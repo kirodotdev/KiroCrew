@@ -118,6 +118,7 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
+  cron_run_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
   queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
   send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
@@ -217,6 +218,7 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
+  cron_run_read_only: 'pages.chat.gatewayNotice.cron_run_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
   queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
   send_dropped: 'pages.chat.gatewayNotice.send_dropped',
@@ -260,8 +262,8 @@ const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 
 /**
  * Settled copy for a pending token whose cause is not the connection: a
- * throttle is the provider's answer, so its card never reads "Connection
- * restored" or "Connection interrupted".
+ * throttle is an answer, not a dropped connection, so its card never reads
+ * "Connection restored" or "Connection interrupted".
  */
 const SETTLED_KEY = {
   transient_throttle_retrying: {
@@ -568,6 +570,10 @@ const LEGACY: readonly Legacy[] = [
     token: 'remote_crew_read_only',
   },
   {
+    re: /^This cron run's transcript can be read here but not replied to\. Start a new chat to follow up on it\.$/u,
+    token: 'cron_run_read_only',
+  },
+  {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
   },
@@ -842,6 +848,20 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
  */
 export function isKasSignedOut(m: ChatMessage): boolean {
   return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
+ * What makes two red notice rows the SAME failure, so a run of them draws as
+ * one card (`errorRuns.ts`): the token and the values its copy reads. `null`
+ * for any other row, and for one whose `kind` or `code` gives it a card of its
+ * own (a sign-in, a usage limit, a turn limit), whose actions belong to it.
+ */
+export function errorNoticeRunKey(m: ChatMessage): string | null {
+  const meta = m.meta as { kind?: unknown; code?: unknown } | undefined
+  if (m.role !== 'error' || m.kind || meta?.kind || meta?.code) return null
+  const shape = shapeOf(m)
+  if (!shape || NOTICE_FAMILIES[shape.token].card !== 'error') return null
+  return `${shape.token} ${JSON.stringify(shape.args)}`
 }
 
 /**

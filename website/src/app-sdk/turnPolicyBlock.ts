@@ -1,5 +1,9 @@
 import type { ChatMessage } from '../types'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
+
+/** Mirrors `chat_utils.HOST_DECLINE_CAUSE_META_KEY` (Python); the value is the decline's cause. */
+const HOST_DECLINE_CAUSE_META_KEY = 'host_decline_cause'
 
 /**
  * True when the turn containing `index` had a tool call blocked by policy.
@@ -26,11 +30,15 @@ import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
  * streaming row has no persisted meta yet, so the chip would appear live and
  * vanish on refresh.
  *
+ * A host approval decline is the same misattribution: the host folds its own notice
+ * into the turn, and the row telling the person the host declined carries the
+ * cause under `HOST_DECLINE_CAUSE_META_KEY`, so that row suppresses the chip too.
+ *
  * A turn that ALSO carries a steer the person sent keeps its chip: their steer
  * deserves its acknowledgement, and suppressing on the presence of a policy
  * notice alone would silently swallow it.
  */
-export function turnHadPolicyBlock(messages: ChatMessage[], index: number): boolean {
+export function turnHadPolicyBlock(messages: readonly ChatMessage[], index: number): boolean {
   let blocked = false
   for (let i = Math.min(index, messages.length - 1); i >= 0; i--) {
     const m = messages[i]
@@ -44,6 +52,22 @@ export function turnHadPolicyBlock(messages: ChatMessage[], index: number): bool
     if (m.role === 'inject' && parseRecoveryMessage(m.content ?? '')?.kind === 'tool_blocked') {
       blocked = true
     }
+    if ((m.meta as Record<string, unknown> | undefined)?.[HOST_DECLINE_CAUSE_META_KEY]) {
+      blocked = true
+    }
   }
   return blocked
+}
+
+/**
+ * True when assistant row `m` draws nothing on a surface that shows file chips:
+ * invisible-only text, or a reply that is only a `[STEERING …]` note in a turn
+ * whose Steered chip `turnHadPolicyBlock` drops. `messages` and `index` locate
+ * only that turn's preceding rows because the rendered row may come from a
+ * deferred snapshot. The reply bubble, footer placement and Regenerate anchor
+ * all ask this, so a hidden row never keeps actions from the row above it.
+ */
+export function isHiddenReplyAt(m: ChatMessage, messages: readonly ChatMessage[], index: number): boolean {
+  if (!isHiddenInvisibleAssistantRow(m, { steerChip: false })) return false
+  return isHiddenInvisibleAssistantRow(m) || turnHadPolicyBlock(messages, index)
 }

@@ -3215,7 +3215,7 @@ below), `filesystem.read` / `filesystem.write` / `folders.*` and
 `network.egress` (host gate via tool kind + args), `channels` (per-transport at
 the messaging chokepoint AND at transport startup), `apps` (app
 activation), `agent_backend` (which ACP harness a deployment may select —
-materialised by narrowing the `acp_backends` registry at gateway start),
+materialised by narrowing the `acp_backends` registry at each process boot),
 `approval_modes` (the `trust_reads`, `trust` and `yolo` modes), `yolo_duration`
 (the `permanent` and `until_shutdown` no-expiry choices), `sandbox.min_level`
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
@@ -4187,8 +4187,11 @@ logged warning).
 only. Every decision lands a `governance_decision` SEL record through
 `log_governance_decision` with `outcome` `"allowed"` / `"denied"` — the vocabulary
 `sel.py` pins and `governance_profiles` emits, so a log query for allowed
-decisions cannot miss this scope. The full record is affordable precisely because
-the decision is materialised: it runs once per gateway start, not per panel open — and *which harnesses did this deployment admit* is
+decisions cannot miss this scope. The full record is kept because the decision is
+materialised: it runs once per process boot (each process that calls
+`boot_platform`), not per panel open and not on a pushed ceiling, so its volume
+follows process starts (for example each CLI command, MCP server process and
+script cron run), not requests — and *which harnesses did this deployment admit* is
 the question an operator actually reconstructs afterwards, which a denials-only
 log cannot answer. Audit failure is swallowed: an unwritable log must not decide
 which harness starts.
@@ -4277,6 +4280,16 @@ the active slot), and `yolo` (auto-approve every tool everywhere). The
 matcher — data-only shape, no evaluator change, mirroring `agent_backend`
 above) lets a managed fleet forbid an auto-approve mode and force interactive
 approval.
+
+On a KAS chat a person drives from the dashboard, the picker can also offer
+**Approve for me** (`approve_for_me`, set through
+`POST /api/chat/slots/{slot}/approve-for-me`), where the engine judges each call
+(see [security.md](security.md), "KAS approve-for-me"). It is no rung of the
+trust ladder and not in `KNOWN_APPROVAL_MODES`; it has a verdict of its own
+(`approval_mode_policy.APPROVE_FOR_ME_MODE`) that is denied by default. Only an
+installed `approval_modes` rule whose `allow` list names `approve_for_me`, in
+either tier of a composed rule, permits it; allowing `trust`, or a deny-mode
+rule that leaves it out, does not, and a rule that cannot be read denies it.
 
 **The scope governs `trust_reads`, `trust` and `yolo`; `normal` is the floor**
 ([RFC D9](../../request-for-change/rfc-crew-lts-edition.md)). The KGL term is
@@ -4605,7 +4618,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `agent_backend_governance.py` — the `agent_backend` scope: `SCOPE`,
   `narrow_selectable_backends` (the registry recompute, plus its host-bound,
   both-directions audit), driven from `platform/bootstrap.py::bootstrap_context`
-  at gateway start. Runtime ceiling installs deliberately leave the registry
+  at each process boot. Runtime ceiling installs deliberately leave the registry
   unchanged until the next start.
 - `acp_backends.py` — the selectable registry the scope narrows:
   `GOVERNANCE_FLOOR_BACKEND`, `POLICY_ID_BY_BACKEND`, the baseline/effective

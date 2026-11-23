@@ -198,7 +198,7 @@ def grant_declared_yolo(source: str = SafetyOverride._DECLARED_SOURCE) -> Activa
 
 # ── User-facing grant-lifetime text (channel-neutral) ──
 
-NO_EXPIRY_TEXT = "stays on until Kiro Crew restarts"
+NO_EXPIRY_TEXT = "stays on until you stop Kiro Crew"
 
 
 def fmt_grant_duration(secs: int) -> str:
@@ -276,7 +276,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _clear_breadcrumb,
         _consume_breadcrumb,
         _enqueue_breadcrumb,
+        _enqueue_job,
+        _transition_listeners,
         _write_breadcrumb,
+        add_transition_listener,
         flush_breadcrumb_writes,
         take_dropped_grant,
     )

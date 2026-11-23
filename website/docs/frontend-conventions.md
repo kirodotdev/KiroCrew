@@ -233,8 +233,7 @@ replays for a tap are ignored, because a hint appearing mid-tap can cost the cli
 (a real mouse on a touch device still hovers). An anchor whose bubble outranks its
 click — one with no click action, or whose tip carries a warning the user must see
 before acting — opts in with `openOnTap`. Its hint then opens from the replayed
-hover/focus, before the click, exactly as it always has (FeedbackPill's usage
-warning, #13342).
+hover/focus, before the click (FeedbackPill's usage warning does this).
 
 An anchor with no click action at all can instead pass `openOnTouchRelease`,
 false by default, which opens the hint on the touch pointerup itself. It still
@@ -250,13 +249,14 @@ nothing for `openOnTap` consumers.
 
 `components/MarkdownRenderer.tsx` is the renderer's only import path. Its default
 export (the memoized component), its named exports and its module id are what
-the consumers import and what about 150 specs mock, so all three stay there. It
+the consumers import and what more than 250 specs mock, so all three stay there. It
 is also the composition root: what has to be decided in one place lives in it,
 and every other concern has one owner under `components/markdown/`.
 
 | Owner | Holds |
 |---|---|
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
+| `markdown/remarkBase.ts` | the parse-side remark plugins (`REMARK_BASE_PLUGINS`: depth bound, CJK-friendly emphasis, GFM, CJK-friendly strikethrough, in that order) that the renderer and the rich-text copy share |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
 | `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
@@ -280,9 +280,10 @@ stub in every spec that mocks the renderer. Consumers keep importing from the
 facade for the same reason. The one exception is `markdown/typography.ts`, which
 `FileRenderers.tsx` imports directly: it is plain data with no imports of its
 own, and reading it through the facade would hand the Office preview the
-renderer's stub in every spec that mocks the renderer. Three things must stay in the facade's own text: the
-seven remark/rehype package imports (`test/test_source_providers.py` pins that
-set against the backend converter), `import '../utils/hljs'`
+renderer's stub in every spec that mocks the renderer. Three things must stay in the facade's own text, or
+beside it: the seven remark/rehype package imports, split between the facade and
+`markdown/remarkBase.ts` (`test/test_source_providers.py` reads both files and pins
+that set against the backend converter), `import '../utils/hljs'`
 (`hljsCoreOnly.test.ts`), and the two lines the i18n added-line gate counts, in
 `MdAnchor` and `stripStrayToolUseTags`.
 
@@ -528,7 +529,7 @@ Both of those overlays portal to the body-level overlay root (see *Floating
 layers and Crew switches* below) and both paint above the dialog
 at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
 stacking context is a paint-order fact and implies nothing about event
-routing** — conflating the two is what kept #6833 open, so do not reason about
+routing** — so do not reason about
 coverage from a z-index.
 
 A dialog rendered inside the App root rather than portalled to the body level
@@ -598,7 +599,8 @@ A bypass is an XSS bug, so there is no "just this once" case.
 The markdown renderer sets no `dangerouslySetInnerHTML`. Raw HTML in markdown
 prose enters its tree only through `rehype-raw`. In the chain
 `MarkdownRenderer.tsx` composes (`rehypeBoundRawDepth`, `rehype-raw`,
-`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`, `rehypeSanitize`, `rehype-katex`)
+`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`, `rehypeSanitize`,
+`rehypeSessionRefPunctuation`, `rehype-katex`)
 the two passes between `rehype-raw` and `rehypeSanitize` only mark and restructure
 the tree; they add no attribute the sanitizer would not judge. Every pass that injects
 elements of its own (the streaming effects, the redaction markers, the stable
@@ -644,7 +646,7 @@ machine (`canPickFolderNatively`); a plain click is unchanged. A line number tak
 it only where every hunk header carries numbers, and never on a tool call's edit
 card, which counts the replaced text from 1.
 
-How a refused destination RENDERS is part of the contract (issue #9925): the
+How a refused destination RENDERS is part of the contract: the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty
 href resolves to the current page — matching `md-notebook/Preview.tsx`'s
@@ -671,7 +673,7 @@ renderer and keeps the plain span.
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — a drive-letter path) is passed through **for image
 `src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and
-would blank the sender's own uploaded image (issue #3497). The invariant that
+would blank the sender's own uploaded image. The invariant that
 makes it safe: `ImgWithFallback` (`components/markdown/ImgWithFallback.tsx`)
 routes every local path to the same-origin `/api/file-raw` endpoint, so the raw
 filesystem path never reaches the DOM, and
@@ -685,7 +687,7 @@ A root-relative image (`/images/a.png`) inside a previewed file (a
 directory above the file, nearest first, up to eight levels
 (`siteRootImageCandidates`). The leading `/` there usually names the root of the
 repository or site the markdown belongs to — GitHub, Zenn and Docusaurus all
-write images that way (issue #23623) — and nothing in the file says where that
+write images that way — and nothing in the file says where that
 root is. A same-named image in a nearer directory therefore wins over one at
 the real root. Every candidate still goes through `/api/file-raw`, so the fallback
 reads nothing the absolute path could not already ask for. When every candidate
@@ -959,7 +961,7 @@ files own it:
   global `:focus-visible` ring, the reduced-motion cut, the scroll-only
   scrollbar)
   and, unlayered, the ambient backdrop and the app-icon tints; then the imports
-  of the other eight partials. Tailwind inlines each `@import` where it stands,
+  of the other ten partials. Tailwind inlines each `@import` where it stands,
   so the import order IS the cascade order: never reorder the imports, and put a
   new rule in the partial that owns its surface.
 - `src/styles/*.css` — the partials `index.css` imports, listed here in import
@@ -973,8 +975,9 @@ files own it:
   - `chat-transcript.css` owns what a chat message paints and how it streams in.
     Strays: the composer's prompt-optimize overlay and approval glow, the update
     card's indeterminate progress bar, `.animate-shimmer`, the custom-font
-    ligature toggle, the Kiro-theme overrides of nav, session-row and shell
-    chrome, and the workspace-tree token mapping.
+    ligature toggle, the rich-text composer's font stacks, the Kiro-theme
+    overrides of nav, session-row and shell chrome, and the workspace-tree token
+    mapping.
   - `scrollbars-and-touch-hit.css` owns the horizontal edge-fade mask for code
     and diff blocks and the 44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
     hover glow (`.card-glow`) and the stat top-line accent (`.stat-accent`).
@@ -987,6 +990,10 @@ files own it:
   - `sidebar-and-side-panel.css` owns session and folder rows, the list dock,
     the side-panel tab strip and the file preview's print layout. Strays: the
     inline lucide icon size and the panel-icon pane morph.
+  - `crew-mode.css` owns conductor mode's marks: the accent token, the ghost
+    badge (`.crew-grad`), the text gradient on the welcome title and the pressed
+    composer chip, the current crew card, the progress track and the turn-on
+    effect.
   - `highlights-and-page-zoom.css` owns search, find and comment highlights and
     the coarse-pointer rules that stop page zoom. Strays: the artifact toolbar
     button heights and the mobile sessions-drawer width.
@@ -998,6 +1005,9 @@ files own it:
     compensation on the nav rail, the Hindi and Bengali letter-spacing reset,
     the crew-chip cut edge, image and spacer reservations, the pane-dim token
     and the markdown-table breakout.
+  - `layout-morph.css` owns the view-transition keyframes for the phone/desktop
+    form switch (`lib/layoutFormTransition.ts`), scoped to `[data-layout-morph]`
+    so nothing in it applies at rest.
 
   `cli-mode.css`, `message-font-size.css` and `crew-notes.css` in the same
   directory are imported by `main.tsx` instead. A test that measures the

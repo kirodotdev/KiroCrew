@@ -247,6 +247,9 @@ _REVIEWED_EDITABLE = frozenset(
         # Which tier a lesson from a turn no person sent lands in; an enum whose
         # opt-in values only tighten that, so it is not a reach or run boundary.
         "memory.lesson_origin_gate",
+        # Whether a pref.* / user.* fact from a turn no person sent is written; an
+        # enum whose opt-in values only hold writes back.
+        "memory.fact_origin_gate",
         # Which tier a lesson from consolidation is stored in, and the order the
         # session-start rule block lists rules in: memory previews, not a reach or
         # run boundary.
@@ -459,6 +462,20 @@ def test_a_key_an_edition_locks_is_read_only_and_says_so(monkeypatch) -> None:
 # ── The PATCH route ──
 
 
+async def test_patch_writes_warm_set_cap_and_refuses_negative(tmp_config) -> None:
+    path = "instances.warm_set_cap"
+    assert all_settings.generic_spec(path) is None
+    for value in (0, 30):
+        status, body = await _send({"path": path, "value": value})
+        assert status == 200, body
+        assert _stored(tmp_config)["instances"]["warm_set_cap"] == value
+
+    assert _editable_config_spec(path) == {"type": "int", "min": 0}
+    status, body = await _send({"path": path, "value": -1})
+    assert (status, body.get("error")) == (400, "must be between 0 and 999999")
+    assert _stored(tmp_config)["instances"]["warm_set_cap"] == 30
+
+
 async def test_patch_writes_and_unsets_a_generic_list(tmp_config) -> None:
     status, _ = await _send({"path": "mcp_gateway.keep_alive_servers", "value": ["github"]})
     assert status == 200
@@ -494,13 +511,13 @@ async def test_patch_stores_a_null_on_a_nullable_int(tmp_config, path) -> None:
 
 async def test_patch_writes_a_generic_enum_and_refuses_a_value_outside_it(tmp_config) -> None:
     assert _editable_config_spec("memory.kind_routing")["generic"] is True
-    status, body = await _send({"path": "memory.kind_routing", "value": "shadow"})
+    status, body = await _send({"path": "memory.kind_routing", "value": "off"})
     assert status == 200, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
     status, body = await _send({"path": "memory.kind_routing", "value": "loud"})
     assert status == 400, body
-    assert _stored(tmp_config)["memory"]["kind_routing"] == "shadow"
+    assert _stored(tmp_config)["memory"]["kind_routing"] == "off"
 
 
 @pytest.mark.parametrize("value", [True, "300", 1.5, None])
@@ -752,7 +769,7 @@ async def test_patch_refuses_a_key_another_route_writes(tmp_config, path, value)
 #: ``/api/security/safety-switches`` route, from Settings -> Security -> Safety switches.
 _SAFETY_SWITCH_LINKS = {
     "mcp.protect_kiro_permission_rules": "security.stop-the-agent-from-editing-its-own-permission-rules",
-    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "mcp.honour_auto_approve": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
 }
 
 

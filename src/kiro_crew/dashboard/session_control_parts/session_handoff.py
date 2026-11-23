@@ -10,6 +10,10 @@ creator.
 
 The reach MOVES rather than being shared: the giver is refused afterwards unless the
 manager chain switch is on and the giver manages the new manager.
+
+With ``bind=true`` the handoff also moves the right to bind the session to work-ledger
+items, which only the session holding it may pass on; the caller's own open item for
+that session is then closed as abandoned on its own board, unless it waits on a person.
 """
 
 from __future__ import annotations
@@ -117,6 +121,7 @@ async def handoff_target(
     target: str,
     to: str,
     caller_fenced: bool | None = None,
+    bind: bool = False,
 ) -> "dict[str, Any]":
     """Make *to* the manager of *target*.
 
@@ -130,6 +135,10 @@ async def handoff_target(
 
     The new manager is written to disk before anything else changes. The tree edge and
     the transcript row follow, and neither can undo the handoff.
+
+    *bind* also moves the right to bind *target* to work-ledger items. Refused
+    ``not_bind_holder`` unless the caller holds that right now, and ``depth_exceeded``
+    when *target* conducts a ledger the recipient's own is not above.
     """
     async with _HANDOFF_LOCK:
         await asyncio.to_thread(session_managers.load)
@@ -187,24 +196,35 @@ async def handoff_target(
                 and (cap_reason := creator_slot_cap_refusal(state, receiver.key)) is not None
             ):
                 raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
+            if bind:
+                await _check_bind_move(slot, receiver, caller_key)
             tab = str(getattr(slot, "_tab_id", "") or "")
-            # ``authorize_target`` found the receiver open, and nothing suspends between
-            # it and this write. A close that lands during the write pops the receiver,
-            # then waits here in ``hand_back_on_close`` and hands back what this saved.
+            # ``authorize_target`` found the receiver open; a close that lands during
+            # the write pops the receiver, then waits here in ``hand_back_on_close`` and
+            # hands back what this saved.
             try:
-                await asyncio.to_thread(session_managers.write, {slot.key: (receiver.key, tab)})
+                await asyncio.to_thread(
+                    session_managers.write, {slot.key: (receiver.key, tab, bind)}
+                )
             except OSError as exc:
                 raise SessionControlError(
                     f"the handoff of {slot.key!r} could not be saved, so nothing changed",
                     status=500,
                     code="handoff_write_failed",
                 ) from exc
+        released_item, release_note = "", ""
+        if bind and receiver.key != caller_key:
+            from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
+
+            released_item, release_note = await work_ledger_routes.release_on_handoff(
+                state, caller_session_key, slot.key, receiver.key
+            )
     _audit(
         caller_session_key=caller_session_key,
         operation="handoff",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"manager": receiver.key, "previous_manager": previous or "none"},
+        detail={"manager": receiver.key, "previous_manager": previous or "none", "bind": bind},
     )
     tree_moved = await _move_tree_edge(state, slot, receiver.key)
     note = f"This session was handed over: {receiver.key} manages it now"
@@ -215,7 +235,48 @@ async def handoff_target(
         "manager": receiver.key,
         "previous_manager": previous,
         "tree_moved": tree_moved,
+        "bind": bind,
+        "released_item": released_item,
+        "release_note": release_note,
     }
+
+
+async def _check_bind_move(slot: "_ChatSlot", receiver: "_ChatSlot", caller_key: str) -> None:
+    """Refuse a ``bind=true`` handoff the caller may not make. Nothing is written.
+
+    Only the session that may bind *slot* now (:func:`session_managers.bind_holder`)
+    may pass that right on, and a *slot* that conducts its own ledger moves only under
+    a recipient whose ledger sits above it, since its depth never changes.
+    """
+    from kiro_crew import session_ledger
+    from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
+
+    holder = session_ledger.ledger_key(session_managers.bind_holder(slot))
+    if not holder or holder != session_ledger.ledger_key(caller_key):
+        raise SessionControlError(
+            f"this session does not hold the right to bind {slot.key!r}, so it cannot "
+            "pass that right on",
+            status=403,
+            code="not_bind_holder",
+        )
+    try:
+        too_deep = await asyncio.to_thread(
+            work_ledger_routes.nests_too_deep, receiver.key, slot.key
+        )
+    except OSError as exc:
+        raise SessionControlError(
+            f"the work ledger of {slot.key!r} or {receiver.key!r} could not be read, so "
+            "the right to bind was not moved",
+            status=409,
+            code="depth_exceeded",
+        ) from exc
+    if too_deep:
+        raise SessionControlError(
+            f"{slot.key!r} conducts a ledger that {receiver.key!r}'s own ledger is not "
+            "above, so its workers would nest past the cap",
+            status=409,
+            code="depth_exceeded",
+        )
 
 
 async def hand_back_on_close(state: "DashboardState", departed: "_ChatSlot") -> "list[str]":
@@ -250,4 +311,18 @@ async def hand_back_on_close(state: "DashboardState", departed: "_ChatSlot") -> 
         logger.warning("session_handoff: hand-back from %s failed: %s", departed.key, exc)
         return []
     logger.info("session_handoff: %s closed; %d session(s) handed up", departed.key, len(changes))
+    # Imported here: a module-level name would be served by the session_control facade.
+    from kiro_crew.tracing import workers as trace_workers
+
+    for key, held in changes.items():
+        # Removing an override returns management to the open slot's creator.
+        manager = (
+            held[0]
+            if held is not None
+            else str(getattr(state._slots.get(key), "_created_by", "") or "")
+        )
+        # No turn made this move (a close did), so each is a span of its own.
+        trace_workers.manager_changed(
+            None, "", trace_workers.OP_HAND_BACK, key, departed.key, manager
+        )
     return sorted(changes)

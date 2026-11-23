@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo, useMemo, useCallback, useId } from 'react'
+import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, type SyntheticEvent } from 'react'
 import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -17,6 +17,7 @@ import { useSidebarCreators } from './chat-sidebar/creators'
 import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
+import { SessionRefStageContext } from '../components/sessionRefStage'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
@@ -147,7 +148,7 @@ function ChatSidebar({
   // to say which collection it means.
   slots: slotsProp, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, splitMode = false, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
-  chatDropTarget, onDropSessionRef, canStageSessionRef, staticRows,
+  chatDropTarget, onDropSessionRef, canStageSessionRef, onShowSessionInPane, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // The person's list. A Crew Mode root's crew members are its side panel's to
@@ -468,15 +469,46 @@ function ChatSidebar({
     () => (foldersUnreadFirst ? unreadFolderLatest(folders, localSlots, slotFolders, unreadSet) : null),
     [foldersUnreadFirst, folders, localSlots, slotFolders, unreadSet])
   // Whether the pointer is over the sessions list (set by the list root below).
+  // Only the hold below reads it, so it is set only while the option is on: with
+  // the option off a hover re-renders nothing. The ref tracks the pointer either
+  // way, so turning the option on from the menu (inside the list) holds at once.
   const [listHovered, setListHovered] = useState(false)
+  const pointerInListRef = useRef(false)
+  useEffect(() => { if (foldersUnreadFirst) setListHovered(pointerInListRef.current) }, [foldersUnreadFirst])
+  // A touch press or a key press inside the list while the option is on holds the
+  // order; a mouse or pen press, any press outside the list, or a mouse or pen
+  // leaving it ends the hold. The root records the native event so the document
+  // listener skips it.
+  const [listPressed, setListPressed] = useState(false)
+  const insidePressRef = useRef<Event | null>(null)
+  const pressListInside = (e: SyntheticEvent) => {
+    if (!foldersUnreadFirst) return
+    insidePressRef.current = e.nativeEvent
+    setListPressed(true)
+  }
+  useEffect(() => {
+    if (!listPressed) return
+    const release = (e: Event) => { if (e !== insidePressRef.current) setListPressed(false) }
+    document.addEventListener('pointerdown', release)
+    document.addEventListener('keydown', release)
+    return () => {
+      document.removeEventListener('pointerdown', release)
+      document.removeEventListener('keydown', release)
+    }
+  }, [listPressed])
   // A chat turning unread must not re-sort the folders under the pointer, while
-  // the pointer is over the list or a dnd-kit / native board-card drag runs: keep
-  // the snapshot taken when that began and pick up the live one once it ends.
-  // Turning the option on or off is never held back.
-  const unreadFrozen = listHovered || dragFrozen || nativeSessionDrag !== null
-  const frozenUnreadRef = useRef(liveUnreadLatest)
-  if (!unreadFrozen || (frozenUnreadRef.current === null) !== (liveUnreadLatest === null)) frozenUnreadRef.current = liveUnreadLatest
-  const unreadLatest = unreadFrozen ? frozenUnreadRef.current : liveUnreadLatest
+  // the pointer is over the list, a press inside it holds, or a dnd-kit / native
+  // board-card drag runs: keep the snapshot taken when that began and pick up the
+  // live one once it ends. A touch tap leaves the list before its click and a key
+  // press may come with the pointer elsewhere, hence the press hold.
+  // Turning the option on or off is never held back. The snapshot is what the
+  // last commit drew, recorded after it commits, so a render React throws away
+  // cannot move it.
+  const unreadFrozen = listHovered || listPressed || dragFrozen || nativeSessionDrag !== null
+  const drawnUnreadRef = useRef(liveUnreadLatest)
+  const drawnUnread = drawnUnreadRef.current
+  const unreadLatest = unreadFrozen && (drawnUnread === null) === (liveUnreadLatest === null) ? drawnUnread : liveUnreadLatest
+  useEffect(() => { drawnUnreadRef.current = unreadLatest }, [unreadLatest])
   const folderCompare = useMemo(
     () => (unreadLatest ? unreadFirstComparator(folderModeCompare, unreadLatest) : folderModeCompare),
     [unreadLatest, folderModeCompare])
@@ -866,14 +898,14 @@ function ChatSidebar({
     onNativeDragStart: startBoardCardDrag, onNativeDragEnd: endNativeSessionDrag,
     onPinnedKeyboardReorder: reorderPinnedByKeyboard, onManualKeyboardReorder: reorderManualByKeyboard,
     openElsewhere, toggleConductor: toggleConductorExpanded,
-    onDropSessionRef, canStageSessionRef,
+    onDropSessionRef,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
     renameOfflineSlot, renameOfflineScope,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,
-    onDropSessionRef, canStageSessionRef,
+    onDropSessionRef,
   ])
   // The values every row shows the same way, ONE object per change of any of them:
   // each view holds it by reference, so it re-renders every row exactly when one of
@@ -1017,7 +1049,7 @@ function ChatSidebar({
     isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
     moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane, prStatusRefreshError,
-    onDropSessionRef, canStageSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
+    onDropSessionRef, canStageSessionRef, onShowSessionInPane, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
@@ -1046,13 +1078,14 @@ function ChatSidebar({
 
   return (
     <SharedCrewBylineContext.Provider value={creatorView.bylines}>
+    <SessionRefStageContext.Provider value={!!canStageSessionRef}>
     {/* stable theming hook 'sidebar' — see website/docs/theming-contract.md
         The region is the session picker a guide's "choose the session" step
         points at (`sessions.list`): both layouts draw their rows inside it. */}
     <>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
-      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerEnter={() => setListHovered(true)} onPointerLeave={() => { releaseHoverPin(); setListHovered(false) }} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerEnter={() => { pointerInListRef.current = true; if (foldersUnreadFirst) setListHovered(true) }} onPointerLeave={e => { pointerInListRef.current = false; releaseHoverPin(); if (foldersUnreadFirst || listHovered) setListHovered(false); if (listPressed && e.pointerType !== 'touch') setListPressed(false) }} onPointerDownCapture={e => { if (e.pointerType === 'touch') pressListInside(e) }} onKeyDownCapture={pressListInside} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
@@ -1213,6 +1246,7 @@ function ChatSidebar({
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
     </>
+    </SessionRefStageContext.Provider>
     </SharedCrewBylineContext.Provider>
   )
 }

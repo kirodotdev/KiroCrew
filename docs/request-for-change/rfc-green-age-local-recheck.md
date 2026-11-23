@@ -1,11 +1,11 @@
 ---
 title: A moved base is a reason to re-test locally, not to push -- the prepare-pr loop pushes a green-age re-sync only when the re-check conflicts or goes red
-status: draft
+status: implemented
 author: rnoack1, with a kirocrew agent session
 created: 2026-11-17
 last-audited: 2026-11-20
-audited-at: cdb601611f
-doc-pr: null
+audited-at: c28a04d44e
+doc-pr: 38682
 implementation-prs: [38192]
 tracking-issues: [38153]
 supersedes: []
@@ -14,10 +14,15 @@ superseded-by: []
 
 # RFC: Re-check locally on a moved base; push only on a conflict or a red
 
-Status: **draft**. Nothing on main follows it yet. It asks a maintainer to
-accept one change to what the `kirocrew-prepare-pr` loop does by default.
-[#38192](https://github.com/kirodotdev/KiroCrew/pull/38192) is the draft that
-builds it, and waits on this decision.
+Status: implemented. A maintainer (bolichen97) accepted it on 2026-11-20 in the
+approving review of [#38682](https://github.com/kirodotdev/KiroCrew/pull/38682),
+and [#38192](https://github.com/kirodotdev/KiroCrew/pull/38192) built it (merged
+2026-11-20). Checked at `c28a04d44e`: on exit 30 `SKILL.md` step 5 says "Green: do NOT
+push", `references/monitor-loop.md` tells the woken loop to keep a green re-check
+local, `scripts/green_age.py` says a STALE answer means re-check locally and push
+only on a conflict or a red, and
+`test/test_prepare_pr_green_age.py::test_a_clean_re_check_keeps_the_rebase_local`
+pins the rule.
 
 ## 1. Summary
 

@@ -139,6 +139,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
     app.router.add_post("/api/telemetry/ui-control", handlers.api_ui_control_clicked)
+    # Owner-only, 256-byte closed body, no disk write (handlers/telemetry_app_view.py).
+    app.router.add_post("/api/telemetry/app-view", handlers.api_app_view)
     app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     # Mobile access: a LIVE probe (the status route above reports the startup
     # value) plus setup/publish/withdraw mutations and the QR mint. Registered

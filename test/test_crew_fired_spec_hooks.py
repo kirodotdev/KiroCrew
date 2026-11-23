@@ -259,6 +259,29 @@ def test_the_dashboard_matches_the_run_nowhere_tag_byte_for_byte():
     assert "meta?.spec_hooks_notice === RUN_NOWHERE" in source
 
 
+def test_the_dashboard_matches_the_project_hook_files_tag_byte_for_byte():
+    from kiro_crew.dashboard.chat_utils_injected_rows import (
+        SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+        project_hook_files_notice_meta,
+    )
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "src"
+        / "pages"
+        / "chat"
+        / "SpecHooksNotice.tsx"
+    ).read_text(encoding="utf-8")
+    assert f"const PROJECT_HOOK_FILES = '{SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE}'" in source
+    assert "meta?.spec_hooks_notice === PROJECT_HOOK_FILES" in source
+    (mark_field,) = set(project_hook_files_notice_meta("/p", ["a.json"])) - {
+        "kind",
+        "spec_hooks_notice",
+    }
+    assert f"meta?.{mark_field}" in source
+
+
 def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
     """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
     assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
@@ -514,6 +537,45 @@ def test_extra_hooks_fire_but_are_never_persisted(tmp_path, monkeypatch):
     assert not persisted.exists() or "spec:a1:x" not in persisted.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("stored", [False, True], ids=["spec-hook-only", "stored-hook-too"])
+def test_only_a_stored_hook_that_fired_rewrites_hooks_json(tmp_path, monkeypatch, stored):
+    """A fire that matched only agent spec hooks leaves hooks.json alone.
+
+    Spec hooks are never written to the file, so their fire has nothing to
+    record there. A stored hook that fired still writes its status once.
+    """
+    store = ScriptHookStore(tmp_path)
+    if stored:
+        saved = store.create(
+            {"name": "s", "event": HOOK_EVENT_POST_TOOL_USE, "matcher": "*", "command": "c"}
+        )
+    writes: list = []
+    real_write = store._write_hooks_file
+    monkeypatch.setattr(store, "_write_hooks_file", lambda data: writes.append(real_write(data)))
+
+    async def fake_run(hook, context="", hook_event=None):
+        hook.last_status = "ok"
+        hook.run_count += 1
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    extra = [ScriptHook(id="spec:a1:x", event=HOOK_EVENT_POST_TOOL_USE, matcher="*", command="c")]
+    before = (tmp_path / "hooks.json").read_bytes() if stored else None
+    for _ in range(3):
+        asyncio.run(store.fire(HOOK_EVENT_POST_TOOL_USE, tool_name="shell", extra_hooks=extra))
+
+    assert extra[0].run_count == 3
+    if not stored:
+        assert writes == []
+        assert not (tmp_path / "hooks.json").exists()
+        return
+    assert len(writes) == 3
+    after = json.loads((tmp_path / "hooks.json").read_text(encoding="utf-8"))
+    row = next(h for h in after["hooks"] if h["id"] == saved.id)
+    assert (row["run_count"], row["last_status"]) == (3, "ok")
+    assert (tmp_path / "hooks.json").read_bytes() != before
+
+
 def _passthrough_sandbox(monkeypatch):
     monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
@@ -705,6 +767,33 @@ def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
     )
     asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, "hi"))
     assert seen["acp_session_id"] == expected
+
+
+@pytest.mark.parametrize(("exit_code", "warned"), [(3, True), (0, False)])
+def test_a_failed_post_tool_use_hook_warns_even_with_an_empty_stderr(caplog, exit_code, warned):
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    result = ScriptHookResult(
+        hook_id="h1", hook_name="h", event=HOOK_EVENT_POST_TOOL_USE, exit_code=exit_code, stderr=""
+    )
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            return [result]
+
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=SimpleNamespace(session_id=""),
+        _spec_hooks=[],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    with caplog.at_level("WARNING", logger=chat_runner.logger.name):
+        asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_POST_TOOL_USE, tool_name="t"))
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == (["Hook h (PostToolUse) failed: exited with code 3"] if warned else [])
 
 
 @pytest.mark.parametrize(

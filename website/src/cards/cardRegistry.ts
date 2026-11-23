@@ -10,7 +10,7 @@ import { AlarmClock,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
-import { GOAL_HEARTBEAT_FIELD, GoalHeartbeatOption, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
+import { GOAL_HEARTBEAT_FIELD, GoalHeartbeatOption, MCP_SHARE_OFFER_FIELD, McpServerOptions, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
 import { ImportFilesBody } from './ImportFilesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
@@ -29,6 +29,26 @@ export interface CardKindSpec {
   Body: ComponentType<KindBodyProps>
   /** An option of the primary press, drawn after the reason, just above the buttons. */
   Option?: ComponentType<KindBodyProps>
+  /** The reason row's label, when the proposer's name is not the right one. */
+  reasonLabel?: () => string
+}
+
+/** The switches a check-ins card can turn on or off; its other fields are timing. */
+const CHECK_IN_SWITCHES: ReadonlySet<string> = new Set(['daily', 'weekly', 'monthly', 'heartbeat'])
+
+/**
+ * A check-ins card's primary names what the press does, read from the rows the
+ * gateway built (a switch restated at its current value gets no row and is not
+ * written): only switches turned on says "Turn on", only switches turned off
+ * says "Turn off", and a mix or a timing-only change says "Save".
+ */
+function checkInsPrimary(card?: Card): string {
+  const set = (card?.changes ?? [])
+    .map(c => (c.field && CHECK_IN_SWITCHES.has(c.field) ? card?.params[c.field] : undefined))
+    .filter((v): v is boolean => typeof v === 'boolean')
+  if (set.length > 0 && set.every(v => v)) return i18nT('components.changeCards.primary_crewmate_check_ins')
+  if (set.length > 0 && set.every(v => !v)) return i18nT('components.changeCards.primary_crewmate_check_ins_off')
+  return i18nT('components.changeCards.primary_crewmate_check_ins_save')
 }
 
 export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
@@ -77,7 +97,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'crewmate.check_ins': {
     icon: AlarmClock, label: () => i18nT('components.changeCards.kind_crewmate_check_ins'),
-    primary: () => i18nT('components.changeCards.primary_crewmate_check_ins'), Body: OneCrewmateBody,
+    primary: checkInsPrimary, Body: OneCrewmateBody,
   },
   'crewmate.dashboard_page': {
     icon: LayoutDashboard, label: () => i18nT('components.changeCards.kind_crewmate_dashboard_page'),
@@ -102,6 +122,13 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'mcp.toggle': {
     icon: Power, label: () => i18nT('components.changeCards.kind_mcp_toggle'),
     primary: () => i18nT('components.changeCards.primary_mcp_toggle'), Body: NoBody,
+  },
+  'mcp.server': {
+    icon: PackageOpen, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
+    primary: () => i18nT('components.changeCards.primary_mcp_server'),
+    decline: () => i18nT('components.changeCards.decline_mcp_server'),
+    reasonLabel: () => i18nT('components.changeCards.reason_why'),
+    Body: NoBody, Option: McpServerOptions,
   },
   'connection.connect': {
     icon: Link2, label: () => i18nT('components.changeCards.kind_connection_connect'),
@@ -202,6 +229,16 @@ export function isToolAccessCard(card: Pick<Card, 'kind' | 'params'>): boolean {
 /** The card's title in the reader's language where the dashboard owns the
  *  wording (a list setting's add/remove, the tool-access ask, the import); otherwise
  *  the gateway's title. */
+/** An `mcp.server` card's title in the reader's language: "Add server: weather". */
+function mcpServerTitle(params: Card['params']): string | null {
+  const name = params?.server
+  if (typeof name !== 'string' || !name) return null
+  if (params.action === 'add') return i18nT('components.changeCards.title_mcp_server_add', { name })
+  if (params.action === 'change') return i18nT('components.changeCards.title_mcp_server_change', { name })
+  if (params.action === 'remove') return i18nT('components.changeCards.title_mcp_server_remove', { name })
+  return null
+}
+
 export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'changes'> & Partial<Pick<Card, 'scope'>>): string {
   if (isToolAccessCard(card)) {
     const name = card.scope?.members?.[0] || String(card.params.name ?? '')
@@ -210,6 +247,8 @@ export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'change
   // The gateway's title is English; the import's is rebuilt in the reader's language.
   const name = card.kind === 'crewmate.import' ? card.params?.name : undefined
   if (typeof name === 'string' && name) return i18nT('components.changeCards.title_crewmate_import', { name })
+  const server = card.kind === 'mcp.server' ? mcpServerTitle(card.params) : null
+  if (server) return server
   const list = listOp(card)
   if (!list) return card.title
   if (list.wording) return list.wording[list.op](list.item)
@@ -258,6 +297,8 @@ export function cardChanges(card: Pick<Card, 'kind' | 'params' | 'changes'> & Pa
   if (isOneShot(card)) return oneShotChanges(card)
   // A goal card's Heartbeat row is drawn as its checkbox (GoalBody), not a change line.
   if (card.kind === 'crewmate.goal') return card.changes.filter(c => c.field !== GOAL_HEARTBEAT_FIELD)
+  // An MCP server card's sharing offer is drawn as its option (McpServerOptions).
+  if (card.kind === 'mcp.server') return card.changes.filter(c => c.field !== MCP_SHARE_OFFER_FIELD)
   const wording = listOp(card)?.wording
   if (!wording || card.changes.length !== 1) return card.changes
   return [{ ...card.changes[0], label: wording.label() }]

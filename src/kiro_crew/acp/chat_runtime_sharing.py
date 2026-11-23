@@ -206,12 +206,19 @@ def kas_chat_sharing_ready(pin: str = "") -> bool:
     no installed engine and the chat keeps its own process. *pin* is the
     session's own Bot pin, which decides the route as the spawn decides it.
     An unreadable version or route answers False: absence of evidence keeps the
-    session on its own process. Each refusal is logged with its cause. Blocking
-    (reads config and files, may run ``kiro-cli --version`` once); call it off
-    the event loop.
+    session on its own process. KAS machine mode (``agent_sdk/kas_machine.py``)
+    answers False too: the sharing key does not carry its token file and cell, so
+    a start under it neither founds nor joins a shared process. Each refusal is
+    logged with its cause. Blocking (reads config and files, may run
+    ``kiro-cli --version`` once); call it off the event loop.
     """
     try:
         from kiro_crew.acp.kas_route import resolve_kas_route
+        from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
+
+        if configured_machine_auth() is not None:
+            logger.info("chat-runtime-sharing: KAS machine mode; not sharing")
+            return False
 
         route = resolve_kas_route(pin=pin)
         if route.bundle:

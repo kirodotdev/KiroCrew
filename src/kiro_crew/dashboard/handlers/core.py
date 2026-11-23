@@ -476,7 +476,7 @@ async def api_ready(request: web.Request) -> web.Response:
     # readiness is not a prerequisite for serving the dashboard — a signed-out
     # user is meant to get in and see the reauthentication banner — and gating
     # this endpoint on it would only delay first paint. (It would also not do
-    # what it looks like: the desktop splash polls /api/status and accepts any
+    # what it looks like: the desktop splash polls /api/live and accepts any
     # status < 500, so a 503 here is invisible to it.)
     # Require the literal bool set at the final startup boundary. This stays
     # fail-closed for partial/mocked state objects and cannot become truthy just
@@ -746,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (
         _MOVED_CONFIG_FIELDS,
+        _acp_backend_sandbox_refusal,
         _beacon_governance_pinned_off,
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
@@ -1120,7 +1121,10 @@ async def api_shutdown(request: web.Request) -> web.Response:
     exits the process.
 
     Intended for the desktop app to call before installing an auto-update, so
-    the Squirrel bundle swap never races a live gateway. Requires loopback (or a
+    the Squirrel bundle swap never races a live gateway, and on Quit, when the
+    body carries ``{"user_stop": true}``: that is a stop the user chose, so it
+    writes the user-stop mark first and the next boot ends the kept YOLO and chat
+    trust (``kept_grants``). Requires loopback (or a
     kernel-attested same-user AF_UNIX peer, ``_unix_peer_is_self``, which is how
     ``kirocrew stop``'s owner-verified socket send arrives, with an empty
     ``request.remote``) plus the local secret (same auth as
@@ -1152,13 +1156,28 @@ async def api_shutdown(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
+    # ``{"user_stop": true}`` says the user chose this stop (the desktop Quit), so the
+    # grants this gateway holds end with it (``kept_grants``). Any other body -- the
+    # desktop's stop before an update, the CLI's fallback, which marks the stop itself
+    # -- keeps them, as every exit the user did not choose does.
+    user_stop = False
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        user_stop = isinstance(body, dict) and body.get("user_stop") is True
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="shutdown",
         outcome="success",
         source="local-app",
-        resources="gateway",
+        resources="gateway, user_stop" if user_stop else "gateway",
     )
+    if user_stop:
+        from kiro_crew import kept_grants
+
+        await asyncio.to_thread(kept_grants.mark_user_stop, "desktop")
     logger.info("shutdown requested via /api/shutdown — triggering graceful stop")
 
     # Fire the shutdown only AFTER this 200 has flushed to the client, so the

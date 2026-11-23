@@ -16,6 +16,7 @@ export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'ne
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
   normal: 'components.approvalModePicker.normal_label', trust_reads: 'components.approvalModePicker.reads_label',
   trust: 'components.approvalModePicker.trust_label', yolo: 'components.approvalModePicker.yolo_label',
+  approve_for_me: 'components.approvalModePicker.approve_for_me_label',
 }
 /** The chat header's own mode rule, so the two never disagree: a live
  * app-armed scoped grant auto-approves too, and reads as trust. */

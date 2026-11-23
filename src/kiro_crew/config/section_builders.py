@@ -75,6 +75,7 @@ from kiro_crew.config.memory_sections import (
     _read_auto_add_documents,
     dream_mode_from,
     extraction_instructions_from,
+    fact_origin_gate_mode_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -127,6 +128,7 @@ from kiro_crew.config.sections import (
 )
 from kiro_crew.config.service_sections import (
     CronHistoryConfig,
+    HeartbeatConfig,
     MessagingConfig,
     MonitoringConfig,
     PowerConfig,
@@ -213,6 +215,17 @@ def _build_cron_history_config(cron_history_data: dict) -> CronHistoryConfig:
         cron_trace_cap_kb=section.read("cron_trace_cap_kb", _safe_int),
         cron_max_records_per_job=section.read("cron_max_records_per_job", _safe_int),
         cron_max_index_records=section.read("cron_max_index_records", _safe_int),
+    )
+
+
+def _build_heartbeat_config(heartbeat_data: dict) -> HeartbeatConfig:
+    section = SectionReader(HeartbeatConfig, heartbeat_data)
+    default_deliver = str(section.get("default_deliver")).strip().lower()
+    if default_deliver not in ("slack", "dashboard"):
+        default_deliver = section.default("default_deliver")
+    return HeartbeatConfig(
+        default_deliver=default_deliver,
+        keep_backoff=section.read("keep_backoff", _safe_bool),
     )
 
 
@@ -404,6 +417,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
+        fact_origin_gate=fact_origin_gate_mode_from(section.get("fact_origin_gate")),
         rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
         relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
@@ -656,6 +670,7 @@ def _build_instances_config(
         max_recovery_attempts=section.read("max_recovery_attempts", _safe_int),
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
+        managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
     )
 
 
@@ -669,12 +684,21 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # A value the person did not give (absent, null, empty or blank) leases from
+        # us-east-1; any value they gave must be a known Region, or the relay refuses
+        # and sends nothing.
+        relay_lease_region=_text_or_empty(section.get("relay_lease_region")),
         relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer's dev settings on: a string
         # or a number left by a hand edit keeps them off rather than reading as truthy.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
+
+
+def _text_or_empty(raw: object) -> str:
+    """``""`` for absent or null, else the value as text, so a given ``false`` is refused."""
+    return "" if raw is None else str(raw)
 
 
 def _relay_enabled(raw: object) -> bool | None:
@@ -798,6 +822,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
+        setup_guide_url=str(section.get("setup_guide_url") or "").strip(),
         forward_to_agent_callback=str(
             section.get("forward_to_agent_callback") or section.default("forward_to_agent_callback")
         ).strip(),
@@ -822,6 +847,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         reactions_enabled=bool(section.get("reactions_enabled")),
         use_tunnel_url=bool(section.get("use_tunnel_url")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
         dm_single_session=bool(section.get("dm_single_session")),
         # Default True: a missing or non-boolean value keeps the built-in page.
         home_tab_builtin=section.read("home_tab_builtin", _safe_bool),
@@ -838,6 +864,8 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False: an unparseable value must never add user scopes or PKCE.
+        slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
         shared_access=_build_shared_access(slack_data.get("shared_access")),
     )

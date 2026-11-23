@@ -31,7 +31,7 @@ head-anchored with an ellipsis
 after the cut and survives the menu's narrowest width; rows whose name is
 unique in the set keep the full path. Each row's tail is unique among the
 group's displayed tails by construction, and the full path stays on the row's
-tooltip. With `pathTail` (`ChatEmbed`) rows show their folder cut from the
+tooltip. With `pathTail` (`ChatEmbed` and a split pane's composer) rows show their folder cut from the
 start instead, and this rule does not apply.
 `website/src/test/FilePickerMenu.sameName.test.tsx` pins the rule.
 

@@ -603,6 +603,49 @@ def test_o_project_hook_files_notice_shows_once_per_chat(tmp_path, monkeypatch):
     assert new_session(other) == 1
 
 
+# (o2) The hook-files row carries the tag and the per-folder mark its Dismiss hides by.
+def test_o2_project_hook_files_notice_carries_a_per_folder_mark(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE
+
+    _point_hooks_dir(monkeypatch, tmp_path / "home")
+    _agents_dir(tmp_path, monkeypatch)
+    project = tmp_path / "proj"
+    hooks_dir = project / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "a.kiro.hook.json").write_text("{}", encoding="utf-8")
+    other = tmp_path / "other"
+    shutil.copytree(project, other)
+    rows: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: rows.append((text, kw.get("meta"))),
+    )
+
+    def mark_in_a_new_chat(cwd: Path) -> str:
+        rows.clear()
+        slot = _NS(_project_hook_files_notice_shown="")
+        client = _NS(capabilities=capabilities_for(ACP_BACKEND_KAS), cwd=str(cwd))
+        _asyncio.run(chat_runner._prepare_spec_hooks(_NS(), slot, client, "a1", is_new=True))
+        (meta,) = [m for text, m in rows if "hook files in .kiro/hooks" in text]
+        mark = meta["project_hook_files_mark"]
+        assert meta == {
+            "kind": SPEC_HOOKS_NOTICE_KIND,
+            "spec_hooks_notice": SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+            "project_hook_files_mark": mark,
+        }
+        assert len(mark) == 16 and set(mark) <= set("0123456789abcdef")
+        assert slot._project_hook_files_notice_shown == mark, "the chat's mark is the row's"
+        return mark
+
+    first = mark_in_a_new_chat(project)
+    assert mark_in_a_new_chat(project) == first, "the same folder and names, in a second chat"
+    assert mark_in_a_new_chat(other) != first, "another folder"
+    (hooks_dir / "a.kiro.hook.json").rename(hooks_dir / "b.kiro.hook.json")
+    assert mark_in_a_new_chat(project) != first, "a renamed file"
+
+
 # (p) User hook files saved with a UTF-8 BOM or encoded in UTF-16LE load successfully.
 def test_p_user_hook_file_with_utf8_bom_or_utf16le_loads(tmp_path, monkeypatch):
     home = tmp_path / "home"

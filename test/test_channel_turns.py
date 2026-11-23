@@ -99,6 +99,7 @@ from kiro_crew.messaging.turn_ceiling import ConversationTurnCeiling
 from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.stats import Stats
 from kiro_crew.testing.wait import await_until
 
 DRIFTS = [
@@ -301,6 +302,21 @@ class TestTheGovernanceBackstop:
         assert governance.asked == ["weixin"]
         assert sessions.ledger == []
         assert renderer.closed == 0 and renderer.started == 0
+
+    def test_a_permitted_message_is_counted_and_a_denied_one_is_not(self, governance) -> None:
+        before = Stats().snapshot()
+        _answer(_turns(FakeSessions()))
+        governance.permitted = False
+        assert _answer(_turns(FakeSessions())).verdict is Verdict.DENIED
+        after = Stats().snapshot()
+        assert after["messages_admitted"] - before["messages_admitted"] == 1
+        # ``summary()`` pairs ``messages_received`` with ok/fail; this path records no outcome.
+        assert after["messages_received"] == before["messages_received"]
+
+    def test_a_turn_no_person_sent_is_not_counted(self, governance) -> None:
+        before = Stats().snapshot()["messages_admitted"]
+        _answer(_turns(FakeSessions()), asker=_asker(start_priority=StartPriority.BACKGROUND))
+        assert Stats().snapshot()["messages_admitted"] - before == 0
 
     def test_a_dispatcher_that_gates_at_its_own_entry_is_not_asked_twice(self, governance) -> None:
         governance.permitted = False

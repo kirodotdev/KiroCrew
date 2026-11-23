@@ -893,17 +893,21 @@ def test_a_long_rearm_waits_on_its_own_timer_not_the_refresh_loop(monkeypatch):
     monkeypatch.setattr(cc_binding, "active_binding", lambda ch, thread_ts=None: _binding())
 
     async def body():
+        # The loop's own clock, frozen: each deadline is then exact, never a second
+        # live reading subtracted from the first.
+        now = 2044.64
+        monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: now)
         assert board_pkg._schedule("C1", delay=120.0)
         assert calls == []  # nothing waits inside the channel's refresh loop
         assert board_pkg._schedule("C1", delay=3.5)  # earlier than 120 s: replaces it
         due, handle = board_pkg._timers["C1"]
-        assert due - asyncio.get_running_loop().time() <= 3.5
+        assert due == now + 3.5
         # Even a short re-arm waits on its own timer, armed in a clean context (at
         # least the debounce), never in the context of the pass that asked for it.
         assert board_pkg._schedule("C1", delay=0.05) is True
         assert calls == []
         due, handle = board_pkg._timers["C1"]
-        assert due - asyncio.get_running_loop().time() <= service.BOARD_DEBOUNCE_SECS
+        assert due == now + service.BOARD_DEBOUNCE_SECS
         handle._run()  # it fires: the ordinary debounced refresh
         assert calls == [service.BOARD_DEBOUNCE_SECS]
         handle.cancel()

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.messaging.dispatch_contract import Asker, RendererSource, TurnOutcome, Verdict
 from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.turn_ceiling import claim_generated_turn
+from kiro_crew.metrics.usage_attrs import TRIGGER_MONITOR, set_current_trigger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.messaging.dispatch import ChannelTurns
@@ -38,11 +40,24 @@ async def run_admitted(
         await note_capacity_refusal(turns.channel, source, kwargs.get("is_muted"), reason)
         return turns._outcome(Verdict.BUSY, None)
 
+    # A plain nudge carries no monitor but runs inside ``generated_turn``;
+    # claimed first, so a wake also uses up the span's one generated turn. The
+    # nudge is the span's first admission: a queue drain runs only from a
+    # turn's tail (``queue_drain``), so a replayed message follows it.
+    generated = claim_generated_turn()
+
+    async def _run() -> TurnOutcome:
+        if generated:
+            # Declared for the session release's idle timeout only: admission
+            # still charges a plain nudge as it did before.
+            set_current_trigger(TRIGGER_MONITOR)
+        return await turns._run(asker, text, source, **kwargs)
+
     return await run_channel_turn(
         session_key=asker.session_key,
         text=text,
         automation=monitor is not None,
-        run=lambda: turns._run(asker, text, source, **kwargs),
+        run=_run,
         refused=_refused,
     )
 

@@ -8,13 +8,25 @@ export const UPDATE_RESTART_LATCH_TTL_MS = 15 * 60 * 1000
  *  as the restart the user asked for and not as a gateway that stopped. Cleared
  *  on the next connect, or when the request came back refused. */
 let requestedAt: number | null = null
+/** Whether that request waits through the restart in this tab, so its
+ *  `restarting` step arms no reload latch. */
+let keepsTab = false
 
-export function noteGatewayRestart(now: number = Date.now()): void {
+export function noteGatewayRestart(now: number = Date.now(), { keepTab = false }: { keepTab?: boolean } = {}): void {
   requestedAt = now
+  keepsTab = keepTab
 }
 
 export function clearGatewayRestart(): void {
   requestedAt = null
+  keepsTab = false
+}
+
+/** True once when the pending request asked to keep this tab loaded. */
+export function takeRestartKeepsTab(): boolean {
+  const kept = keepsTab && gatewayRestartPendingMs() > 0
+  keepsTab = false
+  return kept
 }
 
 /** How much longer a requested restart counts as pending, in ms (0 when none).

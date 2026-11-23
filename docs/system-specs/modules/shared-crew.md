@@ -579,7 +579,13 @@ The `tailscale serve` path and mobile setup check a login against a derived set
 
 Before the dashboard binds, the gateway publishes an owner-only placeholder
 (`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
-the set after the bind. At the first gateway start with a readable tailnet section,
+the set after the bind. All three start paths install the set this way. The
+ordinary dashboard does it through `prepare_at_start` and `start_after_bind`. A
+`gateway --headless` start calls `prepare_tailnet_path` before the bind, which
+records the tailnet path with `loopback_only` true because that bind is always
+loopback, and `finish_access_set` after it, and starts no direct tailnet listener.
+The reduced `--slack-only` server calls `prepare_access_set` and
+`finish_access_set`. At the first gateway start with a readable tailnet section,
 `access_set.install` copies `allowed_logins` (logins and `tag:` entries) into the set
 as its seed and marks it seeded. After that the seed only shrinks: at each start an
 entry no longer in `allowed_logins` leaves the seed, and an entry added later admits
@@ -1068,6 +1074,12 @@ counts the sessions passing the search that the creator filter excluded. The
 list covers persisted sessions; a slot that has never been saved is not in it.
 The route answers only the dashboard user, and refuses an app token or an
 internal caller with 403, so it reaches no session the existing list does not.
+People and mode, which every open dashboard polls, read the same catalog with
+the preview on: concurrent reads of the same route by one viewer share one build
+that started after each of them arrived (`crew_board_flight`). The access check
+runs per request; the key is the gateway and the viewer (for mode, also whether
+the Crew is a relay team Crew), so two viewers never share an answer, and
+nothing is kept between builds.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
 `unattributed`) lists sessions with no human creator and no named trigger; a
@@ -2036,12 +2048,23 @@ tokens, rows wrap at narrow widths):
 
 The Crew switcher's relay group is headed "Remote Crews"
 (`components.relayCrews.group_team_crews`); the Notifications page names the
-relay channel (`system.relay`) with the same string. Each row's second line reads
+relay channel (`system.relay`) with the same string. It is one list with the
+SSH, SSM and Fargate Crews this dashboard reaches itself: while the relay group
+shows, those rows sit under the same "Remote Crews" heading, above the relay rows,
+and the group draws no second heading (there is no "My Crews" group). Each such
+row's second line reads "Private · <source>" with a lock icon, the source being
+the row's SSH / SSM / Fargate tag, then its host. An SSH Crew's own pane reads
+the source from the `transport` its window relays with each tab (`HostTab`); a
+window that relays none shows the host alone. Each relay row's second line reads
 "<type> · <status>": a `TEAM` Crew is "Shared" with a group icon (lucide `Users`),
 a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
 shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
 same two type strings. The signed-in account line ("Signed in with ...") sits
-under the heading. Each online row's one visible action is a small
+under the heading. When the dev relay domain setting
+(`tunnel.relay_viewer_relay_domain`) alone left listed Crews out
+(`relay_viewer.cps.CrewList.off_domain`), `GET /api/relay-viewer/crews` sends
+`offDomain`, their count, and the group and the "Shared with me" section show a
+notice naming that setting in place of the empty line. Each online row's one visible action is a small
 Connect (accessible name "Connect <name>"); an offline row shows none. Connect
 hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
 shows the Crew as a tab in the main window, under the local top bar; another
@@ -2115,7 +2138,7 @@ The People page (`PeoplePanel.tsx`) reads, top to bottom, in every mode but `inv
    Tailscale" (`https://login.tailscale.com/admin/users`, a fixed URL, new tab,
    `noopener noreferrer`). Then the share link with "Copy Tailscale invite" for the
    owner and "Copy link" for a teammate. The AWS SSM card has "Make invite link".
-2. "People · N" (`PeopleCrew.tsx`), N being the distinct people listed. Under the
+2. "People · N" (`PeopleCrew.tsx`), N being the people rows listed. Under the
    heading, the line that one person can appear once per source, then one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot
    report work per person (`usage_available` false and `usage_off` false); no tip icon. Each row:

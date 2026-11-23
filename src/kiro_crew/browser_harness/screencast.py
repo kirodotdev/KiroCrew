@@ -803,6 +803,8 @@ class LiveStream:
         #: resized between the card's frame and the newest one is off until the card
         #: draws a frame of the new viewport, one frame period.
         self.device_width = 0.0
+        #: The viewport's CSS height from the same metadata (0 until a frame lands).
+        self.device_height = 0.0
         self.metrics = _Metrics()
         self.running = False
         self.visible = True
@@ -969,6 +971,10 @@ class LiveStream:
         self._settle_landing = settle
         if self.casting:
             await self._stop_cast()
+        # The last card may have gone while the stop was in flight; its
+        # ``set_visible(False)`` found no cast to stop, so this start must not run.
+        if not self.running or not (self.visible or self._casts_hidden):
+            return
         await self._start_cast()
 
     def _remember(self) -> None:
@@ -1040,6 +1046,19 @@ class LiveStream:
 
     async def _on_event(self, msg: dict[str, Any]) -> None:
         self.frames.handle(msg)
+        if msg.get("method") == "Page.screencastVisibilityChanged" and msg.get("sessionId") in (
+            None,
+            self.session_id,
+        ):
+            # Chrome draws no frame of a tab it hides (a background tab, a covered
+            # or minimised window), whatever the card asks; this line is the trace.
+            # Every cast start reports "shown", so only "hidden" is worth a log line.
+            if not (msg.get("params") or {}).get("visible"):
+                logger.info(
+                    "live stream %s: Chrome hides the tab, so it sends no frames until shown",
+                    self.session_key,
+                )
+            return
         if msg.get("method") != "Page.screencastFrame" or not self.running:
             return
         if msg.get("sessionId") not in (None, self.session_id):
@@ -1222,11 +1241,13 @@ class LiveStream:
         """
         try:
             device_w = float(meta.get("deviceWidth") or 0)
+            device_h = float(meta.get("deviceHeight") or 0)
         except (TypeError, ValueError):
-            device_w = 0.0
+            device_w = device_h = 0.0
         if device_w > 0 and width > 0:
             self.scale = width / device_w
             self.device_width = device_w
+            self.device_height = device_h if device_h > 0 else 0.0
 
     async def _wait_card_ack(self, waiter: asyncio.Event) -> bool:
         """Wait for the card's ack, bounded by :data:`CARD_ACK_TIMEOUT_S` on the injected sleep."""

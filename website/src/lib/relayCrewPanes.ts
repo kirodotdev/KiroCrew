@@ -10,11 +10,14 @@
  */
 import { useCallback } from 'react'
 import { useAppDispatch, useAppSelector, type AppDispatch, type RootState } from '../store'
-import { relayOpenStarted, relayPaneOpened, type RelayTab } from '../store/instancesSlice'
+import { relayOpenEnded, relayOpenStarted, relayPaneOpened, type RelayTab } from '../store/instancesSlice'
 import { OVERLAY_SELECTOR } from '../hooks/useNativeBrowser'
+import { noteCrewOpened, relayCrewKey } from './crewWarmSet'
 
-/** shortcut: a placeholder for how many relay panes stay loaded; the least recent hidden one closes past it. */
-export const RELAY_PANE_WARM_CAP = 3
+/** The most relay panes kept loaded, whatever the warm-set cap; the least recent hidden one closes past it.
+ *  Which ones stay is the shared warm set's call (hooks/useCrewWarmKeeper.ts), so this bounds only an
+ *  explicit `instances.warm_set_cap` above it. */
+export const RELAY_PANE_WARM_CAP = 10
 /** The Preview panel's overlays, plus menus and lists (the switcher's own menu drops over the pane) and the relay-only marker on the notification sheet, banner cards and update overlay. */
 export const RELAY_PANE_OVERLAY_SELECTOR = [OVERLAY_SELECTOR, '[role="menu"],[role="listbox"],[data-relay-pane-overlay]'].join(',')
 
@@ -23,14 +26,20 @@ type Viewport = { width: number; height: number }
 /** `window`: the Crew is shown in another window (its own, or the main window when another
  *  dashboard window asked), which came forward instead; no pane exists in this one. */
 type OpenResult = { ok: boolean; error?: string; window?: boolean }
-export type RelayPaneEvent = { type: string; endpointId: string; index: number }
+/** `dark` comes with a `theme` event: whether the Crew's page is dark, or null when unknown. */
+export type RelayPaneEvent = { type: string; endpointId: string; index: number; dark?: boolean | null }
 export type RelayPaneBridge = {
   openPane: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<OpenResult>
   setPaneBounds: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<unknown>
   setPaneOverlay: (endpointId: string, active: boolean) => Promise<unknown>
   setPaneInactive: (endpointId: string, inactive: boolean) => Promise<unknown>
   closePane: (endpointId: string) => Promise<unknown>
+  /** Load a pane hidden for the warm set; the main window's dashboard only, and never for a Crew
+   *  open anywhere (ALREADY_OPEN). Absent from an older shell. */
+  prewarmPane?: (endpointId: string, rect: Rect, viewport: Viewport) => Promise<OpenResult>
   onPaneEvent: (cb: (event: RelayPaneEvent) => void) => () => void
+  /** The shell keeps a new pane hidden until its page loads and says so with a `loaded` event. */
+  paneLoadEvents?: boolean
 }
 
 /** The pane half of the desktop bridge, or null when the shell has none (a browser, the PWA, an older shell). */
@@ -55,10 +64,12 @@ export function relayPaneRect(): [Rect, Viewport] | null {
 }
 
 /** Open (or bring forward) a relay Crew's pane and make its tab the active one, unless a newer
- *  choice was made while it waited: then it stays a hidden tab. Nothing on screen changes before
- *  the answer, so a refusal leaves whatever is in front (an SSH Crew included). Never throws. */
+ *  choice was made while it waited: then it stays a hidden tab. Until the answer only a
+ *  connecting cover shows over <main>, so a refusal leaves whatever is in front (an SSH Crew
+ *  included). Never throws. */
 export async function openRelayPane(bridge: RelayPaneBridge, tab: RelayTab, dispatch: AppDispatch): Promise<OpenResult> {
-  dispatch(relayOpenStarted())
+  // The window shows this Crew as connecting until the answer (RelayCrewPaneHost).
+  dispatch(relayOpenStarted(tab))
   const gen = dispatch((_d, getState: () => RootState) => getState().instances.pickSeq ?? 0)
   // <main> has no size while an SSH Crew covers it. The pane starts hidden and the host reports
   // <main>'s real rect when it shows it, so the window's own rect only has to be a valid one.
@@ -68,7 +79,12 @@ export async function openRelayPane(bridge: RelayPaneBridge, tab: RelayTab, disp
   try {
     res = await bridge.openPane(tab.id, ...at)
   } catch { /* stays UNAVAILABLE */ }
-  if (res.ok && !res.window) dispatch(relayPaneOpened({ ...tab, gen }))
+  if (res.ok && !res.window) {
+    // A click's open counts for the warm set even when answered after another pick, and it is
+    // recorded before the tab exists, so nothing can drop the tab first. A prewarm never comes here.
+    noteCrewOpened(relayCrewKey(tab.id))
+    dispatch(relayPaneOpened({ ...tab, gen }))
+  } else dispatch(relayOpenEnded(gen))
   return res
 }
 

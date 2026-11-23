@@ -22,7 +22,6 @@ The two RFCs this file implements:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -52,13 +51,18 @@ if TYPE_CHECKING:  # `ResolveResult` exists only from aiohttp 3.10; setup.cfg al
 logger = logging.getLogger(__name__)
 
 # The application-server contact URI in the VAPID JWT `sub` claim. Apple's push
-# service is the strict one: `sub` must be a mailto: or https: URI and the JWT
-# `exp` must be no more than 24h out, else it returns 403 BadJwtToken.
-_VAPID_SUBJECT = "mailto:kirocrew@localhost"
+# service is the strict one: `sub` must be a mailto: or https: URI on a real
+# host (it refuses `mailto:...@localhost`) and the JWT `exp` must be no more
+# than 24h out, else it returns 403 BadJwtToken. The project page is that URI.
+_VAPID_SUBJECT = "https://github.com/kirodotdev/KiroCrew"
 # Well under Apple's 24h ceiling, comfortably longer than any single request.
 _VAPID_TTL_SECONDS = 12 * 60 * 60
 # Push-service TTL: how long to retain the message for a disconnected device.
 _MESSAGE_TTL_SECONDS = 24 * 60 * 60
+# How much of a failed push's response body the warning quotes: enough for the
+# push service's reason (Apple: `{"reason":"BadJwtToken"}`), bounded so an
+# endpoint answering with a large page cannot fill the log.
+_ERROR_BODY_LOG_BYTES = 256
 
 
 @dataclass
@@ -102,11 +106,12 @@ def _es256_jwt(claims: dict[str, Any], private_key: ec.EllipticCurvePrivateKey) 
     return ".".join(segments)
 
 
-def _load_vapid_keys() -> tuple[ec.EllipticCurvePrivateKey, str]:
+def load_vapid_keys() -> tuple[ec.EllipticCurvePrivateKey, str]:
     """The signing key and its public half, read in one call.
 
     A cold cache reads, or generates and persists, the keypair file, so the
-    sender runs this through ``asyncio.to_thread`` rather than on the loop.
+    caller runs this through ``asyncio.to_thread`` rather than on the loop, once
+    for a whole batch of sends.
     """
     return vapid_keys.get_private_key(), vapid_keys.public_key_b64url()
 
@@ -226,20 +231,24 @@ def public_push_session(total_timeout: float = 15) -> aiohttp.ClientSession:
 
 
 async def send_web_push(
-    session: Any, subscription: dict[str, Any], payload: dict[str, Any]
+    session: Any,
+    subscription: dict[str, Any],
+    payload: dict[str, Any],
+    vapid: tuple[ec.EllipticCurvePrivateKey, str],
 ) -> PushResult:
     """Encrypt and POST one notification to one subscription.
 
     ``session`` is an ``aiohttp.ClientSession``. ``payload`` is the JSON the
-    service worker / declarative renderer receives. Returns a :class:`PushResult`;
+    service worker / declarative renderer receives. ``vapid`` is what
+    :func:`load_vapid_keys` returns. Returns a :class:`PushResult`;
     the caller deletes the subscription when ``gone`` is set (404/410). Network
     and encryption errors are caught and reported as a non-ok, non-gone result
     so one dead endpoint never blocks fan-out to the others.
     """
     endpoint = subscription["endpoint"]
     keys = subscription["keys"]
+    private_key, public_key = vapid
     try:
-        private_key, public_key = await asyncio.to_thread(_load_vapid_keys)
         # "replace": a lone surrogate in a note's text becomes "?" rather than
         # failing this device's push; the payload budget counts it as 3 bytes.
         body = _encrypt(
@@ -274,7 +283,13 @@ async def send_web_push(
             gone = status in (404, 410)
             ok = 200 <= status < 300
             if not ok and not gone:
-                logger.warning("Web push to %s returned HTTP %s", urlparse(endpoint).netloc, status)
+                reason = await resp.content.read(_ERROR_BODY_LOG_BYTES)
+                logger.warning(
+                    "Web push to %s returned HTTP %s: %r",
+                    urlparse(endpoint).netloc,
+                    status,
+                    reason.decode("utf-8", "replace"),
+                )
             return PushResult(gone=gone)
     except Exception:
         logger.warning("Web push delivery failed for %s", urlparse(endpoint).netloc, exc_info=True)

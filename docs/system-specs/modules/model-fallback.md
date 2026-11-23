@@ -366,7 +366,7 @@ families — a different model routinely accepts what another's filter declined
   the lock the switches are strictly
   ordered — a pick either completes first (the epoch check drops the
   record) or starts after the restore finishes and wins by ordering. Two seams cooperate with that rule. The
-  same-value pick short-circuit in `chat_handlers` (the "nothing to switch"
+  same-value pick short-circuit in `dashboard/chat_api/slot_model.py` (the "nothing to switch"
   early return) is suppressed while either fallback record is live, so a user
   re-picking the displayed primary actually moves the wire model back — the
   pick-generation bump then makes the restore a deliberate no-op rather than
@@ -462,7 +462,7 @@ State follows the engine, through `EngineFallbackTracker` on the handle and on
   record is cleared, there is nothing to restore, and the line names the primary
   as the conversation's model.
 - Every usage row bills an engine move to the model the engine ran, through one
-  rule, `llm_helpers.engine_attributed_model(pin, client)`: the dashboard row
+  rule, `llm_helpers.engine_attributed_model(pin, provider)`: the dashboard row
   (`dashboard/chat_turn/turn_stats.py`), cron sequential and isolated
   (`slack/gateway_runtime/cron_turn.py`) and sub-agent rows (`subagent_manager/usage_row.py`). A
   turn-scoped hop leaves a pinned `slot.model` on the pin, so the row cannot
@@ -471,12 +471,12 @@ State follows the engine, through `EngineFallbackTracker` on the handle and on
 
 What the user sees is kiro-cli's end-of-turn line (`EngineFallbackWalk.line`):
 `"<from> refused|was unavailable|yielded"` per hop, then `answered by <to> for
-this turn`, `answered by <to>, now this conversation's model`, `No model
-answered`, or `cancelled`, with a promotion named on every line that does not
+this turn`, `answered by <to>, now this conversation's model`, `<to> produced
+no answer` (a multi-hop walk that faulted), `No model answered`, or `cancelled`, with a promotion named on every line that does not
 already name it. Which ending it is comes from the turn's terminal stop reason,
-for both engines (`acp/engine_fallback.py:walk_outcome`): `end_turn` answered, a
-cancel cancelled, anything else (a refusal, a timeout, an `error:` reason, an
-empty one) did not. A promotion is NOT read as an answer: KAS pins its target at
+for both engines (`acp/engine_fallback.py:walk_outcome`): a cancel cancelled; a
+refusal, a timeout, a stale recovery, an `error:` reason or an empty one did not;
+any other reason (`end_turn` among them) answered. A promotion is NOT read as an answer: KAS pins its target at
 move time, before that target answers.
 
 The terminal is trustworthy on both engines because of one rule at the ACP

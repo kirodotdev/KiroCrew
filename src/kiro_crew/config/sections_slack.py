@@ -211,6 +211,16 @@ class SlackConfig:
             # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
+        ),
+    )
     forward_to_agent_callback: str = field(
         default="",
         metadata=_meta(
@@ -276,6 +286,15 @@ class SlackConfig:
             "Show Thinking",
             "Post the model's thinking/reasoning as a thread reply in Slack. "
             "Disable to keep responses concise.",
+            tags=["slack"],
+        ),
+    )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line after each reply. Turn it off for a '
+            "cleaner chat; choice buttons and the Link to Dashboard button still post.",
             tags=["slack"],
         ),
     )
@@ -429,6 +448,27 @@ class SlackConfig:
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    slack_mcp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slack Tools For Your Agents",
+            "Let the same Slack app serve Slack's MCP server, so each person can "
+            "connect their agents to Slack as themselves. Adds "
+            "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "
+            "http://localhost:48106/callback to the generated app manifest, and "
+            "replaces its user scopes with the read-only ones Slack's MCP server "
+            "needs (search, history, channel and user lists, files, canvases, "
+            "lists); off, the manifest is unchanged. "
+            "PKCE cannot be turned off again in Slack without Slack support, the "
+            "app must stay internal (not publicly distributed), each person still "
+            "connects on the Slack card under Settings > Connections with the "
+            "app's Client ID and Client Secret, and Slack ends those "
+            "sign-ins after 30 days. The settings page shows this switch only "
+            "while Connections offers the Slack card, or while it is on. The "
+            "gateway runs nothing for it. Off by default; no restart.",
             tags=["slack"],
         ),
     )

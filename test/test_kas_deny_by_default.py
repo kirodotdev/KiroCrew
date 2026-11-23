@@ -173,6 +173,7 @@ _RUST_SYNTAX = [
     (r"^echo a{2}$", "echo aa", "echo aaa"),
     (r"^cat .+?\.txt$", "cat notes.txt", "cat notes.md"),
     (r"(?i)^whoami$", "WhoAmI", "whoami x"),
+    (r"^ls( [^;|&\x0d\x0a]+)?$", "ls foo", "cat foo"),
     (r"touch /tmp/probe-allowed-\w+\.txt", "touch /tmp/probe-allowed-a.txt", "touch /tmp/x"),
 ]
 
@@ -191,9 +192,9 @@ def test_an_entry_in_rust_syntax_runs_its_command_and_refuses_the_rest(
     assert tools_settings_to_permissions(settings)[1] == []
 
 
-@pytest.mark.parametrize("pattern", [r"touch \p{L}+", "(?x)touch a", r"touch \x41"])
+@pytest.mark.parametrize("pattern", [r"touch \p{L}+", "(?x)touch a", r"touch \x{41}"])
 def test_an_unreadable_entry_allows_nothing_and_each_surface_names_it(pattern: str) -> None:
-    """Outside the syntax Kiro Crew reads (``\\p``, the ``x`` flag, ``\\x``), so a
+    """Outside the syntax Kiro Crew reads (``\\p``, the ``x`` flag, ``\\x{41}``), so a
     command only it would match is refused, never let through, while the other
     entries still apply. The refusal an auto-mode job records and the session-start
     notice name the entry and why, so the author can rewrite it."""

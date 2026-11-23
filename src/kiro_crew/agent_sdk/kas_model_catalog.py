@@ -149,16 +149,33 @@ def catalog_rows_from_session(resp: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def vault_identity() -> str:
+#: :func:`vault_identity`'s default: the machine mode a NEW spawn would get.
+_CONFIGURED: Any = object()
+
+
+def vault_identity(machine: object = _CONFIGURED) -> str:
     """The vault identity fingerprint now; ``""`` when empty or unreadable.
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
     and the picker's match go through. On a workload-identity host it is the
     workload's own key, and the vault is not read.
+
+    In KAS machine mode (``agent_sdk/kas_machine.py``) the rows are keyed by the token
+    file, first, as the spawn gives machine mode precedence on any host. The
+    harness's stamp passes *machine*, the settings its process was started with
+    (``None`` for Crew's own sign-in), so a retained engine keeps recording under the
+    file it still reads after the configuration changes; the picker leaves it out
+    and matches the configured file.
     """
     from kiro_crew import workload_identity
+    from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
 
+    if machine is _CONFIGURED:
+        machine = configured_machine_auth()
+    key = getattr(machine, "catalog_identity", "")
+    if isinstance(key, str) and key:
+        return key
     if workload_identity.active():
         return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
@@ -214,6 +231,48 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
             )
             return True
     return False
+
+
+def config_options_refuse_auto(config_options: Any) -> bool:
+    """Whether a KAS session's stored ``configOptions`` select leaves ``auto`` out.
+
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_select_refuses_auto` over
+    the select's ids, for the dashboard's live Auto pick, which holds the stored
+    options rather than the handle. A reopened chat's one-entry select is not the
+    account's list, so it refuses nothing (``select_lists_only_its_current_model``).
+    """
+    # Lazy for the same import-order reason as ``catalog_rows_from_session``.
+    from kiro_crew.acp.session_handle_model_selection import (
+        kas_select_refuses_auto,
+        model_select_envelope,
+        select_lists_only_its_current_model,
+    )
+
+    if not isinstance(config_options, list):
+        return False
+    select = model_select_envelope({"configOptions": config_options})
+    if select is None or select_lists_only_its_current_model(select):
+        return False
+    return kas_select_refuses_auto([m["modelId"] for m in select["availableModels"]])
+
+
+def session_lists_auto(session: object) -> bool:
+    """Whether the ids a KAS ``set_model("auto")`` on *session* is judged by list ``auto``.
+
+    *session* is the dashboard provider's session client: on KAS the
+    ``AcpSessionProvider`` around the session handle, whose ``kas_auto_judged_ids``
+    reads the handle's
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_auto_judged_ids` (the
+    session's full select, else the catalog recorded for its account). Known
+    means they name a concrete model too, the rule that judges the pick; False
+    when they are not known, or when *session* carries no such ids (the
+    placeholder client before the session starts). For the turn's settle step,
+    which moves a session onto an Auto set before it last ran only on this ground.
+    """
+    ids = getattr(session, "kas_auto_judged_ids", None)
+    if not isinstance(ids, list):
+        return False
+    return "auto" in ids and any(m != "auto" for m in ids)
 
 
 def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:

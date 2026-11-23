@@ -295,7 +295,14 @@ class GatewayClient:
             raise NoGateway(f"gateway on port {self.port} not reachable: {exc}") from None
 
     def call(self, method: str, path: str, body: dict | None = None, timeout: float = 60) -> Any:
-        """One owner request; JSON answer. Re-signs once when the session lapsed."""
+        """One owner request; JSON answer. Re-signs once when the session lapsed.
+
+        The session cookie lives as long as the one-minute sign-in token, so a run
+        longer than that re-signs on every lapse. The gateway answers a lapsed
+        credential on ``/api/`` with 403 and ``X-Auth-Required: true``, not 401. Its other
+        auth refusals carry the same header, so a real one costs one extra sign-in and is
+        then raised; a 403 without the header is raised at once.
+        """
         for attempt in (0, 1):
             url = self.base + path
             if not self._cookie:
@@ -318,7 +325,12 @@ class GatewayClient:
                     raw = resp.read()
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
-                if exc.code == 401 and attempt == 0:
+                lapsed = exc.code == 401 or (
+                    exc.code == 403
+                    and exc.headers is not None
+                    and exc.headers.get("X-Auth-Required") == "true"
+                )
+                if lapsed and attempt == 0:
                     self.sign_in()
                     continue
                 detail = exc.read(2000).decode(errors="replace")
@@ -949,6 +961,19 @@ def main(args: argparse.Namespace) -> int:
         opts = options_from_args(args)
     except UsageError as exc:
         print(f"kirocrew chat --headless: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    from kiro_crew.cloud.aws import _in_agent_session
+
+    # A run signs in as the owner and can open a Trust chat, which an agent's own
+    # shell must not do outside its session's approval mode.
+    if _in_agent_session():
+        print(
+            "kirocrew chat --headless: refused inside an agent session: it signs in as "
+            "the owner and opens a new chat outside this session's approval mode. "
+            "Run it yourself from a normal terminal, or start a sub-agent from the "
+            "agent instead (spawn_run).",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.port_resolution import resolve_client_port

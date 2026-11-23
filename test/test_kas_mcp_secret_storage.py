@@ -3,7 +3,8 @@
 With the key on, the KAS handshake declares ``_meta.kiro.secretStorage`` and the
 engine stores each MCP server's OAuth state through ``_kiro/secret/*`` requests.
 These tests pin that the key is off by default and then declares nothing, that
-``client``, ``kiro-path-client`` and ``tokens`` persist in a dedicated vault that
+``client``, ``kiro-path-client``, ``tokens`` and the organization sign-in
+``session`` persist in a dedicated vault that
 is neither the user Secrets vault nor agent-readable, that ``verifier`` and ``discovery`` stay in
 memory, that only the engine's MCP key namespace is served, and that no stored
 value reaches a log or the raw-frame recorder.
@@ -32,6 +33,7 @@ _PATH_CLIENT_KEY = f"kiro.mcp.{_HASH}.kiro-path-client"
 _ENGINE_KINDS = ("client", "kiro-path-client", "tokens", "verifier", "discovery")
 _VERIFIER_KEY = f"kiro.mcp.{_HASH}.verifier"
 _DISCOVERY_KEY = f"kiro.mcp.{_HASH}.discovery"
+_IDP_SESSION_KEY = f"kiro.mcp.idp.{_HASH}.session"
 _TOKEN_VALUE = (
     '{"access_token":"tok-SECRET-4f1c","token_type":"Bearer","refresh_token":"rt-SECRET-9a2e"}'
 )
@@ -45,7 +47,7 @@ def _server(tmp_path) -> kss.SecretStorageServer:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [_TOKENS_KEY, _CLIENT_KEY, _PATH_CLIENT_KEY])
+@pytest.mark.parametrize("key", [_TOKENS_KEY, _CLIENT_KEY, _PATH_CLIENT_KEY, _IDP_SESSION_KEY])
 async def test_client_and_tokens_outlive_the_engine_process(tmp_path, key):
     first = _server(tmp_path)
     assert await first.answer(kss.METHOD_SECRET_GET, {"key": key}) == {}
@@ -127,6 +129,12 @@ async def test_verifier_and_discovery_stay_in_this_process(tmp_path, key):
         {"key": f"kiro.mcp.{'ab' * 31}.tokens"},
         {"key": f"kiro.mcp.{_HASH}.tokens\n"},
         {"key": f"x.kiro.mcp.{_HASH}.tokens"},
+        {"key": f"kiro.mcp.idp.{_HASH}.tokens"},
+        {"key": f"kiro.mcp.idp.{_HASH}.client"},
+        {"key": f"kiro.mcp.idp.{'AB' * 32}.session"},
+        {"key": f"kiro.mcp.idp.{'ab' * 31}.session"},
+        {"key": f"kiro.mcp.idp.{_HASH}.session\n"},
+        {"key": f"kiro.mcp.{_HASH}.session"},
         {"key": 7},
         {},
         "not-an-object",
@@ -139,6 +147,56 @@ async def test_keys_outside_the_mcp_namespace_are_refused(tmp_path, params, meth
     with pytest.raises(kss.SecretStorageRefused):
         await _server(tmp_path).answer(method, params)
     assert not (tmp_path / "kas").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        (
+            f"kiro.mcp.{_HASH}.path-client",
+            "key kind 'path-client' is outside the MCP sign-in namespace",
+        ),
+        (
+            f"kiro.mcp.idp.{_HASH}.client",
+            "key kind 'client' is outside the MCP sign-in namespace",
+        ),
+        (f"kiro.mcp.{_HASH}.tokens\n", "key is outside the MCP sign-in namespace"),
+        (f"kiro.mcp.{_HASH}.tok-SECRET-4f1c", "key is outside the MCP sign-in namespace"),
+        (f"kiro.mcp.{_HASH}.{'a' * 33}", "key is outside the MCP sign-in namespace"),
+        ("kiro.auth.refreshToken", "key is outside the MCP sign-in namespace"),
+    ],
+)
+async def test_a_refused_key_names_its_kind_only_when_it_is_a_plain_label(tmp_path, key, message):
+    with pytest.raises(kss.SecretStorageRefused) as exc:
+        await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": key})
+    assert str(exc.value) == message
+
+
+@pytest.mark.asyncio
+async def test_a_refused_secret_request_is_logged_at_warning(tmp_path, caplog):
+    from kiro_crew.acp import runtime_host_requests
+
+    class _Runtime:
+        def __init__(self):
+            self.errors = []
+
+        async def send_error(self, request_id, code, message):
+            self.errors.append((request_id, message))
+
+    runtime = _Runtime()
+    caplog.set_level(logging.WARNING, logger=runtime_host_requests.logger.name)
+    await runtime_host_requests._answer_secret_request(
+        runtime,
+        _server(tmp_path),
+        5,
+        kss.METHOD_SECRET_GET,
+        {"key": f"kiro.mcp.{_HASH}.path-client"},
+    )
+    message = "key kind 'path-client' is outside the MCP sign-in namespace"
+    assert runtime.errors == [(5, message)]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in warnings] == [f"MCP grant store request refused: {message}"]
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,307 @@
+name: CI Red-Cause Census
+
+# A red check should mean the pull request's own change broke something. This
+# keeps the three numbers for that goal where they can be read again:
+#
+#   every night   `day` reads why each red CI job of yesterday (UTC) went red
+#                 (`scripts/ci_red_cause_census.py`: rate limit, broken main,
+#                 infrastructure, flaky or the diff) and keeps it as the
+#                 artifact `ci-red-census-day`
+#   every Sunday  `week` adds the last seven of those days up
+#                 (`scripts/ci_red_census_week.py`), writes the week's summary
+#                 to the job summary and keeps it as `ci-red-census-week`
+#
+# READ ONLY: every permission is `read`. It opens no issue, posts no comment and
+# changes no check. Reverting this file, and its line in
+# `scheduled-failure-watch.yml`, removes it.
+#
+# WHY A DAY A NIGHT AND NOT A WEEK AT ONCE. GitHub lists a workflow's runs
+# newest first and has no date filter for them in GraphQL, so reading a window
+# pages through every run created since. Read the next morning, a weekday costs
+# its own 91,000 runs: about 3,000 points and 25 minutes, nothing waits and no
+# runner is held asleep. Read on Sunday, the same week is 21,000 points, more
+# than a bucket should give up in an hour, so one job would sleep between hours
+# for up to five; and seven one-day reads on Sunday would page the week four
+# times over. REST can filter runs by date, but it draws on the 15,000 requests
+# an hour every job of the repository shares and runs dry, returns 1,000 runs
+# a search at most, and has no count of a run's red jobs.
+#
+# WHICH BUCKET, AND HOW MUCH. The census reads by GraphQL with the job's
+# `GITHUB_TOKEN`, whose GraphQL primary limit is apart from the REST one. Its
+# size is the token's to say, not this file's: this repository's Actions token
+# has 10,000 points an hour, where GitHub's page gives 1,000 or 15,000
+# (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit).
+# Every workflow of the repository shares it. So the step before the census
+# reads the bucket from `/rate_limit`, which costs nothing, and sizes the
+# budget to it (`scripts/ci_red_census_budget.py`):
+#
+#   reserve   half the bucket and 120 points: the census stops, and says
+#             Partial, before a call that would start with less
+#   most      two fifths of the bucket less 120 points: the most one run spends
+#
+# The 120 points are one call for each of the 4 workers, the dearest about 30:
+# the calls already sent when the census stops land past the line. On 10,000
+# points that is a reserve of 5,120 and 3,880 to spend; a weekday is about
+# 3,000. The step refuses, and the census is not started, when two fifths of
+# the bucket could not hold a weekday, when what is left above the reserve
+# could not (other jobs spent this hour's bucket), or when the bucket cannot be
+# read. Below 7,800 points an hour there is no census.
+#
+#   --gh-timeout-seconds 900  one `gh` call: the 600 s the wrapper below may
+#                             sleep inside it on a spent limit, and 300 for
+#                             the call. A call ended mid-sleep would have
+#                             spent the wrapper's budget and read nothing
+#
+# So one run takes two fifths of one hour's bucket at the very most, about three
+# tenths on a usual night, once a day, and leaves half of it alone. REST: the
+# rate limit and the workflow list (two calls) at night; two listings and one
+# download for each day on Sunday.
+#
+# WHEN. 07:17 UTC. On the one weekday counted hour by hour (2026-11-19, runs
+# created per hour), 05:00 to 09:00 UTC were the only hours under 2,500 runs
+# and 07:00 the least used (851). Seven hours after midnight also lets a job
+# re-run to green that night count as flaky. Not at :00, when scheduled runs
+# are delayed most.
+#
+# EXIT CODES, both scripts. 0: everything asked for was read. 3: a census the
+# budget ended early, or a week with a day missing or partial; the summary says
+# so in its first lines, the job warns and stays green. Anything else fails the
+# job, and `scheduled-failure-watch.yml` files it.
+#
+# A MISSED NIGHT. GitHub may delay or drop a scheduled run. Sunday's summary
+# says in its first line how many of the seven days it covers, names each day
+# that is missing or partial, divides by the days it has, and says what to do:
+# dispatch this workflow with `day` set to read that day (yesterday and the
+# day before fit the budget), then with `week` to add the week up again.
+#
+# THE NIGHT'S OWN DAY. `week` takes the day its own run has just read with
+# `actions/download-artifact`, which needs no listing: whether the API lists
+# an artifact of a run still in progress is not something to depend on. The
+# six earlier days come from the listing.
+#
+# LOGS. The Actions token cannot read a job log in this repository, so the
+# census reads none (`--logs never`, its default) and `log_unread` counts the
+# red jobs classified from their annotations alone.
+#
+# UNTRUSTED TEXT. A job name and an annotation are whatever a pull request
+# wrote. They reach the CSV only, as quoted cells without control characters.
+# The job summary gets `summary.md`: numbers, the repository name, validated
+# days and the reason a census stopped, cut to printable ASCII. Any run, a
+# pull request's included, can upload an artifact named like a day's: `week`
+# opens only artifacts of this workflow's own scheduled or dispatched runs on
+# the default branch, and reads the day from the artifact's own window. The
+# dispatch inputs are read from the environment, matched and never echoed.
+#
+# TWO EVENTS, ONE SCRIPT. A `schedule` event carries no inputs and no
+# `repository` object. An empty `day` therefore means yesterday, and the
+# default branch falls back to `github.ref_name`, which on a schedule is the
+# default branch. Every expression below has a value under both events.
+#
+# `test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
+# budget against the bucket, each deadline against the wait inside it, and runs
+# both steps with `python3` stubbed.
+
+on:
+  schedule:
+    - cron: "17 7 * * 1-6" # 07:17 UTC, Monday to Saturday: yesterday
+    - cron: "17 7 * * 0" # 07:17 UTC, Sunday: yesterday, then the week
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "UTC day to read, YYYY-MM-DD. Empty: yesterday."
+        required: false
+        default: ""
+      week:
+        description: "Also add up the seven days ending at that day."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: ci-red-census
+  cancel-in-progress: false
+
+jobs:
+  day:
+    name: Red-cause census of one day
+    # A standard hosted runner: free for a public repository, where a larger
+    # runner is billed by the minute.
+    runs-on: ubuntu-latest
+    # About 25 minutes of reading, twice over, and the 10 the gh wrapper may wait.
+    timeout-minutes: 60
+    steps:
+      # The census, the modules it loads and the gh wrapper; no other code is
+      # checked out, and always from the default branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/gh-rate-limit
+            .github/scripts
+            scripts
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "600"
+
+      - name: Size the budget to the bucket
+        id: budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          status=0
+          python3 scripts/ci_red_census_budget.py --needs-points 3000 --workers 4 > budget.txt || status=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < budget.txt
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The census was not started: its budget does not fit this hour's GraphQL bucket. The line above says why."
+            exit 1
+          fi
+
+      - name: Take the census
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DAY: ${{ inputs.day }}
+          RESERVE_POINTS: ${{ steps.budget.outputs.reserve }}
+          MOST_POINTS: ${{ steps.budget.outputs.most }}
+        run: |
+          set -uo pipefail
+          if ! [[ "$RESERVE_POINTS" =~ ^[0-9]+$ && "$MOST_POINTS" =~ ^[0-9]+$ ]]; then
+            echo "::error::The budget step gave no budget; the census was not started."
+            exit 1
+          fi
+          set -uo pipefail
+          if [ -z "$DAY" ]; then
+            set -- --last-days 1
+          elif [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            set -- --since "$DAY" --until "$DAY"
+          else
+            echo "::error::day must be a YYYY-MM-DD date, or empty."
+            exit 1
+          fi
+          mkdir -p census
+          status=0
+          python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
+            --logs never --workers 4 --reserve-points "$RESERVE_POINTS" --max-points "$MOST_POINTS" \
+            --gh-timeout-seconds 900 > census/run.txt || status=$?
+          cat census/run.txt
+          {
+            if [ -f census/summary.md ]; then
+              cat census/summary.md
+            else
+              echo "### Red-cause census: no summary was written (exit ${status})"
+            fi
+            echo
+            echo '```'
+            grep -E '^(GraphQL calls|GraphQL points left|REST calls|Run time): ' census/run.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+            0) ;;
+            3) echo "::warning::The census stopped at its API budget; the summary is marked Partial and says what was read. To read the day again, run this workflow by hand with day set to it." ;;
+            *)
+              echo "::error::The census could not be taken (exit ${status}); the reason is in this step's log."
+              exit 1
+              ;;
+          esac
+
+      - name: Upload the day
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-red-census-day
+          path: census/
+          if-no-files-found: warn
+          retention-days: 90
+
+  week:
+    name: Red-cause census of the week
+    needs: day
+    # After the night's read, whatever became of it: a failed night is one
+    # missing day in the week, not a missing week.
+    if: ${{ !cancelled() && (github.event.schedule == '17 7 * * 0' || inputs.week) }}
+    runs-on: ubuntu-latest
+    # Seconds of work, and the 10 minutes the gh wrapper may wait.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/gh-rate-limit
+            .github/scripts
+            scripts
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "600"
+
+      # The day this run's own `day` job read. That job may have failed and
+      # uploaded nothing: the week is then added up without it.
+      - name: Download this run's day
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-red-census-day
+          path: tonight
+
+      - name: Add the week up
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          DAY: ${{ inputs.day }}
+        run: |
+          set -uo pipefail
+          if [ -z "$DAY" ]; then
+            set --
+          elif [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            set -- --until "$DAY"
+          else
+            echo "::error::day must be a YYYY-MM-DD date, or empty."
+            exit 1
+          fi
+          mkdir -p week
+          status=0
+          python3 scripts/ci_red_census_week.py "$@" --repo "$REPO" --branch "$BRANCH" \
+            --workflow ci-red-census.yml --out-dir week --local tonight \
+            --gh-timeout-seconds 900 > week/run.txt || status=$?
+          cat week/run.txt
+          {
+            if [ -f week/summary.md ]; then
+              cat week/summary.md
+            else
+              echo "### Red-cause census of the week: no summary was written (exit ${status})"
+            fi
+            echo
+            echo '```'
+            grep -E '^REST calls: ' week/run.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+            0) ;;
+            3) echo "::warning::The week is incomplete; the summary names each day that is missing or partial and says how to read it." ;;
+            *)
+              echo "::error::The week could not be added up (exit ${status}); the reason is in this step's log."
+              exit 1
+              ;;
+          esac
+
+      - name: Upload the week
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-red-census-week
+          path: week/
+          if-no-files-found: warn
+          retention-days: 90

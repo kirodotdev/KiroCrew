@@ -63,21 +63,26 @@ from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
     pre_tool_refusal as spec_pre_tool_refusal,
 )
 from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
+from kiro_crew.config.live import ConfigChange, ConfigDeferred  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
     config_local_path,
     config_path,
+    overlay_pins,
     read_config_text,
     read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
+from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the owners
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
+    MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
@@ -139,6 +144,11 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
+    could_be_echo,
+    echo_prefix_len,
+    is_echo,
+)
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -159,6 +169,9 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
+from kiro_crew.messaging.driver_quoted_markers import (  # noqa: F401 - read by the owners
+    QuotedDirectiveFilter,
+)
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
@@ -178,7 +191,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
-from kiro_crew.option_marker_scan import LINE_BREAKS, line_start  # noqa: F401 - read by the owners
+from kiro_crew.option_marker_scan import LINE_BREAKS  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -404,12 +417,13 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _at_tag_line_start,
     _blocks_with_run,
     _comment_hold_is_protocol,
+    _could_open_marker_line,
     _filter_options_brackets,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
     _safe_update,
-    _settle_options_head,
+    _settle_marker_line,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401
@@ -421,9 +435,11 @@ from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
     _thread_meta_fallback,
 )
 from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _adopt_voice_reply,
     _reply_by_voice,
     _safe_voice_reply,
     _str_or_default,
+    apply_voice_reply_change,
     load_voice_reply_config,
 )
 from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
@@ -886,7 +902,8 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             raw = safe_read_file_bytes(str(md_file))
             if raw is None:
                 continue
-            content = raw.decode("utf-8")
+            # utf-8-sig: an editor that saves "UTF-8 with BOM" puts U+FEFF before the fence.
+            content = raw.decode("utf-8-sig")
             if not content.startswith("---"):
                 continue
             frontmatter = content[3 : content.index("---", 3)]

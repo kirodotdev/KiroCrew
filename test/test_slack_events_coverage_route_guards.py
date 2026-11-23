@@ -365,6 +365,29 @@ class TestRouteMessageGuards:
         assert _audit_rows(_real_sel, "!stop") == [("slack:D1", "stopped", "")]
 
     @pytest.mark.asyncio
+    async def test_flat_dm_stop_reaches_a_turn_running_in_the_threads_own_session(self, _real_sel):
+        """A button click's turn runs in its thread's own session, outside the DM's
+        one session, so `!stop` in that thread stops it as with the flag off."""
+        orch = _make_orch(use_transport=True)
+        orch._cfg.slack = SlackConfig(dm_single_session=True)
+        orch.sessions.has_session = MagicMock(return_value=True)
+        orch.sessions.is_busy = MagicMock(side_effect=lambda k: k == "slack:90.0")
+        orch.sessions.get_session_for_thread = MagicMock(
+            side_effect=lambda k: "slack:90.0" if k == "90.0" else None
+        )
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock(return_value="stopped")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(
+                    orch, _event(text="!stop", thread_ts="90.0", ts="100.0"), ev.SeenCache()
+                )
+        orch.sessions.stop_turn.assert_awaited_once()
+        assert orch.sessions.stop_turn.await_args.args[0] == "90.0"
+        assert orch.slack.post_ephemeral.await_args.kwargs["thread_ts"] == "90.0"
+        assert _audit_rows(_real_sel, "!stop") == [("90.0", "stopped", "")]
+
+    @pytest.mark.asyncio
     async def test_pure_stop_is_exempt_from_governance_denial(self, _real_sel):
         orch = _make_orch()
         orch.sessions.has_session = MagicMock(return_value=False)

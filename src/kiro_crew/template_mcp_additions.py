@@ -80,7 +80,7 @@ TRUST_KEYS: frozenset[str] = frozenset(
 )
 
 _TEMPLATE_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
-_SERVER_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+_SERVER_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
 _TEXT_MAX = 256
 _ARG_MAX = 4096
 _ARGS_MAX = 128

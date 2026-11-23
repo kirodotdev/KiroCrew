@@ -175,7 +175,7 @@ owner's consolidation verb rather than your merge mechanism.
 Round 0 says. A tracker that rules is a second lead, and two leads over one
 fleet is how an item gets dispatched twice.
 
-**One owner per shared file, one integrator per output, and a worker for the
+**One owner per shared artifact, one integrator per output, and a worker for the
 next step of its own line only**: your prompt's rules on owners and on worker
 reuse apply as written there.
 

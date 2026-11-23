@@ -1,11 +1,11 @@
-"""``agent.kas_bundle`` defaults on in a Nightly build, and only there.
+"""A packaged build prefers Kiro Crew's own KAS engine for an unset ``agent.kas_bundle``.
 
-The lane is a fact about the build's bytes: ``nightly.yml`` passes
-``build_channel: nightly`` to every build workflow, ``scripts/stamp-distribution.sh``
-bakes it into ``_build_info.BUILD_CHANNEL``, and :mod:`kiro_crew.build_channel`
-reads it. An undeclared key resolves through
-:func:`~kiro_crew.config.loader_document.kas_bundle_build_default`; a stored
-value always wins, and ``save()`` keeps an undeclared key off disk.
+The decision reads the distribution ``scripts/stamp-distribution.sh`` bakes
+(``beacon.baked_distribution``), so nightly, insider and stable behave alike and a
+source checkout keeps the relay (:mod:`kiro_crew.acp.kas_build_default`). A saved
+value always wins, and the loaded field is only ever the saved value. The lane
+stamp (``_build_info.BUILD_CHANNEL``) is still baked by every build workflow and
+read by :mod:`kiro_crew.build_channel`; the tests at the end pin that wiring.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from kiro_crew import build_channel
+from kiro_crew import beacon, build_channel
+from kiro_crew.acp import kas_build_default
 from kiro_crew.config import loader_document
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -40,6 +41,20 @@ def stamp(monkeypatch):
     return _pin
 
 
+@pytest.fixture
+def dist(monkeypatch):
+    """Pin the baked distribution, on a host the engine can run on."""
+    from kiro_crew.agent_sdk import kas_bundle as sdk_kas_bundle
+
+    monkeypatch.setattr(sdk_kas_bundle, "host_unsupported_reason", lambda: "")
+    monkeypatch.setattr(sdk_kas_bundle, "installed_bundle", lambda: None)
+
+    def _pin(value: str) -> None:
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", value)
+
+    return _pin
+
+
 class TestBakedBuildChannel:
     @pytest.mark.parametrize("value", ["stable", "insider", "nightly"])
     def test_a_known_lane_is_read_back(self, stamp, value):
@@ -50,7 +65,6 @@ class TestBakedBuildChannel:
     def test_anything_else_reads_as_no_lane(self, stamp, value):
         stamp(value)
         assert build_channel.baked_build_channel() == ""
-        assert build_channel.is_nightly_build() is False
 
     def test_the_lanes_match_the_release_channels(self):
         from kiro_crew.platform.update_layout import RELEASE_CHANNELS
@@ -58,33 +72,84 @@ class TestBakedBuildChannel:
         assert build_channel.KNOWN_BUILD_CHANNELS == frozenset(RELEASE_CHANNELS)
 
 
-class TestBuildDefault:
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [("nightly", True), ("insider", False), ("stable", False), ("", False)],
-    )
-    def test_only_a_nightly_build_defaults_on(self, stamp, value, expected):
-        stamp(value)
-        assert loader_document.kas_bundle_build_default() is expected
+class TestAPackagedBuildPrefersTheEngine:
+    @pytest.mark.parametrize("value", ["dmg", "appimage", "deb", "rpm", "nsis", "wheel", "docker"])
+    def test_every_packaged_distribution_prefers_it(self, dist, value):
+        dist(value)
+        assert kas_build_default.kas_bundle_preferred_by_build() is True
+
+    @pytest.mark.parametrize("value", ["source", ""])
+    def test_a_source_checkout_does_not(self, dist, value):
+        dist(value)
+        assert kas_build_default.kas_bundle_preferred_by_build() is False
+
+    @pytest.mark.parametrize("lane", ["nightly", "insider", "stable", ""])
+    def test_the_lane_does_not_decide(self, dist, stamp, lane):
+        """Insider and stable ship the same bytes, so the lane cannot be the switch."""
+        dist("dmg")
+        stamp(lane)
+        assert kas_build_default.kas_bundle_preferred_by_build() is True
+
+    def test_a_host_the_engine_cannot_run_on_does_not(self, dist, monkeypatch):
+        from kiro_crew.agent_sdk import kas_bundle as sdk_kas_bundle
+
+        dist("deb")
+        monkeypatch.setattr(sdk_kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(sdk_kas_bundle, "host_unsupported_reason", lambda: "glibc 2.26")
+        assert kas_build_default.kas_bundle_preferred_by_build() is False
+
+    def test_an_installed_engine_needs_no_host_probe(self, dist, monkeypatch):
+        from kiro_crew.agent_sdk import kas_bundle as sdk_kas_bundle
+
+        dist("deb")
+        monkeypatch.setattr(sdk_kas_bundle, "installed_bundle", lambda: object())
+        monkeypatch.setattr(
+            sdk_kas_bundle, "host_unsupported_reason", lambda: pytest.fail("probed the host")
+        )
+        assert kas_build_default.kas_bundle_preferred_by_build() is True
 
 
-class TestBundleRouteReadsTheBuildDefaultWhenUndeclared:
+class TestTheLoadedFieldIsOnlyTheSavedValue:
     @pytest.mark.parametrize(
-        ("lane", "stored", "expected"),
+        ("stored", "expected"),
         [
-            ("nightly", loader_document._ABSENT_AGENT_KEY, True),
-            ("", loader_document._ABSENT_AGENT_KEY, False),
-            ("nightly", False, False),
-            ("", True, True),
-            ("nightly", "true", True),
-            ("", "true", False),
-            ("nightly", None, True),
+            (loader_document._ABSENT_AGENT_KEY, False),
+            (False, False),
+            (True, True),
+            ("true", False),
+            (None, False),
         ],
     )
-    def test_stored_wins_absent_reads_the_build(self, stamp, monkeypatch, lane, stored, expected):
-        stamp(lane)
+    def test_the_bundle_route_reads_only_a_saved_true(self, dist, monkeypatch, stored, expected):
+        dist("dmg")
         monkeypatch.setattr(loader_document, "_stored_agent_value", lambda key: stored)
         assert loader_document.acp_backend_bundle_route() is expected
+
+    @pytest.mark.parametrize(
+        ("agent", "expected"),
+        [({}, False), ({"kas_bundle": False}, False), ({"kas_bundle": True}, True)],
+    )
+    def test_load_resolution(self, dist, tmp_path, agent, expected):
+        from kiro_crew.config import loader
+
+        dist("dmg")
+        doc = loader.ConfigDocument(
+            ticket=0,
+            path=tmp_path / "config.json",
+            data={"agent": agent},
+            loaded=True,
+            content_digest=None,
+        )
+        assert loader.build_config(doc).agent.kas_bundle is expected
+
+    def test_a_home_with_no_config_file_reads_false(self, dist, tmp_path):
+        from kiro_crew.config import loader
+
+        dist("dmg")
+        doc = loader.ConfigDocument(
+            ticket=0, path=tmp_path / "config.json", data={}, loaded=False, content_digest=None
+        )
+        assert loader.build_config(doc).agent.kas_bundle is False
 
 
 class TestSaveKeepsAnUndeclaredKeyOffDisk:
@@ -105,43 +170,6 @@ class TestSaveKeepsAnUndeclaredKeyOffDisk:
         document: dict = {"agent": "not an object"}
         loader_document.strip_undeclared_resolved_defaults(document)
         assert document == {"agent": "not an object"}
-
-
-class TestTheStoredValueWinsAtLoad:
-    @pytest.mark.parametrize(
-        ("lane", "agent", "expected"),
-        [
-            ("nightly", {}, True),
-            ("nightly", {"kas_bundle": False}, False),
-            ("stable", {}, False),
-            ("stable", {"kas_bundle": True}, True),
-            ("", {}, False),
-        ],
-    )
-    def test_load_resolution(self, stamp, tmp_path, lane, agent, expected):
-        from kiro_crew.config import loader
-
-        stamp(lane)
-        doc = loader.ConfigDocument(
-            ticket=0,
-            path=tmp_path / "config.json",
-            data={"agent": agent},
-            loaded=True,
-            content_digest=None,
-        )
-        assert loader.build_config(doc).agent.kas_bundle is expected
-
-    @pytest.mark.parametrize(("lane", "expected"), [("nightly", True), ("", False)])
-    def test_a_home_with_no_config_file_takes_the_build_default(
-        self, stamp, tmp_path, lane, expected
-    ):
-        from kiro_crew.config import loader
-
-        stamp(lane)
-        doc = loader.ConfigDocument(
-            ticket=0, path=tmp_path / "config.json", data={}, loaded=False, content_digest=None
-        )
-        assert loader.build_config(doc).agent.kas_bundle is expected
 
 
 def _run_stamp(pkg_dir: Path, lane: str | None) -> "subprocess.CompletedProcess[str]":

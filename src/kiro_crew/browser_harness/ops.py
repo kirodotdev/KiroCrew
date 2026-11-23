@@ -7,11 +7,13 @@ through ``/api/browser/op``), and it reaches the browser only two ways:
 * ``ctx.helper(helper, **kwargs)`` -- one allowlisted Harness helper over the
   daemon's IPC (``goto``, ``click``, ``type_text``, ``press_key``, ``scroll``,
   ``mouse_move``, ``drag``, ``screenshot``, ``page_info``, ``wait_for_load``,
-  ``new_tab``, ``switch_tab``, ``list_tabs``, ``js``, and the ``reflex`` op's
-  ``page_clock``);
-* the ``js`` helper, ONLY with :data:`WALKER_SOURCE` -- the page-side half of
-  this module (``snapshot_walker.js``) -- so every read or write in the page is
-  a method on that one script. No arbitrary expression is ever evaluated.
+  ``new_tab``, ``switch_tab``, ``list_tabs``, ``js``, ``upload``'s ``set_files``,
+  ``chooser_files`` and ``drop_files``, and the ``reflex`` op's ``page_clock``);
+* the ``js`` helper with :data:`WALKER_SOURCE` -- the page-side half of this
+  module (``snapshot_walker.js``) -- so every read or write these ops make in the
+  page is a method on that one script. The ``js``, ``cdp`` and ``http_get`` ops
+  (``browser_harness.raw_ops``) are the one place the agent's own expression,
+  CDP command or URL reaches a Harness helper.
 
 Every op answers ``{"ok": True, ...}`` or ``{"ok": False, "code", "error"}``.
 A refusal is a VALUE, never an exception: a stale ref, a password field, a tab
@@ -57,9 +59,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 logger = logging.getLogger(__name__)
 
 # The ops the tool advertises, in the order the schema lists them. An enum on the
-# wire, so the model cannot invent a verb. ``evaluate`` is deliberately absent:
-# arbitrary in-page JS is not needed to drive a page and widens the surface an
-# untrusted page could influence.
+# wire, so the model cannot invent a verb.
 OPS: tuple[str, ...] = (
     "navigate",
     "back",
@@ -69,25 +69,49 @@ OPS: tuple[str, ...] = (
     "drag",
     "scroll",
     "type",
+    "fill",
     "paste",
     "press_key",
+    "dispatch_key",
     "hover",
     "select_option",
+    "upload",
     "wait_for",
+    "wait_for_element",
+    "wait_for_network_idle",
     "console",
     "screenshot",
     "tabs",
     "dialog",
     "reflex",
+    "js",
+    "cdp",
+    "http_get",
+    "iframe_target",
     # Served by the gateway route itself (``dashboard/handlers/browser_ask.py``):
     # it needs the live card, which this module never sees. ``run_op`` refuses it.
     "ask",
 )
 
+#: Read-only ops only an app's ``PagePort`` runs (the ``read`` verb of
+#: ``permissions.browser``): not in :data:`OPS`, so the Bot's tool never lists them
+#: and the ``/api/browser/op`` route refuses them. ``pick`` names the element at a
+#: point of the view, ``locate`` the boxes a text is drawn in.
+APP_OPS: tuple[str, ...] = ("pick", "locate")
+#: ``locate`` bounds: texts per call, characters per text, boxes per text.
+LOCATE_TEXTS_CAP = 20
+LOCATE_TEXT_CHARS = 200
+LOCATE_BOXES_CAP = 20
+#: Longest ``pick`` name passed on, cut after redaction (the walker withholds a name
+#: longer than its own, larger cap).
+PICK_TEXT_CAP = 200
+
 # Ops that legitimately take longer than one CDP round trip (a page load, an
 # explicit wait); the route gives them the long budget and everything else the
 # short one.
-SLOW_OPS: frozenset[str] = frozenset({"navigate", "back", "wait_for", "reflex"})
+SLOW_OPS: frozenset[str] = frozenset(
+    {"navigate", "back", "wait_for", "wait_for_element", "wait_for_network_idle", "fill", "reflex"}
+)
 
 WALKER_PATH = Path(__file__).with_name("snapshot_walker.js")
 
@@ -95,28 +119,6 @@ WALKER_PATH = Path(__file__).with_name("snapshot_walker.js")
 # inside a cross-origin frame the gateway reads itself (``browser_harness.frames``).
 _REF_RE = re.compile(r"^(?:f[1-9][0-9]{0,3})?e[1-9][0-9]*$")
 _MOUSE_BUTTONS = frozenset({"left", "middle", "right", "back", "forward"})
-# CDP takes modifiers as a bitmask: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.
-_MODIFIER_BITS = {"alt": 1, "control": 2, "ctrl": 2, "meta": 4, "command": 4, "cmd": 4, "shift": 8}
-_NAMED_KEYS = frozenset(
-    {
-        "Enter",
-        "Tab",
-        "Backspace",
-        "Escape",
-        "Delete",
-        " ",
-        "Space",
-        "ArrowLeft",
-        "ArrowUp",
-        "ArrowRight",
-        "ArrowDown",
-        "Home",
-        "End",
-        "PageUp",
-        "PageDown",
-    }
-)
-
 NAV_SETTLE_S = 10.0
 NAV_POLL_S = 0.05
 # A ref's point is re-measured, without scrolling, after scroll-into-view
@@ -219,8 +221,9 @@ class OpContext:
     in_control: Callable[[], Any] = lambda: False
     agent_targets: Callable[[], list[str]] = list
     #: The navigate gate, applied to the URL a navigation COMMITTED on (after every
-    #: redirect), not only to the one the agent asked for. The route wires the same
-    #: predicate the shim applies before the op (``browser_harness.url_gate``).
+    #: redirect), not only to the one the agent asked for. The route wires the
+    #: predicate the shim applies before the op (``browser_harness.url_gate``), plus
+    #: the origins only the gateway knows it serves under.
     url_allowed: Callable[[str], bool] = lambda _url: True
     screenshot_dir: Path = field(default_factory=lambda: Path(os.getcwd()))
     sleep: _SleepFn = _no_sleep
@@ -249,6 +252,23 @@ class OpContext:
     #: ``screenshot_dir`` only once the check after the capture passes. ``None``
     #: writes straight into ``screenshot_dir`` (tests).
     staging_dir: Path | None = None
+    #: Where ``upload`` stages the checked copy of a file before the browser gets it:
+    #: a leaf no sandboxed agent can read or write (the hidden IPC leaf). ``None``
+    #: refuses ``upload`` (``not_available``).
+    upload_dir: Path | None = None
+    #: The host whose act site grant lets ``upload`` run with no card (``""``: on
+    #: the card). Such an upload sends nothing under the strict sandbox's hidden
+    #: folders and re-reads the tab's host right before the files go.
+    upload_grant_host: str = ""
+    #: The files an ``upload`` card expanded its entries to and the person allowed
+    #: (``upload.preview``'s groups and skip count), or ``None``. When set, the op
+    #: sends exactly these and never expands the entries again, so a file added to a
+    #: folder after the card is never sent.
+    upload_groups: tuple[list[Any], int] | None = None
+    #: Whether the governance ceiling lets this caller read a path (``filesystem.read``).
+    #: ``upload`` asks it for every file a folder or glob expands to: the tool gate
+    #: judged only the entries as written.
+    read_allowed: Callable[[str], bool] = lambda _path: True
 
 
 def screenshot_dir(home: Path) -> Path:
@@ -294,17 +314,6 @@ def _number(value: Any) -> float | None:
     return float(value)
 
 
-def _modifier_mask(modifiers: Any) -> int:
-    if isinstance(modifiers, int) and not isinstance(modifiers, bool):
-        return modifiers & 15
-    if not isinstance(modifiers, list):
-        return 0
-    mask = 0
-    for m in modifiers:
-        mask |= _MODIFIER_BITS.get(str(m or "").lower(), 0)
-    return mask
-
-
 def format_outline(nodes: list[dict[str, Any]]) -> str:
     """Render walker nodes as the indented outline the model reads."""
     lines: list[str] = []
@@ -329,6 +338,8 @@ def format_outline(nodes: list[dict[str, Any]]) -> str:
                 line += " [covered]"
             elif st.get("unusable"):
                 line += " [not usable yet]"
+            if st.get("file"):
+                line += " [file]"
             if st.get("checked"):
                 line += " [checked]"
             if st.get("disabled"):
@@ -666,7 +677,16 @@ async def _navigate(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     url = url.strip()
     if not url.lower().startswith(("http://", "https://")):
         return refusal("bad_url", f"refused non-web URL: {url[:80]}")
-    await _step(ctx, f"Open {url}")
+    return await navigate_to(ctx, url, label=f"Open {url}")
+
+
+async def navigate_to(ctx: OpContext, url: str, *, label: str) -> dict[str, Any]:
+    """Open *url* in the caller's tab, wait for it to commit, and judge where it landed.
+
+    *label* is the live card's step text, so a caller opening a URL the agent must
+    not see (``browser_harness.sign_in``) names only its host.
+    """
+    await _step(ctx, label)
     token = _stamp_token(ctx)
     try:
         await _page(ctx, "stamp", token)
@@ -702,9 +722,10 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
         logger.debug("navigate: could not leave the refused page", exc_info=True)
     return refusal(
         "redirect_refused",
-        f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
-        "loopback origin the user listed (or, for an app's own session, not one of the "
-        "pages the app may browse); the tab was moved to about:blank",
+        f"the page redirected to {url[:120]}, which is not a public http(s) URL other "
+        "than this dashboard or a loopback origin the user listed (or, for an app's own "
+        "session, not one of the pages the app may browse); the tab was moved to "
+        "about:blank",
     )
 
 
@@ -912,8 +933,8 @@ async def _click(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     if button not in _MOUSE_BUTTONS:
         return refusal("bad_button", f"button must be one of {sorted(_MOUSE_BUTTONS)}")
     clicks = args.get("clicks", 2 if args.get("doubleClick") else 1)
-    if clicks not in (1, 2) or isinstance(clicks, bool):
-        return refusal("bad_clicks", "clicks must be 1 or 2")
+    if clicks not in (1, 2, 3) or isinstance(clicks, bool):
+        return refusal("bad_clicks", "clicks must be 1, 2 or 3")
     await _step(ctx, f"Click {args.get('ref') or f'({x:.0f}, {y:.0f})'}")
     await ctx.helper("click", x=x, y=y, button=button, clicks=clicks)
     return {"ok": True, "x": x, "y": y, "button": button, "clicks": clicks, "ref": args.get("ref")}
@@ -983,11 +1004,6 @@ async def _focus_ref(ctx: OpContext, ref: Any) -> dict[str, Any] | None:
             f"ref {ref} did not take focus{why} -- refusing to type into another field",
         )
     return None
-
-
-def _known_key(key: Any) -> bool:
-    """*key* is one ``press_key`` presses: ``Space``, a named key, or one character."""
-    return isinstance(key, str) and (key == "Space" or key in _NAMED_KEYS or len(key) == 1)
 
 
 async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1097,19 +1113,19 @@ def _asked_refusal(ref: Any) -> dict[str, Any]:
     )
 
 
-#: Modifier bits under which a single-character key inserts no text (Ctrl, Meta).
-_NON_TEXT_MODIFIERS = _MODIFIER_BITS["control"] | _MODIFIER_BITS["meta"]
-
-
 async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("key")
     if not isinstance(key, str) or not key:
         return refusal("bad_key", "press_key needs a `key`")
-    if not _known_key(key):
+    # Imported here: the MCP server loads this module before it answers the tool
+    # list, and test_mcp_listing_import_budget caps what that list may load.
+    from kiro_crew.browser_harness import keys
+
+    if not keys.known_key(key):
         return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     if key == "Space":
         key = " "
-    modifiers = _modifier_mask(args.get("modifiers"))
+    modifiers = keys.modifier_mask(args.get("modifiers"))
     if len(key) == 1 or modifiers:
         # A printable key is a character typed into whatever holds focus: the same
         # refusal ``type`` applies, so a password cannot be spelled one key at a time.
@@ -1147,7 +1163,7 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
             focused
             and active.get("password")
             and len(key) == 1
-            and not modifiers & _NON_TEXT_MODIFIERS
+            and not modifiers & keys.NON_TEXT_MODIFIERS
         ):
             return _password_refusal(None)
     await _step(ctx, f"Press {key.strip() or 'Space'}")
@@ -1492,42 +1508,6 @@ def _unlink(path: Path) -> bool:
     return True
 
 
-async def _tabs(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
-    action = args.get("action", "list")
-    owned = set(ctx.agent_targets())
-    if action == "list":
-        tabs = await ctx.helper("list_tabs")
-        mine = [
-            {
-                "target_id": t.get("target_id") or t.get("targetId"),
-                "url": t.get("url"),
-                "title": t.get("title"),
-            }
-            for t in (tabs if isinstance(tabs, list) else [])
-            if isinstance(t, dict)
-            and (t.get("target_id") or t.get("targetId")) in owned
-            and (t.get("url") == "about:blank" or ctx.url_allowed(str(t.get("url") or "")))
-        ]
-        return {"ok": True, "tabs": mine}
-    if action == "switch":
-        target = args.get("target_id")
-        if not isinstance(target, str) or target not in owned:
-            return refusal("not_agent_tab", "only a tab the agent opened can be switched to")
-        await _step(ctx, "Switch tab")
-        await ctx.helper("switch_tab", target=target)
-        return {"ok": True, "target_id": target}
-    if action == "new":
-        url = args.get("url", "about:blank")
-        if not isinstance(url, str) or not url or len(url) > _URL_MAX:
-            return refusal("bad_url", "tabs new needs a `url` string")
-        if url != "about:blank" and not url.lower().startswith(("http://", "https://")):
-            return refusal("bad_url", f"refused non-web URL: {url[:80]}")
-        await _step(ctx, f"Open a new tab {url}")
-        target = await ctx.helper("new_tab", url=url)
-        return {"ok": True, "target_id": target}
-    return refusal("bad_action", "tabs action must be one of: list, switch, new")
-
-
 def _dialog_view(raw: Any) -> dict[str, Any] | None:
     """What the agent is told of an open dialog: its kind, text and default answer.
 
@@ -1695,9 +1675,102 @@ async def _reflex(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     return await module.run(ctx, args)  # type: ignore[no-any-return]
 
 
+async def _tabs(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """``browser_harness.tabs_op``, resolved at call time: it imports this module."""
+    module = importlib.import_module("kiro_crew.browser_harness.tabs_op")
+    return await module.run(ctx, args)  # type: ignore[no-any-return]
+
+
+def _helper_op(name: str) -> Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """``browser_harness.helper_ops``'s *name*, resolved at call time: it imports this module."""
+
+    async def run(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+        module = importlib.import_module("kiro_crew.browser_harness.helper_ops")
+        return await getattr(module, name)(ctx, args)  # type: ignore[no-any-return]
+
+    return run
+
+
+async def _upload(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """``browser_harness.upload``, resolved at call time: it imports this module."""
+    module = importlib.import_module("kiro_crew.browser_harness.upload")
+    return await module.run(ctx, args)  # type: ignore[no-any-return]
+
+
+def _raw_op(name: str) -> Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, Any]]]:
+    """``browser_harness.raw_ops.<name>``, resolved at call time: it imports this module."""
+
+    async def run(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+        module = importlib.import_module("kiro_crew.browser_harness.raw_ops")
+        return await getattr(module, name)(ctx, args)  # type: ignore[no-any-return]
+
+    return run
+
+
 async def _ask_elsewhere(_ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     """``ask`` needs the live card; the op route serves it and never calls here."""
     return refusal("not_available", "ask is served by the gateway's op route")
+
+
+def _box(raw: Any) -> dict[str, float] | None:
+    """A walker box ``{x, y, w, h}`` from page script, as finite numbers, or ``None``."""
+    if not isinstance(raw, dict):
+        return None
+    out = {k: _number(raw.get(k)) for k in ("x", "y", "w", "h")}
+    if any(v is None for v in out.values()):
+        return None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+async def _pick(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The element drawn at viewport point (``x``, ``y``): its ref, tag, name and box."""
+    x, y = _number(args.get("x")), _number(args.get("y"))
+    if x is None or y is None or x < 0 or y < 0:
+        return refusal("bad_target", "give non-negative `x`,`y` viewport pixels")
+    await _step(ctx, "Look at a point on the page")
+    data = await _page(ctx, "pick", x, y)
+    if not isinstance(data, dict) or not data.get("ok"):
+        code = data.get("code") if isinstance(data, dict) else None
+        if code == "password_field":
+            return refusal(
+                "password_field",
+                "that point is a protected field (password, secret or one-time code)",
+            )
+        return refusal("nothing_there", "no element is drawn at that point")
+    ref, box = data.get("ref"), _box(data.get("box"))
+    if not _is_ref(ref) or box is None:
+        return refusal("pick_error", "the page answered no element")
+    # Redacted whole, then cut for display: a cut first could leave a credential's
+    # head the redactor does not match. The walker withholds a name over its cap.
+    text, _ = redact_exfiltration_urls(str(data.get("text") or ""))
+    text, _ = redact_credentials(text)
+    text = text[:PICK_TEXT_CAP]
+    return {"ok": True, "ref": ref, "tag": str(data.get("tag") or ""), "text": text, "box": box}
+
+
+async def _locate(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Where each of ``texts`` is drawn: ``found`` lists ``{text, boxes}`` in order."""
+    texts = args.get("texts")
+    if (
+        not isinstance(texts, list)
+        or not 0 < len(texts) <= LOCATE_TEXTS_CAP
+        or not all(isinstance(t, str) and 0 < len(t) <= LOCATE_TEXT_CHARS for t in texts)
+    ):
+        return refusal(
+            "bad_texts",
+            f"texts must be 1-{LOCATE_TEXTS_CAP} strings of 1-{LOCATE_TEXT_CHARS} characters",
+        )
+    await _step(ctx, "Find text on the page")
+    data = await _page(ctx, "locate", texts, LOCATE_BOXES_CAP)
+    raw = data.get("found") if isinstance(data, dict) else None
+    if not isinstance(raw, list) or len(raw) != len(texts):
+        return refusal("locate_error", "the page answered no positions")
+    found = []
+    for text, entry in zip(texts, raw):
+        boxes = entry.get("boxes") if isinstance(entry, dict) else None
+        kept = [b for b in map(_box, boxes if isinstance(boxes, list) else []) if b is not None]
+        found.append({"text": text, "boxes": kept[:LOCATE_BOXES_CAP]})
+    return {"ok": True, "found": found}
 
 
 _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, Any]]]] = {
@@ -1709,17 +1782,28 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "drag": _drag,
     "scroll": _scroll,
     "type": _type,
+    "fill": _helper_op("fill"),
+    "dispatch_key": _helper_op("dispatch_key"),
+    "wait_for_element": _helper_op("wait_for_element"),
+    "wait_for_network_idle": _helper_op("wait_for_network_idle"),
     "paste": _paste,
     "press_key": _press_key,
     "hover": _hover,
     "select_option": _select_option,
+    "upload": _upload,
     "wait_for": _wait_for,
     "console": _console,
     "screenshot": _screenshot,
     "tabs": _tabs,
     "dialog": _dialog,
     "reflex": _reflex,
+    "js": _raw_op("js"),
+    "cdp": _raw_op("cdp"),
+    "http_get": _raw_op("http_get"),
+    "iframe_target": _raw_op("iframe_target"),
     "ask": _ask_elsewhere,
+    "pick": _pick,
+    "locate": _locate,
 }
 
 
@@ -1747,6 +1831,13 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "screenshot_clip",
             "page_info",
             "wait_for_load",
+            "set_files",
+            "chooser_files",
+            "drop_files",
+            "fill_input",
+            "dispatch_key",
+            "wait_for_element",
+            "wait_for_network_idle",
         }:
             refused = await _refuse_current_url(raw_ctx)
             if refused is not None:

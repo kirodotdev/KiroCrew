@@ -12,6 +12,7 @@ import and patch; this module never imports it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from collections.abc import Awaitable, Callable
@@ -23,13 +24,14 @@ from kiro_crew import conductor_patrol, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
-from kiro_crew.dashboard import session_control, trace_binding
+from kiro_crew.dashboard import session_control, session_managers, trace_binding
 from kiro_crew.dashboard.handlers.work_ledger_caller import (
     _caller_key,
     _code_channel_caller,
     _own_ledger,
 )
 from kiro_crew.dashboard.handlers.work_ledger_read import (
+    _MAX_EVENT_TAIL,
     _published_payload,
     worker_holds_open_item,
 )
@@ -566,33 +568,53 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     if action == "retire":
         return await _record_conductor_retire(state, key, cleaned, request)
 
+    # A bind is admitted by who holds the right to bind the worker, which a handoff
+    # moves under HANDOFF_LOCK. Held from the admission through the write, so a
+    # handoff never lands between them; the board lock is always taken inside it.
+    # A goal or create that opens the caller's first ledger holds it too: that
+    # ledger's depth comes from the caller's binding, which such a bind rewrites
+    # after judging the caller by its having no ledger.
     if action == "bind":
-        refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
-        if refusal is None:
-            refusal = await _refuse_dispatched_worker(key, cleaned.get("worker_session_key"))
-        if refusal is not None:
-            return refusal
+        await asyncio.to_thread(session_managers.load)
+    opens_ledger = action in ("goal", "create") and (
+        await asyncio.to_thread(work_ledger.read_conductor, key) is None
+    )
+    guard: contextlib.AbstractAsyncContextManager[Any] = (
+        session_managers.HANDOFF_LOCK
+        if action == "bind" or opens_ledger
+        else contextlib.nullcontext()
+    )
+    async with guard:
+        if action == "bind":
+            worker = cleaned.get("worker_session_key")
+            refusal = _refuse_unowned_worker(request, key, worker)
+            if refusal is None:
+                refusal = await _refuse_granted_bind_too_deep(state, key, worker)
+            if refusal is None:
+                refusal = await _refuse_dispatched_worker(key, worker)
+            if refusal is not None:
+                return refusal
 
-    # Read from THIS request before the write: only a bind arms a patrol, and only
-    # an attested member thread's own bind may take one (``conductor_patrol``).
-    attested = (
-        await conductor_patrol.attested_caller_slot(request, state) if action == "bind" else ""
-    )
-    # A dispatch never opens a ledger: only ``kirocrew-work``'s own
-    # ``work_ledger_record`` does, so a session without that server is refused,
-    # whatever its backend.
-    resp = await _record_conductor_write(
-        state,
-        key,
-        unit,
-        action,
-        cleaned,
-        operation="work_ledger_record",
-        code_channel=_code_channel_caller(request),
-        caller_sk=request.headers.get("X-Session-Key", ""),
-        dispatch=dispatch,
-        attested_caller=attested,
-    )
+        # Read from THIS request before the write: only a bind arms a patrol, and only
+        # an attested member thread's own bind may take one (``conductor_patrol``).
+        attested = (
+            await conductor_patrol.attested_caller_slot(request, state) if action == "bind" else ""
+        )
+        # A dispatch never opens a ledger: only ``kirocrew-work``'s own
+        # ``work_ledger_record`` does, so a session without that server is refused,
+        # whatever its backend.
+        resp = await _record_conductor_write(
+            state,
+            key,
+            unit,
+            action,
+            cleaned,
+            operation="work_ledger_record",
+            code_channel=_code_channel_caller(request),
+            caller_sk=request.headers.get("X-Session-Key", ""),
+            dispatch=dispatch,
+            attested_caller=attested,
+        )
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
     elif resp.status == 200 and cleaned.get("item_id"):
@@ -865,7 +887,9 @@ def _refuse_unowned_worker(
     and it is the only entry point that does — a person's own tab stays
     unattributed. So a bind is admitted only for a live slot this conductor
     created, in the conductor's own workspace (the memory boundary
-    ``authorize_target`` already refuses across).
+    ``authorize_target`` already refuses across). A ``session_handoff`` with
+    ``bind=true`` moves that right: while it stands, the manager it named is the
+    only conductor admitted (:func:`session_managers.bind_holder`), the creator not.
 
     Returns a refusal, or ``None`` when the bind may proceed.
     """
@@ -897,8 +921,8 @@ def _refuse_unowned_worker(
     # to the ledger spelling only when no open slot answers to the key, which is
     # what a dashboard conductor without a live tab has always compared as.
     conductor_slot_key = session_control.caller_slot_key(state, conductor_key) or conductor_key
-    creator = session_ledger.ledger_key(str(getattr(slot, "_created_by", "") or ""))
-    if creator != session_ledger.ledger_key(conductor_slot_key):
+    holder = session_ledger.ledger_key(session_managers.bind_holder(slot))
+    if not holder or holder != session_ledger.ledger_key(conductor_slot_key):
         _audit(
             conductor_key,
             "work_ledger_record",
@@ -908,9 +932,9 @@ def _refuse_unowned_worker(
         )
         return _refuse_403(
             "worker_not_owned",
-            "That worker session was not created by this conductor, so it cannot "
-            "be bound to one of its items. A conductor binds only the sessions it "
-            "dispatched.",
+            "This conductor does not hold the right to bind that worker session: "
+            "only the session that created it may, unless a session_handoff with "
+            "bind=true gave that right to another session.",
         )
     conductor_slot = None
     for candidate in (conductor_slot_key, conductor_key, f"dashboard_{conductor_key}"):
@@ -937,6 +961,137 @@ def _refuse_unowned_worker(
                 "memory boundary, and a conductor cannot bind across it.",
             )
     return None
+
+
+def nests_too_deep(manager_key: str, worker_key: str) -> bool:
+    """Whether a conducting *worker_key* would nest too deep under *manager_key*.
+
+    A session that conducts keeps the depth it opened its ledger at, so it may move
+    only under a manager whose own ledger sits at least one level above it; a manager
+    with no ledger cannot take it. ``False`` when *worker_key* conducts nothing.
+    Blocking; an unreadable header raises ``OSError``.
+    """
+    worker = work_ledger.read_conductor(session_ledger.ledger_key(worker_key), strict=True)
+    if worker is None:
+        return False
+    manager = work_ledger.read_conductor(session_ledger.ledger_key(manager_key), strict=True)
+    return manager is None or manager.depth + 1 > worker.depth
+
+
+async def _refuse_granted_bind_too_deep(
+    state: DashboardState, conductor_key: str, worker_session_key: Any
+) -> web.Response | None:
+    """Refuse a bind a handoff admitted when the worker's own ledger would nest too deep.
+
+    Only a bind admitted through a moved right reaches the check: a creator's bind
+    is judged as it always was.
+    """
+    if not isinstance(worker_session_key, str) or not worker_session_key:
+        return None
+    slot = _worker_slot(state, worker_session_key)
+    if slot is None or not session_managers.bind_granted(slot):
+        return None
+    try:
+        too_deep = await asyncio.to_thread(nests_too_deep, conductor_key, worker_session_key)
+    except OSError:
+        too_deep = True
+    if not too_deep:
+        return None
+    _audit(conductor_key, "work_ledger_record", "denied", resources="bind", error="depth_exceeded")
+    return _refuse_409(
+        "depth_exceeded",
+        "That worker session conducts its own ledger at a depth this conductor's "
+        "ledger is not above, so binding it here would nest its workers past the cap.",
+    )
+
+
+async def release_on_handoff(
+    state: DashboardState, caller_session_key: str, worker_key: str, manager_key: str
+) -> tuple[str, str]:
+    """Close the caller's open item for *worker_key* once a handoff moved the right to bind it.
+
+    The write lands on the CALLER's own board, through the same commit-and-record
+    path as every conductor write, as an ``abandoned`` close whose ``decision`` tells
+    the worker to stop reporting here and wait for *manager_key*. An item that waits
+    on a person (an open ``ask``, or the Board's ``names_person`` over its event
+    tail) is left open. Returns ``(item id or "", note)``; never raises, because the
+    handoff itself has already been saved.
+    """
+    conductor_key = session_ledger.ledger_key(caller_session_key)
+    worker = session_ledger.ledger_key(worker_key)
+    item_id, kept = "", ""
+
+    async def _kept() -> str:
+        # Why the item stays open: "gone" (not this worker's open item), "person", or "".
+        from kiro_crew.dashboard.handlers.work_ledger_board import names_person
+
+        item = await asyncio.to_thread(work_ledger.read_work_item, conductor_key, item_id)
+        if item is None or item.is_terminal or item.worker_session_key != worker:
+            return "gone"
+        if item.ask:
+            return "person"
+        tail = await asyncio.to_thread(
+            work_ledger.read_events, conductor_key, item_id, limit=_MAX_EVENT_TAIL
+        )
+        return "person" if names_person(item, [e.to_dict() for e in tail]) else ""
+
+    async def _still_releasable() -> web.Response | None:
+        # Judged again under the board lock every report also holds, so a report that
+        # landed after the first read and asked a person keeps its item open.
+        nonlocal kept
+        kept = await _kept()
+        return _refuse_409("release_skipped", "the item changed") if kept else None
+
+    try:
+        binding = await asyncio.to_thread(work_ledger.read_binding, worker)
+        if binding is None or binding[0] != conductor_key:
+            return "", ""
+        item_id = binding[1]
+        kept = await _kept()
+        unit, refusal = (
+            (None, None)
+            if kept
+            else _acting_unit(state, conductor_key, "session_handoff_release", item_id)
+        )
+        if refusal is None and unit is not None:
+            cleaned = crew_log_emit.safe_work_fields(
+                {
+                    "action": "close",
+                    "item_id": item_id,
+                    "state": "abandoned",
+                    "decision": (
+                        f"Handed to {manager_key}; stop reporting here and wait for "
+                        f"{manager_key} to bind you to its item and send you a brief."
+                    ),
+                }
+            )
+            resp = await _record_conductor_write(
+                state,
+                conductor_key,
+                unit,
+                "close",
+                cleaned,
+                operation="session_handoff_release",
+                before_write=_still_releasable,
+            )
+            if resp.status == 200:
+                return item_id, (
+                    f"Closed item {item_id} as abandoned; {manager_key} binds it and "
+                    "sends it a brief."
+                )
+    except Exception:  # noqa: BLE001 - the handoff is saved; the release is best-effort
+        logger.warning("session_handoff release failed for %s", worker, exc_info=True)
+    if kept == "person":
+        return "", (
+            f"Item {item_id} waits on a person, so it stays open: {manager_key} can "
+            f"bind {worker_key} once the person answers and you close item {item_id}."
+        )
+    if not item_id or kept:
+        return "", ""
+    return (
+        "",
+        f"Item {item_id} is still open and bound to {worker_key}: close item {item_id} yourself.",
+    )
 
 
 async def _refuse_dispatched_worker(

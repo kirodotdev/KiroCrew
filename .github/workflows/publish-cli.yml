@@ -29,6 +29,16 @@ on:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
         type: string
+      verify_only:
+        description: >-
+          Run the platform-wheel gate and stop: the publish job is skipped, so
+          nothing reaches the distribution bucket, the feed or the manifest
+          signing key. verify-cli-publish.yml passes true so a fix to this
+          lane can be checked from a branch without publishing. Every other
+          caller leaves it false.
+        required: false
+        type: boolean
+        default: false
       promote:
         description: "Publish verified prerelease bytes to stable without rebuilding"
         required: false
@@ -88,13 +98,25 @@ jobs:
           path: cli-platform
           merge-multiple: true
 
+      # The pure wheel pins pysqlite3-binary, whose only wheels are cp310-cp312,
+      # so the runner image's own python (3.13+) cannot install it. Use the
+      # python build-wheel.yml builds with.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        with:
+          python-version: "3.12"
+          # cache disabled: the gate checks bytes that are about to be published,
+          # and an Actions cache is writable from any branch (zizmor cache-poisoning).
+
       - name: Gate - every platform wheel carries the pinned engine
         id: gate
+        env:
+          GATE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: |
           set -euo pipefail
           PURE=(cli-dist/*-py3-none-any.whl)
           [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { echo "::error::expected one pure wheel"; exit 1; }
-          python3 -m venv "$RUNNER_TEMP/gate"
+          "$GATE_PYTHON" -m venv "$RUNNER_TEMP/gate"
           "$RUNNER_TEMP/gate/bin/pip" install --quiet "${PURE[0]}"
           WANT="manylinux_2_28_x86_64 manylinux_2_28_aarch64 macosx_11_0_arm64 macosx_11_0_x86_64"
           for TAG in $WANT; do
@@ -107,8 +129,9 @@ jobs:
   publish-cli:
     name: Publish CLI wheel (${{ inputs.channel }})
     needs: verify-platform-wheels
-    # A promotion carries no platform wheels, so the gate is skipped there.
-    if: ${{ !cancelled() && (needs.verify-platform-wheels.result == 'success' || (inputs.promote && needs.verify-platform-wheels.result == 'skipped')) }}
+    # A promotion carries no platform wheels, so the gate is skipped there. A
+    # verify_only call never publishes, whatever the gate says.
+    if: ${{ !cancelled() && !inputs.verify_only && (needs.verify-platform-wheels.result == 'success' || (inputs.promote && needs.verify-platform-wheels.result == 'skipped')) }}
     # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
     # than by GROUP. nightly.yml calls this lane with no repository guard, so a
     # fork running its own nightly starts it too; there an organization runner

@@ -434,6 +434,35 @@ def redact_credentials(
     return _splice(text, spans), warnings
 
 
+def redact_credentials_and_spans(
+    text: str, spans: list[tuple[int, int]], replacement: str
+) -> tuple[str, list[str]]:
+    """:func:`redact_credentials`, also masking the caller's *spans* of *text*.
+
+    Both span sets are positioned against the SAME original text, then merged
+    where they overlap and written once, so a caller span can never cut a
+    credential into pieces the scanners cannot recognise. A merged region
+    (or a caller-only span) becomes *replacement*; a credential-only span keeps
+    its own tag.
+    """
+    plan, warnings, _rules = _credential_redaction_plan(text)
+    merged: list[_RedactionSpan] = []
+    group_end = -1
+    caller_group = False
+    items = [(s, e, t, False) for s, e, t in plan] + [(s, e, replacement, True) for s, e in spans]
+    for start, end, tag, caller in sorted(items, key=lambda item: (item[0], -item[1])):
+        if merged and start < group_end:
+            old_start, _old_end, old_tag = merged[-1]
+            caller_group = caller_group or caller
+            group_end = max(group_end, end)
+            merged[-1] = (old_start, group_end, replacement if caller_group else old_tag)
+        else:
+            merged.append((start, end, tag))
+            group_end = end
+            caller_group = caller
+    return (_splice(text, merged) if merged else text), warnings
+
+
 class CredentialMatch(NamedTuple):
     """One credential placeholder the redactor wrote, described for a record.
 

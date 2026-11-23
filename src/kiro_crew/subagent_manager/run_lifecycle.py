@@ -689,6 +689,21 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # report exists, so the parent reads a bounded file. Bounded, and it
         # never raises, so it cannot keep the report below from spawning.
         await self._cap_unclaimed_result_impl(info)
+        if info.worktree is not None and not info._recovering:
+            # The completion event names an isolated run's worktree and its
+            # commits, read off the loop now. Bounded, and it never raises, so
+            # the report below is still spawned.
+            from kiro_crew.subagent_worktree import completion_note
+
+            try:
+                info.worktree_note = await asyncio.wait_for(
+                    asyncio.to_thread(completion_note, info.id, info.worktree), 30
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                logger.debug("worktree note for %s not read", info.id, exc_info=True)
+                info.worktree_note = (
+                    f"Note: Agent `{info.id}` worked in its own git worktree {info.worktree.path}."
+                )
         # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
         # Taken (and the report task SPAWNED) before the teardown awaits
         # below, so a cancellation landing anywhere in teardown cannot

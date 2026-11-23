@@ -27,6 +27,7 @@ Instance fields read: ``_config_options``, ``_runtime``,
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -68,9 +69,14 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
-from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.constants import (
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
+)
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant, as_spec_denied_grant
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
@@ -162,7 +168,10 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
-        await self.reject_tool(request_id)
+        if gate_event is None:
+            await self.reject_tool(request_id)
+        else:
+            await self._reject_with_host_notice(gate_event, reason, cause=DENY_CAUSE_POLICY)
         return False
     if withdraw_if is not None and withdraw_if():
         # The floor's thread hop is an await: read again before anything else
@@ -817,6 +826,15 @@ def _claude_mcp_identity_servers(
     return tuple(state._harness_mcp_server_names()), _bridged_servers(state)
 
 
+def _denies_only(value: Any) -> SpecDeniedGrant | None:
+    """The deny record *value* with its grants emptied, so the gate's ``spec-denies``
+    row still refuses by it and its grant row grants nothing by it."""
+    record = as_spec_denied_grant(value)
+    if record is None:
+        return None
+    return dataclasses.replace(record, builtins=frozenset(), commands=(), web_fetch_trusted=())
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -888,28 +906,34 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # call it serves: marked as the per-chat client marks it, so the dashboard
         # keeps the parent's deny overrides away from it.
         event.native_child_call = True
-    elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
-        # A native KAS sub-agent's call carries this session's id, so mark it:
-        # the dashboard keeps the parent's deny overrides away from it.
-        event.native_child_call = True
     elif self._runtime.acp_backend == ACP_BACKEND_KAS:
-        # What this session's own agent granted and the KAS policy kept at ask,
-        # so the gate can answer the request itself after its checks. A child's
-        # request runs another agent's spec, so it never carries this: neither
-        # one under a foreign sessionId, nor a native KAS sub-agent's tool call,
-        # which shares this session's id and is told apart by the id its
-        # agentSubtaskId frame recorded.
-        event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
-        event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
-        event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+        # The limits of this session's own agent that only Crew's gate applies.
+        # KAS runs a native sub-agent inside this agent's permission rules (its
+        # own and the child's, the stricter answer winning), so they bind a native
+        # sub-agent's call too, as they do a native claude sub-agent's below.
         event.spec_shell_allowlist = getattr(self, "kas_spec_shell_allowlist", None)
+        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)
         event.spec_write_cwd = str(getattr(self, "_bound_cwd", "") or "")
-        event.spec_denied_grant = getattr(self, "kas_spec_denies", None)
         event.spec_unjudged_denies = tuple(getattr(self, "kas_spec_unjudged_denies", ()))
-        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
-        event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
-        event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
+        denies = getattr(self, "kas_spec_denies", None)
+        if _is_native_child_call(self, event):
+            # A native KAS sub-agent's call carries this session's id, so mark it:
+            # the dashboard keeps the parent's deny overrides away from it. It
+            # runs another agent's spec, so it gets the deny record's denies and
+            # none of this agent's grants.
+            event.native_child_call = True
+            event.spec_denied_grant = _denies_only(denies)
+        else:
+            # What this session's own agent granted and the KAS policy kept at
+            # ask, so the gate can answer the request itself after its checks.
+            # A request under a foreign sessionId never reaches this branch.
+            event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
+            event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
+            event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+            event.spec_denied_grant = denies
+            event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
+            event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
     if self._runtime.acp_backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # A harness that never reads ``toolsSettings`` (claude): the shell and write
         # allowlists its own setup stamped on this handle

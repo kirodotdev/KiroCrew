@@ -15,7 +15,8 @@ automaton, never with ``re``:
   not ``<`` / ``>``, which Rust reads as word boundaries; a literal-plus-``.*``
   entry may escape those two, since the text an entry is matched against never
   holds either);
-- Rust's control-character escapes ``\\n \\t \\r \\f \\v \\a``;
+- Rust's control-character escapes ``\\n \\t \\r \\f \\v \\a``, and ``\\x`` with two
+  hex digits that name an ASCII character (``\\x20``, ``[\\x20-\\x7e]``);
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
   ``[^;|&]``, escaped punctuation, the POSIX classes (``[[:alnum:]]``,
@@ -38,7 +39,7 @@ holding a non-ASCII character is refused.
 Everything else is refused (``None``, and :func:`refusal_reason` says why) and
 allows nothing: a nested class or class operator (``&&``, ``--``, ``~~``), a ``]``
 first in a class, a ``-`` that is neither first, last nor a range, any other
-escape (``\\p{L}``, ``\\x41``, ``\\<``, ``\\b{start}``), the flags ``x``, ``u`` and
+escape (``\\p{L}``, ``\\x{41}``, ``\\xff``, ``\\<``, ``\\b{start}``), the flags ``x``, ``u`` and
 ``R``, a look-around, and an entry past :data:`_MAX_PROGRAM_STATES` states (a
 counted repeat in the thousands). So is what Rust refuses to compile, since
 kiro-cli then allows nothing by the entry: two groups of one name, a repeat count
@@ -145,6 +146,8 @@ _DIGITS = frozenset("0123456789")
 #: Rust's escapes for a control character: ``\\n`` is a newline, ``\\t`` a tab.
 _CONTROL_ESCAPES = {"a": "\x07", "f": "\x0c", "t": "\t", "n": "\n", "r": "\r", "v": "\x0b"}
 
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
 #: Rust's POSIX classes, all ASCII: (single characters, inclusive ranges).
 _POSIX_CLASSES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "alnum": ("", (("0", "9"), ("A", "Z"), ("a", "z"))),
@@ -189,7 +192,9 @@ class Pattern:
     automaton :func:`matches` walks. ``ascii_only`` marks an entry using a
     construct Rust reads by Unicode (``\\d \\w \\s \\b``, ``(?i)``): it matches only
     an all-ASCII command. ``alternates`` marks an entry using alternation
-    (``a|b``, ``(a|b)``); a ``|`` in a class or escaped is a literal.
+    (``a|b``, ``(a|b)``); a ``|`` in a class or escaped is a literal. ``spelled``
+    holds each character a ``\\x`` escape names (``\\x3b`` is ``;``), so a check
+    over the entry's text can count it as if written as itself.
     """
 
     segments: tuple[str, ...] | None = None
@@ -197,6 +202,7 @@ class Pattern:
     start: int = 0
     ascii_only: bool = False
     alternates: bool = False
+    spelled: frozenset[str] = frozenset()
 
 
 def parse(raw: object) -> Pattern | None:
@@ -296,6 +302,7 @@ def _read_text(raw: str) -> Pattern | str:
         start=start,
         ascii_only=parser.ascii_only,
         alternates=parser.alternates,
+        spelled=frozenset(parser.spelled),
     )
 
 
@@ -360,6 +367,7 @@ class _Parser:
         self.ascii_only = False
         self.alternates = False
         self.group_names: set[str] = set()
+        self.spelled: set[str] = set()
 
     def parse(self) -> tuple:
         node = self._alternation()
@@ -556,13 +564,14 @@ class _Parser:
         return closes
 
     def _escape(self) -> str:
-        """The literal a ``\\`` + ASCII punctuation or space, or one of
-        :data:`_CONTROL_ESCAPES`, at :attr:`pos` names.
+        """The literal a ``\\`` + ASCII punctuation or space, one of
+        :data:`_CONTROL_ESCAPES`, or ``\\x`` + two hex digits below ``80``, at
+        :attr:`pos` names.
 
         Rust escapes any ASCII character but a letter or digit to a literal, and
         reads ``\\<`` / ``\\>`` as word boundaries; every other escape here
-        (``\\x41``, ``\\p{L}``, a non-ASCII character, a trailing ``\\``) is
-        refused.
+        (``\\x{41}``, ``\\xff``, ``\\p{L}``, a non-ASCII character, a trailing
+        ``\\``) is refused.
         """
         nxt = self._peek(1)
         if not nxt:
@@ -570,6 +579,11 @@ class _Parser:
         if nxt in _CONTROL_ESCAPES:
             self.pos += 2
             return _CONTROL_ESCAPES[nxt]
+        code = self.text[self.pos + 2 : self.pos + 4]
+        if nxt == "x" and len(code) == 2 and set(code) <= _HEX_DIGITS and int(code, 16) < 0x80:
+            self.pos += 4
+            self.spelled.add(chr(int(code, 16)))
+            return chr(int(code, 16))
         if not nxt.isascii() or not nxt.isprintable() or nxt.isalnum() or nxt in "<>":
             raise _Refused(f"the escape \\{nxt}")
         self.pos += 2

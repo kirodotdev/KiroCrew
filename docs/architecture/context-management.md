@@ -151,14 +151,18 @@ and keeps its own reason. The load's own documents from
 outside the trees (`AGENTS.md`, `~/.claude/CLAUDE.md`), a tree link that
 resolves outside its tree, and every file of a tree whose root is itself a link
 (only the home or project anchor is resolved), and a tree file a Claude Code
-memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to, read
-`none`, because Claude Code loads `CLAUDE.md`
+memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to or
+imports with `@path`, read `none`, because Claude Code loads `CLAUDE.md`
 itself and removing Crew's copy would not hold. Folder steering takes no
 switch-off on any harness, because a harness may load a folder file itself (Codex
 and kiro-cli load the project `AGENTS.md`); those rows read `none` too, and a
 file KAS or kiro-cli loads reads `unavailable`. #34598 tracks offering it where
-one harness can say exactly which files it loads. A member
-chat's envelope is not filtered: its rows stay `briefing`.
+one harness can say exactly which files it loads. A crewmate's
+essentials envelope is not filtered: every chat whose turns carry it (the
+crewmate's DM, an ordinary chat that picks the crewmate, or the crewmate's
+worker or delegate) keeps its rows `briefing`. The route reads that from the
+turn's owner (`resolve_turn_owner`'s record, else the chat's crewmate pick), not
+from the slot's mode.
 
 Then the per-turn blocks of §2 follow, and the user's own text is last. This
 build happens *after* the user's message arrives, so it lands directly on
@@ -541,7 +545,10 @@ next turn reads it through `consume_reinjection` (owned by
 `rearm_reinjection` it when the turn does not land or its stream reported a
 completed backend compaction, or delegate to `drive_turn` or
 answer through `messaging.dispatch.ChannelTurns`; `test/test_reinjection_gate.py`
-pins that per module. `build_message` then
+pins that per module. The flag is also kept in the session map
+(`session_map.COMPACTED_FLAG`) until a turn lands, so a restart or resume before
+then does not lose it: that resume's slim prompt carries the list below too, and
+a fresh start drops the copy. `build_message` then
 re-adds, once:
 
 1. the memory activity index and the `[Memory tools]` line;

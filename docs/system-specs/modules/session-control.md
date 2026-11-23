@@ -419,11 +419,45 @@ after it lands. The result names the outcome: `steered` for an injection,
 
 A harness that can drop a steer it accepted (`steer_needs_loss_recovery`:
 codex, claude, goose, pi and opencode) takes a peer's steer only when
-`agent.peer_steer_loss_recovery` is on; otherwise the steer arm answers
-unavailable and the message queues. With the key on, the peer's steer is held
+`agent.peer_steer_loss_recovery` is on; otherwise the send-time steer arm answers
+unavailable and the gateway holds the message as a pending steer
+(`dashboard/deferred_steer.py`). The stream loop retries it at each tool boundary
+of the same turn; the held attempt skips the key's refusal, marks the steer
+delivered before the injection (`slot._deferred_steer_delivered`), and the turn's
+teardown requeue skips a marked steer. A marked steer the Claude Code client only
+buffered behind an open tool call, then dropped unwritten or had refused
+(`held_steers_unsent`), loses its mark when the turn releases its client: the
+teardown queues it and its receipt reads `queued@<time>`, and a hard stop tells its
+sender it will not run. On the Claude Code and Codex paths it is
+therefore injected at most once and never queued back; on the Goose, request and
+concurrent-prompt (Pi, OpenCode) paths a steer the adapter took just as its turn
+ended is reported False and can run once more from the queue. A turn that ends
+first hands the unmarked held steers to the queue, and the next turn starts in the
+same hand-off. They join the HEAD of the queue, ahead of messages queued meanwhile and
+in send order, as an unconsumed steer does; a held steer that a boundary of a later
+turn finds is queued at the head too. A held steer that a later re-check
+refuses, at a boundary (the gate refuses the sender, or the key resolves to another
+session) or when its turn ends and the queue fallback refuses it, reads
+`refused@<time>`, and its sender gets one `SEND_DISCARD_REFUSED_STEER` notice that
+it was not delivered and will not run; a steer a hard stop discarded first keeps the
+stop's one notice. With the key on, the peer's steer is held
 as the composer's is: it counts as delivered only when its turn ends cleanly,
 and the turn's teardown otherwise requeues it as a queue card that runs as the
 next turn, so it can run twice.
+
+While the key is off, a held peer steer injected into one of those harnesses can
+still be dropped by the harness: its sender is told it may not have run and its
+receipt reads `unconfirmed@<time>`, and the delivered mark
+that stops a second run also stops a retry. A save writes each held steer that
+is not marked delivered into the saved queue (`deferred_steer.saved_queue_entries`)
+as the plain queued peer send the teardown would make of it, at the head in send
+order, so a gateway restart hands it back as that queue card; a marked steer is
+left out, so a restart never runs it twice. The live slot keeps its held list, and
+a hold starts the queue write as a queued send does. Admission
+closes at the start of each turn hand-off, so a steer sent while a turn ends is
+queued for the next turn instead of held. A running target whose client cannot
+steer (`supports_steer` false) queues the steer as a plain send; a target whose
+turn has published no client yet holds it.
 
 Two properties keep the steer arm from being a hole in the queued arm's checks.
 The delivery happens NOW rather than later, which removes the queue's waiting
@@ -793,7 +827,8 @@ and `session_revive` refuse a named folder in another Bot's home
 in a Bot's home the forker does not own (the person's Fork, or `session_fork`
 by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
 is saved with a chat folder there only when it runs on that Bot's store (the
-cron create and update routes refuse it `mate_home_locked` (403) and record the
+cron create and update routes refuse it `mate_home_locked` (403), the `cron_add` /
+`cron_update` tools refuse it the same way, and each records the
 denial in the security event log, the Schedule form offers such a folder only
 for a job that runs as that Bot, and the tab placement re-checks it at run time and records a refusal
 the same way), and the name lookups that adopt an existing
@@ -917,7 +952,9 @@ the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
 so a pick that is unknown, not selectable under governance, not installed, or
 installed after the gateway started is refused with that endpoint's codes
 (`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
-listing the backends that can start), and with no session made. An enabled
+listing the backends that can start), and with no session made. A `kiro`
+pick runs on KAS where a stored Kiro CLI pick would ([harness-parity](harness-parity.md)
+H1). An enabled
 `agent.acp_failover` chain may move it to a later member, and the reply says so
 (`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
 `backend_with_crew`. `model` is judged against the pick (`model_rejected`), an
@@ -935,8 +972,16 @@ reset and compaction successors keep it through `allocation_identity`, and each
 reader that works out a session's harness before it exists (selection
 capabilities, the model checks, slash commands, the app-agent host check, the
 autocompact hint, the warm brief wake, request_server, session transfer) passes
-the same pick. A live session found on another harness at turn start (a hard
-Stop's respawn starts with no identity) is reset onto the pick. The precedence is
+the same pick. A live session found on another harness at turn start
+(`_live_session_off_slot_backend`) is reset onto the pick, and one that runs
+another agent than the turn resolved (its agent twin,
+`_live_session_off_slot_agent`, both in `chat_turn/model_fallback.py`) is reset
+onto that agent: both arm `arm_model_switch_reset`, so an idle live session is
+replaced before the claim and the conversation resumes, while a busy one, or one
+with attached sub-agent runs, serves this turn and the armed retry replaces it
+at the next idle point. The agent twin leaves alone a turn that resolved no agent, a
+live session whose provider names no agent, and a crew member's session, whose
+provider names the template `prepare_runtime` picked. The precedence is
 the gate's: `spawn_run(backend=...)` > this pick > the Bot's own harness pin
 (`agents.<crew>.acp_backend`) > the member-DM route > `agent.acp_backend`. A
 `spawn_run` from such a session with no `backend` of its own, and not selecting
@@ -1330,9 +1375,23 @@ session, and the owner's Conductor while `agent.session_control` is off, see
   `not_creator` with the switch off or on. With the switch on, the giver can take the
   session back by handing it to itself while it still manages the new manager; with
   it off, no fenced caller can.
-- A work-ledger `bind` after a handoff is a separate gap: `_refuse_unowned_worker`
-  compares `_created_by`, so the new manager is refused `worker_not_owned` while the
-  giver can still bind. Tracked in #19103.
+- `bind: true` also moves the right to bind the session to ledger items: the record
+  carries `"bind": true` and `_refuse_unowned_worker` admits only
+  `session_managers.bind_holder`. Only its current holder may pass it (403
+  `not_bind_holder`); a session that conducts moves only under a ledger at least one
+  level above its own (409 `depth_exceeded`, also at the bind). The caller's own open
+  item for it closes `abandoned` on the caller's board unless it waits on a person
+  (an open `ask`, or the Board's `names_person`: a `blocked`/`question` report naming
+  a person-wait reason that no `decide` or steer has answered since), judged again
+  under the board lock in `release_on_handoff`'s `before_write`, so a report that
+  lands during the handoff keeps it open. A bind holds `HANDOFF_LOCK` through its
+  write, and so does a `goal` or `create` that opens the caller's first ledger,
+  whose depth comes from the binding such a bind rewrites; each takes it before
+  any board lock. The depth check reads ledgers by slot key, which names the same
+  ledger as the slot's `effective_session_key` for every slot a handoff admits: a
+  channel-linked target or recipient is refused `linked_session_target` first. A
+  plain handoff, a chain take-back or a hand-back on close writes no flag, so the
+  right returns to the creator.
 - A fenced caller adopting a Bot's DM slot is refused `not_creator`, since no
   fenced caller created it; an unfenced agent in a person's own tab can adopt it.
 
@@ -2388,8 +2447,8 @@ delivery and retains the binding by design (see [session](session.md)), and with
 the predicate in place an owner needs neither it nor an unlink to conduct — from
 the DM or from the tab mirrored to it.
 
-Related fold: the ledger's bind ownership check compares `_created_by` (the
-creator's **slot** key, as `session_create` stamps it) against the conductor
+Related fold: the ledger's bind ownership check compares the bind holder (`_created_by`, the
+creator's **slot** key as `session_create` stamps it, unless a handoff moved it) against the conductor
 **session** key's resolved slot (`caller_slot_key`), because a channel-born
 conductor is keyed `discord:…:genN` while its slot is that key folded to the
 filename charset — a string comparison refused every worker such a conductor
@@ -2971,7 +3030,7 @@ Each crew is read once per pull with `POST api/chat/work-items/pull` (`dashboard
 
 With the switch on, the hub also runs that pull with no model turn on each work-ledger patrol tick (`autonudge_service/firing.py` `_pull_remote_reports`, bound by the gateway to `dashboard/handlers/remote_puller.py` `pull_on_patrol`): at the start of the tick, before the person-wait hold and the probe read the ledger, it pulls the loop's own board once, only when that board holds an open crew-bound item or a retired slot still to close (`work_ledger.board_has_open_remote`) and its cache is not flagged dirty (a dirty board waits for a rebuild). A board with only local items makes no peer call. The pull is cut off at 10 s, so an unreachable crew delays only its own conductor's tick, and a failed pull never fails the tick. A board a read is already pulling is skipped. Nothing pulls between ticks: there is no background task. A filing the crew log refuses is retried for the same peer snapshot (stamp and worker fields) only after 10 minutes (`remote_ingest.UNRECORDED_RETRY_SECS`), on a read too; a changed snapshot is filed at once. A pulled report is filed exactly as on a read, so the hold and the probe gate see a remote `done`, `question`, `blocked` or `reply` on that same tick (its crew-log push may also arm a tick, which pulls again and finds nothing new). The person-wait hold (`probes/work_ledger.py` `person_wait_fingerprint`) applies to a board with a remote item only while every remote item's last pull is fresh (`work_ledger.remote_pull_fresh`: connected, slot list read, no error, at most two patrol intervals old, `work_ledger.REMOTE_PULL_FRESH_SECS`); a stale or failed pull, or the switch off, lets the patrol run.
 
-A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval`, `remote_error` and `remote_reports_skipped` (compact rows too; `null` when the work fold cannot be read). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
+A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval`, `remote_error` and `remote_reports_skipped` (compact rows too; `null` when the work fold cannot be read). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A stored `running` counts only while the record's `crew_state` is `connected` or `connecting` and the last pull that reached the crew is at most `work_ledger.REMOTE_PULL_FRESH_SECS` old (`work_ledger_remote._crew_seen_recently`, the same age bound `remote_pull_fresh` uses). A crew that goes down keeps its last answers, so without this bound a worker last seen running there would never read quiet and not running; with it, the item goes stale. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
 
 ### Wave 5: the hub picks the crew
 
@@ -3013,7 +3072,7 @@ The owning conductor can retire a binding itself: `work_ledger_record action=ret
 
 Only the current binding is read. Ingest pulls only the pair the item holds, so a report a retired worker files later, `done` included, is never applied. The retire drops the slot from the in-memory dispatch record (no peer call), so `send`, `read` and `stop` reach only the current binding and refuse a retired slot without reading the history (`crew_target_retired` when the history names it, else `crew_target_not_dispatched`), and the slot stops counting against its caller's crew-session cap. A retire that does not land puts the slot back for every caller that held it. Evict, write and restore run under the cap lock (`remote_dispatch_routes.cap_lock`), which a `session_create(crew=)` also takes for its cap check and for its record, so the cap never reads a record a retire is still settling. A `session_close(crew=)` of a retired slot is admitted only when the history can be read and holds it. When a retired binding's crew reads `connected` again, the read starts one close of the old slot (its own task, so it never delays the read): a best-effort `PATCH api/chat/slots/{slot}/work-item` with `trust: false` first, so a slot whose close then fails holds no Trust grant, then `DELETE api/chat/slots/{slot}`; a 2xx, or a 404 `slot_not_found`, records `destroy` and the entry reads `destroyed`. A failed close (a timeout, a refusal, a version skew, or a `destroy` that did not record) leaves the entry `retired`, still close-only, and backs off: the first sweep or read past the wait tries again, the wait starting at `remote_ingest.CLOSE_RETRY_SECS` (60 s) and doubling up to `CLOSE_RETRY_MAX_SECS` (1 h). There is no timer of its own, and a crew that is not connected costs no try. The backoff is in memory, so a hub restart tries every slot at once. The owner's `session_close(crew=)` still closes it and records `destroy` too.
 
-Closing a remote item (RFC §5c): after a write that closes a crew-bound item, the record route (`work_ledger_conductor._close_remote_item`, then `remote_ingest.close_remote_item`) records a `retire` on the CLOSED item with reason `owner_closed` or `item_closed` (operation `work_ledger_record.close`; the store admits these two reasons only on a closed item and every other reason only on an open one; the schema never offers them to a conductor), then sends `PATCH trust: false` to the pair the item held, then starts the close (`_schedule_closes`). `owner_closed` means the close ran in a turn that passes the `session_close(crew=)` gate (`agent.session_control` and `authorize_remote_dispatch`, verb `item_close`; any refusal or error reads as not the owner): the slot is deleted as soon as its crew reads connected. Any other reason (`item_closed`, and any reason not in `_CLOSE_AT_ONCE_REASONS`) is closed only when a full slot-list read shows the slot neither running nor waiting on an approval and the peer's `GET .../work-item` says `status: done`, or the list does not hold the slot (`_slot_idle_and_done`); a check that does not pass counts as a failed close and backs off. The entry is the same `retired` history entry a retire leaves, so `close_pending`, the boot and patrol sweep, `holds_retired_slot` and `destroy` all apply, across a hub restart. A wake-turn close writes a `denied` audit row for `item_close` (the gate's own refusal); the close itself is `ok`.
+Closing a remote item (RFC §5c): after a write that closes a crew-bound item, the record route (`work_ledger_conductor._close_remote_item`, then `remote_ingest.close_remote_item`) records a `retire` on the CLOSED item with reason `owner_closed` or `item_closed` (operation `work_ledger_record.close`; the store admits these two reasons only on a closed item and every other reason only on an open one; the schema never offers them to a conductor), then sends `PATCH trust: false` to the pair the item held, then starts the close (`_schedule_closes`). When the retire did not record and the peer did not take that PATCH, no sweep will send it again, so `_resend_revoke` resends it in memory with the failed-close backoff until the peer takes it or `REVOKE_RESEND_SECS` (24 h, the ceiling on a grant's lifetime) passes; a hub restart drops the resend and the grant ends at its TTL. `owner_closed` means the close ran in a turn that passes the `session_close(crew=)` gate (`agent.session_control` and `authorize_remote_dispatch`, verb `item_close`; any refusal or error reads as not the owner): the slot is deleted as soon as its crew reads connected. Any other reason (`item_closed`, and any reason not in `_CLOSE_AT_ONCE_REASONS`) is closed only when a full slot-list read shows the slot neither running nor waiting on an approval and the peer's `GET .../work-item` says `status: done`, or the list does not hold the slot (`_slot_idle_and_done`); a check that does not pass counts as a failed close and backs off. The entry is the same `retired` history entry a retire leaves, so `close_pending`, the boot and patrol sweep, `holds_retired_slot` and `destroy` all apply, across a hub restart. A wake-turn close writes a `denied` audit row for `item_close` (the gate's own refusal); the close itself is `ok`.
 
 The read row of an item with retired bindings adds `redispatch_due` (open and unbound), `retired_crews` and `close_pending` (its retired slots not yet closed), compact rows included. The redispatch is the conductor's own `session_create(work_item=)`, so it needs a turn the owner sent, as every crew create does: a patrol wake shows `redispatch_due` and cannot place. Placement skips every crew in `retired_crews`, and its reply carries `previous_branch`, the retired worker's last pushed branch, for the seed; the conductor names a new branch, so two workers never push to one. The peer half (replacing a closed worker on the same crew, removing an empty `hub:` mailbox list) is wave 8b.
 

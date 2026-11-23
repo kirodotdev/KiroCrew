@@ -150,9 +150,10 @@ export function expectWheelToScrollRow(row: HTMLElement): void {
   expect(fits.defaultPrevented).toBe(false)
 }
 
-export function openAllTabsMenu(): HTMLElement[] {
+/** Open the menu that lists every tab; `triggerTestId` names a strip whose list sits in another menu. */
+export function openAllTabsMenu(triggerTestId = 'all-tabs-trigger'): HTMLElement[] {
   // Radix opens a dropdown on a primary-button pointerdown.
-  act(() => { fireEvent.pointerDown(screen.getByTestId('all-tabs-trigger'), { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+  act(() => { fireEvent.pointerDown(screen.getByTestId(triggerTestId), { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
   return screen.getAllByRole('menuitemradio')
 }
 

@@ -151,7 +151,7 @@ def test_claude_result_line_gives_cost_and_done():
     assert (out.status, out.asks, out.cost, out.cost_unit) == ("done", 0, 0.42, "usd")
 
 
-def test_claude_denials_and_question_tools_are_asks():
+def test_claude_question_tools_are_asks_and_a_denial_is_not():
     text = _stream(
         {
             "type": "assistant",
@@ -167,8 +167,34 @@ def test_claude_denials_and_question_tools_are_asks():
         },
     )
     out = ARMS["claude-code"].parse(0, text)
-    assert out.asks == 2
-    assert [e["kind"] for e in out.ask_events] == ["question", "approval"]
+    # dontAsk refuses WebFetch on the spot and nobody is waited on: not an ask.
+    assert out.asks == 1
+    assert [e["kind"] for e in out.ask_events] == ["question"]
+    assert out.denials == [{"tool": "WebFetch"}]
+
+
+def test_a_run_of_only_denials_has_no_asks():
+    text = _stream(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "total_cost_usd": 0.6,
+            "permission_denials": [{"tool_name": "Bash"}, {"tool_name": "Bash"}],
+        }
+    )
+    out = ARMS["claude-code"].parse(0, text)
+    assert (out.status, out.asks, out.ask_events) == ("done", 0, [])
+    assert out.denials == [{"tool": "Bash"}, {"tool": "Bash"}]
+
+
+def test_a_crew_run_that_left_chats_open_has_no_known_cost():
+    # Cut mid-turn and unable to close its chats: the counted credits are a floor.
+    cut = ARMS["crew-conductor"].parse(
+        1, _crew_json(status="error", credits=0.0, unclosed=["chat-2", "chat-1"])
+    )
+    assert (cut.cost, cut.cost_floor, cut.status) == (None, 0.0, "error")
+    assert ARMS["crew-chat"].parse(0, _crew_json(unclosed=[])).cost == 4.5
 
 
 def test_claude_budget_stop_and_missing_result():

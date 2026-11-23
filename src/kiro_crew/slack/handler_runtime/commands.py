@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         COMPACT_ACCOUNT_CHANGED_TEXT,
         SESSIONS_INCLUDE_ENDED_ARGS,
         STOP_DECLINED_COMPACTING_TEXT,
+        ConfigReadError,
+        ConfigWriteRefused,
         ConversationLog,
         CronService,
         KiroCrewConfig,
@@ -50,6 +52,8 @@ if TYPE_CHECKING:
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
+        config_local_path,
+        config_path,
         consume_stop_declined,
         cron_command_reply,
         decline_stop,
@@ -65,6 +69,8 @@ if TYPE_CHECKING:
         is_yolo_mode,
         logger,
         note_user_stop,
+        overlay_pins,
+        read_merged_config_files,
         redact_credentials,
         redact_exfiltration_urls,
         run_config_write,
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
         slack_title_text,
         spawn_command_reply,
         task_command_reply,
+        update_config_locked,
         yolo_policy_permits,
     )
 
@@ -428,7 +435,41 @@ async def _bang_voice(
         )
         await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
     elif arg == "global":
-        _vc.global_enabled = not _vc.global_enabled
+        written: list[bool] = []
+
+        def _apply(data: dict) -> dict:
+            # Toggled from the file's value under the write lock, so two
+            # overlapping commands flip twice rather than write the same value.
+            vr = data.get("voice_reply")
+            if not isinstance(vr, dict):
+                vr = data["voice_reply"] = {}
+            vr["enabled"] = not bool(vr.get("enabled", False))
+            written.append(vr["enabled"])
+            return data
+
+        # Persist FIRST, as the Voice modal and the dashboard's settings PUT do, so
+        # the file stays the one source the live watcher re-reads and a restart
+        # keeps. A failed write leaves the live flag as it was.
+        try:
+            await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+            logger.warning("Refusing to toggle global voice: %s", exc)
+            await slack.post_message(
+                channel,
+                f"\u274c Voice global unchanged: the config was not saved ({exc}).",
+                reply_ts,
+            )
+            return ""
+        _vc.global_enabled = written[-1]
+        note = ""
+        if overlay_pins("voice_reply", "enabled"):
+            # Saved to config.json, but config.local.json's value is what applies.
+            _vc.global_enabled = bool(
+                read_merged_config_files(config_path(), config_local_path())
+                .get("voice_reply", {})
+                .get("enabled", False)
+            )
+            note = f" (saved {'on' if written[-1] else 'off'} to config.json; config.local.json sets voice_reply.enabled and takes precedence)"
         state = "ON \U0001f50a" if _vc.global_enabled else "OFF \U0001f507"
         sel().log_tool_invocation(
             session_key=session_key,
@@ -438,7 +479,7 @@ async def _bang_voice(
             outcome="voice_global_" + ("on" if _vc.global_enabled else "off"),
             metadata={"user": user_id, "channel": channel},
         )
-        await slack.post_message(channel, f"Voice global: *{state}*", reply_ts)
+        await slack.post_message(channel, f"Voice global: *{state}*{note}", reply_ts)
     elif arg == "engine" and val:
         eng = val.lower()
         if eng not in VALID_ENGINES:
@@ -1330,7 +1371,8 @@ async def _handle_compact_command(
 
             elapsed = time.monotonic() - _t0
             footer_blocks, footer_text = build_timing_footer(elapsed)
-            await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+            if footer_blocks:  # none when slack.show_timing_footer is off
+                await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
         except Exception:
             logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
 

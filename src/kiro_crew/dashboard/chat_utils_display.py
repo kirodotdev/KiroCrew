@@ -361,7 +361,11 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 # aligned is what prevents that.
                 lower = v.lower()
                 safe_scheme = lower.startswith("https://") or lower.startswith("http://")
-                out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
+                # A discovery approval holds for the server it was verified for, so the
+                # gate reads the banner's own server name (stored redacted, which only
+                # makes an unusual name fail closed).
+                server = str(meta.get("server_name") or "")
+                out[k] = v if (safe_scheme and not oauth_url_contains_credential(v, server)) else ""
             else:
                 out[k] = _redact_value(v)
         out.update({k: v for k, v in validated_records.items() if v})

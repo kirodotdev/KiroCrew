@@ -227,7 +227,17 @@ def _atomic_json_write_unguarded(path: Path, data: dict) -> None:
     the Windows rename retry below are exactly what must not be duplicated.
     Private and NOT a general escape hatch -- a new caller of this instead of
     the guarded primitive is how the guard gets bypassed by accident.
+
+    A spec that already holds these exact bytes, as a single-link owner-only
+    file, is left as it is. Every rebuild rewrites ``kirocrew.json``, and the
+    worker records that file's inode in ``agent_model_state.json``, a file each
+    sandboxed spawn pins; a new inode for unchanged bytes made that record, and
+    so the pinned file, change on every rebuild.
     """
+    from kiro_crew.unchanged_file import already_holds  # noqa: PLC0415  kept with the call
+
+    if already_holds(path, (json.dumps(data, indent=2) + "\n").encode("utf-8")):
+        return
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -302,7 +312,10 @@ def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
 
     One lock for the fork/publish endpoints, the agent-detail PATCH, and the
     background fork refresh: a read-modify-writer that skips it can interleave
-    with any of the others and silently revert their write. Sidecar lockfile
+    with any of the others and silently revert their write. ``rebuild_agent_config``
+    reads its base copy before taking it, so under the lock it reads the file again
+    and keeps another writer's edit to a key it did not derive
+    (``_carry_concurrent_spec_edits``). Sidecar lockfile
     (not the spec's own fd) for the same reason update_config_locked uses one:
     atomic replace swaps the inode, so a lock on the spec fd would not
     serialize across the rename.

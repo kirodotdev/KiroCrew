@@ -52,7 +52,7 @@ describe('platform defaults', () => {
   })
 
   it('defaults to hybrid mode at 500ms, key enabled', () => {
-    expect(defaultConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 })
+    expect(defaultConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500, pointerHold: false, pointerHoldMs: 500 })
     expect(HOLD_MS_DEFAULT).toBe(500)
   })
 
@@ -189,9 +189,9 @@ describe('normalizeBinding', () => {
 describe('normalizeConfig', () => {
   it('coerces field by field so one bad value does not reset the rest', () => {
     expect(normalizeConfig({ mode: 'nonsense', binding: { code: 'MetaRight' }, holdMs: 800 }, true))
-      .toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'MetaRight' }, holdMs: 800 })
+      .toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'MetaRight' }, holdMs: 800, pointerHold: false, pointerHoldMs: 500 })
     expect(normalizeConfig({ mode: 'ptt', binding: { code: 'bogus-shape' }, holdMs: 'x' }, true))
-      .toEqual({ enabled: true, mode: 'ptt', binding: { code: 'AltRight' }, holdMs: HOLD_MS_DEFAULT })
+      .toEqual({ enabled: true, mode: 'ptt', binding: { code: 'AltRight' }, holdMs: HOLD_MS_DEFAULT, pointerHold: false, pointerHoldMs: HOLD_MS_DEFAULT })
   })
 
   // The off switch (issue #13078). Only an explicit `false` disables; a missing
@@ -208,6 +208,25 @@ describe('normalizeConfig', () => {
       .toBe(true)
   })
 
+  // The pointer hold is opt-in, the reverse of `enabled`: only an explicit
+  // `true` turns it on, so a config written before the field existed keeps a
+  // press on the message box doing what it always did -- placing the caret.
+  it('reads pointerHold from the stored field, defaulting to off', () => {
+    expect(normalizeConfig({ pointerHold: true }, true).pointerHold).toBe(true)
+    expect(normalizeConfig({ pointerHold: false }, true).pointerHold).toBe(false)
+    expect(normalizeConfig({ mode: 'hybrid' }, true).pointerHold).toBe(false)
+    expect(normalizeConfig({ pointerHold: 'yes' }, true).pointerHold).toBe(false)
+  })
+
+  // The pointer hold has its own cutoff, clamped like the key's and defaulting
+  // the same way when absent or unusable.
+  it('clamps pointerHoldMs into the hold range, defaulting when missing', () => {
+    expect(normalizeConfig({ pointerHoldMs: 700 }, true).pointerHoldMs).toBe(700)
+    expect(normalizeConfig({ pointerHoldMs: 10 }, true).pointerHoldMs).toBe(HOLD_MS_MIN)
+    expect(normalizeConfig({ pointerHoldMs: 'x' }, true).pointerHoldMs).toBe(HOLD_MS_DEFAULT)
+    expect(normalizeConfig({ holdMs: 900 }, true).pointerHoldMs).toBe(HOLD_MS_DEFAULT)
+  })
+
   it('accepts every valid mode', () => {
     for (const mode of ['toggle', 'ptt', 'hybrid'] as const) {
       expect(normalizeConfig({ mode }, true).mode).toBe(mode)
@@ -222,13 +241,13 @@ describe('normalizeConfig', () => {
 
 describe('persistence', () => {
   it('round-trips through localStorage', () => {
-    const cfg = { enabled: true, mode: 'ptt' as const, binding: { code: 'ShiftRight' }, holdMs: 300 }
+    const cfg = { enabled: true, mode: 'ptt' as const, binding: { code: 'ShiftRight' }, holdMs: 300, pointerHold: true, pointerHoldMs: 700 }
     savePttConfig(cfg)
     expect(loadPttConfig(true)).toEqual(cfg)
   })
 
   it('round-trips a disabled config', () => {
-    const cfg = { enabled: false, mode: 'hybrid' as const, binding: { code: 'AltRight' }, holdMs: 500 }
+    const cfg = { enabled: false, mode: 'hybrid' as const, binding: { code: 'AltRight' }, holdMs: 500, pointerHold: false, pointerHoldMs: 500 }
     savePttConfig(cfg)
     expect(loadPttConfig(true)).toEqual(cfg)
   })
@@ -251,7 +270,7 @@ describe('persistence', () => {
   // clamped rather than reset — the user's intent ("shorter") is preserved.
   it('normalizes a stored config written by an older or broken build', () => {
     localStorage.setItem(PTT_STORAGE_KEY, JSON.stringify({ mode: 'hold', holdMs: -5 }))
-    expect(loadPttConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: HOLD_MS_MIN })
+    expect(loadPttConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: HOLD_MS_MIN, pointerHold: false, pointerHoldMs: HOLD_MS_DEFAULT })
   })
 })
 

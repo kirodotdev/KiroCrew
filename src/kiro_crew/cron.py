@@ -414,7 +414,9 @@ async def stop_cron_before_restart(crons: CronService | None) -> None:
         logger.warning("Cron: the stop before the restart failed", exc_info=stop.exception())
 
 
-async def _sleep_out_jitter(jitter: float) -> None:
+async def _sleep_out_jitter(
+    jitter: float, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+) -> None:
     """Wait ``jitter`` seconds before a scheduled run, ending on the wall clock too.
 
     Jitter spreads the WALL-CLOCK fire time. A bare ``asyncio.sleep`` uses
@@ -432,7 +434,7 @@ async def _sleep_out_jitter(jitter: float) -> None:
         remaining = min(wall_deadline - time.time(), mono_deadline - time.monotonic())
         if remaining <= 0:
             return
-        await asyncio.sleep(min(remaining, _JITTER_WALL_SLICE_SECS))
+        await sleep(min(remaining, _JITTER_WALL_SLICE_SECS))
 
 
 # Loop-safety guard.
@@ -816,6 +818,7 @@ class CronService:
     _apply_loop_stall_breaker = _stall_breaker._apply_loop_stall_breaker
     _loop_stall_breaker_verdict = _stall_breaker._loop_stall_breaker_verdict
     _pause_for_loop_stall = _stall_breaker._pause_for_loop_stall
+    _file_cut_run = _stall_breaker._file_cut_run
     # The service's copy of the cron store: ``kiro_crew.cron_service.service.store_sync``.
     list_jobs = _store_sync.list_jobs
     count_enabled_from_disk = _store_sync.count_enabled_from_disk

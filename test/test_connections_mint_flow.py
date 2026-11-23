@@ -15,7 +15,9 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import connections_mint_helpers
 import pytest
@@ -29,7 +31,12 @@ from connections_mint_helpers import (
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew import mcp_grant
-from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
+from kiro_crew.acp.types import (
+    METHOD_MCP_OAUTH_REQUEST,
+    METHOD_MCP_SERVER_INIT_FAILURE,
+    METHOD_MCP_SERVER_INITIALIZED,
+    JsonRpcMessage,
+)
 from kiro_crew.connections import mint
 from kiro_crew.testing.wait import await_until, finished
 
@@ -207,6 +214,63 @@ async def test_validation_bounds_readiness_and_both_commands_with_one_deadline(
         "oauth_url": _AUTHORIZE,
     }
     await mint._dispose_mint(mint._mints["notion"])
+
+
+def _hung_start_client(outcomes: list[str | None]) -> type[_FakeClient]:
+    """A fake client whose start waits until it is cancelled, recording what the cancel stands for."""
+    from kiro_crew.startup_deadline import cancel_outcome
+
+    class _HungStart(_FakeClient):
+        async def ensure_ready(self) -> None:
+            try:
+                await asyncio.Event().wait()  # unblocked only by the deadline
+            except asyncio.CancelledError as exc:
+                outcomes.append(cancel_outcome(exc))
+                raise
+
+    return _HungStart
+
+
+@pytest.mark.asyncio
+async def test_a_validation_start_its_deadline_cuts_is_a_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The startup metric files a start its caller's deadline cut as `timeout` (a
+    # startup fault) and any other cancel as `cancelled`. A zero deadline has run
+    # out by the time the start first waits, so no clock decides the run.
+    monkeypatch.setattr(mint, "_MINT_READY_TIMEOUT_SECONDS", 0)
+    outcomes: list[str | None] = []
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _hung_start_client(outcomes))
+
+    proven = await finished(mint._validate_existing_grant("notion", _URL), "validation")
+
+    assert outcomes == ["timeout"]
+    # The caller still reads an unproven grant, and the validator is disposed.
+    assert proven is False
+    validator = _FakeClient.instances[-1]
+    assert validator.commands == []
+    assert validator.shutdowns == 1
+
+
+@pytest.mark.asyncio
+async def test_a_mint_start_its_ready_deadline_cuts_is_a_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Same rule for the mint's own ready wait: no grant on disk, so the flow
+    # spawns the mint client, and a zero deadline cuts its start.
+    monkeypatch.setattr(mint, "_MINT_READY_TIMEOUT_SECONDS", 0)
+    outcomes: list[str | None] = []
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _hung_start_client(outcomes))
+
+    await finished(mint.start_oauth_mint("notion", _URL), "mint")
+
+    assert outcomes == ["timeout"]
+    # The flow still fails the way a ready timeout always has.
+    view = mint.pending_mint_for("notion")
+    assert view is not None
+    assert view["state"] == "failed"
+    assert view["reason"] == "mint_timeouterror"
+    assert _FakeClient.instances[-1].shutdowns == 1
 
 
 # ── the watcher must not resurrect a disproven pair ──
@@ -439,6 +503,13 @@ async def test_the_revalidation_fallback_is_rate_limited(
     await mint._dispose_mint(entry)
 
 
+def _started_without_challenge(client: _FakeClient) -> None:
+    """Queue what kiro-cli sends for a server that started and asked for no sign-in."""
+    client.frames.append(
+        JsonRpcMessage(method=METHOD_MCP_SERVER_INITIALIZED, params={"serverName": "notion"})
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
     monkeypatch: pytest.MonkeyPatch,
@@ -458,6 +529,7 @@ async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = []  # no challenge on the fresh spawn
+            _started_without_challenge(self)
 
     _FakeClient.command_results["/mcp"] = {
         "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
@@ -471,6 +543,63 @@ async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
     assert view is not None
     assert _state_only(view) == {"state": "failed", "reason": "mint_grant_unproven"}
     assert logged == ["error reason=mint_grant_unproven"]
+
+
+@pytest.mark.parametrize("fresh_spawn", ["fails", "never_reports"])
+@pytest.mark.asyncio
+async def test_a_refuted_grant_whose_fresh_spawn_fails_stays_unproven(
+    monkeypatch: pytest.MonkeyPatch, fresh_spawn: str
+):
+    # A check disproved the stored grant, and the fresh spawn then fails the same
+    # way (or never reports). The card's unproven-grant fence keys on
+    # mint_grant_unproven, so that reason must win over the spawn's own failure.
+    _write_paired_grant_artifacts(_URL)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        mint,
+        "_log_mint_outcome",
+        lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
+    )
+
+    class _RefutedThenFailing(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            if fresh_spawn == "fails":
+                self.frames.append(
+                    JsonRpcMessage(
+                        method=METHOD_MCP_SERVER_INIT_FAILURE,
+                        params={"serverName": "notion", "error": "connection refused"},
+                    )
+                )
+
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    attempts = iter([_FakeClient, _RefutedThenFailing])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+    # A kiro-cli that would say it is signed out is never asked: the reason is set.
+    from kiro_crew import kiro_prerequisite
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            asked.append(True)
+            return True
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_grant_unproven",
+    }
+    assert logged == ["error reason=mint_grant_unproven"]
+    assert asked == []
 
 
 def _async_value(value: bool):
@@ -559,6 +688,7 @@ async def test_a_server_that_never_challenges_is_granted_and_disposed(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = []
+            _started_without_challenge(self)
 
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _NoChallenge)
 
@@ -570,6 +700,50 @@ async def test_a_server_that_never_challenges_is_granted_and_disposed(
 
 
 @pytest.mark.asyncio
+async def test_a_server_that_never_reports_ends_as_a_timeout_not_a_grant(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No stored grant, a live process, and a server that neither asks for sign-in
+    # nor reports ready or failed before the wait ends. Silence is not an open
+    # endpoint, so this must not be recorded as granted.
+    class _Silent(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _Silent)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_timeouterror",
+    }
+
+
+@pytest.mark.parametrize("reported", [False, True])
+@pytest.mark.asyncio
+async def test_the_fake_declared_wait_drains_exactly_when_the_real_one_does(reported: bool):
+    # The fake stands in for AcpClient.wait_for_declared_mcp in every mint test,
+    # so it must drain under the same rule: only while a declared server is unreported.
+    from kiro_crew.acp import client_mcp_array
+
+    fake = _FakeClient()
+    if reported:
+        _started_without_challenge(fake)
+        await fake._drain_notifications()
+    real = SimpleNamespace(
+        _mcp_report=fake.report, _drain_notifications=mock.AsyncMock(return_value=None)
+    )
+    before = fake.drains
+
+    await fake.wait_for_declared_mcp(5.0)
+    await client_mcp_array.wait_for_declared_mcp(real, 5.0)
+
+    assert fake.drains - before == real._drain_notifications.await_count == (0 if reported else 1)
+
+
+@pytest.mark.asyncio
 async def test_a_challenge_for_another_server_is_not_claimed(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -577,12 +751,95 @@ async def test_a_challenge_for_another_server_is_not_claimed(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = [{"serverName": "linear", "oauthUrl": _AUTHORIZE}]
+            _started_without_challenge(self)
 
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _WrongServer)
 
     await mint.start_oauth_mint("notion", _URL)
 
     assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_that_arrives_after_the_init_drain_is_still_served(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Readiness drains init frames for about a second, and a remote server that
+    # discovers and registers a client first (Atlassian) asks for sign-in later.
+    # The mint waits for that challenge: silence is not an open endpoint.
+    class _SlowChallenge(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+
+        async def _drain_notifications(self, **kwargs: Any) -> None:
+            # The challenge arrives only on the drain that waits for the server.
+            if kwargs.get("until_declared"):
+                self.requests.append({"serverName": "notion", "oauthUrl": _AUTHORIZE})
+                self.frames.append(
+                    JsonRpcMessage(
+                        method=METHOD_MCP_OAUTH_REQUEST,
+                        params={"serverName": "notion", "oauthUrl": _AUTHORIZE},
+                    )
+                )
+            await super()._drain_notifications(**kwargs)
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _SlowChallenge)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "waiting",
+        "oauth_url": _AUTHORIZE,
+    }
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_fails_to_start_is_not_reported_granted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A failure report is not an open endpoint: the card must say the mint failed
+    # instead of clearing the wait as if the sign-in were done.
+    class _FailsLate(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.frames.append(
+                JsonRpcMessage(
+                    method=METHOD_MCP_SERVER_INIT_FAILURE,
+                    params={"serverName": "notion", "error": "connection refused"},
+                )
+            )
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FailsLate)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_server_failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_process_that_dies_before_its_server_reports_fails_as_gone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Dies(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.alive = False
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _Dies)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_process_gone",
+    }
 
 
 @pytest.mark.asyncio
@@ -962,7 +1219,7 @@ async def test_a_rejected_url_and_its_retry_are_screened_off_the_event_loop(
     seen: list[int] = []
     verdicts = iter([True, False])
 
-    def _screen(_url: str) -> bool:
+    def _screen(_url: str, _server: str | None = None) -> bool:
         seen.append(threading.get_ident())
         return next(verdicts)
 
@@ -1183,6 +1440,91 @@ async def test_a_missing_kiro_cli_records_its_own_reason(monkeypatch: pytest.Mon
         "state": "failed",
         "reason": "mint_kiro_cli_missing",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("whoami_signed_out", "expected"),
+    [
+        (True, "mint_kiro_cli_signed_out"),
+        (False, "mint_acperror"),
+        (None, "mint_acperror"),
+    ],
+    ids=["whoami-signed-out", "whoami-not-signed-out", "no-registered-service"],
+)
+async def test_a_failed_ready_wait_asks_kiro_cli_whether_it_is_signed_out(
+    monkeypatch: pytest.MonkeyPatch, whoami_signed_out: bool | None, expected: str
+):
+    """``ensure_ready`` raises the mint client's ``AcpError`` with no missing-CLI tag.
+
+    A registered prerequisite service answering True records the signed-out
+    reason; one answering False, or no registered service (the real
+    ``kiro_signed_out_confirmed``), keeps the coarse ``mint_acperror``.
+    """
+    from kiro_crew import kiro_prerequisite
+    from kiro_crew.acp.transport_errors import AcpError
+
+    class _SignedOut(_FakeClient):
+        async def ensure_ready(self) -> None:
+            raise AcpError("ACP process exited (code=1)")
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            assert whoami_signed_out is not None
+            asked.append(whoami_signed_out)
+            return whoami_signed_out
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    if whoami_signed_out is not None:
+        kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _SignedOut)
+
+    await asyncio.wait_for(mint.start_oauth_mint("notion", _URL), timeout=30)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {"state": "failed", "reason": expected}
+    assert asked == ([] if whoami_signed_out is None else [whoami_signed_out])
+
+
+@pytest.mark.asyncio
+async def test_a_server_failure_report_keeps_its_reason_without_asking_kiro_cli(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The server reported, so kiro-cli had started: its sign-in is not asked about."""
+    from kiro_crew import kiro_prerequisite
+
+    class _FailsLate(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.frames.append(
+                JsonRpcMessage(
+                    method=METHOD_MCP_SERVER_INIT_FAILURE,
+                    params={"serverName": "notion", "error": "connection refused"},
+                )
+            )
+
+    asked: list[bool] = []
+
+    class _Service:
+        async def signed_out_confirmed(self) -> bool:
+            asked.append(True)
+            return True
+
+    service = _Service()
+    monkeypatch.setattr(kiro_prerequisite, "_turn_auth_service", None)
+    kiro_prerequisite.register_turn_auth_service(service)  # type: ignore[arg-type]
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FailsLate)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_server_failed",
+    }
+    assert asked == []
 
 
 @pytest.mark.asyncio

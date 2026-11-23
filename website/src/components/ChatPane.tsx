@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, showsAsCrewMode } from '../lib/crewMode'
+import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRootOf, showsAsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
@@ -8,6 +8,10 @@ import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
 import ChatMessageList from '../app-sdk/ChatMessageList'
+import SearchBar from './SearchBar'
+import SearchHighlightContext from '../hooks/SearchHighlightContext'
+import JumpRevealContext from '../hooks/JumpRevealContext'
+import { useChatPaneFind } from '../hooks/useChatPaneFind'
 import { RunInTerminalOriginSlot } from './runInTerminalScope'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
@@ -95,8 +99,10 @@ import { useChatPaneSend } from './useChatPaneSend'
 import { useChatPaneStop, useChatPaneRunSync } from './useChatPaneTurnControl'
 import { useChatPaneContinue } from './useChatPaneContinue'
 import { useChatPaneRenderers, ChatPaneAboveRows } from './ChatPaneTranscript'
+import { useQuoteJump } from '../pages/chat/useQuoteJump'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
+import { platformShortcut } from '../utils/platform'
 
 export type { PaneLeading } from './ChatPaneProps'
 // Side Chat runs the same upload flow under a key of its own.
@@ -115,6 +121,9 @@ export { useChatPaneUploads } from './useChatPaneUploads'
  *  crewmate's last words (about a thousand rows at the older-page size). */
 const CREWMATE_AUTO_WALK_MAX_PAGES = 10
 
+/** The floating find bar's height plus the gap below it (SearchBar, undocked). */
+const FIND_BAR_CLEARANCE_PX = 48
+
 export default function ChatPane({
   slotKey,
   focused,
@@ -129,6 +138,7 @@ export default function ChatPane({
   topInset = 0,
   followContentWidth,
   pushToTalk = false,
+  findInChat = false,
   hideEmptyHint,
   openSideChat,
   leading,
@@ -645,6 +655,10 @@ export default function ChatPane({
   // transcript, so the watch does not drop when the active slot moves away.
   const activePageLoaded = useAppSelector((s) => !s.chat.slotLoading && s.chat.slotSwitchTarget !== slotKey)
   const transcriptLoaded = paneIsActive ? activePageLoaded : warmHasMore !== undefined
+  // A conductor mode root on a conductor that is the default agent keeps its picker
+  // until its first message (a transcript still loading or with older rows counts
+  // as one) and while no turn runs.
+  const panePickerKept = conductorDefaultPicker(paneSlot, defaultAgent) && transcriptLoaded && !paneHasUserMessage && !olderHasMore && !paneSlot?.running
   // A turn this pane sent is watched without a loaded page. Kept after the
   // send is confirmed, which clears the row's `optimistic` mark.
   // Dropped when the pane moves to another slot, as the footer resets per session.
@@ -679,7 +693,7 @@ export default function ChatPane({
   // thinking block expanding) and turn-collapse shrink re-pin too.
 
 
-  const pickerActions = useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD })
+  const pickerActions = useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD, templatesOnly: pickerModels.templatesOnly })
   const { switchError, setSwitchError } = pickerActions
 
   const {
@@ -785,7 +799,26 @@ export default function ChatPane({
   // The slot whose playback the browser blocked, as the crewmate's
   // VoicePlaybackNotice reports it; its replies reveal their action rows.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
-  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
+  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
+  const find = useChatPaneFind({ enabled: findInChat, messages: listMessages, slotKey, displayItemsRef: pinItemsRef, listRef, scrollerRef })
+  // The open find bar floats over the scroller's top edge; the scroller pays
+  // for that strip so the first row and a centred match are not under it.
+  const findBarH = find.search.isOpen ? FIND_BAR_CLEARANCE_PX : 0
+  // A sent quote card lands its row in THIS pane's transcript, through the
+  // pinned prompt's virtualized glide (the row may not be mounted). Exact: the
+  // quoted row itself, never the head of the prompt run above it.
+  const quoteJump = useQuoteJump({
+    messages: listMessages,
+    getDisplayItems,
+    land: (index) => pin.jumpToPinnedPromptInPlace(index, {
+      mountIndex: (i, opts) => listRef.current?.mountIndex(i, opts) ?? false,
+      estimateRowTop: (i) => listRef.current?.estimateRowTop(i) ?? null,
+    }, { exact: true }),
+    resetKey: slotKey,
+    fold: { messages, open: unfold },
+    scrollerEl: () => scrollerRef.current,
+    claimScroll: pin.cancelJumpInPlace,
+  })
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
   // layout, shared measurement): `dockH` is what the scroller pays below its
@@ -903,7 +936,7 @@ export default function ChatPane({
               : <span data-testid="chat-pane-status-caption" className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>
           )}
           {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />
             </button>
           )}
@@ -946,7 +979,17 @@ export default function ChatPane({
             getBoundingClientRect — and the banner with it under a host band
             floating over the pane's top, so the pinned prompt never hides
             under that band. */}
-        <div className="relative z-[2]" style={topInset ? { top: topInset } : undefined}>
+        {find.search.isOpen && (
+          // The bar floats at `top-14` (56px), clear of the Sessions chat's own
+          // title row; here the host band is `topInset` tall, so the wrapper
+          // lifts it to 8px under that band.
+          <div className="relative z-[3]" style={{ top: topInset - 48 }}>
+            <SearchBar term={find.search.term} setTerm={find.search.setTerm} matches={find.search.matches} currentIdx={find.search.currentIdx} next={find.search.next} prev={find.search.prev} close={find.search.close} caseSensitive={find.search.caseSensitive} toggleCaseSensitive={find.search.toggleCaseSensitive} focusNonce={find.search.focusNonce} goTo={find.search.goTo} scopeLimited={olderHasMore} />
+          </div>
+        )}
+        {/* An open find bar takes the strip under the host band, so the
+            banner moves down under the bar instead of hiding beneath it. */}
+        <div className="relative z-[2]" style={topInset + findBarH ? { top: topInset + findBarH } : undefined}>
           <div ref={pin.pinFoldRef} aria-hidden className="h-0" />
           {pinnedState && (
             <div className="absolute top-0 left-0 right-1.5 pointer-events-none">
@@ -979,6 +1022,8 @@ export default function ChatPane({
             TranscriptScrollShell for the style contract it enforces. */}
         <ChatProjectDirCtx.Provider value={paneProjectDir}>
           <RunInTerminalOriginSlot.Provider value={crewmate ? slotKey : null}>
+          <SearchHighlightContext.Provider value={find.highlight}>
+          <JumpRevealContext.Provider value={quoteJump.reveal}>
           <ChatMessageList
             ref={listRef}
             messages={listMessages}
@@ -1000,8 +1045,14 @@ export default function ChatPane({
             // chat: it draws messages only (docs/decisions/2026-10-09), so it
             // has no working steps, and folding would hide the Bot's own words.
             collapseAllSteps={!crewmate && chatConfig.collapseAllSteps}
+            // Always on, whether or not this pane answers ⌘F: the pane always
+            // supplies its own SearchHighlightContext above, and a value that
+            // followed `findInChat` would change every row's root element
+            // type when a side panel takes focus, remounting every row.
+            searchRows
             onQuote={onQuote}
             onQuoteMessage={messageQuote.quoteMessage}
+            onJumpToQuote={quoteJump.onJumpToQuote}
             onAsk={onAsk}
             threads={threads}
             onFileOpen={onFileOpen}
@@ -1021,7 +1072,7 @@ export default function ChatPane({
               // scroller's scroll padding, so a control the keyboard or a
               // `scrollIntoView` brings into view (a card's buttons) lands clear
               // of both bands instead of under the glass.
-              scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: 12 + topInset, scrollPaddingBottom: dockH + DOCK_CLEARANCE_PX },
+              scrollerStyle: { paddingTop: 12 + topInset + findBarH, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: 12 + topInset + findBarH, scrollPaddingBottom: dockH + DOCK_CLEARANCE_PX },
               // handOff off, like the list's own notices (see `handOff` above).
               earlier: pagesActiveSlot
                 ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }
@@ -1101,6 +1152,8 @@ export default function ChatPane({
               ),
             }}
           />
+          </JumpRevealContext.Provider>
+          </SearchHighlightContext.Provider>
           </RunInTerminalOriginSlot.Provider>
         </ChatProjectDirCtx.Provider>
         {/* Composer dock. Floats over the bottom of the transcript scroller
@@ -1179,6 +1232,13 @@ export default function ChatPane({
 
         {/* The composer's notices are kept clear like the composer itself. */}
         <div data-testid="chat-pane-composer-notices" {...GUIDE_KEEP_CLEAR}>
+        {/* Opaque under the warn tint, as the main chat's jump notice is: it
+            floats over the transcript rows passing under the dock. */}
+        {quoteJump.notice && (
+          <div className="mx-4 mt-2 mb-0 rounded-lg bg-bg-elevated animate-rise">
+            <StatusNotice testId="chat-pane-quote-unavailable" message={quoteJump.notice} onDismiss={quoteJump.dismissNotice} />
+          </div>
+        )}
         <StatusNotice
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="chat-pane-upload-hint"
@@ -1387,7 +1447,7 @@ export default function ChatPane({
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
           // A Crew Mode root with a message offers no switch, preview on or off: the raw
           // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
-          onAgentClick={!agentLocked && !showsAsCrewMode(paneSlot)
+          onAgentClick={!agentLocked && (panePickerKept || !showsAsCrewMode(paneSlot))
             && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}

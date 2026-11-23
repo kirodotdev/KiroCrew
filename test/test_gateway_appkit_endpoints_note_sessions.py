@@ -1,9 +1,9 @@
 """Tests for App Kit notes across turns, sessions and cleanup.
 
 Covers a held note owed to the next user turn (never an automatic one), an
-immediate note never following an unbound slot into a foreign session, slot
-cleanup persisting held notes, and the audited save-path drop of a rebound
-note.
+immediate note never following an unbound slot into a foreign session, a
+channel-bound session getting the visible line only, slot cleanup persisting
+held notes, and the audited save-path drop of a rebound note.
 """
 
 from __future__ import annotations
@@ -24,8 +24,9 @@ from kiro_crew.dashboard import chat_handlers, chat_persistence, chat_runner
 from kiro_crew.dashboard.chat import api_chat_slot_note
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import drain_pending_context
-from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.chat_utils import _history_key_for, slot_history_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.testing.clock import ManualClock
 
 
@@ -201,6 +202,49 @@ class TestImmediateNoteSessionBinding:
         assert any(
             mark in (m.get("content") or "") for m in own
         ), "the note was dropped everywhere instead of landing in its own session"
+
+
+class TestNoteOnAChannelBoundSession:
+    """A session linked or mirrored to a channel gets a note's visible line only.
+
+    The channel never shows the note's row, so a reply drawing on its context
+    half would cite a note that audience never saw. The dashboard row is still
+    written, and ``contextSkipped`` tells the caller the half was not seated.
+    """
+
+    @asynccontextmanager
+    async def _make_client(self, state: DashboardState):
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/note", api_chat_slot_note)
+        async with TestClient(TestServer(app)) as c:
+            yield c
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("binding", ["linked thread", "outbound mirror"])
+    async def test_a_channel_bound_session_seats_no_context_half(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding: str
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_chat_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+        if binding == "linked thread":
+            state.sessions.set_slack_link(slot_history_key(slot), "1712345678.9001", "C123")
+        else:
+            state.sessions.set_mirror_link(
+                slot_history_key(slot), ChannelLink("telegram", channel_id="42")
+            )
+
+        note = "Board sync: Review -> Done"
+        async with self._make_client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/note", json={"content": note})
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert (body["appended"], body["contextSkipped"], body["pending"]) == (True, True, 0)
+        assert [m["content"] for m in slot.messages] == [note]
+        assert slot._pending_context == []
 
 
 class TestCleanupPersistsHeldNotes:

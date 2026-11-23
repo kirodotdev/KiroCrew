@@ -178,7 +178,9 @@ async def test_a_security_gate_deny_refuses_before_the_spec_hook_runs(
     tmp_path, runs, sel_rows, monkeypatch
 ):
     async def denies(*_a: Any, **_k: Any) -> ToolHookResult:
-        return ToolHookResult(action=TOOL_DENY, reason="blocked by policy")
+        verdict = ToolHookResult(action=TOOL_DENY, reason="blocked by policy")
+        verdict.tier = "deny-rules"
+        return verdict
 
     monkeypatch.setattr(handler, "run_in_tool_gate_pool", denies)
     _write_spec("guard")
@@ -186,6 +188,8 @@ async def test_a_security_gate_deny_refuses_before_the_spec_hook_runs(
     assert runs == []
     client.reject_tool.assert_awaited_once_with("r1")
     assert _errors(sel_rows) == ["hook_deny"]
+    (call,) = sel_rows.log_tool_invocation.call_args_list
+    assert call.kwargs["metadata"] == {"rule_id": "deny-rules"}
 
 
 @pytest.mark.asyncio

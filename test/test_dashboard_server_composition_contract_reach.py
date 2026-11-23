@@ -831,11 +831,11 @@ _DASHBOARD_BOOT = tuple("""
     load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
-    await_crewmate_prune_settled current_context record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    await_crewmate_prune_settled current_context sel setup_tunnel current_context
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
-    current_context unregister_status_delta_sink stop_hook_reconciler
+    unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""

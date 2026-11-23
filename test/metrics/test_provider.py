@@ -1239,8 +1239,13 @@ class TestResetForTestingWaitsOutInFlightWorker:
 
             monkeypatch.setattr(provider_mod, "_RESET_WAIT_BOUND_SECS", 0.05)
             monkeypatch.setattr(provider_mod, "_RESET_WAIT_POLL_SECS", 0.01)
-            with pytest.raises(RuntimeError, match="in flight"):
+            with pytest.raises(RuntimeError, match="in flight") as raised:
                 provider_mod.reset_for_testing()
+            # The error names the step the worker is held in, not only the flag.
+            message = str(raised.value)
+            assert "'kirocrew-telemetry-consent'" in message
+            assert "in _consent_worker" in message
+            assert "in _stuck_build" in message
         finally:
             release.set()
             # Let the real worker actually finish (its own finally clears the
@@ -1346,3 +1351,52 @@ class TestConfigApplierDoesNotWaitOnTheFlush:
             release.set()
             assert provider_flush.join_all(10)
             reset_for_testing()
+
+
+def test_the_reset_timeout_says_when_no_worker_holds_the_flag(monkeypatch):
+    """A flag set with no live worker is named as such, not as a slow worker.
+
+    A ``Thread.start()`` that raises in ``_schedule_consent_check_locked`` leaves
+    that state; the flag is set here through ``monkeypatch`` (which restores it)
+    to model it. The class above covers the real worker, and forbids clearing the
+    flag from the reset itself.
+    """
+    import kiro_crew.metrics.provider as provider_mod
+
+    reset_for_testing()
+    monkeypatch.setattr(provider_mod, "_check_in_flight", True)
+    monkeypatch.setattr(provider_mod, "_RESET_WAIT_BOUND_SECS", 0)
+    with pytest.raises(RuntimeError, match="in flight") as raised:
+        provider_mod.reset_for_testing()
+    assert "no 'kirocrew-telemetry-consent' thread is alive" in str(raised.value)
+    monkeypatch.setattr(provider_mod, "_check_in_flight", False)
+    reset_for_testing()
+
+
+def test_a_consent_worker_that_cannot_start_leaves_no_flag_behind(monkeypatch):
+    """A ``Thread.start()`` that raises must not leave the in-flight flag set.
+
+    With no worker to clear it, every later due recheck would schedule nothing,
+    so consent is never re-read for the life of the process, and in the suite the
+    next ``reset_for_testing()`` on that worker fails. The refusing ``threading``
+    replaces the provider's own module binding, so no other thread sees it.
+    """
+    import types
+
+    import kiro_crew.metrics.provider as provider_mod
+
+    class _RefusedThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    reset_for_testing()
+    get_recorder()  # the first build is synchronous and starts no worker
+    monkeypatch.setattr(provider_mod, "_CONSENT_RECHECK_SECS", 0.0)
+    monkeypatch.setattr(provider_mod, "threading", types.SimpleNamespace(Thread=_RefusedThread))
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        get_recorder()
+    assert not provider_mod._check_in_flight

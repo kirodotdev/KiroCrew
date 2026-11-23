@@ -92,10 +92,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The no-tools notice row's agent name, redacted before the row is handed to
         # `append_and_surface`; the transcript broadcast is the registered sink.
         "dashboard/agent_no_tools_notice.py",
-        # Pure derivation: `shape_snapshot` takes the redactor as an argument
-        # (`redact`) and applies it to each bound field value before a widget block
-        # reads it; the module emits nothing. The widget routes that serve the
-        # snapshot are the egress.
+        # Pure derivation: `shape_snapshot` runs the page's `page_safe_for` on each
+        # bound field value before a widget block reads it, `redact_via_context` on
+        # each string before the sanitizer seam, and `page_safe_for` again on the
+        # finished body; it returns that body and emits nothing. The widget routes
+        # that serve the snapshot are the egress.
         "dashboard/widget_snapshot.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
@@ -673,6 +674,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle_native_children.py",
         "acp/session_handle_permissions.py",
         "acp/session_handle_turn.py",
+        # Redacts the tool title of the security-event row for a call KAS approved
+        # on its own; the row goes to the security event log, not to an output.
+        "acp/kas_approve_for_me.py",
         "platform/defaults.py",
         "platform/interfaces.py",
         # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel
@@ -1183,6 +1187,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.
         "messaging/attachments.py",
+        # Inbound sheet digest: redacts the text of a user's own uploaded CSV or
+        # TSV before its digest enters the prompt, as the ingestion above does.
+        "acp/sheet_digest.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
         "slack/interactions_modals.py",
@@ -1479,6 +1486,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # via to_dict() — already a registered sink.
         "hooks.py",
         "hook_runtime/script_hooks.py",
+        # Helper, not a boundary: ``hook_tool_input`` redacts each string value of a
+        # tool call's structured params to build the ``tool_input`` of the PreToolUse
+        # stdin payload. The callers that hand that payload to a hook process
+        # (``acp/client_tool_events.py``, ``dashboard/chat_turn/tool_approval.py``,
+        # ``subagent_manager/run_turn.py``, ``task_executor.py``) are already listed,
+        # and the hook process itself is the audience ``script_hooks.py`` serves, so
+        # the helper adds no transport or audience.
+        "hook_runtime/hook_dispatch.py",
         # Helper, not a boundary: `redact_oauth_client_secrets` /
         # `restore_redacted_oauth_client_secrets` are pure functions over an agent
         # spec dict that mask (and, on the write-back, un-mask) a pre-registered

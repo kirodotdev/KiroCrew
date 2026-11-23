@@ -42,8 +42,9 @@ const { NOTICE, NOTICE_FOR_CODE, noticeText } = require("./relay-crew-notice");
 // refused this shell's secret, which rotates per gateway start) backs off.
 const RENEWAL_CODE = Object.freeze({ RELAY_VIEWER_OFF: "NOT_SET_UP", UNAVAILABLE: "UNREACHABLE" });
 
-// Main to the opening dashboard: `{ endpointId, type: "chord", index }` or
-// `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
+// Main to the opening dashboard: `{ endpointId, type: "chord", index }`,
+// `{ endpointId, type: "theme", dark }` (dark: true, false or null),
+// `{ endpointId, type: "loaded" }` or `{ endpointId, type: "closed" }`. preload.js's `onPaneEvent` listens.
 const PANE_EVENT = "relay-crew:pane-event";
 
 // `openPane` puts the Crew in the main window instead of a window of its own
@@ -164,6 +165,8 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
           } catch { /* mid-teardown */ }
         };
         win.onChord((index) => tell({ type: "chord", index }));
+        if (win.onThemeDark) win.onThemeDark((dark) => tell({ type: "theme", dark }));
+        if (win.onLoaded) win.onLoaded(() => tell({ type: "loaded" }));
         win.onClosed(() => tell({ type: "closed" }));
       }
       // Registered once per window, not in wire(): a restart re-wires the same window.
@@ -279,6 +282,15 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
       // restarted, or an open already in flight): no pane exists, so the
       // dashboard must not show a tab for it.
       return pane && res.ok && !windows.get(endpointId)?.dashboard ? { ...res, window: true } : res;
+    },
+    // Load a Crew's pane in the background, for the warm set: only a Crew with no
+    // window, no pane and no open in flight, so it never raises, reloads or
+    // re-mints for a Crew that is already open. Otherwise the same open as a click.
+    async prewarm(endpointId, pane) {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      const existing = windows.get(endpointId);
+      if ((existing && !existing.win.isClosed()) || opening.has(endpointId)) return { ok: false, error: "ALREADY_OPEN" };
+      return once(endpointId, () => openNew(endpointId, pane));
     },
     reload: reloadCrew,
     // An open pane's handle and the dashboard view it was opened from, or null

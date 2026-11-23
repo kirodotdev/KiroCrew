@@ -43,6 +43,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [security.md](security.md) | Sensitive paths, denied commands, credential redaction, the sandbox, and the keystone. |
+| [route-access.md](route-access.md) | The action name and stability tier a gateway route can declare: the route table (empty so far) and the shrink-only baseline of unlabelled routes. |
 | [dashboard-token-auth.md](dashboard-token-auth.md) | Signed, IP-pinned dashboard tokens, session TTLs, and the refresh chain. Owns the mechanism; `security.md` owns the threat model. |
 | [governance.md](governance.md) | The two-level governance model, the scope catalog, and the PreToolUse gate. |
 | [platform-context.md](platform-context.md) | The Composed Platform Providers seam, edition resolution, and signed-plugin admission. |
@@ -133,10 +134,9 @@ agent loads only the one it needs.
 |---|---|
 | [cloud.md](cloud.md) | Cloud connect and remote gateway login. |
 | [connections.md](connections.md) | Third-party account connections: provider registry and tiers, the mint endpoints, grant custody at the kiro-cli boundary, warm-table prewarming, owner-only disconnect, and the L0/L1 launch gates. |
-| [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
+| [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds, and who owns each `ConformanceRun`/`EvidenceReceipt` conformance responsibility (none is enforced on `main` yet). |
 | [connector-github.md](connector-github.md) | The GitHub connector (`W02`): per-operation instance data and the GitHub-specific wire parsing (pagination, rate-limit signals, status/body-to-error-class mapping, capability-signature resolution). |
 | [microsoft-graph-runtime.md](microsoft-graph-runtime.md) | The shared Microsoft Graph runtime base (`W05`): the resource locator (`/me` vs `/users/{id}`, the app-only `/me` refusal, the required Graph resource shapes), request/response payload shaping, and the `@odata.nextLink` pagination variants. Pure logic; defines no vendor-error taxonomy. |
 | [connector-zoom.md](connector-zoom.md) | The Zoom connector's `W11-A` contract-semantics slice: identity/UUID double-encoding, recurrence-occurrence time semantics, per-endpoint pagination, the AI Companion processing tri-state, and error classification plus credential redaction — pure logic, no network/auth/dispatch. |
-| [connector-conformance.md](connector-conformance.md) | The `W00-S4` conformance foundation: which component owns each `ConformanceRun`/`EvidenceReceipt` conformance responsibility, so none is dropped when the slice-unique validation remainder is empty. Records the `evidence_tier` contract-vs-spec item as pending. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `dashboard/handlers_instances.py`, `dashboard/session_transfer.py` and `dashboard/session_transfer_staging.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |

@@ -54,7 +54,12 @@ does this if it provides sign-in for its own sites and
 applies it before the agent's first step and again whenever the browser restarts.
 When you sign in again with your organisation's tool, or change either setting, the
 next page the agent opens picks it up. These cookies last only until the browser
-closes.
+closes. One that expires, or that your organisation's sign-in leaves out,
+is removed from the browser before the next page the agent opens.
+
+If the agent opens a page that sends it to your organisation's sign-in, and your
+organisation's provider can finish that sign-in by itself, the browser finishes it
+in the same tab. The agent sees only the page it ends on, never the sign-in link.
 
 Your own Chrome is never filled this way: it already has your logins, and the
 gateway does not write into your profile. The agent never sees a cookie value: not
@@ -65,10 +70,14 @@ it serves.
 ## What the agent can do to a page
 
 Navigate to a URL, go back, read the page as a structured outline of its
-elements, click (by element or by position, single or double), drag, scroll,
-type, press a key, hover, choose from a dropdown, wait for text or for the page
-to load, read the browser console, take a screenshot (saved as a PNG it can show
-you in the chat), and list or switch its own tabs.
+elements, click (by element or by position, single, double or triple), drag,
+scroll, type, fill a field with real key presses (for forms that ignore typed
+text), press a key (function keys included), send a key event to an element,
+hover, choose from a dropdown, upload files into a file field, wait for text,
+for the page to load, for an element to appear or for its network requests to
+finish, read the browser console, take a screenshot (saved as a PNG it can show
+you in the chat), and list, switch or close its own tabs. Like typing, filling
+never reaches a password field.
 
 A screenshot takes optional arguments: `full` for the whole scrollable page,
 `ref` for one element, `region` (`[x, y, width, height]`, the same pixels a
@@ -125,8 +134,76 @@ of a second for the page to react, and the reads around it are bounded, so a slo
 page costs the report and never the step: the step's own result stands, with a
 `warning`.
 
+**Uploading a file.** The `upload` step puts local files into a file field
+on the page (an `<input type=file>`, shown as `[file]` in the outline), given
+the field's ref and each file's absolute path (or a folder or pattern, below).
+It asks you on its own card in the chat with **Allow** and **Deny** that lists
+every entry, marking a folder or a pattern, whatever else you have trusted and
+even on the default agent. To skip that card on one site, trust reading,
+clicking, typing and uploading there from the **Trust** menu of an approval
+card, which appears when your agent asks before each step (see "Trust one site"
+below); uploads there then run without a card while the tab stays on that site,
+except a file in a folder the strict sandbox hides (such as `~/.config/gh` or
+`~/.kube`), which still asks. The field must be shown and enabled, and each
+file must be an ordinary file (not a link), at most 25 MiB, outside
+the protected locations the agent can never read (credential folders, Kiro
+Crew's own keys and policy). The browser gets a copy taken at the moment the
+step was checked, kept in a folder only Kiro Crew can read, so the page sees the
+file's own name and the bytes that were checked. The security log records the
+path and size, never the content. A field that takes several files
+(`multiple`) can get up to 10 in one step, 25 MiB in all; each file is checked the
+same way, and two files with the same name are refused.
+
+The step also takes a folder or a pattern. A folder (such as `~/Pictures/trip`)
+sends every ordinary file inside it, keeping its sub-folders, to a drop zone
+(a field that picks a folder cannot be filled from one yet; give a pattern
+such as `<folder>/*` instead); hidden files and folders (names starting with
+a dot) and links inside are skipped, never followed. A
+pattern such as `~/Pictures/*.png` sends the files it matches, as if each were
+listed. Either way one step is at most 100 files and 25 MiB, and a protected
+file anywhere inside stops the whole step. For a page with no file field, the
+agent can ask for the file picker a button opens (`via: chooser`: it presses
+the button and fills the picker, which you never see) or drop the files on a
+drop zone (`via: drop`), naming either by its ref or, for a zone the outline
+gives no ref, by its position on the page. A folder goes onto a drop zone, not
+into a file field or through a file picker a button opens.
+
+**Scripts, DevTools commands and plain fetches.** When no step above fits, the
+agent can run the browser engine's own three tools: `js` runs a piece of
+JavaScript in its tab and returns the value, `cdp` sends one Chrome DevTools
+Protocol command to its tab and returns the answer, and `http_get` fetches a
+public web address as plain HTTP, without the browser's cookies, and returns the
+page (a redirect comes back as its new address, which takes another step). Each one asks you every time, on its own card in the chat with
+**Allow** and **Deny**, whatever you have trusted (a site, all tools, or
+auto-approve) and even on the default agent, which runs other browser steps
+without asking. One Allow runs that one step. With no dashboard window open to
+answer it, the step is not run. The card says what the step can do:
+`cdp` can read every site's cookies and control every tab. They work only on the agent's own tabs: naming one of your tabs is
+refused, and a DevTools command that would hand the browser a file on your computer is
+refused too (use `upload`). `iframe_target` finds an embedded frame from another site inside the
+agent's tab, so `js` can run in it. The security log records which one ran, the DevTools command's name or
+the fetched address without its query, and never the script, the values sent or
+what came back. The answer is redacted like page text and cut at 18,000
+characters. A DevTools command can still do anything the protocol allows in the
+whole browser, such as read every site's cookies or close the browser, so only
+approve one when you would trust the agent with your browser itself.
+
 It **never types a password**. A password field is refused, and the live view
 masks one, so a sign-in is always your step through takeover.
+
+**Trust one site instead of every tool.** The default agent runs browser steps
+without asking. When your agent asks before each one, there is more than
+"Trust all tools". Under **Trust** on that card you can trust the browser on the site the
+step is on (its host name, such as `www.example.com`), for this session. A
+reading step (open a page, read it, take a
+screenshot) offers "Trust reading pages on" that site. A clicking, typing or
+upload step offers "Trust reading, clicking, typing and uploading on" it, which
+also covers reading. The
+agent is asked again for any other site, when it asks you a question, when it
+runs a series of steps on its own, for closing a tab, for `js`,
+`cdp` and `http_get`, and when the page has moved to another site since you
+trusted it. "Trust all tools
+for this session" is still there when you want it.
 
 Reading a page it can already reach is cheaper than driving it, so a request that
 only needs the text of a public page may be answered without the browser at all.
@@ -141,7 +218,12 @@ planes live, this dashboard among them, so driving one would let the agent reach
 an interface it is not supposed to operate. Only public HTTP(S) targets open,
 plus the exact `host:port` origins you list under **Settings → Browser → Local
 preview origins** (a dev server you want it to check, say). The dashboard's own
-port is refused even when listed.
+port is refused even when listed, and so is every other non-loopback origin
+(scheme, host and port) the gateway trusts as itself at the time, such as its
+`dashboard.url` (and that host on the dashboard's port), a connected tunnel, its
+tailnet name or a `KIROCREW_CORS_ORIGINS` entry. An address that reaches the
+dashboard without being one of those (a private DNS alias, say) is not
+recognised.
 
 The gate does not resolve DNS names. A hostname that later resolves to a private
 address can therefore pass this check, so a successful navigation is not proof
@@ -189,14 +271,16 @@ then shows "Fast mode: N moves · rate", a bar for how much of its step or time
 budget it has used, and, when it stops, why. Take over stops it at the next
 move. Its many steps fold to the last few in the step list.
 
-**Settings → Browser → Live view in chat** turns the view off, caps the frame
-rate, picks a quality, and controls the password mask (on by default).
+**Settings → Browser → Show the live view in chat** turns the view off; under
+**More**, **Quality** and **Max frame rate** set the picture. Password boxes are
+always masked in the live view: `browser.live.mask_passwords` has no control on
+the page and stays on unless set with `kirocrew config set`.
 
 ## Preview tab
 
 The side panel keeps one browser surface of its own: the **Preview** tab, for a
 local dev server the agent started for you. It opens only the origins listed
-under **Local preview origins**, and the agent does not drive it; an outside URL
+under **Local addresses the Preview tab can open** (Settings → Browser → More), and the agent does not drive it; an outside URL
 there answers "Open this in your Chrome, or ask Kiro". That list is also the only
 way the agent's `browser` tool may open a loopback address, so an origin listed for
 the tab is open to the agent's browser too. Once the chat has browsed,
@@ -206,14 +290,12 @@ chat.
 
 ## Settings → Browser
 
-| Section | What it holds |
+| Part | What it holds |
 |---|---|
-| Browser in use | which browser is connected, its state, the fallback order, Test, Disconnect |
-| Engine | the browser engine version; Kiro's Chromium version, Redownload |
-| Privacy | no usage data leaves the machine and no cloud browser is used (not configurable) |
-| Live view in chat | show the live view, quality, maximum frame rate, mask password fields |
-| Local preview | the Preview tab's origins |
-| Advanced | pick a browser by hand: automatic, your Chrome, Kiro's Chromium, headless |
+| Status card | which browser is connected and its state, Test, Disconnect |
+| Main rows | **Which browser** (Automatic, Your Chrome, Kiro's Chromium), **Browser isolation** (shared, or isolated per chat), **Show the live view in chat**, and **Use <provider> sign-in** when your edition has a sign-in provider |
+| **More** (collapsed) | **Quality**, **Max frame rate**, **Local addresses the Preview tab can open**, **Sign-in sites** (with a sign-in provider), **Engine** (versions, Download or Redownload), **Run with no window** |
+| Footer | nothing is uploaded; usage data and the cloud browser are off (not configurable) |
 
 The first visit walks through three steps (install the engine, connect your
 Chrome, try it); **Skip** uses Kiro's own Chromium instead.

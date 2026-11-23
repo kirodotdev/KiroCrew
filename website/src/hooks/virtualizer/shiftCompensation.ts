@@ -81,6 +81,9 @@ export interface ShiftCapture {
   shiftInsertedRef: Ref<number>
   prependPreScrollTopRef: Ref<number>
   prependNetRef: Ref<number>
+  /** Where the previous first row sits after the landing, or -1 when its
+   *  identity did not survive; see prependFirstShiftRef in useShiftCapture. */
+  prependFirstShiftRef: Ref<number>
   /** Set when the host re-based the window in the capture render itself, so
    *  part 1 must not shift it a second time. */
   rebasedInRenderRef: Ref<boolean>
@@ -285,6 +288,11 @@ export function useShiftCapture<T>(ctx: {
    *  path re-bases by the DISPLACEMENT in prependCountRef instead, which
    *  equals the net only for a pure front insert. */
   const prependNetRef = useRef(0)
+  /** The landing's displacement of the rows below the previous first row:
+   *  that row's new index, or -1 when its identity did not survive. Part 1's
+   *  arithmetic fallback moves a retained range by this rather than by the net
+   *  count, which also counts growth at the live tail in the same render. */
+  const prependFirstShiftRef = useRef(-1)
   /** Keys of rows that LEFT the list in this render, handed to the height owner,
    *  which drains them later in this same render (see useHeightOwner). */
   const retiredKeysRef = useRef<string[] | null>(null)
@@ -363,6 +371,8 @@ export function useShiftCapture<T>(ctx: {
     // of a native correction DOUBLES the compensation.
     const inserted = itemCount - prependPrev.count
     prependNetRef.current = inserted
+    const prevFirst = prependPrev.items[0]
+    prependFirstShiftRef.current = prevFirst === undefined ? -1 : (newIndexById.get(idOfPrev(prevFirst, 0)) ?? -1)
     prependPreScrollTopRef.current = prependEl ? prependEl.scrollTop : -1
     if (prependAnchor) {
       prependShift = newIndexById.get(prependAnchor.key)! - prependAnchor.index
@@ -782,6 +792,7 @@ export function useShiftCapture<T>(ctx: {
     shiftInsertedRef,
     prependPreScrollTopRef,
     prependNetRef,
+    prependFirstShiftRef,
     heightAnchorPendingRef,
     spliceCommit,
     retiredKeysRef,
@@ -812,6 +823,9 @@ export function useShiftCompensation<T>(ctx: {
   itemsRef: Ref<T[]>
   anchorIdOf: (item: T, index: number) => string
   setWindowRange: SetWindowRange
+  /** Moves a host's retained range (a native selection's rows) by the
+   *  displacement part 1 re-based the window with; see WindowState. */
+  shiftRetainedRange: (delta: number) => void
   shift: ShiftCapture
   follow: Pick<FollowState, 'stickRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'prePaintRepin'>
@@ -820,10 +834,11 @@ export function useShiftCompensation<T>(ctx: {
 }): ShiftCompensation {
   const {
     itemCount, windowRange, heightCommit, offsetIndex, scrollerRef, elIndexRef, itemsRef, anchorIdOf, setWindowRange,
+    shiftRetainedRange,
   } = ctx
   const {
     shiftAnchorRef, shiftStageRef, prependCountRef, shiftInsertedRef, prependPreScrollTopRef, prependNetRef,
-    heightAnchorPendingRef, spliceCommit, captureAnchorCands, rebasedInRenderRef,
+    prependFirstShiftRef, heightAnchorPendingRef, spliceCommit, captureAnchorCands, rebasedInRenderRef,
   } = ctx.shift
   const { stickRef, writeScrollTop } = ctx.follow
   const { prePaintRepin } = ctx.pinning
@@ -881,6 +896,8 @@ export function useShiftCompensation<T>(ctx: {
     const armed = shiftStageRef.current === 'awaiting-rebase'
     const net = prependNetRef.current
     prependNetRef.current = 0
+    const firstShift = prependFirstShiftRef.current
+    prependFirstShiftRef.current = -1
     if (!armed && net <= 0) return
     // A reader landing an older page: every window write until the stages
     // finish mounts the rows above them a few per frame (LANDING_LEADING_STEPS),
@@ -891,6 +908,11 @@ export function useShiftCompensation<T>(ctx: {
     prependCountRef.current = 0
     const rebasedInRender = rebasedInRenderRef.current
     rebasedInRenderRef.current = false
+    // The retained range names rows, so it moves by how far this landing moved
+    // them: the capture render's displacement here, the previous first row's
+    // in the arithmetic fallback below. Moved at COMMIT, like the mirrors: a
+    // render React discards has not renumbered anything.
+    if (rebasedInRender) shiftRetainedRange(shift)
     const el = scrollerRef.current
     // Every exit from 'awaiting-rebase' clears the slot: an anchor left in that
     // stage is one part 2 never consumes.
@@ -908,10 +930,15 @@ export function useShiftCompensation<T>(ctx: {
         // lurch). Same-commit pre-paint: rebase the window so mounted rows
         // keep their identity, then advance scrollTop by the block just
         // inserted above the reader.
-        if (!rebasedInRender) setWindowRange((r) => ({
-          start: Math.min(itemCount, r.start + net),
-          end: Math.min(itemCount, r.end + net),
-        }))
+        if (!rebasedInRender) {
+          // The net count also counts growth at the live tail in this render;
+          // it stands in only when the previous first row did not survive.
+          shiftRetainedRange(firstShift >= 0 ? firstShift : net)
+          setWindowRange((r) => ({
+            start: Math.min(itemCount, r.start + net),
+            end: Math.min(itemCount, r.end + net),
+          }))
+        }
         let insertedPx = 0
         for (let i = 0; i < net; i++) insertedPx += offsetIndex.getHeight(i)
         // Reading scrollTop forces layout, which is also when native scroll

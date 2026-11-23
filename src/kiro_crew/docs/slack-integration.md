@@ -15,7 +15,7 @@ Each channel can have a different activation mode:
 | `mention` | Only respond when @mentioned; continue in thread replies | Group channels |
 | `observe` | Passively record messages; respond only when @mentioned (full context) | — |
 | `off` | Ignore all messages | — |
-| `review` | Require explicit activation before replying to each message | — |
+| `review` | Draft each reply and show it to the owner as a private draft to send or edit, instead of posting it | — |
 
 Set per-channel: `!channel always` / `!channel mention` / `!channel observe` / `!channel review` / `!channel off`
 
@@ -42,6 +42,10 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
 `slack.allowed_users` in config has no effect.
+
+The `!` commands still work. `!yolo`, `!voice`, `!agent`, `!ta`, `!dashboard` and
+`!restart` are deprecated in favour of their `/kirocrew` slash commands below, and
+each use posts a short note naming the slash form.
 
 ## Commands for All Allowed Users
 
@@ -140,6 +144,10 @@ With `slack.reactions_enabled` on, where Slack shows the bot's native thread sta
 while it is answered, removed when the reply lands (the reply is the done signal).
 A failed turn gets 😱.
 
+After each reply a small "Finished in 23s · ctx 8%" line shows how long the turn
+took and how full the context is. Set `slack.show_timing_footer` to `false` to hide
+it from the next reply on; choice buttons and the Link to Dashboard button still post.
+
 ## File attachments
 
 Slack ingests attachments on incoming messages and can upload local image references from completed replies, including a scheduled cron's result posted to Slack: an `![alt](/abs/path.png)` the reply embeds is uploaded as a native image into the same thread, limited to files inside the session's workspace. Outbound uploads are limited to 10 files, 10 MiB per file, and 25 MiB total per reply. A reference that cannot be sent is named in a short note in the thread rather than dropped.
@@ -163,6 +171,14 @@ there, each top-level DM message still starts its own thread session.
 
 Off by default, because turning it on routes your next DM to a different session
 than the previous one. Existing threads keep working either way.
+
+A button on the bot's Home tab whose `action_id` starts with `options_choice_`
+followed by a name rather than a bare number and does not contain `_done_`, and
+whose `value` starts with `action::`, starts a new thread in your DM with the
+bot, with the button's label as its first message. Such a turn does not join the
+DM's one session when `slack.dm_single_session` is on, and `!stop` or Slack's Stop
+button in its thread still stops it. A Home tab button is never marked as clicked,
+so each click starts another thread.
 
 ## Auto-connect new dashboard sessions
 
@@ -331,7 +347,11 @@ bot posts publicly.
 ## Setting Up Your Slack App
 
 Kiro Crew connects to Slack as a Socket Mode app that you create and install in
-your own workspace.
+your own workspace. The dashboard's **Settings → Messaging Channels → Slack →
+Setup wizard** walks the same steps one screen at a time, from the generated
+manifest to a test message, with no restart; see
+[the Slack setup guide](../../../docs/guides/slack-setup.md#the-setup-wizard-in-settings).
+The steps below are the manual path.
 
 1. **Create a Slack app** at https://api.slack.com/apps and enable **Socket Mode**. Generate an app-level token (`xapp-`) with the `connections:write` scope.
 2. **Add a bot user** with these Bot Token Scopes:
@@ -342,7 +362,8 @@ your own workspace.
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
    `mpim:history`, `mpim:read`, `search:read`, and `users:read`. The gateway
-   does not consume this `xoxp-...` token.
+   does not consume this `xoxp-...` token. **Slack tools for your agents**
+   (`slack.slack_mcp`, below) replaces this list in the generated manifest.
 4. **Subscribe to bot events**: `message.im`, `message.channels`,
    `message.groups`, `app_mention`, `app_home_opened`, `file_change`, and
    `member_joined_channel`. Install or reinstall the app to grant the scopes and
@@ -375,10 +396,10 @@ things about it are worth knowing before you use it:
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
 
-## Slack Code: agent sessions and code channels
+## Slack Code: agent sessions, code channels and Slack tools
 
-Two switches in the Slack channel view's **Slack Code** section, each off by default and
-applied without a restart. A switch that is on runs only once your installed Slack app can use the
+Three switches in the Slack channel view's **Slack Code** section, each off by default and
+applied without a restart. Agent sessions and code channels run only once your installed Slack app can use the
 feature: its permissions (read from Slack each time the gateway connects) include the
 feature's scope, and Slack has not refused it for your workspace. Until then Slack works
 exactly as with the switch off, and the page says why under the switch.
@@ -404,9 +425,9 @@ exactly as with the switch off, and the page says why under the switch.
   and their sub-agents, and says how many it stopped and how many it could not stop. A
   session on the board that the channel's agent did not start as a helper (a chat
   filed in the channel's folder, for one) is not stopped; the reply says how many
-  such sessions still run. Stop does not hold them yet: a message
+  such sessions still run. Stop does not hold them: a message
   queued for a stopped helper, its own timer or patrol, or the channel's agent can
-  start it again. Keeping them stopped until someone writes is a follow-up change. On
+  start it again. On
   the board, a task waiting on you links to its chat. A code channel adds no reactions to your
   messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
   the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
@@ -446,6 +467,37 @@ exactly as with the switch off, and the page says why under the switch.
   `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
   lets the work board pin itself in its channel). Your workspace must have
   Slack code channels enabled.
+- **Slack tools for your agents** (`slack.slack_mcp`) lets the same Slack app also serve
+  Slack's MCP server (`https://mcp.slack.com/mcp`), so each person can connect their agents
+  to Slack as themselves. It adds `settings.is_mcp_enabled: true`,
+  `oauth_config.pkce_enabled: true` and the redirect URL `http://localhost:48106/callback`,
+  and replaces the manifest's user scopes with the 18 read-only ones Slack's MCP server
+  needs (`search:read.public`, `.private`, `.mpim`, `.im`, `.files`,
+  `.users`; `channels:`, `groups:`, `mpim:` and `im:history` and `:read`; `users:read`,
+  `files:read`, `canvases:read`, `lists:read`), with no write scope. The older
+  `search:read` leaves the manifest; scopes an installed app was already granted stay on
+  it until the app is reinstalled. Off, the manifest is unchanged. The gateway runs
+  nothing for it, so the page shows no capability
+  line. The page shows the switch only while Connections offers a Slack card (the card
+  is what uses these lines; the Connections gallery must be on), or while the switch is
+  on, with a note, so it can be turned off. The switch itself only changes the generated
+  manifest and can be turned off again; saving that manifest in Slack is the step that
+  cannot be undone. Before you save it in Slack:
+  - saving the manifest in Slack turns PKCE on, and only Slack support can turn it off;
+  - the app must stay internal: Slack blocks MCP for a publicly distributed app that is not
+    listed in the Slack Marketplace;
+  - each person still connects on their own: on the Slack card under **Settings →
+    Connections** they save this app's Client ID and Client Secret, then select
+    **Connect** (see `docs/guides/oauth-app-registration/slack.md`). The card offers
+    **Connect** once the Crew-owned sign-in preview is on and chats run on Kiro Agent;
+  - on a PKCE app Slack expires refresh tokens 30 days after sign-in, so each person
+    reconnects about once a month.
+
+  One app serves both: the Slack card's sign-in asks only for user scopes, which is all a
+  PKCE `localhost` sign-in may ask for, so the app keeps its bot scopes and Install to
+  Workspace still issues the bot token. That guide also registers a separate app for the
+  MCP side only, and that app can leave its Bot Token Scopes empty; never remove them from
+  an app the bot uses.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
 restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of
@@ -501,7 +553,8 @@ report the app's scopes: select **Check again** first, and open the update steps
 copy the manifest, open the app's **App Manifest** page (the panel links it), replace the
 YAML, save, reinstall the app when Slack asks, then select **Check again**: the gateway
 picks up the new permissions at once. Slack does not report event subscriptions, so the
-check covers scopes only. If Slack refuses a feature at runtime (`feature_disabled`,
+check covers scopes only. It does not report an app's user scopes or settings to the bot
+token either, so the panel lists the Slack tools switch's lines without checking them. If Slack refuses a feature at runtime (`feature_disabled`,
 `missing_scope`), Kiro Crew posts one notification, keeps Slack working as before and
 retries after the next reconnect.
 

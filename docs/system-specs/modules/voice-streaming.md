@@ -164,9 +164,11 @@ reports blocked playback, the crewmate's replies reveal their action rows, as
 the Sessions chat's do. At `chat_done` with no streaming row, the tail falls
 back only to an assistant row of the turn that ended (`replyOfLastTurn` stops
 at the turn's opener), so a turn that failed before any reply text reads
-nothing aloud instead of an earlier reply. In a crewmate thread that row must
-also be one the chat draws as speech (`isCrewmateSpeech`), so a status row it
-hides, such as a compaction notice, is never read aloud.
+nothing aloud instead of an earlier reply. In a Sessions chat that row must
+also be one the transcript draws (`isHiddenReplyAt`), so an invisible-only or
+policy-block steering-only row cannot displace the visible reply above it; in a
+crewmate thread it must be one the chat draws as speech (`isCrewmateSpeech`),
+so a status row it hides, such as a compaction notice, is never read aloud.
 A crewmate reply's More menu offers the same Read aloud as a Sessions reply
 (`website/src/pages/chat/speakReply.ts`, wired by `ChatPaneTranscript` for a
 crewmate pane only).
@@ -395,7 +397,14 @@ the Web Speech queue, and its final `setVoicePlaying(false)` clears
 
 Configuration is stored under `voice_reply` in the Crew configuration file.
 `slack.handler.load_voice_reply_config()` (defined in `slack/handler_runtime/voice.py`)
-loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`. A
+loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`, at
+boot, and the live config watcher re-applies it on every change under `voice_reply`
+in config.json (`apply_voice_reply_change`, with config.local.json merged over it).
+The watcher fingerprints both files, but for a section config.json has, the live
+view keeps config.json's own value (`base_shadow`), so an edit to
+config.local.json alone applies at restart; when config.json has no
+`voice_reply` section, the overlay's section is carried as an unknown section
+(`_extra_sections`) and its edit applies live (see [config](config.md)). A
 `PUT /api/voice/config` validates the whole patch first, then persists it as a
 locked delta read-modify-write (`run_config_write` → `update_config_locked`)
 that sets only the named keys inside `voice_reply`, so voice settings owned by
@@ -568,6 +577,11 @@ surface can show:
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
+`!voice global` toggles `voice_reply.enabled` in config.json under the config write
+lock first and changes the live flag only after the write lands; when
+config.local.json sets that key, the overlay's value stays live and the reply says
+so. `!voice off` clears the thread's own setting and does not silence a thread
+while `voice_reply.enabled` is `true`.
 Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
 once the answer is out: the default transport path
 (`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and

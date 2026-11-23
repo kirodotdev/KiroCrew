@@ -644,8 +644,9 @@ def _emit_turn_histogram(
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
-    ``owning_app`` is the session's app for ``kirocrew.app.run_time``: the live
-    provider's ``owning_app``, else the row's ``app`` stamp.
+    ``owning_app`` is the session's app for ``kirocrew.app.run_time`` and
+    ``kirocrew.app.credits``: the live provider's ``owning_app``, else the row's
+    ``app`` stamp.
 
     ``kirocrew.turn.duration`` plus the turn's usage family
     (``kirocrew.turn.tokens`` and whichever of ``kirocrew.turn.credits`` /
@@ -697,6 +698,7 @@ def _emit_turn_histogram(
         model=model,
         provider=provider,
         harness=harness,
+        owning_app=owning_app,
     )
 
 

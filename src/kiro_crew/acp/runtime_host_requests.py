@@ -519,9 +519,10 @@ def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> 
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now. Sends ``_kiro/mcp/resetServer`` with ``startOAuth``
-    false in the background; the server's next ``_kiro/mcp/status`` entry
-    reports whether it connected. The host that takes this request is the
+    exist now, or that lost its connection mid-session. Sends
+    ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
+    the server's next ``_kiro/mcp/status`` entry reports whether it
+    connected. The host that takes this request is the
     one that sends consent URLs, so the same capability gates both.
 
     Returns False, starting nothing, on a host without the request, when
@@ -615,12 +616,13 @@ async def _answer_secret_request(
     """Answer one ``_kiro/secret/*`` request from *server*, off the reader loop.
 
     A refusal goes back as a JSON-RPC error whose message names only the
-    category; the request's value is never logged.
+    category; the request's value is never logged. It is logged at WARNING: a
+    refused request fails the engine's MCP sign-in.
     """
     try:
         result = await server.answer(method, params)
     except kas_secret_storage.SecretStorageRefused as exc:
-        logger.info("MCP grant store request refused: %s", exc)
+        logger.warning("MCP grant store request refused: %s", exc)
         try:
             await self.send_error(request_id, _MCP_SECRET_REFUSED, str(exc))
         except AcpRuntimeDead:

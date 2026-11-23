@@ -39,7 +39,12 @@ from kiro_crew.mcp_gateway.admission import (
 )
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, non_secret_env
+from kiro_crew.mcp_gateway.hashing import (
+    hash_command,
+    hash_effective_env,
+    hash_launch_env,
+    non_secret_env,
+)
 from kiro_crew.mcp_gateway.manager import (
     BACKEND_WORK_DIR_ENV,
     _scrub_sensitive_env,
@@ -433,8 +438,9 @@ def _approval_env_identity(pool_key: PoolKey) -> str:
     """The full-env approval identity of the launch behind ``pool_key``.
 
     EXACTLY ONE coherent sidecar yields the complete declared env's fingerprint,
-    the identity the approval stores. In every other case the PoolKey hash
-    stands, which matches an approval only when that approval's env carried no
+    the identity the approval stores. In every other case the PoolKey's
+    non-secret env stands, hashed as approvals are (the gateway's ``PATH`` part
+    folded), which matches an approval only when that approval's env carried no
     secret-prefixed key.
 
     Ambiguity is counted over DISTINCT CONTENTS, not over files, and the
@@ -466,6 +472,12 @@ def _approval_env_identity(pool_key: PoolKey) -> str:
         # The verified contents, not a re-read of the file they came from: a
         # second read could pick up a replacement that no hash ever covered.
         return launch_approval.env_fingerprint(coherent[0])
+    if coherent:
+        # Every coherent sidecar projects to the PoolKey hash; hashing that
+        # projection the way approvals are hashed (the gateway's PATH part
+        # folded) keeps it matching a secret-free approval, as the PoolKey
+        # hash did before the fold.
+        return hash_launch_env(non_secret_env(coherent[0], identity_keys=identity_keys))
     return pool_key.effective_env_hash
 
 

@@ -5,7 +5,7 @@ import { appPathname, withBase } from '../lib/basePath'
  * A side-panel file in its own window (`/popout/file?path=…&sid=…`), so it is
  * not held to the panel's width. The window reads and saves the file itself
  * (`pages/FilePopoutFrame.tsx`), so of the shared controller this uses the
- * opener (the window size, the refusal in a desktop crew pane, the
+ * opener (the window size, the hub-framed window in a desktop crew pane, the
  * blocked-pop-up notice, focusing a window this one already opened for the
  * same file), the hand-off of a navigation to the main dashboard, and closing
  * the window itself.

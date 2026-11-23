@@ -109,7 +109,10 @@ else's already-green pull request.
 Limits: 32 open items per conductor (an item in a terminal state -- accepted,
 rejected, abandoned -- does not count toward the open cap). There is no limit on
 how many items a board creates over its life. Every item stays on the board, listed
-and readable. The crew log's fold, which feeds a crew's status and the pipeline
+and readable. In a conductor mode chat's Milestones list you can hide a milestone
+that was not done (the Hide button on its row): that hides its row in your browser
+only, the list's count and Recap still count it, "Show again" under the list brings
+it back, and the board itself keeps the item. The crew log's fold, which feeds a crew's status and the pipeline
 board, keeps open items and
 the 32 most recently closed items whole and only counts older closed ones, so it is
 bounded by what is open, not by history. Those counts (the conductor header's
@@ -214,7 +217,7 @@ report. Every report replaces it. Nothing wakes the conductor at that time yet; 
 worker still idle one window after it is flagged `stale` like any other. A
 remote-dispatch report does not carry it to the hub's board yet.
 
-**`discussion` is where a discussion the worker hosts stands.** It is an object: `phase` (`talking`, `checking`, `asking` or `done`), `round`, `minutes`, `direction` (up to 200 chars), `agreed` (up to 8 lines), `disputed` (up to 5 `{point, sides}`), `checking` (up to 3 lines), `recent` (up to 6 `{who, text}`) and `thread` (up to 512 chars), an http(s) URL or an `/artifacts`, `/chat`, `/schedule`, `/capabilities` or `/settings` path to the full back-and-forth. The worker sends the whole object every time; each report replaces it, and one without it clears it. A part over its cap, malformed or unknown is refused whole (`field_too_long` or `invalid_value`), and the refusal's `field` names the part, such as `discussion.agreed[3]`: nothing is cut. It rides the `work/recorded` entry and the work fold, so `work_ledger_read` and the goal board read it. The goal board shows an open item that carries one as "Discussing", with its counts on the row and the rest behind a toggle. A question for the person still goes through `status: question` and the board's needs-you band.
+**`discussion` is where a discussion the worker hosts stands.** It is an object: `phase` (`talking`, `checking`, `asking` or `done`), `round`, `minutes`, `direction` (up to 200 chars), `agreed` (up to 8 lines), `disputed` (up to 5 `{point, sides}`), `checking` (up to 3 lines), `recent` (up to 6 `{who, text}`), `rounds` (up to 6 `{round, lines}`, `round` 1 to 99, `lines` up to 4 `{who, text}` with `who` up to 20 chars and `text` up to 120: the talk so far, one short line a participant each round) and `thread` (up to 512 chars), an http(s) URL or an `/artifacts`, `/chat`, `/schedule`, `/capabilities` or `/settings` path to the full back-and-forth. The worker sends the whole object every time; each report replaces it, and one without it clears it. A part over its cap, malformed or unknown is refused whole (`field_too_long` or `invalid_value`), and the refusal's `field` names the part, such as `discussion.agreed[3]`: nothing is cut. It rides the `work/recorded` entry and the work fold, so `work_ledger_read` and the goal board read it. The goal board shows an open item that carries one as "Discussing", with its counts on the row and the rest behind a toggle; the conductor mode Board draws `rounds` there as the talk, round by round, and marks the row live while `phase` is `talking` or `checking` and the host's turn runs. A question for the person still goes through `status: question` and the board's needs-you band.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
@@ -293,9 +296,9 @@ report, so the Board, the sidebar count and goal-board stop showing the item as
 needing you once the approval it asked for is answered.
 `work_ledger_read` shows it in the item's events. A steer moves no field: status,
 acceptance and verdict stay where they were, and acceptance stays the evaluator's.
-A person's steer outranks the conductor's decision. The ledger write
-(`work_ledger_worker.record_person_steer_result`) is here; the way to type into a
-crew member, which calls it, lands with the Crew panel.
+A person's steer outranks the conductor's decision. It is written when your
+message reaches the crew member, whether you typed it in the side panel's steer
+box or in the crew member's own chat.
 
 ## Why `done` is a claim
 

@@ -18,6 +18,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Trans } from 'react-i18next'
 import { api, type RemoteControlState } from '../../api/client'
+import { REMOTE_CONTROL_QUERY_KEY } from '../../api/client/remoteAccess'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsCard, SettingsSection } from '../../components/settings'
@@ -27,7 +28,7 @@ import { Btn } from '../../components/ui'
 import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
 
-export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
+export { REMOTE_CONTROL_QUERY_KEY }
 const TURN_ON_COMMAND = 'kirocrew remote-control on'
 
 /** The command, verbatim and never translated, with a copy button, for the catalog's `<command/>` slot. */
@@ -89,7 +90,7 @@ export function RemoteControlCard() {
   return (
     <SettingsSection title={i18nT('pages.settings.remoteControlCard.title')}>
       <SettingsCard>
-        <div className="space-y-3" data-testid="remote-control-card">
+        <div className="space-y-3" data-testid="remote-control-card" data-setting-id="instances.remote-control">
           {readError}
           {/* This build ignores the setting, so a restart would never connect. */}
           {shown && data.locked && (
@@ -104,11 +105,16 @@ export function RemoteControlCard() {
                 : i18nT('pages.settings.remoteControlCard.on')}
             </p>
           )}
-          {shown && !data.locked && !data.running && (
+          {shown && !data.locked && !data.running && !data.problem && (
             <p className="m-0 text-[13px]" role="status">
-              {i18nT('pages.settings.remoteControlCard.restart_to_connect')}
+              {data.connecting
+                ? i18nT('pages.settings.remoteControlCard.connecting')
+                : i18nT('pages.settings.remoteControlCard.restart_to_connect')}
             </p>
           )}
+          {/* Why config keeps the relay from starting: a restart would not help.
+              No hand-off: same reason as the read failure above. */}
+          {shown && !data.locked && !data.running && <ErrorNotice message={data.problem} />}
           {!shown && (
             <p className="m-0 text-[13px]" role="status">
               {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}

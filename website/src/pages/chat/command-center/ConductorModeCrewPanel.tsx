@@ -6,9 +6,9 @@
  *  number comes from reads the dashboard already makes: the crew list route,
  *  the work-ledger board, the session summary (GET only), the live slot rows
  *  and the pending question cards. No model call. */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, PencilLine, CircleStop, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, PencilLine, CircleStop, EyeOff, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { api } from '../../../api/client'
@@ -191,6 +191,31 @@ export function readCrewBoardExpanded(): Record<string, boolean> {
   }
 }
 
+/** Where the milestones the person hid from the Status list are kept:
+ *  `{ root: [item_id, ...] }`, per browser. Only the list forgets them: the work
+ *  ledger keeps every item, a closed one is never written again. */
+export const CONDUCTOR_MILESTONES_REMOVED_KEY = 'mc-conductor-milestones-removed'
+
+/** The stored hidden ids per root, or none when the value is unusable. */
+export function readRemovedMilestones(): Record<string, string[]> {
+  try {
+    const raw = safeGetItem(CONDUCTOR_MILESTONES_REMOVED_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed)
+      .filter(([k, v]) => k !== '' && Array.isArray(v))
+      .map(([k, v]) => [k, (v as unknown[]).filter((id): id is string => typeof id === 'string' && id !== '')]))
+  } catch {
+    return {}
+  }
+}
+
+/** Only a milestone closed without being accepted can be hidden from the list. */
+export function milestoneRemovable(item: WorkBoardItem): boolean {
+  return item.terminal && item.state !== 'accepted'
+}
+
 /** A row's open state: the person's choice, else open at the top level or on
  *  the path to the member on screen (`onPath`). */
 export function crewRowOpen(choices: Readonly<Record<string, boolean>>, n: CrewTreeNode, onPath = false): boolean {
@@ -302,7 +327,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // session working again reads as running even after an earlier "done"
   // report. A report counts only until the conductor decides on it
   // (`decided_at` at or after the report hands it back).
-  if (item.state === 'accepted') return 'done'
+  // A comment on a doc an accepted milestone made wakes its session again; while
+  // that session works or waits on an approval, the row says so instead of done.
+  if (item.state === 'accepted') return waiting ? 'needs_you' : item.alive === 'running' ? 'running' : 'done'
   if (item.terminal) return 'not_done'
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
@@ -350,8 +377,30 @@ export function discussionOf(item: WorkBoardItem): WorkDiscussion | null {
   return item.state === 'open' && d && typeof d === 'object' && typeof d.phase === 'string' && d.phase ? d : null
 }
 
-/** A thread link the board may draw: the server's own LINKABLE rule. */
-const THREAD_LINK = /^(?:https?:\/\/|\/(?:artifacts|chat|schedule|capabilities|settings)\b)/
+/** The talk is live: still talking or checking, and its host's turn runs it. A
+ *  discussing row is already open, not stale and its worker still there. */
+export function talkLive(item: WorkBoardItem, d: WorkDiscussion): boolean {
+  return (d.phase === 'talking' || d.phase === 'checking') && item.alive === 'running'
+}
+
+type TalkRound = { round: number; lines: [string, string][] }
+
+/** The rounds a report carried, oldest first, each with its non-empty lines. An
+ *  older report has none, and the panel then shows its latest lines instead. */
+function talkRounds(d: WorkDiscussion): TalkRound[] {
+  const raw = Array.isArray(d.rounds) ? d.rounds : []
+  return raw
+    .filter(r => r && typeof r === 'object' && Number.isFinite(Number(r.round)))
+    .map(r => ({
+      round: Number(r.round),
+      lines: (Array.isArray(r.lines) ? r.lines : [])
+        .filter(l => l && typeof l === 'object')
+        .map(l => [String(l.who || ''), String(l.text || '')] as [string, string])
+        .filter(([who, text]) => who || text),
+    }))
+    .filter(r => r.lines.length)
+    .sort((a, b) => a.round - b.round)
+}
 
 function minutesBetween(a: string | null | undefined, b: string | number | null | undefined): number {
   const ta = a ? Date.parse(a) : NaN
@@ -378,17 +427,22 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
 /** A text that wraps, a long word (a SHA, a path) included, instead of being cut. */
 const WRAP = 'min-w-0 [overflow-wrap:anywhere]'
 
-function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoardItem; state: MilestoneState; waitingOn: string; now: number; onOpen?: () => void }) {
+function MilestoneRow({ item, state, waitingOn, now, onOpen, onRemove }: { item: WorkBoardItem; state: MilestoneState; waitingOn: string; now: number; onOpen?: () => void; onRemove?: () => void }) {
   let sub: JSX.Element | string = ''
   const talk = state === 'discussing' ? discussionOf(item) : null
   if (talk) {
     const mins = Number(talk.minutes) || 0
+    const live = talkLive(item, talk)
     const text = [
-      i18nT('components.crewMode.conductor_mode_ms_discussing'),
+      i18nT(talk.phase === 'done' ? 'components.crewMode.conductor_mode_ms_talk_done' : 'components.crewMode.conductor_mode_ms_discussing'),
       i18nT('components.crewMode.conductor_mode_ms_discussing_round', { round: Number(talk.round) || 0 }),
       ...(mins > 0 ? [fmtMinutes(mins)] : []),
     ].join(' · ')
-    sub = <span className={WRAP} title={text} data-testid="conductor-mode-discussing">{text}</span>
+    sub = <>
+      {/* Live only while its host's turn runs the talk: a done, idle or stale one shows no dot. */}
+      {live && <span role="img" aria-label={i18nT('components.crewMode.conductor_mode_ms_talk_live')} title={i18nT('components.crewMode.conductor_mode_ms_talk_live')} className="shrink-0 self-center inline-block w-2 h-2 rounded-full bg-[var(--aim)] motion-safe:animate-pulse" data-testid="conductor-mode-talk-live" />}
+      <span className={WRAP} title={text} data-testid="conductor-mode-discussing">{text}</span>
+    </>
   } else if (state === 'done') {
     const link = artifactEntries(item).find(([, v]) => /^https?:\/\//.test(v))
     sub = <>
@@ -433,6 +487,8 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
     // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
       : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.conductor_mode_ms_running')} ${i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}`
+      // An accepted milestone's summary is its done report, so a woken one says only Running.
+      : state === 'running' && item.state === 'accepted' ? i18nT('components.crewMode.conductor_mode_ms_running')
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_ms_running'))
         : i18nT('components.crewMode.conductor_mode_ms_not_started')
     sub = <span className={WRAP} title={text}>{text}</span>
@@ -453,6 +509,15 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
         {talk && <DiscussionDetail id={item.item_id} d={talk} />}
       </div>
       <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'conductor-mode-accent font-medium' : 'text-muted'}`}>{right}</span>
+      {/* A milestone that was not done can be hidden from the list; the ledger keeps it.
+          The visible word says it only hides, so it never reads as a delete. */}
+      {onRemove && (
+        <button type="button" onClick={onRemove} data-testid="conductor-mode-milestone-remove"
+          aria-label={i18nT('components.crewMode.conductor_mode_ms_hide_hint', { t: clip(item.title, 70) })} title={i18nT('components.crewMode.conductor_mode_ms_hide_hint', { t: clip(item.title, 70) })}
+          className="shrink-0 inline-flex items-center gap-1 h-6 px-1.5 -my-0.5 rounded-md text-[11px] text-muted hover:text-text hover:bg-bg-hover">
+          <EyeOff size={12} aria-hidden="true" />{i18nT('components.crewMode.conductor_mode_ms_hide')}
+        </button>
+      )}
     </li>
   )
 }
@@ -473,9 +538,29 @@ function TalkSection({ label, rows }: { label: string; rows: (string | [string, 
   )
 }
 
+/** The talk round by round, in place: each round's one short line a participant. */
+function TalkRounds({ rounds }: { rounds: TalkRound[] }) {
+  return (
+    <div className="mt-1.5 first:mt-0" data-testid="conductor-mode-talk-rounds">
+      <div className="text-[10.5px] font-semibold text-muted">{i18nT('components.crewMode.conductor_mode_talk_rounds')}</div>
+      <ol className="text-text">
+        {rounds.map(r => (
+          <li key={r.round} className="mt-1 first:mt-0.5" data-testid="conductor-mode-talk-round">
+            <div className="text-[11px] font-medium text-muted">{i18nT('components.crewMode.conductor_mode_ms_discussing_round', { round: r.round })}</div>
+            <ul className="pl-2.5 border-l border-[color-mix(in_srgb,var(--muted)_35%,transparent)]">
+              {r.lines.map(([who, text], n) => <li key={n} className={WRAP}>{who && <b className="font-semibold">{who}</b>}{who && text ? ': ' : ''}{text}</li>)}
+            </ul>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 /** The discussing row's counts and, behind a toggle, what the discussion holds:
- *  direction, agreed, disputed with each side, being checked, the latest lines and
- *  the thread link. A question for the person is the Needs your input card's, not this. */
+ *  direction, agreed, disputed with each side, being checked, and the talk round by
+ *  round (an older report's latest lines instead). It opens in place: no new page.
+ *  A question for the person is the Needs your input card's, not this. */
 function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
   const [open, setOpen] = useState(false)
   const list = <T,>(v: T[] | undefined): T[] => (Array.isArray(v) ? v : [])
@@ -483,7 +568,7 @@ function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
   const checking = list(d.checking).filter(x => typeof x === 'string')
   const disputed = list(d.disputed).filter(x => x && typeof x === 'object')
   const recent = list(d.recent).filter(x => x && typeof x === 'object')
-  const thread = typeof d.thread === 'string' && d.thread.length <= 2048 && THREAD_LINK.test(d.thread) ? d.thread : ''
+  const rounds = talkRounds(d)
   const panelId = `conductor-mode-talk-${id.replace(/[^A-Za-z0-9_-]/g, '_')}`
   return (
     <div className="text-[12px]" data-testid="conductor-mode-talk">
@@ -496,8 +581,9 @@ function DiscussionDetail({ id, d }: { id: string; d: WorkDiscussion }) {
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_agreed')} rows={agreed} />
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_disputed')} rows={disputed.map(x => [String(x.point || ''), String(x.sides || '')] as [string, string])} />
         <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_checking')} rows={checking} />
-        <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_recent')} rows={recent.map(x => [String(x.who || ''), String(x.text || '')] as [string, string])} />
-        {thread && <a className="mt-1.5 inline-block text-[11px] conductor-mode-accent hover:underline" href={thread} target="_blank" rel="noreferrer" title={thread} data-testid="conductor-mode-talk-thread">{i18nT('components.crewMode.conductor_mode_talk_thread')}</a>}
+        {rounds.length
+          ? <TalkRounds rounds={rounds} />
+          : <TalkSection label={i18nT('components.crewMode.conductor_mode_talk_recent')} rows={recent.map(x => [String(x.who || ''), String(x.text || '')] as [string, string])} />}
       </div>
     </div>
   )
@@ -800,6 +886,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   )
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
+  const [droppedOpen, setDroppedOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
   // A board shown in the last CREW_BOARD_GC_MS paints at once on entry, and every
   // entry still reads it again (`refetchOnMount: 'always'`), so the cached copy is
@@ -808,6 +895,44 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, gcTime: CREW_BOARD_GC_MS, refetchOnMount: 'always', retry: false })
   // ISO timestamps from the board: a byte compare orders them, no locale involved.
   const items = useMemo(() => [...(board.data?.items ?? [])].sort((a, b) => { const x = a.created_at || '', y = b.created_at || ''; return x < y ? -1 : x > y ? 1 : 0 }), [board.data])
+  // The not-done milestones the person hid from this list (kept per browser).
+  // Only their rows go: the count, the Recap and the Overview still read every
+  // item, so hiding a row never makes the run read better than it went.
+  const [removedByRoot, setRemovedByRoot] = useState(readRemovedMilestones)
+  const hidden = useMemo(() => {
+    const removed = new Set(removedByRoot[root] ?? [])
+    return new Set(items.filter(i => removed.has(i.item_id) && milestoneRemovable(i)).map(i => i.item_id))
+  }, [items, removedByRoot, root])
+  // Where focus goes once the pressed control is gone: the row's Hide leaves
+  // with its row, so focus moves to "Show again" (the undo, never another row's
+  // Hide); "Show again" leaves with its line, so focus moves to the heading.
+  const milestonesHeading = useRef<HTMLHeadingElement>(null)
+  const restoreButton = useRef<HTMLButtonElement>(null)
+  const focusAfter = useRef<'restore' | 'heading' | null>(null)
+  const setRemoved = useCallback((change: (ids: string[]) => string[], focus: 'restore' | 'heading') => {
+    // Pruned to the items still on the board, so the stored list stays bounded.
+    const onBoard = new Set(items.map(i => i.item_id))
+    const apply = (from: Record<string, string[]>) => {
+      const next = { ...from }
+      const ids = change(next[root] ?? []).filter(id => onBoard.has(id))
+      if (ids.length) next[root] = ids
+      else delete next[root]
+      return next
+    }
+    // From what is stored now, not this mount's copy, so another tab's hidden rows are kept.
+    const stored = apply(readRemovedMilestones())
+    const saved = safeSetItem(CONDUCTOR_MILESTONES_REMOVED_KEY, JSON.stringify(stored))
+    focusAfter.current = focus
+    // A write that did not land (no usable storage) left nothing to read back,
+    // so the change builds on what this panel already holds instead.
+    setRemovedByRoot(prev => saved ? stored : apply(prev))
+  }, [items, root])
+  useEffect(() => {
+    const target = focusAfter.current
+    focusAfter.current = null
+    if (target === 'restore') (restoreButton.current ?? milestonesHeading.current)?.focus()
+    else if (target === 'heading') milestonesHeading.current?.focus()
+  }, [removedByRoot])
   const goalText = (board.data?.conductor?.goal || '').replace(/\s+/g, ' ').trim()
   // A goal that says its own "Done when ..." wins over the acceptance kinds.
   const doneMatch = goalDoneWhen(goalText)
@@ -845,6 +970,10 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // Plus the rows below that wait on the person (kept out of `needsYouRows`).
   const needCount = needYou + forYou.length
   const openMs = milestones.filter(m => m.state !== 'done')
+  // Dropped milestones (closed as abandoned) fold into one row below the open
+  // ones, as done ones do above, so a goal that changed course keeps live work on screen.
+  const droppedMs = openMs.filter(m => m.state === 'not_done' && m.item.state === 'abandoned')
+  const listMs = openMs.filter(m => !droppedMs.includes(m))
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
   // Stuck: a milestone with nothing left to move it. Quiet: one idle with
@@ -869,6 +998,23 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w && !w.remote_crew ? () => open(w) : undefined
   }
+  // One folded row for a closed group: done milestones above the open ones,
+  // dropped ones below, so what is open stays on screen. No rows, no fold.
+  const shownListMs = listMs.filter(m => !hidden.has(m.item.item_id))
+  // The done fold's bottom rule already divides it from the dropped fold when no open row sits between them.
+  const dropTopRule = shownListMs.length > 0 || doneMs.length === 0
+  const milestoneFold = (kind: 'done' | 'dropped', rows: typeof milestones, isOpenFold: boolean, setOpenFold: (open: boolean) => void) => rows.length > 0 && (
+    <details className={`group border-border ${kind === 'done' ? 'mt-0.5 border-b' : dropTopRule ? 'border-t' : ''}`} data-testid={`conductor-mode-milestones-${kind}`} open={isOpenFold}
+      onToggle={e => setOpenFold((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
+        <span className="shrink-0">{STATE_ICON[kind === 'done' ? 'done' : 'not_done']}</span>
+        <span className={`flex-1 min-w-0 text-[13px] ${kind === 'done' ? 'text-text' : 'text-muted'}`}>{i18nT(kind === 'done' ? 'components.crewMode.conductor_mode_ms_done_fold' : 'components.crewMode.conductor_mode_ms_dropped_fold', { n: rows.length })}</span>
+        <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
+      </summary>
+      <ol className="divide-y divide-border pl-2">{rows.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
+        onRemove={kind === 'dropped' && milestoneRemovable(m.item) ? () => setRemoved(ids => [...ids, m.item.item_id], 'restore') : undefined} />)}</ol>
+    </details>
+  )
   const waitingMs = milestones.filter(m => m.state === 'needs_you')
   // An approval already named by its milestone is not repeated as a worker.
   // Unbound approvals and the main chat's own asks still belong in the Recap.
@@ -945,7 +1091,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           {/* (3) Milestones: one row per ledger item, as outcomes. */}
           <section data-testid="conductor-mode-milestones">
             <div className="flex items-center gap-2">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_milestones', { done: msDone, total: items.length })}</h3>
+              <h3 ref={milestonesHeading} tabIndex={-1} className="text-[11px] font-semibold uppercase tracking-[1px] text-muted focus:outline-none">{i18nT('components.crewMode.conductor_mode_milestones', { done: msDone, total: items.length })}</h3>
               {(stuck || quiet || (moving && lastReport)) && (
                 <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck || quiet ? 'text-muted' : 'crew-tone-ok'}`} data-testid="conductor-mode-pulse">
                   <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-current" />
@@ -960,21 +1106,20 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
               ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.conductor_mode_milestones_none')}</p>
               : <>
                 {/* Finished milestones fold into one row, so what is open stays on screen. */}
-                {doneMs.length > 0 && (
-                  <details className="group mt-0.5 border-b border-border" data-testid="conductor-mode-milestones-done" open={doneOpen}
-                    onToggle={e => setDoneOpen((e.currentTarget as HTMLDetailsElement).open)}>
-                    <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
-                      <span className="shrink-0">{STATE_ICON.done}</span>
-                      <span className="flex-1 min-w-0 text-[13px] text-text">{i18nT('components.crewMode.conductor_mode_ms_done_fold', { n: doneMs.length })}</span>
-                      <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
-                    </summary>
-                    <ol className="divide-y divide-border pl-2">{doneMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}</ol>
-                  </details>
-                )}
+                {milestoneFold('done', doneMs, doneOpen, setDoneOpen)}
                 <ol className="divide-y divide-border">
-                  {openMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}
+                  {/* A hidden milestone loses only its row here; the count and the Recap keep it. */}
+                  {shownListMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)}
+                    onRemove={milestoneRemovable(m.item) ? () => setRemoved(ids => [...ids, m.item.item_id], 'restore') : undefined} />)}
                 </ol>
+                {milestoneFold('dropped', droppedMs.filter(m => !hidden.has(m.item.item_id)), droppedOpen, setDroppedOpen)}
               </>}
+            {hidden.size > 0 && (
+              <p role="status" className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-muted" data-testid="conductor-mode-milestones-removed">
+                <span>{i18nT('components.crewMode.conductor_mode_ms_hidden', { n: hidden.size })}</span>
+                <button type="button" ref={restoreButton} onClick={() => setRemoved(() => [], 'heading')} data-testid="conductor-mode-milestones-restore" className="conductor-mode-accent hover:underline">{i18nT('components.crewMode.conductor_mode_ms_restore')}</button>
+              </p>
+            )}
           </section>
           {/* (4) Recap: live facts, else descriptive session context. */}
           <section data-testid="conductor-mode-recap-section" className="space-y-0.5">

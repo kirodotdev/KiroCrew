@@ -56,10 +56,10 @@
     {
       "name": "pptx-maker",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-      "commit": "a622dc0eff74ffe2e927871f07400e7ab21ee5da",
-      "version": "0.3.3",
-      "treeSha256": "bcb5c102fb50df1541d5dab1fb59d186b291479e5b90a890edf681832d0fb976",
-      "archiveSha256": "c9c9525a76c7852613661f7e6016c137e0d7a548069f97abf841515ff56c4677",
+      "commit": "f189ef631db6fea2c8331d6080f24d340963f2e6",
+      "version": "0.3.4",
+      "treeSha256": "409e75595ee8e75f3a3cb8dba664f5a568771f177a0865de067975e4eca78bc3",
+      "archiveSha256": "0605507264ba24052bdcec135f4f141e3d9681dab3d645b78c8181548e97fbd1",
       "minAppSdkLevel": 1,
       "legacyNav": {
         "route": "/pptx-maker",
@@ -108,10 +108,10 @@
     {
       "name": "spec-builder",
       "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-spec-builder",
-      "commit": "79de0b4e3581bcbde1a021d9a335c63f45a44f30",
-      "version": "0.1.1",
-      "treeSha256": "05024a394b6c8f43791248b5d6eef63f1d23a1e61b015dafe76bf585ea7fe75a",
-      "archiveSha256": "039f1143d69bf27bc126659c5625d0d2a123f6ea0b3a42a8143c0701b8b43711",
+      "commit": "efd6cdae32c0dfdc5d68f1adbdf7f438db186f58",
+      "version": "0.1.2",
+      "treeSha256": "bee38b7c4098e38d75253f6d3e2db659085532bf0694051f02cce24a61285065",
+      "archiveSha256": "1026117076b932436e49fcd0527f6e6dd5787788e825fbbfb7fea4317b4765c9",
       "minAppSdkLevel": 7,
       "legacyNav": {
         "route": "/spec-builder",

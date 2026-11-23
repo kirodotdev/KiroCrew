@@ -634,6 +634,10 @@ async def _handle_restart(
                 ),
                 timeout=5.0,
             )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Dashboard state save before restart did not finish within 5.0s; restarting without it"
+        )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
     # The exit skips the gateway's _shutdown, where the cron service stops: stop

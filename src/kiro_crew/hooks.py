@@ -152,6 +152,7 @@ from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
     dispatch_session_lane_changed_bulk,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_tool_input,
     permission_pre_tool_block,
     persisted_hook_store,
     pre_tool_match_names,
@@ -290,6 +291,7 @@ from kiro_crew.platform.spec_denied_grant import (  # noqa: F401  (read by tool_
 from kiro_crew.platform.tool_names import (  # noqa: F401  (read by hook_runtime owners)
     DEEPSEEK_READ_ONLY_TOOLS,
     KIRO_TOOL_ALIASES,
+    builtin_names,
     deepseek_policy_alias,
     policy_alias_split,
     policy_aliases,

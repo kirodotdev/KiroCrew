@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.browser_harness import live_hub as hub_mod
@@ -275,6 +276,31 @@ async def test_an_op_past_its_budget_is_timeout(monkeypatch: pytest.MonkeyPatch)
     resp = await mod.api_browser_op(_request({"op": "snapshot", "session_key": "k"}))
     body = json.loads(resp.body)
     assert body["ok"] is False and body["code"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_a_navigate_runs_through_the_sign_in_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route hands a navigate's task to ``browser_harness.sign_in`` with its own
+    supervisor, so an edition's ``complete_sign_in`` is reachable from the agent's op."""
+    from kiro_crew.browser_harness import sign_in
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    seen: list[tuple[str, Any]] = []
+
+    async def _wrapped(op: str, args: dict[str, Any], ctx: Any, supervisor: Any) -> dict[str, Any]:
+        seen.append((op, supervisor))
+        return {"ok": True, "url": "https://example.com/", "title": "", "sign_in": {"outcome": "x"}}
+
+    monkeypatch.setattr(sign_in, "run_op", _wrapped)
+    resp = await mod.api_browser_op(
+        _request({"op": "navigate", "args": {"url": "https://example.com/"}, "session_key": "k"})
+    )
+    body = json.loads(resp.body)
+    assert seen == [("navigate", sup)]
+    assert body["ok"] is True and body["result"]["sign_in"] == {"outcome": "x"}
 
 
 def test_build_context_binds_the_live_hub_and_relay() -> None:
@@ -720,7 +746,7 @@ async def test_a_closed_popup_that_sent_its_opener_to_a_refused_url_answers_the_
     await _op("chat-a")
     sup.open_popup("P1", "T1")
     await _op("chat-a")
-    monkeypatch.setattr(mod, "committed_url_allowed", lambda url: url != "https://T1")
+    monkeypatch.setattr(mod, "committed_url_allowed", lambda url, _own=(): url != "https://T1")
     sup.close_on_next_op = True
     audits.clear()
     answer = await _op("chat-a", "click", ref="e1")
@@ -1349,6 +1375,9 @@ def test_the_shims_budget_outlasts_the_routes_worst_case() -> None:
 
     worst_fast = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.OP_TIMEOUT_S
     worst_slow = mod.ENSURE_TIMEOUT_S + mod.LOCK_WAIT_S + mod.OP_TIMEOUT_S + mod.SLOW_OP_TIMEOUT_S
+    # A navigate may go on to finish an edition sign-in inside its own budget.
+    worst_slow += mod.SIGN_IN_WORST_S
+    assert mod.LOCK_WAIT_S >= mod.SLOW_OP_TIMEOUT_S + mod.SIGN_IN_WORST_S
     # The hold is the shim's, in slices, never in one HTTP call: the gateway's
     # hand-back poll waits far less than the shim's step budget.
     assert mod.HOLD_TIMEOUT_S == 10 * 60
@@ -1446,3 +1475,44 @@ async def test_follow_current_tab_refuses_private_link_before_streaming(monkeypa
     assert sup.calls[-1] == ("goto", {"url": "about:blank"})
     assert hub.get("k").url == "about:blank"
     assert hub.get("k").title == ""
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_under_a_name_the_gateway_trusts_is_never_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tunnel, tailnet or ``dashboard.url`` name serves this dashboard, and the agent's
+    tab may be the person's own signed-in Chrome: the gateway refuses it, however
+    spelled, before the browser sends the request, and a tab that lands there is left.
+    Another public site still opens, a loopback origin the operator listed keeps its
+    own rule, and an unparsable entry in the set breaks nothing."""
+    from kiro_crew.browser_harness import url_gate
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    app = web.Application()
+    own = {"https://Dash.Example.com/", "http://8.8.8.8:5476", "http://localhost:3000", "http://[x"}
+    app["allowed_origins"] = own
+
+    async def _op(op: str, args: dict[str, Any]) -> dict[str, Any]:
+        req = make_mocked_request("POST", "/api/browser/op", app=app)
+        req["internal_auth"] = True
+        req._read_bytes = json.dumps({"op": op, "session_key": "k", "args": args}).encode()
+        return json.loads((await mod.api_browser_op(req)).body)
+
+    for op, args in [
+        ("navigate", {"url": "HTTPS://Dash.Example.com.:443/settings"}),
+        ("navigate", {"url": "http://134744072:5476/"}),
+        ("tabs", {"action": "new", "url": "https://dash.example.com/settings"}),
+    ]:
+        body = await _op(op, args)
+        assert body["ok"] is False and body["code"] == "url_blocked", (args, body)
+    assert sup.calls == [], "refused before the browser is touched"
+    sup.tab["url"] = "https://dash.example.com/settings"
+    body = await _op("tabs", {"action": "list"})
+    assert body["code"] == "redirect_refused", body
+    assert sup.calls[-1] == ("goto", {"url": "about:blank"})
+    assert mod.committed_url_allowed("https://dash.example.org/settings", own) is True
+    listed = frozenset({"localhost:3000"})
+    assert url_gate.url_allowed("http://localhost:3000/", listed, 5476, own) is True

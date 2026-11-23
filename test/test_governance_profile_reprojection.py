@@ -430,7 +430,7 @@ class TestTheBaselineSeed:
 
         src = inspect.getsource(agent_mod.rebuild_agent_config)
         record = src.index("answer_generation = _answer_generation_after_profile_poll()")
-        assert record < src.index("_load_existing_config(path")
+        assert record < src.index("_load_existing_config(")
         assert src.index("declined = _decline_shared_agent_home()") < record
         # Published, and checked against the live answer, only once the rebuild completed:
         # after the sibling pass, which re-raises a dashboard-author install error.

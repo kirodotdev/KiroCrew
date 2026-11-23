@@ -388,6 +388,10 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     after = await vault_identity_snapshot() if before else None
     unseen = await _announce(request, crews)
     body: dict[str, Any] = {"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]}
+    if crews.off_domain:
+        # Listed Crews the dev relay domain setting alone left out: the setting is
+        # wrong for this relay, and the dashboard says so rather than showing none.
+        body["offDomain"] = crews.off_domain
     account = _account(before, *after) if after else None
     if account is not None:
         body["account"] = account
@@ -477,7 +481,7 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
         local_auth_executor(), local_owner_bootstrap_provenance, request
     )
     # Only the desktop app's own main process needs this, never an app backend.
-    if provenance is None or provenance.app is not None:
+    if provenance is None or provenance.app:
         _audit(request, "denied", "unverified-owner-process")
         return _error("This process isn't the desktop app.", "member_owner_token_refused", 403)
     return None

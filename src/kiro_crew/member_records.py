@@ -45,8 +45,8 @@ MEMBER_RECORDS_LEAF = "member-records"
 #: to ``member_space.RULES_DIR_NAME``, ``member_goals.GOALS_DIR_NAME``,
 #: ``member_space.DM_BINDINGS_DIR_NAME``, ``protected_app_state.APP_GRANTS_KIND``,
 #: ``protected_app_state.APP_DISABLED_KIND``, ``protected_app_state.APP_SECRETS_KIND``,
-#: ``bot_grant_store.APP_BOT_GRANTS_KIND`` and ``local_authorization.LOCAL_GRANTS_KIND``;
-#: a test pins them. Only
+#: ``bot_grant_store.APP_BOT_GRANTS_KIND``, ``local_authorization.LOCAL_GRANTS_KIND``
+#: and ``protected_app_ui.APP_UI_KIND``; a test pins them. Only
 #: :data:`MIGRATED_KINDS` had an old layout under ``trust/``.
 RECORD_KINDS: tuple[str, ...] = (
     "member-rules",
@@ -58,6 +58,8 @@ RECORD_KINDS: tuple[str, ...] = (
     "app-crons-deleted",
     "app-bot-grants",
     "local-grants",
+    "app-ui",
+    "app-browser-sites",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

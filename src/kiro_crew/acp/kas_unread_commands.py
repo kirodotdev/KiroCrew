@@ -18,10 +18,12 @@ the three places a person meets it:
 A usable entry past the bound Kiro Crew applies (``kas_permissions._MAX_ALLOWED_COMMANDS``)
 allows nothing either. The session-start notice names each one by its position in the
 list and its text (:func:`name_unreadable_entries`, :func:`over_limit_notice`), and
-says the entries before it still apply.
+says the entries before it still apply. So does a read or write ``allowedPaths``
+entry past ``kas_permissions._MAX_ALLOWED_PATHS`` (:func:`allowed_paths_notice`).
 
 Each unreadable read or write ``allowedPaths`` entry is named in the session-start
-notice the same way (:func:`_unreadable_path_items`): the other entries still apply.
+notice the same way (:func:`_unreadable_path_items`): the other entries still apply,
+up to the bound.
 
 Every reader here takes ``toolsSettings`` with one key per kiro-cli alias group
 (``canonical_tools_settings``), as the gate reads it.
@@ -31,7 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from kiro_crew.acp.kas_spec_grants import (
@@ -51,6 +53,10 @@ _MAX_CARRIED = 64
 #: limit: entry 1025: dig .*; and 3 more after entry 1025``.
 OVER_LIMIT_HEAD = ".allowedCommands past the limit"
 
+#: The same for a read or write list: ``toolsSettings.write.allowedPaths past the
+#: limit: entry 65: /work/dir64/**``.
+PATHS_OVER_LIMIT_HEAD = ".allowedPaths past the limit"
+
 #: How many entries past the bound that item names before it counts the rest.
 _NAMED_OVER_LIMIT = 10
 
@@ -58,21 +64,35 @@ _NAMED_OVER_LIMIT = 10
 _SHOWN_ENTRY_CHARS = 80
 
 
-def placed_allowed_commands(tools_settings: Any) -> list[tuple[str, int, str]]:
-    """``(shell key, position as written, entry)`` of every distinct usable
-    ``allowedCommands`` entry of both shell keys, in order. The position counts
-    from 1 over the key's list as the spec wrote it, an entry read twice keeps its
-    first place, and an entry the reader refuses is skipped."""
+def _placed(
+    tools_settings: Any, keys: tuple[str, ...], field: str, read: Callable[[Any], str | None]
+) -> list[tuple[str, int, str]]:
+    """``(key, position as written, entry)`` of every distinct usable *field* entry of
+    the *keys* entries, in order. The position counts from 1 over the key's list as
+    the spec wrote it, an entry read twice keeps its first place, and an entry the
+    reader refuses (*read* gives ``None``) is skipped. Entries are the same entry
+    when *read* gives the same text."""
     if not isinstance(tools_settings, dict):
         return []
     placed: dict[str, tuple[str, int, str]] = {}
-    for key in SHELL_SETTINGS_KEYS:
+    for key in keys:
         settings = tools_settings.get(key)
-        entries = settings.get("allowedCommands") if isinstance(settings, dict) else None
+        entries = settings.get(field) if isinstance(settings, dict) else None
         for at, raw in enumerate(entries if isinstance(entries, list) else (), 1):
-            if allowed_commands.parse(raw) is not None:
-                placed.setdefault(raw, (key, at, raw))
+            text = read(raw)
+            if text is not None:
+                placed.setdefault(text, (key, at, raw))
     return list(placed.values())
+
+
+def placed_allowed_commands(tools_settings: Any) -> list[tuple[str, int, str]]:
+    """:func:`_placed` for the ``allowedCommands`` of both shell keys."""
+    return _placed(
+        tools_settings,
+        SHELL_SETTINGS_KEYS,
+        "allowedCommands",
+        lambda raw: raw if allowed_commands.parse(raw) is not None else None,
+    )
 
 
 def _shown(entry: str) -> str:
@@ -80,12 +100,12 @@ def _shown(entry: str) -> str:
     return entry if len(entry) <= _SHOWN_ENTRY_CHARS else f"{entry[:_SHOWN_ENTRY_CHARS]}..."
 
 
-def _over_limit_items(tools_settings: Any, limit: int) -> list[str]:
-    """One ``<key>.allowedCommands past the limit: ...`` item per shell key whose
-    usable entries run past *limit*: the first :data:`_NAMED_OVER_LIMIT` such entries
-    by position and text (:func:`_shown`), then how many more follow."""
+def _over_limit_items(placed: list[tuple[str, int, str]], limit: int, head: str) -> list[str]:
+    """One ``<key><head>: ...`` item per key whose *placed* entries run past *limit*:
+    the first :data:`_NAMED_OVER_LIMIT` such entries by position and text
+    (:func:`_shown`), then how many more follow."""
     by_key: dict[str, list[tuple[int, str]]] = {}
-    for key, at, entry in placed_allowed_commands(tools_settings)[limit:]:
+    for key, at, entry in placed[limit:]:
         by_key.setdefault(key, []).append((at, entry))
     items = []
     for key, cut in by_key.items():
@@ -93,37 +113,48 @@ def _over_limit_items(tools_settings: Any, limit: int) -> list[str]:
         parts = [f"entry {at}: {_shown(entry)}" for at, entry in named]
         if len(cut) > len(named):
             parts.append(f"and {len(cut) - len(named)} more after entry {named[-1][0]}")
-        items.append(f"{key}{OVER_LIMIT_HEAD}: {'; '.join(parts)}")
+        items.append(f"{key}{head}: {'; '.join(parts)}")
     return items
+
+
+def _paths_over_limit_items(tools_settings: Any) -> list[str]:
+    """The :data:`PATHS_OVER_LIMIT_HEAD` items of the write and the read list, each
+    counted the way ``kas_permissions._usable_allowed_paths`` counts it."""
+    # circular import: kas_permissions imports this module for its allowlist.
+    from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_PATHS
+
+    return [
+        item
+        for keys in (WRITE_SETTINGS_KEYS, READ_SETTINGS_KEYS)
+        for item in _over_limit_items(
+            _placed(tools_settings, keys, "allowedPaths", allowed_paths.parse),
+            _MAX_ALLOWED_PATHS,
+            PATHS_OVER_LIMIT_HEAD,
+        )
+    ]
 
 
 def _commands_over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
     """The session-start sentence for the :data:`OVER_LIMIT_HEAD` items among *keys*,
     and *keys* without them.
 
-    ``""`` when the same list is also named whole: the session then answers none of
-    its entries, so saying the first ones apply would be wrong. A list named with
+    No sentence for a list that is also named whole: the session then answers none
+    of its entries, so saying the first ones apply would be wrong. A list named with
     ``tools_settings_reach.GATE_READ_MARK`` does not count as named whole: under
     ``denyByDefault`` the gate enforces its first entries as the allowlist and
     refuses what only a later entry names, which is what the sentence says.
     """
     # circular import: kas_permissions imports this module for its allowlist.
-    from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_COMMANDS as limit
+    from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_COMMANDS
 
-    over = [key for key in keys if key.partition(": ")[0].endswith(OVER_LIMIT_HEAD)]
-    rest = [key for key in keys if key not in over]
-    lists = {key.partition(": ")[0].removesuffix(" past the limit") for key in over}
-    if not over or lists & set(rest):
-        return "", rest
-    cut = " ".join(f"{key.partition(': ')[2]}." for key in over)
-    return (
-        f"Agent {agent} sets more {' and '.join(sorted(lists))} entries than the {limit} "
-        f"Kiro Crew applies. Its first {limit} readable entries apply. These do not: {cut} "
+    return _over_limit_sentence(
+        agent,
+        keys,
+        OVER_LIMIT_HEAD,
+        _MAX_ALLOWED_COMMANDS,
         "Each allows nothing, so a command only it matches asks for approval, or is "
-        "refused when denyByDefault is set. To apply them, shorten the list in the "
-        f"agent's file to {limit} entries or fewer, for example by joining entries that "
-        "differ in one word: (dig|host) .* covers both dig .* and host .*.",
-        rest,
+        "refused when denyByDefault is set.",
+        "joining entries that differ in one word: (dig|host) .* covers both dig .* and host .*",
     )
 
 
@@ -131,10 +162,11 @@ def unreadable_paths_notice(agent: str, keys: list[str]) -> tuple[str, list[str]
     """The session-start sentence for the unreadable ``allowedPaths`` entries among
     *keys* (:func:`_unreadable_path_items`), and *keys* without them.
 
-    It says the other entries still apply unless the same list is also named whole:
-    the session then answers none of it. A list marked
-    ``tools_settings_reach.GATE_READ_MARK`` counts as named whole, as an unreadable
-    ``allowedCommands`` entry's list does.
+    It says the other entries still apply unless the same list is also named whole
+    (the session then answers none of it) or cut by the bound (a
+    :data:`PATHS_OVER_LIMIT_HEAD` item among *keys*: its later entries do not apply). A
+    list marked ``tools_settings_reach.GATE_READ_MARK`` counts as named whole, as an
+    unreadable ``allowedCommands`` entry's list does.
     """
     from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK
 
@@ -145,13 +177,70 @@ def unreadable_paths_notice(agent: str, keys: list[str]) -> tuple[str, list[str]
         return "", rest
     lists = {key.partition(mark)[0] + ".allowedPaths" for key in unread}
     whole = lists & {key.removesuffix(GATE_READ_MARK) for key in rest}
-    others = "" if whole else "; the agent's other entries still apply"
+    cut = {
+        head.removesuffix(" past the limit")
+        for head in (key.partition(": ")[0] for key in rest)
+        if head.endswith(PATHS_OVER_LIMIT_HEAD)
+    }
+    others = "" if whole or lists & cut else "; the agent's other entries still apply"
     return (
         f"Agent {agent} has allowedPaths entries Kiro Crew cannot read: {'; '.join(unread)}. "
         "Each covers nothing, so a read or write only it covers asks for approval, and "
         f"such a write is refused when fallbackAction is deny{others}.",
         rest,
     )
+
+
+def paths_over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
+    """:func:`_commands_over_limit_notice` for the :data:`PATHS_OVER_LIMIT_HEAD` items,
+    one sentence per list. A path list the session answers none of is named whole,
+    and then keeps that sentence alone. A write list named with
+    ``tools_settings_reach.GATE_READ_MARK`` is the ``fallbackAction: "deny"``
+    allowlist, whose first entries the gate enforces."""
+    # circular import: kas_permissions imports this module for its allowlist.
+    from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_PATHS
+
+    return _over_limit_sentence(
+        agent,
+        keys,
+        PATHS_OVER_LIMIT_HEAD,
+        _MAX_ALLOWED_PATHS,
+        "Each grants nothing, so a file only it names gets its usual answer (for a write "
+        "list under fallbackAction deny, a refusal).",
+        "removing entries another entry already covers: /work/** covers /work/a/**",
+    )
+
+
+def allowed_paths_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
+    """The session-start sentences for the read and write ``allowedPaths`` entries
+    among *keys* the session does not answer, and *keys* without them: each
+    unreadable one (:func:`unreadable_paths_notice`), then those past the bound
+    (:func:`paths_over_limit_notice`)."""
+    unread, keys = unreadable_paths_notice(agent, keys)
+    over, keys = paths_over_limit_notice(agent, keys)
+    return " ".join(text for text in (unread, over) if text), keys
+
+
+def _over_limit_sentence(
+    agent: str, keys: list[str], head: str, limit: int, effect: str, example: str
+) -> tuple[str, list[str]]:
+    """One sentence per list among the *head* items of *keys*, each list on its own
+    as :func:`_commands_over_limit_notice` describes, and *keys* without those items."""
+    over = [key for key in keys if key.partition(": ")[0].endswith(head)]
+    rest = [key for key in keys if key not in over]
+    sentences = []
+    for item in over:
+        named, _, cut = item.partition(": ")
+        listed = named.removesuffix(" past the limit")
+        if listed in rest:
+            continue
+        sentences.append(
+            f"Agent {agent} sets more {listed} entries than the {limit} Kiro Crew applies. "
+            f"Its first {limit} readable entries apply. These do not: {cut}. {effect} To apply "
+            f"them, shorten the list in the agent's file to {limit} entries or fewer, for "
+            f"example by {example}."
+        )
+    return " ".join(sentences), rest
 
 
 def _unreadable(tools_settings: Any) -> Iterator[tuple[str, object, str]]:
@@ -205,7 +294,8 @@ def name_unreadable_entries(tools_settings: Any, not_carried: list[str]) -> list
     The bare ``<key>.allowedCommands`` stays only when the value is not a list (it
     has no entries to name). Usable entries past the bound Kiro Crew applies are
     named in one item of their own (:func:`_over_limit_items`), so the notice never
-    says a list whose first entries apply has no effect. Each ``web_fetch.blocked``
+    says a list whose first entries apply has no effect; so are the read and write
+    ``allowedPaths`` past theirs (:func:`_paths_over_limit_items`). Each ``web_fetch.blocked``
     entry KAS cannot carry is named the same way, in place of the bare
     ``web_fetch.blocked``, and each unreadable ``allowedPaths`` entry
     (:func:`_unreadable_path_items`).
@@ -214,7 +304,9 @@ def name_unreadable_entries(tools_settings: Any, not_carried: list[str]) -> list
     from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_COMMANDS
 
     unread = unreadable_allowed_commands(tools_settings)
-    over_limit = _over_limit_items(tools_settings, _MAX_ALLOWED_COMMANDS)
+    over_limit = _over_limit_items(
+        placed_allowed_commands(tools_settings), _MAX_ALLOWED_COMMANDS, OVER_LIMIT_HEAD
+    )
     named = {f"{key}.allowedCommands" for key, _entry, _reason in unread}
     named |= {item.partition(OVER_LIMIT_HEAD)[0] + ".allowedCommands" for item in over_limit}
     blocked = _uncarried_web_fetch_blocked(tools_settings)
@@ -231,6 +323,7 @@ def name_unreadable_entries(tools_settings: Any, not_carried: list[str]) -> list
             for key, entry, reason in unread
         ]
         + over_limit
+        + _paths_over_limit_items(tools_settings)
         + blocked
         + paths
     )
@@ -241,13 +334,10 @@ def _unreadable_path_items(tools_settings: Any, not_carried: list[str]) -> list[
     Kiro Crew cannot read, for each ``<key>.allowedPaths`` of *not_carried*.
 
     Only for a read or write list the session still answers some of: another
-    tool's list, a value that is not a list,
-    a list with no readable entry, and a family whose readable entries run past the
-    bound Kiro Crew applies stay named whole.
+    tool's list, a value that is not a list, and a list with no readable entry stay
+    named whole. Entries past the bound are named on their own
+    (:func:`_paths_over_limit_items`).
     """
-    # circular import: kas_permissions imports this module for its allowlist.
-    from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_PATHS, _usable_allowed_paths
-
     if not isinstance(tools_settings, dict):
         return []
     out = []
@@ -259,15 +349,9 @@ def _unreadable_path_items(tools_settings: Any, not_carried: list[str]) -> list[
             continue
         # Kiro Crew answers only the read and write lists; any other tool's list
         # (grep, glob, an unknown tool) applies no entry, so it stays named whole.
-        if key in READ_SETTINGS_KEYS:
-            family = READ_SETTINGS_KEYS
-        elif key in WRITE_SETTINGS_KEYS:
-            family = WRITE_SETTINGS_KEYS
-        else:
+        if key not in READ_SETTINGS_KEYS and key not in WRITE_SETTINGS_KEYS:
             continue
         if not any(allowed_paths.parse(raw) is not None for raw in entries):
-            continue
-        if len(_usable_allowed_paths(tools_settings, family)) > _MAX_ALLOWED_PATHS:
             continue
         for raw in entries:
             reason = allowed_paths.refusal_reason(raw)
@@ -283,7 +367,8 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
     applies), in the spec's order, so the notice names the entry and not only the
     key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
     nothing unless :func:`fails_closed_on_uncarried_blocked` is on, when the
-    translation denies every fetch."""
+    translation denies every fetch. An entry Crew's gate refuses itself
+    (``kas_spec_denies.gate_refused_blocked``) is not named."""
     from kiro_crew.acp.kas_permissions import (
         _MAX_PATTERN_LENGTH,
         _patterns,
@@ -291,13 +376,17 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
         _url_glob,
     )
 
+    # circular import: kas_spec_denies imports kas_permissions, which imports this.
+    from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
+
     settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
     if not isinstance(settings, dict):
         return []
+    refused = {raw.strip() for raw in gate_refused_blocked(tools_settings)}
     out = []
     for raw in _patterns(settings.get("blocked")):
         glob = _url_glob(raw)
-        if glob is not None and len(glob) <= _MAX_PATTERN_LENGTH:
+        if (glob is not None and len(glob) <= _MAX_PATTERN_LENGTH) or raw in refused:
             continue
         if _regex_to_glob(raw) is None:
             reason = "regex syntax KAS cannot express"

@@ -27,6 +27,7 @@ from kiro_crew.atomic_write import atomic_write, on_event_loop, text_bytes
 from kiro_crew.aws_project_profiles import PROJECT_PROFILES_KEY, project_profile_refusals
 from kiro_crew.config import loosening_provenance
 from kiro_crew.config import migration as _migration
+from kiro_crew.config import resolution as _resolution
 from kiro_crew.config import sections as _sections
 from kiro_crew.config import write_provenance
 from kiro_crew.config.loader_locations import (
@@ -143,35 +144,28 @@ def acp_backend_stored_runs_kas() -> bool:
 
 
 def acp_backend_bundle_route() -> bool:
-    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+    """Whether a SAVED ``agent.kas_bundle`` is ``true`` (the bundled KAS engine route).
 
     Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
-    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
-    A stored value that is not a bool reads the same default, as the loader's
-    ``_safe_bool`` does, so the two readers agree.
+    An absent key is ``False``, as the loader reads it: a packaged build only
+    PREFERS the engine for an unset key (``acp.kas_build_default``), which leaves
+    a Kiro CLI pick where it was. A stored value that is not a bool reads ``False``
+    too, as the loader's ``_safe_bool`` does, so the two readers agree.
     """
     stored = _stored_agent_value("kas_bundle")
-    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+    return stored if isinstance(stored, bool) else False
 
 
-def kas_bundle_build_default() -> bool:
-    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+def kas_bundle_declared() -> bool:
+    """Whether ``config.json`` or the overlay names ``agent.kas_bundle`` at all.
 
-    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
-    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
-    bundled engine by default while stable, insider and source builds keep the
-    relay. A fact about the build's bytes, never the ``channel`` file a user can
-    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
-    it is resolved into the loaded value, and ``save()`` leaves the key off disk
-    while it is undeclared, so a nightly install that later takes a stable build
-    goes back to the stable default instead of keeping a value nobody chose.
+    A saved value always wins over the build's preference
+    (``acp.kas_build_default``), so the route asks this before applying it.
     """
-    from kiro_crew.build_channel import is_nightly_build
-
-    return is_nightly_build()
+    return _agent_key_declared("kas_bundle")
 
 
 #: The ``agent`` keys whose absent value is resolved from the host or the build,
@@ -1012,6 +1006,12 @@ def update_config_locked(
     * **Symlink-safe.** The target path is resolved before locking, so a
       symlinked config is updated in place (matching
       ``write_config_atomically``'s behavior).
+    * **Retired keys go.** A write to the base ``config.json`` (*path* is
+      ``config_path()``, however the data home is spelled) drops the retired
+      keys and map entries (``resolution.drop_retired_section_keys``) from what
+      *mutate* returned, as the load-time warning promises; every other key (bar
+      the ``meta`` stamp *stamp_meta* adds), and every other file, is written as
+      returned.
 
     Parameters
     ----------
@@ -1068,6 +1068,10 @@ def update_config_locked(
         (including a contended ``wait_for_lock=False`` acquire).
     """
     p = path if path is not None else config_path()
+    # Judged by location, not spelling (the settings import builds *p* from the raw
+    # KIROCREW_HOME), and before the symlink resolve below follows a symlinked file.
+    base = config_path()
+    is_base = p.name == base.name and p.parent.resolve() == base.parent.resolve()
     # Resolve symlinks before locking (same logic as write_config_atomically)
     # so the sidecar sits beside the ACTUAL file, not the symlink.
     try:
@@ -1087,6 +1091,10 @@ def update_config_locked(
         result = mutate(data)
         if result is None:
             return data
+        if is_base:
+            # Every locked raw edit lands here, not in save(), so this is where the retired keys
+            # go; config.local.json is the operator's own file and keeps what it holds.
+            _resolution.drop_retired_section_keys(result)
         if stamp_meta:
             result = stamp_config_meta(result)
         if unreadable is None:
@@ -1195,10 +1203,11 @@ def refresh_config_meta_stamp() -> bool:
     path: a version check on one small file, a rewrite only when it differs.
 
     Deliberately a plain field refresh, not a migration hook: the stamp is
-    replaced, every other key is preserved, and nothing else changes. When
-    the stored version already matches, the file is not rewritten at all
-    (no mtime churn, no ``lastTouchedAt`` bump). Nor is it rewritten while
-    the one-shot legacy ``skills.lazy_load`` rewrite is still due
+    replaced and every other key is preserved, except the retired keys every
+    locked write to ``config.json`` drops. When the stored version already
+    matches, the file is not rewritten at all (no mtime churn, no
+    ``lastTouchedAt`` bump). Nor is it rewritten while the one-shot legacy
+    ``skills.lazy_load`` rewrite is still due
     (``migration.legacy_lazy_load_rewrite_due``): the old stamp is that
     rewrite's proof, and a degraded first load leaves it pending.
 

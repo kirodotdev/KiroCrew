@@ -56,7 +56,7 @@ async def test_a_catalog_read_after_an_in_process_write_reads_one_row_at_any_siz
 ) -> None:
     log = _log(tmp_path, files)
     request = _request(log)
-    await routes_identity._catalog_rows(request)
+    await routes_identity._catalog_rows(request.app["state"])
     reads: list[object] = []
     real = SessionCatalogProjection._listing_row
 
@@ -67,6 +67,6 @@ async def test_a_catalog_read_after_an_in_process_write_reads_one_row_at_any_siz
     monkeypatch.setattr(SessionCatalogProjection, "_listing_row", counted)
 
     log.append("dashboard:chat-0-0", "user", "one more line")
-    rows = await routes_identity._catalog_rows(request)
+    rows = await routes_identity._catalog_rows(request.app["state"])
 
     assert (len(rows), len(reads)) == (files, 1)

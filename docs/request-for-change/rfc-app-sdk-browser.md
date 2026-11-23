@@ -1,25 +1,33 @@
 ---
 title: "App SDK browser: let an app show, read and annotate the browser that its Bot uses"
-status: draft
+status: partial
 author: chenmingwei23
 created: 2026-11-17
 last-audited: 2026-11-20
-audited-at: 0c5d8bd5f3
-doc-pr:
-implementation-prs: [39018, 39020, 39022]
-tracking-issues: []
+audited-at: 2a6a591c20
+doc-pr: 38322
+implementation-prs: [39018, 39022]
+tracking-issues: [39017]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: App SDK Browser
 
-- Status: draft. No maintainer sign-off is recorded: bolichen97's post-merge
-  comment on #38322 calls itself design input, not a sign-off. Steps 1a, 1b and 1c
-  are nevertheless on main behind the default-off `app_browser_sdk` Feature
-  Preview ([#39018](https://github.com/kirodotdev/KiroCrew/pull/39018), [#39022](https://github.com/kirodotdev/KiroCrew/pull/39022), [#39020](https://github.com/kirodotdev/KiroCrew/pull/39020): `apps/browser_sdk.py`,
-  `apps/browser_page_port.py`, `app-sdk/BrowserView.tsx`); steps 2 and 3 are not
-  (checked at `0c5d8bd5f3`). Each step carries its own App Kit doc update.
+- Status: partial. Accepted 2026-11-18, when the maintainer Joe Guo
+  (@iamwhatever) approved and merged
+  [#38322](https://github.com/kirodotdev/KiroCrew/pull/38322). Step 1 is on
+  main behind the default-off `app_browser_sdk` Feature Preview:
+  [#39018](https://github.com/kirodotdev/KiroCrew/pull/39018) (the
+  `permissions.browser` grant, `ctx.browser` and `BrowserView`; `apps/browser_sdk.py`,
+  `app-sdk/BrowserView.tsx`) and
+  [#39022](https://github.com/kirodotdev/KiroCrew/pull/39022) (one gateway door,
+  `run_browser_op`, for browser operations and the app `PagePort`;
+  `apps/browser_page_port.py`). The look-only second view of an app slot's tab
+  is still open in [#39532](https://github.com/kirodotdev/KiroCrew/pull/39532).
+  Steps 2 and 3 are not built (checked at `2a6a591c20`). Each step lands as its
+  own pull request after a maintainer signs the design, and each of those pull
+  requests carries its own App Kit doc update.
 - Related: `rfc-app-agent-tools-third-party-grant.md` (accepted; owns the
   third-party tool path this document depends on and does not redo),
   `rfc-app-sdk-crew-webview.md` and `rfc-app-session-controls.md` (precedents
@@ -298,6 +306,7 @@ The `slots()` method lists only this app's slots.
   slot="myapp-123"                 // required, this app's slot key
   tabId?: string                   // a tab of that slot; default is the current tab
   interactive?: boolean            // may the user take over; default true
+  stayLive?: boolean               // reopen the open tab when the turn folds; default false
   onTakeover?: () => void
   onHandBack?: (note?: string) => void
   onNavigate?: (e: { url: string; title: string }) => void

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 from kiro_crew import agent, hooks, validation
 from kiro_crew.autonudge import NudgeLoop, nudge_cycle_header
@@ -44,7 +44,7 @@ BUNDLED_SCRIPTS = (
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return skill_text(path)
 
 
 def _make_executable(path: Path) -> None:
@@ -194,7 +194,7 @@ class TestClaimPreflightIsDocumented:
     def test_the_skill_does_not_assume_its_scripts_are_present(self):
         """The skill must not assert a bundled count: a reader told three ship has
         no reason to reach the absent-script rule."""
-        body = _flat(SKILL_MD.read_text(encoding="utf-8"))
+        body = _flat(skill_text(SKILL_MD))
         assert "presence is not assumed" in body
         assert "check at first use" in body
         assert "three bundled scripts" not in body

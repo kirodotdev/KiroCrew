@@ -6,7 +6,7 @@
  * session, the pinned prompt) are driven here with the children stubbed and
  * their props captured.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import { forwardRef, type ReactNode } from 'react'
 
@@ -187,6 +187,22 @@ describe('ChatTitleOverlay', () => {
     act(() => { seen.headerMenu!.onReveal!() })
     expect(openSidebar).toHaveBeenCalled()
     expect(phone.setSidebarPinned).not.toHaveBeenCalled()
+  })
+
+  it('names the split chord the keyboard has in the enter-split hover text', () => {
+    render(<ChatTitleOverlay {...base({ splitFeatureEnabled: true, enterSplit: vi.fn() })} />)
+    expect(screen.getByRole('button', { name: 'Enter split view' }).getAttribute('title')).toBe('Split view (Ctrl+D)')
+  })
+
+  it('names ⌘D in the enter-split hover text on a Mac', async () => {
+    const prev = navigator.platform
+    onTestFinished(() => Object.defineProperty(navigator, 'platform', { value: prev, configurable: true }))
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    // A fresh module graph, so utils/platform reads the Mac platform at import.
+    vi.resetModules()
+    const { default: MacTitleOverlay } = await import('./chat/page/ChatTitleOverlay')
+    render(<MacTitleOverlay {...base({ splitFeatureEnabled: true, enterSplit: vi.fn() })} />)
+    expect(screen.getByRole('button', { name: 'Enter split view' }).getAttribute('title')).toBe('Split view (⌘D)')
   })
 
   it('marks a Slack code channel session in the header, and nothing else', () => {

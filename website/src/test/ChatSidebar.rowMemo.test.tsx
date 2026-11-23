@@ -566,3 +566,35 @@ describe('chat sidebar — onOpenSource identity', () => {
     expect(counts).toEqual({})
   })
 })
+
+/**
+ * `canStageSessionRef` turns true when the first chat opens, in the same task
+ * that renders the transcript. It gates one item of a row menu, which reads it
+ * from context while open, so the flip must not reach the row actions object.
+ */
+describe('chat sidebar — canStageSessionRef flip', () => {
+  it('turning canStageSessionRef on re-renders no rows', () => {
+    const slots = [slot('k-a'), slot('k-b'), slot('k-c')]
+    const { wrap } = renderSidebarWithSlots(slots)
+    let setCanStage: ((v: boolean) => void) | undefined
+    function Harness() {
+      const [canStage, set] = React.useState(false)
+      setCanStage = set
+      return (
+        <ChatSidebar
+          slots={slots} activeSlot={null} unreadSlots={EMPTY_UNREAD}
+          history={EMPTY_HISTORY} historyHasMore={false} defaultAgent="" installedAgents={EMPTY_AGENTS}
+          onDropSessionRef={NOOP_DROP_SESSION_REF} canStageSessionRef={canStage}
+        />
+      )
+    }
+    render(wrap(<Harness />))
+    expect(counts['k-a']).toBeGreaterThan(0)
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    act(() => { setCanStage!(true) })
+
+    expect(counts).toEqual({})
+  })
+})
+const NOOP_DROP_SESSION_REF = () => {}

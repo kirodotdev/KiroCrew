@@ -149,6 +149,31 @@ describe('useSlotListSync: an on-screen pane that is not the active slot', () =>
       stop()
     }
   })
+
+  it('reads the pane again when its _done came first and the warm then fails (#39620)', async () => {
+    const MEMBER = 'slot-member-race'
+    const stop = new QueryObserver(queryClient, {
+      queryKey: slotMessagesQueryKey(MEMBER, undefined),
+      queryFn: () => new Promise(() => {}),
+      staleTime: Infinity,
+    }).subscribe(() => {})
+    const member = (over: Partial<ChatSlot> = {}) =>
+      row({ key: MEMBER, last_message: 'member reply', turn: 1, turn_gen: 'gen-a', ...over } as Partial<ChatSlot>)
+    const sync = mountSync()
+    deliver(sync, [row(), member()])
+    await vi.waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(1))
+    vi.mocked(api.chatSlotDetail).mockClear()
+    let fail: (e: Error) => void = () => {}
+    vi.mocked(api.chatSlotDetail).mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+    deliver(sync, [row(), member({ messages: 4, last_message: 'patrol report', turn: 2 } as Partial<ChatSlot>)])
+    expect(api.chatSlotDetail).toHaveBeenCalledTimes(1)
+    // The `_done` arrives while the warm is in flight and skips its own read.
+    expect(takeIdleRowRefresh(MEMBER, { turn: 2, turn_gen: 'gen-a' })).toBe(true)
+    fail(new Error('gateway down'))
+    await vi.waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.chatSlotDetail).mock.calls[1][0]).toBe(MEMBER)
+    stop()
+  })
 })
 
 /** A queued entry's held verdict rides only the queue a slot read returns, so

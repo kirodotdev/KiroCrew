@@ -21,6 +21,7 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_VALUES,
+    LESSON_RULES_HEADER,
     any_request_overlap,
     contains_volatile_lesson_fact,
     order_by_request_relevance,
@@ -186,22 +187,29 @@ class Lesson:
 def _lesson_lines(path: Path) -> list[str | None]:
     """The lines of *path*, with ``None`` for a line that does not decode.
 
-    Read exactly as before (the platform's default text decoding), so a file that
-    loads today reads the same. Only when that whole-file decode fails is the file
-    split into lines and each decoded on its own, so one bad byte costs its own
-    line instead of every lesson in the file.
+    Read as UTF-8, like ``legacy_lessons``. Under another code page (cp1252 on a
+    Windows host without UTF-8 mode) a hand-edited UTF-8 row still decodes, but
+    into the wrong characters, and the next save writes them back for good. Rows
+    the store writes are ASCII, so they read the same either way. Only when the
+    whole-file decode fails is the file split into lines, each tried as UTF-8 and
+    then with the platform's default codec, so a row saved in that code page
+    still reads and one bad byte costs its own line instead of every lesson.
     """
     try:
-        return list(path.read_text().splitlines())
+        return list(path.read_text(encoding="utf-8").splitlines())
     except UnicodeDecodeError:
-        import locale  # in-function: only reached for a damaged file
+        import locale  # in-function: only reached for a file that is not all UTF-8
 
-        encoding = locale.getpreferredencoding(False)
+        encodings = ("utf-8", locale.getpreferredencoding(False))
     lines: list[str | None] = []
     for raw in path.read_bytes().splitlines():
-        try:
-            lines.append(raw.decode(encoding))
-        except UnicodeDecodeError:
+        for encoding in encodings:
+            try:
+                lines.append(raw.decode(encoding))
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
             lines.append(None)
     return lines
 
@@ -1018,10 +1026,7 @@ class LessonStore:
             ranked_directives,
             directive_room,
             omission_kind=context_omissions.LESSON_RULES,
-            header=(
-                "[Learned corrections — retained rules from past mistakes.\n"
-                "Each binds under CRITICAL RULES but adds no ask case.]"
-            ),
+            header=LESSON_RULES_HEADER + "]",
             footer="[End of learned corrections]",
             omission=(
                 "[Context budget: omitted {count} of {total} retained rules above the "

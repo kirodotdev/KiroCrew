@@ -444,6 +444,31 @@ def test_a_resumed_session_sends_its_own_envelope(harness, tmp_path):
     assert not _seed(tmp_path).exists()
 
 
+def test_a_named_agents_built_ins_reach_the_shared_sessions_envelope(
+    harness, tmp_path, monkeypatch
+):
+    """The built-ins the mirror's projection keeps (a named agent's ``tools`` list) ride
+    session/new and session/load on a shared process, as on the per-session client."""
+    from kiro_crew.providers.mirrors import claude_code as mirror_mod
+
+    kept = ("Read", "Grep", "Glob", "ToolSearch")
+    monkeypatch.setattr(mirror_mod, "_session_builtin_tools", lambda *_args: kept)
+    plane = _Plane({"sessionId": "s-1", "modes": {"currentModeId": "default"}})
+    rt = _claude_runtime(plane)
+    asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
+    new = [p for m, p in plane.sent if m == "session/new"]
+    assert new[0]["_meta"]["claudeCode"]["options"]["tools"] == list(kept)
+    asyncio.run(rt.terminate_session("s-1"))
+
+    load_plane = _LoadPlane()
+    load_rt = _claude_runtime(load_plane)
+    load_rt._can_load_session = True
+    asyncio.run(load_rt.load_session("", "s-5", cwd=str(tmp_path), agent="kirocrew"))
+    loads = [p for m, p in load_plane.sent if m == "session/load"]
+    assert loads[0]["_meta"]["claudeCode"]["options"]["tools"] == list(kept)
+    asyncio.run(load_rt.terminate_session("s-5"))
+
+
 def test_a_session_seeds_its_own_model_over_the_runtimes(harness, tmp_path):
     """On a process a session tree shares, the runtime's model is the founder's."""
 
@@ -565,12 +590,13 @@ def test_a_remote_bound_claude_chat_never_asks_for_a_placement(tmp_path, monkeyp
 class _SubstitutingPlane(_Plane):
     """A ``session/new`` the organization policy refuses once, naming a substitute."""
 
-    def __init__(self, new_response: dict[str, Any]) -> None:
+    def __init__(self, new_response: dict[str, Any], max_refusals: int = 1) -> None:
         super().__init__(new_response)
         self.refusals = 0
+        self.max_refusals = max_refusals
 
     async def send_and_await(self, method: str, params: dict, timeout: Any = None) -> dict:
-        if method == "session/new" and not self.refusals:
+        if method == "session/new" and self.refusals < self.max_refusals:
             self.sent.append((method, params))
             self.refusals += 1
             from kiro_crew.acp.runtime_reader_loop import _runtime_rpc_exception
@@ -781,6 +807,118 @@ def test_a_spec_tightened_after_prepare_is_the_one_the_session_enforces(
     asks = sent["_meta"]["claudeCode"]["options"]["settings"]["permissions"]["ask"]
     assert set(CLAUDE_SHELL_ASK_RULES) <= set(asks)
     asyncio.run(rt.terminate_session("s-19"))
+
+
+def test_a_served_pin_is_named_on_the_retry_and_not_adopted_twice(harness, tmp_path, monkeypatch):
+    """The refused model is the inherited default, not the session's pin: a pin the
+    backend advertises is what the retry's seed names, and a second refusal of it
+    is not retried."""
+    import json
+
+    from kiro_crew import model_registry
+
+    pin = "global.anthropic.claude-opus-4-8[1m]"
+    other = "global.anthropic.claude-sonnet-4-6[1m]"
+
+    async def scenario() -> tuple[bool, bool]:
+        state = await _prepared_for_envelope(harness, tmp_path)
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {state._model_registry_namespace: (pin, other)},
+        )
+        state._model = pin
+        first = await harness.adopt_substituted_model(state, other)
+        assert state._model == pin
+        assert json.loads(_seed(tmp_path).read_text()).get("model") == pin
+        second = await harness.adopt_substituted_model(state, other)
+        # The served pin was refused too: the second adoption falls back to the
+        # offered model, and a third has nothing new to name.
+        assert state._model == other
+        assert json.loads(_seed(tmp_path).read_text()).get("model") == other
+        return first, second
+
+    assert asyncio.run(scenario()) == (True, True)
+
+
+_ADOPTED = "global.anthropic.claude-opus-4-8[1m]"
+_OFFERED = "global.anthropic.claude-sonnet-4-6[1m]"
+
+
+@pytest.mark.parametrize(
+    ("advertised", "substitute", "adopts", "model"),
+    [
+        pytest.param((), _OFFERED, True, _OFFERED, id="no_cache"),
+        pytest.param((_OFFERED,), _OFFERED, True, _OFFERED, id="cache_agrees"),
+        pytest.param((_ADOPTED, _OFFERED), _OFFERED, True, _OFFERED, id="cache_stale"),
+        pytest.param((_ADOPTED,), _ADOPTED, False, _ADOPTED, id="adopted_model_offered_again"),
+    ],
+)
+def test_a_model_adopted_earlier_and_refused_now_falls_back_to_the_offered_one(
+    harness, tmp_path, monkeypatch, advertised, substitute, adopts, model
+):
+    """The per-chat client's case on the shared host: a model the seed already adopted
+    and the policy now refuses is not named again, even when an advertised list older
+    than that policy still names it; the offered model is."""
+    import json
+
+    from kiro_crew import model_registry
+    from kiro_crew.acp import seed_provenance as sp
+
+    # Each case starts with no live claim on the seed: a state an earlier case
+    # left behind would otherwise hold the file and decline this case's write.
+    monkeypatch.setattr(sp, "_RECORDS", {})
+    monkeypatch.setattr(sp, "_LIVE", {})
+    monkeypatch.setattr(sp, "_SHARERS", {})
+    monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+
+    async def scenario() -> bool:
+        state = await _prepared_for_envelope(harness, tmp_path)
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {state._model_registry_namespace: advertised},
+        )
+        state._model = _ADOPTED
+        state._adopted_substitute_model = _ADOPTED
+        adopted = await harness.adopt_substituted_model(state, substitute)
+        assert state._model == model
+        if adopted:
+            assert json.loads(_seed(tmp_path).read_text()).get("model") == model
+        return adopted
+
+    assert asyncio.run(scenario()) is adopts
+
+
+@pytest.mark.parametrize(
+    ("refusals", "starts", "started"),
+    [(2, 3, True), (99, 3, False)],
+    ids=["the_offered_model_starts", "never_more_than_two_resends"],
+)
+def test_a_refused_pin_falls_back_once_to_the_offered_model(
+    harness, tmp_path, monkeypatch, refusals, starts, started
+):
+    """A session on the offered model beats one that never starts: after the served
+    pin is refused as well, the start is re-sent once on the offered model, and
+    never a third time."""
+    from kiro_crew.acp.client_claude import ClaudeAcpClient
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    monkeypatch.setattr(
+        ClaudeAcpClient, "_substitution_retry_model", lambda self, substitute: "opus-pin"
+    )
+    plane = _SubstitutingPlane(
+        {"sessionId": "s-20", "modes": {"currentModeId": "default"}}, max_refusals=refusals
+    )
+    rt = _claude_runtime(plane)
+    if started:
+        asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
+        assert rt._session_harness_states["s-20"]._model == "sonnet-y"
+        asyncio.run(rt.terminate_session("s-20"))
+    else:
+        with pytest.raises(AcpRuntimeError):
+            asyncio.run(rt.create_session(cwd=str(tmp_path), agent="kirocrew"))
+    assert [m for m, _ in plane.sent].count("session/new") == starts
 
 
 def test_a_substitution_retry_is_refused_once_the_settings_file_was_replaced(
@@ -1683,10 +1821,7 @@ def test_the_shared_envelope_asks_what_the_per_session_client_asks(
     carries no pooled stubs: with them the shared list may name more servers."""
     from types import SimpleNamespace
 
-    from kiro_crew.acp.client_claude_session import (
-        _claude_session_meta,
-        _prepare_claude_held_asks,
-    )
+    from kiro_crew.acp.client_claude_session import _claude_session_meta, _prepare_claude_held_asks
 
     held_ledger("*")
     client = SimpleNamespace(

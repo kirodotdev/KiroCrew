@@ -12,6 +12,7 @@ BEFORE the timer is armed, once per dump.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import time
@@ -22,6 +23,8 @@ from stall_dump_helpers import CHAT_STACK, CRON_STACK, write_dump
 
 from kiro_crew import cron_inflight
 from kiro_crew.cron import CronJob, CronService, CronStoreUnreadable
+from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.cron_service.execution import interruption_note
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.stall_attribution import attribute_dump, describe
 from kiro_crew.testing.wait import finished
@@ -36,10 +39,12 @@ def dead_pids(monkeypatch: pytest.MonkeyPatch) -> set[int]:
     return alive
 
 
-def _abandoned_marker(base: Path, job_id: str, name: str, pid: int, started_at: float) -> None:
+def _abandoned_marker(
+    base: Path, job_id: str, name: str, pid: int, started_at: float, run: str | None = None
+) -> None:
     d = cron_inflight.running_dir(base)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{job_id}.json").write_text(
+    (d / (f"{job_id}.json" if run is None else f"{job_id}.{run}.json")).write_text(
         json.dumps(
             {
                 "job_id": job_id,
@@ -199,6 +204,233 @@ class TestBreaker:
             assert cron_inflight.read_markers(tmp_path) == []
         finally:
             await svc.stop()
+
+    async def test_a_run_no_dump_explains_is_filed_before_its_marker_goes(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A crash, a kill or a power loss leaves no dump, and the cut run ran
+        no ``finally``: its marker is all that says it ran. The boot files it as
+        ``stop()`` files a run it cut -- the job waits for its next slot, a
+        cancelled row, the interrupt notice -- and only then removes the marker."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="hard-cut", message="m", every_secs=3600)
+        started_at = time.time() - 600
+        # The previous run's stamp: overdue now, so left as it is the timer
+        # would run the job again at once, against what the notice says.
+        job.last_run_ts = started_at - 3600
+        seed._save()
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_011, started_at)
+        notices: list[tuple[str, str]] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            rows, total = await svc._history.get_job_history(job.id)
+            assert total == 1, "the cut run left no history row"
+            note = interruption_note(dispatched=True)
+            assert (rows[0]["status"], rows[0]["started_at"], rows[0]["error"]) == (
+                "cancelled",
+                started_at,
+                note,
+            )
+            assert cron_inflight.read_markers(tmp_path) == []
+            filed = CronService(base_dir=tmp_path).get_job(job.id)
+            assert filed is not None and filed.last_run_ts == started_at
+        finally:
+            await svc.stop()
+        assert notices == [(job.id, note)]
+
+    async def test_a_run_cancel_already_filed_is_not_filed_again(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """``cancel()`` and the reaper file a run under its marker token before
+        its task clears the marker, so a process that ends in between leaves a
+        marker for a run that already has its row. The row, not a timestamp,
+        says so: the job's ``last_run_ts`` is still the claim's, before the
+        marker's start."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="cancelled", message="m", every_secs=3600)
+        started_at = time.time() - 600
+        job.last_run_ts = started_at - 5
+        seed._save()
+        filed = CronRunRecord(
+            run_id="cancelledrun",
+            job_id=job.id,
+            started_at=started_at - 5,
+            finished_at=started_at + 30,
+            status="cancelled",
+        )
+        assert seed._history.append_sync(filed)
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_013, started_at, run="cancelledrun")
+        notices: list[str] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append(j.id)
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            rows, total = await svc._history.get_job_history(job.id)
+            assert total == 1 and rows[0]["run_id"] == "cancelledrun"
+            assert cron_inflight.read_markers(tmp_path) == []
+        finally:
+            await svc.stop()
+        assert notices == []
+
+    async def test_a_cut_run_is_filed_though_a_later_run_stamped_the_job(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A marker kept by a failed row outlives the job's later runs, so the
+        later ``last_run_ts`` says nothing about the cut run: it is filed under
+        its own token, and the later run's stamp stays."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="later-run", message="m", every_secs=3600)
+        started_at = time.time() - 600
+        job.last_run_ts = started_at + 300
+        seed._save()
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_014, started_at, run="cutrun")
+        notices: list[str] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append(j.id)
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            rows, total = await svc._history.get_job_history(job.id)
+            assert total == 1
+            assert (rows[0]["run_id"], rows[0]["status"], rows[0]["started_at"]) == (
+                "cutrun",
+                "cancelled",
+                started_at,
+            )
+            assert cron_inflight.read_markers(tmp_path) == []
+            reloaded = CronService(base_dir=tmp_path).get_job(job.id)
+            assert reloaded is not None and reloaded.last_run_ts == started_at + 300
+        finally:
+            await svc.stop()
+        assert notices == [job.id]
+
+    async def test_a_cut_run_whose_history_cannot_be_read_keeps_its_marker(
+        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unread history file is not one without the run's row: the marker
+        stays for the next boot, and nothing is filed or sent."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="unreadable", message="m", every_secs=3600)
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_015, time.time() - 600, run="unreadrun")
+        monkeypatch.setattr(
+            CronHistoryStore,
+            "_get_run_detail_sync",
+            lambda self, job_id, run_id: (_ for _ in ()).throw(OSError(errno.EIO, "io")),
+        )
+        notices: list[str] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append(j.id)
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            assert (await svc._history.get_job_history(job.id))[1] == 0
+        finally:
+            await svc.stop()
+        assert [m.run_token for m in cron_inflight.read_markers(tmp_path)] == ["unreadrun"]
+        assert notices == []
+
+    @pytest.mark.parametrize("cause", ["disk-full", "history-denied", "store-quarantined"])
+    async def test_a_cut_run_whose_row_is_not_written_keeps_its_marker(
+        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch, cause: str
+    ) -> None:
+        """The marker is the only evidence of the cut run, so it stays for the
+        next boot until a row has been written, and no notice goes out first:
+        also when a denial turned history off, or the store was moved aside."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="full-disk", message="m", every_secs=3600)
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_012, time.time() - 600)
+        if cause == "disk-full":
+            monkeypatch.setattr(
+                CronHistoryStore,
+                "_append_sync",
+                lambda self, record: (_ for _ in ()).throw(OSError(errno.ENOSPC, "disk full")),
+            )
+        elif cause == "history-denied":
+            # ``start()``'s ``rotate_all()`` degrades the store before the breaker runs.
+            monkeypatch.setattr(
+                CronHistoryStore,
+                "_rotate_all_sync",
+                lambda self: (_ for _ in ()).throw(PermissionError(errno.EACCES, "denied")),
+            )
+        else:
+            seed._path.write_bytes(b"{")
+        notices: list[str] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append(j.id)
+
+        quarantine = cause == "store-quarantined"
+        svc = await CronService.create(base_dir=tmp_path, quarantine_unreadable=quarantine)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        await svc.stop()
+        assert (svc.quarantined_store is not None) is quarantine
+        assert svc._history.enabled is (cause != "history-denied")
+        assert [m.job_id for m in cron_inflight.read_markers(tmp_path)] == [job.id]
+        assert notices == []
+
+    @pytest.mark.parametrize("settled", [True, False], ids=["claimed-dump", "fresh-dump"])
+    async def test_a_run_cut_after_an_older_dump_is_filed(
+        self, tmp_path: Path, dead_pids: set[int], settled: bool
+    ) -> None:
+        """A dump stays on disk long after its stall, so a later hard exit that
+        left no dump of its own still finds one; the run that exit cut is filed."""
+        seed = CronService(base_dir=tmp_path)
+        cut = seed.add_job(name="cut", message="m", every_secs=3600)
+        now = time.time()
+        dump = write_dump(tmp_path / "dumps", 4_100_016, CRON_STACK, mtime=now - 30)
+        _abandoned_marker(tmp_path, cut.id, cut.name, 4_100_017, now - 10, run="laterexit")
+        if settled:
+            assert cron_inflight.write_claim(tmp_path, dump.name)
+        else:
+            stalled = seed.add_job(name="stalled", message="m", every_secs=3600)
+            _abandoned_marker(tmp_path, stalled.id, stalled.name, 4_100_016, now - 60)
+        notices: list[str] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append(j.id)
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            rows, total = await svc._history.get_job_history(cut.id)
+            assert total == 1, "the run the later exit cut left no history row"
+            assert (rows[0]["run_id"], rows[0]["status"], rows[0]["started_at"]) == (
+                "laterexit",
+                "cancelled",
+                now - 10,
+            )
+            if not settled:
+                j = svc.get_job(stalled.id)
+                assert j is not None and j.auto_paused is True
+                assert (await svc._history.get_job_history(stalled.id))[1] == 0
+            assert cron_inflight.read_markers(tmp_path) == []
+        finally:
+            await svc.stop()
+        assert notices == [cut.id]
 
     async def test_an_unpersisted_pause_is_retried_on_the_next_boot(
         self, tmp_path: Path, dead_pids: set[int]

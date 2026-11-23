@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, renderHookWithProviders, createTestStore } from './helpers'
 import RelayCrewPaneHost from '../components/RelayCrewPaneHost'
+import { useTheme } from '../hooks/useTheme'
 import { RELAY_PANE_WARM_CAP, relayPaneBridge, relayPaneRect, useRelayTabs, type RelayPaneEvent } from '../lib/relayCrewPanes'
 import { openRelayCrewTab } from '../hooks/useRelayViewerCrews'
 import { NavItem } from '../shell/nav/navRow'
@@ -9,9 +10,10 @@ import { localCovered, relayPaneOpened, setActiveId } from '../store/instancesSl
 
 const RECT = { x: 236, y: 42, width: 700, height: 500 }
 
-function installBridge(openAnswer: { ok: boolean; error?: string; window?: boolean } = { ok: true }) {
+function installBridge(openAnswer: { ok: boolean; error?: string; window?: boolean } = { ok: true }, paneLoadEvents = true) {
   const listeners: Array<(e: RelayPaneEvent) => void> = []
   const api = {
+    paneLoadEvents,
     open: vi.fn(async () => ({ ok: true })),
     closeAll: vi.fn(async () => undefined),
     openPane: vi.fn(async () => openAnswer),
@@ -124,10 +126,110 @@ describe('relay Crew panes in the main window', () => {
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
   })
 
+  it('the local top bar takes the mode of the relay Crew in front, unsaved, and drops it on Local (row 69)', async () => {
+    const { emit } = installBridge()
+    const setTitleBarOverlayTheme = vi.fn()
+    const setThemeAccent = vi.fn()
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = { setTitleBarOverlayTheme, setThemeAccent }
+    document.documentElement.style.setProperty('--accent', '#123456')
+    onTestFinished(() => {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI
+      document.documentElement.style.removeProperty('--accent')
+    })
+    mountMain()
+    const store = storeWith(['r1'], 'r1')
+    const Probe = () => <span data-testid="theme-probe">{useTheme().theme}</span>
+    renderWithProviders(<><RelayCrewPaneHost /><Probe /></>, { store })
+    const own = document.documentElement.dataset.mode
+    const flip = own === 'dark' ? false : true
+    // Before its page has drawn, the pane's colour is the boot page's: ignored.
+    emit({ type: 'theme', endpointId: 'r1', index: -1, dark: flip })
+    expect(document.documentElement.dataset.mode).toBe(own)
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    setThemeAccent.mockClear()
+    emit({ type: 'loaded', endpointId: 'r1', index: -1 })
+    await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
+    // Every reader of the context's mode (top-bar art) follows too, and so do the
+    // Windows caption buttons (#40254).
+    expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(flip ? 'dark' : 'light')
+    expect(screen.getByTestId('theme-probe').textContent).toBe(flip ? 'dark' : 'light')
+    // The shell saves the accent for the next launch's splash: not the borrowed mode's.
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(setThemeAccent).not.toHaveBeenCalled()
+    expect(localStorage.getItem('mc-theme')).toBeNull()
+    act(() => { store.dispatch(setActiveId(null)) })
+    await waitFor(() => expect(document.documentElement.dataset.mode).toBe(own))
+    expect(setTitleBarOverlayTheme).toHaveBeenLastCalledWith(own)
+    act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' })) })
+    await waitFor(() => expect(document.documentElement.dataset.mode).toBe(flip ? 'dark' : 'light'))
+    emit({ type: 'closed', endpointId: 'r1', index: -1 })
+    await waitFor(() => expect(document.documentElement.dataset.mode).toBe(own))
+  })
+
+  it('with a Scheduled preference the shell is never handed the borrowed mode (row 69)', async () => {
+    localStorage.setItem('mc-theme', 'schedule')
+    onTestFinished(() => { localStorage.removeItem('mc-theme') })
+    const setThemeMode = vi.fn()
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = { setThemeMode }
+    onTestFinished(() => { delete (window as unknown as { electronAPI?: unknown }).electronAPI })
+    const { emit } = installBridge()
+    mountMain()
+    const store = storeWith(['r1'], 'r1')
+    renderWithProviders(<RelayCrewPaneHost />, { store })
+    await waitFor(() => expect(document.documentElement.dataset.modePref).toBe('schedule'))
+    const own = document.documentElement.dataset.mode as 'dark' | 'light'
+    const borrowed = own === 'dark' ? 'light' : 'dark'
+    emit({ type: 'loaded', endpointId: 'r1', index: -1 })
+    emit({ type: 'theme', endpointId: 'r1', index: -1, dark: borrowed === 'dark' })
+    await waitFor(() => expect(document.documentElement.dataset.mode).toBe(borrowed))
+    // The shell reads data-mode only under a Scheduled preference; it is told the own mode instead.
+    expect(document.documentElement.dataset.modePref).toBe(own)
+    expect(setThemeMode).not.toHaveBeenCalledWith(borrowed)
+    act(() => { store.dispatch(setActiveId(null)) })
+    await waitFor(() => expect(document.documentElement.dataset.modePref).toBe('schedule'))
+  })
+
+  it('shows the Crew name and Connecting… from the click until its page loads, and nothing after a refusal (row 73)', async () => {
+    let answer: (r: { ok: boolean; error?: string }) => void = () => {}
+    const { api, emit } = installBridge()
+    api.openPane.mockImplementation(() => new Promise(r => { answer = r }))
+    mountMain()
+    const store = createTestStore()
+    renderWithProviders(<RelayCrewPaneHost />, { store })
+    expect(screen.queryByTestId('relay-crew-connecting')).toBeNull()
+    let opened: Promise<unknown> = Promise.resolve()
+    act(() => { opened = openRelayCrewTab('r1', 'Team Lab', store.dispatch) })
+    const cover = await screen.findByTestId('relay-crew-connecting')
+    expect(cover.textContent).toContain('Team Lab')
+    // It fills its parent, which App.tsx makes exactly <main>'s box (not the docked terminal's).
+    expect(cover.className).toContain('absolute inset-0')
+    expect(cover.textContent).toContain('Connecting…')
+    await act(async () => { answer({ ok: true }); await opened })
+    expect(store.getState().instances.relayActive).toBe('r1')
+    expect(screen.getByTestId('relay-crew-connecting').textContent).toContain('Team Lab')
+    emit({ type: 'loaded', endpointId: 'r1', index: -1 })
+    await waitFor(() => expect(screen.queryByTestId('relay-crew-connecting')).toBeNull())
+    act(() => { opened = openRelayCrewTab('r2', 'Other', store.dispatch) })
+    expect((await screen.findByTestId('relay-crew-connecting')).textContent).toContain('Other')
+    await act(async () => { answer({ ok: false, error: 'CREW_OFFLINE' }); await opened })
+    expect(screen.queryByTestId('relay-crew-connecting')).toBeNull()
+    expect(store.getState().instances.relayActive).toBe('r1')
+  })
+
+  it('with a shell that sends no load event, the cover goes with the answer, not with a load that never comes', async () => {
+    installBridge({ ok: true }, false)
+    mountMain()
+    const store = createTestStore()
+    renderWithProviders(<RelayCrewPaneHost />, { store })
+    await act(async () => { await openRelayCrewTab('r1', 'Team Lab', store.dispatch) })
+    expect(store.getState().instances.relayActive).toBe('r1')
+    expect(screen.queryByTestId('relay-crew-connecting')).toBeNull()
+  })
+
   it('past the warm cap the least recent hidden pane closes and its tab goes with it, so no tab lacks a pane', async () => {
     mountMain()
     const { api, emit } = installBridge()
-    const ids = ['r1', 'r2', 'r3', 'r4'].slice(0, RELAY_PANE_WARM_CAP + 1)
+    const ids = Array.from({ length: RELAY_PANE_WARM_CAP + 1 }, (_, i) => `r${i + 1}`)
     const store = storeWith(ids, 'r1')
     renderWithProviders(<RelayCrewPaneHost />, { store })
     // Opened in order, then r1 again: r2 is the least recent hidden pane.
@@ -234,14 +336,14 @@ describe('relay pane windows, SSH Crews and the local Crew', () => {
 
   it('a late answer past the warm cap is the one that closes, not a tab the person used', async () => {
     mountMain()
-    const store = storeWith(['r1', 'r2', 'r3'], 'r1')
+    const store = storeWith(Array.from({ length: RELAY_PANE_WARM_CAP }, (_, i) => `r${i + 1}`), 'r1')
     const { api, answer } = deferredBridge()
     renderWithProviders(<RelayCrewPaneHost />, { store })
-    const opening = openRelayCrewTab('r4', 'Four', store.dispatch)
+    const opening = openRelayCrewTab('late', 'Late', store.dispatch)
     act(() => { store.dispatch(relayPaneOpened({ id: 'r2', name: 'R2' })) })
     await answer(0)
     await opening
-    await waitFor(() => expect(api.closePane).toHaveBeenCalledWith('r4'))
+    await waitFor(() => expect(api.closePane).toHaveBeenCalledWith('late'))
     expect(api.closePane).toHaveBeenCalledTimes(1)
     expect(store.getState().instances.relayActive).toBe('r2')
   })

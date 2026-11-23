@@ -9,7 +9,7 @@
  * when both figures came back; nothing here estimates one.
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, ExternalLink, RefreshCw, Share2 } from 'lucide-react'
+import { AlertTriangle, Check, ExternalLink, Info, RefreshCw, Share2 } from 'lucide-react'
 import type { McpGatewayFootprint, McpManagedServer } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -30,20 +30,31 @@ import {
   detailsWhyKey,
   DOCS_URL,
   gibNumber,
+  launchDiff,
+  launchIsApprovable,
   type LaunchRefusal,
   withCurrentLaunch,
 } from './mcpManagementModel'
 import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { McpShareDiagram } from './McpShareDiagram'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
+const SHARE_DIAGRAM_ID = 'mcp-share-diagram'
+/** The sharing card's anchor: `/capabilities?tab=mcp-servers&view=sharing#mcp-sharing`
+ *  opens the Sharing view and scrolls here. */
+export const SHARING_ANCHOR_ID = 'mcp-sharing'
+/** Set once sharing has been turned on here, so the diagram stops showing by default. */
+export const SHARE_DIAGRAM_SEEN_KEY = 'kirocrew.mcp.shareDiagramSeen'
 
 function gib(bytes: number): string {
   return fmtNumber(gibNumber(bytes), { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
-/** The page-wide switch, drawn larger than a row's and named by the hero title. */
+/** The page-wide switch, drawn larger than a row's, with its own name. */
 function HeroSwitch({
   on,
   disabled,
@@ -60,8 +71,9 @@ function HeroSwitch({
       type="button"
       role="switch"
       aria-checked={on}
-      aria-labelledby={HERO_TITLE_ID}
+      aria-label={i18nT('pages.mcpManagement.share_switch_label')}
       aria-describedby={describedBy}
+      {...uiLocation('mcp.share-switch')}
       disabled={disabled}
       onClick={onClick}
       className="inline-flex shrink-0 items-center rounded-full p-1 transition-colors hover:bg-[var(--hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -89,6 +101,7 @@ export function SharingHero({
   on,
   switchDisabled,
   switchNote,
+  stateKnown = true,
   onToggle,
   footprint,
   footprintFailed,
@@ -103,6 +116,9 @@ export function SharingHero({
   switchDisabled: boolean
   /** Why the switch is disabled, read to assistive tech only (no visible line). */
   switchNote?: string | null
+  /** False while the sharing state is still loading: the diagram waits for it,
+   *  so a gateway that already shares never flashes the first-use diagram. */
+  stateKnown?: boolean
   onToggle: () => void
   footprint?: McpGatewayFootprint
   /** The footprint read itself failed (a request error, not a null figure). */
@@ -130,8 +146,25 @@ export function SharingHero({
   const showNow = typeof now === 'number'
   const showWithSharing = showNow && typeof withSharing === 'number'
   const showBanner = on && (staleCount > 0 || !!reloadNote || !!reloadError)
+  // Shown until sharing is first turned on; after that, behind the info button.
+  const [unseen, setUnseen] = useState(() => safeGetItem(SHARE_DIAGRAM_SEEN_KEY) !== '1')
+  const firstUse = stateKnown && !on && unseen
+  const [diagramOpen, setDiagramOpen] = useState(false)
+  const [diagramRun, setDiagramRun] = useState(0)
+  // The page is lazy, so the browser's own jump to #mcp-sharing finds nothing yet.
+  useEffect(() => {
+    if (window.location.hash === `#${SHARING_ANCHOR_ID}`) {
+      document.getElementById(SHARING_ANCHOR_ID)?.scrollIntoView?.({ block: 'start' })
+    }
+  }, [])
+  useEffect(() => {
+    if (!on) return
+    safeSetItem(SHARE_DIAGRAM_SEEN_KEY, '1')
+    setUnseen(false)
+  }, [on])
   return (
     <section
+      id={SHARING_ANCHOR_ID}
       // What the footprint read is doing, for a test to wait on instead of a
       // timer: pending, ready (answered, figures or not), refused or error.
       data-footprint={footprintRefused ? 'refused' : footprintFailed ? 'error' : footprint ? 'ready' : 'pending'}
@@ -146,9 +179,30 @@ export function SharingHero({
             <Share2 size={16} />
           </span>
           <div className="min-w-0">
-            <h2 id={HERO_TITLE_ID} className="text-[15px] font-semibold leading-snug text-[var(--text)]">
-              {i18nT('pages.mcpManagement.hero_title')}
-            </h2>
+            <div className="flex min-w-0 items-center gap-1">
+              <h2 id={HERO_TITLE_ID} className="text-[15px] font-semibold leading-snug text-[var(--text)]">
+                {i18nT('pages.mcpManagement.hero_title')}
+              </h2>
+              {/* Toggles the diagram; each time it opens, it plays again. */}
+              <button
+                type="button"
+                aria-label={i18nT('pages.mcpManagement.share_diagram_show')}
+                aria-expanded={firstUse || diagramOpen}
+                aria-controls={SHARE_DIAGRAM_ID}
+                onClick={() => {
+                  if (firstUse || diagramOpen) {
+                    setUnseen(false)
+                    setDiagramOpen(false)
+                  } else {
+                    setDiagramRun(n => n + 1)
+                    setDiagramOpen(true)
+                  }
+                }}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+              >
+                <Info size={14} aria-hidden="true" />
+              </button>
+            </div>
             <a
               href={DOCS_URL}
               target="_blank"
@@ -172,6 +226,8 @@ export function SharingHero({
           </span>
         )}
       </div>
+
+      {(firstUse || diagramOpen) && <McpShareDiagram id={SHARE_DIAGRAM_ID} run={diagramRun} />}
 
       {/* A non-owner's 403 is still a rejected request, so it goes through
           ErrorNotice (errors-use-error-notice), but says what happened: the
@@ -286,6 +342,7 @@ export function ApprovalCard({
           className={SHARE_BUTTON_CLASS}
           aria-describedby="mcp-approval-title"
           onClick={onReview}
+          {...uiLocation('mcp.review-approve')}
         >
           {i18nT('pages.mcpManagement.review_approve')}
         </Btn>
@@ -416,9 +473,10 @@ export function ReviewApprovalsDialog({
         className={narrow ? 'h-screen supports-[height:100dvh]:h-dvh' : undefined}
       >
         <DialogHeader>
-          {/* Counts what still waits, so it drops as blocks are handled. */}
+          {/* A yes/no question the two buttons answer; its number form follows
+              what still waits, so it drops as blocks are handled. */}
           <DialogTitle>
-            {i18nT('pages.mcpManagement.approval_title', {
+            {i18nT('pages.mcpManagement.review_title', {
               count: Math.max(1, items.filter(i => stateOf(i.server.name).kind !== 'approved' && stateOf(i.server.name).kind !== 'skipped').length),
             })}
           </DialogTitle>
@@ -426,12 +484,9 @@ export function ReviewApprovalsDialog({
         {/* The body is the only scroller; its overscroll never reaches the page. */}
         <DialogBody data-testid="mcp-review-body" className="overscroll-contain">
           <div className="space-y-3">
-          {/* What approving risks and when it is fine, said once for every block.
-              In the body, not the header: the header row would squeeze the title. */}
-          <DialogDescription>
-            {i18nT('pages.mcpManagement.share_risk')}{' '}
-            {i18nT('pages.mcpManagement.review_when_safe')}
-          </DialogDescription>
+          {/* No explainer here: what sharing risks is said once, in the confirm
+              shown when sharing is turned on, and each block's buttons are named
+              by their result. */}
           {items.map(item => {
             const { server } = item
             const refusal = withCurrentLaunch(item.refusal, currentLaunches, server.name)
@@ -439,6 +494,15 @@ export function ReviewApprovalsDialog({
             const handled = st.kind === 'approved' || st.kind === 'skipped'
             const nameId = `mcp-review-name-${server.name}`
             const reasonId = `mcp-review-reason-${server.name}`
+            // Drop the "what changed" line only when the diff below draws one:
+            // an env-value-only change, or a refusal with no approved display,
+            // draws none, and there the line is the only sign of a change.
+            const diff = refusal.approved_commands !== undefined ? launchDiff(refusal) : null
+            const changedHint =
+              refusal.reason === 'changed_needs_reapproval' &&
+              launchIsApprovable(refusal) &&
+              diff !== null &&
+              diff.added.length + diff.removed.length + diff.envAdded.length + diff.envRemoved.length > 0
             return (
               <section
                 key={server.name}
@@ -458,19 +522,20 @@ export function ReviewApprovalsDialog({
                 </div>
                 {!handled && (
                   <div className="mt-1.5 min-w-0 space-y-2 text-[12px] text-[var(--muted)]">
-                    <p id={reasonId} className="m-0 text-[12.5px]">
-                      {i18nT(detailsWhyKey(server, 'needs_reapproval', refusal))}
-                    </p>
+                    {/* A changed launch needs no "what changed" line: the diff below
+                        says it and the button says what pressing it does. Other
+                        reasons (never approved here, not approvable) stay. */}
+                    {!changedHint && (
+                      <p id={reasonId} className="m-0 text-[12.5px]">
+                        {i18nT(detailsWhyKey(server, 'needs_reapproval', refusal))}
+                      </p>
+                    )}
                     {/* The endpoint's compare-and-set rejected the write and handed
                         back the newer launch drawn just below. A rejected request, so
                         an ErrorNotice; above the launch, not with the error below it,
                         because its copy points down at that launch. */}
                     <ErrorNotice variant="inline" message={st.launchMoved ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <RefusalLaunch refusal={refusal} />
-                    {/* What the two buttons do, said in the block they act on. */}
-                    <p id={`mcp-review-means-${server.name}`} className="m-0 text-[12.5px] text-[var(--text)]">
-                      {i18nT('pages.mcpManagement.review_what_approve_does')}
-                    </p>
                     <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <div className={['flex gap-2', narrow ? 'flex-col' : 'flex-wrap justify-end'].join(' ')}>
                       <Btn
@@ -488,7 +553,7 @@ export function ReviewApprovalsDialog({
                         primary
                         className={[SHARE_BUTTON_CLASS, narrow ? 'w-full justify-center' : ''].join(' ')}
                         disabled={st.kind === 'approving' || !supported}
-                        aria-describedby={`${nameId} ${reasonId} mcp-review-means-${server.name}`}
+                        aria-describedby={changedHint ? nameId : `${nameId} ${reasonId}`}
                         onClick={() => void approve(item)}
                       >
                         <Check size={14} aria-hidden="true" />

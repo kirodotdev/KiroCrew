@@ -120,9 +120,18 @@ Deny-by-default, in both directions:
   never evaluated can never run a turn.
 - **Every denial is audited.** Rejected inbound messages write a SEL audit
   record with `source: feishu`, so an unexpected sender shows up in
-  `kirocrew security events` rather than vanishing. A group message that does
-  not mention the bot is chatter, not an access attempt, so it is ignored
-  without a record.
+  `kirocrew security events` rather than vanishing. In an allow-listed group,
+  a message that does not mention the bot is chatter, not an access attempt,
+  so it is ignored without a record.
+- **Finding a group's `chat_id`.** Add the bot to the group and @-mention it
+  with a few words, for example `@bot hello`. A plain message is not enough:
+  with the group scope above, Feishu delivers only messages that @-mention the
+  bot, and a message that is nothing but the mention is dropped before it is
+  checked. The denial record for that message carries the group's id as
+  `chat_id=oc_...` in its `resources` field: look for operation
+  `feishu_transport.receive` and outcome `denied_group_not_allowed` in
+  `kirocrew security events` or in `~/.kiro/crew/security_events.jsonl`. Put
+  that id in `feishu.allowed_group_ids` and set `feishu.allow_group` to `true`.
 - **The agent can message you first, but only someone on the lists.** A cron
   result, a finished background task or a `send_message` to Feishu arrives as a
   new message in the DM or group it belongs to. Only an `open_id` in
@@ -143,7 +152,7 @@ Deny-by-default, in both directions:
   instruction and is ignored, so a bare `@bot` does not start an empty turn.
 - **Slash commands work in a group too.** A group message has to mention the
   bot, so it arrives as `@FeishuBot /new`. That single leading mention is
-  removed before matching, so `/new`, `/reset`, `/compact`, `/stop` and `/help` still intercept
+  removed before matching, so `/new`, `/reset`, `/compact`, `/agent`, `/stop`, `/cancel` and `/help` still intercept
   there instead of being sent to the agent as a prompt.
   Only a bare command intercepts, and **a message naming anyone else is never a
   command**: `@FeishuBot please run /new later` and `@FeishuBot /new @Alice` are
@@ -180,6 +189,8 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 | `/new` (or `/reset`) | Start a fresh session; the old context is dropped. |
 | `/compact` | Compact the current context in place. |
 | `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back. |
+| `/stop` (or `/cancel`) | Stop the reply that is running. |
+| `/help` | List these commands. |
 
 Anything else is a prompt.
 

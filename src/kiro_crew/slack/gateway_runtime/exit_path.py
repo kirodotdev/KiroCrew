@@ -12,7 +12,8 @@ Orchestrator fields read: ``_adaptive_controller``, ``_auto_migrate_task``,
 ``_model_download_task``, ``_profile_watch_task``, ``_sign_in_refresher_task``,
 ``_socket_client``, ``_test_mode``, ``_update_check_task``, ``cron_svc``, ``dashboard_state``,
 ``heartbeat_svc``, ``sessions``, ``subagent_mgr``, ``task_runner``.
-Orchestrator fields written: ``_force_exit_claimed`` (by the signal-handler install).
+Orchestrator fields written: ``_force_exit_claimed`` (by the signal-handler install),
+``_ctrl_c_marking`` (by the first Ctrl-C).
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -168,6 +169,10 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
                     self.dashboard_state,
                 ),
                 timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Dashboard slot save before shutdown did not finish within 5.0s; shutting down without it"
             )
         except Exception:
             logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
@@ -544,6 +549,16 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
             pass  # force exit must never be blocked by logging
         platform_compat.hard_exit(0)
 
+    def _mark_ctrl_c() -> None:
+        # Ctrl+C on a foreground gateway is a stop the user chose, so the grants
+        # kept across other exits end with it (``kept_grants``). Never raises.
+        try:
+            from kiro_crew import kept_grants
+
+            kept_grants.mark_user_stop("ctrl_c")
+        except Exception:
+            logger.debug("Could not mark the Ctrl+C stop", exc_info=True)
+
     def _on_signal(sig: object = None) -> None:
         nonlocal _shutting_down, _repeat_term_logged
         # Before anything else, on every signal: a stop owns any apply in
@@ -568,6 +583,16 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
                     logger.warning("Repeat SIGTERM ignored: graceful shutdown already running")
                 return
             force_exit_claimed.set()
+            # A Ctrl+C that forces a stop already under way (after a SIGTERM, or a
+            # second Ctrl+C before the first one's mark was written) is still a
+            # stop the user chose: the mark goes down on the exit thread first.
+            user_chose = sig is None or sig == signal.SIGINT
+
+            def _exit() -> None:
+                if user_chose:
+                    _mark_ctrl_c()
+                _force_exit()
+
             # The backstop for a step that overruns its own bound (the orphan
             # sweep has none): the process ends at this deadline whatever the
             # force-exit thread is doing. Comfortably past the sum of the
@@ -581,7 +606,7 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
             drain_inline = False
             try:
                 deadline.start()
-                threading.Thread(target=_force_exit, name="kc-force-exit", daemon=False).start()
+                threading.Thread(target=_exit, name="kc-force-exit", daemon=False).start()
             except RuntimeError:
                 # No thread could be started (the interpreter is finalizing or
                 # out of threads). Drain inline: blocking the loop for the
@@ -599,9 +624,23 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
             except Exception:
                 pass  # force exit must never be blocked by output
             if drain_inline:
-                _force_exit()
+                _exit()
             return
         _shutting_down = True
+        if sig is None or sig == signal.SIGINT:
+            # The mark is written on a thread of its own, off the loop, while the
+            # shutdown starts; ``_shutdown_and_exit`` waits for it (bounded) before
+            # ``os._exit``, which ends the process without waiting for anything.
+            # SIGTERM is not a user stop: a service manager sends it on its own, at
+            # a host reboot among others, and ``kirocrew stop`` marks its own stop
+            # before it signals. ``None`` is the Windows SIGINT fallback.
+            try:
+                marking = threading.Thread(target=_mark_ctrl_c, name="kc-ctrl-c-mark", daemon=True)
+                marking.start()
+            except RuntimeError:
+                _mark_ctrl_c()  # no thread can start: mark inline
+            else:
+                self._ctrl_c_marking = marking
         shutdown_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -856,6 +895,11 @@ async def _shutdown_and_exit(
     from kiro_crew.dashboard import crash_dump_store
 
     await crash_dump_store.mark_clean_exit()
+    # A Ctrl+C's user-stop mark is written on its own thread; bounded, so a stalled
+    # disk cannot hold the exit.
+    marking = getattr(self, "_ctrl_c_marking", None)
+    if marking is not None:
+        await asyncio.to_thread(marking.join, _CTRL_C_MARK_WAIT_SECS)
     await self._park_if_force_exit_claimed()
     os._exit(exit_code)
 
@@ -895,3 +939,5 @@ _MARKER_WRITE_WAIT_SECS = 5.0
 # gateway.log drain (2 s) -- with room for the orphan sweep, which has no bound
 # of its own, so it only ever cuts a step that has overrun.
 _FORCE_EXIT_DEADLINE_SECS = 20.0
+#: How long the first Ctrl+C waits for its user-stop mark before the stop starts.
+_CTRL_C_MARK_WAIT_SECS = 5.0

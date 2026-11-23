@@ -5,8 +5,9 @@ ghcr image, and it belongs in the data home's read-only ``engines/`` leaf), so
 each installer runs the just-installed ``kirocrew kas install`` once Kiro Crew
 itself is in. A failed download must not fail the install: it warns and names
 the exact command to retry. A first install on a host that cannot run the
-engine at all ends ``cli.sh`` with exit 3 instead. ``--no-kas`` skips the step,
-and the installer never turns ``agent.kas_bundle`` on.
+engine at all ends ``cli.sh`` with exit 3 instead. ``--no-kas`` means "Kiro CLI
+only": it skips the step and saves ``agent.kas_bundle`` off, so a packaged build's
+preference for the engine does not apply. The installer never turns it on.
 
 The ``cli.sh`` cases drive the real script through the signed-manifest harness
 of ``test_installer_binary_only`` (pipx branch, everything faked), with a
@@ -114,19 +115,36 @@ def test_cli_sh_downloads_nothing_when_the_wheel_carries_the_engine(
     [(("--no-kas",), None), ((), {"KIROCREW_INSTALL_KAS": "0"})],
     ids=["flag", "env"],
 )
-def test_cli_sh_no_kas_skips_the_engine(
+def test_cli_sh_no_kas_means_kiro_cli_only(
     tmp_path: Path,
     signing_key: SigningKey,
     extra_args: tuple[str, ...],
     extra_env: dict[str, str] | None,
 ) -> None:
+    """Never "on with no engine": the engine is skipped and the choice saved off."""
     result, calls, _launcher = _run_cli_sh(
         tmp_path / "case", signing_key, extra_args=extra_args, extra_env=extra_env
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == [], calls
+    assert calls == ["config set agent.kas_bundle false"], calls
     assert "Downloading the built-in KAS engine" not in result.stdout
+    assert "KAS will use Kiro CLI (--no-kas)" in result.stdout
+
+
+def test_cli_sh_no_kas_names_the_command_when_the_choice_cannot_be_saved(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    result, calls, _launcher = _run_cli_sh(
+        tmp_path / "case",
+        signing_key,
+        extra_args=("--no-kas",),
+        extra_env={"FAKE_KIROCREW_EXIT": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls == ["config set agent.kas_bundle false"], calls
+    assert "config set agent.kas_bundle false" in result.stderr
 
 
 def test_cli_sh_failed_engine_download_fails_a_first_install_with_the_retry_command(
@@ -251,6 +269,14 @@ def test_install_sh_never_turns_the_bundle_route_on() -> None:
             assert stripped.startswith(("echo ", "ok ", "detail ", "info ")), line
 
 
+def test_install_sh_no_kas_saves_the_kiro_cli_choice() -> None:
+    """--no-kas is "Kiro CLI only": the switch is saved off, behind the flag alone."""
+    text = _install_sh()
+    block = text.split('if [ "$WITH_KAS" -eq 0 ] && [ -n "$_kirocrew" ]; then', 1)[1]
+    block = block.split("\nfi\n", 1)[0]
+    assert '"$_kirocrew" config set agent.kas_bundle false' in block
+
+
 @pytest.mark.parametrize(
     "home",
     [None, "data-home", ""],
@@ -280,6 +306,8 @@ def test_cli_sh_next_steps_name_the_data_home_only_when_it_is_set(
             "  kirocrew gateway            # start the dashboard now (http://localhost:5476)\n"
             "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service"
             " (survives logout, restarts on crash)\n"
+            "  kirocrew stop               # stop it (a service starts again at the next boot"
+            " or login; kirocrew service uninstall removes it)\n"
             "  kirocrew --help             # everything else\n"
             "\n"
         ), block

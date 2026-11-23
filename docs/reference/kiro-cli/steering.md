@@ -57,7 +57,13 @@ against a workspace holding one document per mode with a unique marker in each:
 | `manual`, referenced from the prompt as `#<name>` | no — there is no ACP-side way to invoke one |
 | `fileMatch`, with a file under its pattern read in the same turn | no — withheld, and never matched |
 | `auto`, with a request unrelated to its `description` | yes — loaded regardless |
-| an unrecognized value (`inclusion: totallyBogusMode`) | yes |
+| an unrecognized value (the made-up mode below) | yes |
+
+The unrecognized-value document declared:
+
+```yaml
+inclusion: totallyBogusMode
+```
 
 **The table above is a snapshot of 2.19.1, and the harness has moved since.** On
 **2.20.0** a maintainer reports that kiro-cli pulls a `fileMatch` document in by
@@ -87,9 +93,8 @@ Two corollaries for this repo:
   itself.
 - **Below 2.19.0 the semantics differ** — `inclusion` was applied only on the
   `chat --no-interactive` path, so every document loaded regardless
-  ([kirodotdev/Kiro#10794](https://github.com/kirodotdev/Kiro/issues/10794), and
-  [#3026](https://github.com/kirodotdev/KiroCrew/issues/3026) where that was
-  experienced here). Kiro Crew's kiro-cli version floors gate individual
+  ([kirodotdev/Kiro#10794](https://github.com/kirodotdev/Kiro/issues/10794)).
+  Kiro Crew's kiro-cli version floors gate individual
   features, not startup, so check the installed version before diagnosing a
   steering problem.
 

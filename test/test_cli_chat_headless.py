@@ -16,6 +16,7 @@ import pytest
 
 from kiro_crew import cli_chat_headless as h
 from kiro_crew import crew_mode
+from kiro_crew.cloud import aws as cloud_aws  # loaded so conftest pins its confinement off
 
 
 def _parse(argv):
@@ -111,6 +112,24 @@ def test_headless_flags_need_headless():
 
 def test_main_usage_error_exits_2(capsys):
     assert h.main(_parse(["--headless"])) == h.EXIT_USAGE
+
+
+@pytest.mark.parametrize("marker", ["env", "confinement"])
+def test_main_refuses_inside_an_agent_session(monkeypatch, capsys, marker):
+    def no_sign_in(self):
+        raise AssertionError("an agent-session run must not sign in")
+
+    monkeypatch.setattr(h.GatewayClient, "sign_in", no_sign_in)
+    if marker == "env":
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "agent-slot")
+    else:
+        monkeypatch.setattr(cloud_aws, "_agent_confinement", lambda: True)
+    argv = ["--headless", "--approval-mode", "trust", "-m", "go", "--json"]
+    assert h.main(_parse(argv)) == h.EXIT_USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "refused inside an agent session" in captured.err
+    assert "normal terminal" in captured.err
 
 
 # ---------- conductor agent ----------
@@ -674,6 +693,48 @@ def test_client_without_cookie_uses_the_token_and_resigns_on_401(monkeypatch):
     c.sign_in()
     assert c.call("GET", "/api/chat/slots?x=1") == {}
     assert "?x=1&token=t1" in seen[2][1] and "token=t2" in seen[5][1]
+
+
+def test_a_run_longer_than_the_sign_in_token_keeps_polling(monkeypatch):
+    """The cookie dies with its one-minute token; the gateway then answers 403 with
+    ``X-Auth-Required: true``, and each lapse is met with a fresh sign-in."""
+    import io
+    import urllib.error
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.read_local_secret", lambda port, dial_host=None: "s3cret"
+    )
+    c = h.GatewayClient(4321)
+    state = {"session": "", "minted": 0, "calls": 0}
+
+    def fake_open(req, timeout, operation):
+        url = req.full_url
+        if "/api/token/local" in url:
+            state["minted"] += 1
+            return _Resp(json.dumps({"token": f"t{state['minted']}"}).encode())
+        if "/api/status?token=" in url:
+            state["session"], state["calls"] = f"sess{state['minted']}", 0
+            return _Resp(cookies=[f"mc_token_4321={state['session']}; Path=/"])
+        # A session serves three polls, then lapses the way the gateway's auth layer
+        # refuses an expired cookie on an /api/ path.
+        state["calls"] += 1
+        if dict(req.header_items()).get("Cookie") != f"mc_token_4321={state['session']}" or (
+            state["calls"] > 3
+        ):
+            raise urllib.error.HTTPError(
+                url,
+                403,
+                "Forbidden",
+                {"X-Auth-Required": "true"},
+                io.BytesIO(b'{"code":"forbidden"}'),
+            )
+        return _Resp(b'{"slots":[]}')
+
+    c._open = fake_open
+    c.sign_in()
+    for _ in range(10):  # past three lapses
+        assert c.call("GET", "/api/chat/slots?crew=all") == {"slots": []}
+    assert state["minted"] == 4
 
 
 def test_client_errors(monkeypatch):

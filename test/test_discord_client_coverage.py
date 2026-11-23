@@ -32,6 +32,8 @@ from kiro_crew.discord.client import (
     _OP_RECONNECT,
     _OP_RESUME,
     DISCORD_MAX_TEXT,
+    DISCORD_OK,
+    DiscordApiResult,
     DiscordClient,
     DiscordInbound,
     DiscordInteraction,
@@ -409,11 +411,11 @@ class TestOutboundRest:
         client = _make_client()
         calls: list[tuple[str, str, Any]] = []
 
-        async def _api(method: str, path: str, payload: Any, timeout: int = 30, **_kw: Any) -> Any:
+        async def _api_json(method: str, path: str, payload: Any, **_kw: Any) -> DiscordApiResult:
             calls.append((method, path, payload))
-            return {"id": "t9"}
+            return DiscordApiResult(DISCORD_OK, {"id": "t9"}, status=200)
 
-        monkeypatch.setattr(client, "_api", _api)
+        monkeypatch.setattr(client, "api_json", _api_json)
         result = await client.create_thread_from_message("c1", "m2", "Topic")
 
         assert result == "t9"

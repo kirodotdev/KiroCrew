@@ -48,7 +48,7 @@ own repo.
 
 | Field | Rules |
 |-------|-------|
-| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install` and `register` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
+| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install`, `register` and `market` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
 | `version` | Required. Semver (`major.minor.patch`, optionally with a pre-release or build suffix). Bump on every release. |
 | `displayName` | Required. Rendered in a fixed-width row that truncates, so keep it short. |
 | `description` | Required. Plain text, no markdown. Discover's list row shows one truncated line; the feature cards clamp to two; the detail page shows it in full. Two or three sentences is the useful range. |
@@ -148,7 +148,11 @@ falls back to the name-seeded gradient). Keep art as plain committed files under
 the size caps: an art file over 8 MiB is never served, so its card falls back to
 the gradient, and an owner-tier row prewarms only the first 12 paths of each
 screenshots field. This limitation applies only to pre-install store art: the install
-and update paths are not masked and check out LFS content as usual.
+and update paths are not masked and check out LFS content as usual, from the host
+the app is cloned from only: every registry git command pins `lfs.url` to the
+endpoint Git LFS derives from the clone URL, so a committed `.lfsconfig` that sets
+`lfs.url` or `remote.<name>.lfsurl` is overridden. Keep LFS objects on the same
+forge as the repository.
 
 ## 5. Setup and lifecycle scripts
 
@@ -247,8 +251,10 @@ stock install.
 
 `dependencies.capabilities.mcp` is not `mcpServers`. `mcpServers` are servers
 your app itself provides and runs, and the gateway registers them into
-Kiro Crew's own agent config. `capabilities.mcp` are external servers your app
-merely consumes.
+Kiro Crew's own agent config. A user's own agent whose `tools` grants
+`tool_search` gets them too, with none of their tools auto-approved
+([agent spec fields](../../src/kiro_crew/docs/agent-spec-fields.md)).
+`capabilities.mcp` are external servers your app merely consumes.
 
 Resolved dependencies are recorded in a reference-counting ledger at
 `~/.kiro/crew/dependency-ledger.json`. On uninstall each declared dependency is
@@ -631,6 +637,9 @@ POST /api/apps/register
 ```
 
 The call is idempotent: registering again with a newer version updates the entry.
+With `agent.apps_ui_protected_copy` on (off by default), the dashboard runs the UI
+scripts (`.js`, `.mjs`) that were in the app's folder at its last registration, so
+an app that changes its UI registers again to ship it.
 `resources` and `lifecycle` default to `app` when omitted; the gateway always
 records `origin` as `external` and ignores any `origin` in the body. Use this when the app has its own build or package system, needs
 runtime-dynamic agent configuration, or manages its own agent, skill, and MCP
@@ -660,7 +669,9 @@ installed one.
   `onInstall`. If that install fails, the old version is restored: an enabled app
   is re-registered and restarted, while a disabled app stays stopped and
   unregistered. `kirocrew app update <name> [--source <dir>]` runs the same
-  request from a terminal through a running gateway.
+  request from a terminal through a running gateway; it is not available on
+  native Windows, which has no dashboard Unix socket, so use the Update button
+  there.
 
 ## 14. Review checklist
 

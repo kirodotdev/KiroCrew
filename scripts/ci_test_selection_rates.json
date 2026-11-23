@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "note": "Diff-caused failure rate per (diff, test file) pair in each tier, with its upper 95% bound. A tier is skippable when upper95 < y. A-F are unmeasured here and held at 1.0 (never skippable); G is the replay's no-signal tier.",
+  "y": 2.5e-05,
+  "narrow_reach_max": 20,
+  "tiers": {
+    "A": {"rate": 1.0, "upper95": 1.0},
+    "B": {"rate": 1.0, "upper95": 1.0},
+    "C": {"rate": 1.0, "upper95": 1.0},
+    "D": {"rate": 1.0, "upper95": 1.0},
+    "E": {"rate": 1.0, "upper95": 1.0},
+    "F": {"rate": 1.0, "upper95": 1.0},
+    "G": {"rate": 0.0, "upper95": 2.0e-05}
+  }
+}

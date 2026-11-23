@@ -56,6 +56,8 @@ _GOOGLE: dict[str, Any] = {
     # the account, so two cards share a grant only on the same account.
     "extra_scopes": ("openid",),
     "grant_group": "google",
+    # https://accounts.google.com/.well-known/openid-configuration
+    "issuer": "https://accounts.google.com",
     # Google revokes across every client of one Cloud project, so sharing is
     # judged by the project number that leads each client id.
     "grant_by_project": True,
@@ -68,7 +70,12 @@ DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "git
 #: token, else the access token); without it the revoke is GitHub's token-scoped
 #: DELETE. ``authorize_params`` are added to the consent URL. Slugs with the same
 #: ``grant_group``, client id and account share one upstream grant.
-#: ``extra_scopes`` are appended to the registry's scopes.
+#: ``extra_scopes`` are appended to the registry's scopes. ``issuer`` is the vendor's
+#: published ``issuer`` (RFC 9207), set only where the vendor's public metadata also says its
+#: authorization response carries ``iss`` (Google: its metadata's
+#: ``authorization_response_iss_parameter_supported``): a callback whose ``iss`` names any
+#: other server, or is missing, is refused. An entry without one (GitHub,
+#: Asana, Slack: no documented ``iss`` in the response) is not checked.
 _ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
@@ -832,6 +839,26 @@ class SignIn:
             raise CrewOAuthError("callback_port_busy") from None
         self.bound_port = int(self._runner.addresses[0][1])
 
+    def _iss_trusted(self, iss: str | None) -> bool:
+        """RFC 9207: does the callback's ``iss`` fit this sign-in's authorization server?"""
+        if self._dcr is not None:
+            from kiro_crew.connections.crew_oauth_dcr import iss_ok
+
+            return iss_ok(self._dcr.client, iss)
+        issuer = _ENDPOINTS.get(self.slug, {}).get("issuer")
+        if not issuer:
+            return True
+        if not iss:
+            # The vendor says its response carries iss, so an answer without it is refused.
+            return False
+        from kiro_crew.connections.l0_probe import same_issuer
+
+        try:
+            return same_issuer(iss, issuer)
+        except ValueError:
+            # Vendor text that urlsplit refuses is a mismatch, never a logged traceback.
+            return False
+
     async def _callback(self, request: Any) -> Any:
         from aiohttp import web
 
@@ -840,13 +867,10 @@ class SignIn:
         # Bytes: compare_digest raises on a non-ASCII str, which would answer 500.
         if self._done.done() or not secrets.compare_digest(state.encode(), self._state.encode()):
             return web.Response(status=400, text="This sign-in link is not the current one.")
-        if self._dcr is not None:
-            from kiro_crew.connections.crew_oauth_dcr import iss_ok
-
-            if not iss_ok(self._dcr.client, request.query.get("iss")):
-                # RFC 9207 mix-up defence: the answer came from another server.
-                self._done.set_exception(CrewOAuthError("issuer_mismatch"))
-                return web.Response(status=400, text="This sign-in answer is not trusted.")
+        if not self._iss_trusted(request.query.get("iss")):
+            # RFC 9207 mix-up defence: the answer came from another server.
+            self._done.set_exception(CrewOAuthError("issuer_mismatch"))
+            return web.Response(status=400, text="This sign-in answer is not trusted.")
         if not code or "error" in request.query:
             # An error response is a refusal even beside a code. access_denied
             # is either the user declining or an organization policy blocking the
@@ -1131,6 +1155,17 @@ async def _revoke(slug: str, tokens: Tokens) -> bool:
         return False
 
 
+def _revoke_needs_live_access(slug: str, tokens: Tokens) -> bool:
+    """Whether *slug* revokes by access token and the held one is expiring but renewable."""
+    endpoint = _ENDPOINTS.get(slug)
+    return (
+        endpoint is not None
+        and endpoint.get("revoke_token") == "access"
+        and bool(tokens.refresh)
+        and tokens.expiring(time.time())
+    )
+
+
 async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bool]:
     """Revoke upstream (best effort) and delete the stored pair.
 
@@ -1144,6 +1179,7 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
     removed = False
     revoked = True
     seen = False
+    refreshed = False
     # Slugs sharing a grant group disconnect one at a time, so two overlapping
     # Disconnects can never both see the other as the sharer and skip the revoke.
     async with (
@@ -1166,6 +1202,16 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
                     removed = True
                 break
             seen = True
+            if not refreshed and _revoke_needs_live_access(slug, held[0]):
+                # The vendor revokes only a live access token (Slack's expire in
+                # 12 hours): renew it once, then revoke the fresh pair.
+                refreshed = True
+                try:
+                    await _refresh(slug, store, held)
+                except CrewOAuthError:
+                    pass
+                else:
+                    continue
             revoked = await _revoke(slug, held[0]) and revoked
             if await store.delete_if(slug, held[1]):
                 removed = True
@@ -1312,8 +1358,11 @@ async def _start_mint_row(
             parts.path,
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
+            server_name=row,
         )
-    if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
+    if await asyncio.to_thread(
+        oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr), row
+    ):
         await sign_in.shutdown()
         await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

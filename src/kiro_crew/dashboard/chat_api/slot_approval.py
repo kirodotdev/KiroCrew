@@ -33,7 +33,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
-        exact_trust_pattern,
+        end_approve_for_me,
         grant_deadline,
         logger,
         native_resolution_target,
@@ -442,6 +442,10 @@ async def apply_approval_mode(
             mode=mode,
             resource=slot_key or "",
         )
+    # An explicit pick wins over a kept mode the boot restore has not applied yet.
+    from kiro_crew.dashboard.chat_trust_restart import note_mode_pick
+
+    note_mode_pick(state, slot)
     #: Channels this request turned trusted, so a late refusal can undo just those.
     _granted_channels: list[object] = []
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
@@ -787,6 +791,13 @@ async def apply_approval_mode(
                                     "SEL audit failed for channel bulk approval",
                                     exc_info=True,
                                 )
+
+    # Any mode set through here, from every entry point (the dashboard picker, a
+    # Slack code channel, a crewmate profile, a workflow), ends approve-for-me on
+    # the slots it names, every slot for YOLO or an unnamed request.
+    await end_approve_for_me(
+        state, [slot] if slot is not None and mode != "yolo" else list(state._slots.values())
+    )
 
     # Propagate trust/yolo to session approval policies so subagents inherit.
     #
@@ -1428,13 +1439,18 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
             if pattern != expected:
                 return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
+            from kiro_crew.browser_host_trust import grant_pattern, is_host_key
+
+            if grant_ttl is not None and is_host_key(trust_key):  # a site grant has no lifetime
+                return _deny_trust_pattern(name, request_id, original_action, "ttl_unsupported")
             # ``_trusted_patterns`` is the existing fnmatch store.  Escape every
             # metacharacter so an exact grant for ``rm *.tmp`` cannot authorize
-            # ``rm secret.tmp``.
+            # ``rm secret.tmp``; a browser host ``act`` key alone also covers reads
+            # on its host (``browser_host_trust.grant_pattern``).
             record_trust_grant(
                 owner._trusted_patterns,
                 owner._trusted_pattern_deadlines,
-                (exact_trust_pattern(trust_key),),
+                (grant_pattern(trust_key),),
                 _grant_deadline(grant_ttl),
             )
         action = "approved"

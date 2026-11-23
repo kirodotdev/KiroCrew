@@ -104,7 +104,9 @@ filled in and a line saying so. Only `host` is required; `user` becomes
 not the port ssh dials. Nothing is saved and nothing connects until you press
 **Add remote crew**, so first check that the SSH host is a machine you use:
 after that click the crew is like one you typed in, and with **Auto-connect crews** on (the default) it
-connects as soon as it is added. A link with any other key, a host the SSH host
+connects when it is added if it falls inside the `instances.warm_set_cap` Crews kept warm (the ones
+you opened most recently, then the rest in the order you added them, 5 by default); otherwise it
+connects when you open it. A link with any other key, a host the SSH host
 field would refuse, or a malformed port or label opens nothing.
 
 **Editing and removing** live in each row's overflow menu. Changing anything the
@@ -298,7 +300,9 @@ kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
 With the relay domain set, a Crew is listed only at exactly
-`https://<endpoint ID>.<relay domain>`. A test setup that uses
+`https://<endpoint ID>.<relay domain>`. When that leaves out Crews the control
+plane listed, the top bar's Crew switcher and Settings → Remote Crew say the setting hid
+them, so a domain one character off does not read as "no Shared Crews". A test setup that uses
 `tunnel.relay_viewer_credential` must also set the URL.
 
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads
@@ -315,29 +319,36 @@ A set control plane URL must be `https://` (`http://` only for a loopback
 port-forward). A URL that breaks that rule is ignored with a warning, and the
 viewer answers that it is not set up.
 
-### The Team Crews group
+### The Remote Crews group
 
-Once a list is loaded, the Crew switcher in the top header gains a **Team Crews**
+Once a list is loaded, the Crew switcher in the top header gains a **Remote Crews**
 group. It lists the Crews the control plane lists for you, each with its name,
-**Personal** or **Team**, and its status. A Crew is **online**, and choosing its
+**Shared** or **Private**, and its status. It is one list with the SSH, SSM and
+Fargate Crews this dashboard reaches itself: those sit above the relay rows under
+the same heading, each reading **Private** with its source and its host. A Crew is **online**, and choosing its
 row opens it, only while the relay reports its tunnel connected. A Crew whose host
 still renews its lease but whose tunnel is down shows **reconnecting**, any other
 shows **offline**, and either may also show when it was last seen. A row that
 isn't open and isn't online is dimmed, and choosing it does nothing. The Crew in
 front carries a check mark. Another Crew open in this window reads **Connected**
 while it is online, and nothing but its status once it goes offline; either way
-choosing it brings its tab forward and its **×** disconnects it. The rest read
-**Connect**. Rows are sorted by name, so a Crew stays in place from one read
+choosing it brings its tab forward. The rest read **Not connected**, and choosing
+one connects it, which can take a few seconds: the window shows the Crew's name and
+**Connecting…** until its page has loaded. No row has a close of its own: past the
+few Crews kept loaded, the one used least recently closes by itself. While a Crew
+is in front, the window around it (the top bar and anything docked) takes its dark
+or light mode. With an SSH Crew in front,
+that Crew's own switcher lists the same group. Rows are sorted by name, so a Crew stays in place from one read
 to the next whatever order the control plane answers in. The list
 is read again each time you open the switcher (unless it was read in the last
 few seconds), every 15 seconds while a listed Crew isn't online, and about once
 a minute otherwise, and it never carries an access token. The control plane can
 itself take a minute or two after a host connects to report its tunnel
 connected, so a Crew can read offline for that long whatever the dashboard
-does. The group appears once your account has at least one Team Crew, or when
+does. The group appears once your relay list has at least one Crew, or when
 the gateway names the account the list was read for.
 
-With such an account and no Team Crews, the group still shows, with the empty
+With such an account and an empty list, the group still shows, with the empty
 text.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
@@ -353,7 +364,7 @@ row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
 under it links to the AWS Management Console, where an admin creates Shared
 Crews. Both cards are hidden while no list is loaded.
 
-When a list read finds a **Team** Crew you haven't been told about, the bell says
+When a list read finds a **Shared** Crew you haven't been told about, the bell says
 "You've been added to <name>", with **Open**, and the switcher's caret and that
 Crew's row show a dot until you open the Crew or open the switcher. Two or more
 new Crews in one read, which is what a first sign-in with several already granted
@@ -361,7 +372,7 @@ looks like, get one note with the count instead. Each Crew is announced once: th
 Crews already announced are kept on this computer's gateway, in
 `relay-viewer-crews.json` under the data home, so a new window doesn't announce
 them again. A failed read, or the feature turned off, never announces anything,
-and a Crew that leaves the list isn't announced as lost. Mute the **Team Crews**
+and a Crew that leaves the list isn't announced as lost. Mute the **Remote Crews**
 channel in Settings › Notifications to stop the notes. You only learn of a Crew
 here once Kiro Crew is installed and you've signed in; telling someone sooner is
 for whoever grants the access.
@@ -391,9 +402,13 @@ opens it there.
   address is refused.
 - One tab per Crew. Opening a Crew from its row when it is already open brings
   its tab forward.
-- Up to three relay Crews stay loaded. Opening a fourth closes the one you used
-  least recently: its page closes and its stored data, unsent text included, is
-  cleared. It stays in the Remote Crews list, and choosing it there opens it again.
+- The five Crews you opened most recently, SSH and relay together, stay loaded
+  (`instances.warm_set_cap`), and the next app start loads them again in the
+  background, with **Auto-connect crews** on. A relay Crew you never opened is
+  never loaded for you. Opening one more unloads the one you used least recently.
+  A relay Crew's page closes and its stored data, unsent text included, is
+  cleared; it stays in the Remote Crews list, and choosing it there opens it
+  again. An SSH crew keeps its tunnel and reloads when you open it.
 - If you choose something else while a Crew is still opening, what you chose stays
   in front; the Crew that finished opening waits as a tab.
 - Reload and Force Reload in the app menu reload the relay Crew tab in front.
@@ -465,13 +480,17 @@ credential instead of your Kiro sign-in. Leave it empty.
 
 ### Hosting this Crew on the relay
 
-To let people open a personal Crew through the Kiro relay, turn Remote Control on
-where the Crew runs, then restart. On a personal Crew it is off by default:
+A personal Crew hosts on the Kiro relay by default: once it starts, people the relay
+lets open it can reach it, with no `remote-control on`. The first time it connects,
+the log and the bell say so once. To keep it off, run this where the Crew runs; a
+stored off sticks across restarts and upgrades:
 
 ```bash
-kirocrew remote-control on
-kirocrew restart
+kirocrew remote-control off
 ```
+
+`kirocrew remote-control on`, then `kirocrew restart`, turns it back on.
+`kirocrew remote-control status` says whether it is on.
 
 A personal Crew needs nothing else. A Crew is personal when it sets no
 `tunnel.relay_lease_token_type` and its host has no agent workload identity. It
@@ -479,28 +498,58 @@ holds its lease with the Crew's own Kiro
 sign-in, which must be IAM Identity Center or your organization's identity
 provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
 While the sign-in can't be used, the tunnel status says why and tries again, so
-signing in resumes hosting without another restart. A Builder ID or social sign-in
-is held quietly: the log says so once, and the Crew checks again every minute.
+signing in resumes hosting without another restart. A Crew with no sign-in, a
+sign-in with no Kiro profile, and a Builder ID or social sign-in are held quietly:
+the log says so once (at INFO when the Crew was never signed in), and the Crew
+checks again every minute. While a personal Crew that is on only by default can't
+host yet, the Overview page shows nothing for it; `/api/tunnel/status` still names
+the reason. That covers a gateway bound to one address other than loopback, which
+the relay can't reach: the Crew stays stopped until it restarts on a loopback or
+wildcard bind. A fault on the way, such as a lease service that times out or
+refuses the connection, still shows on the Tunnel tile, and so does a failure it
+can't recover from by itself, such as a relay that refuses this version. A Crew
+you turned on with `remote-control on` shows every reason on the Overview page's
+Tunnel tile.
 
-A team Crew leases with its crew API key. Store the key under **Settings →
-Secrets**, then name it:
+A Shared Crew on the Kiro relay leases with its crew API key. Store the key under
+**Settings → Secrets**, then name it:
 
 ```bash
 kirocrew config set tunnel.relay_lease_credential secret://<name>
 kirocrew config set tunnel.relay_lease_token_type API_KEY
 ```
 
-A team Crew with its key set hosts by default after the next restart, with no
+The key names no Region, so the Crew leases from us-east-1. A Crew registered
+outside us-east-1 needs one more line, naming its Region (`eu-central-1` or
+`eu-west-1`):
+
+```bash
+kirocrew config set tunnel.relay_lease_region eu-central-1
+```
+
+Without that line, such a Crew's key goes to us-east-1 and the lease is refused there;
+the refusal in the log and the tunnel status suggests the setting. Set it with
+`kirocrew config set`; **Settings** shows it but does not change it. A value
+outside that list keeps Remote Control from starting, and `kirocrew
+remote-control status` says "can't start" and why, as does
+**Settings → Remote Crew**. A host with a workload identity leases from
+`tunnel.relay_lease_region` too, whether its `tunnel.relay_lease_credential` names
+its JWT-SVID file or a crew key; the profile ARN does not pick the Region.
+
+A value the person did not give (absent, null, empty or blank) leases from us-east-1;
+any value they gave must be a known Region, or the relay refuses and sends nothing.
+
+A Shared Crew with its key set hosts by default after the next restart, with no
 `remote-control on`: setting the key is the choice to host. A host with a workload
 identity whose `tunnel.relay_lease_credential` names its credential does too. The
 first time such a Crew connects, the log and the bell say once that people the relay
-lets open it can now reach it. Without the key, a team Crew does not connect, and
+lets open it can now reach it. Without the key, a Shared Crew does not connect, and
 the tunnel status names `tunnel.relay_lease_credential`. A host with a workload
 identity never falls back to the sign-in.
-A team Crew pod under the Restricted Pod Security Standard has no inner sandbox;
+A Shared Crew pod under the Restricted Pod Security Standard has no inner sandbox;
 set `agent.sandbox_allow_unsandboxed_exec=true` and the container is the only
 boundary; `agent.sandbox_allow_no_isolation=true` quiets the per-process warning
-(see the Docker guide, "A team Crew pod: the container is the boundary").
+(see the Docker guide, "A Shared Crew pod: the container is the boundary").
 
 `kirocrew remote-control off` turns hosting off and stops the relay within a few
 seconds, with no restart. It writes `tunnel.relay_enabled: false`, which wins over
@@ -509,6 +558,23 @@ already stores; one with a team key and no stored value hosts after the upgrade.
 hosts. **Settings → Remote Crew** shows the state and a **Turn off** button on this
 machine; opened through the relay, it shows the state only, because a Crew turned
 off there can only be turned back on at its machine.
+
+### Behind a firewall or proxy
+
+The relay is reached by name over HTTPS and WebSocket on port 443. On a network
+that only lets listed names out, allow these. Allow them by name, not by IP
+address: the addresses change. Do not allow all of `*.on.aws`.
+
+| Machine | Names to allow |
+|---|---|
+| The one opening a Crew (viewer) | `*.kiro-relay.us-east-1.on.aws`, `*.kiro-relay.eu-central-1.on.aws` |
+| The viewer, for the list of Crews | `management.us-east-1.kiro.dev`, `management.eu-central-1.kiro.dev` |
+| The viewer, for Crews still on the old address | `*.us-east-1.relay.kiro.dev` |
+| The one running a Crew (host) | `host.us-east-1.relay.kiro.dev`, `management.us-east-1.kiro.dev` |
+| A host in Frankfurt | `host.eu-central-1.relay.kiro.dev`, `management.eu-central-1.kiro.dev` |
+
+A proxy must pass WebSocket upgrades through: the Crew page and the host's lease
+both stay open as WebSockets.
 
 ## The four things called "crew"
 
@@ -533,7 +599,8 @@ over a normal link.
 | Setting | Default | What it does |
 |---|---|---|
 | `instances.enabled` | `true` | The main switch; `false` turns Remote Crew off. Read at startup, so changing it needs a restart. |
-| `instances.warm_set_cap` | `0` | How many panes stay warm at once. `0` tracks how many machines you have registered, so up to an internal ceiling nothing is evicted. A number you set is honoured exactly. |
+| `instances.crew_reads_enabled` | `false` | Lets the agent read a connected crew's sessions through the `crew` argument of `search_chat_history`, `list_sessions` and `get_chat_session`. Off by default, because a peer's transcripts enter the agent's context as untrusted text. Read per call, so no restart. |
+| `instances.warm_set_cap` | `0` | How many remote Crews stay warm at once, SSH and relay together: the ones you opened most recently. `0` means 5. A number you set is honoured exactly. |
 | `instances.default_destination` | `""` | The crew **Send a copy to** lists first, marked as the default. Empty means no default. A folder's own **Default destination crew** (Folder settings) overrides it for sessions in that folder. Nothing is sent until you click. |
 | `instances.tunnel_base_port` | `7778` | The first local loopback port handed out for a tunnel. |
 | `instances.ssh_compression` | `true` | Compresses the tunnel. The whole remote dashboard travels over it, so this usually wins; turn it off on a fast local link. |
@@ -561,6 +628,7 @@ reports the first broken link, which is usually the whole answer.
 | What you see | What it means |
 |---|---|
 | `ssh_unreachable` / `ssm_unreachable` | The hub cannot reach the machine at all. Check the host alias and your key, or that the SSM agent is online. |
+| `ssh_unreachable` or a connect error that names a refused `session-manager-plugin` | The host's `ProxyCommand` runs the plugin, and the hub will not run the installed copy, for example one that AWS's macOS package left owned by another account. Apply the fix the message names, then reconnect. Each connect checks the plugin again, so no restart is needed. |
 | `ssh_client_missing` | The machine running Kiro Crew has no usable `ssh`, so nothing reached the remote host. Install the OpenSSH client (on Windows, the optional OpenSSH Client feature) or put `ssh` on the gateway's PATH, then reconnect. |
 | `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
 | `ssm_access_denied` | Your AWS profile was refused `ssm:SendCommand` on the instance. Add the three SSM permissions under [SSH or SSM](#ssh-or-ssm-which-transport) to the profile's IAM policy. |

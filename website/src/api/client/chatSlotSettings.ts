@@ -89,6 +89,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         /** Why that switch cannot be turned on, in the harness's own words (`""` when
          *  it gives none); present only while it reads off and something blocks it. */
         fast_unavailable?: string
+        /** The KAS session's approve-for-me (KAS approves tool calls on its own);
+         *  present only while the session offers it. */
+        approve_for_me?: boolean
       }>,
     /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
     chatSlotSteering: (slot: string) =>
@@ -154,6 +157,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Turn the KAS session's approve-for-me on or off; answers the value it reads back.
+     *  Turning it on also puts the slot back to Normal first. */
+    chatSlotApproveForMe: (slot: string, enabled: boolean) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve-for-me', { enabled }).then(j) as Promise<{ ok: boolean; approve_for_me: boolean }>,
     /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
     chatSlotUltracode: (slot: string, enabled: boolean) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,

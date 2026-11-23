@@ -365,6 +365,15 @@ def test_heartbeat_default_deliver_invalid_falls_back_to_slack():
     assert cfg.heartbeat.default_deliver == "slack"
 
 
+def test_heartbeat_keep_backoff_is_off_by_default():
+    assert _load_from_dict({}).heartbeat.keep_backoff is False
+
+
+def test_heartbeat_keep_backoff_reads_true_and_ignores_junk():
+    assert _load_from_dict({"heartbeat": {"keep_backoff": True}}).heartbeat.keep_backoff is True
+    assert _load_from_dict({"heartbeat": {"keep_backoff": "soon"}}).heartbeat.keep_backoff is False
+
+
 class TestKnowledgeAutoIngest:
     """The auto-add / project-docs / budget / dedup-cadence keys."""
 

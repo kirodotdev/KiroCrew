@@ -5,7 +5,8 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
-prompt spelling, ``file://`` expansion and path check here too.
+prompt spelling, ``file://`` expansion and path check here too, and a script cron's
+MCP client (``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -271,3 +272,25 @@ def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, b
     from kiro_crew.acp._dispatch import _workspace_call_arguments
 
     return _workspace_call_arguments(params, server, tool)
+
+
+def remote_bridge_url(url: str) -> str:
+    """*url* as KAS's header bridge dials it: a plain ``http`` loopback host in its
+    canonical spelling, userinfo dropped (``acp.kas_env_launch.bridge_url``)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return kas_env_launch.bridge_url(url)
+
+
+def plain_http_headers_refused(url: str) -> bool:
+    """Whether headers bound for *url* are refused because they would travel in
+    cleartext: a plain ``http`` url to a host KAS does not accept (not loopback),
+    while the operator's ``agent.kas_refuse_plain_http_mcp_headers`` opt-in is on
+    (``acp.kas_env_launch.refuses_plain_http_headers``, off by default)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return (
+        url.strip().lower().startswith("http://")
+        and not kas_env_launch.kas_accepts_url(url)
+        and kas_env_launch.refuses_plain_http_headers()
+    )

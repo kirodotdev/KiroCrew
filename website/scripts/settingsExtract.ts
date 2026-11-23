@@ -126,6 +126,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
   // is on, so a search offers it only then (`settingEntryOffered`).
   'ChannelsSetting.tsx': { tab: 'display', params: { sub: 'view' } },
+  // The Touch screen layout choice, mounted by DisplayPanel's View page. Drawn only on a
+  // touch-first device, so a search offers it only there (`settingEntryOffered`).
+  'TouchLayoutSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
@@ -261,6 +264,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ReleasesPanel.tsx': 'about',
   'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
+  'SttPointerHoldSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
@@ -273,15 +277,20 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelSetupCards.tsx': 'instances',
   'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
+  'RemoteCrewPanelResources.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
+  // Mounted below RemoteCrewPanel (SettingsPage.tsx); its on/off state is the
+  // manual instances.remote-control entry.
+  'RemoteControlCard.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
   'AutomaticCardSetting.tsx': DEVELOPER_PREVIEWS,
-  // The built-in KAS engine card, which FeaturePreviewsSection mounts from
-  // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
-  'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
+  // The KAS engine choice, which the Agent tab's KAS row mounts from
+  // pages/developer beside OrchestratorMemoryToggle: its `agent.kas_bundle`
+  // choice is an Agent-tab row.
+  'KasBundleCard.tsx': 'agent',
   // The Kiro sign-in card, which the Kiro account tab mounts from pages/developer.
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`kiro-account.kiro-sign-in` in settingsManual.ts) stays anchored to its source.

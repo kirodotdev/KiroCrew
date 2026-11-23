@@ -1154,20 +1154,23 @@ async def _inject_subagent_into_channel_parent(
                                 footer_blocks.extend(
                                     build_options_blocks(options, staleness_token=_sub_token)
                                 )
-                            _footer_ts = await self.slack.post_blocks(
-                                channel,
-                                footer_blocks,
-                                footer_text,
-                                _slack_thread,
-                            )
-                            self._remember_options(
-                                parent_key,
-                                channel,
-                                _footer_ts,
-                                options,
-                                footer_blocks,
-                                footer_text,
-                            )
+                            # Nothing to post when the timing line is hidden
+                            # (slack.show_timing_footer off) and no choices ride it.
+                            if footer_blocks:
+                                _footer_ts = await self.slack.post_blocks(
+                                    channel,
+                                    footer_blocks,
+                                    footer_text,
+                                    _slack_thread,
+                                )
+                                self._remember_options(
+                                    parent_key,
+                                    channel,
+                                    _footer_ts,
+                                    options,
+                                    footer_blocks,
+                                    footer_text,
+                                )
                         except Exception:
                             logger.debug(
                                 "Failed to post timing footer for %s",

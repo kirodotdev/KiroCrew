@@ -588,3 +588,24 @@ async def test_with_no_domain_the_dropped_row_warning_names_no_setting(
         await list_crew_endpoints(fake.url, BEARER)
     assert "unusable Crew list" in caplog.text
     assert "relay_viewer_relay_domain" not in caplog.text
+
+
+async def test_crews_left_out_only_for_the_relay_domain_are_counted(fake: FakeCps) -> None:
+    """Row 65: a domain one character off drops every Crew; the count says so."""
+    body = page(1)
+    body["crewEndpoints"].insert(0, page(0)["crewEndpoints"][0])
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain="crew.example.invalix")
+    assert crews == ()
+    assert crews.off_domain == 2
+
+
+async def test_crews_left_out_for_another_reason_are_not_counted(fake: FakeCps) -> None:
+    body = page(1)
+    body["crewEndpoints"].insert(
+        0, dict(page(0)["crewEndpoints"][0], crewUrl=f"https://{TEAM}.{DOMAIN}:8443")
+    )
+    fake.answer(200, body)
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    assert [c.endpoint_id for c in crews] == [PERSONAL]
+    assert crews.off_domain == 0

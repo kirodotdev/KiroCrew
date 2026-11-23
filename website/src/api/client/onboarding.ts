@@ -184,6 +184,19 @@ export interface ConfigSetHintsV1 {
 export interface KasBundleStatus {
   /** `agent.kas_bundle` as saved. */
   enabled: boolean
+  /**
+   * The Settings engine choice: the saved `agent.kas_bundle`, else what this build
+   * prefers (a packaged build prefers the built-in engine). Optional: an older
+   * gateway sends no such key.
+   */
+  engine_choice?: 'engine' | 'kiro_cli'
+  /** Whether `agent.kas_bundle` is saved at all, so `engine_choice` is the user's. */
+  choice_saved?: boolean
+  /**
+   * Owner only: kiro-cli is signed in here and Kiro Crew is not, so new chats stay on
+   * kiro-cli until Kiro Crew is signed in once, then move to the built-in engine.
+   */
+  sign_in_moves_to_engine?: boolean
   /** The engine version this Kiro Crew release pins. */
   pinned_version: string
   /** The version the harness runs: the pin, unless the gateway's environment overrides it. */
@@ -269,6 +282,12 @@ export interface KasLoginStatus {
    * older gateway.
    */
   company_sign_in?: { start_url: string; region: string }
+  /**
+   * Company portal URLs whose sign-in turns the local agent off (an edition's own
+   * sign-in, `crew_client` preview). Empty while the preview is off; absent on an
+   * older gateway.
+   */
+  local_agent_off_start_urls?: string[]
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */

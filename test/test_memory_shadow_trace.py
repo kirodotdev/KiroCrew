@@ -75,11 +75,16 @@ def test_the_control_sample_is_a_stable_capped_subset_of_kept_keys() -> None:
 
 
 def test_observing_is_false_only_when_every_stage_is_off() -> None:
-    off = SimpleNamespace()
+    assert trace.observing(SimpleNamespace()) is False, "every listed stage defaults to off"
+    off = SimpleNamespace(**{stage.name: "off" for stage in msr.STAGES})
     assert trace.observing(off) is False
+    # Default-on stages without a shadow mode are not observed.
+    on = {name: "enforce" for name in ("kind_routing", "lesson_fold", "rule_authority_order")}
+    assert trace.observing(SimpleNamespace(**vars(off), **on)) is False
     for stage in msr.STAGES:
         mode = "propose" if stage.name == "dream" else "shadow"
-        assert trace.observing(SimpleNamespace(**{stage.name: mode})) is True, stage.name
+        flags = {**vars(off), stage.name: mode}
+        assert trace.observing(SimpleNamespace(**flags)) is True, stage.name
 
 
 def test_recall_ids_reads_keys_only_and_caps_them() -> None:
@@ -363,7 +368,7 @@ async def test_a_recall_answers_the_same_bytes_and_shadow_adds_only_its_receipt(
     off = await _recall(store, "persistent", monkeypatch)
     assert not (home / "usage" / "injections").exists(), "off writes nothing"
     assert "project.signer_region" in off
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     shadow = await _recall(store, "persistent", monkeypatch)
     assert shadow == off
     (line,) = _shards(home)
@@ -381,7 +386,7 @@ async def test_a_recall_names_the_lessons_it_rendered(home: Path, store, monkeyp
     (lesson,) = [r["key"] for r in store.get_lessons()] or [None]
     _config(home)
     off = await _recall(store, "persistent", monkeypatch)
-    _config(home, lesson_fold="shadow")
+    _config(home, relevance_rule="shadow")
     assert await _recall(store, "persistent", monkeypatch) == off
     (line,) = _shards(home)
     assert lesson and line["recall"]["ids"] == [lesson]
@@ -397,7 +402,7 @@ async def test_a_private_session_recall_writes_nothing(
     store.set_semantic(
         "project.signer_region", "the signer deploys to us-west-2", 1.0, "user_explicit"
     )
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     await _recall(store, memory_mode, monkeypatch)
     assert not (home / "usage" / "injections").exists()
 
@@ -480,20 +485,18 @@ def _rao(drop: list[str], control: list[str]) -> dict:
 
 def _rao_log(days: range) -> dict:
     return {
-        "counts": {
-            f"2026-10-{d:02d}": {"rule_authority_order": {"shadow": {"lines": 20}}} for d in days
-        },
-        "stages": {"rule_authority_order": {"policy": 1, "started_at": "2026-10-01T00:00:00Z"}},
+        "counts": {f"2026-10-{d:02d}": {"relevance_rule": {"shadow": {"lines": 20}}} for d in days},
+        "stages": {"relevance_rule": {"policy": 1, "started_at": "2026-10-01T00:00:00Z"}},
     }
 
 
 def test_a_render_drop_is_missed_only_by_a_later_outcome_in_its_own_session(
     home: Path, capsys
 ) -> None:
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     lines = [
-        _start(1, "dashboard:a", rule_authority_order=_rao(["lesson.x", "lesson.y"], ["lesson.k"])),
-        _start(1, "dashboard:b", rule_authority_order=_rao(["lesson.x"], ["lesson.k"])),
+        _start(1, "dashboard:a", relevance_rule=_rao(["lesson.x", "lesson.y"], ["lesson.k"])),
+        _start(1, "dashboard:b", relevance_rule=_rao(["lesson.x"], ["lesson.k"])),
         # a: recalled after the drop -> a miss; b: recalled BEFORE its drop -> not.
         _outcome("recall", 1, "dashboard:a", ["lesson.x"]),
         _outcome("recall", 1, "dashboard:b", ["lesson.x"], hour=9),
@@ -503,7 +506,7 @@ def test_a_render_drop_is_missed_only_by_a_later_outcome_in_its_own_session(
         _outcome("learn_add", 2, "dashboard:b", ["lesson.k"]),
     ]
     _write_receipts(home, lines, _rao_log(range(1, 3)))
-    card = _card(_report(capsys), "rule_authority_order")
+    card = _card(_report(capsys), "relevance_rule")
     assert card["miss"] == {"items": 3, "missed": 1, "rate": 0.3333}
     assert card["control"] == {"items": 2, "missed": 1, "rate": 0.5}
     assert card["verdict"] == msr.VERDICT_WAIT
@@ -517,7 +520,7 @@ def _bar_met(home: Path, drop_misses: int, control_misses: int, *, control: int 
         session = f"dashboard:s{i}"
         drop = [f"lesson.d{i}"]
         ctrl = [f"lesson.c{i}"] if i < control else []
-        lines.append(_start(1 + i % 14, session, rule_authority_order=_rao(drop, ctrl)))
+        lines.append(_start(1 + i % 14, session, relevance_rule=_rao(drop, ctrl)))
         if i < drop_misses:
             lines.append(_outcome("recall", 1 + i % 14, session, drop))
         if i < control_misses:
@@ -540,9 +543,9 @@ def _bar_met(home: Path, drop_misses: int, control_misses: int, *, control: int 
 def test_the_verdict_needs_the_bar_and_a_miss_rate_within_both_limits(
     home: Path, capsys, drop_misses, control_misses, verdict
 ) -> None:
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     _bar_met(home, drop_misses, control_misses)
-    card = _card(_report(capsys), "rule_authority_order")
+    card = _card(_report(capsys), "relevance_rule")
     assert (card["days"], card["sessions"]) == (14, 200)
     assert card["miss"]["items"] == 200 and card["control"]["items"] == 100
     assert card["verdict"] == verdict, card
@@ -552,7 +555,7 @@ def test_the_bar_is_compared_without_rounding() -> None:
     """3 of 299 is 1.003%: over the bar, though it rounds to 1.00%."""
     card = {
         "mode": "shadow",
-        "stage": "rule_authority_order",
+        "stage": "relevance_rule",
         "days": 14,
         "sessions": 200,
         "miss": {"items": 299, "missed": 3, "rate": 0.01},
@@ -636,14 +639,14 @@ def test_outcome_lines_keep_flowing_after_their_first_window(home: Path) -> None
 
 
 def test_no_control_sample_waits(home: Path, capsys) -> None:
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     _bar_met(home, 0, 0, control=0)
-    card = _card(_report(capsys), "rule_authority_order")
+    card = _card(_report(capsys), "relevance_rule")
     assert (card["verdict"], card["verdict_reason"]) == (msr.VERDICT_WAIT, "no control sample")
 
 
 def test_write_stage_trace_reads_new_and_old_entries_and_never_text(home: Path, capsys) -> None:
-    _config(home, lesson_origin_gate="shadow", kind_routing="shadow", lesson_tier_policy="shadow")
+    _config(home, lesson_origin_gate="shadow", lesson_tier_policy="shadow")
     tag = trace.session_tag("dashboard:a")
     _write_meta(
         {
@@ -667,11 +670,6 @@ def test_write_stage_trace_reads_new_and_old_entries_and_never_text(home: Path, 
                 {"key": "lesson.t", "path": "consolidation", "rules": 1},
                 {"key": "lesson.r", "path": "reteach", "rules": 1},
             ],
-            "memory_kind_log:counts:2026-10-01": {"shadow": {"state": 1, "fact": 1}},
-            "memory_kind_log:samples:2026-10-01": [
-                {"key": "project.s", "kind": "state", "value": SECRET, "ts": "2026-10-01T08:00:00"},
-                {"key": "project.f", "kind": "fact", "value": SECRET, "ts": "2026-10-01T08:00:00"},
-            ],
         }
     )
     lines = [
@@ -688,15 +686,12 @@ def test_write_stage_trace_reads_new_and_old_entries_and_never_text(home: Path, 
     assert origin["control"] == {"items": 1, "missed": 1, "rate": 1.0}
     tier = _card(data, "lesson_tier_policy")
     assert tier["miss"]["items"] == 1, "a re-teach entry is an outcome, not a drop"
-    kind = _card(data, "kind_routing")
-    assert kind["miss"] == {"items": 1, "missed": 1, "rate": 1.0}
-    assert kind["control"] == {"items": 1, "missed": 0, "rate": 0.0}
     assert data["outcomes"] == {"recall": 1, "learn_add": 1}
     assert SECRET not in json.dumps(data)
 
 
 def test_outcome_totals_count_only_the_reported_store(home: Path, capsys) -> None:
-    _config(home, rule_authority_order="shadow")
+    _config(home, relevance_rule="shadow")
     other = {**_outcome("recall", 1, "dashboard:a", ["lesson.x"]), "memory_store": "mate"}
     _write_receipts(home, [_start(1, "dashboard:a"), other], {"counts": {}, "stages": {}})
     assert _report(capsys)["outcomes"] == {"recall": 0, "learn_add": 0}
@@ -705,12 +700,12 @@ def test_outcome_totals_count_only_the_reported_store(home: Path, capsys) -> Non
 def test_read_trace_never_selects_a_value_field(home: Path) -> None:
     _write_meta(
         {
-            "memory_kind_log:samples:2026-10-01": [{"key": "project.s", "value": SECRET}],
+            "memory_origin_log:ids:2026-10-01": [{"key": "project.s", "value": SECRET}],
             "memory_dedup_log:ids:2026-10-01": "not json [",
         }
     )
     rows = msr.read_trace(owned_store_path("default"))
-    assert rows == [("memory_kind_log:samples:2026-10-01", "samples", {"key": "project.s"})]
+    assert rows == [("memory_origin_log:ids:2026-10-01", "ids", {"key": "project.s"})]
 
 
 # ── The learn_add route ─────────────────────────────────────────────────────

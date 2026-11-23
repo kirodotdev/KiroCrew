@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from '../../pages/chat/types'
-import { anchorAltIdFor, msgIdentityKey, stableAnchorIdFor, turnLeadKey, uniqueRowKeys, virtualKeyFor } from './rowKeys'
+import { anchorAltIdFor, leadMessage, msgIdentityKey, rowOfMessage, stableAnchorIdFor, turnLeadKey, uniqueRowKeys, virtualKeyFor } from './rowKeys'
 
 const msg = (ts: string, role = 'assistant', mid?: string): ChatMessage =>
   ({ role, content: ts, ts, ...(mid ? { meta: { mid } } : {}) }) as ChatMessage
@@ -54,5 +54,33 @@ describe('rowKeys', () => {
     const rows: DisplayItem[] = [single(msg('a')), single(msg('b'))]
     expect(uniqueRowKeys(rows, key, () => 'same')).toEqual(['same', 'same~#1'])
     expect(uniqueRowKeys(rows, key, () => undefined)).toEqual(['row-a', 'row-b'])
+  })
+
+  it('reads the first message a row draws, null for an empty row', () => {
+    const prompt = msg('u1', 'user')
+    expect(leadMessage(turn([single(prompt), group([msg('a1')])]))).toBe(prompt)
+    expect(leadMessage(group([msg('g1'), msg('g2')]))?.ts).toBe('g1')
+    expect(leadMessage(turn([]))).toBeNull()
+    expect(leadMessage(group([]))).toBeNull()
+  })
+
+  it('finds the row that draws a message, by the object first and by its key once the object is replaced', () => {
+    const lone = msg('s', 'user')
+    const reply = msg('a2')
+    const rows: DisplayItem[] = [single(lone), turn([single(msg('u1', 'user')), group([msg('a1'), reply])])]
+    expect(rowOfMessage(rows, lone, key)).toBe(0)
+    expect(rowOfMessage(rows, reply, key)).toBe(1)
+    // The store copies a message object when it updates it.
+    expect(rowOfMessage(rows, { ...reply }, key)).toBe(1)
+    expect(rowOfMessage(rows, msg('gone'), key)).toBe(-1)
+    expect(rowOfMessage([], reply, key)).toBe(-1)
+  })
+
+  it('tells two messages that share a key apart by object, and takes the first row once the object is replaced', () => {
+    const older = msg('same')
+    const newer = msg('same')
+    const rows: DisplayItem[] = [single(older), single(newer)]
+    expect(rowOfMessage(rows, newer, key)).toBe(1)
+    expect(rowOfMessage(rows, { ...newer }, key)).toBe(0)
   })
 })

@@ -280,6 +280,7 @@ def _exfil_url_warning(
     allow_safe_presigned: bool = True,
     allow_oauth_entropy: bool = False,
     assume_oauth_endpoint: bool = False,
+    server_name: str | None = None,
     _rule_out: list[str] | None = None,
 ) -> str | None:
     """Classify one matched URL — the single per-URL exfil verdict.
@@ -375,7 +376,9 @@ def _exfil_url_warning(
         and not port
         and (
             assume_oauth_endpoint
-            or _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
+            or _approved_oauth_authorization_endpoint(
+                _dom, path_and_query.split("?", 1)[0], server_name
+            )
         )
     )
     if _oauth_endpoint:
@@ -605,7 +608,11 @@ def _oauth_credential_scan_target(
 
 
 def diagnose_oauth_url_credential(
-    url: str, *, assume_approved_endpoint: bool = False, assume_operator_listed: bool = False
+    url: str,
+    *,
+    assume_approved_endpoint: bool = False,
+    assume_operator_listed: bool = False,
+    server_name: str | None = None,
 ) -> OAuthUrlCredentialDiagnostic | None:
     """Return a safe rejection signature, never URL/value bytes or derivatives.
 
@@ -681,7 +688,7 @@ def diagnose_oauth_url_credential(
     approved_endpoint = (
         parsed.scheme.lower() == "https"
         and not port
-        and (assumed or _approved_oauth_authorization_endpoint(host_l, parsed.path))
+        and (assumed or _approved_oauth_authorization_endpoint(host_l, parsed.path, server_name))
     )
     operator_listed = approved_endpoint and (
         assume_operator_listed
@@ -734,6 +741,7 @@ def diagnose_oauth_url_credential(
         allow_safe_presigned=False,
         allow_oauth_entropy=True,
         assume_oauth_endpoint=assumed,
+        server_name=server_name,
         _rule_out=rules,
     )
     if warning is None:
@@ -800,9 +808,13 @@ def diagnose_oauth_url_credential(
     return _oauth_diagnostic(rule, "url", target)
 
 
-def oauth_url_contains_credential(url: str) -> bool:
-    """Return True when an ACP-provided OAuth banner URL is unsafe."""
-    diagnostic = diagnose_oauth_url_credential(url)
+def oauth_url_contains_credential(url: str, server_name: str | None = None) -> bool:
+    """Return True when an ACP-provided OAuth banner URL is unsafe.
+
+    *server_name* is the MCP server the URL came from: a discovery approval clears
+    the URL only for the server it was verified for.
+    """
+    diagnostic = diagnose_oauth_url_credential(url, server_name=server_name)
     if diagnostic is None:
         return False
     shape = diagnostic.shape
@@ -823,7 +835,9 @@ def oauth_url_contains_credential(url: str) -> bool:
     return True
 
 
-def oauth_rejection_is_endpoint_exemptible(url: str, *, operator_listed: bool = False) -> bool:
+def oauth_rejection_is_endpoint_exemptible(
+    url: str, *, operator_listed: bool = False, server_name: str | None = None
+) -> bool:
     """True when *url* is rejected today AND would pass with its endpoint allowlisted.
 
     By default the endpoint is assumed approved but not operator-listed (what MCP
@@ -834,10 +848,13 @@ def oauth_rejection_is_endpoint_exemptible(url: str, *, operator_listed: bool = 
     Only the first call reads the operator file, through the ordinary gate (memoized
     stat), so callers treat this like the gate itself: run it off the event loop.
     """
-    if diagnose_oauth_url_credential(url) is None:
+    if diagnose_oauth_url_credential(url, server_name=server_name) is None:
         return False
     cleared = diagnose_oauth_url_credential(
-        url, assume_approved_endpoint=True, assume_operator_listed=operator_listed
+        url,
+        assume_approved_endpoint=True,
+        assume_operator_listed=operator_listed,
+        server_name=server_name,
     )
     return cleared is None
 
@@ -1320,17 +1337,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASH_EXFIL_RULE_BY_PATTERN,
         _CARVEOUT_VERBS,
         _DATA_EXFIL_FILE_BODY_RULE,
+        _NC_FILE_REDIRECT_PATTERN,
+        _NC_FILE_REDIRECT_RULE,
         _READ_ONLY_GH,
         _backslashes_are_quoted_literals,
         _data_at_carveout_allows,
         _exfil_rule_id_for_match,
         _inert_line_allows,
         _is_read_only_gh,
+        _nc_redirect_line_allows,
         audit_bash_exfiltration,
     )
     from kiro_crew.security.exfil_git_object import (  # noqa: F401
+        _HEX_PAIR_RE,
         _QUERY_WORD_RE,
         _is_plus_joined_words,
+        _word_list_run,
     )
     from kiro_crew.security.exfil_oauth import (  # noqa: F401
         _ENDPOINT_EXTENSION_CAP,
@@ -1382,13 +1404,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         exfil_query_min_len,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
+    from kiro_crew import platform_compat  # noqa: F401
     from kiro_crew.credential_patterns import (  # noqa: F401
         AWS_KEY_ID,
     )
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _INERT_SEARCH_VERBS,
+        BUILTIN_DENIED_RULES,
         _exception_eligible,
     )
+    from kiro_crew.security.shell_commands import pipelines as _pipelines  # noqa: F401
     from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401
         SecurityEvent,

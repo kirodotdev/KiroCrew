@@ -644,6 +644,13 @@ export { default as ChatMessageList } from './ChatMessageList'
 export { default as PullRequestPanel } from './PullRequestPanel'
 export type { AppPullRequestPanelProps } from './PullRequestPanel'
 export type { PullRequestLink } from '../utils/pullRequestLinks'
+// The dashboard's diff viewer, which takes two texts and sends nothing, and the
+// chat's list of the files a session changed with each change's diff, behind the
+// app's declared session-file paths (level 12, see ./SessionChanges).
+export { default as DiffView } from './DiffView'
+export type { AppDiffViewProps } from './DiffView'
+export { default as SessionChanges } from './SessionChanges'
+export type { AppSessionChangesProps } from './SessionChanges'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'
@@ -661,6 +668,9 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
 export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+// The app's browsing list, and the owner's dialog before a site is added (level 13).
+export { useBrowserSites } from './browserSites'
+export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSites'
 // The live view of an app's own slot, with take over and hand back, behind the
 // `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
 export { default as BrowserView } from './BrowserView'

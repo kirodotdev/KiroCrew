@@ -2,10 +2,12 @@ import { memo, useContext, useState, useRef, useEffect, useMemo, useCallback, ty
 import { ChevronRight } from 'lucide-react'
 import { RowActivityContext, type RowActivityReporter } from './rowActivity'
 import type { DisplayItem, TurnItem } from './types'
+import type { ChatMessage } from '../../types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { MESSAGE_BODY_ATTR } from '../../messageActions/messageText'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
@@ -20,10 +22,11 @@ import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
+import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
-import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+import { useDismissedSpecHooksNotice } from './SpecHooksNotice'
 import { isToolCallRow } from '../../lib/toolRowContract'
 
 /**
@@ -218,8 +221,8 @@ const LIVE_ACTIVITY_WINDOW = 5
 /** A hidden Approved:/Refused: completion row renders nothing in every host, so it is
  *  never folded and never counted: one call is one step. A notice the user
  *  dismissed draws nothing either, so it is not a step to expand onto. */
-const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
-  !isHiddenTool(it) && !(noticeDismissed && it.kind === 'single' && isSpecHooksRunNowhereNotice(it.msg))
+const isCountedRow = (it: TurnItem, isDismissedNotice: (m: ChatMessage) => boolean) =>
+  !isHiddenTool(it) && !(it.kind === 'single' && isDismissedNotice(it.msg))
 
 type FoldMode = 'interim' | 'collapseAll' | 'default'
 
@@ -238,8 +241,8 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, noticeDismissed: boolean): number[] {
-  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, noticeDismissed) ? [i] : [])
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, isDismissedNotice: (m: ChatMessage) => boolean): number[] {
+  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, isDismissedNotice) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
@@ -250,7 +253,7 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
-      if (isCountedRow(it, noticeDismissed) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
+      if (isCountedRow(it, isDismissedNotice) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
@@ -288,9 +291,12 @@ const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip steering notes, OPTIONS/markdown formatting, and format chars; return visible text length. */
 function substantiveLength(text: string): number {
-  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(extractSteeringAcks(text).cleaned)
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[#*_`>\-|]/g, '')
+    .trim().length
 }
 
 /**
@@ -609,10 +615,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const expandSteps = useContext(ExpandStepsContext)
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll && !expandSteps ? 'collapseAll' : 'default'
   // A dismiss drops its notice from the count at once, not on the next flush.
-  const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
+  const isDismissedNotice = useDismissedSpecHooksNotice()
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed),
-    [items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows, isDismissedNotice],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()
@@ -668,9 +674,9 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   useEffect(() => {
     if (!jumpInTurn || !revealTs) return
     const t = setTimeout(() => {
-      // The transcript's own row, not the measuring farm's off-screen copy.
+      // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
       const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
-      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
       if (!row) return
       // The jump's settle poll centres the whole turn each frame; end it first.
       claimScroll()

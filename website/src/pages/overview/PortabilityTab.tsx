@@ -11,6 +11,7 @@ import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
 import { downloadBlob } from '../../utils/download'
+import { apiTransport } from '../../api/apiTransport'
 
 /**
  * Where a settings restore leaves its result for the load it triggers.
@@ -121,8 +122,9 @@ export function refusalText(
 }
 
 /**
- * The export's warning header: a JSON list of the agent templates the bundle does
- * not carry, ending in `"+N"` when the server left N more out.
+ * An export warning header (`X-Kirocrew-Unbundled-Templates`, `X-Kirocrew-Unbundled-Apps`):
+ * a JSON list of the names the bundle does not carry, ending in `"+N"` when the
+ * server left N more out.
  */
 export function unbundledTemplates(header: string | null): { names: string[]; more: number } {
   try {
@@ -304,6 +306,7 @@ export default function PortabilityTab() {
     carried ? { type: 'ok', msg: carried.msg } : { type: 'idle', msg: '' },
   )
   const [exportWarning, setExportWarning] = useState('')
+  const [exportAppsWarning, setExportAppsWarning] = useState('')
   const [exportChatsSkipped, setExportChatsSkipped] = useState('')
   const [importWarnings, setImportWarnings] = useState<string[]>(carried?.warnings ?? [])
   const [importErrors, setImportErrors] = useState<string[]>(carried?.errors ?? [])
@@ -355,6 +358,7 @@ export default function PortabilityTab() {
     }
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     setExportWarning('')
+    setExportAppsWarning('')
     setExportChatsSkipped('')
     const withChats = includeChats && !memoryOnly
     try {
@@ -378,6 +382,8 @@ export default function PortabilityTab() {
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
       if (names.length || more) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))
+      const apps = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Apps'))
+      if (apps.names.length || apps.more) setExportAppsWarning(i18nT('pages.overview.portabilityTab.export_apps_not_included', { names: joinWithMore(apps.names, apps.more) }))
       const skipped = withChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
       if (skipped > 0) setExportChatsSkipped(i18nT('pages.overview.portabilityTab.export_chats_skipped_size', { chats: skipped }))
     } catch (e: unknown) {
@@ -404,7 +410,7 @@ export default function PortabilityTab() {
     fd.append('file', file)
     setChecking(true)
     try {
-      const resp = await fetch('/api/portability/preview', { method: 'POST', body: fd })
+      const resp = await apiTransport.request('/api/portability/preview', { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         setPreview(data.manifest)
@@ -450,7 +456,7 @@ export default function PortabilityTab() {
       if (!memoryImport && pickedTemplates.length) params.set('agent_templates', pickedTemplates.join(','))
       if (!memoryImport && includeCrons) params.set('include_crons', '1')
       if (!memoryImport && effectiveMode === 'replace' && includeSkills) params.set('include_skills', '1')
-      const resp = await fetch(`/api/portability/import?${params}`, { method: 'POST', body: fd })
+      const resp = await apiTransport.request(`/api/portability/import?${params}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         const summary = data.summary || {}
@@ -637,6 +643,7 @@ export default function PortabilityTab() {
           <ErrorNotice variant="inline" message={exportStatus.msg} className="mt-3" testId="portability-export-error" />
         )}
         <WarnLine msg={exportWarning} testId="portability-export-warning" />
+        <WarnLine msg={exportAppsWarning} testId="portability-export-apps-warning" />
         <WarnLine msg={exportChatsSkipped} testId="portability-export-chats-skipped" />
       </Card>
 

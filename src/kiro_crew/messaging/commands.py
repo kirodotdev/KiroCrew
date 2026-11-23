@@ -432,6 +432,24 @@ def format_ttl(ttl_secs: int) -> str:
     return f"{mins}m"
 
 
+COMPACT_FOCUS_LIMIT = 500
+
+
+def clean_compact_focus(text: str, limit: int = COMPACT_FOCUS_LIMIT) -> str:
+    """One clean line of what a person typed after ``/compact``, or ``""`` when nothing.
+
+    Every channel reads the words after its command token and hands them to
+    ``provider.compact(...)`` as the focus the compaction should keep. Runs of
+    whitespace (newlines and tabs included) collapse to single spaces, other
+    control characters are dropped, and the result is cut at *limit* characters
+    so a pasted wall of text cannot become the compaction prompt. An empty result
+    means a bare ``/compact``: the caller then calls ``provider.compact()`` with
+    no argument, exactly as before.
+    """
+    line = " ".join(text.split())
+    return "".join(ch for ch in line if ch.isprintable())[: max(limit, 0)].rstrip()
+
+
 def compact_unsupported_backend(provider: Any) -> str | None:
     """Backend id when *provider* cannot serve a manual ``/compact``, else ``None``.
 

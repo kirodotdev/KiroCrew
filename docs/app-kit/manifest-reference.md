@@ -168,8 +168,7 @@ A stdio entry's `env` values are passed through as declared. A
 `secret://<name>` value is **not** resolved for app servers when kiro-cli
 spawns them: the server receives the literal reference text. Registration logs
 a warning naming the app, server and env key when it sees one. How an app may
-receive a vault secret is undecided
-([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+receive a vault secret is not defined: no path resolves one for it.
 
 ### Host paths in an agent file
 
@@ -496,9 +495,11 @@ slot: an overlay `id` must name a component compiled into the dashboard bundle, 
 there is no ESM `entryPoint` for overlays the way `ui.pages` has one. An installed app
 declaring `ui.overlays` is refused at install, and a self-registered one is refused
 when slots are resolved -- `builtin` provenance is assigned only by the builtin
-registration Kiro Crew runs at startup and cannot be self-reported. Treat this as the
-mechanism builtin apps use to replace a host surface, not yet as a third-party
-extension point.
+registration Kiro Crew runs at startup and cannot be self-reported. The dashboard's
+overlay registry (`BUILTIN_OVERLAY_REGISTRY` in `website/src/apps/overlayRegistry.ts`)
+is empty: the Command Bar that once held the slot is the shell's own quick-search
+launcher, and no new built-in may add an overlay. So no overlay `id` resolves to a
+component, and this is not a third-party extension point.
 
 A builtin declaring `ui.overlays` must NOT also declare `ui.entry`: builtin
 registration re-derives `origin` on every startup and downgrades an app that ships a
@@ -720,6 +721,7 @@ import map `ui.pages` uses, so React stays a single instance.
 | `session.folderId` | string? | Folder the chat is filed in, `''` at top level. A dashboard grouping with its own id -- **not** a directory, so key per-folder state on this and not on `cwd` |
 | `session.folderName` | string? | Folder's display name, to name it back to the user |
 | `session.cwd` | string | Working directory recorded for the session, when known |
+| `session.member` | `{ name }`? | In a Bot's own thread, the Bot's display name, so a control can say who the user is talking to. Undefined in every other chat |
 | `onClose` | function | Dismiss the control, e.g. after committing a change |
 
 The control is remounted when the session changes, so per-chat state cannot leak
@@ -1627,6 +1629,11 @@ your backend answers is in [api-reference](api-reference.md#memory-provider-cont
 > reason; the app itself still enables, since its other parts do not need the
 > backend.
 
+A Node backend runs on the first `node` the gateway finds through nvm, its own
+`PATH`, then the Node.js install directories it also searches for MCP servers
+(Homebrew, `/usr/local/bin`, mise, asdf, fnm, Volta, n), so a gateway opened
+from the macOS Dock still finds a Homebrew Node.js. `npm` is found the same way.
+
 A Node backend gets its npm dependencies from the gateway, because an install
 never copies `node_modules`. Before the backend starts, the gateway runs
 `npm install --production` in every directory from the app root down to the
@@ -1671,6 +1678,7 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.routes` | string | `module.path:callable` that registers handlers into the Gateway's in-process `RouteRegistry` catch-all dispatcher |
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
+| `backend.hooks.on_browser_media_ended` | string | `module.path:callable` called with `(ctx, event)` when media ends in the browser tab of one of the app's own slots; needs approved `permissions.browserSites`. Event shape: [API reference, Browser Media](api-reference.md#browser-media) |
 
 **The `routes` callable** receives the app context and returns a list of routes.
 Each route is any object with three attributes, so the app declares its own
@@ -1881,6 +1889,7 @@ packages at all.
     "reachableByUserSessions": [],
     "desktopCapabilities": [],
     "browserSites": [],
+    "kiroOperations": [],
     "browser": [],
     "webhookSource": false,
     "bots": [],
@@ -1911,7 +1920,8 @@ packages at all.
 | `permissions.workerAutoApprove` | boolean | May hold a bounded, audited auto-approve grant on the app's OWN worker slots through `ctx.auto_approve`, so an unattended session's tool calls run without a prompt. Absent unless the value is literally `true`; shown at the trust prompt; an update that adds it waits for the owner's approval; never above the approval-mode policy; ended when the app is disabled or removed ([api-reference](api-reference.md#worker-auto-approve-ctxauto_approve)) |
 | `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
 | `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an app that declares it and whose owner approved it, and to a window loaded from another gateway only what the app also holds there. An app switched off on this computer keeps them in the windows a gateway chosen with `gatewayChoice` still serves it, so `screenCapture` and `localFiles` still act on this computer there |
-| `permissions.browserSites` | string[] | Pages your app's own agent may drive Crew's browser on without asking the owner at each step, at most 16. Each is an exact `https://` origin plus a path pattern: `https://www.youtube.com/watch`, `https://www.bilibili.com/video/*`. `*` matches any run of characters, `/` included; the query and fragment are not compared. The origin follows the `ui.frameSources` rules (no port, user info, wildcard, IP, `localhost` or public suffix); the path starts with `/` and has no `%`, `?`, `#`, empty, `.` or `..` segment. Install never approves them: the owner approves them on the app's page, and an update that adds one waits there. While the app is enabled, trusted and approved, only sessions your app owns get the `browser` tool without a card, and those sessions are held to these pages: opening another is refused, and a page that lands elsewhere is moved to `about:blank`. The agent types and clicks in a browser that holds the owner's logins on these pages. Your page's media buttons use [`useBrowserMedia`](api-reference.md), which needs `/api/browser/media` in `permissions.api` |
+| `permissions.browserSites` | string[] | Pages your app's own agent may drive Crew's browser on without asking the owner at each step, at most 16. Each is an exact `https://` origin plus a path pattern: `https://www.youtube.com/watch`, `https://www.bilibili.com/video/*`. `*` matches any run of characters, `/` included; the query and fragment are not compared. The origin follows the `ui.frameSources` rules (no port, user info, wildcard, IP, `localhost` or public suffix); the path starts with `/` and has no `%`, `?`, `#`, empty, `.` or `..` segment. Install never approves them: the owner approves them on the app's page, and an update that adds one waits there. While the app is enabled, trusted and approved, only sessions your app owns get the `browser` tool without a card, and those sessions are held to these pages: opening another is refused, and a page that lands elsewhere is moved to `about:blank`. The agent types and clicks in a browser that holds the owner's logins on these pages. Your page's media buttons use [`useBrowserMedia`](api-reference.md), which needs `/api/browser/media` in `permissions.api`. The owner may add sites you did not declare, remove or turn off any; your page asks through [`useBrowserSites`](api-reference.md#browser-sites) (seam level 13) |
+| `permissions.kiroOperations` | string[] | The Kiro BFF operations the gateway may call for your app as the signed-in person, by exact name, at most 64: `["GetWidget", "ListWidgets"]`. A name is an upper-case letter then letters or digits, at most 64 characters; no wildcard or service name. Installing approves none: the trust prompt lists them and the owner approves them on the app's page; an update that adds one waits there too, and dropping one needs nothing. Your backend calls `POST /api/apps/<name>/kiro/<operation>` with its app token (no `permissions.api` entry needed), and an in-gateway hook calls `await ctx.kiro_call(operation, input)`. The gateway sends the call with the person's Kiro sign-in to the BFF of their profile's region and returns only the output; your app never sees the token. See [Kiro calls](api-reference.md#kiro-calls). Seam level 12. |
 | `permissions.browser` | string[] | What your app may do on the browser tabs of its own chat slots: `"view"` (show the live view of its own slot and draw over it), `"read"` (read that page) and `"act"` (open pages, click and type there). Empty by default; other entries are ignored. Shown at the trust prompt, but install approves no verb: the owner approves each on the app's page, and an update that adds one holds that one back while the others keep working. Has an effect only while **App browser access** (`dashboard.feature_previews.app_browser_sdk`) is on; off, the app still installs and [`ctx.browser`](api-reference.md#browser-ctxbrowser) is absent |
 | `permissions.webhookSource` | boolean | Takes inbound webhook deliveries on the app's own routes, governed by the security policy's `webhooks` scope as the source named by the app's name ([`ctx.webhook_source`](api-reference.md#webhook-source-ctxwebhook_source), seam level 7). Absent unless the value is literally `true`; shown, with the source id, at the trust prompt. Grants no route or authentication of its own |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
@@ -1928,7 +1938,10 @@ Spawns run through the HOST's subagent manager, which means they inherit the
 host's spawn accounting and approval mode rather than getting a private path.
 Cost is the app's to bound: an app that spawns on a timer needs its own budget
 (see the activity-budget pattern in `builtins/mochi/activity_budget.py`), because
-the platform does not rate-limit spawns per app today.
+the platform does not rate-limit spawns per app. The one exception is Fair Admission
+(`shared_crew.admission_enabled`, off by default and behind the Shared Crew preview):
+with it on, each spawn is admitted as a child charged to the app's own system
+principal, under the per-person and Crew-wide limits.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 `build_continue_impl`, `SpawnError`. The calls are described in
@@ -2175,7 +2188,7 @@ the endpoint; it does not import provider code.
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
 | `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
-| `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
+| `setup.configSchema` | object | `{}` | JSON Schema for app configuration. Nothing reads it. An owner can read and set the values in an app's config with `kirocrew app config <app> [get \| set <key> <value>]`, which runs none of the app's own checks. |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
 stays disabled and any registered resources are deregistered. If it fails when
@@ -2547,8 +2560,7 @@ The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
 that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
-them is the stated policy, decided in
-[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+them is the stated policy: the standard tier
 does not keep an app's children off the user session bus. The launcher reaches
 it, and so do the app's backend and its lifecycle and install commands, which is
 the same documented residual the agent's own shell has (see

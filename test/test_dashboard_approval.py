@@ -29,8 +29,9 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 from named_cases_helpers import named_cases
-from redaction_structured_cases import github_classic
+from redaction_structured_cases import PEM_BEGIN, PEM_BODY, github_classic
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import (
@@ -999,18 +1000,24 @@ class TestDenyRowTitleRedaction:
         self._assert_audit_redacted(audit, "hook_error")
 
     @pytest.mark.asyncio
-    async def test_trust_reads_invalid_name_redacts(self, tmp_path):
-        """Trust-reads denies on a redacted row with an audited SEL record."""
+    async def test_trust_reads_leaves_a_non_shell_invalid_name_to_the_card(self, tmp_path):
+        """A non-shell call with a decoy ``command`` never meets the trust-reads rung.
+
+        Trust-reads reads a command only from a shell call, and a shell title is exempt
+        from the length cap, so an over-long title is never denied BY that rung. The
+        secret in the title still reaches no transcript row and no audit record.
+        """
         state, client = _make_state(tmp_path)
         slot = _make_slot()
         slot._trust_reads = True
-        # Stub the name-grant check: `ls` does not exist on Windows, where the check would
-        # decline the tier and the `trust_reads` deny below would never happen. The check
-        # itself is covered in `test/test_name_grant.py`.
         _no_refusal = patch.object(
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
         )
-        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel, _no_refusal:
+        with (
+            patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel,
+            _no_refusal,
+            patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0),
+        ):
             audit = MagicMock()
             mock_sel.return_value = audit
             await _drive_deny_turn(
@@ -1020,14 +1027,12 @@ class TestDenyRowTitleRedaction:
                 title=self._invalid_title(),
                 tool_input='{"command": "ls"}',
             )
-        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
-        self._assert_audit_redacted(audit, "denied")
-        denied = [
-            call.kwargs
-            for call in audit.log_tool_invocation.call_args_list
-            if call.kwargs.get("outcome") == "denied"
-        ]
-        assert any((c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied), denied
+        client.approve_tool.assert_not_awaited()
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any(self._SECRET in row for row in rows), rows
+        for call in audit.log_tool_invocation.call_args_list:
+            assert self._SECRET not in call.kwargs.get("tool_name", ""), call.kwargs
+            assert (call.kwargs.get("metadata") or {}).get("reason") != "trust_reads", call.kwargs
 
     @pytest.mark.asyncio
     async def test_trust_mode_invalid_name_redacts(self, tmp_path):
@@ -1105,6 +1110,200 @@ class TestDenyRowTitleRedaction:
         # Each deny shape is rendered in exactly one place — its helper.
         assert source.count('tool_row("refused", f"{title} (invalid: {error})")') == 1
         assert source.count('tool_row("refused", f"{title} (hook error)")') == 1
+
+
+# ── Hook tool_input built from the structured params ──
+
+
+class TestHookToolInputFromRawParams:
+    """A PreToolUse hook on the dashboard permission path reads ``tool_input`` built
+    from the call's ``raw_tool_params``, not parsed out of the scrubbed display text.
+
+    The display text is not always JSON: an edit's is the approval card's diff, and
+    a command holding an unterminated private-key block has its mask run past the
+    value, over the closing quote and brace. Parsed out of that text, the payload
+    would go out with no ``tool_input`` at all. The hook still sees redacted input:
+    a secret value is masked and a URL keeps its shape.
+
+    The permission arm fires the hooks at four sites -- under a context builder's
+    auto-approve, under its allow verdict before the interactive card, on the card's
+    own approve (``permission_prompt``), and on a trusted slot with no context builder
+    -- and every one is driven here (``allow_then_card`` reaches the middle two).
+    """
+
+    _TAG = "[REDACTED: credential]"
+    _TOKEN = "a1b2c3d4" * 4
+    _URL = "https://example.com/a?token=" + _TOKEN
+    _MASKED_URL = "https://example.com/a?token=" + _TAG
+
+    def _event(self, command: str) -> LLMEvent:
+        from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
+
+        display = redact_text(json.dumps({"command": command}, indent=2))
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Running: curl",
+            tool_kind="execute",
+            request_id="req-1",
+            tool_input=display,
+            raw_tool_params={"command": command},
+            raw_params_trusted=True,
+            is_shell=True,
+            shell_classified=True,
+        )
+
+    def _edit_event(self, params: dict) -> LLMEvent:
+        """A file-edit permission request as the KAS parser builds it: the display
+        text is the diff drawn for the approval card, the params stay a dict."""
+        from kiro_crew.acp._dispatch_parts.surfaced_text import derive_edit_diff
+
+        display = derive_edit_diff(params)
+        assert display.startswith("--- "), display
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Editing file",
+            tool_kind="edit",
+            request_id="req-1",
+            tool_input=display,
+            raw_tool_params=params,
+            raw_params_trusted=True,
+            is_shell=False,
+            shell_classified=True,
+        )
+
+    async def _pre_fire_inputs(
+        self, tmp_path, command: str, *, site: str, event: LLMEvent | None = None
+    ) -> list:
+        """Every ``tool_input`` the PreToolUse fires of one turn carried; the tool
+        was approved."""
+        if site == "auto_approve":
+            cb, trust, answer = _context_builder(ToolHookResult.auto_approve()), False, False
+        elif site == "allow_then_card":
+            cb, trust, answer = _context_builder(ToolHookResult.allow()), False, True
+        else:
+            assert site == "trusted_slot"
+            cb, trust, answer = None, True, False
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot(trust=trust)
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client._client = client
+        client.last_prompt_stats = None
+        calls = {"n": 0}
+
+        def _stream(*args, **kwargs):
+            # Only the first stream carries the request, so a recovery
+            # continuation completes instead of asking again.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _async_iter([event or self._event(command), _complete_event()])
+            return _async_iter([_complete_event()])
+
+        client.stream = MagicMock(side_effect=_stream)
+        answerer = None
+        if answer:
+
+            async def _approve() -> None:
+                await _answer_approval(slot, "req-1", "approved")
+
+            answerer = asyncio.get_running_loop().create_task(_approve())
+        # The name-grant check resolves the command's program on this host's
+        # PATH; where it refuses (e.g. Windows), a hook auto-approve falls
+        # through to a card no one answers. This test is about tool_input.
+        _no_refusal = patch.object(
+            chat_runner, "_name_grant_refusal_for", new=AsyncMock(return_value=None)
+        )
+        with _patch_stats(), _no_refusal:
+            await _run_chat(state, slot, "hello")
+            if slot.task:
+                await slot.task
+        if answerer is not None:
+            await _drain(answerer)
+        pre = [
+            c
+            for c in state._hook_store.fire.call_args_list
+            if c.args and c.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert pre, state._hook_store.fire.call_args_list
+        client.approve_tool.assert_called()
+        return [c.kwargs["tool_input"] for c in pre]
+
+    @pytest.mark.asyncio
+    # No ``auto_approve``: a hook auto-approve is declined for a command line that
+    # does not tokenize (this one quotes a newline), so that site falls through to
+    # the card, which ``allow_then_card`` drives.
+    @pytest.mark.parametrize("site", ["allow_then_card", "trusted_slot"])
+    async def test_an_unterminated_private_key_fires_the_hook_without_tool_input(
+        self, tmp_path, site
+    ):
+        command = f"printf '%s' '{PEM_BEGIN}\n{PEM_BODY}'"
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(self._event(command).tool_input)  # the display text alone
+        inputs = await self._pre_fire_inputs(tmp_path, command, site=site)
+        assert inputs and all(got is None for got in inputs)
+
+    @pytest.mark.asyncio
+    async def test_a_url_reaches_the_hook_with_only_its_secret_value_masked(self, tmp_path):
+        command = f'curl -s --url "{self._URL}"'
+        inputs = await self._pre_fire_inputs(tmp_path, command, site="auto_approve")
+        assert inputs == [{"command": f'curl -s --url "{self._MASKED_URL}"'}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("site", ["auto_approve", "allow_then_card", "trusted_slot"])
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {
+                "command": "strReplace",
+                "path": "/work/src/app.py",
+                "oldStr": "x = 1\n",
+                "newStr": "x = 2\n",
+            },
+            {"command": "create", "path": "/work/src/new.py", "content": "print('hi')\n"},
+        ],
+        ids=["str_replace", "fs_write_create"],
+    )
+    async def test_a_file_edit_hands_the_hook_its_arguments_not_the_diff(
+        self, tmp_path, site, params
+    ):
+        """An edit's display text is the approval card's diff, which is not JSON; a
+        hook that guards writes by path must still read the call's own arguments."""
+        event = self._edit_event(params)
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(event.tool_input)  # the diff alone
+        inputs = await self._pre_fire_inputs(tmp_path, "", site=site, event=event)
+        assert inputs == [params] * len(inputs)
+
+    @pytest.mark.asyncio
+    async def test_the_tool_call_frames_informational_fire_carries_the_params(
+        self, tmp_path, monkeypatch
+    ):
+        """The tool-call frame's own fire (``tool_rows``) hands over the structured
+        params too, so a hook that runs there reads the same ``tool_input``."""
+        from kiro_crew.providers.base import EVENT_TOOL_CALL
+
+        fire = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", fire)
+        state, client = _make_state(tmp_path)
+        slot = _make_slot()
+        command = f'curl -s --url "{self._URL}"'
+        _set_stream(
+            client,
+            [
+                LLMEvent(
+                    kind=EVENT_TOOL_CALL,
+                    title="Running: curl",
+                    tool_kind="execute",
+                    tool_call_id="tc-1",
+                    tool_input="{",
+                    raw_tool_params={"command": command},
+                ),
+                _complete_event(),
+            ],
+        )
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        assert fire.await_count == 1
+        assert fire.await_args.kwargs["raw_tool_params"] == {"command": command}
 
 
 # ── Long read titles carrying a canonical identity ──
@@ -1334,10 +1533,18 @@ class TestHostPreDeclinedRowIsBornResolved:
         if failure == "delivery-returns-none":
             # Nobody had answered, so this decline is the runner's own and the
             # user is told so.
-            assert any(
-                m.get("role") == "assistant" and "auto-declined" in str(m.get("content"))
+            notices = [
+                m
                 for m in slot.messages
-            ), "the undelivered prompt was declined without telling the user"
+                if m.get("role") == "assistant" and "auto-declined" in str(m.get("content"))
+            ]
+            assert notices, "the undelivered prompt was declined without telling the user"
+            # The row names the host's cause, so the dashboard does not credit the
+            # reply's "Steered" chip to the person.
+            # ``chat_utils.HOST_DECLINE_CAUSE_META_KEY``, pinned in test_dashboard_approval_window.
+            assert [(n.get("meta") or {}).get("host_decline_cause") for n in notices] == [
+                DENY_CAUSE_APPROVAL_UNDELIVERABLE
+            ]
         # Nothing was posted, so nothing is cleaned up on the Slack side.
         state.slack_client.delete_message.assert_not_awaited()
 

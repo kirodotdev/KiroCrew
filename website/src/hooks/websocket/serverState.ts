@@ -115,6 +115,9 @@ const ALL_TARGETS: readonly RefreshTarget[] = [
   TEMPLATES_TARGET,
   { queryKey: ['workspaces'] },
   { queryKey: ['kirocrewConfig'] },
+  // The sign-in status lists the portals the company form warns for, which the
+  // `crew_client` preview in config.json decides (`useKasLogin` KAS_LOGIN_STATUS_KEY).
+  { queryKey: ['kas-login'] },
   // The Security panel's safety switches live in config.json; a save from
   // another tab reaches this one only through the config refresh frame.
   { queryKey: ['safety-switches'] },

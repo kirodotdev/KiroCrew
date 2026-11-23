@@ -5,7 +5,11 @@ or a tool such as AIM installed. Its spec grants what it declares, and the user 
 no practical way to declare Crew's servers in it: their launch command, data-home
 pin and session identity are Crew-internal. So a Crew session on such an agent gets
 :data:`DEFAULT_CREW_SERVERS` added to the spec it runs on, with the managed launch
-(:func:`kiro_crew.agent.managed_mcp_spec_entry`) and an ``@<server>`` grant.
+(:func:`kiro_crew.agent.managed_mcp_spec_entry`) and an ``@<server>`` grant. One
+that grants the ``tool_search`` loader, and is not a Crew Mode conductor, also gets
+every enabled installed app's servers keyed ``<app>:<server>``, the entries Crew's
+default agent mounts, without their ``autoApprove``, except one a wildcard of its
+own ``allowedTools`` would approve unasked.
 
 ONE helper, called by both kiro paths, so the two cannot drift:
 
@@ -98,10 +102,17 @@ def crew_added_servers(agent: str | None, spec: object) -> tuple[str, ...]:
 def opted_out(spec: dict[str, Any], server: str) -> bool:
     """Whether *spec* withholds *server* whole.
 
-    Two existing spellings say so: ``managedToolPolicy.excludeServers`` naming it, or
-    ``excludedTools`` naming ``@<server>`` or ``@<server>/*``. A per-tool exclusion
+    Each of these says so: ``managedToolPolicy.excludeServers`` naming it;
+    ``excludedTools`` naming ``@<server>``, ``@<server>/*``, or the wildcards ``@*``
+    and ``@mcp`` (every MCP server) and ``*`` (every tool); or a ``permissions`` rule that denies
+    the ``mcp`` (or ``all``) capability with no ``exclude`` carve-out, for every
+    resource or for ``<server>/*``. A per-tool exclusion or deny
     (``@kirocrew-core/spawn_run``) is not an opt-out: the server mounts and the
-    spec's own ``excludedTools`` keeps that tool off, natively on both backends.
+    spec's own rule keeps that tool off.
+
+    The ``permissions`` block is read as written, before KAS's projection parses
+    it: a block that projection refuses whole still says the author withholds the
+    server, so the server is not added.
     """
     policy = spec.get("managedToolPolicy")
     if isinstance(policy, dict):
@@ -110,7 +121,42 @@ def opted_out(spec: dict[str, Any], server: str) -> bool:
             return True
     excluded = spec.get("excludedTools")
     if isinstance(excluded, list):
-        if f"@{server}" in excluded or f"@{server}/*" in excluded:
+        # ``@mcp`` is KAS's own name for every MCP tool, which a v3 agent file may use.
+        if any(e in excluded for e in ("@*", "@mcp", "*", f"@{server}", f"@{server}/*")):
+            return True
+    return _permissions_deny_server(spec.get("permissions"), server)
+
+
+def _permissions_deny_server(permissions: object, server: str) -> bool:
+    """Whether an authored ``permissions`` block denies every tool of *server*.
+
+    A rule counts when its effect is ``deny``, its capability is ``mcp`` or ``all``,
+    it has no non-empty ``exclude``, and its ``match`` is absent or empty (KAS reads
+    both as every resource) or holds a pattern whose server part matches *server* and
+    whose tool part is absent or only ``*``.
+    """
+    rules = permissions.get("rules") if isinstance(permissions, dict) else None
+    if not isinstance(rules, list):
+        return False
+    from fnmatch import fnmatchcase
+
+    def covers(pattern: object) -> bool:
+        # Whole server: the server part matches it and the tool part is only `*`s
+        # (absent counts too), so a one-tool pattern such as `<server>/?` does not.
+        if not isinstance(pattern, str):
+            return False
+        server_part, _, tool_part = pattern.partition("/")
+        return fnmatchcase(server, server_part) and not tool_part.strip("*")
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("effect") != "deny" or rule.get("exclude"):
+            continue
+        if rule.get("capability") not in ("mcp", "all"):
+            continue
+        match = rule.get("match")
+        if not match:
+            return True
+        if isinstance(match, list) and any(covers(p) for p in match):
             return True
     return False
 
@@ -142,8 +188,57 @@ def _references(tools: list[Any], server: str) -> bool:
     return any(isinstance(t, str) and (t == whole or t.startswith(prefix)) for t in tools)
 
 
-def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[str, Any]:
+def _wildcard_approves(spec: dict[str, Any], server: str) -> bool:
+    """Whether a wildcard in *spec*'s own ``allowedTools`` would run *server* unasked.
+
+    An entry that reaches ``@<server>`` without naming it (``"*"``, ``@*``,
+    ``@<app>:*``). An app's server is third-party code, so it is not added while
+    one is there, even beside an entry naming it: the wildcard could still run
+    the server's other tools unasked.
+    """
+    allowed = spec.get("allowedTools")
+    if not isinstance(allowed, list):
+        return False
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    return any(
+        isinstance(ref, str)
+        and (ref == "*" or ref.startswith("@"))
+        and not _references([ref], server)
+        and entry_reaches(ref.partition("/")[0], f"@{server}")
+        for ref in allowed
+    )
+
+
+def _app_servers() -> dict[str, dict[str, Any]]:
+    """Each enabled installed app's server as ``kirocrew.json`` mounts it, minus ``autoApprove``.
+
+    Only an unaliased ``<app>:<server>`` key: a server whose declared name has a
+    ``/`` is keyed by an alias, and an alias can be another server's.
+    """
+    from kiro_crew import agent as agent_mod
+
+    mounted = (agent_mod._installed_default_spec() or {}).get("mcpServers")
+    if not isinstance(mounted, dict):
+        return {}
+    owned = agent_mod._app_owned_mcp_keys()
+    return {
+        key: {field: value for field, value in entry.items() if field != "autoApprove"}
+        for key, entry in mounted.items()
+        if ":" in key and owned.get(key) and isinstance(entry, dict)
+    }
+
+
+def with_default_crew_servers(
+    agent: str | None, spec: dict[str, Any], *, audit: bool = True
+) -> dict[str, Any]:
     """*spec* with :data:`DEFAULT_CREW_SERVERS` added when *agent* is a custom agent.
+
+    A spec that grants the ``tool_search`` loader also gets :func:`_app_servers`,
+    under the same rules, unless *agent* is a Crew Mode conductor: a conductor
+    mounts only Crew's own servers (``crew_mode.conductor_agents``). An app server
+    a wildcard of the spec's own ``allowedTools`` would approve is not added
+    (:func:`_wildcard_approves`).
 
     Returns *spec* itself when nothing is added, else a new dict. Nothing is added
     on a registry-governed install (:func:`_registry_mode`). For each server:
@@ -158,6 +253,9 @@ def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[s
     Otherwise the managed entry joins ``mcpServers`` and ``@<server>`` joins
     ``tools``, unless ``tools`` already grants everything or already names the
     server (a per-tool grant keeps its narrowing).
+
+    *audit* false skips the security-event record of a withheld approval, for a
+    read-only caller that must judge the spec as a spawn would.
     """
     if not is_custom_agent(agent, spec) or _registry_mode():
         return spec
@@ -172,14 +270,23 @@ def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[s
     if declared is not None and not isinstance(declared, dict):
         return spec
     from kiro_crew.agent import managed_mcp_spec_entry
+    from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
+    from kiro_crew.crew_mode import conductor_agents
+
+    def wanted(server: str) -> bool:
+        return not opted_out(spec, server) and not (declared and server in declared)
 
     added: dict[str, dict[str, Any]] = {}
     for server in DEFAULT_CREW_SERVERS:
-        if opted_out(spec, server) or (declared and server in declared):
-            continue
-        entry = managed_mcp_spec_entry(server)
+        entry = managed_mcp_spec_entry(server) if wanted(server) else None
         if isinstance(entry, dict):
             added[server] = entry
+    if spec_grants_tool_search(spec) and agent not in conductor_agents():
+        added.update(
+            (key, entry)
+            for key, entry in _app_servers().items()
+            if wanted(key) and not _wildcard_approves(spec, key)
+        )
     if not added:
         return spec
     out = copy_json_document(spec)
@@ -208,7 +315,7 @@ def with_default_crew_servers(agent: str | None, spec: dict[str, Any]) -> dict[s
 
         withheld = [ref for ref in allowed if reaches_gated(ref)]
         out["allowedTools"] = [ref for ref in allowed if not reaches_gated(ref)]
-        if withheld:
+        if withheld and audit:
             from kiro_crew.acp.kas_agents import _audit_permission_decision
 
             _audit_permission_decision(

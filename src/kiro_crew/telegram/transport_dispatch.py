@@ -70,6 +70,7 @@ from kiro_crew.messaging.attachments import IngestLimits, append_attachment_cont
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments  # noqa: F401
 from kiro_crew.messaging.commands import (  # noqa: F401
     YOLO_PHRASING_PLAIN,
+    clean_compact_focus,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -718,7 +719,10 @@ class TelegramDispatcher:
             return
         if cmd == "compact":
             self._conv.clear_awaiting(route)
-            await self._handle_compact(route, chat_id, session_key=resumed_key)
+            focus = clean_compact_focus(parse_command_argument(text))
+            await self._handle_compact(
+                route, chat_id, session_key=resumed_key, **({"focus": focus} if focus else {})
+            )
             return
         if cmd == "link":
             await self._handle_link(route, chat_id, resumed_key=resumed_key)

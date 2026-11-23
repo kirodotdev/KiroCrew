@@ -202,11 +202,12 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             print("               kirocrew kas install")
         _report_kas_bundle_spec_permissions(None, issues)
         return
-    where = (
-        " (built into the wheel)"
-        if installed.packaged
-        else " (built into the app)" if installed.bundled else ""
-    )
+    if installed.packaged:
+        where = " (built into the wheel)"
+    elif installed.bundled:
+        where = " (built into the app)"
+    else:
+        where = ""
     print(f"  bundle:      ✅ KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     _report_kas_bundle_pin(installed.version)
     # The two entry points ``install.json`` records, each on its own row: the

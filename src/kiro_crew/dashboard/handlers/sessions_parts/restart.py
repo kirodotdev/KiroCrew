@@ -40,6 +40,11 @@ _SHUTDOWN_TIMEOUT_SECS = 10
 
 
 async def _reset_all_sessions(request: web.Request) -> int:
+    """Reset sessions through the same path used by in-process config changes."""
+    return await reset_sessions(request.app["state"])
+
+
+async def reset_sessions(state: DashboardState) -> int:
     """Reset all active sessions so they pick up config changes.
 
     Reloads provider factory (handles provider switch ACP→CC or vice versa),
@@ -48,7 +53,6 @@ async def _reset_all_sessions(request: web.Request) -> int:
     New sessions cold-start on next message.
     Returns the number of sessions reset.
     """
-    state: DashboardState = request.app["state"]
     sessions = state.sessions
 
     # Reload factory so provider switch takes effect immediately. A session a
@@ -166,8 +170,11 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
 
 # Every ``api_session*`` handler is an owner surface, so a private member's
 # internal call is refused before it runs (audit label = handler name).
+# Restarting every session is the owner's call, so a non-owner dashboard session
+# is refused too; an app token and an internal caller stay under their own controls.
 guard_owner_surface_routes(
     globals(),
     prefix="api_session",
     member_scoped=frozenset(),
+    dashboard_owner_only=True,
 )

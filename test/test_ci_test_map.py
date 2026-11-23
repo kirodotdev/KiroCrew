@@ -83,8 +83,11 @@ def test_load_map_refuses_another_schema(tmp_path: Path) -> None:
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), str(project)])}
-    env.pop("PYTEST_XDIST_WORKER", None)
+    inherited = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), str(project), *inherited])}
+    # The child is a hermetic session: the parent run's options and plugins stay out.
+    for name in ("PYTEST_XDIST_WORKER", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        env.pop(name, None)
     return subprocess.run(
         [
             sys.executable,
@@ -112,12 +115,16 @@ def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedP
     )
 
 
-def test_the_plugin_records_what_each_test_file_ran(tmp_path: Path) -> None:
+@pytest.fixture(scope="module")
+def recorded_parts(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One recorded child pytest run that every recorder test below reads."""
+    tmp_path = tmp_path_factory.mktemp("recorder")
     project = tmp_path / "proj"
     (project / "pkg").mkdir(parents=True)
     (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     (project / "pkg" / "one.py").write_text("def f():\n    return 1\n", encoding="utf-8")
     (project / "pkg" / "two.py").write_text("def g():\n    return 2\n", encoding="utf-8")
+    (project / "pkg" / "consts.py").write_text("LIMIT = 3\n", encoding="utf-8")
     (project / "test_one.py").write_text(
         "import threading\nfrom pkg import one, two\n\n"
         "def test_f():\n    t = threading.Thread(target=one.f)\n    t.start()\n    t.join()\n",
@@ -126,13 +133,33 @@ def test_the_plugin_records_what_each_test_file_ran(tmp_path: Path) -> None:
     (project / "test_two.py").write_text(
         "from pkg import two\n\ndef test_g():\n    assert two.g() == 2\n", encoding="utf-8"
     )
+    (project / "test_x.py").write_text(
+        "from pkg.consts import LIMIT\n\nCASES = list(range(LIMIT))\n\n"
+        "def test_cases():\n    assert CASES == [0, 1, 2]\n",
+        encoding="utf-8",
+    )
     out = tmp_path / "parts"
     done = _run_pytest_with_recorder(project, out)
     assert done.returncode == 0, done.stdout + done.stderr
-    part = json.loads((out / "part-main.json").read_text(encoding="utf-8"))
-    # pkg/two.py's body ran at collection, before any test: the documented limit.
-    assert part["test_one.py"] == {"nodes": 1, "files": ["pkg/one.py", "test_one.py"]}
+    return out
+
+
+def test_the_plugin_records_what_each_test_file_ran(recorded_parts: Path) -> None:
+    part = json.loads((recorded_parts / "part-main.json").read_text(encoding="utf-8"))
+    # test_one.py imported pkg first: the module bodies are linked to it alone.
+    assert part["test_one.py"] == {
+        "nodes": 1,
+        "files": ["pkg/__init__.py", "pkg/one.py", "pkg/two.py", "test_one.py"],
+    }
     assert part["test_two.py"] == {"nodes": 1, "files": ["pkg/two.py", "test_two.py"]}
+
+
+def test_a_module_body_run_at_collection_is_linked_to_its_test_file(
+    recorded_parts: Path,
+) -> None:
+    built = ctm.merge_parts(ctm.read_parts(recorded_parts), commit="c")
+    # pkg/consts.py is read only while test_x.py is imported, never during a test.
+    assert built["files"]["pkg/consts.py"] == [list(built["tests"]).index("test_x.py")]
 
 
 def test_a_worker_crash_leaves_a_marker_instead_of_a_silent_gap(tmp_path: Path) -> None:
@@ -214,6 +241,52 @@ def test_guard_tier_is_the_leaf_scope_corpus_gates() -> None:
 
     tier = ctm.guard_tier(ROOT)
     assert tier and tier == corpus_gates(ROOT)
+    assert ctm.tier_lines(tier, None) == sorted(tier)
+
+
+def _guard_tier_tree(root: Path, *gates: str) -> list[str]:
+    """A tree whose *gates* read the test tree and whose one leaf does not: its argv."""
+    test_dir = root / "test"
+    test_dir.mkdir()
+    for name in gates:
+        # Formatted, so this module's own text does not read as a test-tree join.
+        text = "FILES = ROOT / {!r}\n".format("test")
+        (test_dir / name).write_text(text, encoding="utf-8")
+    (test_dir / "test_leaf.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    return ["--root", str(root), "guard-tier"]
+
+
+def test_guard_tier_prints_posix_paths_in_code_point_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `B` sorts before `a` by code point and after it when case is folded.
+    argv = _guard_tier_tree(tmp_path, "test_a.py", "test_B.py", "test_gate.py")
+    assert ctm.tracked_tests(tmp_path) is None
+    assert ctm.main(argv) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "test/test_B.py",
+        "test/test_a.py",
+        "test/test_gate.py",
+    ]
+
+
+def test_guard_tier_leaves_out_a_test_file_git_does_not_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = _guard_tier_tree(tmp_path, "test_gate.py", "test_scratch.py")
+    index = ctm.parse_ls_files(b"test/test_gate.py\0test/test_leaf.py\0")
+    assert index == {"test/test_gate.py", "test/test_leaf.py"}
+    monkeypatch.setattr(ctm, "tracked_tests", lambda root: index)
+    assert ctm.main(argv) == 0
+    assert capsys.readouterr().out.splitlines() == ["test/test_gate.py"]
+
+
+def test_guard_tier_never_prints_an_empty_tier(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert ctm.main(_guard_tier_tree(tmp_path)) == 2
+    printed = capsys.readouterr()
+    assert printed.out == "" and "guard tier is empty" in printed.err
 
 
 def test_shadow_judge_counts_a_missed_failing_file() -> None:

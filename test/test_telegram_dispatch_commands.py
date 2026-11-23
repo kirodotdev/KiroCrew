@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
@@ -166,6 +166,12 @@ class TestCommandDispatchTable:
         ("text", "handler", "args", "kwargs"),
         [
             ("/compact", "_handle_compact", (_ROUTE, 7), {"session_key": None}),
+            (
+                "/compact keep the API decisions",
+                "_handle_compact",
+                (_ROUTE, 7),
+                {"session_key": None, "focus": "keep the API decisions"},
+            ),
             ("/link", "_handle_link", (_ROUTE, 7), {"resumed_key": None}),
             ("/unlink", "_handle_unlink", (_ROUTE, 7), {}),
             ("/stop", "_handle_stop", (_ROUTE, 7), {"origin": "ORIGIN", "session_key": None}),
@@ -266,6 +272,42 @@ class TestCommandDispatchTable:
         assert mocks["_handle_yolo"].await_args.kwargs == {"thread": 4}
         # /cron is a host listing: refused in a Topic before its handler runs.
         mocks["_handle_cron"].assert_not_awaited()
+
+
+class TestCompactFocus:
+    """``/compact <text>`` hands the cleaned text to the compaction; a bare one sends nothing."""
+
+    @staticmethod
+    def _run(text: str) -> tuple[AsyncMock, Any]:
+        d, cli, sess = _dispatcher({7})
+        compact = AsyncMock()
+        sess._gp.compact = compact
+        asyncio.run(d.handle_message(_dm(text)))
+        return compact, cli
+
+    def test_the_text_after_the_command_reaches_compact(self) -> None:
+        compact, cli = self._run("/compact keep the API decisions")
+        assert compact.await_args_list == [call("keep the API decisions")]
+        assert cli.edits[-1][1].endswith("Context compacted.")
+
+    def test_a_bare_compact_sends_exactly_what_it_always_did(self) -> None:
+        compact, _cli = self._run("/compact")
+        assert compact.await_args_list == [call()]
+
+    def test_a_blank_argument_is_a_bare_compact(self) -> None:
+        compact, _cli = self._run("/compact   \n  ")
+        assert compact.await_args_list == [call()]
+
+    def test_whitespace_collapses_and_a_long_focus_is_cut(self) -> None:
+        compact, _cli = self._run("/compact keep\n  the\tAPI   decisions")
+        assert compact.await_args_list == [call("keep the API decisions")]
+        compact, _cli = self._run("/compact " + "x" * 2000)
+        assert compact.await_args_list == [call("x" * 500)]
+
+    def test_the_reply_never_claims_the_focus_was_used(self) -> None:
+        _compact, cli = self._run("/compact keep the API decisions")
+        assert "keep the API decisions" not in " ".join(text for text, _ in cli.sent)
+        assert "keep the API decisions" not in " ".join(edit[1] for edit in cli.edits)
 
 
 class TestCommandReplies:

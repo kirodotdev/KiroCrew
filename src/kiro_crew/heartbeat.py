@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine, NamedTuple
@@ -152,6 +153,9 @@ _KEEP_SENTINEL = "HEARTBEAT_KEEP"
 _KEEP_RE = re.compile(_KEEP_SENTINEL, re.IGNORECASE)
 
 _DEFAULT_INTERVAL = 60
+# Seconds a retained task waits before it runs again when ``heartbeat.keep_backoff``
+# is on: the Nth consecutive retain waits the Nth rung, and the last rung repeats.
+_KEEP_LADDER_SECS = (60, 120, 240, 480, 900)
 _FTS_REBUILD_TICKS = 15  # rebuild every 15 ticks (15 min at 60s interval)
 _PRUNE_TICKS = 1440  # prune old history once per day (1440 min at 60s interval)
 # Memory backup runs on its OWN counter, offset from _PRUNE_TICKS rather than sharing
@@ -346,6 +350,11 @@ class HeartbeatService:
         # Serializes the HEARTBEAT.md read→process→rewrite window within this
         # process so two cycles can't clobber each other's rewrite.
         self._file_lock = asyncio.Lock()
+        # ``heartbeat.keep_backoff``: per task, how many cycles in a row kept it
+        # and when it may run next. Memory only, so a restart starts the ladder
+        # again. ``_clock`` is a seam for tests.
+        self._keep_table: dict[tuple[str, str], tuple[int, float]] = {}
+        self._clock: Callable[[], float] = time.monotonic
 
     async def start(self) -> None:
         # Off the loop: start() is awaited on the gateway boot path, before
@@ -564,6 +573,36 @@ class HeartbeatService:
         assert self._on_task is not None
         return await self._on_task(task_text, deliver)
 
+    def _split_by_due(
+        self, tasks: list[tuple[str, str]], now: float
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """Split *tasks* into those that run now and those still waiting.
+
+        A task is due within half a tick of its time, so tick jitter never
+        costs a whole extra tick. A task with no entry (new or edited) is due.
+        """
+        run: list[tuple[str, str]] = []
+        waiting: list[tuple[str, str]] = []
+        for task in tasks:
+            _, due = self._keep_table.get(task, (0, 0.0))
+            (waiting if due - self._interval / 2 > now else run).append(task)
+        return run, waiting
+
+    def _space_kept(
+        self,
+        waiting: list[tuple[str, str]],
+        kept: list[tuple[str, str]],
+        now: float,
+    ) -> None:
+        """Rebuild the table: a waiting task keeps its entry, a retained task
+        climbs one rung, and a task that finished or left the file is dropped."""
+        table = {t: self._keep_table[t] for t in waiting}
+        for task in kept:
+            streak = self._keep_table.get(task, (0, 0.0))[0] + 1
+            rung = _KEEP_LADDER_SECS[min(streak, len(_KEEP_LADDER_SECS)) - 1]
+            table[task] = (streak, now + rung)
+        self._keep_table = table
+
     async def _process_heartbeat_file(self) -> None:
         path = heartbeat_path()
         # Hold the file lock across the whole read→process→rewrite window so a
@@ -574,20 +613,36 @@ class HeartbeatService:
             # file lives under workspace_dir().
             content = await asyncio.to_thread(_read_heartbeat_file, path)
             if content is None:
+                # No task survives this pass, so none carries its spacing on.
+                self._keep_table.clear()
                 return
             tasks = _extract_tasks(content)
             if not tasks or not self._on_task:
+                self._keep_table.clear()
                 return
+
+            now = self._clock()
+            run = tasks
+            waiting: list[tuple[str, str]] = []
+            spaced = await asyncio.to_thread(_keep_backoff_enabled)
+            if spaced:
+                run, waiting = self._split_by_due(tasks, now)
+                if not run:
+                    self._keep_table = {t: self._keep_table[t] for t in waiting}
+                    return
+            else:
+                self._keep_table.clear()
 
             self._processing = True
             try:
                 logger.info("Heartbeat: %d task(s) found", len(tasks))
-                keep: list[tuple[str, str]] = []
+                # A task still waiting out its spacing stays in the file untouched.
+                keep: list[tuple[str, str]] = list(waiting)
                 results = await asyncio.gather(
-                    *[self._run_one_task(t, d) for t, d in tasks],
+                    *[self._run_one_task(t, d) for t, d in run],
                     return_exceptions=True,
                 )
-                for (task_text, deliver), result in zip(tasks, results):
+                for (task_text, deliver), result in zip(run, results):
                     if isinstance(result, BaseException):
                         # A chain-exhaustion failure carries the fallback story
                         # on the exception; this log line is the heartbeat's
@@ -603,6 +658,10 @@ class HeartbeatService:
                     elif _should_keep(result):
                         logger.info("Heartbeat task incomplete, keeping: %s", task_text[:80])
                         keep.append((task_text, deliver))
+                if spaced:
+                    # Space from when the turns ended: a turn longer than its
+                    # rung (a timeout) must not come back already due.
+                    self._space_kept(waiting, keep[len(waiting) :], self._clock())
 
                 # Re-read, merge mid-cycle appends, and replace atomically while
                 # holding the sibling OS lock. Every internal writer uses the
@@ -632,6 +691,15 @@ class HeartbeatService:
                         await self._on_cycle_end()
                     except Exception:
                         logger.warning("Heartbeat: on_cycle_end callback failed", exc_info=True)
+
+
+def _keep_backoff_enabled() -> bool:
+    """Whether ``heartbeat.keep_backoff`` is on; an unreadable config reads as off."""
+    try:
+        return bool(KiroCrewConfig.load().heartbeat.keep_backoff)
+    except Exception:
+        logger.debug("heartbeat keep_backoff lookup failed", exc_info=True)
+        return False
 
 
 def _should_keep(result: str | None) -> bool:

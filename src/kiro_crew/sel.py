@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib  # noqa: F401
+import copy
 import errno
 import functools  # noqa: F401
 import hashlib  # noqa: F401
@@ -52,7 +53,7 @@ from contextlib import contextmanager  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone  # noqa: F401
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Literal, NamedTuple, overload  # noqa: F401
+from typing import IO, TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, overload  # noqa: F401
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat  # noqa: F401
@@ -329,17 +330,20 @@ class SecurityEventLog:
         # sharing, EACCES) leaves the tip unknown, not genesis: construction
         # still succeeds, and the first append reads the tip again.
         self._tip_unknown: bool = False
+        # Identity of the live log as of our last observation, so a replacement
+        # by another process (its rotation) is detected before we chain off a tip
+        # that has moved into the closed segment. Read BEFORE the tip, with no lock
+        # between the two: a sibling append landing in between then leaves this
+        # identity older than the file, so the first append re-reads the tip.
+        # Read after the tip, it would already count that record while the tip
+        # does not, and the first append would chain off a stale hash.
+        self._live_seen: tuple[int, int, int] | None = self._live_identity()
         try:
             self._last_hash = self._read_last_hash()
         except OSError:
             logger.warning("SEL: failed to read chain tip from %s", self._path, exc_info=True)
             self._last_hash = ""
             self._tip_unknown = True
-        # Identity of the live log as of our last observation, so a replacement
-        # by another process (its rotation) is detected before we chain off a tip
-        # that has moved into the closed segment. Seeded here because
-        # _read_last_hash above just anchored us to THIS file.
-        self._live_seen: tuple[int, int, int] | None = self._live_identity()
         self._forward_callback: Callable[[dict], None] | None = None
         # Background writer: callers enqueue (non-blocking) and one daemon thread
         # maintains the HMAC chain + batches appends off the hot path. Lazily
@@ -1163,9 +1167,84 @@ def audit_sources() -> tuple[str, ...]:
     return _AUDIT_SOURCES
 
 
+_unavailable_lock = threading.Lock()
+_unavailable_warned = False
+_unavailable_dropped = 0
+
+
+class _UnavailableSecurityEventLog(SecurityEventLog):
+    """What :func:`sel` returns when this process cannot build the log.
+
+    A non-critical event is dropped with one warning, the same best-effort loss
+    ``log`` accepts when its writer cannot take an event on the event loop, and
+    is counted into ``dropped_events`` once the log builds. A critical event, and
+    every read or maintenance call, raises the error that stopped construction,
+    so a fail-closed caller still refuses.
+    """
+
+    def __new__(cls, error: OSError) -> _UnavailableSecurityEventLog:
+        return object.__new__(cls)
+
+    def __init__(self, error: OSError) -> None:
+        self._error = error
+
+    def _raise(self) -> NoReturn:
+        try:
+            err = copy.copy(self._error)
+        except Exception:
+            raise self._error
+        raise err from self._error
+
+    def log(self, event: SecurityEvent, *, critical: bool = False) -> None:
+        global _unavailable_warned, _unavailable_dropped
+        if critical:
+            self._raise()
+        with _unavailable_lock:
+            _unavailable_dropped += 1
+            warn = not _unavailable_warned
+            _unavailable_warned = True
+        if warn:
+            logger.warning(
+                "security event log is unavailable in this process (%s: %s); "
+                "dropping non-critical events",
+                type(self._error).__name__,
+                self._error,
+            )
+
+    def recent(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise()
+
+    def verify_integrity(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise()
+
+    def prune(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise()
+
+    def flush(self, *args: Any, **kwargs: Any) -> None:
+        self._raise()
+
+    def set_forward_callback(self, *args: Any, **kwargs: Any) -> None:
+        self._raise()
+
+
 def sel() -> SecurityEventLog:
-    """Module-level accessor for the singleton SEL instance."""
-    return SecurityEventLog()
+    """Module-level accessor for the singleton SEL instance.
+
+    If this process cannot build the log (a sandbox that hides the trust
+    directory), this returns :class:`_UnavailableSecurityEventLog` instead of
+    raising, and the next call tries to build it again.
+    """
+    global _unavailable_warned, _unavailable_dropped
+    try:
+        inst = SecurityEventLog()
+    except OSError as exc:
+        return _UnavailableSecurityEventLog(exc)
+    if _unavailable_dropped or _unavailable_warned:
+        with _unavailable_lock:
+            inst.dropped_events += _unavailable_dropped
+            _unavailable_dropped = 0
+            _unavailable_warned = False
+    return inst
 
 
 async def warm_sel_singleton() -> None:
@@ -1195,14 +1274,21 @@ async def warm_sel_singleton() -> None:
     gateway from becoming ready — audit degradation is survivable, a boot
     loop is not. On a failed warm the first later touch retries init on its
     caller's thread, as every call site did before the per-site hops existed;
-    every ``critical=True`` audit still fails closed at its own site.
+    every ``critical=True`` audit still fails closed at its own site. An
+    ``OSError`` reaches here as the unavailable stand-in :func:`sel` returns.
     """
     try:
-        await asyncio.to_thread(sel)
+        inst = await asyncio.to_thread(sel)
     except Exception:
         logger.warning(
             "SEL startup warm failed; the first audit write will retry init",
             exc_info=True,
+        )
+        return
+    if isinstance(inst, _UnavailableSecurityEventLog):
+        logger.warning(
+            "SEL startup warm failed; the first audit write will retry init",
+            exc_info=inst._error,
         )
 
 

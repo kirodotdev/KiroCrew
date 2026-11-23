@@ -365,6 +365,7 @@ class TestNoConsentWorkerOutlivesItsTest:
     def _schedule_worker(monkeypatch, load):
         """Start a real consent worker whose ``KiroCrewConfig.load`` is *load*."""
         from kiro_crew.metrics import provider
+        from kiro_crew.metrics.consent_worker_stacks import describe_consent_workers
 
         scripted = load
 
@@ -373,7 +374,9 @@ class TestNoConsentWorkerOutlivesItsTest:
 
         monkeypatch.setattr(provider, "KiroCrewConfig", _Config)
         with provider._lock:
-            assert not provider._check_in_flight, "a worker is already in flight; test order?"
+            assert not provider._check_in_flight, (
+                "a worker is already in flight; test order? " + describe_consent_workers()
+            )
             provider._schedule_consent_check_locked()
         workers = _root._live_telemetry_consent_workers()
         assert len(workers) == 1, workers
@@ -1298,11 +1301,24 @@ class TestTheTempResidueReport:
         for name in (
             "kirocrew-computer-shots",
             "playwright-transform-cache-1001",
+            "playwright_chromiumdev_profile-ZolcpN",
+            "playwright_firefoxdev_profile-Qm3x8T",
+            "playwright_webkitdev_profile-Lw2pRc",
             ".org.chromium.Chromium.AHpK6x",
         ):
             (tmp_path / name).mkdir()
 
         assert _root._tmp_residue(tmp_path, per_test=False) == []
+
+    def test_only_the_drivers_profile_names_are_allowed_with_an_underscore(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The driver's per-launch profile is allowed by its exact name, not by the bare
+        ``playwright_`` prefix, so an unknown entry under that prefix is still residue."""
+        (tmp_path / "playwright_chromiumdev_profile-ZolcpN").mkdir()
+        (tmp_path / "playwright_scratch-1").mkdir()
+
+        assert _root._tmp_residue(tmp_path, per_test=False) == ["playwright_scratch-1"]
 
     def test_it_stays_silent_when_nothing_was_left(self, tmp_path: pathlib.Path) -> None:
         assert _root._tmp_residue(tmp_path, per_test=False) == []

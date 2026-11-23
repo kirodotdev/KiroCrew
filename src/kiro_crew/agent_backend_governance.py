@@ -53,9 +53,9 @@ because a per-call check reads as the more obvious design:
   argument and no new failure mode in service of an adapter, and it names
   ``create_provider_factory`` as a constrained site.
 
-Narrowing at the registry satisfies all three: the context is installed at both call
-sites (so no re-entrant load), the registry stays the single source, and no call site
-changes.
+Narrowing at the registry satisfies all three: the context is installed before the one
+call site runs (so no re-entrant load), the registry stays the single source, and no
+call site changes.
 
 ## Additive over a floor
 
@@ -108,10 +108,13 @@ def _audit(backend: str, decision: object, permitted: bool) -> None:
 
     Both directions, unlike the publish gate which audits denials only. That gate
     is evaluated per candidate row on every panel open, so auditing permits would
-    turn an authorization log into a page-view log; this runs once per gateway
-    start and once per pushed ceiling, so the full record is cheap — and "which
-    harnesses did this deployment admit" is the question an operator actually
-    reconstructs afterwards, which a denials-only log cannot answer.
+    turn an authorization log into a page-view log; this runs once per process boot
+    (every process that calls ``boot_platform``) and not when a ceiling is pushed,
+    since ``apply_ceiling`` does not re-narrow, so its volume follows process starts
+    (for example each CLI command, MCP server process and script cron run), not
+    requests or panel opens — and "which harnesses did this deployment admit" is the
+    question an operator actually reconstructs afterwards, which a denials-only log
+    cannot answer.
 
     ``"allowed"``/``"denied"`` is the vocabulary ``log_governance_decision`` pins in
     its own docstring (``sel.py``) and the one the canonical helper
@@ -184,11 +187,11 @@ def _scope_permits(backend: str) -> bool:
 def narrow_selectable_backends() -> list[str]:
     """Recompute which backends this deployment may select. Returns what was removed.
 
-    Called from BOTH ``bootstrap_context`` (after the context installs and every
-    edition has finished registering) and ``policy_distribution.apply_ceiling``
-    (whenever a ceiling is installed at runtime). Both sit outside
-    ``KiroCrewConfig.load()``, so ``governance_permits`` can read the ceiling without
-    re-entering that load.
+    Called from ``bootstrap_context`` only (after the context installs and every
+    edition has finished registering), so once per process boot;
+    ``policy_distribution.apply_ceiling`` deliberately does not call it (see the
+    module docstring). It sits outside ``KiroCrewConfig.load()``, so
+    ``governance_permits`` can read the ceiling without re-entering that load.
 
     Iterates the BASELINE, not the currently-selectable set: asking the narrowed set
     what to narrow is how a one-way ratchet gets built, and it is exactly what made
@@ -196,8 +199,7 @@ def narrow_selectable_backends() -> list[str]:
 
     The floor is skipped, not asked about — it is what guarantees the set cannot be
     emptied. Never raises: a boot that aborts because a policy could not be evaluated
-    is worse than one that starts on the floor alone, and the same holds for a runtime
-    refresh, whose caller keeps serving traffic either way.
+    is worse than one that starts on the floor alone.
     """
     try:
         floor = governance_floor_backend()

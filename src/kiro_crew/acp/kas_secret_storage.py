@@ -21,10 +21,13 @@ What is stored, and where:
   ``kiro.mcp.<sha256 hex>.(client|kiro-path-client|tokens|verifier|discovery)``.
   The hash is the engine's own digest of the server URL, headers and OAuth
   config, so a changed server config reads as a different key and never inherits
-  a grant. Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
+  a grant. The engine's organization (identity provider) sign-in, set by an
+  ``identityProvider`` block in ``mcp.json``, is one more key,
+  ``kiro.mcp.idp.<sha256 hex>.session``, hashed from the issuer and client id.
+  Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
   so the engine cannot use Crew as a general key-value store.
 - ``client``, ``kiro-path-client`` (the client registration, under either kind)
-  and ``tokens`` persist, in a DEDICATED vault at
+  and ``tokens``, and the organization ``session``, persist, in a DEDICATED vault at
   ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
   file and is neither the user Secrets vault (so it is not listed in Settings ->
   Secrets and cannot be granted to a cron) nor the Kiro sign-in vault (so a Kiro
@@ -92,6 +95,9 @@ _KEY_RE = re.compile(
     + "|".join(re.escape(kind) for kind in (*PERSISTED_KINDS, "verifier", "discovery"))
     + r")\Z"
 )
+#: The engine's organization sign-in key: ``kiro.mcp.idp.<sha256 hex>.session``.
+#: It holds that sign-in's tokens, so it persists like ``tokens``.
+_IDP_SESSION_RE = re.compile(r"\Akiro\.mcp\.idp\.[0-9a-f]{64}\.session\Z")
 #: Kinds that outlive the engine process. The rest stay in runtime memory.
 _PERSISTED_KINDS = frozenset(PERSISTED_KINDS)
 #: Largest value accepted, in characters. A client registration or token set is a
@@ -116,6 +122,21 @@ class SecretStorageRefused(Exception):
 def _server_id(key: str) -> str:
     """The short server name a log line uses for an already-validated *key*."""
     return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
+
+
+#: A refused key's last segment is named in the refusal only when it has this
+#: shape, so an engine/gateway kind mismatch shows in gateway.log while an
+#: arbitrary key (which could carry anything) is never echoed.
+_KIND_LABEL_RE = re.compile(r"\A[a-z][a-z0-9-]{0,31}\Z")
+
+
+def _namespace_refusal(key: str) -> SecretStorageRefused:
+    """The refusal for a *key* outside the namespace, naming its kind when safe."""
+    if key.startswith(_KEY_PREFIX):
+        kind = key.rsplit(".", 1)[-1]
+        if _KIND_LABEL_RE.match(kind) is not None:
+            return SecretStorageRefused(f"key kind {kind!r} is outside the MCP sign-in namespace")
+    return SecretStorageRefused("key is outside the MCP sign-in namespace")
 
 
 def _is_tokens_key(key: str) -> bool:
@@ -228,9 +249,14 @@ class SecretStorageServer:
         if not isinstance(params, dict):
             raise SecretStorageRefused("params must be an object")
         key = params.get("key")
-        if not isinstance(key, str) or (match := _KEY_RE.match(key)) is None:
+        if not isinstance(key, str):
             raise SecretStorageRefused("key is outside the MCP sign-in namespace")
-        persisted = match.group(1) in _PERSISTED_KINDS
+        if (match := _KEY_RE.match(key)) is not None:
+            persisted = match.group(1) in _PERSISTED_KINDS
+        elif _IDP_SESSION_RE.match(key) is not None:
+            persisted = True
+        else:
+            raise _namespace_refusal(key)
 
         if persisted:
             async with self._locks.setdefault(key, asyncio.Lock()):

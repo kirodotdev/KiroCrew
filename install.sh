@@ -18,13 +18,14 @@
 #
 # Options:
 #   --voice   Install optional voice extras (pip install -e .[voice])
-#   --no-kas  Skip downloading the KAS engine this release pins. By default
+#   --no-kas  Use Kiro CLI only: saves agent.kas_bundle off and skips
+#             downloading the KAS engine this release pins. By default
 #             the installer runs `kirocrew kas install` after installing, so
 #             the built-in engine route can be turned on with no download; a
 #             failed download only warns and prints the command to retry.
-#             The switch (agent.kas_bundle) is NOT turned on: the route is in
-#             shadow testing on every platform, so the default stays kiro-cli
-#             until you flip it yourself. (--kas, the former opt-in, is still
+#             The switch (agent.kas_bundle) is NOT turned on: a source
+#             checkout defaults to kiro-cli until you choose the engine
+#             yourself. (--kas, the former opt-in, is still
 #             accepted and changes nothing.)
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
@@ -896,6 +897,14 @@ elif [ "$WITH_KAS" -eq 1 ]; then
     warn "kirocrew not in PATH — the built-in KAS engine was not downloaded."
     detail "After reloading your shell, run: kirocrew kas install"
 fi
+# --no-kas means "Kiro CLI only", never "on with no engine": the choice is saved off.
+if [ "$WITH_KAS" -eq 0 ] && [ -n "$_kirocrew" ]; then
+    if "$_kirocrew" config set agent.kas_bundle false >/dev/null 2>&1; then
+        ok "KAS will use Kiro CLI (--no-kas). Change it in Settings → Agent Harness."
+    else
+        warn "Could not save the Kiro CLI choice. Run: kirocrew config set agent.kas_bundle false"
+    fi
+fi
 
 ok "Run ${CYAN}kirocrew setup${RESET} to configure agent, workspace, and integrations"
 
@@ -947,6 +956,7 @@ echo "       ${GREEN}kirocrew setup${RESET}"
 echo ""
 echo "    ${CYAN}4.${RESET} Start the dashboard:"
 echo "       ${GREEN}kirocrew gateway${RESET}"
+echo "       Stop it with ${GREEN}kirocrew stop${RESET}."
 echo ""
 echo "    ${CYAN}5.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
 echo ""

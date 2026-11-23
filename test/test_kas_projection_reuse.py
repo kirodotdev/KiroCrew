@@ -27,8 +27,12 @@ from kiro_crew.acp import batch_guard, kas_env_launch
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.kas_agents import build_kas_custom_agents, to_client_custom_agent
 from kiro_crew.acp.types import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.tool_search import CUSTOM_AGENT_JOB_TOOLS
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
+
+#: A custom agent's job tools as the handshake lists them.
+_CUSTOM_JOB_IDS = sorted(CUSTOM_AGENT_JOB_TOOLS)
 
 SESSION = "dashboard_chat-projection-reuse-1"
 
@@ -360,7 +364,7 @@ class TestOneSpawnReadsEachInstalledAppOnce:
         before = await start()
         assert before["enabled"] is False
         # Crew's added servers stay behind the loader; the author's own grant is direct.
-        assert before["neverDefer"] == ["kirocrew-core::mcp_server_wait", "own::one"]
+        assert before["neverDefer"] == [*_CUSTOM_JOB_IDS, "own::one"]
         assert app_reads == [*self.APPS, *self.APPS], "without reuse each ask reads"
         app_reads.clear()
 
@@ -380,8 +384,8 @@ class TestOneSpawnReadsEachInstalledAppOnce:
         (tmp_path / "kiro" / "agents" / "mine.json").write_text(json.dumps(spec), encoding="utf-8")
         second = await start()
         assert app_reads == [*self.APPS, *self.APPS]
-        assert first["neverDefer"] == ["kirocrew-core::mcp_server_wait", "own::one"]
-        assert second["neverDefer"] == ["kirocrew-core::mcp_server_wait", "other::two"]
+        assert first["neverDefer"] == [*_CUSTOM_JOB_IDS, "own::one"]
+        assert second["neverDefer"] == [*_CUSTOM_JOB_IDS, "other::two"]
 
     def test_each_spawn_starts_with_no_judged_spec(self):
         """The spec the switch-off reuses is this spawn's handshake's: the spawn

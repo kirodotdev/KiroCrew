@@ -156,6 +156,14 @@ describe('SharedCrewsCards', () => {
     expect(link).toHaveAttribute('rel', 'noreferrer')
   })
 
+  it('says the relay domain setting hid the listed Crews instead of the empty state (row 65)', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [], offDomain: 1 })
+    renderWithProviders(<SharedCrewsCards />)
+    expect(await screen.findByTestId('shared-crews-off-domain')).toHaveTextContent('tunnel.relay_viewer_relay_domain')
+    expect(screen.queryByTestId('shared-crews-empty')).toBeNull()
+  })
+
   it.each([[409, 'SIGNED_OUT'], [403, 'REMOTE_ACCESS_DISABLED']])(
     'renders nothing, with no notice, when the read answers %i %s',
     async (status, code) => {
@@ -193,7 +201,11 @@ describe('SharedCrewsCards', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
     renderWithProviders(<SharedCrewsCards />)
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
-    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to see your Shared Crews.')
+    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to open this Crew.')
     expect(screen.getByRole('link', { name: 'Go to Kiro account' })).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+    // Signed out is a state, not a failure (Bug Bash row 62): a status, no alert, no hand-off.
+    expect(screen.getByTestId('shared-crew-refusal')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).toBeNull()
   })
 })

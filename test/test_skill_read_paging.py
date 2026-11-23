@@ -518,6 +518,66 @@ class TestGatewayContract:
         wide = await get(key=_KEY, capacity=10**9)
         assert wide["refusal"]["capacity"] == _CAPACITY
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider, whole", [("kas", False), ("acp", True)])
+    async def test_a_kas_session_reads_in_pages_under_its_result_cut(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opened, provider: str, whole: bool
+    ):
+        """KAS saves a tool result of 30,000 characters or more to a file, so a KAS
+        session's page, framing included, stays under that; other sessions keep
+        the 99,000-byte page and get a 40,000-byte body in one read."""
+        from aiohttp import web
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import prompts
+        from kiro_crew.mcp_tools import skills as skill_tool
+
+        root = tmp_path / "skills"
+        text = _skill(root, _KEY, _body_over(40_000)).read_text(encoding="utf-8")
+        loader = opened(SkillsLoader(skills_path=root, install_builtins=False))
+        monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
+        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *a, **kw: None)
+        monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
+        monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
+        monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
+        monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: None)
+        monkeypatch.setattr(prompts, "served_provider_label", lambda served: provider)
+        app = web.Application()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(get_agent=lambda key: None, get_provider=lambda key: object())
+        )
+
+        async def post(**body):
+            payload = json.dumps({"scope": "installed", "action": "read", **body}).encode()
+            request = make_mocked_request(
+                "POST",
+                "/api/skills/-/discover",
+                headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+                payload=BodyStreamPayload(payload),
+                app=app,
+            )
+            return json.loads((await prompts.api_skills(request)).body)
+
+        capacity = skill_tool._read_capacity(_KEY, 0)
+        first = await post(key=_KEY, capacity=capacity)
+        assert bool(first["matches"]) is whole
+        if whole:
+            assert first["matches"][0]["content"] == text
+            return
+        assert first["refusal"]["reason"] == "over_capacity"
+        pages: list[str] = []
+        offset: int | None = 0
+        while offset is not None:
+            page = (await post(key=_KEY, offset=offset, capacity=capacity))["matches"][0]
+            assert len(skill_tool._render_read(_KEY, page, offset)) < 30_000
+            pages.append(page["content"])
+            offset = page["page"]["next_offset"]
+        assert len(pages) == 2
+        assert "".join(pages) == text
+        # A caller's smaller page stays its ceiling; the KAS bound only lowers it.
+        narrow = (await post(key=_KEY, offset=0, capacity=10_000))["matches"][0]
+        assert 0 < len(narrow["content"].encode("utf-8")) <= 10_000
+
 
 class TestLoaderContract:
     def test_the_pager_copies_only_the_page_out_of_a_newline_dense_body(self):

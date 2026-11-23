@@ -191,6 +191,14 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    into rendered code and diffs by inheritance. */
 .msg-content code,.msg-content pre,.msg-content .code-block,.msg-content .diff-block{font-variant-ligatures:normal}
 
+/* Lexical keeps a U+200B after an open IME composition; an alias face (font-faces.css)
+   has no space glyph, so it merges U+200B into the glyph before and the caret lands
+   mid-glyph. These are --font-body and --mono with the Latin face ahead of the aliases
+   ('KC Straight Quotes' stays first), pinned by composerImeFonts.test.ts. Only Lexical
+   holds U+200B, so the shared [data-composer-typo] hook keeps --font-body. */
+:is(html:not([data-font-family]),html[data-font-family="sans"]) [data-lexical-composer]{font-family:var(--theme-font-sans, 'KC Straight Quotes','Space Grotesk',var(--script-fallbacks),-apple-system,BlinkMacSystemFont,sans-serif)}
+html[data-font-family="mono"] [data-lexical-composer],html:not([data-font-family="opendyslexic"]) [data-lexical-composer] .font-mono{font-family:var(--theme-font-mono, 'JetBrains Mono',var(--script-fallbacks-mono),ui-monospace,SFMono-Regular,monospace)}
+
 /* ── Code in messages ── */
 .msg-content code{font-family:var(--mono);font-size:.9em}
 .msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}

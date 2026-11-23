@@ -119,7 +119,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # this process does not have one. Per instance and never reset -- a client
         # that re-spawns is the same owner across spawns.
         self._seed_owner = uuid.uuid4().hex
-        # The built-ins a crewmate worker keeps (``SessionProjection.builtin_tools``),
+        # The built-ins a crewmate worker or a named agent keeps (``SessionProjection.builtin_tools``),
         # carried as claude's ``tools`` option; None keeps the harness's preset.
         self._claude_worker_builtin_tools: tuple[str, ...] | None = None
         # Set when the claude backend's "Compacting..." notice is seen inside a
@@ -266,6 +266,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _retract_reseed = _client_claude_seed._retract_reseed
     _log_declined_share = _client_claude_seed._log_declined_share
     _render_claude_settings_payload = _client_claude_seed._render_claude_settings_payload
+    _substitution_retry_model = _client_claude_seed._substitution_retry_model
     _write_claude_local_settings = _client_claude_seed._write_claude_local_settings
     _reseed_after_capture = _client_claude_seed._reseed_after_capture
     _seed_session_settings = _client_claude_seed._seed_session_settings
@@ -339,6 +340,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _harness_session_mcp_servers = _client_claude_session._harness_session_mcp_servers
     _harness_session_meta = _client_claude_session._harness_session_meta
     _retry_after_model_substitution = _client_claude_session._retry_after_model_substitution
+    _reissue_naming_model = _client_claude_session._reissue_naming_model
     _local_settings_exclusion = _client_claude_session._local_settings_exclusion
     _note_worker_builtin_tools = _client_claude_session._note_worker_builtin_tools
     _ensure_served_default = _client_claude_session._ensure_served_default

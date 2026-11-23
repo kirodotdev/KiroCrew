@@ -286,6 +286,65 @@ class TestAnUnreadableDeclarationFencesItsAppsData:
         assert self._fenced("demo") == (True, True, True)
 
 
+class TestTheDeclarationSourcesAreWriteFenced:
+    """A file tool cannot rewrite away the manifest or record a fence comes from."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, home, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
+        self.apps = home / "apps"
+        _install(home, "demo", ["notes"])
+        (self.apps / "demo" / "app.json").write_text(
+            json.dumps(
+                {
+                    "name": "demo",
+                    "version": "1.0.0",
+                    "agentReadOnlyDirs": ["notes"],
+                    "credentialMasks": ["token.json"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        for suffix, key, entry in (
+            (agent_readonly_dirs.RECORD_SUFFIX, "agentReadOnlyDirs", "notes"),
+            (credential_masks.RECORD_SUFFIX, "credentialMasks", "token.json"),
+        ):
+            (self.apps / f".demo{suffix}").write_text(
+                json.dumps({"name": "demo", key: [entry]}), encoding="utf-8"
+            )
+
+    def _refused(self, rel: str) -> tuple[bool, bool]:
+        """(write refused, read refused) for ``apps/<rel>``."""
+        path = str(self.apps / rel)
+        return security.is_sensitive_write_path(path), security.is_sensitive_path(path)
+
+    @pytest.mark.parametrize(
+        "rel",
+        ["demo/app.json", ".demo-agent-readonly-dirs.json", ".demo-credential-masks.json"],
+    )
+    def test_a_fencing_source_is_write_fenced_and_readable(self, rel):
+        assert self._refused(rel) == (True, False)
+
+    def test_each_declaration_alone_fences_its_manifest(self):
+        for key, entry in (("agentReadOnlyDirs", "notes"), ("credentialMasks", "token.json")):
+            (self.apps / "demo" / "app.json").write_text(
+                json.dumps({"name": "demo", "version": "1.0.0", key: [entry]}), encoding="utf-8"
+            )
+            credential_masks.clear_cache()
+            assert self._refused("demo/app.json") == (True, False), key
+
+    def test_a_manifest_that_does_not_read_cleanly_is_fenced(self):
+        (self.apps / "demo" / "app.json").write_text('{"name": "demo", "agentRe', encoding="utf-8")
+        assert self._refused("demo/app.json")[0]
+
+    def test_a_manifest_declaring_nothing_and_its_neighbours_stay_writable(self):
+        _install(self.apps.parent, "plain", [])
+        assert self._refused("plain/app.json") == (False, False)
+        assert self._refused("demo/ui/index.html") == (False, False)
+        assert self._refused("demo/app.json.bak") == (False, False)
+        assert self._refused(".plain-agent-readonly-dirs.json") == (False, False)
+
+
 class TestTheDeclarationsAreListedWithinADeadline:
     """Every caller takes the rows from a bounded listing; the event loop also reuses it."""
 

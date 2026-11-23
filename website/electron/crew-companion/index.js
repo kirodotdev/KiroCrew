@@ -17,6 +17,7 @@ const { ipcMain } = require("electron");
 const http = require("http");
 const { hostOwnsAppWindows } = require("../app-window-host-rules");
 const { sessionCookieHeader } = require("../mochi-session-token");
+const { linkTokenIsStale } = require("../link-token-age");
 const {
   hostsDashboard: sharedHostsDashboard,
   openDashboardSession: sharedOpenDashboardSession,
@@ -94,13 +95,15 @@ let suspended = false;
  * live, full-privilege sign-in links existed at any moment purely as a
  * side-effect of asking whether an app is enabled.
  *
- * Reuse is the normal path and a re-resolve the exception: only an actual auth
- * refusal invalidates the cache. A link token (local mint or ssh fetch) is
- * refused once its short first-load expiry passes, which costs one re-resolve
- * every few minutes; a borrowed session cookie lasts until the session expires.
+ * Reuse is the normal path and a re-resolve the exception. A link token (local
+ * mint or ssh fetch) is re-resolved before the gateway's 300 s window would
+ * refuse it (../link-token-age.js), which costs one mint every few minutes; a
+ * borrowed session cookie lasts until the session expires. An auth refusal
+ * still invalidates the cache.
  */
 const NO_AUTH = Object.freeze({ value: "", viaCookie: false });
 let cachedAuth = NO_AUTH;
+let cachedAuthAt = 0;
 
 /**
  * How long an EMPTY answer from the credential chain is trusted before asking again.
@@ -122,10 +125,13 @@ let emptyAuthAt = 0;
  * @returns {Promise<{value: string, viaCookie: boolean}>}
  */
 async function authForProbe(forceMint) {
-  if (!forceMint && cachedAuth.value) return cachedAuth;
+  if (!forceMint && cachedAuth.value && !linkTokenIsStale(cachedAuth, cachedAuthAt, Date.now())) {
+    return cachedAuth;
+  }
   if (!forceMint && emptyAuthAt && Date.now() - emptyAuthAt < EMPTY_AUTH_RETRY_MS) {
     return NO_AUTH;
   }
+  cachedAuthAt = Date.now();
   try {
     const auth = fetchGatewayAuth && (await fetchGatewayAuth());
     cachedAuth = auth && typeof auth.value === "string" && auth.value

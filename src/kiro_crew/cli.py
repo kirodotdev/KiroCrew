@@ -10,7 +10,7 @@ Commands:
     kirocrew update               Update Kiro Crew via git fetch + rebuild
     kirocrew cron list|add|remove Manage scheduled jobs
     kirocrew spawn run "task"     Spawn a background subagent
-    kirocrew spawn list           List subagents
+    kirocrew spawn list           List subagents that no session started
     kirocrew learn add|list|remove Save and manage learned corrections
     kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
@@ -139,9 +139,12 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     """
     from kiro_crew import lts_signin_gateway as signin
 
-    # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
-    # line, not a browser sign-in, so it gets the refusal exit as before.
-    if getattr(args, "test_mode", False) or getattr(args, "json_ready", False):
+    # A scripted or headless start cannot use the browser-only sign-in server.
+    if (
+        getattr(args, "test_mode", False)
+        or getattr(args, "json_ready", False)
+        or getattr(args, "headless", False)
+    ):
         return
     if not signin.applies(exc):
         return
@@ -329,6 +332,124 @@ def _exit_on_pending_save(entry: Callable[[], None]) -> Callable[[], None]:
     return run
 
 
+def add_gateway_arguments(gw_parser: argparse.ArgumentParser) -> None:
+    """Add the ``gateway`` command's arguments to *gw_parser*.
+
+    The one definition of them: ``main()`` registers the command with it, and the
+    restart reads the running gateway's command line with it
+    (``cli_restart_headless.gateway_parser``), so the two cannot disagree on a flag.
+    """
+    gw_parser.add_argument(
+        "--slack-only",
+        action="store_true",
+        help="Slack-only mode — skip dashboard web server and SSH tunnel instructions",
+    )
+    gw_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Serve the gateway's HTTP services with no dashboard: no dashboard pages or "
+            "assets, no browser opened, no sign-in link printed. Listens on loopback "
+            "only. Cannot be combined with --slack-only. "
+            "Get a credential for a Crew API client with `kirocrew token --bearer`."
+        ),
+    )
+    gw_parser.add_argument(
+        "--no-crons",
+        action="store_true",
+        help="Skip cron scheduler — use when another instance handles cron execution",
+    )
+    gw_parser.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        help=(
+            "Never publish a tunnel — this process refuses to start or provision "
+            "one for its whole life, whatever tunnel.enabled says. Scoped to "
+            "TUNNELS: it does not change where the dashboard binds, so a config "
+            "that widens dashboard.url off loopback still does. Use for an "
+            "instance that must not publish a tunnel (a Dev Fleet pod passes "
+            "this); reach it with `ssh -L` instead."
+        ),
+    )
+    gw_parser.add_argument(
+        "--seed",
+        metavar="FIXTURE",
+        help=(
+            "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
+            "gateway (dev tool). Fixture must exist under "
+            "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
+            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
+            "on. Refuses when "
+            "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
+            "when the target is non-empty (use --seed-replace to wipe + re-seed)."
+        ),
+    )
+    gw_parser.add_argument(
+        "--seed-replace",
+        action="store_true",
+        help=(
+            "When used with --seed, wipe $KIROCREW_HOME (rmtree) before "
+            "copying the fixture. Ignored without --seed. Does NOT "
+            "override the main-gateway-home rail — ~/.kiro/crew is refused "
+            "regardless."
+        ),
+    )
+    gw_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not auto-open the dashboard URL in the default browser on startup",
+    )
+    gw_parser.add_argument(
+        "--port",
+        metavar="PORT",
+        help=(
+            "Override the dashboard port. Pass an integer (e.g. --port 9999) "
+            "for a fixed port, or --port auto to bind to an ephemeral port "
+            "(OS-assigned). When omitted, falls back to the value in config "
+            "(dashboard.url)."
+        ),
+    )
+    gw_parser.add_argument(
+        "--json-ready",
+        action="store_true",
+        help=(
+            "Print a single line `KIROCREW_READY:{...}` to stdout once the "
+            "dashboard is bound. Payload includes port, token, pid, and "
+            "KIROCREW_HOME. Used by test harnesses to discover the bound "
+            "ephemeral port and authenticate without polling. NOTE: the "
+            "token grants gateway access for up to 20 hours — treat the "
+            "READY line as sensitive and do not commit captured stdout to "
+            "shared logs."
+        ),
+    )
+    gw_parser.add_argument(
+        "--approval",
+        choices=["reads", "yolo", "interactive"],
+        help=(
+            "Default approval mode for tool invocations. 'reads' auto-approves "
+            "read-only tools (read/list/get/search/* prefixes) on background "
+            "turns (cron jobs, the task runner, subagents); a channel turn "
+            "under 'reads' asks about every tool, as under 'interactive'. "
+            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
+            "explicitly set to a non-default location); 'interactive' uses "
+            "the standard Slack/dashboard prompt flow. When omitted, config "
+            "agent.approval_mode (default: auto) decides; 'auto' approves "
+            "every channel tool call the tool gate allows, without asking."
+        ),
+    )
+    gw_parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help=(
+            "Convenience alias for --port auto --no-open --json-ready "
+            "--no-tunnel --approval reads. An explicit --port or --approval value "
+            "overrides the bundle's default (e.g. --test-mode --approval "
+            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
+            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
+        ),
+    )
+
+
 @_exit_on_pending_save
 def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
@@ -438,114 +559,16 @@ def main() -> None:
 
     # Each command's arguments come from a registrar, called here in registration order: a
     # ``cli_parser_*`` module's, or for ``perf``, ``bench`` and ``desktop`` their own module's.
-    # The ``gateway`` block stays inline (``pod.runtime_boot.target_supports_flag`` reads its
-    # flags from this file's text), and so do the internal ``mcp-*`` servers.
+    # The ``gateway`` arguments stay in this file (``add_gateway_arguments``;
+    # ``pod.runtime_boot.target_supports_flag`` reads its flags from this file's text),
+    # and so do the internal ``mcp-*`` servers.
     cli_parser_agent.register_chat_parser(sub, _jail_opts)
     cli_parser_gateway.register_doctor_parser(sub)
     cli_parser_gateway.register_ledger_sweep_parser(sub)
     cli_parser_gateway.register_tmp_parser(sub)
 
     # gateway
-    gw_parser = cli_help.add_command(sub, "gateway")
-    gw_parser.add_argument(
-        "--slack-only",
-        action="store_true",
-        help="Slack-only mode — skip dashboard web server and SSH tunnel instructions",
-    )
-    gw_parser.add_argument(
-        "--no-crons",
-        action="store_true",
-        help="Skip cron scheduler — use when another instance handles cron execution",
-    )
-    gw_parser.add_argument(
-        "--no-tunnel",
-        action="store_true",
-        help=(
-            "Never publish a tunnel — this process refuses to start or provision "
-            "one for its whole life, whatever tunnel.enabled says. Scoped to "
-            "TUNNELS: it does not change where the dashboard binds, so a config "
-            "that widens dashboard.url off loopback still does. Use for an "
-            "instance that must not publish a tunnel (a Dev Fleet pod passes "
-            "this); reach it with `ssh -L` instead."
-        ),
-    )
-    gw_parser.add_argument(
-        "--seed",
-        metavar="FIXTURE",
-        help=(
-            "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
-            "gateway (dev tool). Fixture must exist under "
-            "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
-            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
-            "on. Refuses when "
-            "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
-            "when the target is non-empty (use --seed-replace to wipe + re-seed)."
-        ),
-    )
-    gw_parser.add_argument(
-        "--seed-replace",
-        action="store_true",
-        help=(
-            "When used with --seed, wipe $KIROCREW_HOME (rmtree) before "
-            "copying the fixture. Ignored without --seed. Does NOT "
-            "override the main-gateway-home rail — ~/.kiro/crew is refused "
-            "regardless."
-        ),
-    )
-    gw_parser.add_argument(
-        "--no-open",
-        action="store_true",
-        help="Do not auto-open the dashboard URL in the default browser on startup",
-    )
-    gw_parser.add_argument(
-        "--port",
-        metavar="PORT",
-        help=(
-            "Override the dashboard port. Pass an integer (e.g. --port 9999) "
-            "for a fixed port, or --port auto to bind to an ephemeral port "
-            "(OS-assigned). When omitted, falls back to the value in config "
-            "(dashboard.url)."
-        ),
-    )
-    gw_parser.add_argument(
-        "--json-ready",
-        action="store_true",
-        help=(
-            "Print a single line `KIROCREW_READY:{...}` to stdout once the "
-            "dashboard is bound. Payload includes port, token, pid, and "
-            "KIROCREW_HOME. Used by test harnesses to discover the bound "
-            "ephemeral port and authenticate without polling. NOTE: the "
-            "token grants gateway access for up to 20 hours — treat the "
-            "READY line as sensitive and do not commit captured stdout to "
-            "shared logs."
-        ),
-    )
-    gw_parser.add_argument(
-        "--approval",
-        choices=["reads", "yolo", "interactive"],
-        help=(
-            "Default approval mode for tool invocations. 'reads' auto-approves "
-            "read-only tools (read/list/get/search/* prefixes) on background "
-            "turns (cron jobs, the task runner, subagents); a channel turn "
-            "under 'reads' asks about every tool, as under 'interactive'. "
-            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
-            "explicitly set to a non-default location); 'interactive' uses "
-            "the standard Slack/dashboard prompt flow. When omitted, config "
-            "agent.approval_mode (default: auto) decides; 'auto' approves "
-            "every channel tool call the tool gate allows, without asking."
-        ),
-    )
-    gw_parser.add_argument(
-        "--test-mode",
-        action="store_true",
-        help=(
-            "Convenience alias for --port auto --no-open --json-ready "
-            "--no-tunnel --approval reads. An explicit --port or --approval value "
-            "overrides the bundle's default (e.g. --test-mode --approval "
-            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
-            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
-        ),
-    )
+    add_gateway_arguments(cli_help.add_command(sub, "gateway"))
 
     cli_parser_gateway.register_setup_parser(sub)
     cli_parser_gateway.register_manifest_parser(sub)
@@ -772,6 +795,8 @@ def main() -> None:
         from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
 
         record_boot_agent_socket()
+        # Before the platform boot below can resolve the Kiro home.
+        _isolate_test_mode_kiro_home(args)
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
@@ -858,6 +883,7 @@ def main() -> None:
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
+        from kiro_crew import cli_chat_runs
         from kiro_crew.cli_chat_headless import EXIT_USAGE as _headless_usage
         from kiro_crew.cli_chat_headless import main as _headless_main
         from kiro_crew.cli_chat_headless import (
@@ -865,17 +891,30 @@ def main() -> None:
         )
 
         if getattr(args, "headless", False):
+            if args.list_chats or args.continue_chat:
+                print("Error: --list and --continue are not --headless flags", file=sys.stderr)
+                sys.exit(_headless_usage)
             sys.exit(_headless_main(args))
         stray = _headless_stray(args)
         if stray:
             print(f"Error: {stray} needs --headless", file=sys.stderr)
             sys.exit(_headless_usage)
+        if args.list_chats:
+            cli_chat_runs.print_runs()
+            return
         try:
             message = resolve_chat_message(args.message)
         except StdinMessageError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        _run_chat(message, args.model, agent=getattr(args, "agent", None))
+        run = cli_chat_runs.ChatRun(agent=args.agent or "")
+        try:
+            if args.continue_chat:
+                run.resume = cli_chat_runs.choose_resume(args.agent)
+            _run_chat(message, args.model, agent=args.agent, run=run)
+        except cli_chat_runs.CannotContinue as exc:
+            print(f"\nError: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
         # (systemd journal, launchd file, the Desktop supervisor's log fd, a
@@ -1108,7 +1147,10 @@ def main() -> None:
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
+        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError, AcpRuntimeError
+        from kiro_crew.agent_sdk.host_auth import for_terminal
         from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
+        from kiro_crew.terminal_safe import safe_terminal_line
 
         _eval_refusal = _eval_run_flag_refusal(args)
         if _eval_refusal:
@@ -1116,7 +1158,15 @@ def main() -> None:
             sys.exit(2)
         if args.scenarios[:1] == ["run"]:
             sys.exit(_run_eval_tasks(args))
-        asyncio.run(_run_eval(args))
+        try:
+            asyncio.run(_run_eval(args))
+        except (AcpError, AcpRuntimeError) as exc:
+            # The backend refused to start a scenario or judge session (a signed-out
+            # kiro-cli, a KAS engine that cannot be installed). Its text names what
+            # failed, so that one line is the output; the traceback is logged at DEBUG.
+            logger.debug("eval: the backend refused to start a session", exc_info=True)
+            print(f"Error: {safe_terminal_line(for_terminal(str(exc)))}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "security":
         from kiro_crew.cli_commands import _security
 
@@ -1168,9 +1218,27 @@ def main() -> None:
             except OSError:
                 pass  # the notice stays; the update itself succeeded
     elif args.command == "stop":
+        from kiro_crew import kept_grants
         from kiro_crew.cli_server import _stop
 
-        _stop(args.port, expect_pid=args.expect_pid)
+        if args.expect_pid is not None or getattr(args, "keeps_grants", False):
+            # The desktop app's pid-pinned stop, which it runs before an update and to
+            # restart a stuck gateway, and its "Stop and restart" of an older gateway
+            # (``--keeps-grants``): not a stop the user chose, so grants are kept.
+            _stop(args.port, expect_pid=args.expect_pid)
+        else:
+            # The mark always lands in this data home: a spurious one ends only this
+            # home's kept grants, the safe direction. A --port gateway this home
+            # cannot prove is its own may use another home, so the user is told.
+            if args.port is not None and not kept_grants.port_in_this_home(args.port):
+                print(
+                    f"Note: could not confirm the gateway on port {args.port} uses this "
+                    "data home. If it uses another one, its kept YOLO and chat trust stay "
+                    "on: run kirocrew stop with its KIROCREW_HOME set to end them."
+                )
+            kept_grants.run_user_stop(
+                lambda: _stop(args.port, expect_pid=args.expect_pid), via="cli"
+            )
     elif args.command == "restart":
         if args.max_wait is not None and not args.when_idle:
             print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)
@@ -1293,6 +1361,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _diagnostic_bind_address,
     _diagnostic_port,
     _install_child_watcher,
+    _isolate_test_mode_kiro_home,
     _refuse_unpersistable_data_home,
     _resolve_gateway_args,
 )

@@ -184,7 +184,7 @@ function createGatewaySupervisor({
   const processObj = processRef;
   const PORT = port;
   const BACKEND_URL = backendUrl;
-  const HEALTH_URL = `${BACKEND_URL}/api/status`;
+  const HEALTH_URL = `${BACKEND_URL}/api/live`;
   const KIROCREW_HOME = home || resolveHome();
   const IS_MAC = processObj.platform === "darwin";
   const IS_WIN = processObj.platform === "win32";
@@ -302,6 +302,7 @@ function createGatewaySupervisor({
     psPpid,
     isLaunchdJob,
     snapshotGatewayPortPids,
+    mintPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
     forceStopGatewayPort,
@@ -406,7 +407,7 @@ function createGatewaySupervisor({
     isWindows: IS_WIN,
     log: glog,
     sendStatus,
-    snapshotGatewayPortPids,
+    mintPortPids,
     getGatewayProcess: () => gatewayProcess,
     psPpid,
     holdsHomeGatewayLock,
@@ -1089,9 +1090,9 @@ function createGatewaySupervisor({
     resolve(true);
   }
 
-  function stopGatewayOnQuit() {
+  function stopGatewayOnQuit({ userStop = false } = {}) { // true only for a Quit the user chose
     tunnelKeeper.stop();
-    stopGatewayGracefully()
+    stopGatewayGracefully({ userStop })
       .catch((error) => console.error("Gateway stop failed:", error?.message));
   }
 
@@ -1190,6 +1191,8 @@ function createGatewaySupervisor({
         glog("liveness: backend responsive again (transient blip)");
       },
       log: (message) => glog(`liveness: ${message}`),
+      setIntervalFn,
+      clearIntervalFn,
     });
     livenessMonitor.start();
   }
@@ -1291,7 +1294,7 @@ function createGatewaySupervisor({
     targetBackendUrl = BACKEND_URL,
     { reconnect = false, initialPath = "" } = {},
   ) {
-    const healthUrl = `${targetBackendUrl}/api/status`;
+    const healthUrl = `${targetBackendUrl}/api/live`;
     const webContents = window.webContents;
     const painted = paintLoadingScreen(window, { reconnect });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
@@ -1306,7 +1309,7 @@ function createGatewaySupervisor({
       });
       if (window.isDestroyed()) return;
 
-      // A newly started gateway regenerates .local_secret. /api/status can answer
+      // A newly started gateway regenerates .local_secret. /api/live can answer
       // just before local mint accepts that secret, so retry only an own-gateway
       // 403; foreign/SSH gateways can never be minted from this machine.
       for (let attempt = 0; ; attempt += 1) {

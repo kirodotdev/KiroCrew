@@ -98,10 +98,42 @@ name: Main Red Watch
 # never part of a shell command or a `${{ }}` expression. The script is read from
 # main's default-branch checkout, never from the failing commit.
 #
-# API CALLS: no loop waits and nothing retries. A red run costs the job list, one
-# annotation read per failed job (first 20 jobs; a second read, the log, only for
-# a job whose annotations could not be read or, on a backend test job, name no
-# test) and the issue reads and writes.
+# API CALLS: a red run costs the job list, one annotation read per failed job
+# (first 20 jobs; a second read, the log, only for a job whose annotations could
+# not be read or, on a backend test job, name no test), the issue reads and
+# writes, and, once it names a test, the run list (one read).
+#
+# A SPENT RATE LIMIT: the token draws on the installation limit every workflow
+# of the repository shares, and a red main is when the fleet spends it. Every
+# `gh` call of the step goes through `.github/actions/gh-rate-limit`: a call the
+# limit refuses waits for the reset and is retried, out of one budget of
+# `max-wait` seconds for the job, so a refused label call, issue lookup or job
+# read delays the issue instead of losing it. A reset past the budget fails the
+# call as it would without the wrapper: the step ends red having written
+# nothing, or, when the reading of the failed jobs was cut short, files what it
+# read. Nothing marks such a run. Instead every red run that names a test reads
+# the run list and replays the red verdict runs directly before it that no
+# issue's record holds (back to the first green run, the last run a record
+# holds, or 5 runs): one job list and one annotation read per failed job
+# (first 20, annotations only, as the look back reads them) for each. The
+# record is the open issue's; with none open it is the newest among the closed
+# watcher issues (two more reads: the 20 newest under the label and the 200
+# newest closed issues of any label), because an issue closed while main was
+# red leaves no green run in the run list and its runs were recorded.
+# `.github/scripts/main_red_previous.py` applies the rules above to each in
+# order, so the record names the first red commit and counts the streak as if a
+# watcher had finished every one. This also covers a watcher run the queue
+# dropped (see `concurrency` below). The replay opens no issue: with none open,
+# this run opens one only by the two rules under WHEN IT OPENS, and the
+# replayed record then says since when. A replay that cannot read a run, or the
+# closed issues, counts none of them and says so; the run then writes what it
+# would have without the replay. A green run needs no replay: what it would
+# add, the same run closes. Limits, each of which keeps the replay to those
+# reads: any green run ends the walk back, a reduced one included; a replayed
+# job is read from its annotations, never its log; the first replayed run has
+# no run before it to share a test file with; and a closed issue older than
+# both lists is not seen. The first three can leave the streak a run short, the
+# last can count a recorded run again.
 #
 # PERMISSIONS: `actions: read` for the run's jobs and their logs; `checks: read`
 # for the annotations of each failed job's check run; `issues: write`
@@ -150,7 +182,8 @@ jobs:
     # so a fork running its own copy cannot reach it and would wait forever for
     # a runner. The `||` leg keeps a fork on the hosted image.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # The wrapper's wait budget (20 minutes) plus the step's own minute or two.
+    timeout-minutes: 30
     if: >-
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
@@ -165,7 +198,13 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
+            .github/actions/gh-rate-limit
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
+
+      # Every `gh` call below waits out a spent rate limit and is retried.
+      - uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
 
       - name: Open, update or close the main-red issue
         env:
@@ -337,7 +376,149 @@ jobs:
             exit 0
           fi
 
+          # What a failed read says: sets `looked`.
+          unread() {
+            if rate_limited; then
+              looked="The API rate limit of this token is used up, so $1 could not be read"
+            else
+              looked="Could not read $1 ($(why))"
+            fi
+          }
+          # The finished push runs of main, read once for the replay and for the
+          # look back. Returns 1 with `looked` saying why when the read failed.
+          runs_read=""
+          read_runs() {
+            if [ -z "$runs_read" ]; then
+              if gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=100" \
+                > "$work/runs.json" 2> "$work/read-error.txt"; then
+                runs_read=ok
+              else
+                unread "the earlier runs of main"
+                runs_read="$looked"
+              fi
+            fi
+            if [ "$runs_read" != ok ]; then
+              looked="$runs_read"
+              return 1
+            fi
+          }
+          # The failing tests of an earlier run ($1: its id, $2: its url) as
+          # per-job files in $work/past/$1: its job list (one call) and the
+          # annotations of its failed jobs (one each, first 20). Read once per
+          # run, whoever asks. Returns 1 with `looked` saying why when the job
+          # list, or a rate limit on an annotation read, left the run unread; the
+          # directory exists only for a run read to its end.
+          read_past_run() {
+            past="$work/past/$1"
+            if [ -d "$past" ]; then
+              return 0
+            fi
+            if [ -f "$past.unread" ]; then
+              looked="$(< "$past.unread")"
+              return 1
+            fi
+            mkdir -p "$past.part"
+            if ! gh api "repos/$REPO/actions/runs/$1/jobs?per_page=100" --paginate \
+              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.id, .name] | @tsv' \
+              > "$past.jobs" 2> "$work/read-error.txt"; then
+              unread "the jobs of $2"
+              printf '%s' "$looked" > "$past.unread"
+              return 1
+            fi
+            past_read=0
+            while IFS=$'\t' read -r job_id _; do
+              case "$job_id" in ''|*[!0-9]*) continue ;; esac
+              if [ "$past_read" -ge 20 ]; then
+                break
+              fi
+              past_read=$((past_read + 1))
+              if ! gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" \
+                > "$past.part/$job_id.json" 2> "$work/read-error.txt"; then
+                rm -f "$past.part/$job_id.json"
+                if rate_limited; then
+                  unread "the failing tests of $2"
+                  printf '%s' "$looked" > "$past.unread"
+                  return 1
+                fi
+              fi
+            done < "$past.jobs"
+            mv "$past.part" "$past"
+          }
+          # Red runs of main directly before this one that no watcher run
+          # recorded (the rate limit ended it, or the queue dropped it) are
+          # replayed into $work/prev-body.md, the record this run adds itself to,
+          # so the issue names the first red commit and the whole streak. Sets
+          # `caught` to what was counted, empty for nothing. A read that fails
+          # counts nothing and says so: the replay only ever adds earlier runs to
+          # the record. It opens no issue: with none open, this run opens one by
+          # its own two rules below, and the record then says since when.
+          catch_up() {
+            caught=""
+            case "$RUN_NUMBER" in ''|*[!0-9]*) return 0 ;; esac
+            case "$WORKFLOW_ID" in ''|*[!0-9]*) return 0 ;; esac
+            if ! read_runs; then
+              say notice "$looked; the red runs before this one are not replayed."
+              return 0
+            fi
+            closed_lists=()
+            list_unfinished() {
+              python3 "$previous" unfinished "$work/runs.json" --run-number "$RUN_NUMBER" \
+                --prev-body "$work/prev-body.md" ${closed_lists[@]+"${closed_lists[@]}"} \
+                --repo "$REPO" > "$work/unfinished.txt" && [ -s "$work/unfinished.txt" ]
+            }
+            if ! list_unfinished; then
+              return 0
+            fi
+            # With no issue open, the runs a closed issue's record holds were
+            # finished too: an issue closed while main was red (by hand, or by a
+            # merged pull request that names it) leaves no green run to end the
+            # walk back. The closed issues are read as the open one is found: the
+            # labelled list, and the unlabelled one for an issue filed while the
+            # label could not be added. Without either read nothing is replayed.
+            # A `Main may be red:` issue of `main-red-suspect.yml` is in neither
+            # sense a record of main: it has another title and another marker, so
+            # it bounds no walk back, open or closed.
+            if [ -z "$existing" ]; then
+              closed_label=(--label main-red --limit 20)
+              for closed_list in labelled unlabelled; do
+                if [ "$closed_list" = unlabelled ]; then
+                  closed_label=(--limit 200)
+                elif [ "$have_label" != 1 ]; then
+                  continue
+                fi
+                if ! gh issue list --repo "$REPO" --state closed ${closed_label[@]+"${closed_label[@]}"} \
+                  --json number,title,body,author > "$work/closed-$closed_list.json" 2> "$work/read-error.txt"; then
+                  unread "the closed main-red issues"
+                  say notice "$looked; the red runs before this one are not replayed."
+                  return 0
+                fi
+                closed_lists+=(--closed "$work/closed-$closed_list.json")
+              done
+              if ! list_unfinished; then
+                return 0
+              fi
+            fi
+            while IFS=$'\t' read -r past_id past_url; do
+              if ! read_past_run "$past_id" "$past_url"; then
+                say notice "$looked; the red runs before this one are not replayed."
+                return 0
+              fi
+            done < "$work/unfinished.txt"
+            if ! caught="$(python3 "$previous" replay "$work/runs.json" "$work/past" --run-number "$RUN_NUMBER" \
+              --prev-body "$work/prev-body.md" ${closed_lists[@]+"${closed_lists[@]}"} --repo "$REPO" \
+              --out-body "$work/prev-body.md")"; then
+              caught=""
+            fi
+          }
+          # Says what the replay counted, once this run is going to write it.
+          say_caught() {
+            if [ -n "$caught" ]; then
+              say notice "$caught"
+            fi
+          }
+
           find_open_issue
+          catch_up
           render() {
             # $1: the issue number or empty. Exit 10 means an older run finished late.
             rc=0
@@ -353,6 +534,7 @@ jobs:
           }
 
           if [ -n "$existing" ]; then
+            say_caught
             # Pull requests that cross-reference the issue, with their bodies. The
             # script keeps those whose body declares the issue: a comment that only
             # cites it cross-references it too and is not a fix.
@@ -376,25 +558,20 @@ jobs:
             # what the look back found. An open issue is updated either way.
             #
             # look_back sets `again` to the shared test files (empty for none) and
-            # `looked` to what it found. It reads the run list (one call), the
-            # previous run's jobs (one call) and the annotations of its failed jobs
-            # (one each, first 20), and only when that run was red. A read that
-            # fails, rate limit included, opens nothing: the look back only ever
-            # adds an issue, and without it the run does what it did before.
+            # `looked` to what it found. It uses the run list and the previous
+            # run's failing tests that the replay above read, or reads them (the
+            # previous run only when it was red). A read that fails, rate limit
+            # included, opens nothing: the look back only ever adds an issue.
+            #
+            # What the replay counted does not open the issue. Which runs a
+            # watcher already recorded is not always knowable (a closed issue past
+            # the lists read above), and a wrong count must cost a streak that is
+            # too long, never an issue for a failure seen in one job.
             look_back() {
               again=""
               case "$RUN_NUMBER" in ''|*[!0-9]*) looked="This run has no run number to look back from"; return 0 ;; esac
               case "$WORKFLOW_ID" in ''|*[!0-9]*) looked="This run has no workflow id to look back with"; return 0 ;; esac
-              unread() {
-                if rate_limited; then
-                  looked="The API rate limit of this token is used up, so $1 could not be read"
-                else
-                  looked="Could not read $1 ($(why))"
-                fi
-              }
-              if ! gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=100" \
-                > "$work/runs.json" 2> "$work/read-error.txt"; then
-                unread "the earlier runs of main"
+              if ! read_runs; then
                 return 0
               fi
               if ! prev="$(python3 "$previous" previous-verdict "$work/runs.json" --run-number "$RUN_NUMBER" --repo "$REPO")"; then
@@ -406,30 +583,10 @@ jobs:
                 looked="The previous run of main that reached a verdict ($prev_url) was green"
                 return 0
               fi
-              if ! gh api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" --paginate \
-                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.id, .name] | @tsv' \
-                > "$work/prev-failed-jobs.txt" 2> "$work/read-error.txt"; then
-                unread "the jobs of $prev_url"
+              if ! read_past_run "$prev_id" "$prev_url"; then
                 return 0
               fi
-              mkdir -p "$work/prev-logs"
-              prev_read=0
-              while IFS=$'\t' read -r job_id _; do
-                case "$job_id" in ''|*[!0-9]*) continue ;; esac
-                if [ "$prev_read" -ge 20 ]; then
-                  break
-                fi
-                prev_read=$((prev_read + 1))
-                if ! gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" \
-                  > "$work/prev-logs/$job_id.json" 2> "$work/read-error.txt"; then
-                  rm -f "$work/prev-logs/$job_id.json"
-                  if rate_limited; then
-                    unread "the failing tests of $prev_url"
-                    return 0
-                  fi
-                fi
-              done < "$work/prev-failed-jobs.txt"
-              if again="$(python3 "$previous" same-files "$work/logs" "$work/prev-logs")"; then
+              if again="$(python3 "$previous" same-files "$work/logs" "$work/past/$prev_id")"; then
                 looked="The previous run of main that reached a verdict ($prev_url) was red on the same test file ($again)"
               else
                 again=""
@@ -444,7 +601,7 @@ jobs:
               fi
               say notice "$RUN_URL: $once. $looked, so an issue is opened."
             fi
-            : > "$work/prev-body.md"
+            say_caught
             render ""
             # The form's labels exist where the form does. A repository without one
             # (a fork's own main) gets it created here, with no `--force`, so a

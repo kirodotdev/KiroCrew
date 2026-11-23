@@ -29,13 +29,17 @@ from kiro_crew.dashboard.chat_handlers import _retract_failed_newborn, write_sse
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
 from kiro_crew.dashboard.kiro_readiness import (
+    KAS_TURN_REFUSED_CODE,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
     turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import (
+    CRON_RUN_READ_ONLY_CODE,
+    CRON_RUN_READ_ONLY_ERROR,
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
+    is_cron_run_read_only,
     is_relay_archive,
 )
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
@@ -457,31 +461,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # A relay archive is read-only. Reaching the local dispatch chokepoint
-        # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
-        # leaving this HTTP caller waiting on a turn that never runs. Refuse
-        # BEFORE any mutation. A freshly-created slot is always local, so this
-        # only rejects an existing archive.
-        if is_relay_archive(slot):
-            sel().log_api_access(
-                caller=request.remote or "",
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="openai_compat",
-                resources=f"slot={slot_id}",
-                error="relay archive is read-only",
-            )
-            return web.json_response(
-                {
-                    "error": {
-                        "message": RELAY_ARCHIVE_ERROR,
-                        "type": "invalid_request_error",
-                        "code": RELAY_ARCHIVE_CODE,
-                    },
-                    "code": RELAY_ARCHIVE_CODE,
-                },
-                status=409,
-            )
         # Busy check — prevent concurrent writes to the same slot.
         if slot.running is True:
             return _slot_busy_response(request, slot_id)
@@ -648,6 +627,44 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
             return _foreign_slot_response()
 
+    # A relay archive is read-only. Reaching the local dispatch chokepoint
+    # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
+    # leaving this HTTP caller waiting on a turn that never runs. A cron run's
+    # transcript the History resume marked read-only ends at the same
+    # chokepoint, so it is refused here too, with its own code. Refused BEFORE
+    # any mutation, and AFTER the app-ownership checks above so a foreign app
+    # cannot tell a read-only slot apart from one it cannot reach via the 409.
+    # A slot this request created, the ephemeral one included, is never
+    # read-only, so this only rejects an existing one.
+    cron_run = is_cron_run_read_only(slot)
+    if cron_run or is_relay_archive(slot):
+        code, message = (
+            (CRON_RUN_READ_ONLY_CODE, CRON_RUN_READ_ONLY_ERROR)
+            if cron_run
+            else (RELAY_ARCHIVE_CODE, RELAY_ARCHIVE_ERROR)
+        )
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="openai_compat",
+            resources=f"slot={slot_id}",
+            error=(
+                "cron run transcript is read-only" if cron_run else "relay archive is read-only"
+            ),
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                },
+                "code": code,
+            },
+            status=409,
+        )
+
     # Unlike the dashboard, this endpoint has no transcript the caller reads. A
     # turn that ends on its `error` card answers the generic `turn_failed`
     # (`_TurnOutcome`). When the turn runs on a harness that signs in through
@@ -666,15 +683,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             if freshly_created:
                 # The probe awaited: a slot another request took up stays.
                 _retract_failed_newborn(state, slot)
+            message = "Kiro CLI setup or sign-in is required before starting a session."
+            code = "kiro_prerequisite_required"
+            gate_body = json.loads(blocked.text or "{}")
+            if gate_body.get("code") == KAS_TURN_REFUSED_CODE:
+                # Crew's own sign-in refused this KAS turn: kiro-cli cannot clear it,
+                # so the caller gets the gate's own remedy, not kiro-cli's.
+                message, code = gate_body["error"], KAS_TURN_REFUSED_CODE
             return web.json_response(
-                {
-                    "error": {
-                        "message": "Kiro CLI setup or sign-in is required before starting a "
-                        "session.",
-                        "type": "service_unavailable_error",
-                        "code": "kiro_prerequisite_required",
-                    }
-                },
+                {"error": {"message": message, "type": "service_unavailable_error", "code": code}},
                 status=503,
             )
     # The checks above can yield: the slot may have been closed, replaced, or

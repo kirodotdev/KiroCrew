@@ -203,6 +203,23 @@ class AppContext:
         """
         return loopback_gateway_origin()
 
+    async def kiro_call(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call one of this app's approved Kiro operations as the signed-in person.
+
+        Runs the same core path as ``POST /api/apps/<name>/kiro/<operation>``
+        (``apps/kiro_calls.py``), keyed on this context's own app name: the name
+        must be declared in ``permissions.kiroOperations`` and approved by the owner.
+        Returns the operation's output map as JSON (byte strings as base64, times as
+        ISO-8601). Raises ``KiroCallError`` with the route's ``code``, ``message`` and
+        ``status``. The Kiro token never reaches the app.
+
+        Not gated by a permission here: the grant is checked on every call. The
+        import is lazy so this module keeps its aiohttp-free import.
+        """
+        from kiro_crew.apps.kiro_calls import call_kiro_operation
+
+        return await call_kiro_operation(self.name, operation, payload, caller="hook")
+
     async def require_owner(self, request: Any, operation: str) -> Any | None:
         """``None`` when *request* comes from the dashboard owner; else the refusal.
 
@@ -386,5 +403,5 @@ def build_app_context(
         turns=turns,
         chat_slots=chat_slots,
         webhook_source=webhook_source,
-        browser_sdk=browser_sdk_for(app_name, perms),
+        browser_sdk=browser_sdk_for(app_name, perms, http_app=http_app),
     )

@@ -39,6 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_approve_for_me, kas_build_default
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -71,7 +72,11 @@ from kiro_crew.acp.kas_settings_mcp import (
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
-from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off, project_subagent_targets
+from kiro_crew.acp.kas_subagent_targets import (
+    _excluding_switched_off,
+    deny_refused_targets,
+    project_subagent_targets,
+)
 from kiro_crew.acp.kas_tool_limits import (
     kas_globs,
     unmatched_disabled_globs,
@@ -106,6 +111,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
+from kiro_crew.agent_sdk import kas_machine
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.kiro_cli import (
     chat_sibling,
@@ -365,10 +371,11 @@ def resolve_projected_spec(
 
     A name the user level declares resolves to the user-level spec in
     *agents_dir*; a checkout spec of the same name adds only its switch-off keys
-    (a mute, switched-off tools) for the servers that spec declares, as the
-    mirrored hosts do (:func:`_with_project_switch_offs`). Only a name the user level does
-    NOT declare is looked up in ``<work_dir>/.kiro/agents/``, through the
-    resolver the mirrored hosts use (``acp.session_mcp.project_agent_spec``).
+    (a mute, switched-off tools) for the servers that spec declares or Crew adds
+    to it, as the mirrored hosts do (:func:`_with_project_switch_offs`). Only a
+    name the user level does NOT declare is looked up in
+    ``<work_dir>/.kiro/agents/``, through the resolver the mirrored hosts use
+    (``acp.session_mcp.project_agent_spec``).
 
     A checkout is untrusted input, so a project-only agent's spec is its
     :data:`PROJECT_SPEC_HONOURED_KEYS` and nothing else, with no servers. Its
@@ -430,11 +437,13 @@ def resolve_projected_spec(
                 "your own agents folder. Your own one runs here. kiro-cli would run "
                 "the folder's, but Crew does not let a cloned folder replace your agent."
             )
+        # A user-level custom agent gets Crew's default servers, through the helper
+        # the kiro-cli skill view applies too, so the two paths cannot drift. Added
+        # first, so the checkout's switch-offs reach them as well.
+        spec = with_default_crew_servers(agent, spec)
         if isinstance(project, dict):
             spec = _with_project_switch_offs(spec, project)
-        # A user-level custom agent gets Crew's default servers, through the helper
-        # the kiro-cli skill view applies too, so the two paths cannot drift.
-        return with_default_crew_servers(agent, spec), agents_dir
+        return spec, agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -560,6 +569,7 @@ def _skill_scope(
     spec: dict[str, Any],
     spec_dir: Path,
     work_dir: str | Path | None,
+    notices: list[str] | None = None,
 ) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
     """The ``skill`` deny rules and the extra ``skill://`` resources that give this
     KAS session its kiro-cli skill set.
@@ -568,21 +578,35 @@ def _skill_scope(
     session on top of the agent's ``resources``; kiro-cli under Crew loads only the
     scope Crew resolves (``acp/kas_skill_scope.py``). The resources are fixed
     copies of in-scope skills KAS would drop (``refused_skill_copies``). A failure
-    here costs the narrowing or the copies, never the session: the skills are the
-    user's own, and a session that fails to start over them loses more than it
-    protects.
+    here never costs the session, but it never widens the skill set either: when
+    the scope or its rules cannot be worked out, every skill is denied except the
+    copies already made, the error is logged, and *notices* gets one line.
     """
     from kiro_crew.acp import kas_skill_scope
 
-    try:
-        globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
-    except Exception:  # see the docstring: degrade to the unscoped catalog
+    def _failed(copy_names: list[str]) -> tuple[dict[str, Any], ...]:
         logger.warning(
-            "KAS skill scope for %r failed; the session loads KAS's default skill trees",
+            "KAS skill scope for %r failed; the session gets no skill but its copies",
             agent,
             exc_info=True,
         )
-        return (), ()
+        if notices is not None:
+            notices.append(
+                f"⚠ Crew could not work out which skills agent {agent} may use, "
+                "so its skills are off for this session. Start a new chat to try again."
+            )
+        rule: dict[str, Any] = {"capability": kas_skill_scope.SKILL_CAPABILITY, "effect": "deny"}
+        # Only literal names can be ``exclude`` entries, and one rule holds a bounded
+        # list (``skill_scope_rules``); past it, the copies are denied too.
+        kept = sorted(n for n in copy_names if kas_skill_scope._literal(n))
+        if 0 < len(kept) <= kas_skill_scope._MAX_PATTERNS_PER_RULE:
+            rule["exclude"] = kept
+        return (rule,)
+
+    try:
+        globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
+    except Exception:  # see the docstring: no scope, so no copies and no skill
+        return _failed([]), ()
     try:
         copies = kas_skill_scope.refused_skill_copies(
             agent, spec, globs, agents_dir=spec_dir, work_dir=work_dir
@@ -594,13 +618,8 @@ def _skill_scope(
         rules = kas_skill_scope.skill_scope_rules(
             globs, work_dir=work_dir, also_allowed=frozenset(c.name for c in copies)
         )
-    except Exception:  # see the docstring: degrade to the unscoped catalog
-        logger.warning(
-            "KAS skill scope for %r failed; the session loads KAS's default skill trees",
-            agent,
-            exc_info=True,
-        )
-        rules = []
+    except Exception:  # see the docstring: only the copies stay usable
+        return _failed([c.name for c in copies]), tuple(c.uri for c in copies)
     return tuple(rules), tuple(c.uri for c in copies)
 
 
@@ -776,6 +795,10 @@ class KasHarness(MembershipHarness):
     #: the launch's SSH forward verdict is re-judged on the engine's own tier, never
     #: on a later config. None until a spawn: then no socket is relayed.
     spawn_sandbox_mode: str | None = None
+    #: The machine-mode settings the process this harness last spawned runs under
+    #: (``agent_sdk/kas_machine.py``), or None for Crew's own sign-in. Set at each
+    #: spawn, so the same launch's environment and catalog stamp follow its argv.
+    spawn_machine_auth: kas_machine.MachineAuth | None = None
     #: The engine version of the process this harness last spawned, when Crew
     #: knows it: its own bundle's. ``""`` on the relay, whose ``initialize``
     #: names no engine version.
@@ -788,6 +811,9 @@ class KasHarness(MembershipHarness):
     #: The sign-in messages for THIS runtime read it, never the process-wide
     #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
     spawn_route: kas_route_mod.KasRoute | None = None
+    #: The notice that this chat runs on kiro-cli because the build default's first
+    #: move to Crew's engine failed (``kas_build_default``); "" otherwise.
+    engine_fallback_notice = ""
 
     # ── Seam 1: spawn ──
 
@@ -824,10 +850,32 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.auth.login.endpoints import (
+            LOCAL_AGENT_UNAVAILABLE,
+            stored_sign_in_registered,
+        )
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
+        # Before any route is chosen: a sign-in on an edition's own start URL
+        # (``crew_client`` preview) is not one a local agent may run on, on any route.
+        # The turn gate refuses the same sign-in (``kiro_readiness.kas_turn_verdict``).
+        if await asyncio.to_thread(stored_sign_in_registered):
+            raise AcpRuntimeError(LOCAL_AGENT_UNAVAILABLE)
+        machine = await asyncio.to_thread(kas_machine.configured_machine_auth)
+        self.spawn_machine_auth = machine
+        if machine is not None:
+            # Before any install or route, so a refused spawn starts no engine. Only
+            # ``agent.kas_bundle`` takes machine mode: no sharing-preview bundle, relay
+            # or packaged-build default is asked, so the turn gate can mirror it.
+            try:
+                await asyncio.to_thread(kas_machine.check_spawnable, machine)
+            except kas_machine.MachineAuthRefused as exc:
+                raise AcpRuntimeError(str(exc)) from exc
+            if not await asyncio.to_thread(_bundle_route_selected):
+                raise AcpRuntimeError(kas_machine.RELAY_REFUSAL)
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
+        self.engine_fallback_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
         self.spawn_route_reason = ""
@@ -839,6 +887,7 @@ class KasHarness(MembershipHarness):
         # chat placed as shared before a fallback never lands on a queueing engine.
         self.spawn_engine_shares_chats: bool | None = None
         self._sharing_preview_on = await asyncio.to_thread(_chat_sharing_preview_on)
+        preview_failed = False
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
@@ -866,12 +915,19 @@ class KasHarness(MembershipHarness):
                 return plan
             except AcpRuntimeError as exc:
                 self.bundle_engine_version = ""
+                preview_failed = True
                 kas_route_mod.note_preview_bundle_failed(str(exc))
                 logger.warning(
                     "chat-runtime-sharing: Crew's KAS engine could not start (%s); this "
                     "chat takes the default KAS route on its own process",
                     exc,
                 )
+
+        if not preview_failed:
+            # Rule 1b: a packaged build prefers Crew's engine (``kas_build_default``).
+            plan = await kas_build_default.build_default_plan(self, ctx)
+            if plan is not None:
+                return plan
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         # Read only when the route is still open: a stored Kiro CLI pick, the
@@ -1079,12 +1135,17 @@ class KasHarness(MembershipHarness):
             str(bundle.node_bin), str(bundle.acp_server), environ=ctx.environ
         )
         await asyncio.to_thread(ensure_engine_bundle_cache, argv)
+        machine = getattr(self, "spawn_machine_auth", None)
+        if machine is not None:
+            argv = kas_machine.with_engine_args(argv, machine)
         return SpawnPlan(
             argv=argv,
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
             stderr_label=KAS_BUNDLE_SPAWN_LABEL,
-            host_auth=True,
+            # Machine mode: the engine reads its token file and asks Crew for none.
+            host_auth=machine is None,
             engine_bundle=True,
+            machine_auth=machine,
         )
 
     def apply_spawn_env(
@@ -1133,10 +1194,16 @@ class KasHarness(MembershipHarness):
         """
         from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
-        if cli_owned_auth:
+        machine = getattr(self, "spawn_machine_auth", None)
+        if cli_owned_auth and machine is None:
             inject_kiro_cli_api_key(env)
         else:
+            # Machine mode answers no callback either (``host_auth`` False), yet the
+            # engine reads the token file alone: no API key, whatever the plan says.
             strip_kiro_cli_api_key(env)
+        if machine is not None:
+            # None of the names the host's config drops.
+            kas_machine.drop_engine_env(env, machine)
         engine_bundle = _runs_crew_engine_bundle(spawned_binary)
         if engine_bundle:
             # The validated argv owns this endpoint, including after agent.env is merged.
@@ -1145,6 +1212,9 @@ class KasHarness(MembershipHarness):
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        # Off by default; the runtime spawn turns it on only for a session the
+        # person opted in (``kas_approve_for_me.apply_runtime_env``).
+        kas_approve_for_me.force_off(env)
         apply_child_env_defaults(env)
         env.setdefault("KIRO_DISABLE_SESSION_TITLE_LLM", "true")
         apply_node_compile_cache(env, engine_bundle=engine_bundle)
@@ -1240,6 +1310,7 @@ class KasHarness(MembershipHarness):
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
+        handle.kas_engine_fallback_notice = self.engine_fallback_notice
 
     async def session_extras(
         self,
@@ -1276,7 +1347,11 @@ class KasHarness(MembershipHarness):
         # its credential from the vault per call, so the ``model`` select it
         # answers with is this account's catalog. Read before anything else, off
         # the loop, and carried on the payload for the catalog recorder.
-        vault_identity = await asyncio.to_thread(kas_model_catalog.vault_identity)
+        # Under the settings this process was started with, not the configured ones,
+        # which may have changed since without a restart.
+        vault_identity = await asyncio.to_thread(
+            kas_model_catalog.vault_identity, getattr(self, "spawn_machine_auth", None)
+        )
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 
@@ -1463,7 +1538,9 @@ class KasHarness(MembershipHarness):
             # fresh read of the file.
             withheld: kas_agents_mod.WithheldOut = {}
             prompt_unread: list[Path] = []
-            scope_rules, skill_copies = _skill_scope(agent, spec, prompt_dir, work_dir)
+            scope_rules, skill_copies = _skill_scope(
+                agent, spec, prompt_dir, work_dir, spec_notices
+            )
             projected = spec
             if skill_copies:
                 # Crew's own copies of the spec's skills, not a widening of the
@@ -1552,6 +1629,7 @@ class KasHarness(MembershipHarness):
             # A stub withdrawn above is off the session-level array, so a target
             # that enables that server keeps its own declaration of it.
             gated: set[str] = set()
+            refused: set[str] = set()
             targets, targets_notice = project_subagent_targets(
                 agent,
                 spec,
@@ -1565,8 +1643,11 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
                 folder_gated_out=gated,
+                refused_out=refused,
             )
-            custom_agents = [*custom_agents, *targets]
+            # A refused target the engine could still load from disk is denied, so
+            # the refusal the notice names holds.
+            custom_agents = [*deny_refused_targets(custom_agents, agent, refused), *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.

@@ -36,6 +36,14 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
+      "id": "agent.engine",
+      "label": "Engine",
+      "tab": "agent",
+      "route": "/settings/agent?highlight=key%3Aagent.kas_bundle",
+      "description": "Kiro Agent runs on one of these.",
+      "configKey": "agent.kas_bundle"
+    },
+    {
       "id": "agent.kiro-memory",
       "label": "Kiro Memory",
       "tab": "agent",
@@ -516,6 +524,14 @@
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.slack-bot-token-slack",
       "description": "From OAuth & Permissions after installing your Slack app (starts with xoxb-)."
+    },
+    {
+      "id": "channels.slack-tools-for-your-agents-slack",
+      "label": "Slack tools for your agents (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.slack_mcp",
+      "description": "Lets your agents search and read Slack, read-only, for each person who connects their own Slack account. Each person can disconnect on the Slack card at any time, which stops their agents reading Slack.",
+      "configKey": "slack.slack_mcp"
     },
     {
       "id": "channels.slash-command-slack",
@@ -1124,6 +1140,15 @@
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
+    },
+    {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
@@ -1489,6 +1514,14 @@
       "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.phone-widgets",
+      "label": "Phone widgets",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.phone-widgets",
+      "description": "Lets your Bots prepare home-screen widgets for the Kiro Mobile app. Nothing reaches your phone yet.",
+      "hint": "Your Bots learn to save home-screen widgets with their Dashboard. The Kiro Mobile app can't show them yet: this Crew doesn't serve widgets to a phone. While this is off, Bots aren't told about widgets and can't save them."
+    },
+    {
       "id": "developer.quick-worker-check-before-a-hard-choice",
       "label": "Quick worker check before a hard choice",
       "tab": "developer",
@@ -1521,13 +1554,6 @@
       "hint": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
     },
     {
-      "id": "developer.run-kas-on-kiro-crew-s-own-engine",
-      "label": "Run KAS on Kiro Crew's own engine",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
-      "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts."
-    },
-    {
       "id": "developer.send-pending-approvals-to-chat-apps",
       "label": "Send pending approvals to chat apps",
       "tab": "developer",
@@ -1549,6 +1575,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
+    },
+    {
+      "id": "developer.use-your-company-s-sign-in",
+      "label": "Use your company's sign-in",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-your-company-s-sign-in",
+      "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+      "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes."
     },
     {
       "id": "developer.visual-refresh",
@@ -1855,6 +1889,13 @@
       "hint": "Select a theme for the dashboard"
     },
     {
+      "id": "display.touch-screen-layout",
+      "label": "Touch screen layout",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.touch-screen-layout",
+      "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only."
+    },
+    {
       "id": "display.translucent-panels",
       "label": "Translucent panels",
       "tab": "display",
@@ -1883,11 +1924,23 @@
       "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
     },
     {
+      "id": "instances.crews-kept-loaded",
+      "label": "Crews kept loaded",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.crews-kept-loaded"
+    },
+    {
       "id": "instances.enable-remote-crew-management",
       "label": "Enable remote crew management",
       "tab": "instances",
       "route": "/settings/instances?highlight=key%3Ainstances.enabled",
       "configKey": "instances.enabled"
+    },
+    {
+      "id": "instances.remote-control",
+      "label": "Remote Control",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.remote-control"
     },
     {
       "id": "kiro-account.kiro-sign-in",
@@ -2064,11 +2117,11 @@
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
-      "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
-      "label": "Ask me before running tools an MCP server pre-approves",
+      "id": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
+      "label": "Ask me before running tools set to auto-approve in a tool server's settings",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.honour_auto_approve",
-      "description": "Tools you set to Always allow still run without asking.",
+      "description": "Tools you set to Always allow, on an approval card or in MCP Servers, still run without asking.",
       "configKey": "mcp.honour_auto_approve"
     },
     {
@@ -2115,7 +2168,7 @@
       "label": "Stop the agent from editing its own permission rules",
       "tab": "security",
       "route": "/settings/security/safety?highlight=key%3Amcp.protect_kiro_permission_rules",
-      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way.",
+      "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can.",
       "configKey": "mcp.protect_kiro_permission_rules"
     },
     {
@@ -2322,6 +2375,20 @@
       "description": "Paste the SHA-256 shown on the file's download page. It checks the file is the one you downloaded.",
       "hint": "A wrong value is refused and nothing else changes.",
       "configKey": "stt.custom_model_sha256"
+    },
+    {
+      "id": "voice.hold-the-message-box-to-talk",
+      "label": "Hold the message box to talk",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.hold-the-message-box-to-talk",
+      "hint": "Turn this off and a press on the message box only places the cursor."
+    },
+    {
+      "id": "voice.hold-time",
+      "label": "Hold time",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.hold-time",
+      "hint": "How long the button stays down before dictation starts. Shorter starts sooner; longer keeps a slow click from starting it."
     },
     {
       "id": "voice.how-the-key-works",

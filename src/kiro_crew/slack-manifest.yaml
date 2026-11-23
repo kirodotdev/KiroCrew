@@ -2,14 +2,16 @@
 # Import via https://api.slack.com/apps → Create New App → From a manifest
 #
 # After import you still need to:
-#   1. Socket Mode: toggle OFF then back ON to trigger token generation dialog
+#   1. Install the app to your workspace and copy the Bot Token (xoxb-...)
+#   2. Basic Information → App-Level Tokens → Generate Token and Scopes
 #      → add scope connections:write → Generate → copy the xapp-... token
-#   2. Install the app to your workspace and copy the Bot Token (xoxb-...)
-#   3. Run `kirocrew setup` and paste both tokens
+#   3. Paste both tokens in Settings → Messaging channels → Slack (its setup
+#      wizard walks every step), or run `kirocrew setup --slack`
 #
 ## Template notes (never rendered): a line ending in "#@<feature>" is rendered
 ## only when that Slack Code switch (slack.<feature>, registered in
-## slack_manifest.FEATURE_SCOPES) is on; "#@a|b" means either one.
+## slack_manifest.FEATURES) is on; "#@a|b" means either one, and "#@!a" means
+## only while a is off.
 ## `kirocrew manifest` and Settings → Slack render this file for the
 ## switches you have on.
 #
@@ -45,6 +47,12 @@ features:
       should_escape: true
 
 oauth_config:
+  # Slack MCP: the sign-in address the Slack card under Connections listens on,  #@slack_mcp
+  # and PKCE, which Slack MCP sign-ins need. Slack cannot turn PKCE off again  #@slack_mcp
+  # once this is saved (only Slack support can).  #@slack_mcp
+  redirect_urls:  #@slack_mcp
+    - http://localhost:48106/callback  #@slack_mcp
+  pkce_enabled: true  #@slack_mcp
   scopes:
     bot:
       - app_mentions:read
@@ -74,16 +82,28 @@ oauth_config:
       - users:read
       # Optional: uncomment for custom workspace emojis in Secretary emoji picker
       # - emoji:read
+    # Slack MCP: with it on, the user scopes are exactly the read-only set the  #@slack_mcp
+    # Slack MCP server needs, for each person's own Slack sign-in. They replace  #@slack_mcp
+    # the older list (search:read is dropped). The gateway uses no user token.  #@slack_mcp
     user:
+      - canvases:read  #@slack_mcp
       - channels:history
       - channels:read
+      - files:read  #@slack_mcp
       - groups:history
       - groups:read
       - im:history
       - im:read
+      - lists:read  #@slack_mcp
       - mpim:history
       - mpim:read
-      - search:read
+      - search:read  #@!slack_mcp
+      - search:read.files  #@slack_mcp
+      - search:read.im  #@slack_mcp
+      - search:read.mpim  #@slack_mcp
+      - search:read.private  #@slack_mcp
+      - search:read.public  #@slack_mcp
+      - search:read.users  #@slack_mcp
       - users:read
 
 settings:
@@ -109,6 +129,10 @@ settings:
       - member_joined_channel
   interactivity:
     is_enabled: true
+  # Slack MCP: this app also serves Slack's MCP server (https://mcp.slack.com/mcp).  #@slack_mcp
+  # Slack refuses MCP for an app that is publicly distributed but not listed in  #@slack_mcp
+  # the Slack Marketplace, so keep the app internal.  #@slack_mcp
+  is_mcp_enabled: true  #@slack_mcp
   org_deploy_enabled: false
   socket_mode_enabled: true
   token_rotation_enabled: false

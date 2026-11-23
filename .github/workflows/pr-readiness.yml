@@ -752,6 +752,10 @@ jobs:
             echo "stack_trunk=$STACK_TRUNK"
             echo "ci_on_release=$CI_ON_RELEASE"
             echo "author=$PR_AUTHOR"
+            # For the docs-only rule (.github/scripts/docs_only.py): the base
+            # the PR's own diff is measured from, and how many files it lists.
+            echo "base_sha=$(jq -r '.base.sha' <<<"$pr_rest")"
+            echo "changed_files=$(jq -r '.changed_files' <<<"$pr_rest")"
             echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
             # bound back to this PR below. Both fields are populated on a fork
@@ -913,7 +917,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || github.ref_name }}
-          sparse-checkout: src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
+          # The docs-only classifier comes from the default branch too, so a
+          # pull request cannot change the rule it is judged by.
+          sparse-checkout: |
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/
+            .github/scripts/docs_only.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       # Issue #6658: the one-lane / one-rationale-per-finding disposition rule
@@ -1120,6 +1129,9 @@ jobs:
           STACK_TRUNK: ${{ steps.context.outputs.stack_trunk }}
           CI_ON_RELEASE: ${{ steps.context.outputs.ci_on_release }}
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CHANGED_FILES: ${{ steps.context.outputs.changed_files }}
+          DOCS_ONLY_SCRIPT: ${{ github.workspace }}/.github/scripts/docs_only.py
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
           # The edit's time on an `edited` run, read by the `edited_lanes` check.
@@ -1278,8 +1290,24 @@ jobs:
               "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
+            # A pull request that changes nothing but prose docs skips the
+            # CodeQL scan (codeql.yml), so no results check is owed: list it
+            # as not eligible rather than wait for one. The rule is the default
+            # branch's own classifier over the compare listing, and any read or
+            # parse failure answers "not docs-only", which keeps the lane.
+            docs_only=false
+            if [ "$codeql_ineligible" != "true" ] && [ -f "${DOCS_ONLY_SCRIPT:-}" ] \
+              && [ -n "${BASE_SHA:-}" ] && [ "${CHANGED_FILES:-0}" -le 250 ] 2>/dev/null; then
+              if compare="$(gh_retry gh api "repos/$REPO/compare/$BASE_SHA...$SHA?per_page=300")" \
+                && answer="$(printf '%s' "$compare" \
+                  | python3 "$DOCS_ONLY_SCRIPT" classify --expect-files "$CHANGED_FILES")"; then
+                [ "$answer" = "docs_only=true" ] && docs_only=true
+              fi
+            fi
             if [ "$codeql_ineligible" = "true" ]; then
               skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
+            elif [ "$docs_only" = "true" ]; then
+              skipped+=("CodeQL (docs-only PR)")
             else
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
             fi
@@ -2302,6 +2330,7 @@ jobs:
             echo "label=$label"
             echo "status_state=$status_state"
             echo "description=$description"
+            echo "docs_only=${docs_only:-false}"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -2370,6 +2399,7 @@ jobs:
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
           DESCRIPTION: ${{ steps.verdict.outputs.description }}
+          DOCS_ONLY: ${{ steps.verdict.outputs.docs_only }}
           FORK: ${{ steps.context.outputs.fork }}
           HEAD_REPO: ${{ steps.context.outputs.head_repo }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
@@ -2493,7 +2523,9 @@ jobs:
             # evaluation rejected, or blocking a verdict it passed. A fork head
             # cannot run the managed default-setup CodeQL (the verdict step
             # lists it skipped), so this read is same-repo only.
-            if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ]; then
+            # A docs-only head owes no CodeQL result: the verdict step listed
+            # it not eligible, so this re-check reads it the same way.
+            if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ] && [ "${DOCS_ONLY:-}" != "true" ]; then
               if codeql_state="$(gh_head_runs "$REPO" "$SHA" dynamic "$runs_page" \
                 | jq -r '
                   [.workflow_runs[]

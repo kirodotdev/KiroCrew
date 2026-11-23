@@ -101,6 +101,11 @@ class HereDoc(NamedTuple):
     quoted: bool
     #: Raw offset past the tag line that closed the body; ``end`` when nothing closed it.
     tail: int = -1
+    #: The ``<<`` was held inside an open ``$(( ))`` / ``(( ))`` arithmetic span and
+    #: only became a body because the span was still open at a newline (the reader's
+    #: conservative multiline-arithmetic reading). Inside arithmetic ``<<`` is a left
+    #: SHIFT, not a here-document, so this body is a fiction bash never reads.
+    arith_held: bool = False
 
 
 class ShellCommand(NamedTuple):
@@ -294,10 +299,17 @@ def read_commands(
                 cut(step.char)
                 in_redirect = False
                 if step.char == "\n" and pending:  # the bodies start on the next line
+                    # A ``<<`` still HELD in an open arithmetic span at this newline is
+                    # a left shift the reader is about to read as a body only because
+                    # the span never closed with ``))`` on the ``<<``'s line. Record
+                    # which pending docs those are so the body-quote reset can skip
+                    # them: escaping a quote inside such a fiction would reset a real
+                    # command's quote after the arithmetic and over-refuse.
+                    arith_held_ids = {id(doc) for frame in frames for doc in frame[2]}
                     for frame in frames:
                         frame[2] = []  # a held ``<<`` whose span is still open is a heredoc
                     resume = _read_bodies(
-                        command, pos + step.offset + 1, pending, out, track, _base
+                        command, pos + step.offset + 1, pending, out, track, _base, arith_held_ids
                     )
                     pending = []
                     break
@@ -334,11 +346,23 @@ def _heredoc_tag(text: str, at: int) -> "tuple[str, bool, bool]":
 
 
 def _read_bodies(
-    command: str, at: int, pending: "list[list]", out: "list[ShellCommand]", track: bool, base: int
+    command: str,
+    at: int,
+    pending: "list[list]",
+    out: "list[ShellCommand]",
+    track: bool,
+    base: int,
+    arith_held_ids: "set[int] | None" = None,
 ) -> int:
     """Take each pending body from *at* up to its tag line, attach it to its command,
-    read the substitutions of an unquoted one, and return the offset past the last tag line."""
-    for owner, tag, strip, quoted in pending:
+    read the substitutions of an unquoted one, and return the offset past the last tag line.
+
+    *arith_held_ids* are the ``id()`` of the pending docs whose ``<<`` was a left shift
+    held in an open arithmetic span (see the caller): their :class:`HereDoc` is marked
+    ``arith_held`` so the body-quote reset skips the fiction."""
+    for doc_entry in pending:
+        owner, tag, strip, quoted = doc_entry
+        held = arith_held_ids is not None and id(doc_entry) in arith_held_ids
         start = body_end = tail = at
         while at < len(command):
             newline = command.find("\n", at)
@@ -355,7 +379,7 @@ def _read_bodies(
         else:
             body_end = tail = at = len(command)  # an unclosed body runs to the end, as in bash
         body = command[start:body_end]
-        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail)
+        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail, held)
         out[owner] = out[owner]._replace(heredocs=out[owner].heredocs + (doc,))
         if not quoted:
             out.extend(_body_substitutions(body, base + start, track))

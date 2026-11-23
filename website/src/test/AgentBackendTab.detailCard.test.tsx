@@ -48,7 +48,8 @@ vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
 // KasBundleCard.test.tsx, and the real card would need the kas-bundle API.
-vi.mock('../pages/developer/KasBundleCard', () => ({
+vi.mock('../pages/developer/KasBundleCard', async importOriginal => ({
+  ...(await importOriginal<typeof import('../pages/developer/KasBundleCard')>()),
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 
@@ -945,13 +946,32 @@ describe('AgentBackendTab kiro sign-in', () => {
     expect(screen.queryByTestId('kiro-account-status-line')).toBeNull()
   })
 
-  it('keeps the KAS engine card off the harness row; it lives in Feature Previews', async () => {
-    // The route is in shadow testing, so its switch is not in plain view of every
-    // KAS user: the KAS detail shows the account line and no engine card.
+  it('opens the KAS detail when a link asks for the engine choice', async () => {
+    // Settings search and the all-settings link land on `?highlight=agent.engine`
+    // or `key:agent.kas_bundle`; the choice lives in KAS's detail, so it must open.
+    for (const highlight of ['agent.engine', 'key:agent.kas_bundle']) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const { unmount } = render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={[`/settings/agent?highlight=${highlight}`]}>
+            <AgentBackendTab />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+      expect(await screen.findByTestId('kas-bundle-card')).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it("shows the KAS engine choice on KAS's own row, and on no other", async () => {
+    // A packaged build prefers the built-in engine, so the choice sits with KAS
+    // where every KAS user can see and change it.
     wrap()
     await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     highlight('Kiro Agent')
     expect(screen.getByTestId('kiro-account-status-line')).toBeInTheDocument()
+    expect(detail().contains(screen.getByTestId('kas-bundle-card'))).toBe(true)
+    highlight('Claude Code')
     expect(screen.queryByTestId('kas-bundle-card')).toBeNull()
   })
 

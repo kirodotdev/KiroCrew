@@ -193,9 +193,11 @@ class TestCatalog:
 
     def test_plumb_pins_a_jevk5_that_answers_a_choice_of_any_size(self):
         """skills.select offers up to MAX_CANDIDATES skills plus a "none" option in one
-        Choice. jevk5 before v0.2.2 letters at most 16 options and drops the connection
-        on a 17th, so every larger menu came back as a provider error. Each commit here
-        was checked to answer a 30-option Choice through its own server."""
+        Choice to an endpoint not counted as on this machine, a Plumb server reached by a
+        name such as ``localhost`` included, and browser steps offer up to 100. jevk5
+        before v0.2.2 letters at most 16 options and drops the connection on a 17th, so
+        every larger menu came back as a provider error. Each commit here was checked to
+        answer a 30-option Choice through its own server."""
         from kiro_crew.decisions.local_runtime import SERVERS_DIR
         from kiro_crew.decisions.points.skills_select import MAX_CANDIDATES
 

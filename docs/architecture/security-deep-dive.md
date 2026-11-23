@@ -189,9 +189,9 @@ described honestly for the tier it runs at:
   `is_sensitive_bash_command` deliberately matches no paths: a text matcher
   cannot hold against `python -c open(...)`, `awk`, a variable or a `cd`, and
   every spelling it did close denied ordinary commands whenever the fenced
-  spelling appeared as data. The path regexes were removed for that reason
-  (#9183), and the recovered command of a sandboxed shell is exempt from the
-  path tier (#11223). The enforcement point for a shell's `open()` is the OS
+  spelling appeared as data. The path regexes were removed for that reason,
+  and the recovered command of a sandboxed shell is exempt from the
+  path tier. The enforcement point for a shell's `open()` is the OS
   sandbox.
 - The OS sandbox's **default `standard` tier leaves `~/.aws`, `~/.ssh` and
   `~/.kube` visible** (`sandbox._STANDARD_DIRS` omits them on purpose) so the
@@ -666,8 +666,11 @@ trust and auto-approve paths.
 
 Auto-approve is time-bounded by a **single** duration shared by every ad-hoc
 surface (`agent.yolo_duration`, default `6h`, hard ceiling 24 h, or
-`until_shutdown` for an in-memory grant with no timed expiry that a restart
-clears). There are deliberately no per-surface TTLs: giving the same grant a
+`until_shutdown` for a grant with no timed expiry that lasts until the user
+stops Kiro Crew). Any other exit keeps an ad-hoc grant with its original expiry,
+from a signed record in a sandbox-masked directory, bounded by the ceiling in
+force at the restore ([security](../system-specs/modules/security.md), "Grants
+kept across an exit the user did not choose"). There are deliberately no per-surface TTLs: giving the same grant a
 different lifetime depending on which surface enabled it is unpredictable for the
 operator without buying any security.
 
@@ -786,10 +789,8 @@ not thread, semantics). macOS and Linux hosts without delegation have no hard
 per-subtree process/memory ceiling; they retain the file-descriptor cap and
 post-failure reapers. See [`resource-protection.md`](resource-protection.md).
 
-**Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
-tracked as CWE-778 by
-[#371](https://github.com/kirodotdev/KiroCrew/pull/371) /
-[#417](https://github.com/kirodotdev/KiroCrew/issues/417)).** The resolved
+**Launcher self-poisoning by the same user is accepted, not defended (CWE-345,
+also classed as CWE-778).** The resolved
 `kiro-cli` launcher is executed in place with no signature, hash, ownership or
 install-source check — the only gate is `platform_compat.is_executable_file`
 (`kiro_cli.py`) — so an agent running as the invoking user can overwrite its own
@@ -839,8 +840,7 @@ fonts and images from the rendered screenshot. A WebSocket to a host other than
 the pinned base has the same window: the guard's `routeWebSocket` handler checks
 the host once and then calls `ws.connectToServer()`, which also takes no
 address, so the browser resolves the name again to connect
-([#9004](https://github.com/kirodotdev/KiroCrew/issues/9004) accepted it as the
-same class). **Status: ACCEPTED, bounded.**
+(accepted as the same class). **Status: ACCEPTED, bounded.**
 Reaching it requires an attacker to control both a critiqued page and a rebinding
 DNS name; the base-host and same-host vectors are already closed. The complete
 fix is below-the-browser egress filtering independent of Chromium's resolver — a
@@ -851,8 +851,7 @@ mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
 
-**A sandboxed command's detached descendants are not bound to its lifetime
-([#5883](https://github.com/kirodotdev/KiroCrew/issues/5883)).** The Linux
+**A sandboxed command's detached descendants are not bound to its lifetime.** The Linux
 launcher unshares only the user and mount namespaces. It deliberately adds no
 PID namespace: an earlier PID-namespace version broke session identity, which is
 keyed on host pids, and seccomp denies the host-wide `kill(-1)` broadcast

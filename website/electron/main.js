@@ -61,6 +61,7 @@ const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
+const { isRelaunching, watchRelaunch } = require("./relaunch-intent");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -313,6 +314,16 @@ function readInternalSecret(gatewayUrl) {
 }
 
 let isQuitting = false;
+// Why this quit happens, for the gateway: only a quit the user chose ends the YOLO
+// and chat trust it keeps across every other exit. An update's quit and the OS
+// ending the session are not one. On macOS and Linux powerMonitor's `shutdown` says
+// the OS is ending it (watched once the app is ready); on Windows `before-quit` is
+// not emitted for a shutdown, restart or log off at all.
+let quittingForUpdate = false;
+let osSessionEnding = false;
+// A relaunch (GPU fallback, update Restart now, the dashboard relaunch, a managed
+// apply) is a restart, not a user stop: every `app.relaunch()` is noted.
+watchRelaunch(app);
 let desktopMetricsRecorder = null;
 let windows = null;
 // The kirocrew:// deep-link handler (armed by the single-instance winner below).
@@ -425,6 +436,7 @@ const requestQuit = () => {
 onQuitForUpdate(electron.autoUpdater, () => {
   if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
   isQuitting = true;
+  quittingForUpdate = true;
 });
 
 // Only the lock winner may arm native logging. A rejected second instance must
@@ -634,6 +646,7 @@ const ipcRegistrar = createIpcRegistrar({
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
   crashScan: scanCrashArtifacts,
+  nativeLoggingStatus: () => nativeLogging,
   downloadExpectations,
   readInternalSecret,
   fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
@@ -762,6 +775,11 @@ app.whenReady().then(async () => {
     });
   } catch (error) {
     glog("power: could not watch for resume: " + (error && error.message));
+  }
+  try {
+    electron.powerMonitor.on("shutdown", () => { osSessionEnding = true; });
+  } catch (error) {
+    glog("power: could not watch for shutdown: " + (error && error.message));
   }
 
   // A dictation left running when the person locks the screen keeps the
@@ -1022,7 +1040,7 @@ app.on("before-quit", () => {
   } catch {
     // Best effort during quit.
   }
-  gateway.stopOnQuit();
+  gateway.stopOnQuit({ userStop: !quittingForUpdate && !osSessionEnding && !isRelaunching() });
 });
 
 // Release only the shell summon accelerator. Mochi owns and removes its own

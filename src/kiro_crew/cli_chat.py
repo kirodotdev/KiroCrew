@@ -16,6 +16,7 @@ from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
+from kiro_crew.cli_chat_runs import ChatRun, note_turn, start_run
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -46,6 +47,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -348,8 +350,10 @@ def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None,
     )
 
 
-async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
-    """Run a single message or interactive chat session."""
+async def _chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
+    """Run a single message or interactive chat session; :class:`ChatRun` documents *run*."""
     # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
     # never ran the gateway's KAS floor, so establish that evidence here, before
     # the config load below reads the pick. Probe-once, off the event loop.
@@ -440,16 +444,16 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # backend before the handshake completes: a failure partway through leaves a
     # process that only `shutdown()` ends.
     try:
-        await provider.start()
-
+        await start_run(provider, run)
         if message:
             # `-m` is documented as a non-interactive single message, so this
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
             built = await context.first_message(provider, message)
             await _send_and_print(provider, built or message, interactive=False, gate=gate)
+            await note_turn(run, provider, message)
         else:
-            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context, run=run)
     finally:
         try:
             await provider.shutdown()
@@ -465,7 +469,9 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             gc.collect()
 
 
-def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
+def _run_chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
     """Run chat at the sync CLI boundary and render SIGINT as a clean exit.
 
     Also renders a fail-closed SANDBOX REFUSAL as a message rather than a traceback.
@@ -491,7 +497,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     this function's own ``BENIGN_SPAWNS`` entry read as stale.
     """
     try:
-        asyncio.run(_chat(message, model, agent=agent))
+        asyncio.run(_chat(message, model, agent=agent, run=run))
     except KeyboardInterrupt:
         print("\nBye! 👻")
     except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
@@ -869,7 +875,13 @@ async def _steer_user_reply(provider: LLMProvider, event: LLMEvent, reply: str) 
 
 
 async def _audit_off_loop(
-    gate: _ToolGate, event: LLMEvent, outcome: str, *, error: str = "", critical: bool = False
+    gate: _ToolGate,
+    event: LLMEvent,
+    outcome: str,
+    *,
+    error: str = "",
+    critical: bool = False,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Await :func:`_audit` on a worker thread.
 
@@ -890,10 +902,14 @@ async def _audit_off_loop(
     it in :func:`asyncio.shield` so the record still lands if another
     cancellation arrives mid-write. No caller audits synchronously on the loop.
     """
-    await asyncio.to_thread(_audit, gate, event, outcome, error=error, critical=critical)
+    await asyncio.to_thread(
+        _audit, gate, event, outcome, error=error, critical=critical, metadata=metadata
+    )
 
 
-async def _audit_refusal(gate: _ToolGate, event: LLMEvent, *, error: str) -> None:
+async def _audit_refusal(
+    gate: _ToolGate, event: LLMEvent, *, error: str, metadata: dict[str, str] | None = None
+) -> None:
     """Audit a REFUSAL without letting the audit become the outcome.
 
     Every caller goes on to ``reject_tool``, and that call is what ends the turn:
@@ -908,7 +924,7 @@ async def _audit_refusal(gate: _ToolGate, event: LLMEvent, *, error: str) -> Non
     anything. Refusal paths therefore fail safe when bookkeeping is unavailable.
     """
     try:
-        await _audit_off_loop(gate, event, "denied", error=error)
+        await _audit_off_loop(gate, event, "denied", error=error, metadata=metadata)
     except Exception:
         # Warning, not debug: an audit sink that cannot record refusals is an
         # operational fault worth seeing, even though it must not stop the refusal.
@@ -923,6 +939,7 @@ async def _refuse_host_deny(
     error: str,
     cause: str,
     reason: str,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Refuse a request the HOST declined, and tell the model so first.
 
@@ -945,7 +962,7 @@ async def _refuse_host_deny(
     The person's own refusal must NOT come through here: there kiro-cli's
     wording is the truth.
     """
-    await _audit_refusal(gate, event, error=error)
+    await _audit_refusal(gate, event, error=error, metadata=metadata)
     await _steer_host_deny(provider, event, reason, cause=cause)
     await provider.reject_tool(event.request_id)
 
@@ -971,7 +988,13 @@ async def _reject_internal_failure(
 
 
 def _audit(
-    gate: _ToolGate, event: LLMEvent, outcome: str, *, error: str = "", critical: bool = False
+    gate: _ToolGate,
+    event: LLMEvent,
+    outcome: str,
+    *,
+    error: str = "",
+    critical: bool = False,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Record a permission decision in the SEL audit log.
 
@@ -1023,6 +1046,7 @@ def _audit(
         outcome=outcome,
         request_id=event.request_id,
         error=error,
+        metadata=metadata,
         critical=critical,
     )
 
@@ -1187,6 +1211,7 @@ async def _answer_permission(
             error=_HOOK_DENY_CODE,
             cause=DENY_CAUSE_POLICY,
             reason=decision.reason or "blocked by security policy",
+            metadata={"rule_id": decision.tier} if decision.tier else None,
         )
         try:
             reason = (
@@ -1426,13 +1451,16 @@ async def _send_and_print(
     # ``o`` replies the backend could not take mid-turn. Sent as the next message
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
+    # A quoted directive marker line is protocol: held to its newline, then dropped.
+    quoted = QuotedDirectiveFilter()
     try:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
         async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
-                print(event.text, end="", flush=True)
+                print(quoted.feed(event.text), end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
                 # unhandled request is not a missed prompt -- it is a turn that
                 # never ends.
@@ -1444,13 +1472,14 @@ async def _send_and_print(
                     undelivered_replies=undelivered,
                 )
             elif event.kind == EVENT_COMPLETE:
+                print(quoted.flush(), end="", flush=True)
                 # The text was printed as it streamed, so the error carries
                 # none: the timeout branch below must not print it twice.
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
                 break
-        print()  # final newline
+        print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
         if e.partial_output:
             print(e.partial_output)
@@ -1469,14 +1498,14 @@ async def _send_and_print(
         )
 
 
-def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> float:
-    """The context percentage the REPL compacts at for a run of *agent*.
+def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> tuple[float, bool]:
+    """The REPL's compaction point for a run of *agent*, and whether its crew declared it.
 
     The crew the run resolves to (the provider factory's rule) may declare its
     own number; otherwise the global ``session.autocompact_pct`` applies.
     """
     declared = crew_autocompact_pct(cfg, resolve_crew_identity(cfg, agent, None))
-    return cfg.session.autocompact_pct if declared is None else declared
+    return (cfg.session.autocompact_pct, False) if declared is None else (declared, True)
 
 
 async def _interactive(
@@ -1486,12 +1515,13 @@ async def _interactive(
     gate: _ToolGate | None = None,
     agent: str = "",
     context: CliSessionContext | None = None,
+    run: ChatRun | None = None,
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold.
 
     The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
     resolved from *agent* by the same rule the provider factory keys the run on,
-    else the global ``session.autocompact_pct``.
+    else the global ``session.autocompact_pct``, which leaves KAS to compact itself.
 
     *context* builds the first message of each session on a harness other than
     kiro-cli and KAS: the first turn's, the first after a compaction restart or a
@@ -1527,6 +1557,7 @@ async def _interactive(
         if context is not None and context.owed(provider, delivered_to):
             built = await context.first_message(provider, message)
         await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        await note_turn(run, provider, message)
         if built is not None:
             delivered_to = provider.context_incarnation
         elif context is not None and context.clears_history(message):
@@ -1534,11 +1565,14 @@ async def _interactive(
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
-        compact_at = _repl_compact_at(cfg, agent)
-        needs_compact = pct >= compact_at
+        compact_at, declared = _repl_compact_at(cfg, agent)
+        # The global threshold leaves a self-compacting harness (KAS) alone, like the dashboard.
+        harness = getattr(provider, "harness_managed_compaction_backend", None)
+        left_to_harness = not declared and isinstance(harness, str) and bool(harness)
+        needs_compact = pct >= compact_at and not left_to_harness
         # Warn one margin BELOW the compaction point. An absolute warn level
         # would be dead code here: the compact arm is tested first and claims
-        # the whole range above the configured threshold.
+        # the range above the threshold, except for a harness left to itself.
         warn_at = compact_at - CONTEXT_WARN_MARGIN_PCT
 
         if needs_compact:

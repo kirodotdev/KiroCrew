@@ -206,7 +206,10 @@ audits calls sees a call that asks for approval twice there: once at the notice
 and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
-the hook with its error, and the turn continues.
+the hook with its error, and the turn continues. The gateway log also gets one
+WARNING, `Hook <name> (<event>) failed: <detail>`, where the detail is the
+hook's error, its stderr tail, or `exited with code N`, so a hook that fails
+without printing anything still shows up there.
 
 **Exit 0 discards both streams except where the table says otherwise.** On
 `PostToolUse` and `Stop` a successful run surfaces nothing — stderr included — and
@@ -225,8 +228,8 @@ agent to act on.
 
 ### The six Kiro Agent triggers
 
-A Kiro Agent session has eleven triggers where the gateway has five. The other
-six can be authored and saved here, and a saved one reads back unchanged.
+A Kiro Agent session has triggers the gateway has no event for. Six of them can
+be authored and saved here, and a saved one reads back unchanged.
 
 **No event fires any of them.** The gateway has no lifecycle moment for the six,
 so nothing fires one on its own, and no other reader exists. Authoring one records
@@ -473,14 +476,16 @@ so a spec written for either tool loads here:
 ```
 
 Both shapes are held to the same bar: same command and matcher rules, same
-dedup, same per-event and total caps. Twelve triggers are accepted, each in
-kiro-agent's own PascalCase, its IDE camelCase spelling, or its CLI alias —
-the whole table from kiro-agent's `packages/kiro-agent/src/hooks/trigger-names.ts` at blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, matched without regard to case. Five map onto the five kiro-cli event
+dedup, same per-event and total caps. Fourteen triggers are accepted, each in
+kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
+Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
+`packages/kiro-agent/src/hooks/trigger-names.ts`, plus `PreCompact` and
+`PostCompact` from the pinned engine, matched without regard to case. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,
-`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete` or `Manual`
-stays in your config and is not installed for that trigger. Autoimport is a
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`,
+`PreCompact` or `PostCompact` stays in your config and is not installed for that trigger. Autoimport is a
 separate path: a script sitting in your hooks directory is still discovered there
 on its own, on the event that scan infers, unless a hook you switched off names
 it. An `action` of type `agent` has no
@@ -514,7 +519,8 @@ the list leaves out is refused, and a refused `preToolUse` hook blocks the
 call. With no `hooks` list every hook runs. The list only decides whether a
 hook runs: a listed hook still meets the blocked-commands list and the sandbox,
 as in a chat. The number is the hook's place in the spec, so reordering the
-spec's hooks changes which one a name means. The list applies where Kiro Crew
+spec's hooks changes which one a name means. A `PreCompact` or `PostCompact`
+hook, which Kiro Crew does not fire, takes no number. The list applies where Kiro Crew
 fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
 backend kiro-cli runs them itself.
 

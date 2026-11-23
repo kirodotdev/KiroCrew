@@ -34,7 +34,7 @@ import copy
 import hashlib
 import logging
 import threading
-from typing import Iterable
+from typing import Any, Iterable
 
 from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
 from kiro_crew.config.fields import _coerce_bool
@@ -306,11 +306,18 @@ def _actual_type_name(value: object) -> str:
 #:   builder (``section_builders._relay_enabled``) reads anything but a boolean or
 #:   ``null`` as off, which is the gate every relay reader asks.
 #:
+#: * ``tunnel.relay_lease_region``: a value the person did not give (absent, null,
+#:   empty or blank) leases from us-east-1; any value they gave must be a known
+#:   Region, or the relay refuses and sends nothing. So a given bad value is preserved,
+#:   never repaired to ``""``: the section builder passes it through and
+#:   ``RelaySettings.validate`` refuses it, naming the setting.
+#:
 #: Exact-match only: this is a per-path judgment, not a subtree rule. The
-#: registry is only half of a fix — a preserved value changes nothing unless
-#: the loader RECORDS the degradation and a gate reads
-#: ``KiroCrewConfig.degraded_sections``. Both halves exist for every path
-#: listed here; adding a path without them just keeps evidence nobody reads.
+#: registry is only half of a fix — a preserved value changes nothing unless a
+#: gate reads it: for most paths the loader RECORDS the degradation and a gate
+#: reads ``KiroCrewConfig.degraded_sections``; for ``tunnel.relay_enabled`` and
+#: ``tunnel.relay_lease_region`` the section builder and its reader are the gate
+#: (bullets above). Adding a path without a gate just keeps evidence nobody reads.
 _FAIL_CLOSED_PATHS = frozenset(
     {
         "agent",
@@ -324,6 +331,7 @@ _FAIL_CLOSED_PATHS = frozenset(
         "hooks.confirm_tools",
         "mcp_gateway",
         "tunnel.relay_enabled",
+        "tunnel.relay_lease_region",
     }
 )
 
@@ -429,7 +437,7 @@ def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
 # KiroCrewConfig.load() is called on per-message / per-request hot paths (skill
 # triggering, context build, dashboard handlers). The expensive part is NOT the
 # dataclass construction — it is reading config.json (+ config.local.json),
-# json.loads, _deep_merge, and the full jsonschema.validate against the whole
+# json.loads, _deep_merge, and the full JSON Schema validation against the whole
 # config schema. We cache ONLY that validated, merged dict, keyed on a cheap
 # fingerprint (path + st_mtime_ns + st_size + st_mode) of both files, computed by
 # the loader. On a cache hit load() still builds fresh dataclasses from a deep
@@ -621,6 +629,27 @@ def prime_extension_config_keys() -> None:
     refresh_installed_plugin_config_keys()
 
 
+#: ``(schema, validator)`` for the last schema validated. Holding the schema keeps
+#: its ``id`` from being reused; a different schema object builds a new validator.
+_VALIDATOR_CACHE: list[tuple[dict, Any]] = []  # process-cache-ok: keyed by schema object identity
+
+
+def _schema_validator(schema: dict) -> Any:
+    """A validator for *schema*, checked against its meta-schema once and reused.
+
+    ``jsonschema.validate`` checks the schema and builds a validator on every
+    call; the config schema is built once at import, so that work would repeat
+    on every config load.
+    """
+    if _VALIDATOR_CACHE and _VALIDATOR_CACHE[0][0] is schema:
+        return _VALIDATOR_CACHE[0][1]
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    _VALIDATOR_CACHE[:] = [(schema, validator)]
+    return validator
+
+
 def validate_config_data(data: dict) -> dict:
     """Validate *data* against the config JSON Schema.
 
@@ -808,12 +837,9 @@ def validate_config_data(data: dict) -> dict:
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 
     # 5. Run jsonschema validation
-    try:
-        jsonschema.validate(data, JSON_SCHEMA)
-    except jsonschema.ValidationError:
+    validator = _schema_validator(JSON_SCHEMA)
+    if not validator.is_valid(data):
         # Collect all errors (including nested ones)
-        validator_cls = jsonschema.validators.validator_for(JSON_SCHEMA)
-        validator = validator_cls(JSON_SCHEMA)
         for err in validator.iter_errors(data):
             dot_path = _dot_path_from_json_path(err.absolute_path)
             if not dot_path:

@@ -65,6 +65,7 @@ from kiro_crew.llm_helpers_parts.turn_usage import (
     _billing_stats,
     _sum_usage,
 )
+from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.sel import sel as _sel
 
 if TYPE_CHECKING:
@@ -145,6 +146,11 @@ async def stream_and_collect(
     ``STOP_RECOVERY_MAX_RETRIES`` times, and the turn goes on. Its text follows the
     stalled prompt's, its billing is summed with it, and ``on_complete`` sees only
     the completion the turn ends on.
+
+    A prompt's first text is held while it could still be the backend's alternation
+    placeholder, "(No assistant response was recorded ...)", and dropped when it is,
+    so neither the returned text nor ``on_chunk`` carries it. Words after it, and
+    text that only opens like it, are kept.
 
     Args:
         provider: The LLM provider to stream through.
@@ -285,8 +291,27 @@ async def stream_and_collect(
     timed_out_sent = 0
     continued_text = ""
     continuation = ""
+    # One prompt's text and its held opening: reset at the top of each pass below,
+    # bound here so ``settle_echo_hold`` can rebind them.
+    result_text = ""
+    echo_held = ""
+
+    def settle_echo_hold() -> None:
+        """End the placeholder hold where its text ends: a tool call, the prompt's
+        end. The whole placeholder is dropped; anything else is collected."""
+        nonlocal result_text, echo_held
+        held, echo_held = echo_held, ""
+        if held and not is_echo(held):
+            result_text += held
+            if on_chunk:
+                on_chunk(held)
+
     while True:
         result_text = ""
+        # The prompt's first text, held while it could still be the backend's
+        # alternation placeholder (``messaging.alternation_echo``): the model
+        # repeats it at the start of a turn after one that ended on a tool result.
+        echo_held = ""
         # Set when this prompt ended on a call's silence timer and the turn goes
         # on with the continuation: unlike a retry, what it did stands.
         continuing = False
@@ -343,9 +368,19 @@ async def stream_and_collect(
                 if spec_hooks is not None:
                     await spec_hooks.observe(event)
                 if event.kind == EVENT_TEXT_CHUNK:
-                    result_text += event.text
+                    text = event.text
+                    if not result_text:
+                        held = echo_held + text
+                        if could_be_echo(held):
+                            echo_held = held
+                            continue
+                        echo_held = ""
+                        # The placeholder, then the model's own words after it.
+                        cut = echo_prefix_len(held)
+                        text = held[cut:].lstrip() if cut else held
+                    result_text += text
                     if on_chunk:
-                        on_chunk(event.text)
+                        on_chunk(text)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     # Captures this decision's outcome and mechanism, so a hard
                     # security block is distinguishable from a governance denial
@@ -382,6 +417,7 @@ async def stream_and_collect(
                     if not approved:
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
+                    settle_echo_hold()
                     tool_call_count += 1
                     # Sticky across attempts (never reset in the retry loop):
                     # once ANY attempt fired a tool, a transient path must not
@@ -416,6 +452,7 @@ async def stream_and_collect(
                         get_global_hook_store(),
                         event.title,
                         event.tool_input,
+                        raw_tool_params=getattr(event, "raw_tool_params", None),
                     )
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
@@ -426,6 +463,7 @@ async def stream_and_collect(
                         except Exception:
                             logger.debug("on_compaction callback failed", exc_info=True)
                 elif event.kind == EVENT_COMPLETE:
+                    settle_echo_hold()
                     follow_up = (
                         timed_out_continuation(event)
                         if timed_out_sent < STOP_RECOVERY_MAX_RETRIES
@@ -450,6 +488,7 @@ async def stream_and_collect(
                     if unfinished is not None:
                         raise unfinished
                     break
+            settle_echo_hold()
             if continuing:
                 continued_text = _join_continued(continued_text, result_text)
                 continue

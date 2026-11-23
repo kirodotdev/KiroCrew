@@ -31,9 +31,12 @@ which documents the bounded section kept. A member chat's folder guides are
 from __future__ import annotations
 
 import os
-from collections.abc import Collection, Mapping, Sequence
+import re
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
+
+from kiro_crew.hooks import safe_read_prefix, validate_file_path
 
 #: Values of ``reaches``. ``harness`` and ``briefing`` mean another loader decides
 #: by its own rules, so the list does not claim either way.
@@ -69,6 +72,17 @@ LOADER_WITHHELD: Final = "withheld"
 _ALWAYS: Final = "always"
 #: ``applies`` for a document whose mode the listing could not read.
 APPLIES_UNKNOWN: Final = "unknown"
+
+#: Claude Code's documented maximum depth of nested ``@path`` imports.
+_CLAUDE_IMPORT_HOPS: Final = 5
+#: Import targets one walk judges, as many files as the steering listing lists; the
+#: text of a memory file cannot make the walk do more, and later imports are not followed.
+_CLAUDE_IMPORT_TARGETS: Final = 500
+#: An ``@path`` token at a line start or after whitespace; ``\ `` escapes a space.
+#: A backtick-quoted `` `@path` `` is not one: a backtick precedes its ``@``.
+_CLAUDE_IMPORT: Final = re.compile(r"(?:^|(?<=\s))@((?:\\ |\S)+)")
+#: Bytes of each memory or imported file scanned, the steering listing's per-file cap.
+_CLAUDE_MEMORY_READ_BYTES: Final = 262_144
 
 
 def declared_steering_targets(agent: str | None, project: str | None) -> frozenset[Path] | None:
@@ -220,9 +234,9 @@ def _claude_memory_targets(project: str | None) -> frozenset[Path]:
     CLI resolves: ``CLAUDE_CONFIG_DIR``, else ``~/.claude``), and ``CLAUDE.md``,
     ``CLAUDE.local.md`` and ``.claude/CLAUDE.md`` in the project and each folder
     above it. A memory file that is a link into a steering tree makes that tree
-    file natively read.
-    shortcut: an ``@path`` import inside a memory file is not followed; upgrade when
-    a harness can say exactly which files it loads.
+    file natively read, and so does every file it imports: ``@path`` imports are
+    followed relative to the importing file, ``~/`` expanded, outside fenced code
+    blocks, up to five hops and :data:`_CLAUDE_IMPORT_TARGETS` targets.
     """
     # The resolution the ``claude`` CLI makes; ``acp.claude_settings_sources`` holds
     # the same rule, which application code may not import.
@@ -237,13 +251,57 @@ def _claude_memory_targets(project: str | None) -> frozenset[Path]:
             names += [folder / "CLAUDE.md", folder / "CLAUDE.local.md"]
             names.append(folder / ".claude" / "CLAUDE.md")
     found: set[Path] = set()
+    held: list[Path] = []
     for name in names:
         try:
             if name.is_file():
                 found.add(name.resolve())
+                held.append(name)
         except (OSError, RuntimeError):
             continue
+    judged = 0
+    for _hop in range(_CLAUDE_IMPORT_HOPS):
+        reached: list[Path] = []
+        for target in _claude_imports(held):
+            judged += 1
+            if judged > _CLAUDE_IMPORT_TARGETS:
+                return frozenset(found)
+            # The path gate before any stat: the target is file text, and on Windows
+            # a stat of a UNC path it names is an SMB lookup of that host. Judged
+            # inline (off the loop here), not one resolver round trip per token.
+            canonical = validate_file_path(str(target), canonical_gate=True)
+            if canonical is None or not os.path.isfile(canonical) or Path(canonical) in found:
+                continue
+            found.add(Path(canonical))
+            reached.append(target)
+        held = reached
     return frozenset(found)
+
+
+def _claude_imports(holders: Iterable[Path]) -> Iterator[Path]:
+    """The ``@path`` imports in *holders*, outside fenced code blocks, read lazily."""
+    for holder in holders:
+        # Through the sensitive-path gate: an import can name a credential file.
+        head = safe_read_prefix(str(holder), _CLAUDE_MEMORY_READ_BYTES)
+        if head is None:
+            continue
+        text = head.decode("utf-8", errors="replace")
+        fence = ""
+        for line in text.splitlines():
+            marker = line.lstrip()[:3]
+            if fence:
+                fence = "" if marker == fence else fence
+                continue
+            if marker in ("```", "~~~"):
+                fence = marker
+                continue
+            for match in _CLAUDE_IMPORT.finditer(line):
+                path = match.group(1).replace("\\ ", " ")
+                if path.startswith("~/"):
+                    yield Path.home() / path[2:]
+                else:
+                    # An absolute *path* replaces ``holder.parent`` whole.
+                    yield holder.parent / path
 
 
 def chat_steering_plan(

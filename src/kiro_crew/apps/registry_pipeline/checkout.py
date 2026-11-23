@@ -38,6 +38,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _git_target_is_unsupported,
     _git_transport_env,
     _is_ssh_git_url,
+    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _redacted_git_failure_class,
     _same_git_target,
@@ -477,8 +478,9 @@ async def _git_fetch_ref(
         # not): the init/checkout steps run with *clone_env*, which carries no such
         # override, so without this a repo-shipped ``post-checkout`` executes during
         # checkout. The ``-c`` overrides go right after the executable so they
-        # precede the subcommand.
-        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *argv[1:]]
+        # precede the subcommand. The LFS pin keeps a smudge in the checkout on
+        # *git_url*'s host whatever the repository's ``.lfsconfig`` names.
+        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *_lfs_endpoint_pin_argv(git_url), *argv[1:]]
         fwd = forward_ssh_auth_sock and network  # the agent socket is for the network step only
         # The gh sign-in step keeps its tier and gets back `~/.config/gh` alone, the
         # one folder `gh` reads its sign-in from; every other credential folder the
@@ -1142,7 +1144,15 @@ async def _git_clone_or_pull(
             # agent-influenced git spawn. The hooks/fsmonitor neutralizer is spliced
             # right after ``git`` so a repo-shipped hook cannot run during the pull.
             pull_cmd, _cleanup = await wrap_argv_async(
-                ["git", *_HOOKS_NEUTRALIZER_ARGV, "pull", "--ff-only", git_url, branch],
+                [
+                    "git",
+                    *_HOOKS_NEUTRALIZER_ARGV,
+                    *_lfs_endpoint_pin_argv(git_url),
+                    "pull",
+                    "--ff-only",
+                    git_url,
+                    branch,
+                ],
                 mode=sandbox_mode,
                 forward_ssh_auth_sock=forward_sock,
                 _prepare=wrap_argv,
@@ -1244,6 +1254,7 @@ async def _git_clone_or_pull(
         clone_cmd = [
             "git",
             *_HOOKS_NEUTRALIZER_ARGV,
+            *_lfs_endpoint_pin_argv(git_url),
             "clone",
             "--depth",
             "1",

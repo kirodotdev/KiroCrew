@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from skill_script_helpers import skill_text
 
 from kiro_crew import agent, mcp_instructions
 from kiro_crew.agent_materialization import auto_approve
@@ -148,7 +149,7 @@ def test_every_shipped_spec_carries_the_line_exactly_when_its_grants_cannot_seed
 
     carrying: set[str] = set()
     for path in sorted(agents.glob("*.json")):
-        spec = json.loads(path.read_text(encoding="utf-8"))
+        spec = json.loads(skill_text(path))
         refused = agent_specs.creates_without_send(agent_specs.spec_grants(spec, audit=False))
         prompt = spec.get("prompt") or ""
         assert (RULE in prompt) is refused, path.name
@@ -194,4 +195,4 @@ def test_the_server_instructions_point_at_the_line_instead_of_a_refused_try() ->
     ids=lambda p: f"{p.parent.name}/{p.name}",
 )
 def test_the_skills_and_docs_say_it_in_the_same_words(path: Path) -> None:
-    assert RULE in _flat(path.read_text(encoding="utf-8"))
+    assert RULE in _flat(skill_text(path))

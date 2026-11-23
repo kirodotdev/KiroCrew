@@ -68,8 +68,9 @@ async def api_token_local(request: web.Request) -> web.Response:
     (``_unix_peer_is_self``), which is stronger locality evidence than a
     loopback address. The secret is required on both transports.
 
-    Each of the three refusals carries a machine-readable ``code`` beside its
-    ``error`` — ``loopback_only``, ``invalid_secret``, ``member_owner_token_refused``
+    Each refusal carries a machine-readable ``code`` beside its ``error`` —
+    ``loopback_only``, ``invalid_secret``, ``member_owner_token_refused``, and
+    ``session_kind_refused_for_app`` for an app backend asking for ``kind=session``
     — mirroring the distinction already in the SEL record, so a caller reports the
     gate that refused rather than listing the ones that might have. The codes
     restate what the ``error`` text already says and widen no gate.
@@ -121,26 +122,6 @@ async def api_token_local(request: web.Request) -> web.Response:
             },
             status=403,
         )
-    if provenance.app is not None:
-        # An app backend (or a descendant of one) is code the owner enabled, not the
-        # owner: no token of any kind is minted for it, because an owner-subject token
-        # without an ``app`` claim passes ``is_owner_dashboard_request``. The registry
-        # key is kebab-case (``apps.manifest.app_name_error``), so it cannot carry a
-        # space or ``=`` and cannot forge a second field in the row.
-        _sel().log_api_access(
-            caller="local-process",
-            operation="token.local",
-            outcome="denied",
-            source="local-bootstrap",
-            resources=f"app-backend-refused app={provenance.app}",
-        )
-        return web.json_response(
-            {
-                "error": "An app backend cannot request an owner token.",
-                "code": "member_owner_token_refused",
-            },
-            status=403,
-        )
     ttl = MAX_SESSION_TTL_SECS
     ttl_param = request.query.get("ttl", "")
     if ttl_param:
@@ -163,12 +144,51 @@ async def api_token_local(request: web.Request) -> web.Response:
         efp = request.query.get("embed_forward_port", "")
         if efp.isdigit() and 1 <= int(efp) <= 65535:
             extra["embed_forward_port"] = str(int(efp))
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
+    # The provenance gate knows WHICH app's backend owns the calling process, so
+    # the audit row names it: a token minted by an app is attributed to that app,
+    # and any later per-app scoping of this grant is a data change here rather
+    # than a protocol change. The name goes into the record only, not into the
+    # token: an ``app``-scoped token is refused by ``is_owner_dashboard_request``,
+    # so a claim would withdraw the capability. The registry key is kebab-case
+    # (``apps.manifest.app_name_error``), so it cannot carry a space or ``=`` and
+    # cannot forge a second field in the row.
+    app_name = provenance.app
+    # ``kind=session``: the token IS the session, for a client that sends it in
+    # ``Authorization: Bearer`` and keeps no cookie. It passes the same three gates as
+    # the link, and it never works as a ``?token=`` link. An app backend is refused
+    # this kind: its link is exchanged in the owner's browser, and a bearer session
+    # is for the owner's own client, not for code an app runs.
+    subject, claims = owner_id or "local-app", owner_mint_extra(extra)
+    if request.query.get("kind", "") == "session":
+        if app_name:
+            _sel().log_api_access(
+                caller="local-process",
+                operation="token.local",
+                outcome="denied",
+                source="local-bootstrap",
+                resources=f"session-kind-app-backend app={app_name}",
+            )
+            return web.json_response(
+                {
+                    "error": "An app backend cannot mint a session token. "
+                    "Request the link without kind=session.",
+                    "code": "session_kind_refused_for_app",
+                },
+                status=403,
+            )
+        token = generate_token(
+            subject, ttl_seconds=ttl, extra=claims, session=True, register_nonce=False
+        )
+    else:
+        token = generate_token(subject, ttl_seconds=ttl, extra=claims)
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",
         outcome="success",
         source="local-bootstrap",
-        resources="token-issued",
+        # The admitting leg, from a fixed vocabulary with no space or ``=`` in it, so
+        # a mint no host check verified (``basis=win32-unverified``) is visible.
+        resources=(f"token-issued app={app_name}" if app_name else "token-issued")
+        + f" basis={provenance.basis or 'unknown'}",
     )
     return web.json_response({"token": token, "expires_in": ttl})

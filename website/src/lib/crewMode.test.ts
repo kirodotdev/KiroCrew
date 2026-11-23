@@ -63,6 +63,32 @@ describe('crewMode', () => {
     ])
   })
 
+  it('leaves the roster copy of a conductor template out with it, and keeps a crewmate the person created', () => {
+    // `agent.crew_mode_agent` names a custom agent the agents sync copied into
+    // the roster: the copy runs the template of its name, so leaving only the
+    // template out listed the conductor under Bots.
+    setCrewModeCatalog('acme-custom', ['kirocrew-conductor'])
+    const plain = { name: 'kirocrew', selection_kind: 'template', kiro_agent: 'kirocrew' }
+    const bot = { name: 'research', selection_kind: 'member', kiro_agent: 'research', source: 'kirocrew', memory_store: 'research' }
+    const rows = [
+      plain,
+      { name: 'acme-custom', selection_kind: 'template', kiro_agent: 'acme-custom' },
+      { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'package', memory_store: 'default' },
+      bot,
+    ]
+    expect(withoutConductors(rows)).toEqual([plain, bot])
+    // The default-agent pick's copy (`kirocrew`, the shared store) goes the same way;
+    // a crewmate the person created on the conductor template, under its name, stays.
+    const picked = { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'kirocrew', memory_store: 'default' }
+    const created = { name: 'acme-custom', selection_kind: 'member', kiro_agent: 'acme-custom', source: 'kirocrew', memory_store: 'acme-custom' }
+    expect(withoutConductors([plain, picked])).toEqual([plain])
+    expect(withoutConductors([plain, created])).toEqual([plain, created])
+    // The chord skips the copy too: from `kirocrew` it lands on the Bot, never the copy.
+    const folded = [plain, rows[2], bot]
+    expect(agentCycleTarget(folded, 'kirocrew', 'template', 1)).toBe('research')
+    expect(agentCycleTarget(folded, 'research', 'member', 1)).toBe('kirocrew')
+  })
+
   it('opening a worker the list leaves out hides the sessions list; a root or a plain chat never does', () => {
     // `openingHidesSessionList` reads `crewModeView`, on with this part: a worker
     // is no row of the list, so opening it hides the list beside the Crew panel.
@@ -120,8 +146,7 @@ describe('crewMode', () => {
     expect(agentCycleTarget(agents, 'kirocrew', 'template', 1)).toBe('research')
     expect(agentCycleTarget(agents, 'research', 'template', 1)).toBe('kirocrew')
     expect(agentCycleTarget(agents, 'kirocrew', 'template', -1)).toBe('research')
-    // A chat already on a conductor has no picker to mirror (the server refuses
-    // to move a Crew Mode root), so the chord does nothing there.
+    // A chord never takes a chat out of conductor mode, so it does nothing there.
     expect(agentCycleTarget(agents, 'kirocrew-conductor', 'template', 1)).toBeNull()
     expect(agentCycleTarget([], 'kirocrew', 'template', 1)).toBeNull()
   })

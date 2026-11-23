@@ -297,11 +297,7 @@ def _day_timestamp(day: str) -> float | None:
 
 
 def _document_items(snapshot: dict) -> list[MemoryItem]:
-    """Global V1's Markdown memory: one ``document`` per file, one ``summary`` per day.
-
-    A document longer than the contract's document cap is cut and marked, so a move
-    can see it was not whole; the plan reports it as truncated.
-    """
+    """Global V1's Markdown memory: one ``document`` per file, one ``summary`` per day."""
     items: list[MemoryItem] = []
     for name in _DOCUMENT_NAMES_ORDERED:
         entry = snapshot.get(name) or {}

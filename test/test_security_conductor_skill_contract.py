@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from skill_script_helpers import skill_text as whole_skill_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "security-conductor"
@@ -107,7 +108,7 @@ def _section(text: str, heading: str) -> str:
 
 @pytest.fixture(scope="module")
 def skill_text() -> str:
-    return SKILL_MD.read_text(encoding="utf-8")
+    return whole_skill_text(SKILL_MD)
 
 
 @pytest.fixture(scope="module")
@@ -253,7 +254,7 @@ class TestAuditorBrief:
         case. Unanswered, an auditor either stalls or substitutes its own
         governance judgment -- and the finding then does not record which."""
         body = _flat(_section(skill_text, self.HEADING))
-        assert "arcc: unavailable" in body
+        assert "governance: unavailable" in body
         assert "do not treat its absence as permission" in body
 
     def test_the_poc_ceiling_is_stated(self, skill_text: str) -> None:

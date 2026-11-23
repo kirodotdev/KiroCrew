@@ -1,0 +1,12 @@
++59
+Splitting the ssh floor to stay under the 2000-line file cap: the operand-position
+self-target reader (`_operand_targets_self`) and the brace / arithmetic expansion
+and run-time hostname-substitution helpers it uses moved out of `argv_floor_ssh.py`
+into a new leaf module `argv_floor_ssh_operand.py`. The moved lines are net-neutral
+(they left one module and entered another), so this delta is the overhead the split
+adds to the package: the new module's docstring and imports, the re-export block
+`argv_floor_ssh.py` serves the moved names through, and the facade registration in
+`argv_floor.py` (the `_OWNERS` entry and its `TYPE_CHECKING` manifest block). It also
+covers the `skip_alias` guard added to `argv_floor_git_tar.py` so a merely defined
+alias on a local verb is not read as a self-dial. Deny-floor behaviour is unchanged:
+this is a pure move plus registration, it adds and removes no rule.

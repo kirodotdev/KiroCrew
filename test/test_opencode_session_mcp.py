@@ -624,7 +624,8 @@ class TestPooledStubs:
         pooled = inspect.getsource(client_mod.AcpClient._pooled_mcp_servers)
         assert "self.backend in MIRRORS" in pooled
         resolve = inspect.getsource(client_mod.AcpClient._resolve_session_mcp_servers)
-        assert "stub_elements=self._pooled_broker_stubs()" in resolve
+        assert "stubs = self._pooled_broker_stubs()" in resolve
+        assert "stub_elements=stubs," in resolve
 
 
 # ── the allowlist ───────────────────────────────────────────────────────────

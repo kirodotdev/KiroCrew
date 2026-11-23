@@ -1041,16 +1041,11 @@ class InstancesConfig:
         default=_DEFAULT_WARM_SET_CAP,
         metadata=_meta(
             "Warm Set Cap",
-            "Max number of remote instances kept warm (iframe mounted + tunnel live) "
-            "at once. Least-recently-used instances beyond this are evicted and "
-            "reconnected on demand. Bounds memory/socket use (each warm instance is a "
-            "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are configured, so up to an internal ceiling no crew you added "
-            "is evicted and the cap widens by itself when you add one -- eviction "
-            "cold-boots the pane and reads as a disconnect, so a cap below the number "
-            "of crews in use makes tab switching look like a connection flap. Past that "
-            "ceiling eviction resumes; an explicit value is honoured exactly, including "
-            "one below the number of configured crews.",
+            "Max number of remote Crews kept warm (pane loaded, connection live) at "
+            "once, SSH and relay together. The most recently opened ones stay warm; "
+            "the rest are dropped and reconnect when you open them. Bounds memory and "
+            "connections (each warm Crew is a full dashboard page). 0 (the default) is "
+            "automatic: 5. An explicit value is honoured exactly.",
         ),
     )
     default_destination: str = field(
@@ -1148,15 +1143,28 @@ class InstancesConfig:
             "(zombie) tunnel is torn down to trigger self-heal.",
         ),
     )
+    # The managed-environment lane (``kiro_crew.managed_env``), read only while the
+    # ``crew_client`` feature preview is on. Every value is empty by default and nothing
+    # is guessed: a step that needs a missing value is refused and names the key.
+    managed_env_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Service Endpoint",
+            "HTTPS base URL of the Kiro web service that lists, creates and connects your "
+            "managed environments. Empty (the default): every call is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:
-            # 0 is meaningful here (automatic -- track the connected count), so
+            # 0 is meaningful here (automatic), so
             # only a negative value is a misconfiguration, and it falls back to
             # automatic rather than to 1: a caller who wrote a nonsense number
             # wanted "enough", not the tightest possible cap.
             logger.warning(
-                "instances.warm_set_cap %d < 0, using 0 (automatic: track the connected count)",
+                "instances.warm_set_cap %d < 0, using 0 (automatic)",
                 self.warm_set_cap,
             )
             object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)
@@ -1280,14 +1288,16 @@ class TunnelConfig:
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Unset (the default) turns it on only for a "
-            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload "
-            "identity whose Relay Lease Credential names its credential; a Crew on a "
-            "personal sign-in stays off until you run kirocrew remote-control on. True "
+            "the caller named by the relay. Unset (the default) turns it on for a Crew "
+            "on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no "
+            "Relay Lease Token Type, no workload identity), and for a Shared Crew (Relay "
+            "Lease Token Type API_KEY) or a host with a workload identity whose Relay "
+            "Lease Credential names its credential; kirocrew remote-control off turns "
+            "it off. True "
             "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
-            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
+            "Shared Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
             "connects only when Relay Lease Credential names its credential: without it no "
             "relay client starts and the tunnel status names the missing setting. While "
             "it is off, "
@@ -1306,10 +1316,23 @@ class TunnelConfig:
             "Relay Lease Service URL",
             "The base URL of the lease service this Crew calls RenewCrewLease on, to "
             "hold its lease and get host tokens. Empty (the default) uses the built-in "
-            "Kiro control plane URL: the one for the sign-in profile's region on the Kiro "
-            "sign-in, and us-east-1 otherwise. Must be https:// "
-            "(http:// only for a loopback port-forward).",
+            "Kiro control plane URL for the Crew's Region: the sign-in profile's on the "
+            "Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is "
+            "empty. Must be https:// (http:// only for a loopback port-forward).",
             restart=True,
+        ),
+    )
+    relay_lease_region: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Region",
+            "The built-in lease service's Region for a Crew on a stored credential, such "
+            "as a Shared Crew's crew API key, which names no Region. Empty (the default) "
+            "uses us-east-1; a Crew registered in another Region must name it, with "
+            "kirocrew config set tunnel.relay_lease_region <Region>. Ignored "
+            "on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+            restart=True,
+            enum=["", "eu-central-1", "eu-west-1", "us-east-1"],
         ),
     )
     relay_lease_credential: str = field(
@@ -1322,7 +1345,7 @@ class TunnelConfig:
             "Center or your organization's identity provider), refreshed automatically. "
             "Empty (the default) uses that sign-in too, on a personal Crew: one with no "
             "Relay Lease Token Type, on a host with no agent workload identity. "
-            "A team Crew must name its crew API key here. "
+            "A Shared Crew on the Kiro relay must name its crew API key here. "
             "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
@@ -1335,7 +1358,7 @@ class TunnelConfig:
             "Relay Lease Token Type",
             "The TokenType the Crew sends with its lease credential. Empty (the "
             "default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for "
-            "a token from an outside identity provider, API_KEY for a team Crew's crew "
+            "a token from an outside identity provider, API_KEY for a Shared Crew's crew "
             "API key. Must be empty with kiro-sign-in, which sends the type its sign-in "
             "needs. Any other value keeps Remote Control from starting.",
             restart=True,

@@ -1,5 +1,6 @@
 """Finding skill files: the skills directory and the packaged and trusted provider roots, the
-installed package's RECORD admission of a hardlinked ``SKILL.md``, the configured extra roots,
+installed package's RECORD admission of a hardlinked ``SKILL.md`` or packaged built-in skill
+file, the configured extra roots,
 the walk that enumerates every root (``_iter_skill_files``) with its no-follow traversal of a
 trusted project's ``.kiro/skills``, and the bounds on how long a walk's answer is served.
 
@@ -114,12 +115,16 @@ _DISCOVERY_IN_PROGRESS_NOTICE = (
 _PROJECT_SKILL_MAX_DEPTH = 64
 
 
+#: The package directory the built-in skills ship in, as the RECORD names it.
+_BUILTIN_SKILLS_PART = "builtin_skills"
+
 # Bundled fallback — inside the kiro_crew package
-_BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin_skills"
+_BUILTIN_SKILLS_DIR = Path(__file__).parent / _BUILTIN_SKILLS_PART
 
 #: The installed ``kiro_crew`` package tree: a trusted provider root for skill
-#: symlinks, and the only tree whose hardlinked ``SKILL.md`` and built-in app
-#: ``.json`` files can be admitted (see :func:`_installed_package_bytes_match` and
+#: symlinks, and the only tree whose hardlinked ``SKILL.md``, packaged built-in
+#: skill files and built-in app ``.json`` files can be admitted (see
+#: :func:`_installed_package_bytes_match`, :func:`_recorded_bytes_match` and
 #: :func:`_installed_builtin_app_file_match`). A module binding so a test can stand
 #: up a fake site dir.
 _INSTALLED_PACKAGE_DIR = Path(__file__).parent
@@ -225,10 +230,11 @@ def _read_package_record(
 ) -> tuple[tuple[int, int, int], dict[str, tuple[str, str]]] | None:
     """*record*'s identity and the digests it lists that can admit a hardlink, or ``None``.
 
-    Two kinds of row are kept: every ``SKILL.md`` in the package, and every
-    ``.json`` file inside a built-in app's own directory
-    (``<package>/apps/builtins/<app>/...``), which is where a shipped app keeps its
-    ``app.json`` and agent specs. A RECORD that does not list the package's own
+    Three kinds of row are kept: every ``SKILL.md`` in the package, every file
+    under ``<package>/builtin_skills/`` (the packaged built-in skill trees the
+    skill sync fingerprints), and every ``.json`` file inside a built-in app's own
+    directory (``<package>/apps/builtins/<app>/...``), which is where a shipped app
+    keeps its ``app.json`` and agent specs. A RECORD that does not list the package's own
     ``__init__.py`` vouches for nothing, so it answers no digests. ``None`` means
     it could not be read or
     changed while it was read: the identity is taken before and after the parse,
@@ -242,11 +248,12 @@ def _read_package_record(
     owned = f"{package}/__init__.py"
     skill_row = f"/{_SKILL_FILE}"
     builtin_prefix = "/".join((package, *_BUILTIN_APPS_PARTS)) + "/"
+    builtin_skills_prefix = f"{package}/{_BUILTIN_SKILLS_PART}/"
     owns = False
     digests: dict[str, tuple[str, str]] = {}
     try:
         with open(record, encoding="utf-8", newline="") as fh:
-            # A substring test first: only three kinds of row matter, and running
+            # A substring test first: only four kinds of row matter, and running
             # every one of a few thousand rows through the CSV parser is what
             # made this the slow part.
             wanted = (
@@ -254,6 +261,7 @@ def _read_package_record(
                 for line in fh
                 if line.startswith(owned)
                 or skill_row in line
+                or line.startswith(builtin_skills_prefix)
                 or (line.startswith(builtin_prefix) and ".json," in line)
             )
             for row in csv.reader(wanted):
@@ -265,7 +273,11 @@ def _read_package_record(
                 parts = PurePosixPath(row[0]).parts
                 if (
                     len(row) < 2
-                    or not (parts[-1:] == (_SKILL_FILE,) or _is_builtin_app_json(parts[1:]))
+                    or not (
+                        parts[-1:] == (_SKILL_FILE,)
+                        or parts[1:2] == (_BUILTIN_SKILLS_PART,)
+                        or _is_builtin_app_json(parts[1:])
+                    )
                     or parts[:1] != (package,)
                     or ".." in parts
                 ):
@@ -284,8 +296,9 @@ def _read_package_record(
 def _recorded_skill_digests() -> dict[str, frozenset[tuple[str, str]]]:
     """The installed package's recorded admission digests, re-read on reinstall.
 
-    Keyed by absolute path: every ``SKILL.md`` and every built-in app ``.json``
-    the RECORD lists (:func:`_read_package_record`). Cached per process under
+    Keyed by absolute path: every ``SKILL.md``, every packaged built-in skill
+    file and every built-in app ``.json`` the RECORD lists
+    (:func:`_read_package_record`). Cached per process under
     the site dir's stamp and every candidate RECORD's,
     so the steady state costs a few ``stat`` calls and a reinstall, a dist-info
     appearing mid-upgrade, or a RECORD replaced mid-read is re-read on the next
@@ -886,11 +899,13 @@ def reconfigure(self, cfg: KiroCrewConfig) -> None:
 def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
     """Resolve and screen ``skills.extra_paths`` -- filesystem work, no state.
 
-    Runs the SAME screening as construction -- expanduser, resolve,
+    The one screening for construction and reload -- expanduser, resolve,
     ``is_sensitive_path`` reject, existence check -- so a root added by hand to
     ``config.json`` can no more reach a credential directory than one present at
-    boot. Fails closed per entry: a rejected or missing root is dropped with the
-    same log line rather than admitted.
+    boot. Fails closed per entry: a rejected or missing root is dropped with a
+    warning rather than admitted. A root on a slow or network mount blocks here
+    until the mount answers, so a caller on the event loop runs this in a worker
+    thread.
     """
     resolved_paths: list[Path] = []
     # Logged by position, not value: a rejected entry is by definition a path
@@ -900,14 +915,21 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
         try:
             resolved = Path(p).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
-            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped on reload", index)
+            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped", index)
             continue
         if is_sensitive_path(str(resolved)):
-            logger.warning("Skipping sensitive skills.extra_paths[%d] on reload", index)
-        elif resolved.is_dir():
+            logger.warning("Skipping sensitive skills.extra_paths[%d]", index)
+            continue
+        try:
+            reachable = resolved.is_dir()
+        except OSError:
+            # ``is_dir()`` returns False only for ENOENT-like errors; EACCES,
+            # ESTALE or EIO from stat re-raise and would stop the loader.
+            reachable = False
+        if reachable:
             resolved_paths.append(resolved)
         else:
-            logger.debug("skills.extra_paths[%d] does not exist; skipped on reload", index)
+            logger.warning("skills.extra_paths[%d] is not a reachable directory; skipped", index)
     return resolved_paths
 
 

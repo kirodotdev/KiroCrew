@@ -54,6 +54,7 @@ from kiro_crew.executors import (
 from kiro_crew.hooks import (
     HOOK_REPLY,
 )
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.dispatch_admission import (
@@ -699,6 +700,12 @@ class ChannelTurns:
         # session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
+        from kiro_crew.start_priority import StartPriority  # noqa: F811
+        from kiro_crew.stats import Stats  # in-function: keeps them off the facade
+
+        # Only a message a person sent counts; a loop or monitor wake starts BACKGROUND.
+        if asker.start_priority is StartPriority.FOREGROUND:
+            Stats().inc_message_admitted()
         agent = asker.agent or self._agent()
         if asker.resumed:
             # A resumed session must run as ITSELF: on a cold start ``get_or_create``
@@ -1342,6 +1349,11 @@ class ChannelTurns:
             # recorded a failure, but the context it carried has already landed,
             # and re-arming would inject it a second time on the next turn.
             landed = bracket.landed(driver)
+            if landed:
+                # Per-interaction telemetry, on the landed verdict alone and
+                # before delivery is judged: a reply the channel failed to carry
+                # was still a model turn. On the provider this turn ran on.
+                record_interaction_event(_turn_provider, session_key, channel)
             stop_reason = (
                 (getattr(driver, "last_stop_reason", "") or "")
                 if getattr(driver, "completion_observed", False)

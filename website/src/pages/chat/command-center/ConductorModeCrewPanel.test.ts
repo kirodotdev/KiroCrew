@@ -204,6 +204,15 @@ describe('milestoneState', () => {
     expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
   })
 
+  it('an accepted milestone whose session works again reads as running until it stops', () => {
+    // A comment on a doc the milestone made wakes its session after the accept.
+    const accepted = { state: 'accepted' as const, terminal: true, status: 'done' as const }
+    expect(milestoneState(item({ ...accepted, alive: 'running' }), false)).toBe('running')
+    expect(milestoneState(item({ ...accepted, alive: 'idle' }), true)).toBe('needs_you')
+    expect(milestoneState(item({ ...accepted, alive: 'idle' }), false)).toBe('done')
+    expect(milestoneState(item({ ...accepted, alive: 'closed' }), false)).toBe('done')
+  })
+
   it('a rejected or abandoned item is not done, whatever its last report said', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
     expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')

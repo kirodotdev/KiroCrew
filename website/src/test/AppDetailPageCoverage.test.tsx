@@ -50,6 +50,8 @@ vi.mock('../api/client', () => ({
     untrustApp: (...a: unknown[]) => untrustApp(...a),
     getAppBotGrants: (...a: unknown[]) => getAppBotGrants(...a),
     members: (...a: unknown[]) => members(...a),
+    // The browsing sites card reads its own list; an empty one draws nothing.
+    getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
   },
 }))
 
@@ -885,7 +887,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [], browser: [],
+      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [], kiroOperations: [], browser: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -1077,7 +1079,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await loaded()
 
     fireEvent.click(screen.getByRole('button', { name: /sync/i }))
-    const notice = await screen.findByText(/newly asks to control your chats/)
+    const notice = await screen.findByText(/stays off until you allow it to control your chats/)
     expect(notice).toHaveTextContent('Review the permission on this page before enabling it.')
     expect(screen.getByRole('button', { name: 'Enable and allow chat control' })).toBeInTheDocument()
     expect(screen.queryByText(/from the registry\./)).not.toBeInTheDocument()
@@ -1097,9 +1099,50 @@ describe('AppDetailPage — uncovered surfaces', () => {
     renderDetail()
     await loaded()
 
-    const notice = await screen.findByText(/newly asks to control your chats/)
+    const notice = await screen.findByText(/stays off until you allow it to control your chats/)
     expect(notice).toHaveTextContent('Review the permission on this page before enabling it.')
     expect(notice.closest('[role="status"]')).not.toBeNull()
+  })
+
+  it('shows one calm notice on a fresh install that awaits consent and holds browsing sites', async () => {
+    const sites = ['https://www.example.com/watch']
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      sessionApprovalConsentPending: true,
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], sessionApproval: true, browserSites: sites } },
+      approvedGrants: { api: [], events: [] },
+      browserSitesGrant: { approved: [], staged: sites },
+    }))
+    renderDetail()
+    await loaded()
+
+    // A fresh install sets the same pending flag as a widening update, so the
+    // copy holds for both: it claims nothing was "newly" added or disabled.
+    const notice = screen.getByText(/stays off until you allow it to control your chats/)
+    expect(screen.getAllByText(/control your chats\. Review/)).toHaveLength(1)
+    expect(screen.queryByText(/newly asks|is disabled because/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/is off\. Turn it on/)).not.toBeInTheDocument()
+    // The held-back sites are listed in the same box, not a second one.
+    const box = notice.closest('[role="status"]')
+    expect(box).not.toBeNull()
+    expect(within(box as HTMLElement).getByTestId('staged-browser-sites')).toHaveTextContent(sites[0])
+    expect(screen.getByRole('button', { name: 'Enable and allow chat control' })).toBeInTheDocument()
+  })
+
+  it('still says a disabled app is off when it holds new permissions without a consent step', async () => {
+    const sites = ['https://www.example.com/watch']
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], browserSites: sites } },
+      approvedGrants: { api: [], events: [] },
+      browserSitesGrant: { approved: [], staged: sites },
+    }))
+    renderDetail()
+    await loaded()
+
+    const notice = screen.getByText('Ledger Lens is off. Turn it on, then approve these new permissions here.')
+    expect(notice.closest('[role="status"]')).not.toBeNull()
+    expect(screen.queryByText(/allow it to control your chats/)).not.toBeInTheDocument()
   })
 
   it('reports a failed sync inline and lets the user dismiss it', async () => {

@@ -38,6 +38,12 @@
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "kas_sso_start_url": "",
         "kas_sso_region": "",
+        "kas_auth": "acp-callback",
+        "kas_token_path": "",
+        "kas_endpoint": "",
+        "kas_control_plane_endpoint": "",
+        "kas_region": "",
+        "kas_machine_env_drop": [],
         "native_skill_projection": true,
         "default_agent": "",
         "crew_mode_agent": "kirocrew-conductor",
@@ -62,6 +68,7 @@
         "apps_builtin_adoption": {},
         "apps_builtin_adoption_nav": {},
         "apps_ui_stream_timeout_secs": 30,
+        "apps_ui_protected_copy": false,
         "jail": "auto",
         "dangerously_skip_permissions": false,
         "yolo_duration": "6h",
@@ -452,7 +459,7 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: run Kiro Crew's own engine bundle",
-      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a Nightly build turns it on and every other build leaves it off (config.loader_document.kas_bundle_build_default(), read from the build's own stamp, not the update channel). A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
+      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a packaged build (desktop app, wheel or image, not a source checkout) prefers the built-in engine: KAS runs on it once Kiro Crew's own sign-in is usable, and a host signed in only to kiro-cli keeps kiro-cli until then (acp.kas_build_default). If that first move to the engine fails, the chat runs on kiro-cli. A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -556,6 +563,113 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.kas_auth",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: engine credential",
+      "help": "How Kiro Crew's own engine bundle gets its credential. 'acp-callback' (the default) asks Kiro Crew, which answers from its Kiro sign-in. 'machine' starts the engine with --auth=machine: it reads the token file in agent.kas_token_path itself, and Kiro Crew never opens that file. Machine mode needs the crew_client feature preview, agent.kas_bundle true and the cell keys (endpoint, control plane endpoint, region); it has no default service.",
+      "hasChildren": false,
+      "enumValues": [
+        "acp-callback",
+        "machine"
+      ],
+      "defaultValue": "acp-callback",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_token_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine token file",
+      "help": "Machine mode: absolute path of the token file the engine reads. Kiro Crew only checks that it exists, is readable and is not empty. No default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine endpoint",
+      "help": "Machine mode: the engine's runtime endpoint, an https:// url. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_control_plane_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine control plane endpoint",
+      "help": "Machine mode: the engine's control plane endpoint, an https:// url. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine region",
+      "help": "Machine mode: the region the endpoints serve. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_machine_env_drop",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: variables kept from the engine",
+      "help": "Machine mode: a JSON array of environment variable names removed from the engine's environment, such as the one that carries the token on this host, so the engine reads the token file only. Kiro Crew's own API key is always removed.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_machine_env_drop.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.native_skill_projection",
@@ -1047,6 +1161,20 @@
       "defaultValue": 30
     },
     {
+      "path": "agent.apps_ui_protected_copy",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Serve App UI Scripts From the Protected Copy",
+      "help": "When on, the /apps/{name}/ui/ route serves an app's .js and .mjs files from the copy the gateway took when it installed, updated or registered the app, kept where no sandboxed process can write, instead of from the app's own folder. A script edited in the app's folder then keeps serving as installed, and an app the gateway never installed has its scripts not found. Off by default: scripts are read from the app's folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.jail",
       "kind": "core",
       "type": "string",
@@ -1089,7 +1217,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Ad-hoc Auto-approve Duration",
-      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on with no timed expiry until Kiro Crew restarts. Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
+      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on until you stop Kiro Crew (a restart keeps any grant). Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
       "hasChildren": false,
       "enumValues": [
         "30m",
@@ -1368,7 +1496,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Resource Critical Threshold (GB)",
-      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which on Linux stops the largest Crew tool or test tree at critical memory, or at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and turns the memory guard off. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
+      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which on Linux stops the largest Crew tool or test tree at critical memory, or at tight memory with PSI full avg10 >= 10, or, with no memory controller in view, when the cgroup in view stalls 10% of the time between samples. 0 disables the critical tier and turns the memory guard off. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2.0
@@ -1961,7 +2089,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Peer Steer Loss Recovery",
-      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
+      "help": "Off (the default): a session_send or session_broadcast steer into a running Claude Code, Codex, Goose, Pi or OpenCode turn is held and goes in at that turn's next tool step, or runs as its next turn if the turn ends first; an automation's steer is not held. On: both cut into the running turn at once. Those harnesses can drop a steer they accepted, so with it on the steer counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. With it on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. With it off, a held steer cannot run twice on Claude Code and Codex; on the other harnesses a steer taken just as the turn ended can run once more from the queue.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2288,6 +2416,7 @@
       "enumValues": null,
       "defaultValue": {
         "timeout_secs": 3600,
+        "automated_idle_timeout_secs": 0,
         "idle_exempt_keys": [],
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
@@ -2326,6 +2455,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "session.automated_idle_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Idle Timeout After an Automated Turn",
+      "help": "Idle timeout in seconds for a session whose last turn no person sent, such as a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. Your next message puts the session back on the Session Timeout. Used only when shorter than the Session Timeout, and not while that is 0. 0 (the default) turns it off. Read at every idle sweep, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "session.idle_exempt_keys",
@@ -2991,12 +3134,13 @@
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
         "repeated_failures_notice": false,
-        "kind_routing": "off",
+        "kind_routing": "enforce",
         "extraction_instructions": "",
         "lesson_origin_gate": "off",
+        "fact_origin_gate": "off",
         "lesson_tier_policy": "off",
-        "lesson_fold": "off",
-        "rule_authority_order": "off",
+        "lesson_fold": "enforce",
+        "rule_authority_order": "enforce",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
         "dream": "off",
@@ -3594,14 +3738,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Consolidation Kind Routing",
-      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. Stored facts are never changed.",
+      "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) in one small extra model call and what it does with it. 'enforce' (default) skips a state item (the status of tracked work, such as a code change under review, a ticket, a CI run or a branch, or a next step, a count or a worktree path) and writes facts and events as before. 'off' makes no extra call and writes every fact. A stored 'shadow' reads as 'enforce'. Stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.extraction_instructions",
@@ -3627,6 +3770,24 @@
       "tags": [],
       "label": "Lesson Origin Gate",
       "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.fact_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fact Origin Gate",
+      "help": "Whether facts about you (pref.* and user.* keys, and the preferences file) may be learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run). 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only counts, within fixed size caps, what the gate would hold back. 'enforce' does not write or delete those facts, or change the preferences file, from such turns. Project facts, episodes and stored facts are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -3662,14 +3823,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Lesson Fold",
-      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'enforce' (default) keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. 'off' keeps every copy. A stored 'shadow' reads as 'enforce'. Rules you taught are never folded and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.rule_authority_order",
@@ -3680,14 +3840,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Rule Authority Order",
-      "help": "How the session-start rule block orders its rules. 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids the new order would add or drop. 'enforce' lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
+      "help": "How the session-start rule block orders its rules. 'enforce' (default) lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the relevance order holds. 'off' keeps the relevance order. A stored 'shadow' reads as 'enforce'. Set memory.lesson_origin_gate to 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.member_lesson_dedup",
@@ -6350,7 +6509,8 @@
         "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
-        "probe_failure_threshold": 3
+        "probe_failure_threshold": 3,
+        "managed_env_endpoint": ""
       }
     },
     {
@@ -6391,7 +6551,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Warm Set Cap",
-      "help": "Max number of remote instances kept warm (iframe mounted + tunnel live) at once. Least-recently-used instances beyond this are evicted and reconnected on demand. Bounds memory/socket use (each warm instance is a full dashboard SPA). 0 (the default) is automatic: the cap follows how many crews are configured, so up to an internal ceiling no crew you added is evicted and the cap widens by itself when you add one -- eviction cold-boots the pane and reads as a disconnect, so a cap below the number of crews in use makes tab switching look like a connection flap. Past that ceiling eviction resumes; an explicit value is honoured exactly, including one below the number of configured crews.",
+      "help": "Max number of remote Crews kept warm (pane loaded, connection live) at once, SSH and relay together. The most recently opened ones stay warm; the rest are dropped and reconnect when you open them. Bounds memory and connections (each warm Crew is a full dashboard page). 0 (the default) is automatic: 5. An explicit value is honoured exactly.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -6512,6 +6672,23 @@
       "defaultValue": 3
     },
     {
+      "path": "instances.managed_env_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Service Endpoint",
+      "help": "HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty (the default): every call is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "heartbeat",
       "kind": "core",
       "type": "object",
@@ -6524,7 +6701,8 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "default_deliver": "slack"
+        "default_deliver": "slack",
+        "keep_backoff": false
       }
     },
     {
@@ -6543,6 +6721,20 @@
         "dashboard"
       ],
       "defaultValue": "slack"
+    },
+    {
+      "path": "heartbeat.keep_backoff",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Space out a retained task",
+      "help": "A heartbeat task that keeps being retained (it answers HEARTBEAT_KEEP, fails, times out or is refused by fair admission) waits 1, 2, 4, 8 and then 15 minutes between runs instead of running on every 60-second tick, and stays in HEARTBEAT.md meanwhile. Each run starts a new session, so spacing the retries saves the context it builds. A new or edited task runs on the next tick; a restart starts the ladder again. Off by default: every retained task runs on every tick.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "monitoring",
@@ -7743,6 +7935,7 @@
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
+        "setup_guide_url": "",
         "forward_to_agent_callback": "",
         "trusted_bot_ids": [],
         "trusted_bot_turn_limit": 5,
@@ -7750,6 +7943,7 @@
         "reactions": {},
         "reactions_enabled": true,
         "show_thinking": true,
+        "show_timing_footer": true,
         "dm_single_session": false,
         "home_tab_builtin": true,
         "home_tab_sessions_per_kind": 5,
@@ -7761,6 +7955,7 @@
         "agent_sessions": false,
         "code_channel_dispatch": false,
         "code_channels": false,
+        "slack_mcp": false,
         "code_channel_defaults": {
           "folder": null,
           "agent": null,
@@ -7872,6 +8067,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "slack.setup_guide_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Setup Guide URL",
+      "help": "Your organization's own Slack setup guide (for example, how to get a workspace you may install apps in). The Slack setup wizard links it on its first step. https:// only; any other value is ignored. Empty = no link.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.forward_to_agent_callback",
@@ -8010,6 +8221,22 @@
       ],
       "label": "Show Thinking",
       "help": "Post the model's thinking/reasoning as a thread reply in Slack. Disable to keep responses concise.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "slack.show_timing_footer",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Show Timing Footer",
+      "help": "Post the \"Finished in … · ctx …%\" line after each reply. Turn it off for a cleaner chat; choice buttons and the Link to Dashboard button still post.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -8186,6 +8413,22 @@
       ],
       "label": "Code Channels",
       "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites, pins:write) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.slack_mcp",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Slack Tools For Your Agents",
+      "help": "Let the same Slack app serve Slack's MCP server, so each person can connect their agents to Slack as themselves. Adds settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL http://localhost:48106/callback to the generated app manifest, and replaces its user scopes with the read-only ones Slack's MCP server needs (search, history, channel and user lists, files, canvases, lists); off, the manifest is unchanged. PKCE cannot be turned off again in Slack without Slack support, the app must stay internal (not publicly distributed), each person still connects on the Slack card under Settings > Connections with the app's Client ID and Client Secret, and Slack ends those sign-ins after 30 days. The settings page shows this switch only while Connections offers the Slack card, or while it is on. The gateway runs nothing for it. Off by default; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10428,6 +10671,7 @@
         "title_refresh_every_turns": 0,
         "title_ticket_prefix": false,
         "upload_max_mb": 100,
+        "attachment_sheet_digest": false,
         "mcp_probe_timeout_secs": 15,
         "loop_stall_exit_after_secs": null,
         "chat_entry_cache_max_entries": 4096,
@@ -10443,6 +10687,7 @@
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "prevent_sleep": false,
+        "warm_task_brief": true,
         "quick_send": false,
         "model_picker_configured": false,
         "model_picker_hidden_models": [],
@@ -10974,6 +11219,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.crew_client",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_client",
+      "help": "Turn on the 'crew_client' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_oauth",
       "kind": "core",
       "type": "boolean",
@@ -11109,6 +11368,20 @@
       "tags": [],
       "label": "Feature preview: webhooks",
       "help": "Turn on the 'webhooks' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.widgets",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: widgets",
+      "help": "Turn on the 'widgets' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -11283,6 +11556,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 100
+    },
+    {
+      "path": "dashboard.attachment_sheet_digest",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Digest Attached CSV, TSV And Excel Files",
+      "help": "When on, a CSV, TSV or Excel file attached in chat is followed in the prompt by a short digest: column names, an inferred type for each column, a row count and the first three rows, for each sheet of a workbook (at most 5). Only the first 256 KiB of a CSV or TSV is read, and a workbook over 8 MiB is skipped; each prompt shows at most 3 files, 20 columns each, with cells cut to 40 characters. Off by default: the agent then gets the path alone. Takes effect on the next message; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.mcp_probe_timeout_secs",
@@ -11538,6 +11825,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.warm_task_brief",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Since You Left Briefs",
+      "help": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief of its work. Off: a return posts no brief. Takes effect on the next return; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.quick_send",
       "kind": "core",
       "type": "boolean",
@@ -11730,7 +12031,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max terminal sessions",
-      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this. At the ceiling, opening a terminal ends the shell that has had no browser attached the longest (at least a minute) and posts a notice; with none, the open is refused.",
+      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. At the ceiling, opening a terminal ends the shell that has had no browser attached the longest (at least a minute) and posts a notice; with none, the open is refused.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 12
@@ -12757,6 +13058,7 @@
         "name_override": "",
         "relay_enabled": null,
         "relay_lease_url": "",
+        "relay_lease_region": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
         "relay_handle_email_domains": [],
@@ -12824,7 +13126,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Kiro Relay",
-      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on only for a team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; a Crew on a personal sign-in stays off until you run kirocrew remote-control on. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Unset (the default) turns it on for a Crew on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no Relay Lease Token Type, no workload identity), and for a Shared Crew (Relay Lease Token Type API_KEY) or a host with a workload identity whose Relay Lease Credential names its credential; kirocrew remote-control off turns it off. True is on and false is off, whatever the Crew's credential. It holds a lease (from Relay Lease Service URL, or the built-in one when that is empty) on Relay Lease Credential, or on a personal Crew's own Kiro sign-in when that is empty. A Shared Crew (Relay Lease Token Type API_KEY) or a host with a workload identity connects only when Relay Lease Credential names its credential: without it no relay client starts and the tunnel status names the missing setting. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -12840,9 +13142,29 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Service URL",
-      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL: the one for the sign-in profile's region on the Kiro sign-in, and us-east-1 otherwise. Must be https:// (http:// only for a loopback port-forward).",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL for the Crew's Region: the sign-in profile's on the Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is empty. Must be https:// (http:// only for a loopback port-forward).",
       "hasChildren": false,
       "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Region",
+      "help": "The built-in lease service's Region for a Crew on a stored credential, such as a Shared Crew's crew API key, which names no Region. Empty (the default) uses us-east-1; a Crew registered in another Region must name it, with kirocrew config set tunnel.relay_lease_region <Region>. Ignored on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "eu-central-1",
+        "eu-west-1",
+        "us-east-1"
+      ],
       "defaultValue": "",
       "requiresRestart": true
     },
@@ -12855,7 +13177,7 @@
       "sensitive": true,
       "tags": [],
       "label": "Relay Lease Credential",
-      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, the absolute path of a file holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity Center or your organization's identity provider), refreshed automatically. Empty (the default) uses that sign-in too, on a personal Crew: one with no Relay Lease Token Type, on a host with no agent workload identity. A team Crew must name its crew API key here. Never the credential itself; it is read for each call and never logged.",
+      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, the absolute path of a file holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity Center or your organization's identity provider), refreshed automatically. Empty (the default) uses that sign-in too, on a personal Crew: one with no Relay Lease Token Type, on a host with no agent workload identity. A Shared Crew on the Kiro relay must name its crew API key here. Never the credential itself; it is read for each call and never logged.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -12870,7 +13192,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Token Type",
-      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Must be empty with kiro-sign-in, which sends the type its sign-in needs. Any other value keeps Remote Control from starting.",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a Shared Crew's crew API key. Must be empty with kiro-sign-in, which sends the type its sign-in needs. Any other value keeps Remote Control from starting.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",

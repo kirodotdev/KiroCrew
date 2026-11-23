@@ -211,7 +211,8 @@ function collectCrashReports({
   //   foreign        -> acknowledge. This is the 689-foreign-dump case; without
   //                     it they are re-parsed every launch forever. Requires
   //                     PROOF (a parsed dump whose module is someone else's, or
-  //                     whose exception code is zero), never a failure to read.
+  //                     whose exception code marks a snapshot), never a failure
+  //                     to read.
   //   unparsed       -> acknowledge once its ledger line is on disk. Terminal:
   //                     the artifact is past the parse cap and a file does not
   //                     shrink, so a retry can only produce the same answer. Not
@@ -284,15 +285,15 @@ function collectCrashReports({
   // them this app. Acknowledging alone kept them out of the ledger but left the
   // leak. Deletion is gated on the same PROOF as the acknowledgement — a
   // readable dump whose first module is someone else's, or whose exception code
-  // is zero — never on a failure to read, and never when the stranger is itself
-  // an Electron build (`isElectronShaped`): `crashDumps` is per-`app.getName()`,
-  // so a dev run of this same app shares it, and its real crash belongs to that
-  // build's own collector. Our own dumps are never touched: an own-app crash is
-  // `records`, an own-app snapshot (code 0) is the one foreign case that IS
-  // ours, and it is a deliberate `DumpWithoutCrashing()` nobody asked to keep
-  // either. Best-effort: an unlink that fails leaves the dump acknowledged
-  // exactly as before, so a read-only database degrades to the old behaviour
-  // rather than to a retry loop.
+  // marks a snapshot — never on a failure to read, and never when the stranger
+  // is itself an Electron build (`isElectronShaped`): `crashDumps` is
+  // per-`app.getName()`, so a dev run of this same app shares it, and its real
+  // crash belongs to that build's own collector. Our own crash dumps are never
+  // touched: an own-app crash is `records`, an own-app snapshot is the one
+  // foreign case that IS ours, and it is a deliberate `DumpWithoutCrashing()`
+  // nobody asked to keep either. Best-effort: an unlink that fails leaves the
+  // dump acknowledged exactly as before, so a read-only database degrades to
+  // the old behaviour rather than to a retry loop.
   for (const { candidate, deletable } of provenForeign) {
     seen.add(candidate.key);
     if (!deletable || candidate.kind !== "minidump") continue;
@@ -399,7 +400,7 @@ function collectCrashReports({
 
   // `kind=unparsed` counts here even though it is not a crash: it is still a
   // line in the log the user hands over, so it counts as something recorded.
-  // Logged rather than surfaced — the renderer gets `newCount` and nothing else.
+  // Logged rather than surfaced — the renderer gets `newCount` and `lastCrashAt`.
   summary.recorded = readCrashLogLines(logPath, { fs }).filter(
     (l) => l.includes("kind=minidump") || l.includes("kind=ips") || l.includes("kind=unparsed")
   ).length;

@@ -23,8 +23,8 @@ advisory review text. Its stateless directive is validated by
 `mcp_tools.control.monitor_start`, then applied by
 `dashboard.session_directive_apply._monitor_start` through
 `autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
-schedules the loop. Those two `monitor_start` surfaces are the only callers that
-ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
+schedules the loop. Those two `monitor_start` surfaces and the conductor patrol
+(`conductor_patrol`) are the only callers that ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
 REST route included. Gating is the state that can silently stop work, so a caller
 that names no value resolves toward spending a turn per interval rather than toward
 a watch that deactivates itself.
@@ -289,7 +289,11 @@ sides of the contract. The `fired` state event carries the cleared deadline, so
 the turn-end re-arm that sets the next one (`_arm_and_announce_deadline`, also
 used when a re-arm was deferred past the fire window) emits `updated`, and the
 dashboard countdown never reads "not yet scheduled" between cycles;
-`test_turn_end_after_fire_announces_the_new_deadline` pins it. Channel-bound loops re-arm after their unattended turn
+`test_turn_end_after_fire_announces_the_new_deadline` pins it. A quiet gated
+tick runs no turn, so no turn end announces the deadline it sets: the quiet
+branch emits `updated` itself when that deadline moved, and a pushed quiet tick
+that keeps the earlier deadline publishes nothing;
+`test_quiet_gated_tick_announces_the_new_deadline` pins both. Channel-bound loops re-arm after their unattended turn
 in `AutoNudgeService._run_fire_cycle` (`autonudge_service/firing.py`) because they do not
 use the dashboard
 turn-lifecycle hooks.
@@ -492,7 +496,7 @@ what reaches the kernel as a failed tick.
 
 The PR watch is driven in-process by the gateway (`monitor_watch` or a
 `monitor_start` loop); no script asset ships for it and the babysit skill
-directory holds only its `SKILL.md`. A registered script job is refused by the
+directory holds only its `SKILL.md` and the `references/github-helper.md` guide. A registered script job is refused by the
 probe and auto-paused, as described under "There is no script-cron driver"
 above, so script-cron `Skip`/`Report`/`Done` delivery is not this watch's path.
 

@@ -459,23 +459,8 @@ class SkillsLoader:
         # construction-time value stays as the fallback for a loader built from an
         # explicitly injected config, before any snapshot exists.
         self._max_triggered = cfg.skills.max_triggered
-        self._extra_paths: list[Path] = []
-        self._configured_extra_paths: list[Path] = []
-        for p in cfg.skills.extra_paths:
-            try:
-                resolved = Path(p).expanduser().resolve()
-            except (OSError, RuntimeError, ValueError):
-                # ``~nosuchuser`` (no such home) or an embedded NUL: one bad
-                # entry is skipped, never the whole loader.
-                logger.warning("Skipping unresolvable extra skill path: %r", p)
-                continue
-            if is_sensitive_path(str(resolved)):
-                logger.warning("Skipping sensitive extra skill path: %s", p)
-            elif resolved.is_dir():
-                self._extra_paths.append(resolved)
-                self._configured_extra_paths.append(resolved)
-            else:
-                logger.debug("Extra skill path does not exist: %s", p)
+        self._extra_paths: list[Path] = self._screen_extra_paths(cfg)
+        self._configured_extra_paths: list[Path] = list(self._extra_paths)
 
         # Edition-contributed skill paths (CPP seam). A companion returns extra
         # SKILL.md source roots via McpToolingProvider.extra_skills(); the public

@@ -2,7 +2,8 @@ import { withDeadline } from '../lib/withDeadline'
 import { agentPath } from './agentPath'
 import { apiTransport } from './apiTransport'
 
-export type CapabilitySection = 'mcpServers' | 'tools' | 'allowedTools' | 'autoApprove' | 'skills' | 'prompt' | 'model' | 'resources'
+/** `toolsSettings` is a Bot's worker row only: one tool's settings its file carries, which Remove takes out. */
+export type CapabilitySection = 'mcpServers' | 'tools' | 'allowedTools' | 'autoApprove' | 'skills' | 'prompt' | 'model' | 'resources' | 'toolsSettings'
 export interface CapabilityRef { section: CapabilitySection; id: string }
 export interface CapabilityRow extends CapabilityRef {
   label: string

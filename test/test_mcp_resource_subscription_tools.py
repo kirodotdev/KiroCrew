@@ -18,7 +18,8 @@ Pinned here:
   it reads the session key, changing nothing, and the CLI exits non-zero on that
   refusal;
 * the operator route refuses a session, and the CLI removes through the store
-  when no service runs;
+  when no service runs (who else the routes refuse is
+  ``test_mcp_resource_subscription_operator_auth.py``);
 * with the switch off nothing on the route-registration path imports the
   feature (owner requirement 3).
 """
@@ -106,6 +107,23 @@ def recognized(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *_a: False)
 
 
+def _admit_as_host_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _verified(_request: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(routes, "_host_owner_verified", _verified)
+
+
+@pytest.fixture
+def host_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The operator route's caller passes the host-owner check.
+
+    The check reads the kernel's peer identity, which a mocked request has none
+    of; its refusal is pinned by its own test, which skips this fixture.
+    """
+    _admit_as_host_owner(monkeypatch)
+
+
 def _request(
     method: str,
     path: str,
@@ -114,6 +132,7 @@ def _request(
     body: Any = ...,
     state: Any = None,
     internal: bool = True,
+    attested: bool = True,
 ) -> web.Request:
     app = web.Application()
     app["state"] = MagicMock() if state is None else state
@@ -123,6 +142,10 @@ def _request(
         # What token_auth sets on a constant-time X-Internal-Secret match: how the
         # tools and the CLI arrive. A cookie-granted request arrives without it.
         req["internal_auth"] = True
+        if attested:
+            # What token_auth sets once the kernel peer's ancestry resolves to the
+            # declared key: how a session's own tool arrives.
+            req["peer_verified"] = True
     if body is not ...:
         req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
     return req
@@ -712,7 +735,7 @@ async def test_a_caller_without_the_internal_secret_is_refused_and_changes_nothi
 
 @pytest.mark.asyncio
 async def test_the_same_requests_with_the_internal_secret_reach_the_service(
-    tmp_path: Path, switch: dict[str, bool], audit: _AuditLog
+    tmp_path: Path, switch: dict[str, bool], audit: _AuditLog, host_owner: None
 ) -> None:
     """The secret-bearing caller, the tool of the session the key names, is served."""
     service = await _offline_service(
@@ -837,6 +860,7 @@ async def test_a_stale_subscription_id_never_removes_its_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recognized: None,
+    host_owner: None,
     audit: _AuditLog,
     operator: bool,
 ) -> None:
@@ -916,6 +940,7 @@ async def test_a_removal_that_does_not_commit_is_refused_and_audited(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     recognized: None,
+    host_owner: None,
     audit: _AuditLog,
     operator: bool,
 ) -> None:
@@ -983,6 +1008,7 @@ async def test_a_removal_the_store_refuses_is_gateway_unavailable_not_a_server_e
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     recognized: None,
+    host_owner: None,
     audit: _AuditLog,
     operator: bool,
 ) -> None:
@@ -1069,7 +1095,10 @@ async def test_stopping_service_remains_active_until_its_close_finishes(
 
 @pytest.mark.asyncio
 async def test_operator_not_found_from_running_service_never_allows_an_offline_edit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host_owner: None,
 ) -> None:
     store = ResourceSubscriptionStore(tmp_path / "subs.json")
     store.put(_record(OTHER, (URI,), ("rsub_kept000000000",)))
@@ -1164,6 +1193,8 @@ def _operator_server(monkeypatch: pytest.MonkeyPatch) -> TestServer:
         "kiro_crew.port_resolution.resolve_client_port_ex", lambda _port: (server.port, None)
     )
     _send_without_the_peer_proof(monkeypatch)
+    # The real peer check is pinned against a real socket by its own test.
+    _admit_as_host_owner(monkeypatch)
     return server
 
 
@@ -1274,7 +1305,7 @@ def test_the_ask_confirming_an_offline_edit_decides_the_exit(
 
 
 @pytest.mark.asyncio
-async def test_the_operator_route_refuses_a_session(tmp_path: Path) -> None:
+async def test_the_operator_route_refuses_a_session(tmp_path: Path, host_owner: None) -> None:
     await _offline_service(tmp_path, _record(OTHER, (URI,), ("rsub_op000000000000",)))
     got = await _call(
         routes.api_resource_subscriptions_operator,

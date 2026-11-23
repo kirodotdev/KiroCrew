@@ -18,6 +18,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { safeSetItem } from '../utils/safeStorage'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from '../prompts/featureRequest'
 import { consumeChatHandoff } from '../utils/errorReport'
+import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
 
 /** Chrome the side tracks never get: the header's own `pl-2 pr-3` (20px) plus the
  *  two 12px track gaps. Subtracted before reasoning about a group's width —
@@ -717,6 +718,44 @@ describe('App routing', () => {
     expect(screen.getByTitle(/show fewer apps/i)).toBeInTheDocument()
   })
 
+  it('scrolls the whole rail as one region above a pinned Settings block', async () => {
+    const { api } = await import('../api/client')
+    const manyApps = Array.from({ length: 8 }, (_, i) => ({
+      name: `app${i}`,
+      displayName: `App ${i}`,
+      enabled: true,
+      origin: 'installed',
+      manifest: { ui: { pages: [{ route: `/apps/app${i}`, icon: 'Package', label: `App ${i}` }] } },
+    }))
+    ;(api.listApps as ReturnType<typeof vi.fn>).mockResolvedValueOnce(manyApps)
+    localStorage.setItem('mc-apps-expanded', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByText('App 7')
+    const rail = screen.getByRole('navigation', { name: /main navigation/i })
+    const scroller = within(rail).getByTestId('nav-rail-scroller')
+    // The menu row, the primary rows and the Apps list share the one scroller...
+    expect(within(scroller).getByText('App 0')).toBeInTheDocument()
+    expect(within(scroller).getByText('App 7')).toBeInTheDocument()
+    expect(within(scroller).getByText('Discover')).toBeInTheDocument()
+    // ...and no group inside it scrolls on its own.
+    expect(scroller.querySelectorAll('.overflow-y-auto')).toHaveLength(0)
+    // Settings stays outside it, pinned below.
+    const settings = within(rail).getByText('Account & Settings')
+    expect(scroller.contains(settings)).toBe(false)
+    // The hidden scrollbar is replaced by a bottom fade, only while rows are below the fold.
+    const mask = MORE_BELOW_MASK.split(' ')[0]
+    const setOverflow = (hidden: number) => {
+      Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 100 + hidden })
+      Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => 0 })
+      act(() => { scroller.dispatchEvent(new Event('scroll')) })
+    }
+    setOverflow(60)
+    expect(scroller.className).toContain(mask)
+    setOverflow(0)
+    expect(scroller.className).not.toContain(mask)
+  })
+
   it('keeps the overflow toggle visible while expanded (no disappear / layout shift)', async () => {
     // Regression for the toggle-disappears bug: the toggle must render whenever
     // the Apps list is collapsible (length > APPS_NAV_LIMIT), not only when
@@ -971,7 +1010,7 @@ describe('App routing', () => {
     await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
     act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
 
-    const badge = await screen.findByLabelText('1 unread conversations')
+    const badge = await screen.findByLabelText('1 unread conversation')
     expect(badge.className).not.toContain('absolute')
     expect(badge.parentElement).toBe(chord.parentElement)
     expect(chord.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -1005,11 +1044,8 @@ describe('App routing', () => {
     // fix above), so a bare "1" pill beside a bare bot glyph and "2" has to be
     // tellable apart without a screen reader. Both carry the label as `title`.
     //
-    // The title is the label ALONE, deliberately: the labels are plural phrases,
-    // so reusing the aria string would render a visible "1 unread conversations"
-    // at count 1. The count is already in the pill, so the title does not repeat
-    // it — asserted below, or the grammar defect returns the moment someone
-    // "helpfully" switches these back to ariaLabel.
+    // The title is the label ALONE, deliberately: the count is already in the
+    // pill, so the title does not repeat it — asserted below.
     localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
@@ -1019,7 +1055,7 @@ describe('App routing', () => {
     act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
     act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
 
-    const badge = await screen.findByLabelText('1 unread conversations')
+    const badge = await screen.findByLabelText('1 unread conversation')
     const activity = await screen.findByLabelText('2 subagents in flight')
     expect(badge).toHaveAttribute('title', 'unread conversations')
     expect(activity).toHaveAttribute('title', 'subagents in flight')
@@ -1184,17 +1220,20 @@ describe('App routing', () => {
     expect(trigger.style.width).toBe('')
     // Header children, in order: left group · centre cell · actions group. The
     // three-track grid depends on that being exactly three in-flow children.
-    const centre = trigger.parentElement!
+    // The trigger's HoverTip wrapper is the cell's item and takes the track.
+    expect(trigger.parentElement).toHaveClass('flex-1')
+    const centre = trigger.parentElement!.parentElement!
     const header = centre.parentElement!
     const flow = [...header.children].filter(el => !el.className.includes('absolute'))
     expect(flow[0]).toHaveClass('tb-left')
     expect(flow[1]).toBe(centre)
     expect(flow[2]).toHaveClass('tb-right')
-    // The centre cell holds the trigger and the focus-mode toggle, and nothing
-    // else: a third control there is what website/AUTOSDE.yaml's
-    // max-two-buttons-per-row rule forbids.
+    // The centre cell holds the trigger and the focus-mode toggle (each inside
+    // its hint's wrapper), and nothing else: a third control there is what
+    // website/AUTOSDE.yaml's max-two-buttons-per-row rule forbids.
     expect([...centre.children]).toHaveLength(2)
-    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
+    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle').parentElement)
+    expect(centre.children[1]).toHaveAttribute('data-hover-tip')
     return shellSettled()
   })
 

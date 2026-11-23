@@ -36,16 +36,19 @@
 #                                        of the managed default (sticky: later
 #                                        runs and updates keep the choice)
 #                                        (env KIROCREW_MANAGED_PYTHON=0)
-#   --no-kas                             skip downloading the KAS engine this
-#                                        release pins now; the gateway installs
-#                                        it when it starts (env KIROCREW_INSTALL_KAS=0)
+#   --no-kas                             use Kiro CLI only: saves agent.kas_bundle
+#                                        off and skips downloading the KAS engine
+#                                        this release pins now; the gateway installs
+#                                        it when it starts
+#                                        (env KIROCREW_INSTALL_KAS=0)
 #
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
 # data home (`engines/kas/`) and verifies it against the pin. A failed download
 # only warns and prints the command to retry; the install still succeeds. A
 # first install on a host that cannot run the engine at all keeps the install
-# and exits 3. The switch (agent.kas_bundle) is never turned on here.
+# and exits 3. The switch (agent.kas_bundle) is never turned on here; --no-kas
+# saves it off.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -142,8 +145,9 @@ Options / env:
                                        instead of the managed default (sticky:
                                        later runs and updates keep the choice)
                                        (env KIROCREW_MANAGED_PYTHON=0)
-  --no-kas                             skip downloading the KAS engine this
-                                       release pins now; by default the
+  --no-kas                             use Kiro CLI only: saves agent.kas_bundle
+                                       off and skips downloading the KAS engine
+                                       this release pins now; by default the
                                        installer runs `kirocrew kas install`
                                        once the wheel is in, and with this flag
                                        the gateway installs it when it starts
@@ -1576,7 +1580,8 @@ _path_hint
 # install then ends with the same 3, so a provisioning script sees it. A re-run
 # over an existing install keeps 0: every released `kirocrew update` re-runs
 # this live script on a pipx install and reads any non-zero as a failed update.
-# --no-kas skips this download; the gateway then installs the engine at start.
+# --no-kas skips this download and saves the Kiro CLI choice (below); the
+# gateway then installs the engine when it starts.
 _KAS_RETRY="$BIN/kirocrew kas install"
 _KC_EXIT=0
 _kas_rc=0
@@ -1612,6 +1617,17 @@ elif [ "$INSTALL_KAS" = "1" ]; then
     echo "ERROR: could not install the built-in KAS engine, so Kiro Crew cannot run its default agent yet." >&2
     echo "The gateway retries when it starts. Retry now when online: $_KAS_RETRY" >&2
     [ "$_KC_REPLACED_INSTALL" = 1 ] || [ "$CHANNEL" = lts ] || _KC_EXIT=1
+  fi
+fi
+# --no-kas means "Kiro CLI only", never "on with no engine": the choice is saved
+# off (agent.kas_bundle false), so a packaged build's preference for the built-in
+# engine does not apply. A saved value is the user's own, so a re-run without the
+# flag leaves it; Settings > Agent Harness changes it.
+if [ "$INSTALL_KAS" = "0" ] && [ -x "$BIN/kirocrew" ]; then
+  if "$BIN/kirocrew" config set agent.kas_bundle false >/dev/null 2>&1; then
+    echo "KAS will use Kiro CLI (--no-kas). Change it in Settings > Agent Harness."
+  else
+    echo "WARNING: could not save the Kiro CLI choice. Run: $BIN/kirocrew config set agent.kas_bundle false" >&2
   fi
 fi
 # Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there
@@ -1675,6 +1691,7 @@ else
   _data_home_note
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
   echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew stop               # stop it (a service starts again at the next boot or login; kirocrew service uninstall removes it)"
   echo "  kirocrew --help             # everything else"
   echo ""
   echo "Need a non-default port (e.g. 5476 is already taken)?"

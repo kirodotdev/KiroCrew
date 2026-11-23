@@ -56,6 +56,7 @@ in the **same commit** when you change what it documents.
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
 | monitoring loops, `monitoring/`, `irq.py`, watches | [monitor-architecture](docs/system-specs/modules/monitor-architecture.md) (the paradigm) + [agent-interrupt-controller](docs/system-specs/modules/agent-interrupt-controller.md) + [babysit-pr-watch](docs/system-specs/modules/babysit-pr-watch.md) |
+| registering or changing an HTTP route, a route's action name or tier | [route-access](docs/system-specs/modules/route-access.md) |
 | `acp/`, kiro-cli transport, providers | [acp-client](docs/system-specs/modules/acp-client.md) + [providers](docs/system-specs/modules/providers.md) |
 | picking or defaulting a model anywhere | [model-selection](docs/system-specs/common/model-selection.md) + [model-fallback](docs/system-specs/modules/model-fallback.md) |
 | adding or adapting an agent harness (BYO, KAS, claude) | [harness-parity](docs/system-specs/modules/harness-parity.md) (invariants) + [harness-parity-gate](docs/ci/harness-parity-gate.md) (CI) |
@@ -187,7 +188,14 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   that are NOT in this repository, or the PR ships a rollback plan that names
   them. A sweep proving every in-tree mint was updated proves nothing about an
   installed app minting through the same endpoint. Reviewers hold the PR to this;
-  #14436 had to revert a tightening whose sweep missed such a client.
+  #14436 had to revert a tightening whose sweep missed such a client, and so did
+  #40360 (#38113, refusing `/api/token/local` to app backends) and the revert of
+  #38182 (masking `.local_secret` and `run/gateway-*.secret` in the running app
+  backend's sandbox): both broke the external Crew Tunnel app, which reads
+  `run/gateway-<port>.secret` and mints an owner token to proxy the dashboard.
+  Do not re-add either until an app-scoped token path exists and Crew Tunnel uses
+  it ([dashboard-token-auth](docs/system-specs/modules/dashboard-token-auth.md),
+  "App backends mint through the local secret").
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
   ([rfc-crew-lts-edition](docs/request-for-change/rfc-crew-lts-edition.md),
@@ -238,7 +246,7 @@ or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A ne
 app, first-party included, ships from a dedicated GitHub repository listed in the
 official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).
 The built-ins that still ship are being moved out under #26967; fixing one in place
-until it leaves is fine, but once `apps/adoption-pins.json` pins it the fix lands in its
+until it leaves is fine, but once `src/kiro_crew/apps/adoption-pins.json` pins it the fix lands in its
 app repository first and the PR names it (`App repo: <owner>/<repo>@<sha>`, PR Hygiene). An app moves out COMPLETELY: no part of it (backend, UI,
 scripts, CI, specs) stays in core, and core never imports or hard-codes a specific
 app (`kiro_crew.apps.builtins.<app>`, an app id) outside the built-in tables being

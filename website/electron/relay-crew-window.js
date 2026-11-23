@@ -484,6 +484,59 @@ function paneChordIndex(input, platform) {
   return digit >= 1 && digit <= PANE_CHORD_DIGITS ? digit - 1 : -1;
 }
 
+// A relay Crew's page has no preload to say it has drawn, so after its load
+// the shell asks it every PANE_ROOT_PROBE_MS: once its root holds text and its
+// theme is applied (`data-mode`, which the app sets in an effect after its first
+// render; before that the stylesheet's dark fallback shows), the probe answers
+// that mode and the pane shows. Any host answers this, an older build's too.
+// A page that never does shows PANE_PAINT_BACKSTOP_MS after its load. The same
+// bound holds the first show of a page that does not say it has drawn (PANE_DRAWN).
+const PANE_PAINT_BACKSTOP_MS = 3000;
+const PANE_ROOT_PROBE_MS = 100;
+const PANE_ROOT_PROBE = "(() => { const r = document.getElementById(\"root\"); "
+  + "if (!r || r.childElementCount === 0 || r.textContent.trim() === \"\") return \"\"; "
+  + "return document.documentElement.dataset.mode || \"\"; })()";
+
+// Resolves, with the number of animation frames it took, once the page has drawn
+// its own theme while on screen: two frames in a row whose background is settled.
+// The background is the body's, or the root's when the body has none. Settled is
+// one that agrees with `data-mode` (the app sets the mode first and its palette a
+// moment later, so until then a light Crew is still the boot page's dark). A page
+// with no mode, or no background at all, is settled at once.
+// The compositor gives a page nobody can see about three frames and then one a
+// second, so the check has to settle in its first frames. It finishes the page's
+// CSS transitions on each one: the palette's fade, which a hidden page holds at
+// its start, would otherwise take a dozen frames to turn light. And a background
+// that has not changed for PANE_SETTLE_MS settles on a timer, not on a frame: a
+// palette whose background and mode disagree, or whose colour is not an `rgb()`
+// this reads, comes up that way. The check ends with the shell's own wait
+// (PANE_PAINT_BACKSTOP_MS) at the latest, so it never goes on in a page that is
+// by then on top: a background that never rests (a keyframe animation) would
+// otherwise keep it finishing that page's transitions for good.
+const PANE_SETTLE_MS = 600;
+const PANE_DRAWN = "new Promise((resolve) => { "
+  + "const read = (el) => (el ? getComputedStyle(el).backgroundColor : \"\"); "
+  + "const clear = (c) => c === \"\" || /^rgba\\(\\d+, \\d+, \\d+, 0\\)$/.test(c); "
+  + "let frames = 0; let good = 0; let last = null; let timer = 0; let over = false; "
+  + "const done = () => { over = true; clearTimeout(timer); resolve(frames); }; "
+  + "const tick = () => { if (over) return; frames += 1; "
+  + "for (const a of document.getAnimations()) { if (a.transitionProperty) { try { a.finish(); } catch { /* not one that ends */ } } } "
+  + "let bg = read(document.body); "
+  + "if (clear(bg)) bg = read(document.documentElement); "
+  + "if (bg !== last) { last = bg; clearTimeout(timer); timer = setTimeout(done, " + PANE_SETTLE_MS + "); } "
+  + "const mode = document.documentElement.dataset.mode; "
+  + "const m = /^rgba?\\((\\d+), (\\d+), (\\d+)/.exec(bg); "
+  + "const light = m ? 0.2126 * m[1] + 0.7152 * m[2] + 0.0722 * m[3] > 127 : null; "
+  + "const settled = (mode !== \"dark\" && mode !== \"light\") || clear(bg) || light === (mode === \"light\"); "
+  + "good = settled ? good + 1 : 0; "
+  + "if (good >= 2) done(); else requestAnimationFrame(tick); }; "
+  + "setTimeout(done, " + PANE_PAINT_BACKSTOP_MS + "); "
+  + "requestAnimationFrame(tick); })";
+
+// The page's applied mode, read again whenever its theme colour changes: the
+// colour is the palette's background, which says nothing reliable about the mode.
+const PANE_MODE_READ = "document.documentElement.dataset.mode || \"\"";
+
 // shortcut: one pane per Crew, and none while the Crew is open in a window:
 // both would use the Crew's one partition.
 const openPanes = new Map();
@@ -516,6 +569,18 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   view.setVisible(false);
   parent.contentView.addChildView(view);
   const chordListeners = [];
+  const themeListeners = [];
+  const loadedListeners = [];
+  // The page has drawn the app (or failed to load, or a notice took its place).
+  // Until then the pane stays hidden, so the dashboard's connecting cover shows
+  // instead of the empty view's black.
+  let loaded = false;
+  let backstop = null;
+  let probe = null;
+  // Whether the page has been on screen in this window, and the reveal in
+  // progress when it has not (`stage`).
+  let drawn = false;
+  let staging = null;
   // The notice view (which focuses its own button) reads the chord too, so
   // the keyboard can leave a tab that shows one.
   const readChord = (event, input) => {
@@ -525,7 +590,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     crew.notify(chordListeners, index);
   };
   const crew = attachRelayCrew({ endpointId, ...parts }, {
-    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
+    // A notice that comes up during the page's first show ends it: the notice shows now.
+    add: (v) => { parent.contentView.addChildView(v); markLoaded(); if (staging) sync(); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
     remove: (v) => parent.contentView.removeChildView(v),
     place: (v) => { if (rect) v.setBounds(rect); },
   }, deps);
@@ -541,20 +607,59 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     rect = clean;
     for (const v of crew.views()) v.setBounds(rect);
   };
+  // Renewal parks while the pane is hidden or the main window is. A page drawing
+  // under the dashboard is on screen to itself, so it counts as showing.
+  const reportHidden = () => {
+    const hidden = !(shown || staging) || parentAway;
+    if (hidden !== reportedHidden) { reportedHidden = hidden; crew.setHidden(hidden); }
+  };
+  // A page that has never been on screen has no frame to show: made visible, its
+  // area is the colour the page last reported as its background (often still the
+  // boot page's dark one: a hidden page does not report a change reliably) until
+  // its first frame arrives.
+  // So the first time the pane should show, it goes on screen under the dashboard
+  // view, where nobody sees it, and comes to the top once its page has drawn.
+  const stage = () => {
+    if (staging) return;
+    const mine = { timer: null };
+    staging = mine;
+    const raise = () => {
+      if (staging !== mine || isClosed()) return;
+      sync(true);
+    };
+    parent.contentView.addChildView(view, 0);
+    view.setVisible(true);
+    mine.timer = setTimeout(raise, PANE_PAINT_BACKSTOP_MS);
+    Promise.resolve(wc.executeJavaScript(PANE_DRAWN)).then(raise, raise);
+  };
+  // The page goes back on top, under its notice when one is up; `sync` then
+  // shows or hides it.
+  const endStage = () => {
+    if (!staging) return;
+    clearTimeout(staging.timer);
+    staging = null;
+    try { for (const v of crew.views()) parent.contentView.addChildView(v); } catch { /* mid-teardown */ }
+  };
   // As for the Preview panel (browser-view.js): decide the hand-back before
   // the hide, and make it after.
-  const sync = () => {
+  // `staged`: the reveal `stage` started is over, so the pane shows now.
+  const sync = (staged = false) => {
     const was = shown;
-    shown = computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
+    const want = loaded && computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
+    // A notice up is a local page over the Crew's: nothing to wait for.
+    if (want && !drawn && !staged && crew.views().length === 1) { stage(); reportHidden(); return; }
+    endStage();
+    shown = want;
+    // The dashboard's cover stays until the pane is on top: a pane loaded behind
+    // another tab says `loaded` when it first shows, not when its page loaded.
+    if (shown && !drawn) { drawn = true; crew.notify(loadedListeners); }
     const reclaim = !shown && holdsFocus();
     for (const v of crew.views()) v.setVisible(shown);
     if (reclaim) handBack();
     // A pane that comes to the front takes the keyboard, as its window did, so
     // typing cannot reach the local dashboard underneath; a notice up takes it.
     if (shown && !was && parent.isFocused()) crew.views().at(-1).webContents.focus();
-    // Renewal parks while the pane is hidden or the main window is.
-    const hidden = !shown || parentAway;
-    if (hidden !== reportedHidden) { reportedHidden = hidden; crew.setHidden(hidden); }
+    reportHidden();
   };
   const parentEvents = [["minimize", true], ["hide", true], ["restore", false], ["show", false]]
     .map(([event, away]) => [event, () => { parentAway = away; sync(); }]);
@@ -569,6 +674,8 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     parent.removeListener("closed", close);
     for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
     openPanes.delete(endpointId);
+    for (const timer of [backstop, probe, staging && staging.timer]) if (timer) clearTimeout(timer);
+    backstop = probe = staging = null;
     try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
     crew.teardown("pane");
     if (reclaim) handBack();
@@ -581,6 +688,46 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     if (!isClosed() && !shown && parent.isFocused()) handBack();
   }));
   wc.on("before-input-event", readChord);
+  // The page's theme, so the local top bar above it can match (the page has no
+  // preload to say so itself).
+  const markLoaded = () => {
+    if (backstop) { clearTimeout(backstop); backstop = null; }
+    if (probe) { clearTimeout(probe); probe = null; }
+    if (loaded || isClosed()) return;
+    loaded = true;
+    // Only a pane the dashboard already asked to show has anything to change.
+    if (!inactive) sync();
+  };
+  // A page could answer early, and all that does is show its own pane sooner;
+  // only "dark" or "light" leaves main, as the theme it paints.
+  const probeRoot = () => {
+    probe = null;
+    if (loaded || isClosed()) return;
+    Promise.resolve(wc.executeJavaScript(PANE_ROOT_PROBE)).then((mode) => {
+      if (loaded || isClosed()) return;
+      if (mode === "dark" || mode === "light") {
+        crew.notify(themeListeners, mode === "dark");
+        markLoaded();
+      } else probe = setTimeout(probeRoot, PANE_ROOT_PROBE_MS);
+    }, () => {});
+  };
+  wc.once("did-finish-load", () => {
+    if (loaded) return;
+    backstop = setTimeout(markLoaded, PANE_PAINT_BACKSTOP_MS);
+    probeRoot();
+  });
+  wc.once("did-fail-load", markLoaded);
+  // Before the page has drawn, its theme colour is the boot page's dark one.
+  // Only the latest read counts, so an earlier answer arriving late cannot win.
+  let modeRead = 0;
+  wc.on("did-change-theme-color", () => {
+    if (!loaded) return;
+    const read = ++modeRead;
+    Promise.resolve(wc.executeJavaScript(PANE_MODE_READ)).then((mode) => {
+      if (read !== modeRead || isClosed()) return;
+      if (mode === "dark" || mode === "light") crew.notify(themeListeners, mode === "dark");
+    }, () => {});
+  });
   setBounds(bounds);
 
   const handle = {
@@ -603,6 +750,13 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
     setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
     onChord: (cb) => { chordListeners.push(cb); },
+    onThemeDark: (cb) => { themeListeners.push(cb); },
+    onLoaded: (cb) => { loadedListeners.push(cb); },
+    // The page's OS process, for the Settings usage readout; 0 once gone.
+    processId: () => {
+      if (isClosed()) return 0;
+      try { return wc.isDestroyed() ? 0 : wc.getOSProcessId(); } catch { return 0; }
+    },
   };
   openPanes.set(endpointId, handle);
   Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
@@ -619,15 +773,30 @@ function shownRelayPane(win) {
   return null;
 }
 
+// The OS pids of the relay panes open in `win`, for the Settings usage readout.
+function relayPaneProcessIds(win) {
+  const pids = [];
+  if (!win) return pids;
+  for (const pane of openPanes.values()) {
+    if (pane.parent !== win || pane.isClosed()) continue;
+    const pid = pane.processId();
+    if (pid > 0) pids.push(pid);
+  }
+  return pids;
+}
+
 module.exports = {
   isEndpointId,
   partitionCleared,
   shownRelayPane,
+  relayPaneProcessIds,
   createTokenHolder,
   relayPartitionName,
   installRelayHeaderRule,
   createRelayCrewView,
   openRelayCrewWindow,
   paneChordIndex,
+  PANE_ROOT_PROBE,
+  PANE_DRAWN,
   openRelayCrewPane,
 };

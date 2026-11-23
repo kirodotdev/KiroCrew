@@ -138,6 +138,27 @@ describe('PortabilityTab template warnings', () => {
     expect(screen.getByText('Download started.')).toBeTruthy()
   })
 
+  it('names the installed apps an export leaves out, beside the template line', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['PK']), {
+      status: 200,
+      headers: {
+        'X-Kirocrew-Unbundled-Templates': '["reviewer"]',
+        'X-Kirocrew-Unbundled-Apps': '["Minimal App", "Notes", "+2"]',
+      },
+    })))
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = () => 'blob:x'
+      static revokeObjectURL = () => {}
+    })
+    render(<PortabilityTab />)
+    fireEvent.click(screen.getByRole('button', { name: /download export/i }))
+    const apps = await screen.findByTestId('portability-export-apps-warning')
+    expect(apps.textContent).toBe(
+      "This export doesn't include these apps or their data: Minimal App, Notes, and 2 more. On the other machine, install them again or turn them back on; their data stays on this one.",
+    )
+    expect(screen.getByTestId('portability-export-warning').textContent).toContain('reviewer')
+  })
+
   it('does not revoke the export blob URL synchronously after the click (issue #13047)', async () => {
     // Electron turns the <a download> click into an async DownloadItem in the
     // main process; revoking the blob URL synchronously after click() tears the

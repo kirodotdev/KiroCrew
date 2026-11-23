@@ -628,8 +628,9 @@ def _save_slot_to_history(
                 rewrite=rewrite,
                 retired_rows=retired_rows,
             )
-            # Text from a rewrite; on an append, the cache's entry, possibly a range.
-            frozen_prefix: str | tuple[int, int] | None
+            # Text from a rewrite, a byte range of the transcript on a streamed
+            # rewrite; on an append, the cache's entry, possibly a range.
+            frozen_prefix: str | tuple | _transcript_merge.PrefixSource | None
             if tail is None:
                 payload, frozen_prefix, foreign_lines, drop_archives = (
                     _transcript_merge.compose_payload(
@@ -689,10 +690,12 @@ def _save_slot_to_history(
                 if tail is not None:
                     _transcript_merge.append_tail(path, tail)
                 else:
-                    atomic_write(
+                    # A streamed payload copies its frozen prefix from the
+                    # transcript instead of holding it in memory.
+                    _transcript_merge.write_payload(
                         path,
                         payload,
-                        fsync=True,
+                        atomic_write,
                         replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
                     )
             except BaseException:
@@ -751,7 +754,9 @@ def _save_slot_to_history(
             # The prefix is cached as where it sits in this file, not as its
             # text: a slot that stays open would otherwise hold a second copy of
             # its whole older history for as long as it lives.
-            _post_write_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+            _post_write_cache: (
+                tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
+            )
             try:
                 _st = path.stat()
             except OSError:
@@ -764,13 +769,17 @@ def _save_slot_to_history(
                         _st.st_mtime,
                         _st.st_size,
                         disk_older,
-                        (
-                            frozen_prefix
-                            if not isinstance(frozen_prefix, str)
-                            else _transcript_merge.prefix_range(meta_str, frozen_prefix)
-                        ),
+                        _transcript_merge.post_write_span(meta_str, frozen_prefix),
                         foreign_lines,
                     )
+                )
+            if isinstance(payload, _transcript_merge.StreamedPayload):
+                # The prefix's row count is known, so the count is stored and
+                # the next consolidation check does not re-read the file.
+                _transcript_merge.store_count_after_write(
+                    path,
+                    payload.prefix.span_after(meta_str),
+                    payload.tail.splitlines(keepends=True),
                 )
             # What the next save needs to append instead of rewriting: only when
             # the file holds exactly meta + prefix + this window, so no foreign line.

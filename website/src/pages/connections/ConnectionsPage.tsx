@@ -13,7 +13,7 @@ import type { McpApplyChange, McpServer } from '../../types'
 import { Badge, Btn, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
-import { fmtList } from '../../i18n/format'
+import { fmtList, joinSentences } from '../../i18n/format'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL, docSectionHref } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
@@ -372,18 +372,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               error = t('pages.connectionsPage.mint_failure_callback_unauthorized_client', { provider: name })
               if (adminGuide) help = { href: adminGuide }
               break
+            // A refusal no org admin policy causes reads as the one generic line.
             case 'crew_oauth_callback_invalid_request':
-              error = t('pages.connectionsPage.mint_failure_callback_invalid_request', { provider: name })
-              break
             case 'crew_oauth_callback_unsupported_response_type':
-              error = t('pages.connectionsPage.mint_failure_callback_unsupported_response_type', { provider: name })
-              break
             case 'crew_oauth_callback_server_error':
-              error = t('pages.connectionsPage.mint_failure_callback_server_error', { provider: name })
-              break
             case 'crew_oauth_callback_temporarily_unavailable':
-              error = t('pages.connectionsPage.mint_failure_callback_temporarily_unavailable', { provider: name })
-              break
             case 'crew_oauth_callback_refused':
               error = t('pages.connectionsPage.mint_failure_callback_refused', { provider: name })
               break
@@ -393,6 +386,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
             case 'mint_process_gone':
               error = t('pages.connectionsPage.mint_failure_process_gone')
               break
+            case 'mint_kiro_cli_signed_out':
             case 'mint_kiro_cli_missing':
               error = t('pages.connectionsPage.mint_failure_kiro_cli_missing')
               break
@@ -549,11 +543,44 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // at or below this timestamp predates the attempt (same clock domain as
     // the banners themselves — see PendingConnect.sinceTs).
     const sinceTs = oauthByServer[provider.slug]?.timestamp ?? 0
+    let stored: Awaited<ReturnType<typeof api.mcpCustomGet>> | null = null
     if (existing) {
       // Round-trip the stored spec and only overlay the url: a `{ url }`-only
       // PUT is authoritative for the OAuth hints, so it would clear configured
       // `scopes`/`clientId` (and any other stated field) on every reconnect.
-      const stored = await api.mcpCustomGet(existing.name)
+      // The read finds only a row Kiro Crew stores itself; a 404 is a row the
+      // user wrote in their own mcp.json, which is not Kiro Crew's to rewrite,
+      // so say where it lives and what to change instead of "not found".
+      stored = await api.mcpCustomGet(existing.name).catch(async (error: unknown) => {
+        if (!(error instanceof ApiError && error.status === 404)) throw error
+        // The cached inventory never goes stale on its own, so it can still
+        // hold a row the user has since removed. Read it fresh here, at the
+        // decision: no row left means add the provider, not repeat this 404.
+        const fresh = await queryClient.fetchQuery<McpServer[]>({
+          queryKey: ['mcp-servers'],
+          queryFn: () => api.mcpServers(),
+          staleTime: 0,
+        })
+        const row = serverForConnection(provider, fresh)
+        if (!row) return null
+        // No raw scope holds the row any more: only the rendered agent config
+        // does, and a restart keeps it (the rebuild starts from that file). An
+        // add now would collide with that name, so point to MCP Servers'
+        // Uninstall, which also strips the rendered copy.
+        const rawScopes = Object.entries(row.presence ?? {}).filter(([scope]) => scope !== 'kirocrew')
+        if (row.presence && rawScopes.every(([, present]) => !present)) {
+          throw new Error(t('pages.connectionsPage.connect_rendered_copy_only', {
+            provider: provider.name,
+            name: existing.name,
+          }))
+        }
+        throw new Error(t('pages.connectionsPage.connect_hand_written_row', {
+          provider: provider.name,
+          name: existing.name,
+        }))
+      })
+    }
+    if (existing && stored) {
       await api.mcpCustomUpdate(existing.name, { ...stored.spec, url: provider.mcp_url })
       // Editing a spec deliberately preserves the disabled flag ("editing is
       // not consent to run") — but Reconnect IS consent, so re-enable the
@@ -595,7 +622,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     setLocallyWaiting(current => ({
       ...current,
       [provider.slug]: {
-        kind: existing ? 'reconnect' : 'new',
+        kind: stored ? 'reconnect' : 'new',
         sinceTs,
         token: started?.token,
       },
@@ -703,7 +730,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         ...current,
         [provider.slug]: disconnectFeedback(
           provider,
-          [grantClause, entryClause, specClause].filter(Boolean).join(' '),
+          joinSentences([grantClause, entryClause, specClause]),
           // A census gap tells the user their access was NOT withdrawn and hands
           // them a repair to make; a not-ours entry leaves the card showing
           // Connected with a live Disconnect button, so a green success would

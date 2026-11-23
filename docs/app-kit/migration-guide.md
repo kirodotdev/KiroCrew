@@ -110,7 +110,8 @@ before the reply starts.
 
 For raw request bodies (such as `FormData`), use `api.request(path, init)`.
 JSON helpers also accept request options: `api.post(path, body, { signal })`.
-All responses are still parsed as JSON; use the `status` and unparsed `body`
+Their responses are still parsed as JSON (only `api.raw` returns the unread
+`Response`); use the `status` and unparsed `body`
 fields on an HTTP `AppApiError` to handle an endpoint's conflict response rather
 than parsing its error message. See the [API reference](api-reference.md#app-sdk-hooks-dashboard-ui).
 Do not copy a session header into app code: the host supplies it, and a chat-bound

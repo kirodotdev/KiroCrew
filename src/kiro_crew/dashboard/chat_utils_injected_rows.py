@@ -11,6 +11,7 @@ patch; this module never imports it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from enum import Enum
 from typing import Any
@@ -264,12 +265,37 @@ SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
 #: ``meta.spec_hooks_notice`` of the one :data:`SPEC_HOOKS_NOTICE_KIND` row that
 #: says nothing runs the agent spec's hooks on this backend. The dashboard offers
-#: a Dismiss link on this row alone and hides it by this value, so dismissing it
-#: hides no other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
+#: a Dismiss link on this row and hides it by this value, so its dismiss hides no
+#: other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
 #: A row that names a ``preToolUse`` hook does not carry it, because such a hook
 #: is there to refuse calls. It changes only what the dashboard draws: which
 #: hooks run is decided elsewhere.
 SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
+
+#: ``meta.spec_hooks_notice`` of the row that says a folder's own
+#: ``.kiro/hooks/*.json`` files do not run. It rides with
+#: ``meta.project_hook_files_mark``, a hash of the folder and the files' names,
+#: and the dashboard's Dismiss hides every row with that mark: the notice shows
+#: again in another folder or once a file is added, removed or renamed. Names
+#: only, so a file whose content changes stays hidden. It changes only what the
+#: dashboard draws (``website/src/pages/chat/SpecHooksNotice.tsx``).
+SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE = "project_hook_files"
+
+
+def project_hook_files_notice_meta(project_dir: str, names: list[str]) -> dict[str, str]:
+    """The meta of the hook-files notice row for *project_dir*'s hook file *names*.
+
+    ``project_hook_files_mark`` is also the chat's once-shown mark
+    (``turn_spec_hooks._project_hook_files_notice_is_new``), so one value says both
+    "this chat showed it" and "the user dismissed it here".
+    """
+    mark = hashlib.sha256(json.dumps([project_dir, names]).encode()).hexdigest()[:16]
+    return {
+        "kind": SPEC_HOOKS_NOTICE_KIND,
+        "spec_hooks_notice": SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+        "project_hook_files_mark": mark,
+    }
+
 
 #: ``meta.kind`` of the session-start notice that says Crew's tools are off in
 #: this session because a settings file Crew does not govern holds its path.
@@ -407,7 +433,7 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 RESOURCE_WAKE_KIND = "resource_wake"
 
 #: A runner notice re-routed into a crew member's own next turn — today the
-#: automation arm/revision/stop refusal (``session_directive_apply``). A member
+#: automation arm/revision/stop or person-only refusal (``session_directive_apply``). A member
 #: DM draws messages only and never replays a ``notice`` row to the model, so a
 #: refused directive there would reach neither the person nor the crewmate; this
 #: kind delivers it as an ``inject`` row the crewmate's turn carries. System
@@ -614,6 +640,10 @@ COMPOSER_SEND_META = "composer_send"
 #: ``nudge`` row instead of a ``user`` row, and the entry drains alone: merged,
 #: its text would be glued onto the human's own queued words in one row.
 AUTOMATION_STEER_META = "automation_steer"
+#: The wire mark (``queue_push`` meta and the slot-detail queue view) of a queue
+#: entry carrying :data:`AUTOMATION_STEER_META`, so the client never draws its
+#: card as the person's own words.
+AUTOMATION_STEER_WIRE_KEY = "automationSteer"
 
 
 def releases_past_subagent_hold(item: dict) -> bool:

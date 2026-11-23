@@ -107,6 +107,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_code_channel_worker,
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
+        _refuse_granted_bind_too_deep,
         _refuse_unowned_worker,
         _set_pair_field,
         _widest_retired_bindings,
@@ -115,6 +116,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_work_ledger_rebuild,
         api_work_ledger_record,
         holds_ledger,
+        nests_too_deep,
+        release_on_handoff,
     )
     from kiro_crew.dashboard.handlers.work_ledger_handback import (  # noqa: F401
         _HANDBACK_OPERATION,
@@ -239,6 +242,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard import (  # noqa: F401
         session_control,
+        session_managers,
         trace_binding,
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401

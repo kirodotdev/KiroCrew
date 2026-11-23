@@ -681,7 +681,7 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
     assert args[1] is slot
-    assert kwargs == {"human_seen": False}
+    assert kwargs == {"human_seen": False, "mirror_reply_only": False}
 
 
 @pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly", "heartbeat"])
@@ -1360,7 +1360,7 @@ def test_the_reminder_fires_one_hidden_turn_in_the_crewmates_own_thread(_floor_m
     member_goals.set_schedules(slug, ORDINARY, {"daily": True})
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
-    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[1] is slot and kwargs == {"human_seen": False, "mirror_reply_only": False}
     prompt = args[2]
     assert "Keep docs current" in prompt
     assert "pages reviewed" in prompt and "key_result_progress" in prompt

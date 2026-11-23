@@ -26,9 +26,11 @@ logger = logging.getLogger("kiro_crew.acp.kas_agents")
 
 #: The keys a projected stdio declaration may carry and still be reproduced
 #: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
-#: else on a managed entry is a user customization with no session-level
-#: carrier -- ``timeout``, for one -- so an entry carrying one stays in the
-#: block. ``disabledTools`` never reaches here: the projection carries it in the
+#: else on a managed entry is a user customization the hoisted element does not
+#: reproduce -- ``timeout``, for one. Crew's own local launch is hoisted anyway
+#: with those keys dropped and named in one log line: left in the block it
+#: would get no session token and refuse every call. An app entry carrying one
+#: stays in the block. ``disabledTools`` never reaches here: the projection carries it in the
 #: agent's ``excludedTools`` and drops it from the entry. ``disabled`` is absent from that list of
 #: examples for a reason worth stating: a disabled entry never reaches this
 #: function, because :func:`_project_mcp_servers` declines to declare it at all.
@@ -75,8 +77,8 @@ def hoist_servers_for_session(
 
     Only managed declarations move; user-declared ones stay in the block on
     ``session/new`` and ``session/load`` alike, where KAS launches them and reads
-    their ``timeout`` (a session-level element has no ``timeout`` slot, so it
-    would get KAS's 60 s).
+    their ``timeout`` (a session-level element gets KAS's 60 s unless its
+    ``_meta.kiro`` names one the engine reads; only Crew's own elements carry one).
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
@@ -105,11 +107,21 @@ def hoist_servers_for_session(
     * a non-managed server -- third-party declarations are not this seam's;
     * an inactive agent's block -- it must not widen the active session's tool
       surface or carry another identity's key;
-    * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
-      other than ``stdio``, or no usable command -- a restriction, a registry
-      marker or a malformed entry keeps the block path, where it is honoured.
+    * an entry with a ``type`` other than ``stdio`` or no usable command -- a
+      registry marker or a malformed entry keeps the block path, where it is
+      honoured;
+    * an app entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`.
 
-    A managed entry such a key keeps in the block still launches the managed
+    With a *session_token*, a managed local launch with a key outside
+    :data:`_HOISTABLE_ENTRY_KEYS` (``timeout``, ``cwd``) IS hoisted, with those keys dropped and named in one
+    info line. The hoisted element does not reproduce them: a user ``timeout``
+    gives way to the 120 s :func:`_pin_legacy_negotiation` sets on every managed
+    element. Keeping the entry in the block instead kept
+    the key but cost the session token, and ``kirocrew-core`` then refused every
+    call as ``identity_unattested`` -- a trade no user asked for. The token
+    still reaches only the re-derived managed launch (below).
+
+    A managed entry kept in the block still launches the managed
     invocation: its ``command`` and ``args`` come from *managed_entries*
     (:func:`~kiro_crew.agent.with_managed_launch`) and every other key stays as
     projected, so a user spec copied from ``kirocrew.json`` does not start the
@@ -153,9 +165,10 @@ def hoist_servers_for_session(
     property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
 
     Every managed element in the returned array, caller entries included, is
-    pinned to legacy version negotiation (:func:`_pin_legacy_negotiation`) and
-    placed ahead of every other entry (:func:`_managed_first`), because KAS
-    starts servers in array order and session start waits for Crew's own.
+    pinned to legacy version negotiation and kiro-cli's 120 s connect timeout
+    (:func:`_pin_legacy_negotiation`) and placed ahead of every other entry
+    (:func:`_managed_first`), because KAS starts servers in array order and
+    session start waits for Crew's own.
     """
     if not custom_agents:
         # The kiro path (no wire payload) returns here without importing the
@@ -191,14 +204,33 @@ def hoist_servers_for_session(
                 managed
                 and name not in taken
                 and isinstance(entry, dict)
-                and set(entry) <= _HOISTABLE_ENTRY_KEYS
                 and entry.get("type", "stdio") == "stdio"
             ):
-                element = acp_server_element(name, entry)
+                dropped = sorted(set(entry) - _HOISTABLE_ENTRY_KEYS)
+                carried: Any = entry
+                if dropped:
+                    # Only Crew's own local launch sheds keys to move, and only
+                    # for the token: with none, the block keeps its managed
+                    # relaunch below. An app or remote entry keeps the block.
+                    carried = (
+                        {k: v for k, v in entry.items() if k in _HOISTABLE_ENTRY_KEYS}
+                        if session_token and _is_managed_local_launch(name, entry)
+                        else None
+                    )
+                element = acp_server_element(name, carried)
                 if element is not None:
                     hoisted.append(element)
                     taken.add(name)
                     keep = False
+                    if dropped:
+                        # Values are not logged: a user key may carry a secret.
+                        logger.info(
+                            "MCP server %r is moved to the session-level array so it gets"
+                            " this session's token; dropped %s, which that array does not"
+                            " carry (a user timeout is replaced by Crew's own 120 s)",
+                            name,
+                            "/".join(dropped),
+                        )
             if not keep:
                 continue
             if (
@@ -248,6 +280,17 @@ def hoist_servers_for_session(
             tokened.append(element)
         hoisted = tokened
     return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
+
+
+def _is_managed_local_launch(name: str, entry: Mapping[str, Any]) -> bool:
+    """Whether *entry* is Crew's own server started as a local command, not a remote one."""
+    command = entry.get("command")
+    return (
+        name in MANAGED_MCP_SERVER_NAMES
+        and isinstance(command, str)
+        and bool(command)
+        and not entry.get("url")
+    )
 
 
 def _managed_entry(name: str, managed_entries: Mapping[str, Any] | None) -> Any:

@@ -1,7 +1,7 @@
 ---
 name: browser-auth
 description: Browse a site that needs a logged-in session. The agent never types a password; the user takes over the live browser view in the chat, signs in, and hands it back. Use when a page is behind a login wall, a CAPTCHA or a two-factor prompt.
-triggers: login required, behind a login wall, authenticated browsing, session expired, sign in to browse, take over to sign in, captcha, two-factor, 2fa code
+triggers: login required, behind a login wall, authenticated browsing, captcha, two-factor, 2fa code
 ---
 
 # Browser Auth: browsing what needs a login
@@ -17,13 +17,28 @@ Either way the rule is the same: **you never type a password.** `type`
 refuses a password field with `password_field`, the live view masks password
 boxes, and nothing in a credential ever reaches you or the transcript.
 
+## Ask on the live card first
+
+For a step only the user may do, the `browser` tool's `ask` op puts the request
+on the live card and waits up to 10 minutes for the answer: `credentials` for a
+sign-in (with no `targets` the user types into Kiro's own sheet and the browser
+fills each screen of the site itself), `otp` for a one-time code, `text` for a
+personal detail you do not know, `human_check` for a CAPTCHA box, and `confirm`
+before a click that cannot be undone. You get only an outcome (`filled`,
+`submitted`, `declined`, ...), never what was typed. The tool's description lists
+the args and the roles each kind takes. A passkey prompt or an interactive
+CAPTCHA is takeover-only.
+
 ## Take over to sign in
 
-When a page lands on a sign-in form, a CAPTCHA, or a one-time-code prompt:
+When `ask` does not fit, or the page needs a passkey, a hardware key or an
+interactive CAPTCHA:
 
 1. Say so in one line: what the page wants and that you are waiting for them.
    Example: "This page needs your sign-in. Click the live view to take over,
-   sign in, then press Esc to hand it back."
+   sign in, then press Esc to hand it back." Pass `handback_options` (up to 4
+   short answers such as "I signed in" / "Not signed in"); the result then
+   carries `handed_back` with the one they picked, so act on it without asking.
 2. Issue your next op as normal. While the user holds the browser the op
    WAITS until they hand it back (up to 10 minutes) and then runs; you never
    poll and never ask them to tell you they are done. `user_in_control` comes

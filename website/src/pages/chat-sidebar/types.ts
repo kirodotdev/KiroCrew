@@ -127,6 +127,8 @@ export interface Slot {
    *  matter what the backend sends. */
   executor?: 'local' | 'remote'
   instance_id?: string
+  /** A read-only cron run transcript — see `ChatSlot` in ../../types. */
+  cron_run_read_only?: boolean
   created?: string
   /** Shared Crew creator, when the gateway records one. Display only. */
   attribution?: SessionAttribution | null

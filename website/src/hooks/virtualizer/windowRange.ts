@@ -95,6 +95,15 @@ export interface WindowState {
   windowRange: WindowRange
   setWindowRange: SetWindowRange
   retainRange: (range: RetainedVirtualRange | null) => void
+  /** Move the retained range by `delta` rows. A retained range names ROWS (a
+   *  native selection's), and a landed older page renumbers every row, so each
+   *  owner that lands one moves the range by those rows' displacement, at
+   *  commit: the anchored landing by its anchor's measured displacement, the
+   *  arithmetic fallback and follow by where the old first row landed (the
+   *  fallback by the inserted count when that row did not survive). Left
+   *  where it was, the range holds whichever rows took its numbers and can
+   *  let the rows under the selection unmount, which re-roots the selection. */
+  shiftRetainedRange: (delta: number) => void
   /** The range `setWindowRange(next)` commits: `next` widened to keep any
    *  retained range mounted. A render-phase writer compares against this, not
    *  against `next`, or it never sees its own update land. */
@@ -153,9 +162,17 @@ export function useWindowState(
     retainedRangeRef.current = normalized
     if (normalized) setWindowRange((current) => current)
   }, [setWindowRange])
+  // No window write of its own: every write reads the range through
+  // resolveWindowRange (which also clamps it to the count), so the next one,
+  // the caller's own or the next recompute, holds the moved rows.
+  const shiftRetainedRange = useCallback((delta: number) => {
+    const retained = retainedRangeRef.current
+    if (!retained || delta === 0) return
+    retainedRangeRef.current = { start: retained.start + delta, end: retained.end + delta }
+  }, [])
   // Live mirror of windowRange for imperative reads (debug probe).
   const windowRangeRef = useRef(windowRange)
-  return { windowRange, setWindowRange, windowRangeRef, retainRange, resolveWindowRange }
+  return { windowRange, setWindowRange, windowRangeRef, retainRange, shiftRetainedRange, resolveWindowRange }
 }
 
 /**

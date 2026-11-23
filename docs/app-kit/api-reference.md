@@ -245,6 +245,66 @@ async def wake_first_bot(ref: str) -> None:
                 print(r.status, await r.json())  # 202 {"status": "started"} or "queued"
 ```
 
+### Kiro calls
+
+Level 12. Your app can call Kiro BFF operations as the signed-in person without ever
+holding their Kiro token. Name each operation in the manifest:
+
+```json
+"permissions": { "kiroOperations": ["GetWidget", "ListWidgets"] }
+```
+
+Installing approves none of them: the trust prompt lists the names, and the owner
+approves them on the app's detail page. An update that adds a name holds it there too;
+the names already approved keep working. The gateway forwards only a name that is declared and approved, by exact match.
+
+From your backend, with your app token (no `permissions.api` entry is needed):
+
+```
+POST /api/apps/<name>/kiro/<operation>
+Content-Type: application/json
+
+{ ...the operation's input... }
+```
+
+The answer is the operation's output map as JSON: a byte string is base64 text and a
+timestamp is ISO-8601 text. The owner's own dashboard session may call the route too; any
+other caller gets 403 `forbidden`. From an in-gateway hook:
+
+```python
+output = await ctx.kiro_call("GetWidget", {"widgetId": "w-1"})
+```
+
+It raises `KiroCallError` with the same `code`, `message` and `status` as the route.
+An `agentTools` handler calls the seam the same way.
+
+The gateway sends the call with the person's Kiro sign-in to the BFF of their profile's
+region. Your app chooses no host, path or header. The input is at most 1 MiB and 32
+levels deep, the reply at most 8 MiB, a call at most 30 seconds, and at most 8 calls of
+one app run at once. An error body is `{"error": "<message>", "code": "<code>", "upstream":
+null}`; `upstream` is `{status, type, message}` when the BFF answered an error:
+
+| Case | Status | `code` |
+|---|---|---|
+| Not your app's token, nor the owner | 403 | `forbidden` |
+| App not enabled | 403 | `app_disabled` |
+| Name not declared | 404 | `unknown_operation` |
+| Declared, not approved | 403 | `operation_not_approved` |
+| Input too large or too deep | 413 | `body_too_large` |
+| Input not a JSON object, or a value Kiro cannot take (an integer past 64 bits) | 400 | `invalid_json` |
+| More than 8 calls running (with `Retry-After: 1`) | 429 | `too_many_calls` |
+| Not signed in to Kiro | 409 | `kiro_sign_in_required` |
+| Sign-in could not be read or renewed | 503 | `kiro_sign_in_unavailable` |
+| The BFF answered 401 to the renewed sign-in | 409 | `kiro_sign_in_refused` |
+| Profile region not served | 503 | `kiro_region_unsupported` |
+| The BFF answered any other error, a 403 included | 502 | `kiro_operation_failed` |
+| Timeout / network error | 504 / 502 | `kiro_unreachable` |
+| Reply too large or not RPC v2 CBOR | 502 | `kiro_bad_reply` |
+
+Show the sign-in codes to the person as they are: the message already says to sign in
+to Kiro in Settings. None of them is a 401, so your client's app-token renewal does not
+fire on them.
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -431,7 +491,7 @@ answer like `/clear` is sent as the literal words. When no turn is running the
 steer replies `unavailable` and the typed answer is put back in the message box,
 unsent, rather than dropped.
 
-What the embed does not do today, one line each:
+What the embed does not do, one line each:
 
 - No frame stream of its own. Every row comes from the transcript read, which
   returns the newest 200 rows; "load earlier" widens that by 200 rows a press,
@@ -440,7 +500,6 @@ What the embed does not do today, one line each:
   read at once; otherwise the embed polls every 1 s while a turn runs and every
   5 s when idle. After 10 s of failed reads it backs off, up to 30 s between
   attempts.
-- No Stop control. A running turn cannot be cancelled from the embed.
 - No reasoning display. Model thinking is sent only as the `chat_thinking`
   WebSocket event, which the poll never sees.
 - Trust is a lasting grant, not a one-shot approval. Choosing Trust on an
@@ -693,8 +752,8 @@ client does not let an app choose.
 
 ### Long pastes
 
-A long paste collapses the way it does in the main chat. Text of four lines or
-more, or over 200 characters, goes into the draft as one
+A long paste collapses the way it does in the main chat. Text of three lines or
+more, or 200 characters or more, goes into the draft as one
 `[ Paste #N · M lines ]` chip instead of its full text. The chip moves and
 deletes as one unit, hovering it (or putting the caret inside it) previews the
 text, and a double-click (a tap on touch) expands it back into the draft.
@@ -807,6 +866,56 @@ composer and source strip, which an app page does not have.
 | `sources` | `PullRequestLink[]` | yes | The pull requests the strip offers |
 | `selectedUrl` | `string` | yes | The url of the one shown |
 | `onSelect` | `(url: string) => void` | yes | Called when the user picks another tab |
+
+## Session Changes and Diff View
+
+`SessionChanges` is the chat window's list of the files a chat session created or
+changed, the **Edited** view of its **Files** tab, with the diff of the file you pick
+shown beside it. `DiffView` is the diff viewer the chat window's diff tabs draw. An
+app page that embeds a chat (`ChatEmbed`, `ChatPanel`) renders them to show what that
+chat changed, instead of restating either. Both need `APP_SDK_LEVEL >= 12`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+sdk.APP_SDK_LEVEL >= 12 && sdk.SessionChanges
+  ? <sdk.SessionChanges slotKey={slotKey} projectDir={projectDir} />
+  : null
+
+sdk.DiffView && <sdk.DiffView filePath="src/app.ts" original={before} modified={after} />
+```
+
+`DiffView` takes both texts and sends no request, so it needs nothing declared.
+`SessionChanges` reads through your app's scoped client and needs two paths in your
+manifest's `permissions.api`:
+
+| Endpoint | What it backs |
+|---|---|
+| `/api/project/session-files` | The list of files the session changed |
+| `/api/project/session-file-diff` | The diff of the file picked in the list |
+
+The two are siblings, not parent and child, so declaring one does not declare the
+other. Without the list's path, or outside an app, `SessionChanges` renders a refusal
+naming it, with the **Ask the agent** hand-off, and sends nothing. With the list's path
+alone, the list shows and picking a file renders a refusal naming the diff's path in
+the diff's place, sending nothing. The diff is the change the session recorded; when
+its record holds no whole before-and-after copy, the pane says so. Both reads are
+read-only. A built-in page keeps the dashboard's client. The list draws no **Browse**
+hand-off and picking a row does not open the file in a tab: those belong to the chat
+window's side panel, which an app page does not have.
+
+| `SessionChanges` prop | Type | Required | Purpose |
+|---|---|---|---|
+| `slotKey` | `string` | yes | The chat session whose changes are shown, as `ChatEmbed` takes it |
+| `projectDir` | `string` | no | The session's project folder: each row names its folder relative to it, else the absolute folder |
+
+| `DiffView` prop | Type | Required | Purpose |
+|---|---|---|---|
+| `filePath` | `string` | yes | Shown in the footer (click to copy) and used for highlighting |
+| `original` | `string` | yes | The text before the change; empty for a new file |
+| `modified` | `string` | yes | The text after the change; empty for a deleted file |
+| `sideBySide` | `boolean` | no | Side by side (default) or one unified column |
+| `lineNumbers` | `boolean` | no | Show line numbers (default off) |
 
 ## Issue Search
 
@@ -989,6 +1098,52 @@ session's messages, the cron list or the subagent list through `useAppApi()`
 A built-in page gets every member as the dashboard has it; outside an app every member
 refuses.
 
+## Browser Sites
+
+`useBrowserSites()` reads the pages your app's own agent may browse and lets your page
+ask the owner to change that list. It needs `APP_SDK_LEVEL >= 13` and no
+`permissions.api` entry: it reads and writes your app's own
+`/api/apps/<name>/browser-sites`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const { sites, active, loading, error, refresh, requestAdd, requestRemove, requestDisable } = sdk.useBrowserSites()
+// sites:  [{ site: 'https://music.example.net/song/*', source: 'owner', status: 'approved' }, ...]
+// active: the sites the agent may open right now
+const result = await requestAdd('https://music.example.net/song/*')
+if (!result.ok && result.code === 'declined') { /* the owner pressed Cancel */ }
+```
+
+Each row has `site`, `source` (`app`: your manifest's `permissions.browserSites`
+declares it; `owner`: the owner added it) and `status` (`approved`, `pending`: declared
+and not yet approved, `disabled`: the owner turned it off, or `removed`: a declared site
+the owner removed, listed so it can be added back and never in force).
+
+- `requestAdd(site)` widens the list: a new site, a turned-off or removed one back on, or a
+  declared one still waiting. The dashboard shows its own dialog with the site and what the agent
+  may then do, and sends the change only when the owner presses **Allow site**. A new
+  site follows the `permissions.browserSites` entry rules: an `https://` origin with a
+  path pattern; no bare `*`, wildcard host, IP, `localhost`, port or public suffix.
+- `requestRemove(site)` and `requestDisable(site)` only shrink the list, so they apply at
+  once. The agent's next browser step is refused on that site, and a tab on it is blanked.
+  Neither acts on a `removed` row (`not_listed`).
+
+Each resolves `{ ok: true, sites, active }`, or `{ ok: false, code, error }` with `code`
+one of `declined`, `bad_site`, `too_many`, `not_listed`, `bad_action`, `not_found`,
+`app_token_forbidden`, `dashboard_session_required`, `owner_only` or `request_failed`.
+
+Your backend and your agent read the same list with
+`GET /api/apps/<name>/browser-sites` (the app token reaches it), which answers
+`{ sites, active }`. Only the owner's dashboard may change it: the `POST` refuses your
+app token, an agent's tools and every other session. A browser step your agent takes off
+the list is refused with `site_not_allowed`, and the message names the sites in force.
+
+The dialog is a guardrail, not a security boundary: your page runs in the dashboard's
+document with the owner's session, and a backend that mints an owner token through the
+local owner mint reaches the `POST` too, as it reaches `/enable` (see the
+[trust model](../architecture/app-platform-trust-model.md)).
+
 ## Browser Media
 
 `useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
@@ -1008,10 +1163,10 @@ const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia
 
 | Member | Does |
 |---|---|
-| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `media` | the playing element's state: `kind`, `paused`, `ended` (true once the tab counted an ending, also one the site answered by taking the source away, until something plays), `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
 | `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
 | `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
-| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+| `onEnded(media)` (option) | called once for each ending the tab counted; again only after something plays and ends anew. A song that has already ended when the page mounts counts once |
 
 For continuous play, poll and let the ending pick the next song:
 
@@ -1026,9 +1181,55 @@ sdk.useBrowserMedia(sessionKey, {
 because every read takes the browser lock your agent's ops wait on. A value that is not
 a finite number above 0 (`0`, `-1`, `NaN`, `Infinity`) reads once.
 
-The signal is derived from the state your page reads, so it only exists while your page is
-mounted and polling. Your backend learns of it when your page posts to one of your own
-routes; with the page closed nothing reads the tab, so nothing fires.
+`onEnded` is derived from the state your page reads, so it only exists while your page is
+mounted and polling. To keep playing with the page closed, let your backend hear the
+ending instead: declare `backend.hooks.on_browser_media_ended` in your manifest.
+
+```json
+{ "backend": { "hooks": { "routes": "backend.routes:register_routes",
+                          "on_browser_media_ended": "backend.routes:on_media_ended" } } }
+```
+
+```python
+async def on_media_ended(ctx, event):
+    # event == {"event": "browser_media_ended", "session_key": "mood-music-dj-1",
+    #           "origin": "https://www.youtube.com", "duration": 213.4}
+    slots = getattr(ctx, "chat_slots", None)
+    ...  # e.g. send "That song ended. Play the next one." to the slot event["session_key"] names
+```
+
+| Field | Value |
+|---|---|
+| `event` | always `"browser_media_ended"` |
+| `session_key` | your app's own slot whose tab played (the one its agent browsed in) |
+| `origin` | the page's `scheme://host[:port]`, `""` when the tab reported none |
+| `duration` | the element's length in seconds, `null` when it did not know |
+
+The gateway calls it once per ending, whether or not your page is open: after your
+agent's first successful `browser` op in a slot, it reads that tab's media state every 3
+seconds (the read `useBrowserMedia` makes, skipped while the browser is busy or the
+person has taken the tab over) and calls your hook for each new ending the tab counted.
+The same ending is not reported twice; a new song that plays and ends is a new call.
+
+The tab counts an ending as it happens, so neither the page nor the gateway has to read
+at that moment: the element's `ended` event, or its source going away within 2 seconds
+of the end (YouTube removes the source when a song ends, leaving the element paused at
+0 with no duration, and `duration` in the event is then `null`). An ending counts once
+nothing plays on the same page for 3 seconds after it, so an advert that hands over to
+the video on the same page is not one, and the reports arrive up to that much later.
+The page moving on to another address and playing there (the site's own autoplay) counts
+at once. Only the page's largest media element is followed, so a small preview ending
+is not one, and media already ended when the tab is first read counts once. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
+hook gets 30 seconds before the gateway stops waiting for it. Keep it short: turning
+your app off or uninstalling it waits for a hook that is still running, and
+withdrawing its trust fails until the hook returns. Nothing of the page is
+passed beyond its origin, and no agent is woken: what happens next is your hook's.
+
+Only your app hears of its own slots, never another app's and never a person's chat.
+The watch stops when the tab closes, when your app is turned off, uninstalled or loses
+its trust or its approved `browserSites`, or when the manifest drops the hook; your
+agent's next op starts it again. A host that predates the hook ignores the key, so a
+manifest that declares it still installs there.
 
 The route acts on the element that is playing, else the largest one shown, in the page's
 top document. It reads no page text. A play may be refused by the
@@ -1070,6 +1271,7 @@ import * as sdk from '@kirocrew/app-sdk'
 | `slot` | required; one of your slot keys (`<app>-<id>`), a slot your app made with `ctx.chat_slots` |
 | `aria-label` | required; the name of the view for a screen reader |
 | `interactive` | may the person take over; default `true` |
+| `stayLive` | keep the picture after the Bot's turn ends while its tab is still open (music still playing): the view streams that tab again by itself, once per turn while mounted and on screen. A closed tab stays folded, and a refused reopen shows its error and is not retried. Default `false`: the view folds to a "Show the live page" button. An older dashboard ignores it |
 | `onTakeover()` | the person took over in this view, once the gateway accepted it |
 | `onHandBack(note?)` | the person handed back, with their note or chosen reply if they gave one |
 | `onNavigate({ url, title })` | the page changed address or title |
@@ -1081,6 +1283,10 @@ import * as sdk from '@kirocrew/app-sdk'
 | `state` | `idle` before the slot has browsed, else `live`, `in_control`, `waiting_allow`, `login_needed`, `done` or `error` |
 | `url`, `title` | the page's address and title |
 | `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
+
+Below the picture the view lists what the Bot did this turn (the chat card's step
+strip): the latest five actions, newest last, behind a toggle that counts them all
+and that the person may fold. It needs no prop and no change in your app.
 
 `useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
 the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
@@ -1125,6 +1331,12 @@ website/src/app-sdk/protocol/
   steering.ts       extractSteeringAcks
   grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
+
+The same directory holds four more in-tree helpers the package does not export:
+`grillWireValues.ts` (the `[GRILL:]` card's wire strings), `keepVisibleMarker.ts`
+(the `<!-- keep-visible -->` tag that keeps a mid-turn report out of the collapsed
+steps), `inlineThinking.ts` (splits an inline `<thinking>` block out of a reply) and
+`dispatchShape.ts` (whether a chip's text would run a command when sent).
 
 ### Using it from an app
 
@@ -1232,7 +1444,7 @@ const renderers = [{
 collapsible "worked through N steps" group **before** rows are resolved. An entry claiming either is
 still consulted, but it renders **inside** that group, and the group keeps its own summary and
 approval affordance — so you cannot yet use the registry to replace the built-in approval UI with
-your own. Substituting the group itself is not an extension point today — tracked in #2940.
+your own. Substituting the group itself is not an extension point.
 
 ### Replacing a built-in row
 
@@ -1315,21 +1527,23 @@ that genuinely needs live app state is supplied by the host as an entry.
 
 ## Gateway API Surface
 
-The sections below name the Gateway API surface. A name here is an **endpoint
-label**, not a guarantee that a client method exists for it: the source-only
-`kirocrew-client` Python package covers part of this surface, and
-[Python Client](#python-client) marks which part. For anything it does not
-implement, call the endpoint directly — the paths are in
+The sections below name the Gateway API surface by the method of the
+source-only `kirocrew-client` Python package that wraps each route.
+[Method Reference](#method-reference) gives the route each method calls. From
+any other language, call the route directly — the paths are in
 [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
-The `Returns` column describes the response shape. It is not a TypeScript type:
-no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
-their siblings are response-shape names rather than importable types.
+The `Returns` column describes what the Python method returns: the decoded JSON
+answer (a `dict`, or a `list` of dicts) unless the row says otherwise. No
+TypeScript client ships, so `GatewayStatus`, `CronJob` and their siblings are
+response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the Python client uses
-the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
-`KIROCREW_APP_NAME` names the same app). Only with a Gateway older than that does it
-fall back to `~/.kiro/crew/apps/{name}/.app_secret`. Code that runs in the Gateway
+When `app_name` is set and no explicit auth or `app_secret` is provided, the Python
+client uses the app secret the Gateway gave its backend at spawn
+(`KIROCREW_PROXY_SECRET`, when `KIROCREW_APP_NAME` names the same app). Only with a
+Gateway older than that does it fall back to `~/.kiro/crew/apps/{name}/.app_secret`.
+A self-managed app passes the secret its registration returned as `app_secret=`.
+Code that runs in the Gateway
 process, an app's `backend.hooks`, has no secret: pass `base_url=ctx.gateway_origin()`,
 `token=await ctx.app_token()` and `on_auth_expired=ctx.app_token`, and build no client
 when `ctx.gateway_origin()` returns `""` (see
@@ -1348,40 +1562,42 @@ applies to both HTTP requests and WebSocket handshakes created by `create_ws()`.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `authenticate()` | `boolean` | Exchange the app secret for a token; call explicitly before the first remote request |
-| `setToken(token)` | `void` | Conceptual token assignment; the Python client accepts `token=` in its constructor |
+| `authenticate()` | `bool` | Exchange the app secret for a token; call explicitly before the first remote request |
+| `token` | `str` | The token the client sends; pass `token=` to the `KiroCrewClient` constructor |
 
 ### Connection
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `ping()` | `boolean` | Check if Gateway is reachable |
-| `getStatus()` | `GatewayStatus` | Gateway health (version, uptime, slots, provider) |
-| `getSystemInfo()` | `SystemInfo` | CPU, memory, disk metrics |
+| `ping()` | `bool` | Check if Gateway is reachable |
+| `get_status()` | `GatewayStatus` | Gateway health (version, uptime, slots, provider) |
+| `get_system_info()` | a `dict` of metrics | CPU (`cpu_pct`), memory (`mem_used_gb`, `mem_total_gb`, `proc_mem_mb`), disk (`disk_free_gb`, `disk_total_gb`) and network metrics |
 
 ### Chat Slots
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `createSlot(name, agent?)` | `SlotInfo` | Create a new chat session |
-| `listSlots()` | `SlotInfo[]` | List all active sessions |
-| `deleteSlot(slotId)` | `—` (no body) | Remove a session |
-| `getSlotHistory(slotId, limit?)` | `{messages, total}` | Get slot message history |
-| `sendMessage(slotId, message)` | `—` (no body) | Send a message (validates length, auto-flushes pending context) |
+| `create_slot(name, agent="")` | the slot's row (`dict`) | Create a new chat session |
+| `list_slots()` | a `list` of slot rows | List all active sessions |
+| `delete_slot(slot_id)` | `—` (no body) | Remove a session |
+| `get_slot_history(slot_id, limit=50)` | `{messages, total}` | Get slot message history |
+| `send_message(slot_id, message)` | `—` (no body) | Send a message (validates length, auto-flushes pending context) |
 
 ### WebSocket Events
 
+These are methods of the `WsClient` that `create_ws()` returns.
+
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `void` | Open WebSocket connection |
-| `disconnect()` | `void` | Close WebSocket connection |
-| `connected` | `boolean` | Current connection state |
-| `onChatChunk(slotId, cb)` | `() => void` | Stream response chunks for a slot |
-| `onChatDone(slotId, cb)` | `() => void` | Response complete for a slot |
-| `onNotification(cb)` | `() => void` | Receive notifications |
-| `onToolCall(cb)` | `() => void` | Receive tool call events |
-| `onConnectionChange(cb)` | `() => void` | Connection state changes |
-| `onRaw(cb)` | `() => void` | All parsed WebSocket events |
+| `connect()` | `None` | Open WebSocket connection |
+| `disconnect()` | `None` | Close WebSocket connection |
+| `connected` | `bool` | Current connection state |
+| `on_slot(slot_id, "chat_chunk", cb)` | an unsubscribe function | Stream response chunks for a slot |
+| `on_slot(slot_id, "chat_done", cb)` | an unsubscribe function | Response complete for a slot |
+| `on("notification", cb)` | an unsubscribe function | Receive notifications |
+| `on("tool_call", cb)` | an unsubscribe function | Receive tool call events |
+| `on_connection_change(cb)` | an unsubscribe function | Connection state changes |
+| `on_raw(cb)` | an unsubscribe function | All parsed WebSocket events |
 
 All `on*` methods return an unsubscribe function.
 
@@ -1427,21 +1643,21 @@ client when it fires.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `spawn(task, agent?)` | `string` | Spawn a background subagent |
-| `spawnMany(tasks, agents?)` | `string[]` | Spawn multiple subagents in parallel |
-| `listSubagents()` | `SubagentInfo[]` | List all subagents |
-| `getSubagentStatus(id)` | `SubagentResult` | Get subagent output |
+| `spawn(task, agent="")` | `str` | Spawn a background subagent |
+| `spawn_many(tasks, agents=None)` | `list[str]` | Spawn multiple subagents in parallel |
+| `list_subagents()` | `SubagentInfo[]` | List all subagents |
+| `get_subagent_status(agent_id)` | the run's status (`dict`: `id`, `task`, `done`, `result`, …) | Get subagent output |
 
 ### Cron Jobs
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addCron(name, options)` | `CronJob` | Create a scheduled job |
-| `listCrons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
-| `updateCron(id, options)` | `CronJob` | Update a cron job |
-| `removeCron(id)` | `—` (no body) | Delete a cron job |
-| `pauseCron(id)` | `—` (no body) | Pause without deleting |
-| `resumeCron(id)` | `—` (no body) | Resume a paused job |
+| `add_cron(name, **options)` | `CronJob` | Create a scheduled job |
+| `list_crons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
+| `update_cron(job_id, **options)` | `CronJob` | Update a cron job |
+| `remove_cron(job_id)` | `—` (no body) | Delete a cron job |
+| `pause_cron(job_id)` | `—` (no body) | Pause without deleting |
+| `resume_cron(job_id)` | `—` (no body) | Resume a paused job |
 
 **Ownership for app tokens.** `POST /api/crons` from an app token stamps the
 job's `created_by` as `app:<name>` from the token. An app token may update,
@@ -1544,7 +1760,7 @@ Register it as a **script** cron. Two paths create one:
   creation time, which is why this call must come from that session.
 
 Pass the probe's settings as the cron `message`, for example
-`json.dumps({"env": "prod"})`. Do not use `addCron` / `POST /api/crons` for
+`json.dumps({"env": "prod"})`. Do not use `add_cron` / `POST /api/crons` for
 this: that route reads neither `script` nor `timeout`, so it creates an
 **agent** cron that pays a model turn on every tick.
 
@@ -1749,7 +1965,7 @@ older than this option raises `TypeError` on the unknown keyword.
 
 ### Bot proposals (`ctx.crewmate`)
 
-> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
+> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards ships. The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
 
 Once switched on, present when the manifest declares `permissions.proposeCrewmate: true`, and `None` otherwise. The app hands core one parsed `.crewmate` bundle ([rfc-crewmate-share.md](../request-for-change/rfc-crewmate-share.md) §5.2). Core checks it and raises one `crewmate.import` change card for the owner. The app creates nothing: only the owner's press creates the crewmate.
 
@@ -1957,7 +2173,7 @@ line = await ctx.turns.run_oneshot(prompt, label="translate")
 | Call | Returns | What it does |
 |------|---------|--------------|
 | `run(key, text, *, agent="", timeout_secs=None, cancel_ack_secs=5.0)` | reply text | Send *text* to the session *key*, created on first use as *agent* (`""` is the default agent) and kept for the next call. Past `timeout_secs` the turn is cancelled (the session is reset if the agent does not acknowledge within `cancel_ack_secs`) and `asyncio.TimeoutError` is raised; the budget starts after the session is acquired |
-| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -` |
+| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -`, starting with a letter or digit |
 | `has_session(key)` | bool | Whether a live session exists for *key* |
 
 A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`; any other key
@@ -2129,7 +2345,8 @@ stay yours. The owner sees the declaration, with the source id, at the trust pro
 
 ### Browser (`ctx.browser`)
 
-The browser tabs of your app's own chat slots (RFC #38322, step 1a). Present only
+The browser tabs of your app's own chat slots
+([rfc-app-sdk-browser](../request-for-change/rfc-app-sdk-browser.md)). Present only
 when the manifest declares `permissions.browser` and the owner turned on **App
 browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
 Developer > Feature previews; `None` otherwise, so feature-detect it:
@@ -2143,13 +2360,69 @@ if browser is None or "read" not in browser.verbs():
 | Member | Returns | Description |
 |--------|---------|-------------|
 | `verbs()` | `tuple[str, ...]` | The verbs your app holds now: declared, approved by the owner on your app's page, the app turned on, and the preview on. Blocking: call it from a worker thread. Empty when any of these is missing; turning the app off keeps the approvals, and they apply again when it is turned on. |
+| `page(slot, *, state=None)` | `PagePort` | The page of `slot`, one of your app's own live chat slots (opened through `ctx.chat_slots`). Pass the route's `request.app["state"]`; without it the SDK reads the Gateway's own, which only a `backend.hooks.routes` app is handed. Raises `BrowserRefused` (a `PermissionError` with a `code`: `not_your_slot`, `no_state`) when the slot is not yours: the key's prefix AND the Gateway's stamp must both match, so `foo` does not get `foo-bar-1`. |
 
 Installing approves no verb: the owner approves them on your app's page, and an
 update that adds a verb holds that verb back while the ones already approved keep
 working. `ctx.browser` itself and the answer of `verbs()` are re-read at each use, so
 an approval, a removed verb or the preview turned on or off applies at once, with no
-restart. This step adds only the grant and the gate; the
-page operations (`page(slot)`, `slots()`) follow in step 1b of the RFC.
+restart.
+
+**`PagePort`.** Every method is `async` and answers a dict, never an exception:
+`{"ok": True, ...}`, or `{"ok": False, "code": ..., "error": ...}`. Each call checks
+again that the slot is still yours, the preview is on, and the verb is approved and
+your app is on, so a port you kept stops working the moment any of them changes.
+`read` and `act` calls then go through the same Gateway function as the Bot's own
+`browser` tool: the browse switch for the slot's session, the address check, your
+`browserSites`, the takeover hold and the shared browser lock.
+
+| Method | Verb | Answers (when `ok`) |
+|--------|------|---------------------|
+| `aim(x, y, label="")` | `view` | `shown`: whether a live view shows the cursor now (viewport CSS px) |
+| `view_state()` | `view` | `state`, `url`, `title`, `user_holds`, `viewport` |
+| `tabs()` | `read` | `tabs`: the slot's own tabs only |
+| `outline(*, budget=6000)` | `read` | `snapshot`: the page outline the Bot reads, cut to `budget` characters (`truncated` when cut) |
+| `screenshot(*, region=None)` | `read` | `png`: the image bytes, at most 8 MiB |
+| `pick(x, y)` | `read` | `ref`, `tag`, `text`, `box` of the element drawn at that viewport point; the `ref` is one `click` and `type` take. `text` is the element's own drawn text (no form field value, secret-named element, hidden text or script; never a label or `aria-labelledby` target), else its own `aria-label`, `title`, `alt` or `placeholder`. A protected field (password, secret-named, one-time code, quick-ask), or a point inside one, answers `password_field`. An iframe answers as itself |
+| `locate(texts)` | `read` | `found`: one `{text, boxes}` per text, in order, a box per visible occurrence in the page and its open shadow roots (at most 20 per text). Text inside a protected field, a form field or a script is never searched, and same-origin frames are not searched |
+| `navigate(url)` | `act` | the `navigate` result |
+| `click(ref)` | `act` | the `click` result; `ref` comes from `outline` |
+| `type(ref, text)` | `act` | the `type` result |
+
+Every refusal, from `page(slot)` or from a `PagePort` method, writes a `denied` row in
+the Gateway's browser audit under your app's name, as the Bot's refusals do.
+
+Every string you get back (outline text, a tab's address and title, an op's result or
+error, `view_state`'s address and title, `pick`'s name) is redacted whole, as the Bot's
+own tool redacts it, before anything is cut to a length.
+
+`pick`, `locate` and `view_state` also answer `viewport`: the streamed viewport's
+`{w, h}` in CSS px (`None` before the first frame). Boxes and points are viewport CSS
+px; a live view draws frame pixels, whose width differs and changes, so scale by
+`viewport.w / frame_width` to mark or point at what the person sees.
+
+An app's call never uses up what the Bot in that slot is owed: a popup that opened
+or closed is reported on your answer and still on the Bot's next one, and your calls
+do not count against the chat's `browser.run` step limits. Until one of your answers
+has reported such a move, a `click` or `type` by ref is refused (`popup_opened`,
+`popup_closed`), since the ref belongs to the page that was left; take a fresh
+`outline` and act again.
+
+Refusal codes: `not_your_slot`, `preview_off`, `permission_denied` (the verb is not
+approved, or your app is off), `policy_denied` (browsing is off for that slot),
+`url_blocked`, `site_not_allowed`, `password_field`, `user_holds` (the person has
+taken over the page; try again later, nothing waits), `browser_busy`, plus the
+browser operation's own codes. A working app is
+[examples/browser-reader](examples/browser-reader/README.md):
+
+```python
+async def outline(request, ctx):
+    try:
+        page = ctx.browser.page(request.match_info["slot"], state=request.app["state"])
+    except PermissionError as exc:
+        return web.json_response({"ok": False, "code": exc.code, "error": str(exc)})
+    return web.json_response(await page.outline(budget=2000))
+```
 
 ### App token (`ctx.app_token()`)
 
@@ -2229,7 +2502,10 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
-dashboard's `appWebOriginStatus(name)`; each level
+dashboard's `appWebOriginStatus(name)`, and level 12 adds
+`permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
@@ -2294,17 +2570,18 @@ because none of them adds reach. Your manifest declares nothing for them.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `addLesson(rule, category, scope?)` | `—` (no body) | Save a learned rule |
-| `listLessons()` | `Lesson[]` | List all lessons |
-| `removeLesson(query)` | `—` (no body) | Remove matching lessons |
+| `add_lesson(rule, category, scope="")` | `—` (no body) | Save a learned rule |
+| `list_lessons()` | `Lesson[]` | List all lessons |
+| `remove_lesson(query)` | `—` (no body) | Remove matching lessons |
 
 ### Notifications
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `sendNotification(text, options?)` | `—` (no body) | Send via Slack or dashboard |
-| `listNotifications()` | `{notifications}` | List notifications |
-| `ackNotifications()` | `—` (no body) | Acknowledge all notifications |
+| `send_notification(text, **options)` | `—` (no body) | Send via Slack or dashboard |
+| `list_notifications()` | `{notifications, unread}` | List notifications |
+| `ack_notification(ts)` | `—` (no body) | Acknowledge one notification |
+| `ack_all_notifications()` | `—` (no body) | Acknowledge all notifications |
 
 ### Member records
 
@@ -2359,14 +2636,14 @@ POST /api/member-records/{slug}
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `approveAction(slotId, taskId, pattern?)` | `—` (no body) | Approve a pending tool action; command/base trust requires the pending card pattern |
-| `rejectAction(slotId, taskId)` | `—` (no body) | Reject a pending tool action |
-| `resolveApproval(approvalId, action, slotId?, pattern?)` | `—` (no body) | Resolve an approval by ID; `trust_command` and `trust_base` require `pattern` |
-| `getApprovalMode()` | `'auto'` \| `'interactive'` | Read the config setting `agent.approval_mode` from `GET /api/config/kirocrew` |
-| `setApprovalMode(mode)` | `—` (no body) | Set the chat trust mode (`normal`, `trust_reads`, `trust`, `yolo`) through `POST /api/chat/mode`; a different setting from `agent.approval_mode` |
+| `resolve_approval(request_id, "approved", slot_id, pattern="")` | `—` (no body) | Approve a pending tool action; command/base trust requires the pending card pattern |
+| `resolve_approval(request_id, "rejected", slot_id)` | `—` (no body) | Reject a pending tool action |
+| `resolve_approval(request_id, action="approve", slot_id="", *, pattern="")` | `—` (no body) | Resolve an approval by ID; `trust_command` and `trust_base` require `pattern` |
+| `get_gateway_config("kirocrew")` | a JSON object | Read the config setting `agent.approval_mode` (`'auto'` or `'interactive'`) from `GET /api/config/kirocrew` |
+| `set_approval_mode(mode, slot_id="")` | `—` (no body) | Set the chat trust mode (`normal`, `trust_reads`, `trust`, `yolo`) through `POST /api/chat/mode`; a different setting from `agent.approval_mode` |
 
 **Ownership for app callers** (a dashboard caller is unrestricted). The rule follows the request's app claim: an app token, and also an agent running in one of your app's sessions, whose internal calls carry your app's identity.
-- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `setApprovalMode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolveApproval(id, action, slotId)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
+- `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `set_approval_mode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolve_approval(id, action, slot_id)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
 - `GET /api/approvals` lists only what the app could resolve. The list carries background approvals only, so for an app it is always empty. Read a slot's pending requests from its history instead.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.
@@ -2380,49 +2657,49 @@ POST /api/member-records/{slug}
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listModels()` | `ModelInfo[]` | List available LLM models |
-| `setSlotModel(slotId, model)` | `—` (no body) | Set model for a slot |
+| `list_models()` | `ModelInfo[]` | List available LLM models |
+| `set_slot_model(slot_id, model)` | a JSON object | Set model for a slot |
 
 ### MCP Servers
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `listMcpServers()` | `McpServerInfo[]` | List registered MCP servers |
-| `registerMcpServer(def)` | `—` (no body) | Register an MCP server (requires name + command) |
-| `removeMcpServer(name)` | `—` (no body) | Remove an MCP server |
+| `list_mcp_servers()` | `McpServerInfo[]` | List registered MCP servers |
+| `register_mcp_server(name, command, args=None, env=None)` | `—` (no body) | Register an MCP server (requires name + command) |
+| `remove_mcp_server(name)` | `—` (no body) | Remove an MCP server |
 
 Apps declare their agents, skills and `mcpServers` in `app.json`, and
 `kirocrew app install` installs them. For an ad-hoc MCP server, use
-`registerMcpServer`.
+`register_mcp_server`.
 
 ### Agent Runtime
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `dispatchAgent(agent, prompt)` | `TaskResult` | Run agent synchronously |
-| `dispatchAgentAsync(agent, prompt)` | `string` | Run agent in background |
-| `getTaskResult(taskId)` | `TaskResult` | Poll task status |
+| `dispatch_agent(agent, prompt)` | the `POST /api/chat` answer (`dict`) | Run agent synchronously |
+| `dispatch_agent_async(agent, prompt)` | `str` (the run id) | Run agent in background |
+| `get_task_result(task_id)` | the run's status (`dict`: `id`, `task`, `done`, `result`, …) | Poll task status |
 
 ### Gateway Config
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getGatewayConfig(key)` | a JSON object | Read gateway config section |
-| `setGatewayConfig(key, value)` | `—` (no body) | Write gateway config section |
+| `get_gateway_config(key)` | a JSON object | Read gateway config section |
+| `set_gateway_config(key, value)` | a JSON object | Write gateway config section |
 
 ### App Storage
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getAppDataDir()` | `string` | App-scoped data directory path |
-| `getAppConfig()` | a JSON object | Read app config via REST |
-| `setAppConfig(config)` | `—` (no body) | Write app config via REST |
+| `get_app_data_dir()` | `Path` | App-scoped data directory path |
+| `get_app_config()` | a JSON object | Read app config via REST |
+| `set_app_config(config)` | `—` (no body) | Write app config via REST |
 
 ### Memory
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
+| `memory_search(query, top_k=8)` | a `list` of episodic memory entries (the route's `results`) | Semantic memory search |
 
 ### Memory provider routes
 
@@ -2557,12 +2834,14 @@ Silent background context for LLM — content appears in the next user-initiated
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `injectContext(slotId, content, options?)` | `—` (no body) | Inject context (null slotId = buffer locally) |
-| `flushPendingContext(slotId)` | `number` | Flush buffered entries to a slot; returns the count the Gateway refused for good and dropped. A `context_not_queued` or `context_secret_shaped` entry is dropped (not re-buffered) so it never blocks later sends; a transient failure is re-buffered and raised |
-| `setDefaultSlot(slotId)` | `void` | Auto-flush pending context on sendMessage |
-| `pendingContextCount` | `number` | Number of buffered context entries |
+| `inject_context(slot_id, content, *, source=None, ephemeral=True, max_age=None)` | `—` (no body) | Inject context (`slot_id=None` = buffer locally) |
+| `flush_pending_context(slot_id)` | `int` | Flush buffered entries to a slot; returns the count the Gateway refused for good and dropped. A `context_not_queued` or `context_secret_shaped` entry is dropped (not re-buffered) so it never blocks later sends; a transient failure is re-buffered and raised |
+| `set_default_slot(slot_id)` | `None` | Auto-flush pending context on `send_message` |
+| `pending_context_count` | `int` | Number of buffered context entries |
 
-Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
+The request body of `POST /api/chat/slots/{slot}/context` is
+`{ content, source?, ephemeral?, maxAge? }`; the Python client sends its
+`max_age` argument as `maxAge`.
 
 **Constraints** (400 on violation):
 - `source`: ≤64 chars, no control characters or newlines; whitespace-trimmed (a padded label and its bare form share one per-source cap bucket)
@@ -2582,9 +2861,9 @@ Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 
 `POST /api/chat/slots/{slot}/note` drops a short declarative line into a chat that is both visible in the transcript immediately and known to the agent on the user's next message — without firing an LLM turn. Context injection alone is silent; a transcript append alone is invisible to the model, because a live provider forwards only the new user message. The note endpoint does both writes against one slot.
 
-Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, inside URLs too) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
+Body: `{ content, source?, maxAge?, ephemeral? }`. A note always asks for both writes -- there is no visible-only or context-only mode; the visible line is written alone only in the `contextSkipped` cases below. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, inside URLs too) before it reaches the transcript. A credential-shaped `content` seats no context half, because the context half is model-visible pending context (see the boundary under Context Injection): the redacted visible line is still written and `contextSkipped` is true. The bubble's author pill comes from the authenticated app identity, never from the body's `source`. A dashboard user's note has no pill, and neither does a note from an app whose name is over 64 characters or contains a control character. The body's `source` is only the label of the context frame. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
 
-Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, **or** the content is credential-shaped. The request is **not** rejected in any of these cases, because the caps and the credential check protect the context queue rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
+Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. `contextSkipped` is true whenever the context half is refused but the visible line is still written: the source's per-source context cap is full, the whole 50-entry pending-context queue has no seat, the content is credential-shaped, **or** the session is linked or mirrored to a channel (a linked thread, an outbound mirror, the channel a conversation started in), even while that link is paused. That channel never shows the note's line, so the note is not queued for the agent's next turn, whose reply the channel would read. A later session reset that replays the transcript still carries the line, as it does for any note. The request is **not** rejected in any of these cases, because each of them guards the context half rather than the transcript. The full-queue refusal is checked at admission on both arms — an immediate note (`append_pending_context` returns false) and a note held during a running turn (`has_pending_context_seat()` is false) — so a held note never acknowledges a context half the turn-end flush would then drop. Merge-card contexts being read by a running turn count toward both the per-source cap and the 50-entry ceiling until that turn ends. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
 
 **A 200 for a held note is a durable acknowledgement — for a slot that has a durable identity.** The hold is persisted verbatim (both halves, the silent context included) into the slot's own session metadata *before* the 200 is returned and replayed by both slot-restore paths after a gateway restart. A plain note retires when the save commits its delivered row. A merge card's context is consumed once a turn has sent it in a prompt kiro-cli kept, whether or not that turn completes; a turn whose prompt never went out, was stopped before its reply finished, or was re-queued after an empty response puts that context back at the queue front. Consumption is not retirement: the card's hold is retired only by a later full save that proves its row, either because that save's window carries the row or because the entry carries the delivered mark described next. A consumed card whose row has left every live window and carries no delivered mark keeps its hold inert until a restart restores and re-flushes its row without replaying context; a later full save can then retire it. The card row and a delivered mark commit atomically, so a restart before the consumption stamp lands re-queues the context without writing a second card row even after the row rotates out of the live transcript. A note accepted with `visibleDeferred: true` therefore survives a restart and is delivered, unaltered, on the first turn after it. An immediate note posted to that slot before then delivers the restored hold first, so the older note keeps its place ahead of the newer one. Two edges keep the original gateway-lifetime meaning instead: a memory-only deployment (no conversation log at all), and a slot that has never been persisted (no metadata line to attach the hold to -- such a tab does not itself survive a restart, so there is no restored slot the note could outlive). Do **not** re-post a held note after a restart; the restored hold delivers it, and a re-post would put the same line in the transcript twice. Three boundary refusals protect that promise: a note posted during a running turn is capped at 4,000 characters (`413`, code `deferred_note_too_large` -- shorten it or wait for the turn to end), a slot whose durable hold is full answers `429 deferred_notes_full` until its rows are saved, and a slot that is rebound to another session while the hold is persisting answers the endpoint's uniform `404` -- the note was neither delivered nor made durable (a note the turn-end flush drops at that same rebind seam takes this `404` too; the 200 stands only when the note observably exists in a delivered row or the durable hold). The one retry-the-same-request signal is a `503` with code `deferred_note_persist_failed`, which means the durable write itself failed and the note was **not** accepted. The queued context of an *immediate* (non-held) note still behaves exactly as `/context`'s queue always has -- in memory, for this gateway lifetime. Note the retention consequence of durability: a HELD note's context half -- the trusted-caller channel, which is deliberately not redacted -- lives on disk in the session metadata until delivery or retirement, while an immediate note's context lives only in memory.
 
@@ -2631,6 +2910,7 @@ KiroCrewClient(
     base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
     app_name="",              # app-scoped storage and secret lookup
+    app_secret="",            # the app's secret, used with app_name
     timeout=30,               # request timeout seconds
     max_retries=3,            # retry count
     retry_base_delay=1.0,     # base delay for backoff
@@ -2640,8 +2920,8 @@ KiroCrewClient(
 )
 ```
 
-With `app_name` set and no `token` or `on_auth_expired`, the client takes the
-app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
+With `app_name` set and no `app_secret`, `token` or `on_auth_expired`, the client
+takes the app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
 backend the Gateway started). An older Gateway kept it at
 `$KIROCREW_HOME/apps/{name}/.app_secret`, which the client reads only as a fallback.
 In an app's hooks, which run in the Gateway process, pass `base_url=ctx.gateway_origin()`,
@@ -2650,12 +2930,18 @@ last one after a 401 or 403,
 which is how an expired token is renewed. When `ctx.gateway_origin()` returns `""`,
 build no client, because an empty `base_url` falls back to `KIROCREW_PORT` or 5476.
 
+A self-managed app passes the secret its registration returned as `app_secret=`,
+together with the Gateway's `base_url`: the default dials `KIROCREW_PORT` or 5476,
+which can be another Gateway. The client exchanges that secret for its token and
+again after a 401 or 403. `app_secret` is ignored without `app_name`. An explicit
+`on_auth_expired` still renews the token instead.
+
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
-`app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`. The client sends `token` as the session cookie, so it must be an
-app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
-refused there until it is traded for a session with one
+`app_name`, with or without `app_secret`, does not authenticate during
+`__aenter__`. The client sends `token` as the session cookie, so
+it must be an app token or a session the Gateway issued: a sign-in link
+(`kirocrew token`) is refused there until it is traded for a session with one
 `GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
 `Set-Cookie` value).
 
@@ -2676,12 +2962,9 @@ and replay once because the Gateway rejected the request before applying it.
 
 ### Method Reference
 
-The left column is the endpoint label used in the sections above; the right
-column is the shipped Python method, in `snake_case` per Python convention.
-
-Rows marked *not implemented* are Gateway endpoints the shipped Python client
-does not wrap yet. Call those endpoints directly with `aiohttp` (or any HTTP
-client) using the paths in
+The left column is the Gateway route a method calls; the right column is the
+shipped Python method named in the sections above. A route with no method here
+is called directly with `aiohttp` (or any HTTP client), using the paths in
 [Gateway REST API Endpoints](#gateway-rest-api-endpoints).
 
 `create_ws()` returns a `WsClient` bound to `/api/ws` with this client's auth
@@ -2691,60 +2974,60 @@ cookie. Its listeners (`on(type, cb)`, `on_slot(slot, type, cb)`, `on_raw`, and
 `disconnect()` stops it for good. When the client can refresh its token, it
 does so before each reconnect.
 
-| API surface | Python |
-|-----------|--------|
-| `ping()` | `ping()` |
-| `getStatus()` | `get_status()` |
-| `getSystemInfo()` | `get_system_info()` |
-| `createSlot(name, agent?)` | `create_slot(name, agent="")` |
-| `listSlots()` | `list_slots()` |
-| `deleteSlot(id)` | `delete_slot(id)` |
-| `getSlotHistory(id, limit?)` | `get_slot_history(id, limit=50)` |
-| `sendMessage(id, msg)` | `send_message(id, msg)` |
-| `streamChat(id, msg)` | `stream_chat(id, msg)` → async iterator of chunk dicts; an SSE response ends only at `[DONE]` (transport failure or earlier clean close raises `NETWORK_ERROR` without retry), while a successful JSON queue, steer, or orchestrator-control receipt is yielded once and ends the iterator |
-| `stopSlot(id, force?)` | `stop_slot(id, force=False)` |
-| `editResend(id, content, opts)` | `edit_resend(id, content, *, index=None, ts=None)` |
-| `spawn(task, agent?)` | `spawn(task, agent="")` |
-| `spawnMany(tasks, agents?)` | `spawn_many(tasks, agents=None)` |
-| `listSubagents()` | `list_subagents()` (reads `agents`) |
-| `getSubagentStatus(id)` | `get_subagent_status(id)` |
-| `addCron(name, opts)` | `add_cron(name, **opts)` |
-| `listCrons()` | `list_crons()` (reads `jobs`) |
-| `updateCron(id, opts)` | `update_cron(id, **opts)` (`PATCH`) |
-| `removeCron(id)` | `remove_cron(id)` |
-| `pauseCron(id)` | `pause_cron(id)` |
-| `resumeCron(id)` | `resume_cron(id)` |
-| `addLesson(rule, cat, scope?)` | `add_lesson(rule, cat, scope="")` |
-| `listLessons()` | `list_lessons()` (reads `lessons`) |
-| `removeLesson(query)` | `remove_lesson(query)` |
-| `sendNotification(text, opts?)` | `send_notification(text, **opts)` |
-| `listNotifications()` | `list_notifications()` → `{notifications, unread}` |
-| `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
-| `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
-| `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
-| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", *, pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
-| `listApprovals()` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
-| `getApprovalMode()` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
-| `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
-| `listModels()` | `list_models()` |
-| `setSlotModel(slot, model)` | `set_slot_model(slot, model)` |
-| `getGatewayConfig(key)` | `get_gateway_config(key)`; `key` is one of `GATEWAY_CONFIG_KEYS` (`kirocrew`, `stt`, `theme`, `default-agent`) |
-| `setGatewayConfig(key, val)` | `set_gateway_config(key, val)` (`PUT`, same keys) |
-| `listMcpServers()` | `list_mcp_servers()` (`GET /api/mcp`) |
-| `registerMcpServer(def)` | `register_mcp_server(name, cmd, args?, env?)` |
-| `removeMcpServer(name)` | `remove_mcp_server(name)` |
-| `dispatchAgent(agent, prompt)` | `dispatch_agent(agent, prompt)` |
-| `dispatchAgentAsync(agent, prompt)` | `dispatch_agent_async(agent, prompt)` |
-| `getTaskResult(id)` | `get_task_result(id)` |
-| `getAppDataDir()` | `get_app_data_dir()` → `Path` |
-| `getAppConfig()` | `get_app_config()` |
-| `setAppConfig(cfg)` | `set_app_config(cfg)` |
-| `memorySearch(q, topK?)` | `memory_search(q, top_k=8)` (sent as `limit`, capped at 50) |
-| `transcribe(audio)` | `transcribe(audio_bytes, *, filename=, content_type=)` → text; transport failures raise `NETWORK_ERROR` without retry |
-| `connect()` / `on*` | `create_ws()` → `WsClient` (see above) |
-| `injectContext(slot, content, opts?)` | `inject_context(slot, content, *, source?, ephemeral?, max_age?)` |
-| `flushPendingContext(slot)` | `flush_pending_context(slot)` |
-| `setDefaultSlot(slot)` | `set_default_slot(slot)` |
+| Route | Python |
+|-------|--------|
+| `GET /api/status` | `ping()` |
+| `GET /api/status` | `get_status()` |
+| `GET /api/system` | `get_system_info()` |
+| `POST /api/chat/slots` | `create_slot(name, agent="")` |
+| `GET /api/chat/slots` | `list_slots()` |
+| `DELETE /api/chat/slots/{slot}` | `delete_slot(id)` |
+| `GET /api/chat/slots/{slot}?limit=` | `get_slot_history(id, limit=50)` |
+| `POST /api/chat` | `send_message(id, msg)` |
+| `POST /api/chat` (streamed) | `stream_chat(id, msg)` → async iterator of chunk dicts; an SSE response ends only at `[DONE]` (transport failure or earlier clean close raises `NETWORK_ERROR` without retry), while a successful JSON queue, steer, or orchestrator-control receipt is yielded once and ends the iterator |
+| `POST /api/chat/slots/{slot}/stop` | `stop_slot(id, force=False)` |
+| `POST /api/chat/slots/{slot}/edit-resend` | `edit_resend(id, content, *, index=None, ts=None)` |
+| `POST /api/spawn` | `spawn(task, agent="")` |
+| `POST /api/spawn`, once per task | `spawn_many(tasks, agents=None)` |
+| `GET /api/spawn` | `list_subagents()` (reads `agents`) |
+| `GET /api/spawn/{agent_id}` | `get_subagent_status(id)` |
+| `POST /api/crons` | `add_cron(name, **opts)` |
+| `GET /api/crons` | `list_crons()` (reads `jobs`) |
+| `PATCH /api/crons/{job_id}` | `update_cron(id, **opts)` (`PATCH`) |
+| `DELETE /api/crons/{job_id}` | `remove_cron(id)` |
+| `POST /api/crons/{job_id}/enable` (`enabled: false`) | `pause_cron(id)` |
+| `POST /api/crons/{job_id}/enable` (`enabled: true`) | `resume_cron(id)` |
+| `POST /api/lessons` | `add_lesson(rule, cat, scope="")` |
+| `GET /api/lessons` | `list_lessons()` (reads `lessons`) |
+| `DELETE /api/lessons` | `remove_lesson(query)` |
+| `POST /api/send-message` | `send_notification(text, **opts)` |
+| `GET /api/notifications` | `list_notifications()` → `{notifications, unread}` |
+| `POST /api/notifications/ack` / `POST /api/notifications/ack-all` | `ack_notification(ts)` / `ack_all_notifications()` |
+| `POST /api/chat/slots/{slot}/approve` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
+| `POST /api/chat/slots/{slot}/approve` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
+| `POST /api/chat/slots/{slot}/approve` or `POST /api/approvals/{id}/{action}` | `resolve_approval(id, action="approve", slot_id="", *, pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `GET /api/approvals` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
+| `GET /api/config/kirocrew` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
+| `POST /api/chat/mode` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
+| `GET /api/models` | `list_models()` |
+| `POST /api/chat/slots/{slot}/model` | `set_slot_model(slot, model)` |
+| `GET /api/config/{key}` | `get_gateway_config(key)`; `key` is one of `GATEWAY_CONFIG_KEYS` (`kirocrew`, `stt`, `theme`, `default-agent`) |
+| `PUT /api/config/{key}` | `set_gateway_config(key, val)` (`PUT`, same keys) |
+| `GET /api/mcp` | `list_mcp_servers()` (`GET /api/mcp`) |
+| `PUT /api/mcp/servers/{name}` | `register_mcp_server(name, cmd, args?, env?)` |
+| `DELETE /api/mcp/servers/{name}` | `remove_mcp_server(name)` |
+| `POST /api/chat` (with `agent`) | `dispatch_agent(agent, prompt)` |
+| `POST /api/spawn` | `dispatch_agent_async(agent, prompt)` |
+| `GET /api/spawn/{agent_id}` | `get_task_result(id)` |
+| none (a local path) | `get_app_data_dir()` → `Path` |
+| `GET /api/apps/{name}/config` | `get_app_config()` |
+| `PUT /api/apps/{name}/config` | `set_app_config(cfg)` |
+| `GET /api/memory/episodic/search` | `memory_search(q, top_k=8)` (sent as `limit`, capped at 50) |
+| `POST /api/stt/transcribe` | `transcribe(audio_bytes, *, filename=, content_type=)` → text; transport failures raise `NETWORK_ERROR` without retry |
+| `GET /api/ws` (WebSocket) | `create_ws()` → `WsClient` (see above) |
+| `POST /api/chat/slots/{slot}/context` | `inject_context(slot, content, *, source?, ephemeral?, max_age?)` |
+| `POST /api/chat/slots/{slot}/context`, once per entry | `flush_pending_context(slot)` |
+| none (client-side) | `set_default_slot(slot)` |
 
 When `send_message` targets the default slot it flushes buffered context first.
 An entry the Gateway refuses for good (`context_not_queued` or
@@ -2853,14 +3136,14 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream (owner only) |
 | GET | `/api/apps/{name}` | Get app details, including cached `update` state |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
-| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only) |
+| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only). A GET carries the file's `ETag`, and a PUT with `If-Match` is written only while the file still has that tag, else 412 `config_changed` |
 | POST | `/api/apps/{name}/update` | Update installed app (owner only) |
 | POST | `/api/apps/{name}/uninstall` | Uninstall app (owner only) |
 | POST | `/api/apps/{name}/enable` | Enable app (owner only) |
 | POST | `/api/apps/{name}/disable` | Disable app (owner only) |
 | POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand (owner only) |
-| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files |
+| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call |
 | * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed). An ordinary response is bounded at 30s total. A `text/event-stream` response has no total, but must emit an event or a `:` comment at least every 60s, or it is cut |
 
 "Owner only" routes answer 403 `owner_only` to a dashboard subject that is not
@@ -3164,7 +3447,8 @@ Security and lifecycle:
   app's folder. An app installed before this keeps working once its secret is handed over
   again: the old `.app_secret` file is never accepted, the next backend start stores a NEW
   secret and passes it here, and a self-managed app gets one in the response of its next
-  registration. A backend left running across the upgrade has no secret until it restarts.
+  registration (pass it to the Python client as `app_secret=`). A backend left running
+  across the upgrade has no secret until it restarts.
 - A backend that runs in the gateway process (`backend.hooks`, no `entryPoint`) gets no
   secret and needs none: [`ctx.app_token()`](#app-token-ctxapp_token) returns its app
   token and `ctx.gateway_origin()` the origin to call. The first load of its hooks after the upgrade stores a new secret and removes

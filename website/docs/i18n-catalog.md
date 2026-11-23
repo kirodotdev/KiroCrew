@@ -176,7 +176,8 @@ Authoring rules that follow:
   referent does not change with an edition must not interpolate the name:
   `app.star_kirocrew_on_github` wraps a hardcoded upstream repo URL, and the
   survey (`components.sessionPulseSurveyCard.email_disclosure`) and install
-  receipts (`privacyDisclosure.installReceipt*`) name the recipient of data
+  receipts (`privacyDisclosure.installReceiptTitle`,
+  `privacyDisclosure.installReceiptBody`, `privacyDisclosure.installReceiptFields`) name the recipient of data
   sent to hardcoded upstream endpoints. Interpolating those would make an
   edition misattribute a link target or where user data goes.
 - **Wire-format identifiers keep their unspaced literal.** The generated
@@ -256,7 +257,7 @@ If a value's part of speech is not obvious from the key, **put it in the key**.
 A confirm string that interpolates a user-supplied name without quotes lets an
 ordinary-word name blend into the sentence: a pet named "Everything" produced
 "Reset Everything?", indistinguishable from a sentence about resetting
-everything (#4653, #4657, #4676, #4821).
+everything.
 
 **Quote the operand in every authored catalog**, using that locale's pair from
 `OPERAND_QUOTE_PAIRS` in `scripts/lib/qa-checks.mjs` (curly doubles in English,
@@ -269,7 +270,7 @@ allowlist you can forget to extend:
 - every key whose **name** matches `/confirm/i` and whose English value
   interpolates a placeholder is swept in automatically and must quote its
   operand in every catalog, **or**
-- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (today: the #4657
+- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (the
   kind-word forms, where "template" / "crew" already sit next to the name), **or**
 - interpolate **only** placeholder names in `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`
   (numerals, closed-set schedule fragments, version ids, and system error
@@ -436,7 +437,7 @@ registry a reviewer has to go look up.
 
 The sidebar's **By name** folder order is the standing example, and a deliberate
 one. `naturalNameCompare` in `src/utils/folderTree.ts` and `_chat_folder_natural_key`
-in `src/kiro_crew/mcp_dashboard.py` sort the same way, operation for operation:
+in `src/kiro_crew/mcp_dashboard_folder_tree.py` sort the same way, operation for operation:
 only ASCII `A`-`Z` is case-folded, runs of ASCII digits compare by value
 (`01.` < `02.` < `10.`), and every other character compares by UTF-16 code unit.
 Not `compareText`, not `Intl.Collator`, not Python's `locale.strxfrm`.
@@ -513,7 +514,13 @@ wired; there is no in-repo producer of those attributes yet.
 Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
 platform picks for a missing glyph. A test pins the `:root` tokens, every
 declaration site (including the theme blocks, which redeclare both), the
-`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
+`html:lang(zh-CN/ja/ko)` overrides, and the ordering. The one exception is the
+rich-text composer (`[data-lexical-composer]`): Lexical keeps a U+200B after an
+open IME composition and an alias has no space glyph to draw it with, so
+`src/styles/chat-transcript.css` lists the bundled Latin face ahead of the
+aliases there. No character that paints changes face, because the Latin faces'
+ranges overlap no alias range; `src/i18n/composerImeFonts.test.ts` pins those two
+stacks, which the ordering test does not read.
 
 **No letter-spacing under a Hindi or Bengali UI.** Devanagari and Bengali hang
 each word from one headline stroke and join letters into conjuncts, so
@@ -555,8 +562,8 @@ writes prompts and validates answers, but sends nothing:
 | Command | Does |
 |---|---|
 | `plan [pathPrefix]` | what still needs translating, read from `untranslated-baseline.json` |
-| `emit <baseDir> [--locales a,b]` | writes one prompt per (locale, shard), including the plural forms that locale requires |
-| `verify <baseDir> --locale <tag>` | every rule that can be decided mechanically. Run it before `merge` |
+| `emit <baseDir> [--locales=a,b]` | writes one prompt per (locale, shard), including the plural forms that locale requires |
+| `verify <baseDir> --locale=<tag>` | every rule that can be decided mechanically. Run it before `merge` |
 | `merge <baseDir> [--overwrite]` | insert-only reassembly |
 
 Per-language style guides live in `src/i18n/style/<tag>.md`, each with a test that

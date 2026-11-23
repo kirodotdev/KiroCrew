@@ -327,6 +327,14 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
+        if gate_event is not None:
+            # A call the floor refused reaches the model as the backend's generic
+            # user denial unless the host notice goes first, while the request is
+            # still unanswered. No recorded event means no title to name.
+            # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
+            from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
+
+            await _steer_host_deny(self, gate_event, reason, cause=DENY_CAUSE_POLICY)
         await self.reject_tool(request_id)
         return False
     if withdraw_if is not None and withdraw_if():

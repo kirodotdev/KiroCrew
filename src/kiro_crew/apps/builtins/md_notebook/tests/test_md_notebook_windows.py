@@ -405,6 +405,17 @@ def test_git_bin_failure_keeps_its_original_wording_off_windows(monkeypatch):
     assert "Git for Windows" not in message
 
 
+def test_windows_git_lookup_skips_the_drive_less_posix_dirs(monkeypatch):
+    """Windows resolves ``/usr/bin`` against the current drive, so a planted
+    ``C:\\usr\\bin\\git.exe`` would win over Git for Windows."""
+    windows_dir = r"C:\Program Files\Git\cmd"
+    monkeypatch.setattr(git_ops, "_GIT_BIN_DIRS", ("/usr/bin", "/bin", windows_dir))
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    assert git_ops._trusted_git_bin_dirs() == (windows_dir,)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    assert git_ops._trusted_git_bin_dirs() == ("/usr/bin", "/bin", windows_dir)
+
+
 def test_windows_gets_a_doubled_default_git_timeout():
     """Six to ten git invocations per sync, each dearer on Windows (process
     creation plus Defender scanning the object store), made 30s a spurious

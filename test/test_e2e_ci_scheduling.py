@@ -473,6 +473,77 @@ raise SystemExit(m['main']())
         self.assertNotIn("i18n", "\n".join(str(s) for s in steps))
         self.assertEqual(module["MEMORY_UI_TIMEOUT"], 720)
 
+    def test_the_suite_is_sharded_and_what_runs_once_stays_on_one_leg(self):
+        import re
+
+        import test_playwright_e2e as harness
+        import yaml
+
+        job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["e2e"]
+        legs = job["strategy"]["matrix"]["shard"]
+        # Leg numbers are Playwright's 1-based shard indices, so the list must be
+        # 1..K: a gap or a repeat would leave part of the suite to no leg.
+        self.assertEqual(legs, list(range(1, len(legs) + 1)))
+        self.assertGreaterEqual(len(legs), 2)
+        # One red leg must not cancel the other: each reports its own part.
+        self.assertIs(job["strategy"]["fail-fast"], False)
+
+        def on_leg(text, leg):
+            """*text* as leg *leg* of the matrix sees it."""
+            values = {"matrix.shard": str(leg), "strategy.job-total": str(len(legs))}
+            return re.sub(r"\$\{\{\s*([\w.-]+)\s*\}\}", lambda m: values.get(m[1], m[0]), str(text))
+
+        def runs_on(step, leg):
+            """Whether a step limited by leg runs on *leg*; None when it is not limited."""
+            cond = re.fullmatch(r"\$\{\{\s*matrix\.shard\s*==\s*(\d+)\s*\}\}", str(step.get("if")))
+            return None if cond is None else int(cond[1]) == leg
+
+        steps = job["steps"]
+        self.assertEqual(len({on_leg(job["name"], leg) for leg in legs}), len(legs))
+        (suite,) = [s for s in steps if harness._SHARD_ENV in (s.get("env") or {})]
+        # The suite step runs on every leg, and what it hands the harness is that
+        # leg's own index out of the number of legs the matrix has.
+        self.assertNotIn("if", suite)
+        for leg in legs:
+            self.assertEqual(
+                harness._parse_shard(on_leg(suite["env"][harness._SHARD_ENV], leg)),
+                (leg, len(legs)),
+            )
+        # A step that names the leg in its condition runs on exactly one leg, and
+        # all of them on the same one, so each still runs once per pull request.
+        limited = [s for s in steps if "matrix.shard" in str(s.get("if", ""))]
+        self.assertTrue(limited)
+        homes = set()
+        for step in limited:
+            on = [leg for leg in legs if runs_on(step, leg)]
+            self.assertEqual(len(on), 1, step.get("name"))
+            homes.add(on[0])
+        self.assertEqual(len(homes), 1)
+        (home,) = homes
+        # The helper's lanes follow the same rule: a lane runs on every leg or on
+        # that one leg only, every lane runs somewhere, and unsharded all run.
+        module = runpy.run_path(str(HELPER))
+        lanes = {leg: module["_lanes"](f"{leg}/{len(legs)}") for leg in legs}
+        everywhere = set.intersection(*(set(v) for v in lanes.values()))
+        self.assertTrue(everywhere)
+        for leg, names in lanes.items():
+            expected = set(module["COMMANDS"]) if leg == home else everywhere
+            self.assertEqual(set(names), expected, leg)
+        for unsharded in (None, ""):
+            self.assertEqual(module["_lanes"](unsharded), list(module["COMMANDS"]))
+        # Two legs upload in one run, where an artifact name can be used once.
+        uploads = [
+            s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+        self.assertTrue(uploads)
+        names = [on_leg(u["with"]["name"], leg) for u in uploads for leg in legs]
+        self.assertEqual(len(set(names)), len(names), names)
+        # The report the harness keeps is uploaded from where the harness is told
+        # to put it, whatever the outcome of the suite step.
+        kept = suite["env"][harness._REPORT_DIR_ENV].rstrip("/")
+        (report,) = [u for u in uploads if u["with"]["path"].rstrip("/") == kept]
+        self.assertIn("always()", report["if"])
+
     def test_render_gate_is_its_own_job_with_the_base_resolved_before_it(self):
         import yaml
 

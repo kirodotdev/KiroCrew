@@ -149,6 +149,16 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             },
         ),
         (
+            "kirocrew.app.credits",
+            {"app": "weather-app", "entity_version": "2.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "credits",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+            },
+        ),
+        (
             "kirocrew.app.present",
             {
                 "app": "weather-app",
@@ -163,6 +173,34 @@ from kiro_crew.metrics.recorder import MetricsRecorder
                 "entity_version": "1.1.0",
                 "status": "disabled",
                 "backend": "stopped",
+            },
+        ),
+        (
+            "kirocrew.app.opened",
+            {"app": "weather-app", "entity_version": "1.2.3", "surface": "page"},
+            {
+                "Feature": "app",
+                "Activity": "opened",
+                "Entity": "weather-app",
+                "entity_version": "1.2.3",
+                "surface": "page",
+            },
+        ),
+        (
+            "kirocrew.app.foreground_time",
+            {
+                "app": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
+            },
+            {
+                "Feature": "app",
+                "Activity": "foreground_time",
+                "Entity": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
             },
         ),
     ],

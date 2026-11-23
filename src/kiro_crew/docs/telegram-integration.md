@@ -61,7 +61,7 @@ log.
 At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setMyCommands`, so typing `/` in Telegram offers autocomplete. `COMMAND_SPEC` also drives `/help`; commands that need an argument appear in the help footer instead of the menu.
 
 - `/new` (or `/start`) — start a fresh conversation
-- `/compact` — free up room when the context fills
+- `/compact` — free up room when the context fills. Text after it (`/compact keep the API decisions`) is passed to the compaction; the KAS backend's compaction takes no instructions, so there the text is ignored
 - `/model` (or `/models`) — pick the model from an inline-button list. Button-only on purpose:
   the choices are what this account's backend actually advertised, so there is
   no model name to guess and no typo to reject mid-conversation. The pick is

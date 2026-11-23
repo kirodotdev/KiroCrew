@@ -262,6 +262,134 @@ async def test_create_session_refusal_explains_a_derived_readonly_spec(tmp_path,
     assert "Refusing to run the backend default mode kirocrew in its place" in message
 
 
+@pytest.mark.asyncio
+async def test_create_session_refusal_for_a_bots_agent_names_the_dashboard(tmp_path, monkeypatch):
+    """A Bot chats on the mate conductor, kept in ``mates/agents/``, which kiro-cli
+    does not list and setup does not write: the refusal says so and names the
+    dashboard instead of the setup hint that cannot fix a Bot."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.config import paths as paths_mod
+
+    mates = tmp_path / "mates" / "agents"
+    mates.mkdir(parents=True)
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(paths_mod, "_mate_agents_dir_override", lambda: mates)
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="kirocrew-mate-conductor", mcp_servers=[])
+    message = str(exc.value)
+    assert "kirocrew setup --agent-only` does not write it" in message
+    assert "Run `kirocrew setup --agent-only`" not in message
+    assert "is likely missing" not in message
+    assert "'kirocrew-mate-conductor' is a Bot's agent" in message
+    assert message.endswith("Chat with the Bot from the dashboard's Bots page.")
+
+
+@pytest.mark.asyncio
+async def test_create_session_refusal_names_the_v3_format_on_the_kiro_cli_harness(
+    tmp_path, monkeypatch
+):
+    """kiro-cli's v2 engine leaves a file it reads as the v3 agent format out of its
+    modes, and ``kiro-cli agent validate`` passes it: on the Kiro CLI harness the
+    refusal points at kiro-cli's own listing and at backend ``kas``. Another harness
+    keeps the validate answer (``test_spawn_internal_agent_specs``)."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import kiro_on_kas_notice
+
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(kiro_on_kas_notice, "kas_backend_offered", lambda: True)
+    spec = {"name": "narrow", "tools": ["fs_read"], "permissions": {"rules": [{"x": 1}]}}
+    (tmp_path / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
+    rt, _, _ = _make_runtime()
+    assert rt._harness.backend == ""
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="narrow", mcp_servers=[])
+    message = str(exc.value)
+    assert "marks it (v3 format)" in message
+    assert "Spawn it with backend 'kas'" in message
+    assert "agent validate" not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["excludedTools", "permissions", "includePowers"])
+async def test_an_empty_v3_field_still_names_the_v3_format(tmp_path, monkeypatch, key):
+    """kiro-cli reads the v3 format from the KEY, an empty value included."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import kiro_on_kas_notice
+
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(kiro_on_kas_notice, "kas_backend_offered", lambda: True)
+    empty = {"excludedTools": [], "permissions": {}, "includePowers": []}[key]
+    spec = {"name": "narrow", "tools": ["fs_read"], key: empty}
+    (tmp_path / "narrow.json").write_text(json.dumps(spec), encoding="utf-8")
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="narrow", mcp_servers=[])
+    assert "marks it (v3 format)" in str(exc.value)
+
+
+class _RefusingProjection:
+    """The skill view's refusal of one agent, as ``NativeSkillProjection`` keeps it."""
+
+    aliases: dict = {}
+    errors = {"mapped": "skill_search is explicitly excluded; bounded skill discovery requires it"}
+
+    def agent(self, name):
+        raise ValueError(f"Agent {name!r}: {self.errors[name]}")
+
+
+@pytest.mark.asyncio
+async def test_a_skill_view_refusal_is_named_instead_of_the_parse_guess(tmp_path, monkeypatch):
+    """The skill view refused the agent, so that sentence is the reason, not a
+    parse error or a late write; the session still ends and set_mode is not sent."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import kiro_on_kas_notice
+
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(kiro_on_kas_notice, "kas_backend_offered", lambda: True)
+    (tmp_path / "mapped.json").write_text(json.dumps({"name": "mapped"}), encoding="utf-8")
+    rt, _, _ = _make_runtime()
+    rt._native_skill_projection = _RefusingProjection()  # type: ignore[assignment]
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="mapped", mcp_servers=[])
+    message = str(exc.value)
+    assert "skill view refused it: Agent 'mapped': skill_search is explicitly excluded" in message
+    assert "parser rejected" not in message
+    assert "spawn it with backend 'kas'" in message
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods
+    assert METHOD_SESSION_TERMINATE in methods
+
+
+def test_a_definition_kas_did_not_register_is_named_as_such():
+    """On KAS Crew sent the definition with the session, so no file was parsed: the
+    refusal says the engine left it out, not that kiro-cli rejected a file."""
+    from kiro_crew.acp.runtime_session_create import _known_mode_refusal
+
+    rt, _, _ = _make_runtime()
+    cause, remedy = _known_mode_refusal(rt, "narrow", [{"id": "narrow", "tools": []}])
+    assert "sent its definition with this session" in cause
+    assert "excludedTools is a list of names" in remedy
+    assert _known_mode_refusal(rt, "other", [{"id": "narrow"}]) is None
+    assert _known_mode_refusal(rt, "narrow", None) is None
+
+
 def _configure_missing_default_agent(tmp_path, monkeypatch, name: str) -> None:
     """``agent.default_agent`` names *name*, and the agents directory has no spec for it."""
     from kiro_crew import agent as agent_mod

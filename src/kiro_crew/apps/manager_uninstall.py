@@ -19,7 +19,11 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps import (
+    agent_readonly_dirs,
+    credential_masks,
+    protected_app_state,
+)
 from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
@@ -86,6 +90,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     deregistration should be done before calling this.
     Built-in apps stay locked unless explicitly cleaning up an eligible retired builtin.
     """
+    # Imported here, not at module level: the MCP listing imports this module and
+    # its import budget has no room (test_mcp_listing_import_budget).
+    from kiro_crew.apps import protected_app_ui
+
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     # Held to the end, rollback included: a disable or enable in another process
@@ -156,6 +164,16 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # The approved set goes first, so a removal that fails leaves the execution
         # grant untouched; the disable stays until the uninstall commits.
         protected_app_state.forget_grants(name)
+        # Durable before anything is deleted, so its scripts stop being served
+        # even if the copy itself cannot be removed later (``protected_app_ui``).
+        # Refuses only while the protected copy is the one served: off, the
+        # default, nothing reads the copy and the uninstall goes ahead as on main.
+        try:
+            protected_app_ui.withdraw(name)
+        except (OSError, ValueError):
+            if protected_app_ui.enabled():
+                raise
+            logger.warning("could not withdraw %r's UI script copy", name, exc_info=True)
         # Recorded BEFORE the withdrawal so a failed delete below can put back
         # exactly what was there — and only when there WAS something. Restoring a
         # grant the app never held would be granting, not restoring.
@@ -174,6 +192,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # The app stays installed: put back the approvals a removal took.
         try:
             protected_app_state.restore_app(name, prior_records)
+            protected_app_ui.unwithdraw(name)
         except (OSError, ValueError):
             logger.warning(
                 "could not restore %r's approvals and disable after a failed removal",
@@ -461,6 +480,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         restore_note = ""
         try:
             protected_app_state.restore_app(name, prior_records)
+            protected_app_ui.unwithdraw(name)
         except (OSError, ValueError) as restore_exc:
             logger.warning(
                 "could not restore %r's approvals and disable after a failed uninstall",
@@ -503,6 +523,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.forget_deleted_app_crons(name)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
+    try:
+        protected_app_state.forget_owner_browser_sites(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's browser sites", exc_info=True)
     # The Bots the owner ticked go only once the uninstall committed, so a failed one
     # keeps them. A record left by a failure here grants nothing to a later install:
     # it names this install's ``installedAt`` (``bot_grant_store.read_granted_bots``).
@@ -519,6 +543,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     from kiro_crew.memory_provider.consent import revoke_app_soft
 
     revoke_app_soft(name)
+    protected_app_ui.forget(name)
     refresh_app_config_keys()
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
     from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415

@@ -143,7 +143,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     configKey: 'mcp.protect_kiro_permission_rules',
   },
   {
-    id: 'security.ask-me-before-running-tools-an-mcp-server-pre-approves',
+    id: 'security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings',
     labelKey: 'pages.settings.securityPanel.safetySwitches.ask_label',
     descriptionKey: 'pages.settings.securityPanel.safetySwitches.ask_desc',
     tab: 'security',
@@ -393,6 +393,16 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     type: 'toggle',
     occurrence: 1,
     configKey: 'instances.enabled',
+  },
+  {
+    // RemoteControlCard draws its on/off state from raw markup (no Settings
+    // primitive), so the extractor never sees it.
+    id: 'instances.remote-control',
+    labelKey: 'pages.settings.remoteControlCard.title',
+    tab: 'instances',
+    type: 'toggle',
+    occurrence: 1,
+    settingId: 'instances.remote-control',
   },
   // BotChannelPanel's SecretFields take their labels from each channel's spec, so the
   // extractor never sees them; each spec passes a literal catalog key, indexed here.

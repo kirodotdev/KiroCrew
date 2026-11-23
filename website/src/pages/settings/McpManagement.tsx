@@ -718,6 +718,9 @@ export function McpManagement({
       const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      // An approval only clears the refusal; with sharing off nothing is shared
+      // yet, so ask to turn it on, as the table's share action does.
+      if (supported && res?.sharing_on !== true && !status?.enabled) void askToTurnOnSharing()
       return null
     } catch (err) {
       if (keepCurrentLaunch(name, refused, err)) {
@@ -1124,6 +1127,7 @@ export function McpManagement({
 
       <SharingHero
         on={!!status?.enabled}
+        stateKnown={!statusQ.isLoading}
         switchDisabled={
           busy || prepareSharing.isPending || turnOn.isPending || statusQ.isLoading
           || (!status?.enabled && !canEnableSharing)
@@ -1172,7 +1176,7 @@ export function McpManagement({
               </TabsTrigger>
               <TabsTrigger value="sharing">
                 <Share2 size={14} />
-                <span>{i18nT('pages.mcpPage.view_sharing')}</span>
+                <span {...uiLocation('mcp.sharing-view')}>{i18nT('pages.mcpPage.view_sharing')}</span>
               </TabsTrigger>
             </TabsList>
           </div>

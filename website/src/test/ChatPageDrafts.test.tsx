@@ -24,7 +24,7 @@ import {
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { __resetSteerTakeBacksForTests } from '../hooks/useSteerRetract'
 import { api } from '../api/client'
-import { DRAFTS_KEY } from '../utils/chatDrafts'
+import { DRAFTS_KEY, __resetForTests as resetDrafts } from '../utils/chatDrafts'
 import { addStashEntry, loadPromptStash, makeStashEntry } from '../utils/promptStash'
 
 vi.mock('react-virtuoso', () => ({
@@ -131,7 +131,10 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>, mode?:
 }
 
 const messageInput = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
-const TAKE_BACK_NOW = Date.parse('2026-10-23T14:00:00Z')
+// Anchored to the real clock: the drafts store prunes by a real-clock TTL, so a
+// fixed calendar date here expires every draft it stamps once that date is
+// older than the TTL.
+const TAKE_BACK_NOW = Date.now() // flake-ok: read once, then pinned with vi.spyOn(Date, 'now') in primeEditedSteerTakeBack
 const SLOT_A_FILE = '/tmp/a.txt'
 const SLOT_B_FILE = '/tmp/b.txt'
 const RESTORED_FILE = '/tmp/steer.txt'
@@ -170,6 +173,9 @@ beforeEach(() => {
   localStorage.clear()
   __resetNavSeamForTests()
   __resetSteerTakeBacksForTests()
+  // The drafts store keeps its TTL stamps in module memory, so a stamp written
+  // under one test's mocked clock would otherwise prune the next test's draft.
+  resetDrafts()
   vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue({
     messages: [{ role: 'assistant', content: 'hi', cls: '' }],
     running: false, has_more: false, total: 1,

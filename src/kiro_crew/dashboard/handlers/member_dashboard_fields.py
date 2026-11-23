@@ -657,12 +657,13 @@ def snapshot_package_page(
     package_slug: str,
     version: int,
     state: Any,
-) -> tuple[dict[str, Any] | None, Any]:
+) -> tuple[dict[str, Any] | None, Any, Any]:
     """The page IN FORCE run over the crewmate's REAL read, with a picture of it.
 
-    ``(verification, image)``: :func:`verify_package_page`'s wire form, and the run's
+    ``(verification, image, text)``: :func:`verify_package_page`'s wire form, the run's
     :class:`~kiro_crew.dashboard_page_image.PageImage`, or ``None`` when the run never got
-    as far as one (the verification's ``reason`` says why).
+    as far as one (the verification's ``reason`` says why), and the page's rendered
+    :class:`~kiro_crew.dashboard_page_image.PageText`, or ``None`` when none was read.
 
     Unlike the save's check this hands the page the record itself: the read
     :meth:`LivePage.arm` builds for the tab, through the tab's own ``_page_safe``
@@ -671,7 +672,8 @@ def snapshot_package_page(
     anyway -- so *package* must be the page in force; a page that is only saved goes
     through :func:`verify_package_page` and its synthetic copy. The picture is bytes and
     is not put through a text pass, which could only corrupt it; what it can show is what
-    the tab already shows.
+    the tab already shows. The page's text does cross that pass, as the verification
+    does, because the page's script can build a string no scan of its source saw.
 
     *package_slug* and *version* name the applied page, and the script-grant audit row
     is written under them, as the tab's own serve writes it, so the log shows which
@@ -702,7 +704,7 @@ def _run_package_page(
     capture: bool,
     real: tuple[str, int] | None = None,
     state: Any = None,
-) -> tuple[dict[str, Any] | None, Any]:
+) -> tuple[dict[str, Any] | None, Any, Any]:
     """The run behind :func:`verify_package_page` and :func:`snapshot_package_page`.
 
     *real* is ``(package slug, version)`` of the applied page for a snapshot over the
@@ -710,15 +712,15 @@ def _run_package_page(
     """
     html = authored_html(package)
     if html is None:
-        return None, None
+        return None, None, None
     # Deferred: this module is imported before the socket binds and must not pull in
     # the browser runner, and `member_dashboard` imports this module (a cycle).
-    from kiro_crew import dashboard_verify
+    from kiro_crew import dashboard_page_image, dashboard_verify
     from kiro_crew.dashboard.handlers import member_dashboard
 
-    def skipped(reason: str) -> tuple[dict[str, Any], None]:
+    def skipped(reason: str) -> tuple[dict[str, Any], None, None]:
         wire = dashboard_verify.Verification(dashboard_verify.STATUS_SKIPPED, reason=reason).wire()
-        return wire, None
+        return wire, None, None
 
     if not crew:
         return skipped("only a Bot's own page is run, and this session is not a Bot")
@@ -804,8 +806,15 @@ def _run_package_page(
             verdict = dataclasses.replace(verdict, notes=(note, *verdict.notes))
         # REDACTED LIKE EVERY VALUE THE TAB IS SERVED. The page's own script chose the text of
         # its errors, and it can build a string that no scan of its source saw (two literals
-        # joined at run time), so what goes back to the agent crosses the same recursive pass.
-        return member_dashboard._page_safe(verdict.wire()), verdict.image
+        # joined at run time), so what goes back to the agent crosses the same recursive pass,
+        # the page's rendered text included.
+        # Redacted whole, THEN cut: a cut first can keep the start of a secret too short
+        # for the redactor to know.
+        text = verdict.text
+        if text is not None:
+            safe = member_dashboard._page_safe(text.text)[: dashboard_page_image.MAX_TEXT_CHARS]
+            text = dataclasses.replace(text, text=safe)
+        return member_dashboard._page_safe(verdict.wire()), verdict.image, text
     except Exception:
         logger.warning("dashboard: the page for %r could not be checked", slug, exc_info=True)
         return skipped("the check could not run on this machine")
@@ -1042,8 +1051,12 @@ def package_write_refusal(request: Any, content: Any, stored_content: Any = None
     # THE PERSON at the dashboard, who owns every page on their own machine and whom
     # the artifact routes have already owner-gated. Reached only after the app check
     # above, which is what makes this a positive identification of the person rather
-    # than "whoever sent no secret".
-    if request.headers.get("X-Internal-Secret") is None:
+    # than "whoever sent no secret". An agent-socket call carries no secret either;
+    # token auth marks it ``internal_auth``, so that is checked too.
+    if (
+        request.headers.get("X-Internal-Secret") is None
+        and request.get("internal_auth") is not True
+    ):
         return ""
     crew, slot = writing_caller(request)
     # BOTH BINDINGS ARE AUTHORIZED, and the STORED one first. Checking only the

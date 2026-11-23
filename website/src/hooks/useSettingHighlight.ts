@@ -67,6 +67,9 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'agent.orchestrator-memory': 'agent.kiro-memory',
   // The Kiro sign-in card left the Agent Harness tab for a Kiro account tab.
   'agent.kiro-sign-in': 'kiro-account.kiro-sign-in',
+  // The engine switch left Developer > Feature previews for the KAS row on
+  // Agent Harness, as a two-way choice.
+  'developer.run-kas-on-kiro-crew-s-own-engine': 'agent.engine',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */

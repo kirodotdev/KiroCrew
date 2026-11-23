@@ -533,8 +533,50 @@ class TestCliRestoreRefusesAnUnusableSettingsDocument:
             [str(tarball), "--mode", mode, "--components", "config", "--force"] + unpinnable_argv()
         )
 
-        assert ret != 0
+        if name == "config.local.json" and mode == "merge":
+            # A merge never installs the overlay, so its bundle copy cannot refuse the restore.
+            assert ret == 0
+        else:
+            assert ret != 0
         assert (live.read_bytes() if live.exists() else None) == before
+
+
+class TestCliRestoreAcceptsAByteOrderMarkTheReaderAccepts:
+    @pytest.mark.parametrize(
+        ("name", "body"),
+        [
+            # None: the config writer's document after its first load, which later loads keep.
+            ("config.json", None),
+            ("config.local.json", '{"timezone": "UTC"}'),
+            ("hooks.json", '{"hooks": []}'),
+            ("notification_settings.json", '{"channel_settings": {"app.a": {"muted": true}}}'),
+        ],
+    )
+    def test_a_replace_restore_installs_it_as_saved(self, tmp_path, monkeypatch, name, body):
+        """Notepad's "UTF-8 with BOM" writes this mark and these files' readers drop it, so
+        the restore must not refuse the bundle as unreadable."""
+        src = tmp_path / "src"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        if body is None:
+            KiroCrewConfig().save()
+            KiroCrewConfig.load()  # lands the one-time migrations a fresh document gets
+            body = (src / name).read_text(encoding="utf-8")
+        saved = b"\xef\xbb\xbf" + body.encode("utf-8")
+        (src / name).write_bytes(saved)
+        tarball = _make_snapshot(src, tmp_path / "out")
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        (dst / name).unlink(missing_ok=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main(
+            [str(tarball), "--mode", "replace", "--components", "config", "--force"]
+            + unpinnable_argv()
+        )
+
+        assert ret == 0
+        assert (dst / name).read_bytes() == saved
 
 
 class TestCliMergeSaysWhatItKept:

@@ -134,12 +134,13 @@ Switches that change what is written or injected:
 | `memory.persistence_enabled: false` | No automatic writes | Stored memory and lessons withheld |
 | `memory.writes_enabled: false` | No automatic writes | Unchanged |
 | `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
-| `memory.kind_routing: "enforce"` | Consolidation skips a `state` fact; facts and events are written as before (`"shadow"` only logs; default `"off"` does neither) | Unchanged |
+| `memory.kind_routing: "enforce"` (default) | Consolidation skips a `state` fact; facts and events are written as before (`"off"` writes every fact) | Unchanged |
 | `memory.extraction_instructions: "<text>"` | Consolidation is asked to follow your text about what to keep and what never to store; an empty value (default) changes nothing | Unchanged |
 | `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.fact_origin_gate: "enforce"` | Consolidation of turns no person sent writes no `pref.*` or `user.*` fact and leaves the preferences file alone; `project.*` facts and episodes are written as before (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message back it; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
-| `memory.lesson_fold: "enforce"` | Unchanged | A rule that repeats another one takes no room in the rule block; the block says how many were folded, `learn_list` shows all, and rules you taught are never folded (`"shadow"` only records what would fold; default `"off"` does neither) |
-| `memory.rule_authority_order: "enforce"` | Unchanged | Rules saved as yours (`learn_add`, dashboard, CLI) come first in the rule block, then inferred rules (`"shadow"` only records what would change; default `"off"` does neither) |
+| `memory.lesson_fold: "enforce"` (default) | Unchanged | A rule that repeats another one takes no room in the rule block; the block says how many were folded, `learn_list` shows all, and rules you taught are never folded (`"off"` keeps every copy) |
+| `memory.rule_authority_order: "enforce"` (default) | Unchanged | Rules saved as yours (`learn_add`, dashboard, CLI) come first in the rule block, then inferred rules (`"off"` keeps the old order) |
 | `memory.member_lesson_dedup: "enforce"` | A private store skips a lesson that copies a stored one, and retires a new near-copy before a dashboard turn sees it (turning it off restores them); lessons you taught are never folded (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.relevance_rule: "enforce"` | Unchanged | Past findings, task facts and project and history sections join a new session only when they share a word of 3 or more letters, or a two-character Chinese or Japanese pair, with your first message; a fact also needs the private store's evidence check. The rule block is unchanged (`"shadow"` only records what would change; default `"off"` does neither) |
 | `memory.dream: "propose"` | While no chat runs, an offline pass lists copies, near-copies, work status and old untagged rules it would clean up; read the list with `kirocrew memory dream list`. Nothing is applied, and lessons you taught are never proposed for change | Unchanged |
@@ -232,7 +233,7 @@ Just tell it naturally:
 - "Prefer ruff over flake8 for linting"
 
 Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
-or on the dashboard Overview → Lessons tab.
+or in the Lessons table of the Memory page (**Settings → Overview → Memory**).
 
 To change whether a saved lesson applies in every session (`always`) or only
 when the task is about it (`on_topic`), ask Kiro Crew: the `learn_update` tool
@@ -325,10 +326,10 @@ original diagnostic text.
 
 Kiro Crew automatically consolidates conversations into memory:
 - **Preferences/projects**: every 30 messages per session
-- **Daily history + lessons**: after 3 hours idle per session
+- **Daily history + lessons**: after 3 hours idle per session (`memory.history_idle_hours`)
 
 No manual action needed — it happens in the background. The manual trigger
-(Overview → Memory tab → Summarize now, or `POST /api/memory/consolidate`) refuses
+(**Summarize now** on the Memory page, **Settings → Overview → Memory**, or `POST /api/memory/consolidate`) refuses
 an Incognito or Temporary session with a 403 no matter which session triggers it,
 and the background paths skip those sessions — including a Slack or Telegram
 thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
@@ -367,6 +368,11 @@ scheduled jobs.
   exits 1. The `markdown` collection is never imported, and a private Bot (V2)
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
+- `kirocrew memory import-text <file> [--yes | --dry-run]` — save what another assistant
+  wrote about you: one fact per line or bullet (200 per run, file up to 256 KiB). It lists
+  facts the default store does not hold and you have not forgotten, and saves the numbers
+  you confirm (`--yes`: all; no terminal: none). It never replaces a stored fact and
+  makes no network or model call.
 
 ## Comparing Memory Providers
 
@@ -386,5 +392,5 @@ answering and grading may take. Nothing runs until you start the planned run.
 
 ## Editing Memory
 
-- **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
+- **Dashboard**: **Settings → Overview → Memory**, then edit preferences.md or projects.md
 - **Chat**: ask Kiro Crew to remember or correct a fact through its memory tools

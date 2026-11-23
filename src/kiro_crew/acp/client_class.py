@@ -278,9 +278,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
-        # A member session's spec ``tools`` allowlist on a mirror-less array host
-        # (pi), from the same parse; the pooled stubs pass through it.
+        # pi: the stubs' spec ``tools`` allowlist, and a worker's stub names withheld.
         self._member_stub_allowlist: ToolsAllowlist | None = None
+        self._pi_worker_stub_names: frozenset[str] = frozenset()
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()
@@ -1110,7 +1110,7 @@ class AcpClient:
         return False, None
 
     def _note_worker_builtin_tools(self, builtin_tools: tuple[str, ...] | None) -> None:
-        """Keep the built-ins a crewmate worker's projection allows: this backend has
+        """Keep the built-ins a worker's or a named agent's projection allows: this backend has
         no option that carries them."""
 
     def _worker_settings_lag(self, spec: dict[str, Any] | None) -> bool:
@@ -1492,6 +1492,7 @@ class AcpClient:
     _held_steers = _client_turn_control._held_steers
     _release_held_steers = _client_turn_control._release_held_steers
     _held_steer_writes = _client_turn_control._held_steer_writes
+    _held_steer_unsent = _client_turn_control._held_steer_unsent
     _send_held_steers = _client_turn_control._send_held_steers
     _send_steering_request = _client_turn_control._send_steering_request
     _await_steering_answer = _client_turn_control._await_steering_answer
@@ -1552,6 +1553,28 @@ class AcpClient:
         turn starts.
         """
         return frozenset(getattr(self, "_held_steers_unanswered", ()))
+
+    # The text of each held steer of the running or last turn that the adapter
+    # never took: dropped from the buffer unwritten, or written and refused,
+    # until the next turn starts.
+    _held_steers_unsent: set[str]
+
+    @property
+    def held_steers_unsent(self) -> frozenset[str]:
+        """Held steer texts that never reached the turn.
+
+        A steer held behind an open tool call answers True without being
+        written. This names each such text still buffered, dropped from the
+        buffer unwritten when its turn stopped, or written and refused, so a
+        caller that marked it delivered queues it instead. A write in flight
+        is not here (see :attr:`held_steers_possibly_delivered`). Reset when
+        the next turn starts.
+        """
+        unresolved = getattr(self, "_held_steers_unanswered", ())
+        buffered = {
+            text for _, text in getattr(self, "_steers_held", None) or () if text not in unresolved
+        }
+        return frozenset(buffered | getattr(self, "_held_steers_unsent", set()))
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's

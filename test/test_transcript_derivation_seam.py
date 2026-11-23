@@ -77,8 +77,6 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/apps/chat_slot_sdk.py", "read_messages"),
         # Channel file migration: moves rows between stems, derives nothing.
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
-        # SEL audit log `recent`, not a transcript.
-        ("kiro_crew/cli_commands_security.py", "recent"),
         # `kirocrew consolidate`: a yes/no sensitive-session check on a tail
         # consolidate_now left, to report the skip; no rows leave.
         ("kiro_crew/cli_knowledge.py", "_read_messages"),
@@ -136,6 +134,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/feature_videos.py", "recent"),
         # SEL audit log `recent` (the recurring-failure scan), not a transcript.
         ("kiro_crew/failure_recurrence.py", "recent"),
+        # SEL audit log `recent` (the security events field filters), not a transcript.
+        ("kiro_crew/sel_filter.py", "recent"),
         # The log and its read projection ARE the plain reads.
         ("kiro_crew/history.py", "_read_messages"),
         ("kiro_crew/history.py", "_read_messages_locked"),

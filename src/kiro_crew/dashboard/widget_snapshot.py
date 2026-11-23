@@ -13,10 +13,26 @@ one widget into the wire snapshot of the mobile widgets design (section 3.2.3):
    agent share.
 4. **Shape** each block, with its freshness taken from the source's own timestamps.
 
-TWO SEAMS ARE LEFT OPEN ON PURPOSE. ``redact`` runs on every resolved value before a
-block reads it, and ``clean`` on every string a block emits. Both default to the
-identity here: the widget boundary's redaction and its text sanitizer are separate
-steps, and each replaces one default without touching the shaping.
+REDACTION IS NOT OPTIONAL. The widget routes are a new way for fold and agent data to
+leave the gateway, so this module applies the page's own rule itself rather than
+trusting a caller to (design section 6). Three passes, all of them the page's existing
+functions:
+
+* every resolved value goes through :func:`member_dashboard.page_safe_for` before any
+  block reads it: masked keys dropped, session keys removed, strings and mapping keys
+  run through ``redact_via_context``. :func:`resolve_snapshot` always builds it from
+  the gateway state and the Bot's slot; :func:`shape_snapshot` defaults to the
+  state-free form, never to the identity;
+* every string a block emits is redacted before ``clean`` sees it, then made plain
+  (:func:`plain_text`) and redacted again, so a key that only a removed control
+  character hid is caught before the cut, and a later cut to a length can never keep
+  part of a secret the whole string would have matched;
+* the finished body goes through the same pass once more, so text ``clean`` produced
+  and every envelope string are checked as the bytes that leave.
+
+``clean`` is the text sanitizer's seam and defaults to :func:`sanitize_text` (design
+3.2.3): control and bidi characters removed, whitespace collapsed, cut to
+:data:`MAX_TEXT_GRAPHEMES` grapheme clusters. It is display safety, not redaction.
 
 FRESHNESS IS NEVER INVENTED. Each block's ``freshness`` names its ``source``:
 
@@ -44,11 +60,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import unicodedata
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
 
 from kiro_crew.artifact_store.dashboard_widgets import RESERVED_WIDGET_ID
+from kiro_crew.messaging.graphemes import joins_previous
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +150,86 @@ DEFAULT_WIDGET: Final[Mapping[str, Any]] = {
 }
 
 
-def _identity(value: Any) -> Any:
-    return value
+# --------------------------------------------------------------------------
+# the text sanitizer
+# --------------------------------------------------------------------------
+
+#: The most grapheme clusters a snapshot string keeps, the ellipsis included (design
+#: 3.2.3, a design choice).
+MAX_TEXT_GRAPHEMES: Final = 80
+ELLIPSIS: Final = "\u2026"
+
+#: Unicode's Bidi_Control set: ALM, LRM, RLM, the embeddings and overrides
+#: (U+202A to U+202E) and the isolates (U+2066 to U+2069). The design names the last
+#: two ranges; the three marks are removed too, since they reorder text as well.
+_BIDI_CONTROLS: Final = frozenset(
+    "\u061c\u200e\u200f"
+    + "".join(map(chr, range(0x202A, 0x202F)))
+    + "".join(map(chr, range(0x2066, 0x206A)))
+)
+
+
+def plain_text(text: str) -> str:
+    """*text* with C0 and C1 controls and bidi controls removed and whitespace collapsed.
+
+    Whitespace controls (tab, newline, NEL) become one space rather than nothing, so
+    the words on either side stay apart. Removing a character happens before the
+    collapse, so it never leaves two spaces behind.
+    """
+    kept = []
+    for char in text:
+        if char.isspace():
+            kept.append(" ")
+        elif char in _BIDI_CONTROLS or unicodedata.category(char) == "Cc":
+            continue
+        else:
+            kept.append(char)
+    return " ".join("".join(kept).split())
+
+
+def cut_graphemes(text: str, limit: int = MAX_TEXT_GRAPHEMES) -> str:
+    """*text* if it has at most *limit* grapheme clusters, else its first ``limit - 1``
+    clusters and :data:`ELLIPSIS`.
+
+    Cluster boundaries are the shared rule in :mod:`kiro_crew.messaging.graphemes`, so a
+    cut never splits an emoji with a modifier, a ZWJ sequence, a flag or a base and its
+    marks.
+    """
+    count, keep_end = 1 if text else 0, len(text)
+    for index in range(1, len(text)):
+        if joins_previous(text, index):
+            continue
+        count += 1
+        if count == limit:
+            keep_end = index
+        if count > limit:
+            return text[:keep_end].rstrip() + ELLIPSIS
+    return text
+
+
+def sanitize_text(text: str) -> str:
+    """One snapshot string as the phone may draw it: :func:`plain_text`, then
+    :func:`cut_graphemes`. Display safety only: the caller redacts first."""
+    return cut_graphemes(plain_text(text))
+
+
+def _page_redactor(state: Any = None, slot: str = "") -> Callable[[Any], Any]:
+    """The dashboard page's own value pass, :func:`member_dashboard.page_safe_for`."""
+    from kiro_crew.dashboard.handlers.member_dashboard import page_safe_for
+
+    return page_safe_for(state, slot)
+
+
+def _redacting(clean: Callable[[str], str]) -> Callable[[str], str]:
+    """*clean* run only on redacted, plain text.
+
+    ``redact_via_context`` runs first, then once more after :func:`plain_text`: a key
+    that a control character split in two is whole again only after that removal, and
+    must be caught before *clean* can cut it to a length that no pattern matches.
+    """
+    from kiro_crew.platform.context import redact_via_context
+
+    return lambda text: clean(redact_via_context(plain_text(redact_via_context(text))))
 
 
 # --------------------------------------------------------------------------
@@ -501,7 +597,7 @@ def shape_block(
     fresh: Callable[[str], dict[str, Any]],
     *,
     now: datetime,
-    clean: Callable[[str], str] = _identity,
+    clean: Callable[[str], str] = sanitize_text,
 ) -> dict[str, Any]:
     """One block on the wire. *values* are the resolved (and redacted) field values.
 
@@ -544,11 +640,12 @@ def shape_block(
     elif kind == "sparkline":
         out["points"] = _sparkline_points(block, value)
     elif kind == "status":
+        tone_key = _scalar_text(value, str)
         text = _scalar_text(value, clean)
         raw_tones = block.get("tones")
         tones: Mapping[str, Any] = raw_tones if isinstance(raw_tones, Mapping) else {}
         out["text"] = text
-        out["tone"] = tones.get(text, "idle") if text is not None else "idle"
+        out["tone"] = tones.get(tone_key, "idle") if tone_key is not None else "idle"
     if not isinstance(field, str):
         out["freshness"] = freshness(source=SOURCE_NONE, now=now)
     elif kind == "progress" and isinstance(block.get("total_field"), str):
@@ -567,17 +664,22 @@ def shape_snapshot(
     bot: Mapping[str, str],
     layout_version: int,
     now: datetime,
-    redact: Callable[[Any], Any] = _identity,
-    clean: Callable[[str], str] = _identity,
+    redact: Callable[[Any], Any] | None = None,
+    clean: Callable[[str], str] = sanitize_text,
 ) -> dict[str, Any]:
     """The 3.2.3 snapshot of *widget* from one field *read*. Pure: no IO.
 
     Only the fields the widget binds are looked at, so a value the read happens to hold
     for any other name never reaches the body. *redact* sees each of those values once,
-    before any block reads it.
+    before any block reads it; ``None`` is the page's pass with no gateway state, so
+    no caller gets an unredacted snapshot by leaving it out. The finished body is
+    redacted once more (module docstring).
     """
     from kiro_crew.dashboard_agentic import stale_after_map
 
+    page_safe = _page_redactor()
+    redact = redact or page_safe
+    clean = _redacting(clean)
     fields = getattr(read, "fields", {}) or {}
     bound = bound_fields(widget)
     values = {name: redact(fields[name]) for name in bound if name in fields}
@@ -592,9 +694,15 @@ def shape_snapshot(
         if default and block.get("type") == "title" and "field" not in block:
             block = {**block, "text": bot.get("name", "")}
         blocks.append(shape_block(block, values, fresh, now=now, clean=clean))
-    return {
+    body = {
         "v": SNAPSHOT_V,
-        "bot": {key: str(bot.get(key, "")) for key in ("slug", "member", "name")},
+        # ``slug`` and ``member`` are the identity the phone checks its configuration
+        # against, so they go out exactly as the route was asked; ``name`` is display.
+        "bot": {
+            "slug": str(bot.get("slug", "")),
+            "member": str(bot.get("member", "")),
+            "name": clean(str(bot.get("name", ""))),
+        },
         "widget": {
             "id": widget.get("id"),
             "title": clean(str(widget.get("title") or "")),
@@ -606,6 +714,8 @@ def shape_snapshot(
         "blocks": blocks,
         "tap": {"open": "bot", "value": str(bot.get("slug", ""))},
     }
+    redacted: dict[str, Any] = page_safe(body)
+    return redacted
 
 
 # --------------------------------------------------------------------------
@@ -620,12 +730,16 @@ async def resolve_snapshot(
     *,
     name: str = "",
     now: datetime | None = None,
-    redact: Callable[[Any], Any] = _identity,
-    clean: Callable[[str], str] = _identity,
+    state: Any = None,
+    clean: Callable[[str], str] = sanitize_text,
 ) -> dict[str, Any] | None:
     """The snapshot of the Bot's widget *widget_id*, or ``None`` when it has no such widget.
 
-    The read is blocking IO and runs off the loop.
+    Redacted with :func:`member_dashboard.page_safe_for` over *state* (the gateway
+    state) and the Bot's dashboard slot, the page route's own pass. It takes no
+    redactor argument: a caller cannot swap the boundary's redaction out.
+
+    The read and the slot lookup are blocking IO and run off the loop.
     """
     from kiro_crew.dashboard.handlers import member_dashboard as md
 
@@ -636,6 +750,7 @@ async def resolve_snapshot(
     types = types_of(package, widget)
     manifest = cut_manifest(types, widget, slug=slug, version=layout_version)
     read = await asyncio.to_thread(md.read_fields, slug, member, manifest)
+    slot = await asyncio.to_thread(md._dashboard_slot, member, slug) if state is not None else ""
     return shape_snapshot(
         widget,
         types,
@@ -644,6 +759,6 @@ async def resolve_snapshot(
         bot={"slug": slug, "member": member, "name": name or member},
         layout_version=layout_version,
         now=now or datetime.now(timezone.utc),
-        redact=redact,
+        redact=_page_redactor(state, slot),
         clean=clean,
     )

@@ -65,6 +65,8 @@ from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
+    EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     STATUS_EXTENSION_VERSION,
@@ -92,6 +94,8 @@ __all__ = [
     "is_user_worded_failure",
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
+    "EVENT_SUBAGENT_ACTIVITY",
+    "EVENT_SUBAGENT_LIST",
     "EVENT_TOOL_CALL",
     "EVENT_TOOL_CALL_UPDATE",
     "EVENT_TOOL_RESULT",
@@ -112,6 +116,7 @@ __all__ = [
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpError",
     "AcpRequestTimeout",
     # The runtime family outside ``AcpError``: a session start the backend
     # refuses (a KAS engine that cannot be fetched) raises it.

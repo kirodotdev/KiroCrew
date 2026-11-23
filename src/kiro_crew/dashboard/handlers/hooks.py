@@ -1136,6 +1136,11 @@ async def _run_hook_inner(
                     source="webhook",
                     request_id=str(event.request_id),
                     error=deny_error,
+                    metadata=(
+                        {"rule_id": decision.tier}
+                        if deny_error == "hook_deny" and decision is not None and decision.tier
+                        else None
+                    ),
                 )
                 # No person is attached to a webhook turn, so every deny here
                 # is the host's: tell the model which one before the wire.
@@ -1146,6 +1151,15 @@ async def _run_hook_inner(
             _complete_event = event
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
+    # Per-interaction telemetry, only for a completion that landed: the loop
+    # above also ends on a failed one (e.g. ``error: compaction failed``).
+    from kiro_crew.llm_helpers import record_interaction_event
+    from kiro_crew.messaging.dispatch import stop_reason_landed
+
+    if _complete_event is not None and stop_reason_landed(
+        str(getattr(_complete_event, "stop_reason", "") or "")
+    ):
+        record_interaction_event(client, session_key, "webhook")
 
     # ── Per-turn usage row: attribute webhook spend. ──
     try:

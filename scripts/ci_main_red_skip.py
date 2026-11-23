@@ -39,7 +39,10 @@ Guards (each is pinned by `test/test_ci_main_red_skip.py`):
    issue, runs everything: the fix must prove itself. A node id whose test
    file the PR changes is kept too.
 5. Any failure to read or parse the issue runs everything, with a ::warning.
-   This module fails open to running tests, never to skipping them.
+   This module fails open to running tests, never to skipping them. A read
+   the API refuses for a rate limit is tried once without the token, then
+   waited for within ``MAX_WAIT_SECONDS``; a refusal that names no rate limit
+   is not retried. Each answer passes the same checks as a first one.
 6. Each shard's job summary lists what it deselected and links the issue.
 
 Nothing read from the issue reaches a shell word or a ``${{ }}`` expression in
@@ -55,8 +58,11 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -212,26 +218,151 @@ def decide(
 
 
 API_URL = "https://api.github.com"
+REQUEST_TIMEOUT = 20
+# Seconds one `decide` may sleep for rate-limit resets, in total. The `changes`
+# job gates every other CI job and holds its runner while this sleeps, so the
+# budget is a third of that job's timeout: a slow full-history checkout and
+# this wait together still end inside it. A reset further away is not waited
+# for at all. `test_the_wait_budget_fits_the_changes_job` pins the fit.
+MAX_WAIT_SECONDS = 300
+MAX_TOKEN_READS = 3
+# Added to a reset time: the runner's clock and GitHub's are not the same one.
+RESET_MARGIN_SECONDS = 5
+# GitHub's guidance for a secondary limit that names no `Retry-After`.
+SECONDARY_WAIT_SECONDS = 60
+_ERROR_BODY_BYTES = 4000
+_WHOLE = re.compile(r"[0-9]{1,12}")
+
+Response = tuple[int, dict[str, str], bytes]
 
 
-def fetch_open_issues(repo: str, token: str) -> list[Any]:
-    if _REPO.fullmatch(repo) is None:
-        raise ValueError("REPO has an unexpected shape")
-    query = urllib.parse.urlencode({"state": "open", "labels": LABEL, "per_page": "100"})
-    request = urllib.request.Request(
-        f"{API_URL}/repos/{repo}/issues?{query}",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme and host pinned to API_URL, repo checked against _REPO
-    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
-        data = json.loads(response.read().decode("utf-8"))
+class IssueReadError(Exception):
+    """The issue was not read. The caller runs the full suite."""
+
+
+class RateLimited(IssueReadError):
+    """A rate limit refused the read and the bounded wait did not clear it."""
+
+
+def _send(url: str, token: str) -> Response:
+    """One GET: ``(status, lower-cased headers, body)``. No ``token`` reads anonymously."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme and host pinned to API_URL, repo checked against _REPO
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:  # noqa: S310
+            return response.status, _lowered(response.headers), response.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(_ERROR_BODY_BYTES)
+        except (OSError, ValueError, AttributeError):
+            body = b""
+        return exc.code, _lowered(exc.headers), body
+
+
+def _lowered(headers: Any) -> dict[str, str]:
+    return {str(key).lower(): str(value) for key, value in (headers.items() if headers else [])}
+
+
+def _whole(value: str | None) -> int | None:
+    text = (value or "").strip()
+    return int(text) if _WHOLE.fullmatch(text) else None
+
+
+def rate_limit(response: Response, now: float) -> tuple[str, int | None] | None:
+    """``(kind, seconds to wait)`` for a refusal that names a rate limit, else None.
+
+    A 403 or 429 names one through a `Retry-After` header, through
+    `X-RateLimit-Remaining: 0`, by being a 429, or in its body text. A 403
+    with none of these is a permission error. The wait is None when the
+    primary limit's reset time cannot be read.
+    """
+    status, headers, body = response
+    if status not in (403, 429):
+        return None
+    if "retry-after" in headers:
+        after = _whole(headers["retry-after"])
+        return "secondary", SECONDARY_WAIT_SECONDS if after is None else max(after, 1)
+    if headers.get("x-ratelimit-remaining", "").strip() == "0":
+        reset = _whole(headers.get("x-ratelimit-reset"))
+        if reset is None:
+            return "primary", None
+        return "primary", max(reset - int(now), 0) + RESET_MARGIN_SECONDS
+    if status == 429 or b"rate limit" in body.lower():
+        return "secondary", SECONDARY_WAIT_SECONDS
+    return None
+
+
+def issue_page(response: Response) -> list[Any]:
+    """The issues of one complete 200 answer. Anything less raises."""
+    _status, headers, body = response
+    if 'rel="next"' in headers.get("link", ""):
+        raise ValueError("the open main-red issues do not fit one page")
+    data = json.loads(body.decode("utf-8"))
     if not isinstance(data, list):
         raise ValueError("the issues API did not return a list")
     return data
+
+
+def fetch_open_issues(
+    repo: str,
+    token: str,
+    *,
+    send: Callable[[str, str], Response] | None = None,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = print,
+) -> list[Any]:
+    """The open `main-red` issues, or an exception: the caller then runs everything.
+
+    The token draws on the rate limit every workflow of the repository shares.
+    When that refuses the read, one read without the token is tried first: it
+    draws on the runner address's own small limit and costs no wait. Only then
+    does this sleep for the token's reset, when that is inside what is left of
+    ``MAX_WAIT_SECONDS``.
+    """
+    if _REPO.fullmatch(repo) is None:
+        raise ValueError("REPO has an unexpected shape")
+    if not token:
+        raise IssueReadError("GH_TOKEN is empty")
+    send = send or _send
+    query = urllib.parse.urlencode({"state": "open", "labels": LABEL, "per_page": "100"})
+    url = f"{API_URL}/repos/{repo}/issues?{query}"
+    waited = 0
+    anonymous = ""
+    for read in range(1, MAX_TOKEN_READS + 1):
+        response = send(url, token)
+        if response[0] == 200:
+            return issue_page(response)
+        limit = rate_limit(response, clock())
+        if limit is None:
+            raise IssueReadError(f"HTTP {response[0]} that names no rate limit, so not retried")
+        kind, delay = limit
+        if not anonymous:
+            try:
+                without_token = send(url, "")
+            except OSError as exc:
+                anonymous = f"; the read without a token failed ({type(exc).__name__})"
+            else:
+                if without_token[0] == 200:
+                    log(f"Main-red skip: {kind} rate limit on the token; read without it.")
+                    return issue_page(without_token)
+                anonymous = f"; the read without a token got HTTP {without_token[0]}"
+        if delay is None:
+            raise RateLimited(f"{kind} rate limit with no readable reset time{anonymous}")
+        if read == MAX_TOKEN_READS:
+            raise RateLimited(f"{kind} rate limit still set after {read} reads and {waited}s")
+        if waited + delay > MAX_WAIT_SECONDS:
+            raise RateLimited(
+                f"{kind} rate limit resets in {delay}s, past what is left of the "
+                f"{MAX_WAIT_SECONDS}s wait budget ({waited}s used){anonymous}"
+            )
+        log(f"::notice::Main-red skip: {kind} rate limit; waiting {delay}s, then reading again.")
+        sleep(delay)
+        waited += delay
+    raise RateLimited("the read loop ended without an answer")
 
 
 def changed_paths(base_sha: str) -> set[str] | None:

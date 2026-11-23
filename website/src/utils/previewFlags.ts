@@ -243,11 +243,28 @@ export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
 export const PREVIEW_APP_BROWSER_SDK = `${PREVIEW_FLAG_PREFIX}app-browser-sdk`
 
 /**
+ * Phone widgets: Bots may write home-screen widgets for the Kiro Mobile app.
+ * Has SERVER behavior: off, agents are not told about widgets and
+ * `dashboard_save` refuses them with `widgets_preview_off`
+ * (`kiro_crew/widgets_preview.py`). Nothing in the dashboard reads this key.
+ * Default OFF.
+ */
+export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
+
+/**
  * Visual refresh: a restyle of the dashboard that lands on `main` in pieces.
  * Default OFF, and OFF is the dashboard as it is on `main`. Nothing reads it
  * yet; shipping the refresh to everyone (retiring the flag) is its own decision.
  */
 export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
+
+/**
+ * Company sign-in: an edition may give an IAM Identity Center start URL its own
+ * sign-in profile. Has SERVER behavior: off, the gateway asks the edition for no
+ * profile (`kiro_crew/auth/login/endpoints.py`), and the sign-in form shows no
+ * company warning. Default OFF, and OFF is `main`.
+ */
+export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
 
 /**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
@@ -274,6 +291,8 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,
+  PREVIEW_WIDGETS,
+  PREVIEW_CREW_CLIENT,
 ]
 
 /**

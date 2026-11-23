@@ -289,7 +289,7 @@ class TestAdvertisedModelCacheWiring:
             lambda *a, **k: True,
         )
         # The re-seed half: set_model refreshes settings.local.json so a pooled
-        # runtime's stale spawn-time seed is overwritten with the claimed model.
+        # runtime's spawn-time seed is refreshed for the claimed model.
         monkeypatch.setattr(
             mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-4-8[1m]"]}
         )
@@ -299,7 +299,8 @@ class TestAdvertisedModelCacheWiring:
         client.set_config_option = AsyncMock(return_value=None)
         await client.set_model("claude-opus-4-8")
         seed = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
-        assert seed["model"] == "global.anthropic.claude-opus-4-8[1m]"
+        # The claimed model goes over set_config_option; the seed only has to list it.
+        assert "model" not in seed
         assert "global.anthropic.claude-opus-4-8[1m]" in seed["availableModels"]
 
     @pytest.mark.asyncio

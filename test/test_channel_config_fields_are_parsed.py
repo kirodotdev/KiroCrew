@@ -223,3 +223,17 @@ def test_telegram_show_thinking_specifically_round_trips(
         json.dumps({"telegram": {"show_thinking": True}}), encoding="utf-8"
     )
     assert KiroCrewConfig.load().telegram.show_thinking is True
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [({"show_timing_footer": False}, False), ({"show_timing_footer": True}, True), ({}, True)],
+    ids=["false", "true", "missing"],
+)
+def test_slack_show_timing_footer_round_trips_and_defaults_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section: dict, expected: bool
+) -> None:
+    """Off only when set off: a missing key keeps the footer, as before the setting."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps({"slack": section}), encoding="utf-8")
+    assert KiroCrewConfig.load().slack.show_timing_footer is expected

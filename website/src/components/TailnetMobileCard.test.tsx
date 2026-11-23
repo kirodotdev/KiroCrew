@@ -578,6 +578,7 @@ describe('TailnetMobileCard — mutating actions', () => {
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    expect(mockApi.restartGateway.mock.calls).toEqual([[{ keepTab: true }]])
   })
 
   it('migrates an already-ready user to persistent access before showing a QR', async () => {
@@ -622,6 +623,7 @@ describe('TailnetMobileCard — mutating actions', () => {
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    expect(mockApi.restartGateway.mock.calls).toEqual([[{ keepTab: true }]])
   })
 
   it('labels the full operation as phone access setup while it is running', async () => {

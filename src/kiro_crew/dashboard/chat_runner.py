@@ -119,6 +119,7 @@ from kiro_crew.context import (
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
+from kiro_crew.dashboard import deferred_steer as _deferred_steer
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
@@ -280,6 +281,7 @@ from kiro_crew.dashboard.chat_turn.stream_chunks import (
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
+    _operator_confirms_call,
     _slot_is_trusted,
 )
 from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
@@ -981,6 +983,10 @@ async def _run_chat(
     # the mirror does not quote it there again. Stamped by ``api_chat`` and carried
     # through the queue by the entry's ``promptOnChannel`` meta.
     _prompt_on_channel: bool = False,
+    # A Bot's Heartbeat wake (``mate_welcome.dispatch_hidden_turn``): a linked thread
+    # or channel gets only the final reply -- no "Thinking…" placeholder, no task
+    # stream, and no outcome line for a quiet end.
+    _mirror_reply_only: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1029,6 +1035,7 @@ async def _run_chat(
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
+        _mirror_reply_only=_mirror_reply_only,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -1286,6 +1293,11 @@ async def _run_chat(
                 await _on_tool_call_update(turn, event)
             elif event.kind == EVENT_TOOL_RESULT:
                 await _on_tool_result(turn, event)
+                # A tool call just finished: the next model step is the boundary a
+                # held peer steer is injected at. A task, not an await: this loop is
+                # also the reader of the steer's acknowledgement.
+                if slot._deferred_steers:
+                    _deferred_steer.schedule_flush(state, slot)
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 _flow = await _on_permission_request(turn, event)
                 if _flow is _Flow.CONTINUE:

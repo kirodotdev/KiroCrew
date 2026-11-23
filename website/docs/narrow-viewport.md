@@ -167,8 +167,14 @@ width (an unfolded foldable in landscape is about 951px wide). A browser in desk
 the desktop form from 768px and keeps the phone form below it: the desktop top bar's
 collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
 Slide Over window must not get the desktop form. Every other device, touch laptops
-included, keeps the 768px breakpoint. A home-screen web app has no
-desktop-site toggle, so it keeps the browser's default mode.
+included, keeps the 768px breakpoint. A home-screen web app or an in-app browser has no
+desktop-site toggle, so Settings > Display > View > Touch screen layout
+(`TouchLayoutSetting.tsx`) overrides the browser's mode on a touch-first device:
+Automatic (the default) is the rule above, Phone layout is the phone form at any width,
+and Desktop layout on wide screens is the desktop-mode result (desktop form from 768px,
+phone form below). The choice is saved on this browser only (`kc-touch-layout`), is read
+only after the touch-first test so a mouse device never sees it, and takes effect at
+once because `useIsMobile` re-reads the form on its change event.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
@@ -271,7 +277,7 @@ therefore keep their authored size on touch, and the composer uses the message f
 setting on every device. One size for the composer's typed text and its placeholder
 is also what keeps an empty composer one line tall: its auto-size measures the
 placeholder at the field's font size, so a field held at 16px over a 14px hint
-measured the hint a line too tall on a 375px phone (#28843).
+measured the hint a line too tall on a 375px phone.
 
 **There is deliberately no app-wide 16px field rule either**, because CSS cannot
 express a floor at all: it can only SET a size, so the two available shapes are wrong
@@ -336,7 +342,7 @@ That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), appl
 `.tb-right`.** Those two are inline-size containers for the collapse ladders, and
 a size container in an `auto` track has no content size to give, so it collapses
 to its padding and clips its contents -- the measurement is recorded in
-`test/topbarMenuButtonNarrow.test.ts`, and `test/topbarSingleVariant.test.ts`
+`src/test/topbarMenuButtonNarrow.test.ts`, and `src/test/topbarSingleVariant.test.ts`
 pins that no container class reaches the variant's side cells. The single bar
 has no ladder to run (the readout capsule is not rendered on it), so it needs no
 containers. `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the
@@ -377,7 +383,7 @@ reading), leads to **Settings -> Kiro account**, whose **Credits** section
 (`KiroCreditsCard`) renders the modal's body. On a Kiro harness (kiro-cli or KAS)
 that section is always there (its Refresh fills an empty reading); on any other
 harness only for a reading the desktop segment would show --
-`kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
+`kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`. The tab itself shows while the
 build offers Kiro sign-in or that section has something to show.
 Off the chat route the phone header keeps the logo -> nav drawer
@@ -411,12 +417,11 @@ The rail carries everything the nav drawer does except Connect-your-phone, which
 moot on the phone itself: the Main rows and Library on top, the apps, then
 Terminal (which toggles the docked panel and closes
 the drawer so the panel is not left behind it) and Capabilities, with
-Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
-that secondary group: it stays pinned above Settings while the Apps list keeps
-`APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
-the apps, behind a separator. The decision reads `stableRailHeight` — the tallest
-height seen at the current window width — so the on-screen keyboard or a browser
-toolbar shrinking the rail at the same width never moves the tiles.
+Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` lays it
+out like the desktop rail: everything above Account & Settings and Search is ONE scroll
+region (the top rows, the apps, then the secondary group behind a separator),
+with a bottom-edge fade while tiles sit below the fold; only the foot is pinned
+(#34398).
 
 **The Bots page hosts the same drawer.** On a phone `/members` lands on a
 Bot exactly as a wide window does, and its roster is a left drawer over the
@@ -566,7 +571,7 @@ hamburger-opened drawer cannot be dragged shut.
 the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
 passed, and `animate()` delivers that `onComplete` a microtask later, after the new
 gesture has committed. A busy main thread is exactly when that happens, and the stale
-arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+arrival slid the side panel back open over a closing drag. Both main-thread
 settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
 framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
 arrival that comes after it.
@@ -598,11 +603,15 @@ around a dozen such widget families in `src/` today (`ResizeHandle`, `ColumnSpli
 `components/ui.tsx`, …); asking each to remember an attribute means the next one
 silently fights the nav drawer instead.
 
-**Count the panels before believing the rule holds.** Four are driven by
-`registerDrawerTargets` today: the nav drawer, the chat page's sessions drawer and
-activity panel (all three with gestures), and the notification sheet (no gesture,
-portaled). Only the chat page declares a claim, because it is the only one that binds
-its own gesture inside the shell.
+**Count the panels before believing the rule holds.** Six are driven by
+`registerDrawerTargets` today: the nav drawer (`shell/appShell.tsx`), the chat page's
+sessions drawer and side panel (`pages/chat/page/sessionsDrawer.ts`), the Bots page's
+roster drawer and side panel (`pages/members/useMembersPageDrawers.ts`), all five with
+gestures, and the notification sheet (no gesture, portaled). The two pages that bind
+their own gesture inside the shell declare a claim (`ChatPageFrame.tsx`, and
+`MembersPage.tsx` while its roster drawer or side-panel swipe is available), and so does
+the session tab strip (`SessionTabStrip.tsx`), whose long-press reorder needs the touch
+before the shell drawer sees it.
 
 **Two sibling instances exclude each other on INTENT, not on arrival.** The chat page
 binds `useDrawerSwipe` twice on one element — sessions drawer on the left, side panel on
@@ -657,7 +666,12 @@ run unstarted. The fingers' moves before the start are kept for the release spee
 flick that just passes 80px still opens the panel. Under reduced motion it is not asked: nothing moves there, and a clear swipe
 already needs the same 80px. The start distance is there for a mouse's thumb wheel, which turns a little
 when the mouse is held or moved and sends runs of 1-2px steps that sum to a few dozen px:
-a run that short never moves a closed panel, and neither does a flick that short. The drag is released only on a real
+a run that short never moves a closed panel, and neither does a flick that short. A waiting reveal is
+also the one run whose owner can change after its first event: once its summed vertical travel
+reaches the furthest it has gone sideways its way (a turn back does not count against it), it is a
+scroll that started with a little sideways drift, not a swipe, and the rest of the run is handed
+back to the browser uncancelled (a new run for the reader, so its hold and quiet timer go), so the
+content under the fingers keeps scrolling and neither the panel nor the Dashboard tab moves. The drag is released only on a real
 lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
 lift), or the momentum tail's signature, three steps in a row each smaller than the last
 by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
@@ -758,7 +772,7 @@ does this, correctly.
 like a feel problem rather than a bug: a MotionValue deliberately does not re-render
 React, so the drag writes the value every frame while the DOM moves only on whatever
 re-render happens to occur — the panel comes out a little, freezes, and completes on
-release when the settle takes over. Bind it instead, as all three gesture-driven
+release when the settle takes over. Bind it instead, as every gesture-driven
 panels do:
 
 ```tsx

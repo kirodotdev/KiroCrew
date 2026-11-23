@@ -2,6 +2,69 @@
   "_comment": "The exported metric schema: every metric in PRODUCT_METRICS, its kind, unit, instrumentation scope, temporality, attribute keys and closed values. Rows, keys and values are only ever added; see docs/guides/telemetry-otlp-export.md (Metric schema contract). Regenerate with: python test/metrics_schema_helpers.py --write",
   "metrics": [
     {
+      "name": "kirocrew.app.credits",
+      "kind": "counter",
+      "unit": "credit",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "credits"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {}
+      }
+    },
+    {
+      "name": "kirocrew.app.foreground_time",
+      "kind": "counter",
+      "unit": "s",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "foreground_time"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "duration": {
+          "values": [
+            "gt_4h",
+            "le_10s",
+            "le_15m",
+            "le_1h",
+            "le_1m",
+            "le_4h",
+            "le_5m",
+            "other"
+          ]
+        },
+        "entity_version": {},
+        "surface": {
+          "values": [
+            "other",
+            "page",
+            "popout"
+          ]
+        }
+      }
+    },
+    {
       "name": "kirocrew.app.installed",
       "kind": "counter",
       "unit": "1",
@@ -26,6 +89,36 @@
             "default",
             "other",
             "store"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.opened",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "opened"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "surface": {
+          "values": [
+            "desktop",
+            "other",
+            "page",
+            "popout"
           ]
         }
       }

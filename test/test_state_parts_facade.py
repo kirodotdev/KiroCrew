@@ -215,6 +215,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[list[dict[str, Any]], int]'",
     ),
+    "durable_source": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "enqueue_or_run_prompt": (
         "function",
         False,
@@ -223,7 +224,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
         "relay_meta: 'dict[str, Any] | None' = None, gateway_prompt_kind: 'str' = "
-        "'') -> 'bool'",
+        "'', at_head: 'bool' = False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -631,6 +632,13 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_source_links_revision": ("value", "0"),
     "_stale_recovery_exhausted_emitted": ("value", "False"),
     "_stale_recovery_retries": ("value", "0"),
+    "_deferred_flush_dirty": ("value", "False"),
+    "_deferred_flush_task": ("value", "None"),
+    "_deferred_steer_delivered": ("value", "{}"),
+    "_deferred_steer_ended_gen": ("value", "-1"),
+    "_deferred_steer_injected": ("value", "{}"),
+    "_deferred_steer_receipts": ("value", "{}"),
+    "_deferred_steers": ("value", "[]"),
     "_steer_act_now": ("value", "set()"),
     "_steer_admissions": ("value", "{}"),
     "_steer_attachment_meta": ("value", "{}"),
@@ -702,6 +710,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_generation": ("value", "0"),
     "_turn_lineage": ("type", "builtins.tuple"),
     "_turn_in_flight_generation": ("value", "0"),
+    "_turn_pick_gen": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
     "_restored_turn_marker": ("value", "None"),
     "_run_started_at": ("value", "None"),
@@ -739,6 +748,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "color_theme": ("value", "''"),
     "created_at": ("type", "builtins.str"),
     "credential_evidence": ("type", "kiro_crew.security.credential_sources.CredentialEvidence"),
+    "cron_run_read_only": ("value", "False"),
     "event": ("type", "asyncio.locks.Event"),
     "executor": ("value", "'local'"),
     "folder_id": ("value", "''"),

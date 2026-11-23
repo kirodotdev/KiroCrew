@@ -164,6 +164,7 @@ class AcpSessionHandle:
     _sync_mcp_reattempting = _sh_mcp._sync_mcp_reattempting
     _runtime_reattempts_mcp = _sh_mcp._runtime_reattempts_mcp
     _reattempt_failed_mcp_servers = _sh_mcp._reattempt_failed_mcp_servers
+    _note_mcp_call_disconnected = _sh_mcp._note_mcp_call_disconnected
     _apply_init_notification = _sh_mcp._apply_init_notification
     drain_init = _sh_mcp.drain_init
     # What KAS speaks beyond ACP on a session: ``kiro_crew.acp.session_handle_kas``.
@@ -374,6 +375,11 @@ class AcpSessionHandle:
         # consumption report can never clear a pending entry whose row does
         # not exist yet. Matched by identity (``_release_proven_steers``).
         self._steers_accepted: list[str] = []
+        # The text of each codex steer of the running or last turn whose write
+        # may have reached the adapter with no answer read, or was answered
+        # ``injected`` after its turn ended, until the next turn starts. Read
+        # through ``held_steers_possibly_delivered``, as on ``AcpClient``.
+        self._held_steers_unanswered: set[str] = set()
         # goose's ``_goose/unstable/session/steer`` (``_steer_via_goose_request``):
         # the run id goose announced for the running prompt, and each accepted
         # steer's answer with its wrapped text, until goose echoes it.
@@ -801,11 +807,15 @@ class AcpSessionHandle:
         self._mcp_sign_in_dropped = 0
         # Servers whose last status entry for this session was ``failed`` with
         # an error that reads as a missing or refused credential (not an OAuth
-        # authorization failure, which the sign-in above handles), and how many
-        # times each was re-attempted. Both bounded by ``BUCKET_CAP`` names.
+        # authorization failure, which the sign-in above handles), or whose
+        # call found the connection gone, and how many times each was
+        # re-attempted. Both bounded by ``BUCKET_CAP`` names.
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
+        # Waiting servers a call found disconnected, until their reset starts:
+        # KAS still lists them ``connected``, which must not end the wait.
+        self._mcp_reattempt_dropped: set[str] = set()
         # Failed servers whose error is the SSE fallback's non-200 answer, each
         # probed once for whether it wants a sign-in (``_probe_mcp_sign_in``), at most
         # ``BUCKET_CAP`` names; those whose probe said so and that have not
@@ -910,6 +920,9 @@ class AcpSessionHandle:
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""
+        # The notice that this chat runs on kiro-cli because the build default's
+        # first move to Crew's engine failed (``KasHarness.engine_fallback_notice``).
+        self.kas_engine_fallback_notice: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.
@@ -1157,6 +1170,17 @@ class AcpSessionHandle:
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
         return self._last_steer_monotonic
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """Steer texts whose delivery remains unresolved (``AcpClient``'s twin).
+
+        A stalled write (``ambiguous_delivery``), no answer before the turn
+        ended or the bound passed, or ``injected`` after the turn ended may run
+        without being reported consumed. The dashboard reads this so it does
+        not run such a steer again. Reset when the next turn starts.
+        """
+        return frozenset(getattr(self, "_held_steers_unanswered", ()))
 
     @property
     def supports_steer(self) -> bool:

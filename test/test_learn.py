@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 import stat
 import sys
@@ -134,8 +135,9 @@ class TestUnreadableRows:
         """One undecodable byte costs only its own row, not every lesson."""
         import locale
 
-        # The store reads with the platform's default codec, so pick a byte that
-        # codec cannot decode here (0xff on UTF-8, an unmapped byte on cp1252).
+        # A line that is not UTF-8 is retried with the platform's default codec, so
+        # pick a byte that codec cannot decode either (0xff on UTF-8, an unmapped
+        # byte on cp1252).
         encoding = locale.getpreferredencoding(False)
         bad = None
         for value in range(0x80, 0x100):
@@ -155,6 +157,41 @@ class TestUnreadableRows:
         assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
         assert "Write tests first" in store.get_context()
         assert "Skipped 1 of 3 rows" in caplog.text and "(lines 2)" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("extra_row", "extra_rules"),
+        [
+            pytest.param(b"", [], id="all-utf8"),
+            pytest.param(
+                b'{"ts": "t", "rule": "na\xefve", "category": "tool"}\n',
+                ["naïve"],
+                id="and-a-cp1252-row",
+            ),
+        ],
+    )
+    def test_a_utf8_row_reads_and_saves_as_written_under_a_cp1252_locale(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        extra_row: bytes,
+        extra_rules: list[str],
+    ) -> None:
+        """A hand-saved UTF-8 row is neither shown nor re-saved as cp1252 mojibake."""
+        # A Windows process without UTF-8 mode: a bare read_text() gets its codec from
+        # io.text_encoding(None), which UTF-8 mode answers "utf-8" whatever the locale,
+        # so the funnel itself is patched (as test_portability_import_guards does).
+        monkeypatch.setattr("io.text_encoding", lambda enc=None, *_a, **_k: enc or "cp1252")
+        monkeypatch.setattr("locale.getpreferredencoding", lambda do_setlocale=True: "cp1252")
+        path = tmp_path / "lessons.jsonl"
+        utf8_row = '{"ts": "t", "rule": "use café spelling", "category": "tool"}\n'
+        path.write_bytes((_RULE_A + "\n").encode() + utf8_row.encode("utf-8") + extra_row)
+        kept = ["use café spelling", *extra_rules]
+
+        store = LessonStore(base_dir=tmp_path)
+        assert [le.rule for le in store.load_all()] == ["Run the linter first", *kept]
+        assert store.remove("Run the linter first") is True
+        stored = [json.loads(line)["rule"] for line in path.read_bytes().splitlines()]
+        assert stored == kept
 
     @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
     def test_a_row_whose_rule_is_not_text_does_not_block_writes(

@@ -9,6 +9,10 @@
  * page's `useBrowserMedia` (play, pause, seek and volume on the app's own agent's tab).
  * Level 11 adds `BrowserView`, `useBrowserView` and `useBrowserCoords`: the live view of
  * the app's own chat slot, with take over and hand back, behind `app_browser_sdk`; and
- * `appWebOriginStatus`.
+ * `appWebOriginStatus`. Level 12 adds `permissions.kiroOperations`: the gateway calls
+ * the Kiro operations the owner approved for the app, with the person's Kiro sign-in;
+ * and `SessionChanges` and `DiffView`. Level 13 adds `useBrowserSites`: the app's
+ * browsing list (declared sites and the ones the owner added), and the owner's edits
+ * through `/api/apps/<name>/browser-sites`, where adding a site asks the owner first.
  */
-export const APP_SDK_LEVEL = 11
+export const APP_SDK_LEVEL = 13

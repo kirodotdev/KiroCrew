@@ -28,6 +28,8 @@
   // characters, so a snapshot past NODE_CAP nodes carries nothing it would show.
   var CONSOLE_TEXT_CAP = 2000;
   var NODE_CAP = 1500;
+  // The longest name `pick` sends; a longer one is withheld, never cut.
+  var PICK_TEXT_CAP = 2000;
   // `glance` bounds: elements looked at, entries per list, and the longest name or
   // message read. Text past its bound is left out, never cut, so a credential
   // reaches the gateway's redaction whole. The text bounds are four times the
@@ -414,6 +416,7 @@
     if (ae === "true") st.expanded = true;
     else if (ae === "false") st.expanded = false;
     if (inputType(el) === "password") st.password = true;
+    if (inputType(el) === "file") st.file = true;
     return st;
   }
 
@@ -516,6 +519,110 @@
       try { requestAnimationFrame(frame); } catch (e) {}
     })();
     return tick;
+  }
+
+  // Media endings, once per document, for `media` below. An element's `ended` is
+  // true only until the site acts on it: a player that takes its source away when
+  // the item ends (YouTube removes `src`) leaves it paused at 0 with no duration,
+  // and a poll can miss the moment between. So an ending is caught as it happens:
+  // the `ended` event, or the source going away (`emptied`) within END_NEAR_S of
+  // the end. Media events do not bubble; a capturing listener on the window still
+  // sees them, from this world too. Only the page's main element (the largest
+  // shown) is followed, so a small preview or a sound effect ending is no ending.
+  //
+  // An ending counts only once the tab has stayed off that item for END_GRACE_MS:
+  // the same page playing again before then is an advert handing over to the item
+  // itself (or the person replaying it) and drops the ending. Playing again at
+  // another address (the site moving on to its own next item) counts at once.
+  // shortcut: a player that swaps items without changing the address within the
+  // grace reads as an advert; tell them apart by duration if a real site does that.
+  var END_NEAR_S = 2;
+  var END_GRACE_MS = 3000;
+  function isMedia(el) {
+    return !!el && (el.tagName === "VIDEO" || el.tagName === "AUDIO");
+  }
+  // The element `media` acts on: the one playing, else the largest shown one. With
+  // `bySize`, the largest whether or not it plays: the main element for endings.
+  function mainMedia(bySize) {
+    var els = document.querySelectorAll("video,audio");
+    var pick = null;
+    var best = -1;
+    for (var i = 0; i < els.length; i++) {
+      var box = els[i].getBoundingClientRect();
+      var score = (bySize || els[i].paused ? 0 : 1e12) + box.width * box.height;
+      if (score > best) { best = score; pick = els[i]; }
+    }
+    return pick;
+  }
+  function place() {
+    return String(location.pathname) + String(location.search);
+  }
+  // *pick* is the element this read found: one already ended when the listeners go
+  // in is counted at once, so a first read and every later one name it alike.
+  function mediaEnds(pick) {
+    if (window.__kcMediaDoc === document && window.__kcMedia) return window.__kcMedia;
+    var w = {
+      // Names this document's endings apart from another document's (`endId`).
+      doc: Math.random().toString(36).slice(2, 10),
+      n: pick && pick.ended ? 1 : 0,
+      // An ending counted and nothing played since: `ended` reads true.
+      over: !!(pick && pick.ended),
+      pending: null,
+      times: new WeakMap(),
+      lastEl: null
+    };
+    window.__kcMedia = w;
+    window.__kcMediaDoc = document;
+    function begin() {
+      if (w.pending || w.over) return;
+      w.pending = { at: Date.now(), place: place() };
+    }
+    function near(t) {
+      return !!t && t.d > 0 && t.d - t.t <= END_NEAR_S;
+    }
+    function on(type, fn) {
+      try {
+        window.addEventListener(type, function (ev) {
+          if (isMedia(ev.target) && ev.target === mainMedia(true)) fn(ev.target);
+        }, true);
+      } catch (e) {}
+    }
+    on("timeupdate", function (el) {
+      if (isFinite(el.duration)) w.times.set(el, { t: el.currentTime, d: el.duration });
+    });
+    on("ended", begin);
+    on("emptied", function (el) {
+      if (near(w.times.get(el))) begin();
+      w.times.delete(el);
+    });
+    on("playing", function () {
+      // Past the grace with no read in between, or at another address: it counted.
+      if (w.pending && (w.pending.place !== place() || Date.now() - w.pending.at >= END_GRACE_MS)) w.n++;
+      w.pending = null;
+      w.over = false;
+      // What a read last saw near its end is over too: the read-time check below
+      // must not raise the ending again from it.
+      if (w.lastEl) w.times.delete(w.lastEl);
+    });
+    return w;
+  }
+  // Counts a pending ending the grace has passed. A read also notices the main
+  // element it last saw near its end disconnected or emptied, for missed events.
+  // A different selection alone is no ending: the tracked element must lose its source.
+  function settleEnds(w, pick) {
+    var seen = w.lastEl && w.times.get(w.lastEl);
+    if (seen && seen.d > 0 && seen.d - seen.t <= END_NEAR_S &&
+        (!w.lastEl.isConnected || !isFinite(w.lastEl.duration) || w.lastEl.readyState === 0)) {
+      if (!w.pending && !w.over) w.pending = { at: Date.now(), place: place() };
+      w.times.delete(w.lastEl);
+    }
+    if (w.pending && Date.now() - w.pending.at >= END_GRACE_MS) {
+      w.pending = null;
+      w.n++;
+      w.over = true;
+    }
+    w.lastEl = pick;
+    if (pick && isFinite(pick.duration)) w.times.set(pick, { t: pick.currentTime, d: pick.duration });
   }
 
   function hash(text) {
@@ -1121,9 +1228,98 @@
       return { ok: true, selected: selected };
     },
 
+    // The `upload` op's target: a visible, enabled <input type=file>. With `node`
+    // the element itself, or null, for the helper to hand to DOM.setFileInputFiles;
+    // without it the verdict, so the gateway can say why it refused.
+    fileInput: function (ref, node) {
+      var el = lookup(ref);
+      var code = !el ? "ref_stale"
+        : inputType(el) !== "file" ? "not_file_input"
+        : disabledEl(el) ? "disabled"
+        : !visible(el) ? "not_visible" : "";
+      if (node) return code ? null : el;
+      return code ? { ok: false, code: code }
+        : {
+          ok: true,
+          multiple: !!el.multiple,
+          directory: !!el.webkitdirectory || el.hasAttribute("webkitdirectory"),
+        };
+    },
+
     textPresent: function (text) {
       var b = document.body;
       return !!(b && (b.innerText || "").indexOf(text) !== -1);
+    },
+
+    // The element drawn at viewport point (x, y) of the top document, through open
+    // shadow roots (an iframe answers as itself), with a ref the other methods take,
+    // its box and its name. The name is its drawn text (`drawnText`: no form field,
+    // secret-named element, hidden or aria-hidden node, or script), else its own
+    // aria-label, title, alt or placeholder; never another element's text. A
+    // protected field, or a point inside one, answers `password_field` and no ref.
+    pick: function (x, y) {
+      var el = document.elementFromPoint(x, y), guard = 0;
+      while (el && el.shadowRoot && guard++ < 16) {
+        var inner = el.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === el) break;
+        el = inner;
+      }
+      if (!el || el === document.documentElement) return { ok: false, code: "nothing_there" };
+      if (secretish(el) || insideSecretEditable(el)) return { ok: false, code: "password_field" };
+      var text = drawnText(el, 0).replace(/\s+/g, " ").trim();
+      var attrs = ["aria-label", "title", "alt", "placeholder"];
+      for (var i = 0; !text && i < attrs.length; i++) text = String(el.getAttribute(attrs[i]) || "").trim();
+      var r = el.getBoundingClientRect();
+      return {
+        ok: true,
+        ref: assignRef(el),
+        tag: (el.tagName || "").toLowerCase(),
+        // Over the cap it is withheld whole: a cut could leave half a credential the
+        // gateway's redaction does not recognise. The gateway cuts after redacting.
+        text: text.length > PICK_TEXT_CAP ? "" : text,
+        box: { x: r.left, y: r.top, w: r.width, h: r.height }
+      };
+    },
+
+    // Where each text is drawn, in top-document viewport px: a box per visible
+    // occurrence, every one in a text node, in the page and its open shadow roots,
+    // at most `cap` per text across all of them. It searches only text `read` would
+    // show: never a protected field, a form field or a script. Same-origin frames
+    // are not searched, and a text split across elements ("$1<b>.99</b>") is not found.
+    locate: function (texts, cap) {
+      var roots = [];
+      (function collect(root, depth) {
+        roots.push(root);
+        if (depth >= 8) return;
+        var all = root.querySelectorAll("*");
+        for (var i = 0; i < all.length; i++) if (all[i].shadowRoot) collect(all[i].shadowRoot, depth + 1);
+      })(document.body || document.documentElement, 0);
+      var found = [];
+      for (var t = 0; t < texts.length; t++) {
+        var want = texts[t], boxes = [];
+        for (var k = 0; k < roots.length && boxes.length < cap; k++) {
+          var walker = document.createTreeWalker(roots[k], NodeFilter.SHOW_TEXT);
+          for (var node = walker.nextNode(); node && boxes.length < cap; node = walker.nextNode()) {
+            var parent = node.parentElement, value = node.nodeValue || "";
+            // Drawn as text, as `read` judges it: a display:contents parent has no
+            // box of its own, so its text is measured, not its element.
+            // A shadow root's own text child has no parent element: only an
+            // element parent can be one of the excluded tags.
+            var searchable = textNodeShown(node) && !insideSecretEditable(node) &&
+              !(parent && parent.closest("script,style,noscript,template,input,textarea,select"));
+            for (var at = searchable ? value.indexOf(want) : -1; at !== -1 && boxes.length < cap;
+              at = value.indexOf(want, at + want.length)) {
+              var range = document.createRange();
+              range.setStart(node, at);
+              range.setEnd(node, at + want.length);
+              var b = range.getBoundingClientRect();
+              if (b.width > 0 || b.height > 0) boxes.push({ x: b.left, y: b.top, w: b.width, h: b.height });
+            }
+          }
+        }
+        found.push({ text: want, boxes: boxes });
+      }
+      return { ok: true, found: found };
     },
 
     // Navigation commit tracking: stamp the CURRENT document, then poll
@@ -1254,6 +1450,12 @@
       }
       walkRoot(document, 0);
       return n;
+    },
+
+    // Whether an agent selector is refused because it could probe a filled secret
+    // (`probeSelectorBlocked`): the gateway asks before a Harness helper runs one.
+    selectorBlocked: function (selector) {
+      return probeSelectorBlocked(selector);
     },
 
     // Visible elements matching a CSS selector, as {t, x, y} (short text and the
@@ -1617,16 +1819,11 @@
     // pause, seek or set the volume of the tab's main <video>/<audio>, and report its
     // state. Top document only. The element is the one playing, else the largest
     // shown one. Runs in the isolated world, so a page script cannot swap the
-    // methods it calls. Reads no page text: only the element's own playback state.
+    // methods it calls. Reads no page text: only the element's own playback state
+    // (the page's address is compared in the page for `mediaEnds`, never returned).
     media: function (action, value) {
-      var els = document.querySelectorAll("video,audio");
-      var pick = null;
-      var best = -1;
-      for (var i = 0; i < els.length; i++) {
-        var box = els[i].getBoundingClientRect();
-        var score = (els[i].paused ? 0 : 1e12) + box.width * box.height;
-        if (score > best) { best = score; pick = els[i]; }
-      }
+      var pick = mainMedia(false);
+      var ends = mediaEnds(pick);
       if (!pick) return { ok: false, code: "no_media" };
       var num = typeof value === "number" && isFinite(value) ? value : null;
       if (action === "play") {
@@ -1646,12 +1843,18 @@
       } else if (action !== "state") {
         return { ok: false, code: "bad_action" };
       }
+      settleEnds(ends, mainMedia(true));
       var r = pick.getBoundingClientRect();
       return {
         ok: true,
         kind: pick.tagName.toLowerCase(),
         paused: !!pick.paused,
-        ended: !!pick.ended,
+        // An ending the tab counted (`mediaEnds`) and nothing played since: also
+        // after the site took the source away, never for one still in its grace.
+        ended: ends.over,
+        // Changes once per counted ending (`mediaEnds`), null before the first one
+        // in this document: what a reader compares to call its ending once.
+        endId: ends.n ? ends.doc + ":" + ends.n : null,
         currentTime: isFinite(pick.currentTime) ? pick.currentTime : 0,
         duration: isFinite(pick.duration) ? pick.duration : null,
         volume: pick.volume,

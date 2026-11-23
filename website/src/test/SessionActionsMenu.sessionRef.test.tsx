@@ -31,6 +31,7 @@ const copyToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 vi.mock('../utils/clipboard', () => ({ copyToClipboard }))
 
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import { SessionRefStageContext } from '../components/sessionRefStage'
 import type { RootState } from '../store'
 
 const dashboardState = {
@@ -40,7 +41,7 @@ const dashboardState = {
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
 } as unknown as RootState['dashboard']
 
-function renderMenu(onReferenceInChat?: () => void) {
+function renderMenu(onReferenceInChat?: () => void, canStageSessionRef = true) {
   const store = createTestStore({ dashboard: dashboardState })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
@@ -48,12 +49,14 @@ function renderMenu(onReferenceInChat?: () => void) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
-            <DropdownMenu>
-              <DropdownMenuTrigger>menu</DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <SessionActionsMenu variant="dropdown" slotKey="chat-1" onReferenceInChat={onReferenceInChat} />
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SessionRefStageContext.Provider value={canStageSessionRef}>
+              <DropdownMenu>
+                <DropdownMenuTrigger>menu</DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <SessionActionsMenu variant="dropdown" slotKey="chat-1" onReferenceInChat={onReferenceInChat} />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </SessionRefStageContext.Provider>
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -188,6 +191,12 @@ describe('SessionActionsMenu reference-in-chat item', () => {
     renderMenu(onReferenceInChat)
     fireEvent.click(await screen.findByText('Reference in chat'))
     expect(onReferenceInChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders no Reference in chat item when there is no composer to stage into', async () => {
+    renderMenu(vi.fn(), false)
+    expect(await screen.findByText('Pin')).toBeTruthy()
+    expect(screen.queryByText('Reference in chat')).toBeNull()
   })
 
   it('renders no Reference in chat item when no handler is passed', async () => {

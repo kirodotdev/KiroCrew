@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 import sys
 import types
@@ -26,6 +25,7 @@ from push_guard_helpers import (
     _land_on_main,
     _load_push_guard,
     _run_push_guard,
+    copy_repo_pair,
 )
 from skill_script_helpers import load_skill_script
 
@@ -46,23 +46,10 @@ def _mod():
     return load_skill_script("sweep_check_under_test", SCRIPT)
 
 
-def _copy_pair(template: tuple[str, str], root: Path) -> tuple[str, str]:
-    """Copy a (clone, origin) pair under *root* and point the clone at its own origin."""
-    template_clone, template_origin = template
-    origin_dir = str(root / "origin.git")
-    clone_dir = str(root / "work")
-    shutil.copytree(template_origin, origin_dir)
-    shutil.copytree(template_clone, clone_dir)
-    _git(clone_dir, "remote", "set-url", "origin", origin_dir)
-    # Copied files carry new times the index has not seen; a hard reset re-stats them.
-    _git(clone_dir, "reset", "--hard", "HEAD")
-    return clone_dir, origin_dir
-
-
 @pytest.fixture(scope="module")
 def _clone_template(tmp_path_factory, _repo_pair_template) -> tuple[str, str]:
     """The ``clone`` state, built once per module; ``clone`` hands each test a copy."""
-    clone_dir, origin_dir = _copy_pair(
+    clone_dir, origin_dir = copy_repo_pair(
         _repo_pair_template, tmp_path_factory.mktemp("sweep-check-clone")
     )
     _land_on_main(
@@ -76,13 +63,14 @@ def _clone_template(tmp_path_factory, _repo_pair_template) -> tuple[str, str]:
         {A: "x = 1\nhooks_path = 1\n", "test/test_a.py": "def test_hooks():\n    pass\n"},
         "fix: a",
     )
+    _git(clone_dir, "reset", "--hard", "HEAD")  # the ORIG_HEAD and reflog line a copy starts with
     return clone_dir, origin_dir
 
 
 @pytest.fixture
 def clone(tmp_path, _clone_template):
     """A feature branch that fixes a.py; b.py still names hooksPath; one test is added."""
-    clone_dir, _ = _copy_pair(_clone_template, tmp_path)
+    clone_dir, _ = copy_repo_pair(_clone_template, tmp_path)
     return clone_dir
 
 

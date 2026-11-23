@@ -127,10 +127,11 @@ _generated_turn: ContextVar[Optional["_GeneratedTurn"]] = ContextVar(
 class _GeneratedTurn:
     """One generated turn's unspent exemption."""
 
-    __slots__ = ("unspent",)
+    __slots__ = ("unspent", "unclaimed")
 
     def __init__(self) -> None:
         self.unspent = True
+        self.unclaimed = True
 
 
 @contextmanager
@@ -149,6 +150,20 @@ def generated_turn() -> Iterator[None]:
         yield
     finally:
         _generated_turn.reset(token)
+
+
+def claim_generated_turn() -> bool:
+    """Whether this is the first admitted turn of a generated span, claiming it.
+
+    Kept apart from the ceiling exemption: a monitor wake never enters the
+    ceiling gate, and a turn can end before it, so a queue drain's replayed
+    messages after either must still read as a person's.
+    """
+    marker = _generated_turn.get()
+    if marker is None or not marker.unclaimed:
+        return False
+    marker.unclaimed = False
+    return True
 
 
 def _spend_generated_turn() -> bool:

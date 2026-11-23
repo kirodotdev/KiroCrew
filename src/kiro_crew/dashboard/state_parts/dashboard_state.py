@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import weakref
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -596,7 +597,6 @@ class DashboardState:
         # pre-loop, post-detection); status_snapshot() reads this attribute so
         # subprocess never runs on the event loop. See module-level _build_info.
         self._build_info: tuple[str, str] = _build_info
-        self.messages_received = 0
         # Broadcast: each SSE client gets its own queue; _notify_event wakes all
         self._sse_queues: list[asyncio.Queue[dict[str, Any]]] = []
         self._notify_event = asyncio.Event()
@@ -629,6 +629,13 @@ class DashboardState:
         # Web Push subscription store (browser push endpoints). State-owned like
         # the bus/limiter/settings so its lifecycle matches the gateway.
         self.push_subscription_store = PushSubscriptionStore()
+        # Notes waiting for Web Push, the one drain sending them, and how many a
+        # burst dropped since the drain last reported (dashboard_services).
+        self._web_push_queue: deque[dict[str, Any]] = deque(
+            maxlen=_dashboard_services._WEB_PUSH_QUEUE_MAX
+        )
+        self._web_push_drain: asyncio.Task[None] | None = None
+        self._web_push_dropped = 0
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         # The bridge runs after it, so a chat transport never delays the
@@ -708,6 +715,8 @@ class DashboardState:
         # refuses every one of them. Bounded at three entries by construction, so
         # it needs no size cap and no eviction pass.
         self._voice_sandbox_notified: dict[str, float] = {}
+        # MCP servers a person's chat already named as waiting for a sign-in this run.
+        self._mcp_sign_in_notice_servers: set[str] = set()
         # Slot keys that EXIST but are deliberately absent from ``_slots`` while
         # they are being built (see ``session_transfer``'s import path, which
         # retracts a slot so it is unreachable until its transcript and context

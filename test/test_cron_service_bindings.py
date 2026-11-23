@@ -97,6 +97,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_forget_store_document": ("function", False, "b60c5fea256e", "store_sync"),
     "_guard_off_event_loop": ("staticmethod", False, "6d7a93dbe237", "cron"),
     "_handles_of": ("staticmethod", False, "22fc29ddcddf", "run_kill"),
+    # The breaker's filing of a run a hard exit cut short, when no dump explains it.
+    "_file_cut_run": ("function", False, "648a677d2f09", "stall_breaker"),
     "_hold_run_record": ("function", False, "205f7c442654", "run_merge"),
     "_is_due": ("staticmethod", False, "7f648885cd59", "cron_service.schedule"),
     "_keep_store_document": ("function", False, "b474d2621c43", "store_sync"),
@@ -155,7 +157,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "ack_job": ("function", False, "1dcd84422c4a", "job_writes"),
     "ack_job_async": ("function", True, "1dcd84422c4a", "job_writes"),
     "active_session_keys": ("function", False, "602c14087aa8", "run_registry"),
-    "add_job": ("function", False, "80987f9f0320", "job_writes"),
+    "add_job": ("function", False, "77f0ab465263", "job_writes"),
     "add_job_async": ("function", True, "465805844cfc", "job_writes"),
     "add_job_if_absent": ("function", False, "43f1e87b70b1", "job_writes"),
     "add_job_if_absent_async": ("function", True, "43f1e87b70b1", "job_writes"),

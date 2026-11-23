@@ -53,8 +53,9 @@ The electron-builder configuration lives in
   It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
   5-minute ceiling. Auto-updates skip the assisted wizard's decision pages but
-  keep its native extraction progress visible, then relaunch Kiro Crew and close
-  automatically. A legacy silent `/S --updated` invocation is converted to the
+  keep its native extraction progress visible, then close automatically,
+  starting Kiro Crew again only when the update was launched with
+  `--force-run` (a Restart now the user asked for). A legacy silent `/S --updated` invocation is converted to the
   same visible update path so the transition works from already-fielded clients.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
   tree is packaged three times, with `scripts/stamp-distribution.sh` re-run
@@ -75,6 +76,11 @@ The electron-builder configuration lives in
   `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  `rpm.fpm` defines `_build_id_links none`, so the rpm ships no
+  `/usr/lib/.build-id` links: Electron's binaries are identical in every app
+  on the same Electron, so any other Electron app's rpm (and the nightly rpm)
+  claims the same link paths and rpm refuses the second install, in-app
+  updates included, as a file conflict.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
   binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
   Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
@@ -114,14 +120,13 @@ otherwise, and `UNIVERSAL=0` is the opt-out.)
 The shipped app carries **no** kiro-cli. It detects the one the user installed
 (`kiro_cli.known_kiro_cli_dirs`), and the first-run gate shows the install and
 sign-in commands until it finds one; the KAS bundle route (next section) needs
-no kiro-cli at all. Bundling was the default from #5130 / #13207 until #22018,
-and it was turned off for three reasons. The bundled copy ranked above every
-system install, so the gate read it as "installed" and users who installed Kiro
-Crew in that window never installed kiro-cli themselves. The copy they ran was
-frozen at `packaging/kiro-cli-version` instead of following upstream, so kiro-cli
-fixes reached them only when someone bumped the pin. And it was the largest
-single payload: ~250 MB of the macOS universal update zip, within ~50 MiB of the
-1 GiB Squirrel cliff (#21716), 100-200 MB on every other platform. Everything
+no kiro-cli at all. Bundling is off for three reasons. A bundled copy ranks above
+every system install, so the gate reads it as "installed" and its users never
+install kiro-cli themselves. The copy is frozen at `packaging/kiro-cli-version`
+instead of following upstream, so kiro-cli fixes reach it only when someone bumps
+the pin. And it is the largest single payload: ~250 MB of the macOS universal
+update zip, within ~50 MiB of the 1 GiB Squirrel cliff, 100-200 MB on every other
+platform. Everything
 below describes the `BUNDLE_KIRO_CLI=1` opt-in; the code paths it names stay in
 the tree and are exercised only by such a build.
 
@@ -276,9 +281,9 @@ macOS build fails on any symlink or hardlink in it, because the signing service
 refuses a universal bundle with shared trees.
 The Electron shell (`gateway-env.js`, `bundledKasEnvironment`) reads
 `BUNDLED-VERSION` and the install record beside it, and exports the root as
-`KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default, the build
-already probed the staged Node, and a copy that cannot run on this machine
-fails at session spawn, only for a user who turned the switch on. A build
+`KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default outside
+nightly builds, the build already probed the staged Node, and a copy that cannot
+run on this machine fails at session spawn, only on a build where the switch is on. A build
 without the payload or a source checkout exports nothing, and the backend then
 sees only the data home, exactly as an unbundled build does.
 The two values the shell joins onto the staged tree, the version and the
@@ -295,8 +300,8 @@ install` (or a `--unpinned` test install) wins over the copy the app was built
 with, the same precedence `KIROCREW_KIRO_BIN` has over the bundled kiro-cli.
 `kirocrew kas status` and `kirocrew doctor` say which one answered (`built into
 the app`), the status payload carries `installed.bundled`, and the Settings card
-names where each copy came from: "KAS engine … (included with the app)" for the
-app's copy, "KAS engine … (installed by you)" for the data home's.
+reads "Built-in engine … (included with the app)" for the
+app's copy, plain "Built-in engine …" for the data home's.
 
 The hand-off is asserted against a shipped app, not only the build's staging
 directory. The macOS smoke (`scripts/smoke-macos-install.sh`) checks the
@@ -316,10 +321,11 @@ smoke reads the shell's export off a real gateway child, so a build whose root
 electron-builder moved or dropped fails there rather than on an opted-in user's
 first prompt.
 
-Bundling the engine does not turn the route on: `agent.kas_bundle` keeps its
-default (off) on every platform while the route is in shadow testing, and the
-relay route runs on the kiro-cli the user installed. Nothing in the build,
-the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
+Bundling the engine does not save `agent.kas_bundle`: unset, the packaged app
+prefers the built-in engine once Kiro Crew is signed in, and a host signed in
+only to kiro-cli keeps the relay until then (`acp/kas_build_default`). Nothing in
+the build, the installer or the shell saves the switch; the KAS row of Settings →
+Agent Harness is where the user chooses. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
 `kirocrew kas install` first, exactly as a pure-wheel pip install does. CI refuses
 `BUNDLE_KAS=0` (`GITHUB_ACTIONS=true`), so no released artifact ships without the
@@ -897,7 +903,7 @@ signal.
 
 With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
-gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
+gateway --no-open`, polls `/api/live`, and loads the dashboard once it is
 healthy.
 
 The gateway's stdout and stderr go to `gateway-launch.log`. Off Windows the shell
@@ -983,6 +989,21 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+Settings > WakaTime's **Connect with WakaTime** rides the same gate.
+`window.wakatimeConnectAPI.openInBrowser()` takes no argument and invokes
+`wakatime:open-in-browser`, which runs the three checks above (a refusal rejects
+and opens nothing) and then hands one fixed URL to `shell.openExternal`: the
+window's own dashboard origin plus `/settings/overview?view=wakatime`, built in
+the main process. It answers `true` when the OS took the URL and `false`, with
+one log line, when it did not. The sign-in then finishes in the system browser,
+because the WakaTime callback needs the state cookie of the browser that
+started it ([wakatime-oauth-read-auth](../architecture/design-notes/wakatime-oauth-read-auth.md)).
+The window's navigation guard is unchanged. The Mochi panel's
+`mochi-panel:open-dashboard` is the precedent: a no-argument channel, so page
+content never names the URL the shell opens. With no bridge the panel shows its
+"open this dashboard in a web browser" note; on `false` or a refusal it shows the
+same text as an error notice.
+
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
 gateway off, or a non-loopback URL) does not ask in the first place. On every
@@ -990,7 +1011,7 @@ load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
 same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
 whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
-`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`wakatimeConnectAPI`, `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
@@ -1348,19 +1369,23 @@ the terminal route is named instead of the button).
 
 The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
 logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
-lazily, the first time the dashboard's crash notice asks for it. It reads the
-Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
-`.ips` diagnostic reports:
+lazily, the first time the dashboard's crash notice asks for it. A refused ask
+runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
+then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
+and, on macOS, the user's `.ips` diagnostic reports:
 
-- `crashes.log` records each new crash of this app, capped at 500 lines.
+- `crashes.log` records each new crash of this app, capped at 500 lines. A
+  snapshot Crashpad took of this app while it kept running (exception code `0`,
+  or `0x517a7ed` on Windows) is not a crash: it gets no line and no notice, and
+  is deleted.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
   once rather than on every launch, capped at 2000 keys.
 - At most 25 unseen artifacts are inspected per app session, and a dump that
   reads short or unreadable on three consecutive scans is aged out.
 - A minidump proven to belong to another process (a child that inherited the
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
-  Unreadable dumps, Electron-shaped strangers and this app's own dumps are
-  never deleted.
+  Unreadable dumps, Electron-shaped strangers and this app's own crash dumps
+  are never deleted.
 - Minidumps that reached `crashes-seen.json` without that check (every scan
   writes off unread a dump older than the launch that first armed the
   collector) are swept: each is opened once more,
@@ -1460,6 +1485,13 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+The band costs one more thing: a native `title` tooltip never paints over it,
+even on an exempt control whose hover and click still work. So a hint on a
+control the band covers is an in-page bubble
+([`HoverTip`](../../website/src/components/HoverTip.tsx)), not a `title`. A
+browser tab shows a `title` normally, so only a native window shows the
+difference.
+
 **On macOS and Windows the band alone cannot keep the bar draggable.** Because
 the band is prepended, every later `no-drag` rectangle that reaches into it
 wins, including ones nobody can see there: a theme pack's decoration iframes
@@ -1532,7 +1564,9 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
    app-region rectangles, one of those two stops working: either the top strip of
    the conversation goes dead and shows an arrow cursor, or the header no longer
    drags. A headless display cannot answer this one, because the region set is
-   resolved by the window rather than by the page.
+   resolved by the window rather than by the page. While the header is out, also
+   hover a top-bar control such as the focus-mode toggle: its hint should open
+   under it.
 5. **Slam the pointer out through the top edge to reveal the header, park it
    just outside the window, then move it well away.** The header should stay
    while the pointer is parked and close once it travels away. Exercises the
@@ -1967,8 +2001,7 @@ before the deferral (on Windows those commands never run; see
 way when it runs the app's own bundled backend. A separately installed one (from
 the CLI, as a service, or reached over an SSH tunnel) follows its own
 `auto_update` ([where to set it](../../src/kiro_crew/docs/configuration.md#turning-it-off-and-updating-by-hand)). A
-container defers to its image. Both updaters running on one install is
-[#15797](https://github.com/kirodotdev/KiroCrew/issues/15797).
+container defers to its image.
 
 Settings → About renders the app's update section in the desktop app's own
 window and the gateway's in a browser. A desktop window also draws the gateway's
@@ -2014,10 +2047,9 @@ ones the packager never reads). The body is optional JSON:
 `relaunchPath` is for an install whose launch path changes with each version,
 such as a version-pinned payload behind a stable launch link. When the app
 relaunches after an apply (the start-time apply, or Restart now) it normally calls Electron's `app.relaunch()`, which
-re-runs the path the app was started as. A macOS app opened from the Dock was
-started as its version's own payload path, so it came back on the version the
-apply had just replaced, and the dashboard kept offering Restart to update
-([#22774](https://github.com/kirodotdev/KiroCrew/issues/22774)). With
+re-runs the path the app was started as. A macOS app opened from the Dock is
+started as its version's own payload path, so it would come back on the version
+the apply just replaced, and the dashboard would keep offering Restart to update. With
 `relaunchPath` set, the app relaunches that executable instead, with the same
 arguments. The value must be absolute or start with `~/`, which is the
 account's home read from the account entry, not from `HOME`. Anything else is
@@ -2132,9 +2164,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   Then it probes whether a gateway is still running (a gateway that outlived the
   quit): this bundle's gateway, or, when that cannot be identified (Windows, a
   failed process lookup), anything listening on the launch port
-  (`gateway-probe.js`). If one is, nothing is applied, the arm stays,
-  and a notice names the `kirocrew stop --port <port>` command. A probe that
-  cannot answer defers the same way. If
+  (`gateway-probe.js`). If one is, nothing is applied and the arm stays. For
+  this bundle's gateway the notice names the `kirocrew stop --port <port>`
+  command; any other holder is named as unidentified, with no command, because
+  the app cannot tell what it is or whether that command would stop it. A probe
+  that cannot answer defers the same way. If
   that apply fails too, the arm is cleared, the installed version starts and
   the error is shown as an install error. The gateway the app hosts skips its
   own boot-time apply, so exactly one side applies and the app and gateway never
@@ -2174,12 +2208,15 @@ and not once an install has started.
 
 **A package manager's own update pause holds only if the check command honours
 it**: on this managed lane while the app's update switch is on, and on the
-gateway's policy `check_command` (below) while `auto_update` is on or a policy
-floor forces the update. Neither lane compares versions after an apply: if the
-check still prints a version and the apply command exits 0 having changed
-nothing, the gateway restarts and checks again at boot, and the app runs
-`updateCommand` on every quit, so both loop
-([#15798](https://github.com/kirodotdev/KiroCrew/issues/15798)).
+gateway's policy `check_command` (below), whose answer the dashboard shows as an
+update notice. The gateway's check only reports; its `apply_command` runs when a
+person clicks Update. The app lane re-checks after every apply
+(`applyChangedNothing` in `runtime/update/managed-exec.js`): an `updateCommand`
+that exits 0 while the check still offers the same version is recorded as a
+failed apply ("the install did not change"). On quit the arm stays and the app
+exits without relaunching; the next start's apply fails the same way, clears the
+arm and shows the error, so an apply that changes nothing does not repeat on
+every quit.
 
 The commands run with a **constructed environment**, not the app's own. Only an explicit pass-through set reaches them — `USER`, `LOGNAME`, `TZ`, `TMPDIR`, the `LANG`/`LC_*` locale vars, and the proxy vars — plus a narrowed system-only `PATH` and `cwd=/`. `HOME` is deliberately excluded: Python derives its user-site directory from it, so passing it through would let a planted `sitecustomize.py` run on every `python` start. Everything else is absent by construction, because `shell: true` means a shell interprets the command and a shell reads its environment as code: the loader family (`LD_*`/`DYLD_*`), the interpreter family (`PYTHON*`, `NODE_OPTIONS`), the startup files (`BASH_ENV`, `ENV`), the tracing pair (`SHELLOPTS` plus a command-substituting `PS4`), word splitting (`IFS`), and exported shell functions (`BASH_FUNC_*`, which shadow a command name outright). A packager whose updater needs any other variable must set it inside its own command rather than relying on inheritance.
 

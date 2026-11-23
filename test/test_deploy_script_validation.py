@@ -120,6 +120,21 @@ class TestDetachBackendValidation(_InputsBothScriptsAccept):
         assert exc.value.code == 2
 
 
+_VALID_ARGS = {"region": "us-east-1", "dist_id": "E1A2B3C4D5E6F7", "slug": "my-app"}
+
+
+@pytest.mark.parametrize("script", ["attach_backend.py", "detach_backend.py"])
+@pytest.mark.parametrize("field", ["region", "dist_id", "slug"])
+def test_trailing_newline_rejects(script, field):
+    """A value with a trailing newline must exit 2, like the profile check."""
+    mod = _load_script(script)
+    args = dict(_VALID_ARGS)
+    args[field] += "\n"
+    with pytest.raises(SystemExit) as exc:
+        mod._validate_args("", args["region"], args["dist_id"], args["slug"])
+    assert exc.value.code == 2
+
+
 class TestAwsSpawnFlow:
     """The ``aws()`` helper in both scripts: timeout, temp-profile cleanup, exit codes.
 

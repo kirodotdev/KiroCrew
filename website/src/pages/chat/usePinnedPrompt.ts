@@ -1,6 +1,8 @@
 import { type Dispatch, type RefObject, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 
 import type { DisplayItem } from './types'
+import { leadMessage, rowOfMessage } from '../../chat-core/transcript/rowKeys'
+import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import {
   DEFAULT_PINNED_CARD_H,
@@ -33,7 +35,7 @@ export function isTranscriptRow(node: Element, scroller: Element): boolean {
 }
 
 /** The transcript row wrapper for `idx`, skipping any forged copy in message content. */
-function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
+export function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
   for (const node of scroller.querySelectorAll(`[data-display-index="${idx}"]`)) {
     if (isTranscriptRow(node, scroller)) return node as HTMLElement
   }
@@ -85,6 +87,8 @@ export interface UsePinnedPromptOptions {
  */
 export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }: UsePinnedPromptOptions) {
   const displayItemsRef = useRef<DisplayItem[]>([])
+  // The row identity rule the transcript keys its rows by, for the jump.
+  const msgKey = useStableMessageKey()
   // Pinned-prompt banner. `pinFoldRef` is a zero-height sentinel sitting
   // directly under the title row: its top edge is the fold line the banner
   // sticks to, and it is always mounted so the fold stays measurable even when
@@ -523,7 +527,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
    * measurement and the banner swap refine the landing; a frame with neither a
    * mounted row nor an estimate yields no goal (see runConvergingGlide). User
    * scroll intent aborts the glide, and owning each frame's write prevents
-   * follow-controller writes from cancelling it.
+   * follow-controller writes from cancelling it. `exact` lands `target` itself
+   * instead of the head of its prompt run: a quote jump must show the quoted
+   * row, not the prompt above it.
    */
   const jumpCancelRef = useRef<(() => void) | null>(null)
   const jumpToPinnedPromptInPlace = useCallback((
@@ -532,6 +538,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
       estimateRowTop: (index: number) => number | null
     },
+    opts?: { exact?: boolean },
   ) => {
     jumpCancelRef.current?.()
     const sc0 = scrollerRef.current
@@ -540,19 +547,22 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // before any output, a double-send) so the row on the hand-off line is a
     // non-prompt and the previous turn's banner survives the landing — see
     // jumpAnchorIdx.
-    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    const anchor = opts?.exact ? target : jumpAnchorIdx(displayItemsRef.current, target)
+    // The glide aims at that row's prompt and finds the prompt's row again on
+    // each frame: a page that lands mid-glide renumbers the rows.
+    const anchorItem = displayItemsRef.current[anchor]
+    const prompt = anchorItem ? leadMessage(anchorItem) : null
+    if (!prompt) return
     steer.mountIndex(anchor, { unionOnly: true })
-    const rowEl = (): HTMLElement | null => {
-      const sc = scrollerRef.current
-      return sc ? findTranscriptRow(sc, anchor) : null
-    }
     const goal = (): number | null => {
       const sc = scrollerRef.current
       if (!sc) return null
-      const row = rowEl()
+      const at = rowOfMessage(displayItemsRef.current, prompt, msgKey)
+      if (at < 0) return null
+      const row = findTranscriptRow(sc, at)
       const rowTop = row
         ? sc.scrollTop + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
-        : steer.estimateRowTop(anchor)
+        : steer.estimateRowTop(at)
       if (rowTop == null) return null
       return Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, rowTop - pinnedJumpChrome()))
     }
@@ -572,7 +582,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       onEnd: () => { detach(); jumpCancelRef.current = null },
     })
     jumpCancelRef.current = cancelGlide
-  }, [pinnedJumpChrome, scrollerRef])
+  }, [pinnedJumpChrome, scrollerRef, msgKey])
+  /** Ends the in-place jump's glide, for a scroll that takes over from it. */
+  const cancelJumpInPlace = useCallback(() => { jumpCancelRef.current?.() }, [])
 
   return {
     displayItemsRef,
@@ -589,5 +601,6 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     onScrollPin,
     pinnedJumpChrome,
     jumpToPinnedPromptInPlace,
+    cancelJumpInPlace,
   }
 }

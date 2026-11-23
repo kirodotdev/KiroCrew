@@ -238,7 +238,7 @@ def test_a_query_string_never_reaches_the_resource_or_the_audit(vendor, monkeypa
     import kiro_crew.security.exfil_oauth as exfil_oauth
 
     monkeypatch.setattr(
-        exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda h, p, u: audited.append(u)
+        exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda h, p, u, s: audited.append(u)
     )
     exfil_oauth._OAUTH_DISCOVERED_ENDPOINTS.clear()
     raw = MCP + "?api_key=SECRET"
@@ -567,7 +567,9 @@ def discovered_slack(monkeypatch):
     monkeypatch.setattr(exfil_oauth, "_emit_oauth_discovered_endpoint_event", lambda *a: None)
     monkeypatch.setattr(exfil_oauth, "_OAUTH_DISCOVERED_ENDPOINTS", {})
     parts = urllib.parse.urlsplit(AS_DOC["authorization_endpoint"])
-    assert record_discovered_oauth_endpoint(parts.hostname, parts.path, mcp_url=MCP)
+    assert record_discovered_oauth_endpoint(
+        parts.hostname, parts.path, mcp_url=MCP, server_name="acme"
+    )
 
 
 def _plan(client_id: str, registered: bool = True) -> crew_oauth_dcr.Plan:
@@ -597,9 +599,9 @@ def test_crews_registered_client_id_passes_only_on_its_own_sign_in(discovered_sl
     from kiro_crew.security import oauth_url_contains_credential
 
     url = _link(("client_id", DCR_ID))
-    assert not oauth_url_contains_credential(crew_oauth._vetted_link(url, _plan(DCR_ID)))
+    assert not oauth_url_contains_credential(crew_oauth._vetted_link(url, _plan(DCR_ID)), "acme")
     # The ACP banner path reads the same link whole and still refuses it.
-    assert oauth_url_contains_credential(url)
+    assert oauth_url_contains_credential(url, "acme")
 
 
 @pytest.mark.parametrize(
@@ -620,7 +622,7 @@ def test_everything_but_crews_own_client_id_is_still_scanned(discovered_slack, p
     from kiro_crew.security import oauth_url_contains_credential
 
     vetted = crew_oauth._vetted_link(_link(*pairs), _plan(DCR_ID, registered))
-    assert oauth_url_contains_credential(vetted)
+    assert oauth_url_contains_credential(vetted, "acme")
 
 
 def test_a_custom_server_with_a_long_dcr_client_id_reaches_consent(vendor, monkeypatch):

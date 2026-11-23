@@ -284,6 +284,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
     ("POST", "/api/chat/slots/{slot}/ultracode", "api_chat_slot_ultracode"),
     ("POST", "/api/chat/slots/{slot}/fast", "api_chat_slot_fast_mode"),
+    ("POST", "/api/chat/slots/{slot}/approve-for-me", "api_chat_slot_approve_for_me"),
     ("POST", "/api/chat/slots/{slot}/workspace", "api_chat_slot_workspace"),
     ("PUT", "/api/chat/slots/{slot}/queue/order", "api_chat_slot_queue_reorder"),
 )
@@ -1438,7 +1439,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
     r"safety_override\(\)\.activate": frozenset({"slot_approval"}),
     r"\._queue\.clear\(\)": frozenset({"turn_stop"}),
     r'_turn_kwargs\["_turn_actor"\]': frozenset({"chat_send"}),
-    r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)": frozenset({"chat_send"}),
+    r"warn_if_not_durable\(slot\.durable_source\(\), qid, slot\.key\)": frozenset({"chat_send"}),
     r"(?m)^def _unblock_pending_waits\(": frozenset({"chat_handlers"}),
     r"(?m)^async def _reset_slot_session\(": frozenset({"chat_handlers"}),
     r"(?m)^def _orphan_in_current_turn\(": frozenset({"chat_handlers"}),

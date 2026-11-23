@@ -256,6 +256,10 @@ def _declares_server(spec: dict) -> bool:
 # program" comparison, not string equality.
 _COMMAND_UNIT_KEYS = ("args", "env")
 
+#: What an edition server's entry takes from the edition only. Its ``env`` is merged
+#: key by key instead (see the store loop in :func:`merge_mcp_sources`).
+_EDITION_INVOCATION_KEYS = ("command", "args")
+
 
 def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
     """Project *spec*'s ``command``/``args``/``env`` onto *existing* as one unit.
@@ -510,9 +514,20 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     mcps[name].pop(key, None)
                 mcps[name].update(_replaced.pop(name))
             if name in mcps and isinstance(mcps[name], dict):
+                # An edition-supplied name keeps the edition's invocation, as it
+                # does against a scope global (_merge_source_owned): a store copy
+                # of the user's own entry (often `"args": []`) would otherwise
+                # drop the args that pick its tool surface, e.g. the tool tags
+                # some of its tools need, while the dashboard's probe, which runs
+                # the edition's args, still lists them.
+                own = (
+                    {k: v for k, v in spec.items() if k not in _EDITION_INVOCATION_KEYS}
+                    if name in edition_names
+                    else spec
+                )
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
-                mcps[name].update(spec)
+                mcps[name].update(own)
                 # An edition-supplied name keeps the env keys the edition ships:
                 # the store's own env keys win, but a same-named store entry
                 # must not drop the keys the server needs to run as shipped.
@@ -800,6 +815,47 @@ def _expand_env_values(env: dict, *, server: str | None = None) -> dict:
     return dict(zip(keys, expand_spec_args([env[k] for k in keys], server=server)))
 
 
+def _resolve_spec_command(
+    cmd: str,
+    env: dict | None,
+    resolve_command: Callable[[str, dict | None], tuple[str | None, str]],
+) -> tuple[str | None, str]:
+    # Resolution must search the same home/login-expanded values the spec emits.
+    if isinstance(cmd, str):
+        cmd = expand_spec_args([cmd])[0]
+    return resolve_command(cmd, _expand_env_values(env) if isinstance(env, dict) else env)
+
+
+def emit_mcp_entry(
+    spec: Mapping[str, Any],
+    resolve_command: Callable[[str, dict | None], tuple[str | None, str]],
+    *,
+    server: str | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Resolve and emit one local entry, without changing its stored declaration.
+
+    Both spec rebuilds and card comparisons use this entire step. The resolver
+    is supplied by the caller, as for ``resolve_mcp_servers``; its search path is
+    returned unchanged so rebuild diagnostics name the directories it consulted.
+    """
+    resolved, searched = _resolve_spec_command(
+        spec.get("command", ""), spec.get("env"), resolve_command
+    )
+    if not resolved:
+        return None, searched
+    merged = dict(spec)
+    merged["command"] = resolved
+    # kiro-cli expands home/login references in env, but never in args.
+    if "args" in merged:
+        merged["args"] = expand_spec_args(merged["args"], server=server)
+    spec_env = merged.get("env")
+    if isinstance(spec_env, dict):
+        # A declared PATH replaces the child's PATH, so emit its full effective
+        # value. Both helpers return copies: the source's env must stay intact.
+        merged["env"] = emit_env(_expand_env_values(spec_env, server=server))
+    return merged, searched
+
+
 def resolve_mcp_servers(
     config: dict,
     sources: McpSources,
@@ -813,13 +869,7 @@ def resolve_mcp_servers(
     kirocrew_mcp = sources.kirocrew
 
     def _resolve_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
-        # Home/login names in ``command`` and ``env`` (``env.PATH`` included) are
-        # expanded at the resolver boundary, the way the probe and the emitted
-        # spec expand them, so every resolution decision below (candidate and
-        # provenance precheck alike) searches what the server will be given.
-        if isinstance(cmd, str):
-            cmd = expand_spec_args([cmd])[0]
-        return resolve_command(cmd, _expand_env_values(env) if isinstance(env, dict) else env)
+        return _resolve_spec_command(cmd, env, resolve_command)
 
     valid_servers: dict[str, Any] = {}
     # Servers this pass declines to emit ONLY because a declared command did not
@@ -1007,12 +1057,12 @@ def resolve_mcp_servers(
             cmd = cand.get("command", "")
             if cmd:
                 had_any_command = True
-            r, cand_search = _resolve_command(cmd, cand.get("env"))
+            emitted, cand_search = emit_mcp_entry(cand, resolve_command, server=name)
             if cand_search:
                 searched.append(cand_search)
-            tried.append(f"{label}={cmd or '<none>'}{' -> ok' if r else ''}")
-            if r:
-                resolved = r
+            tried.append(f"{label}={cmd or '<none>'}{' -> ok' if emitted else ''}")
+            if emitted is not None:
+                resolved = emitted["command"]
                 chosen = cand
                 break
         if chosen is _previous:
@@ -1031,39 +1081,16 @@ def resolve_mcp_servers(
         _mute_here = bool(resolved) and _unrouted_secret_reference(
             name, chosen, _routed, _app_owned
         )
-        if resolved:
-            # Start from the merged winner so user-set NON-command fields
-            # (autoApprove, disabled, ...) are preserved.  When we fall back to
-            # a *different* source, adopt that source's command/args/env as a
-            # unit (args belong with their command) — drop the winner's stale
-            # args/env so we never pair one source's command with another's
-            # args.
+        if resolved and emitted is not None:
+            # Preserve the winner's non-launch fields when a different source
+            # supplies the command/args/env unit. Emission never mutates either.
             merged = dict(spec)
-            merged["command"] = resolved
             if chosen is not spec:
                 merged.pop("args", None)
                 merged.pop("env", None)
-                if "args" in chosen:
-                    merged["args"] = chosen["args"]
-                if "env" in chosen:
-                    merged["env"] = chosen["env"]
-            # kiro-cli expands ``${VAR}`` in ``env`` but never in ``args``, and
-            # the gateway's pooled spawn reads these same args, so a
-            # ``${HOME}/...`` launch path is resolved here or not at all.
-            if "args" in merged:
-                merged["args"] = expand_spec_args(merged["args"], server=name)
-            # A declared env.PATH replaces the child's PATH rather than
-            # extending it, so emit the full effective one via the shared
-            # normalization point (see emit_env / spec_env_path). emit_env
-            # returns a fresh dict: ``dict(spec)`` is shallow, so the env dict
-            # here is still the source config's own and must not be mutated
-            # through.
-            spec_env = merged.get("env")
-            if isinstance(spec_env, dict):
-                # Home/login names only, as for ``args``, so every reader of
-                # this spec sees one value whether or not it expands ``env``
-                # itself; any other ``${VAR}`` is left for the reader.
-                merged["env"] = emit_env(_expand_env_values(spec_env, server=name))
+            for key in ("command", "args", "env"):
+                if key in emitted:
+                    merged[key] = emitted[key]
             # Record only for a server with no other source, and only a field this
             # pass may honestly claim: one the record already proved ours on the way
             # in, or one whose emitted value DIFFERS from what the entry carried.

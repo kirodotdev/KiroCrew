@@ -37,7 +37,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import ConversationCard, { CARD_ROLE, changeCardShownAgainBelow } from '../../cards/ConversationCard'
-import { opensTurn } from './RecoveryCard'
+import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isKiroCliSignIn, kiroCliRowOffersCrewSignIn, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
@@ -45,6 +45,7 @@ import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { isKasSignedOut, resolveGatewayNotice } from './gatewayNotice'
+import { selectErrorRuns } from './errorRuns'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
@@ -72,6 +73,8 @@ import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
 import { isToolCallRow } from '../../lib/toolRowContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
+import { replyTurnStats } from './replyFooter'
 
 /** Disclosure-map identity for a tool row (#8204). messageRowKey is
  *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
@@ -91,6 +94,11 @@ export function toolDisclosureKey(m: ChatMessage, key: string): string {
   if (m.role !== 'tool') return key
   const tcid = m.meta?.tool_call_id
   return typeof tcid === 'string' && tcid ? `${key}-${tcid}` : key
+}
+
+/** A reply that has no visible content in a crewmate chat. */
+function isHiddenCrewmateReply(m: ChatMessage): boolean {
+  return isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false })
 }
 
 export interface TranscriptRendererOptions {
@@ -454,6 +462,18 @@ export function createTranscriptRenderers(
 
   return [
     {
+      // The SDK default's card, except for a Resume press inside a run of
+      // identical failures: the run's one card stands for it (`errorRuns.ts`).
+      id: 'recovery_inject',
+      roles: ['*'],
+      match: m => m.role === 'inject' && resolveInjectCard(m) !== null,
+      render: (m, ctx) => {
+        const parsed = resolveInjectCard(m)
+        if (!parsed || selectErrorRuns(ctx.messages).folded.has(m)) return null
+        return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
+      },
+    },
+    {
       id: 'warm_task_brief_claim',
       roles: ['notice'],
       match: m => m.meta?.kind === 'warm_task_brief_claim',
@@ -753,7 +773,12 @@ export function createTranscriptRenderers(
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             // Run position reads turn boundaries off the UNFILTERED transcript
             // (a patrol wake between two replies is filtered from `ctx.messages`).
-            const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
+            const transcript = crewmateTranscriptOf()
+            const pos = crewmateRunPosition(ctx.messages, ctx.index, transcript)
+            const transcriptIndex = transcript?.indexOf(m) ?? -1
+            const turnStats = transcript && transcriptIndex >= 0
+              ? replyTurnStats(m, transcript, transcriptIndex, isHiddenCrewmateReply)
+              : replyTurnStats(m, ctx.messages, ctx.index)
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that
             // carries the hover actions. No "Steered" chip on any bubble: in a
@@ -767,6 +792,7 @@ export function createTranscriptRenderers(
               forceFooter: pos === 'single' || pos === 'end',
               suppressSteerAck: true,
               hideFileChanges: true,
+              turnStats,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves
@@ -795,6 +821,11 @@ export function createTranscriptRenderers(
       id: 'error',
       roles: ['error'],
       render: (m, ctx) => {
+        // A run of identical failures draws one card, on its first row
+        // (`errorRuns.ts`): the later rows draw nothing.
+        const runs = selectErrorRuns(ctx.messages)
+        if (runs.folded.has(m)) return null
+        const attempts = runs.attemptsByLead.get(m)
         // A gateway status row draws localized copy keyed on its notice token.
         // A transient-5xx retry the gateway is already running is routine
         // status, not a failure: a soft NoticeCard. Every other family keeps the
@@ -830,7 +861,9 @@ export function createTranscriptRenderers(
         // stamp only selects it.
         const featureRequestFormUrl =
           offersFeatureRequestForm(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? feedbackTracker().formUrl : undefined
-        const newest = ctx.index === lastErrorIndex(ctx.messages)
+        // A run's card stands for its newest row, the one Resume would rerun.
+        const lastError = lastErrorIndex(ctx.messages)
+        const newest = attempts ? ctx.messages[lastError] === attempts[attempts.length - 1] : ctx.index === lastError
         // The same session start failed twice in a row (Resume between them
         // re-issued it): a third press would fail the same way, and the server
         // refuses it (`session_start_repeat`). Only the NEWEST row decides --
@@ -905,6 +938,8 @@ export function createTranscriptRenderers(
             freshSession={o.freshSession}
             onRepairImages={imageRepair && newest && imageRepairIsNewest(ctx.messages) ? o.onRepairImages : undefined}
             repairImages={o.repairImages}
+            attempts={attempts}
+            disclosureKey={ctx.key}
           />,
         )
       },
@@ -956,6 +991,7 @@ export function createTranscriptRenderers(
                 continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+                onJumpToQuote={ctx.onJumpToQuote}
               />
               {threadFooterFor(m, ctx, 'end')}
             </>,

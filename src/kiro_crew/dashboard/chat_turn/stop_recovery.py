@@ -49,7 +49,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _record_consumed_merge_contexts
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
-    from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import (
+        _queue_recovery,
+        _replay_owes_delivery,
+        _requeue_owed_completion,
+    )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_marker import _retire_local_turn_marker
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
@@ -64,6 +68,42 @@ if TYPE_CHECKING:
         _emit_recovery_outcome,
         _merge_cards_reached_the_model,
         _turn_outcome,
+    )
+
+
+def _user_intent_blocks_replay(turn: _ChatTurn) -> bool:
+    """Whether the person's newer intent forbids replaying this turn's message.
+
+    A replay lands at queue index 0, so it would run before anything the person
+    did since: a live stop, a stop that completed during this turn, a pending
+    steer, a steer the session already took, or a message they queued.
+    """
+    slot = turn.slot
+    return (
+        _should_suppress_requeue(slot)
+        or _stop_pressed(turn)
+        or bool(getattr(slot, "_pending_steers", None))
+        or turn._person_steered_turn
+        or _has_user_queued_followup(slot)
+    )
+
+
+def _stale_probe_replays(turn: _ChatTurn) -> bool:
+    """Whether a stall probe of this turn re-sends its message instead of a continue:
+    it streamed nothing, not even a native sub-agent's activity."""
+    return not (turn._turn_emitted or turn._turn_native_activity)
+
+
+def _stale_replay_vetoed(turn: _ChatTurn) -> bool:
+    """Whether the person's newer intent cancels this turn's stall replay, so it gives up.
+
+    An owed sub-agent completion is exempt. ``_on_complete`` labels the turn from this
+    too, so its metric names the give-up ``_turn_stop_recovery`` takes.
+    """
+    return (
+        _stale_probe_replays(turn)
+        and not _replay_owes_delivery(turn)
+        and _user_intent_blocks_replay(turn)
     )
 
 
@@ -97,8 +137,8 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     # wedge (a done-but-missing-frame turn would have acked and completed
     # normally). Reset the session (kill the wedged runtime + session/load
     # resume in _turn_release_session, chat_turn/session_reset.py) and re-queue a
-    # continue-nudge so the turn finishes IN PLACE, on this same slot, with NO
-    # user message required —
+    # continue-nudge (or, when nothing streamed, the message itself) so the turn
+    # finishes IN PLACE, on this same slot, with NO user message required —
     # the dequeue in _run_chat's finally re-dispatches it against the resumed session,
     # which restores the prior committed work so the model continues rather
     # than restarts. Bounded so a permanently-broken session surfaces a clean
@@ -119,15 +159,40 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
         # goes back to the queue (``_native_session_lacks_the_prompt``
         # derives that from the reset and this terminal).
 
-        if _requeues and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES:
+        # A probed turn that streamed nothing, not even a native sub-agent's
+        # activity, is sent again verbatim: the agent may not have kept a
+        # prompt it never answered, so a continue would have nothing to
+        # continue. A verbatim replay yields to the person's newer intent, as
+        # the compaction-failure replay below does, except an owed sub-agent
+        # completion: it is queued as the completion it is, which nothing the
+        # person does since cancels.
+        _replays = _stale_probe_replays(turn)
+        _owed = _replays and _replay_owes_delivery(turn)
+        _intent_blocks = _stale_replay_vetoed(turn)
+        if (
+            _requeues
+            and not _intent_blocks
+            and slot._stale_recovery_retries < STOP_RECOVERY_MAX_RETRIES
+        ):
             slot._stale_recovery_retries += 1
-            _queue_recovery(
-                turn,
-                0,
-                f"{STALE_RECOVERY_PREFIX}\n{build_stale_recovery_prompt()}",
-                kind=SYNTHETIC_RECOVERY_KIND,
-                payload=RecoveryPayload.CONTINUATION,
-            )
+            if _owed:
+                _requeue_owed_completion(turn)
+            elif _replays:
+                _queue_recovery(
+                    turn,
+                    0,
+                    turn._message_without_merge_cards,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=payload_for_replay(_is_synthetic),
+                )
+            else:
+                _queue_recovery(
+                    turn,
+                    0,
+                    f"{STALE_RECOVERY_PREFIX}\n{build_stale_recovery_prompt()}",
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                )
             _emit_stale(
                 turn,
                 gn.GATEWAY_TURN_STALLED_RECOVERING_TEXT,
@@ -148,9 +213,10 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             _emit_stale(turn, gn.GATEWAY_SESSION_STUCK_TEXT, notice=gn.GATEWAY_NOTICE_SESSION_STUCK)
             turn.died_notice = "chat_stopped_stalled"
         else:
-            # depth>0 (nested turn) with budget remaining: reset the session
-            # but don't re-queue (mirrors the pipe-death depth>0 handling);
-            # surface feedback so the nested turn doesn't fail silently.
+            # depth>0 (nested turn) with budget remaining, or a replay the
+            # person's newer intent overrides: reset the session but don't
+            # re-queue (mirrors the pipe-death depth>0 handling); surface
+            # feedback so the turn doesn't fail silently.
             _emit_stale(
                 turn,
                 gn.GATEWAY_TURN_STALLED_GIVE_UP_TEXT,
@@ -264,18 +330,16 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             and _requeues
             and slot._compaction_failed_retries < _COMPACTION_FAILED_RETRIES
             # The USER'S INTENT WINS over this recovery. A requeue lands at
-            # queue index 0, so without these four checks a message the user
+            # queue index 0, so without these checks a message the user
             # has since stopped or replaced would run BEFORE the correction
             # they typed. Same hazard and same guard as the promise-only
             # continuation in _turn_ending_chain: a live stop (`_should_suppress_requeue` /
             # `_stopping`), a stop that COMPLETED during this turn (both
             # flags snap back to idle, so only the monotonic generation
-            # counter sees it), a pending steer, or a user-authored queue
-            # entry each mean the turn must stay abandoned.
-            and not _should_suppress_requeue(slot)
-            and not _stop_pressed(turn)
-            and not bool(getattr(slot, "_pending_steers", None))
-            and not _has_user_queued_followup(slot)
+            # counter sees it), a pending steer, a steer the session already
+            # took, or a user-authored queue entry each mean the turn must
+            # stay abandoned.
+            and not _user_intent_blocks_replay(turn)
         ):
             slot._compaction_failed_retries += 1
             # No reason interpolated here: each arming site already logs the

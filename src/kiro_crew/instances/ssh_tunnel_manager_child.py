@@ -39,6 +39,7 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
     _SSH_TRANSPORT_DROP_SIGNALS,
     _SSM_BIND_SIGNALS,
     _SSM_CREDENTIAL_SIGNALS,
+    _SSM_DENIAL_DETAIL_MAX_CHARS,
     _SSM_DENIAL_SIGNALS,
     _SSM_PLUGIN_SIGNALS,
     _SSM_TARGET_SIGNALS,
@@ -52,7 +53,11 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
 )
 from kiro_crew.instances.token_mint import (
     PROXY_TOOL_MISSING_SIGNALS,
-    proxy_tool_missing_message,
+    RefusedAws,
+    proxy_tool_missing_cause,
+    refused_aws_message,
+    refused_plugin_folder,
+    refused_plugin_message,
     ssh_spawn_argv_env,
 )
 from kiro_crew.sandbox import without_python_env
@@ -128,6 +133,11 @@ class TunnelState(enum.Enum):
 TunnelState.__module__ = "kiro_crew.instances.ssh_tunnel_manager"
 
 
+#: ``TunnelStatus.error_code`` for an SSM forward IAM refused: the profile's role
+#: lacks ``ssm:StartSession`` on the target.
+SSM_START_SESSION_DENIED = "ssm_start_session_denied"
+
+
 @dataclass
 class TunnelStatus:
     """Serializable snapshot of one instance's tunnel (never holds the token)."""
@@ -137,6 +147,9 @@ class TunnelStatus:
     local_port: int = 0
     remote_port: int = 0
     error: str = ""
+    #: A machine-readable cause the dashboard words for itself, with ``error`` kept
+    #: as the raw detail under it. Empty when no such cause is known.
+    error_code: str = ""
     connected_at: float = 0.0
     diagnosis: dict | None = None  # last failure-diagnosis ladder result
     # Fargate only: the local URL of the crew's turn API, what the card shows in
@@ -175,6 +188,8 @@ class TunnelStatus:
             d["diagnosis"] = self.diagnosis
         if self.turn_url:
             d["turn_url"] = self.turn_url
+        if self.error_code:
+            d["error_code"] = self.error_code
         return d
 
 
@@ -261,6 +276,9 @@ class _SshTunnel:
         # it, so _terminate addresses a survivor through this id.
         self._child_pgid: int | None = None
         self._child_path = ""  # the PATH the last spawned child was given
+        self._refused_plugin = ""  # refused_plugin_message() at the last ssh spawn
+        self._refused_aws = RefusedAws("", "")  # refused_aws_message() at the last ssh spawn
+        self._refused_plugin_dir = RefusedAws("", "")  # refused_plugin_folder() likewise
         self.status = TunnelStatus(
             instance_id=instance_id,
             local_port=local_port,
@@ -295,6 +313,10 @@ class _SshTunnel:
                 self._ssh_host, self._local_port, self._remote_port, compression=self._compression
             )
         )
+        # Read in this worker thread, since _exit_error runs on the event loop.
+        self._refused_plugin = refused_plugin_message()
+        self._refused_aws = refused_aws_message()
+        self._refused_plugin_dir = refused_plugin_folder(self._refused_plugin)
         return argv
 
     async def start(self) -> bool:
@@ -309,6 +331,7 @@ class _SshTunnel:
         self._stopping = False
         self.status.state = TunnelState.CONNECTING
         self.status.error = ""
+        self.status.error_code = ""
         # Built in a worker thread: both branches resolve their argv head
         # absolutely (aws: PATH scan + well-known install dirs; ssh: PATH scan),
         # which probes the filesystem — synchronous work that must not run on the
@@ -423,6 +446,7 @@ class _SshTunnel:
         self.status.state = TunnelState.CONNECTED
         self.status.connected_at = time.time()
         self.status.error = ""
+        self.status.error_code = ""
         # Supervise for later unexpected exit (Phase 3 self-heal hooks here).
         self._monitor_task = asyncio.create_task(self._monitor())
         # Health probe: detect a tunnel that's alive-but-not-forwarding and tear
@@ -722,13 +746,21 @@ class _SshTunnel:
         # A ProxyCommand that could not find its program. Checked before the
         # transport drops: ssh follows it with "Connection closed by ..." once the
         # proxy exits, which would otherwise read as a network drop, and the
-        # actionable fact is which PATH the program was missing from.
+        # actionable fact is which PATH the program was missing from, or the
+        # refusal that kept a plugin off it.
         # Gated on 255, ssh's own failure status, as the mint's twin is: the
         # wording is shell prose, and only an ssh-level failure is the proxy's.
         hit = _first_hit(low, PROXY_TOOL_MISSING_SIGNALS) if returncode == 255 else None
         if hit is not None:
             detail = _sanitize_banner(tail, anchor=hit)
-            return f"{proxy_tool_missing_message(self._child_path)}: {detail}"
+            cause = proxy_tool_missing_cause(
+                low,
+                self._child_path,
+                self._refused_plugin,
+                self._refused_aws,
+                self._refused_plugin_dir,
+            )
+            return f"{cause}: {detail}"
         # WSSH / transport session drops — not an auth problem. Worded neutrally
         # because this method is also used for the initial-connect failure path,
         # where no self-heal is armed yet (so it must not promise reconnection).
@@ -772,7 +804,11 @@ class _SshTunnel:
             )
         hit = _first_hit(low, _SSM_DENIAL_SIGNALS)
         if hit is not None:
-            detail = _sanitize_banner(tail, anchor=hit)
+            detail = _sanitize_banner(tail, anchor=hit, limit=_SSM_DENIAL_DETAIL_MAX_CHARS)
+            # Only a refusal AWS names as StartSession: an AssumeRole denial matches
+            # the same signals, and its fix is not this permission.
+            if "startsession" in low:
+                self.status.error_code = SSM_START_SESSION_DENIED
             return f"IAM denied ssm:StartSession for this target: {detail}"
         hit = _first_hit(low, _SSM_PLUGIN_SIGNALS)
         if hit is not None:

@@ -26,7 +26,8 @@ const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
 const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
 const { requestRelayCrewToken } = require("./relay-crew-client");
-const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared } = require("./relay-crew-window");
+const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared, relayPaneProcessIds } = require("./relay-crew-window");
+const { collectPaneProcesses, summarizeUsage } = require("./remote-crew-usage");
 const { normalizeBounds, deriveScale, scaleRect } = require("./browser-view");
 const { createRelayCrewRenewal } = require("./relay-crew-renewal");
 const { createRelayCrewHandoff } = require("./relay-crew-handoff");
@@ -45,6 +46,8 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   crashScan = null,
+  // This launch's `initNativeLogging` result; only its cause code reaches the renderer.
+  nativeLoggingStatus = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does
   // not float orphaned over the vanished dashboard during the quit handoff.
@@ -958,8 +961,8 @@ function createIpcRegistrar({
     });
     ipcMain.on("theme-mode-changed", (event, pref) =>
       windows.chrome.setThemeMode(pref, event.sender));
-    ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
-      windows.chrome.setTitlebarMode(mode));
+    ipcMain.on("titlebar-overlay-theme", (event, mode) =>
+      windows.chrome.setTitlebarMode(mode, event.sender));
 
     // Electron no-ops setBadgeCount on unsupported platforms. Keep the clamp in
     // the trusted process so a malformed renderer value cannot set an absurd
@@ -1015,7 +1018,10 @@ function createIpcRegistrar({
       await assertLocalDashboard(event, "crash-reports:get");
       // Absent injection means the shell was assembled without a collector —
       // report "nothing to see" rather than failing the renderer's first call.
-      return crashNoticeSummary(typeof crashScan === "function" ? crashScan() : null);
+      return crashNoticeSummary(
+        typeof crashScan === "function" ? crashScan() : null,
+        typeof nativeLoggingStatus === "function" ? nativeLoggingStatus() : null,
+      );
     });
 
     // Reveal, never read. The renderer names no path and receives no path: this
@@ -1073,6 +1079,30 @@ function createIpcRegistrar({
         log(`${PANE_ASSETS_PREFIX} clear-http-cache origin=${target} failed: ${e && e.message}`);
         return false;
       }
+    });
+
+    // What the remote Crews loaded in the asking window cost this machine, for
+    // Settings -> Remote Crew. Read-only, and gated like the purge above: only
+    // the local dashboard shell frames panes. `origins` are the SSH panes'
+    // loopback origins as the renderer knows them; remote-crew-usage.js
+    // filters them and walks the sender's own frames, so a renderer can only
+    // learn about frames it already holds.
+    ipcMain.handle("remote-crew:usage", async (event, origins) => {
+      await assertLocalDashboard(event, "remote-crew:usage");
+      const win = windows.windowForWebContents(event.sender);
+      const collected = collectPaneProcesses({
+        dashboard: event.sender,
+        origins,
+        backendUrl,
+        relayPids: relayPaneProcessIds(win),
+      });
+      let metrics = [];
+      try {
+        metrics = app.getAppMetrics();
+      } catch {
+        metrics = [];
+      }
+      return summarizeUsage(collected, metrics);
     });
 
     // Forward the Remote Crew pane ports a window on the launch port shows.
@@ -1331,6 +1361,21 @@ function createIpcRegistrar({
       }
     });
 
+    // Connect with WakaTime finishes in the system browser: its callback needs
+    // the state cookie of the browser that started the sign-in. The renderer
+    // passes nothing; the only URL opened is this dashboard's WakaTime panel.
+    // Answers whether the OS took the hand-off.
+    ipcMain.handle("wakatime:open-in-browser", async (event) => {
+      await assertLocalDashboard(event, "wakatime:open-in-browser");
+      try {
+        await shell.openExternal(`${backendUrl}/settings/overview?view=wakatime`);
+        return true;
+      } catch (e) {
+        log(`wakatime:open-in-browser failed: ${e && e.message}`);
+        return false;
+      }
+    });
+
     // First-run setup's "connect to a crew on another machine" exit. It stops the
     // gateway this app started and reconnects the main window to a crew the
     // user names, so it is an action on the machine in front of the user and
@@ -1482,6 +1527,22 @@ function createIpcRegistrar({
       // Before any mint, like a bad ID.
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
       return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+    });
+
+    // The warm set's background load: the main window's dashboard only, and never
+    // handed off, so no other window can bring the main one forward with it.
+    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:prewarm-pane");
+        assertMainWindowDashboard(event, "relay-crew:prewarm-pane");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const main = windows.getMainWindow();
+      const bounds = paneRect(main, rect, viewport);
+      if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
+      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds });
     });
 
     // The calls that steer an open pane take it only from the dashboard view

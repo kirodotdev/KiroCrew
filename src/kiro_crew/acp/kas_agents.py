@@ -87,6 +87,7 @@ from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
+    NOT_RUN_SCOPE_MUTED,
     WithheldOut,
     _project_mcp_servers,
 )
@@ -189,6 +190,8 @@ from kiro_crew.acp.kas_spec_denies import (
     uncarried_denied_commands,
     web_fetch_carried,
     web_fetch_gate,
+    web_fetch_regranted,
+    with_blocked_host_asks,
 )
 from kiro_crew.acp.kas_spec_grants import SHELL_SETTINGS_KEYS, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (  # noqa: F401
@@ -595,6 +598,29 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
+#: What a kiro-cli ``excludedTools`` entry of ``@*`` (every MCP server) is on KAS.
+#: KAS matches an exclusion against each tool's tags too, and its built-ins carry
+#: ``@builtin``, so ``@*`` there withholds every tool, the built-ins the spec's
+#: ``tools`` grants included. ``@mcp`` and ``@powers`` are the tags of MCP-served
+#: and Powers tools, which is what ``@*`` names on kiro-cli and in Crew's own reads
+#: (``default_crew_servers.opted_out``, ``mcp_refs.entry_reaches``).
+_KAS_MCP_WILDCARD_EXCLUSIONS: tuple[str, ...] = ("@mcp", "@powers")
+
+
+def _kas_mcp_wildcard(entries: list[str]) -> list[str]:
+    """*entries* with each exact ``@*`` replaced by :data:`_KAS_MCP_WILDCARD_EXCLUSIONS`.
+
+    Only an exclusion list is rewritten, so the built-ins the agent keeps are still
+    the ones its ``tools`` list names. Every other entry stays as written.
+    """
+    if "@*" not in entries:
+        return entries
+    out: list[str] = []
+    for entry in entries:
+        out.extend(_KAS_MCP_WILDCARD_EXCLUSIONS if entry == "@*" else (entry,))
+    return list(dict.fromkeys(out))
+
+
 def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
     """The ceiling predicate for the spec's own allows (``allowedTools``, ``permissions``).
 
@@ -952,6 +978,11 @@ def to_client_custom_agent(
         block["rules"] = [*(block.get("rules") or []), *skill_scope_rules]
         permissions = block
         _audit_skill_scope(skill_scope_rules, agent_id)
+    # A `web_fetch.blocked` entry KAS cannot carry as a host deny that Crew's gate
+    # refuses: an `ask` on its host brings a fetch there to the gate. Read before
+    # them: whether those asks alone hold back a fetch the policy ran unprompted.
+    web_fetch_lifted = web_fetch_regranted(tools_settings, spec.get("permissions"), permissions)
+    permissions = with_blocked_host_asks(permissions, tools_settings)
     if permissions:
         out["permissions"] = permissions
     # Read before the hook asks AND from the raw inputs: an ``ask`` or ``deny`` the
@@ -989,11 +1020,15 @@ def to_client_custom_agent(
         commands=answered_commands,
         commands_answered=CREW_ANSWERED_COMMANDS_KEY in out,
     )
-    # A plain-URL `web_fetch.trusted` grant, held back by any blocked match.
+    # A plain-URL `web_fetch.trusted` grant, held back by any blocked match, and
+    # the blocked entries the gate refuses; with the asks above, a fetch they hold
+    # back that no entry reaches is granted by name.
     web_fetch = web_fetch_gate(tools_settings, spec.get("permissions"))
     if web_fetch:
         base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
         denies = {**base, **web_fetch}
+        if web_fetch_lifted:
+            denies["builtins"] = sorted({*denies["builtins"], "web_fetch"})
     # A `deniedCommands` entry KAS received no rule for: the gate refuses what it
     # names on every approval policy, so an auto-approved call cannot run it. It
     # grants nothing (a record with no lifted grant only refuses).
@@ -1048,7 +1083,7 @@ def to_client_custom_agent(
             # with the restricting direction's polarity: a spec that excludes
             # ``fs_read`` for kiro-cli must not leave ``read_file`` mounted here,
             # and one that excludes ``fs_write`` must not leave ``delete_file``.
-            out["excludedTools"] = expand_kiro_cli_tool_exclusions(entries)
+            out["excludedTools"] = _kas_mcp_wildcard(expand_kiro_cli_tool_exclusions(entries))
     switched_off, unusable = _disabled_tool_exclusions(spec)
     if unusable:
         raise KasAgentTranslationError(

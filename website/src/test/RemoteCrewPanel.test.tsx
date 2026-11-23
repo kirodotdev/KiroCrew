@@ -666,7 +666,8 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     // The localized "not installed" line still explains the gap…
-    expect(await screen.findByText('Session Manager plugin')).toBeInTheDocument()
+    // In the answered list: the rows drawn while the check runs carry the same titles.
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     // …but no Copy button appears with nothing to copy.
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
@@ -773,7 +774,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     const profileInput = await screen.findByLabelText(/AWS profile/i)
-    const credsRow = await screen.findByText('AWS credentials')
+    const credsRow = await screen.findByText('AWS credentials', { selector: 'ul:not([aria-busy]) div' })
     // compareDocumentPosition: 4 = FOLLOWING — the row comes after the input.
     expect(profileInput.compareDocumentPosition(credsRow) & 4).toBeTruthy()
     // And the probed identity is stated in plain words, never as a profile named "none set".
@@ -875,7 +876,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Enable remote crew management/i })).toBeInTheDocument()
   })
 
@@ -898,7 +899,7 @@ describe('RemoteCrewPanel', () => {
 
     // After the 403 resolves: transitions directly to the disabled card.
     rejectInstances(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'My Crews' })).not.toBeInTheDocument()
   })
 
@@ -931,7 +932,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     // Prereq checklist rendered; a missing plugin blocks Launch.
     expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-    expect(screen.getByText('Session Manager plugin')).toBeInTheDocument()
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled())
     expect(screen.getByText('Fix “Session Manager plugin” above to enable this.')).toBeInTheDocument()
   })
@@ -1450,6 +1451,28 @@ describe('RemoteCrewPanel', () => {
       expect(prompt).toContain('remote_down')
       expect(prompt).toContain('ssh=ok -> remote_dashboard=FAILED')
       expect(prompt).toContain('Nimbus')
+    })
+
+    it('drops the diagnosis note and the remove warning once the crew is removed (Bug Bash row 53)', async () => {
+      sessionStorage.clear()
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [BROKEN] } as never)
+      ;vi.mocked(api.instanceStatus).mockResolvedValue(DIAGNOSED as never)
+      ;vi.mocked(api.disconnectInstance).mockResolvedValue({} as never)
+      ;vi.mocked(api.removeInstance).mockResolvedValue({} as never)
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+      await screen.findByText('Nimbus')
+      await openRowMenu(u)
+      await u.click(await screen.findByRole('button', { name: /Diagnose Nimbus/i }))
+      await screen.findByText(/c1: Remote dashboard down/i)
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] } as never)
+      // The row's Remove asks first; the confirm button carries the same name.
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await screen.findByText(/Remove only takes it off this list/)
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await waitFor(() => expect(api.removeInstance).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByText(/c1: Remote dashboard down/i)).toBeNull())
+      expect(screen.queryByText(/Remove only takes it off this list/)).toBeNull()
     })
 
     it('keeps the typed add-form values across that hand-off', async () => {

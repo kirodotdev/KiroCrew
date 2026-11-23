@@ -21,7 +21,7 @@ import kiro_crew.subagent_persistence as sp
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import wait_until
 
-NO_ROUTE = "kas"
+NO_ROUTE = "opencode"
 ROUTED = "acp"
 DAY = 86400
 

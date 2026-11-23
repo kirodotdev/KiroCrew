@@ -649,6 +649,30 @@ class CardStore:
                 return rec
         return None
 
+    def expire_made(
+        self, slot_key: str, kind: str, params: dict[str, Any]
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Expire *slot_key*'s waiting cards whose exact change is already made.
+
+        The agent already heard the change is made, so the expiry is marked
+        reported. Returns each card with its :meth:`snapshot` for :meth:`restore`.
+        """
+        self._ensure_loaded()
+        out = []
+        for rec in self._cards.values():
+            if (
+                rec["slot_key"] == slot_key
+                and rec["kind"] == kind
+                and rec["status"] in (STATUS_PENDING, STATUS_FAILED)
+                and not rec.get("inflight")
+                and rec["params"] == params
+            ):
+                snap = self.snapshot(rec)
+                self._finish(rec, STATUS_EXPIRED)
+                rec["reported_status"] = STATUS_EXPIRED
+                out.append((rec, snap))
+        return out
+
     def _apply_preview(
         self,
         rec: dict[str, Any],
@@ -1106,6 +1130,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.change_card_mcp_server import (  # noqa: F401
+        KIND_MCP_SERVER,
+    )
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
     )

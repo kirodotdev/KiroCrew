@@ -1262,6 +1262,7 @@ def kas_sentence_route(text: str) -> Any:
             kas_route.REASON_NO_KIRO_CLI,
             kas_route.REASON_KIRO_CLI_SIGNED_OUT,
             kas_route.REASON_SHARING_PREVIEW,
+            kas_route.REASON_BUILD_DEFAULT,
         )
     ]
     for route in candidates:

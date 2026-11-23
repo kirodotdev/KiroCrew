@@ -50,7 +50,9 @@ skip it. The route asks ``capabilities.browse`` again itself, fail-closed (403
 ``policy_denied``, ``handlers/browser_policy.py``), and so does every helper the
 op runs (``HarnessSupervisor.call``), so a deny that lands mid-op ends it with the
 same code. Beyond that it enforces what only the gateway can see: who holds the
-browser, which tabs the agent owns.
+browser, which tabs the agent owns, and the origins it trusts as itself (a tunnel,
+a tailnet name, ``dashboard.url``), refused like its loopback port on the address
+asked for and on every landing (:func:`committed_url_allowed`).
 
 The live card (``browser_harness.live_hub``) is driven from here too, because
 this is the one place that knows both the session and the browser: the FIRST
@@ -75,18 +77,23 @@ so chats do not share cookies either, and the daemon's current tab is never adop
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import importlib
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import browser_host_trust
 from kiro_crew.apps import browser_sites
 from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
 from kiro_crew.browser_harness import ops as harness_ops
-from kiro_crew.browser_harness import run_budget, session_contexts, url_gate
+from kiro_crew.browser_harness import run_budget, session_contexts
+from kiro_crew.browser_harness import sign_in as browser_sign_in
+from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.budgets import (
     CHANGE_REPORT_S,
     DECISION_HEADROOM_S,
@@ -95,6 +102,7 @@ from kiro_crew.browser_harness.budgets import (
     HOLD_TIMEOUT_S,
     LOCK_WAIT_S,
     OP_TIMEOUT_S,
+    SIGN_IN_WORST_S,
     SLOW_OP_TIMEOUT_S,
 )
 from kiro_crew.browser_harness.decide import BrowserDecisions
@@ -336,6 +344,7 @@ def build_context(
     *,
     caller_key: str | None = None,
     sites: tuple[str, ...] = (),
+    own_origins: tuple[str, ...] = (),
 ) -> harness_ops.OpContext:
     """Bind the gateway's supervisor, relay and live hub to one caller's session.
 
@@ -345,6 +354,7 @@ def build_context(
     ``browserSites`` of the app that owns the session (:func:`session_sites`): when
     there are any, a page is allowed only if it is one of them as well, so a landing
     off the list is refused and blanked like any other refused landing.
+    *own_origins* are the gateway's own (:func:`committed_url_allowed`).
     """
     hub = hub if hub is not None else get_live_hub()
     helper = (
@@ -391,8 +401,13 @@ def build_context(
         agent_targets=_agent_targets,
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
         staging_dir=config_dir() / IPC_LEAF / "shots",
+        upload_dir=config_dir() / IPC_LEAF / "uploads",
         sleep=asyncio.sleep,
-        url_allowed=committed_url_allowed if not sites else _site_gate(sites),
+        url_allowed=(
+            _site_gate(sites, own_origins)
+            if sites
+            else lambda url: committed_url_allowed(url, own_origins)
+        ),
         loop=_loop,
         mark=_mark,
         record=_record,
@@ -402,10 +417,12 @@ def build_context(
 
 
 def _op_budget(op: str, ctx: harness_ops.OpContext) -> float:
-    """The route's budget for *op*: its own, the decision hooks', and the change report's."""
+    """The route's budget for *op*: its own, the hooks', the change report's, a sign-in's."""
     own = SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
     report = CHANGE_REPORT_S if ctx.report_changes and op in harness_ops.REPORT_OPS else 0.0
-    return own + DECISION_HEADROOM_S + report
+    # A navigate may go on to finish an edition sign-in (``browser_harness.sign_in``).
+    sign_in = SIGN_IN_WORST_S if op == "navigate" else 0.0
+    return own + DECISION_HEADROOM_S + report + sign_in
 
 
 def _report_changes() -> bool:
@@ -449,13 +466,15 @@ def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
     return FrameOps(relay, stream.session_id, registry, harness_ops.WALKER_SOURCE)
 
 
-def committed_url_allowed(url: str) -> bool:
-    """The navigate gate for the URL a navigation LANDED on, judged in the gateway.
+def committed_url_allowed(url: str, own_origins: Iterable[str] = ()) -> bool:
+    """The navigate gate, judged in the gateway: the URL asked for and where it LANDED.
 
-    The same predicate the shim applies to the requested URL
-    (``browser_harness.url_gate``), with the operator's loopback allowlist read
-    fresh and the gateway's own port refused. Fail-CLOSED: a config read failure
-    admits only public targets, an unknown port admits no local one.
+    The predicate the shim applies to the requested URL (``browser_harness.url_gate``),
+    with the operator's loopback allowlist read fresh and the gateway's own port
+    refused, plus what only the gateway knows: *own_origins*, the origins it trusts
+    as itself (:func:`_own_origins`), so this dashboard is refused under those names
+    too. Fail-CLOSED: a config read failure admits only public targets, an unknown
+    port admits no local one.
     """
     try:
         from kiro_crew.config import KiroCrewConfig
@@ -475,23 +494,54 @@ def committed_url_allowed(url: str) -> bool:
     except Exception:  # noqa: BLE001 - unknowable port -> no local target is provably safe
         port = None
     try:
-        return url_gate.url_allowed(url, allowed, port)
+        return url_gate.url_allowed(url, allowed, port, own_origins)
     except ValueError:  # an address the URL parser cannot read is no page to open
         return False
 
 
-def _site_gate(sites: tuple[str, ...]) -> Any:
+def _site_gate(sites: tuple[str, ...], own_origins: tuple[str, ...] = ()) -> Any:
     """:func:`committed_url_allowed`, narrowed to the pages *sites* name."""
 
     def _allowed(url: str) -> bool:
-        return committed_url_allowed(url) and url_matches(sites, url)
+        return committed_url_allowed(url, own_origins) and url_matches(sites, url)
 
     return _allowed
+
+
+def _own_origins(caller: Any) -> tuple[str, ...]:
+    """The route request's live ``app["allowed_origins"]``, copied for the worker-thread gate.
+
+    A :class:`GatewayCaller` (an app's trusted in-gateway code) has none.
+    """
+    app = getattr(caller, "app", None)
+    return tuple((app.get("allowed_origins") if app is not None else None) or ())
 
 
 def session_app(request: web.Request, key: str) -> str:
     """The app that owns the dashboard slot *key*, or ``""`` (no slot, or a person's)."""
     return slot_app(_request_state(request), key)
+
+
+def _read_permitted(session_key: str, agent: str, app: str, path: str) -> bool:
+    """Whether governance lets *session_key* (its slot's *agent* and *app*) read *path*.
+
+    Fail-closed. Blocking.
+    """
+    from kiro_crew.platform.governance_profiles import governance_permits
+
+    try:
+        decision = governance_permits(
+            "filesystem.read",
+            path,
+            session_key=session_key,
+            agent=agent,
+            app=app,
+            log_warning=False,
+            fail_closed=True,
+        )
+    except Exception:  # noqa: BLE001 - unevaluable denies
+        return False
+    return bool(getattr(decision, "permitted", False))
 
 
 def slot_app(state: Any, key: str) -> str:
@@ -842,10 +892,13 @@ _PAGE_TARGETED_OPS = frozenset(
         "drag",
         "scroll",
         "type",
+        "fill",
         "paste",
         "press_key",
+        "dispatch_key",
         "hover",
         "select_option",
+        "upload",
         "dialog",
         "reflex",
     }
@@ -862,15 +915,17 @@ _TAB_MOVE_HINTS = {
 
 
 def _refused_for_tab_move(
-    hub: LiveHub, key: str, op: str, args: dict[str, Any]
+    hub: LiveHub, key: str, op: str, args: dict[str, Any], *, app: bool = False
 ) -> dict[str, Any] | None:
     """The refusal for a page-targeted op while a tab move is unreported, or ``None``.
 
     The ref or point the agent sent was read off the page it was on before a popup
     moved its tab, so it would land on an unrelated element. Ops that do not point
-    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run.
+    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run. The Bot
+    and the slot's *app* each have their own pending move, so each is told once and
+    telling one never lifts the other's refusal.
     """
-    pending = hub.pending_tab_move(key)
+    pending = hub.pending_app_tab_move(key) if app else hub.pending_tab_move(key)
     page_targeted = op in _PAGE_TARGETED_OPS or (op == "read" and args.get("ref") is not None)
     if not page_targeted or not pending:
         return None
@@ -885,16 +940,19 @@ def _refused_for_tab_move(
     )
 
 
-def _with_tab_move(hub: LiveHub, key: str, answer: Any) -> Any:
+def _with_tab_move(hub: LiveHub, key: str, answer: Any, *, take: bool = True) -> Any:
     """Report the unreported tab move on *answer*, success or refusal alike.
 
     Taking it clears it, so the agent is told exactly once. A non-answer (the
-    person holds the browser, or a claim cut the op short) leaves it pending.
+    person holds the browser, or a claim cut the op short) leaves it pending. With
+    *take* false (an app's op) the app's own pending move is reported and cleared,
+    and the Bot's stays pending, since its next ref would otherwise land on the page
+    it left; the Bot taking its own leaves the app's in place the same way.
     """
     if not isinstance(answer, dict) or answer.get("code") == DENIED_CODE:
         # A governance deny is shown as fixed text, so the move waits for the next answer.
         return answer
-    notice = hub.take_tab_move(key)
+    notice = hub.take_tab_move(key) if take else hub.take_app_tab_move(key)
     if not notice:
         return answer
     out = dict(answer)
@@ -911,6 +969,7 @@ async def follow_current_tab(
     *,
     caller_key: str | None = None,
     sites: tuple[str, ...] = (),
+    own_origins: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Point the session's stream at the daemon's current tab; update the address pill.
 
@@ -970,7 +1029,10 @@ async def follow_current_tab(
         return None
     if tab.get("url") != "about:blank":
         refused = await harness_ops._refuse_committed_url(
-            build_context(key, supervisor, hub, caller_key=caller_key, sites=sites), url
+            build_context(
+                key, supervisor, hub, caller_key=caller_key, sites=sites, own_origins=own_origins
+            ),
+            url,
         )
         if refused is not None:
             await hub.stop_stream(key)
@@ -1027,8 +1089,14 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    approval = body.get("approval")
     answer, status = await run_browser_op(
-        session_key, op, args, state=_request_state(request), caller=request
+        session_key,
+        op,
+        args,
+        state=_request_state(request),
+        caller=request,
+        approval=approval if isinstance(approval, str) else "",
     )
     if status == 403:
         # The one answer that is not 200: a browse deny before the op started.
@@ -1062,8 +1130,9 @@ def _request_state(request: web.Request) -> Any:
 #: Refused before the op reaches the browser: the address it asked to open is not
 #: one the navigate gate admits (:func:`committed_url_allowed`).
 URL_BLOCKED_TEXT = (
-    "the browser only opens public http(s) pages, plus the loopback origins the user "
-    "listed under Settings -> Browser -> Local preview origins; this address is refused"
+    "the browser only opens public http(s) pages other than this dashboard, plus the "
+    "loopback origins the user listed under Settings -> Browser -> Local preview "
+    "origins; this address is refused"
 )
 
 
@@ -1074,6 +1143,7 @@ async def run_browser_op(
     *,
     state: Any = None,
     caller: Any = None,
+    approval: str = "",
 ) -> tuple[dict[str, Any], int]:
     """Run one browser op for *session_key* through every gate; ``(answer, http_status)``.
 
@@ -1090,12 +1160,18 @@ async def run_browser_op(
     *session_key* is the caller's runtime session key (``dashboard:<slot>`` for a
     dashboard slot), which governance binds on. *state* is the dashboard state, read
     for the slot's owning app. *caller* is the audit identity: the route's request,
-    or a :class:`GatewayCaller`. Answers are the route's own bodies; the status is
-    403 only for a browse deny before the op started, else 200.
+    or a :class:`GatewayCaller`. *approval* is the answered card a ``js``, ``cdp``
+    or ``http_get`` call runs under (:mod:`browser_card_ask`). Answers are the
+    route's own bodies; the status is 403 only for a browse deny before the op
+    started, else 200.
     """
     # The audit identity every helper below reads (``_audit`` takes a request's shape).
     request: Any = caller if caller is not None else GatewayCaller("gateway")
-    if op not in harness_ops.OPS or not isinstance(args, dict):
+    # ``APP_OPS`` are an app's read ops: an in-gateway caller's only, never the route's.
+    known = op in harness_ops.OPS or (
+        op in harness_ops.APP_OPS and isinstance(request, GatewayCaller)
+    )
+    if not known or not isinstance(args, dict):
         return {"error": "unknown op", "code": "bad_op"}, 400
     # The shim asked (and audited) the same row before posting; this is the
     # gateway's own check, which a direct POST cannot skip and which fails closed.
@@ -1107,9 +1183,10 @@ async def run_browser_op(
     # one an in-gateway caller cannot skip. Without it a request to an internal
     # address leaves before the landing check (``_refuse_committed_url``) can refuse.
     _readable, wanted = browser_call_url({"op": op, "args": args})
+    own = _own_origins(request)
     # Off the loop: the gate reads the operator's local-origins setting from disk.
     if isinstance(wanted, str) and not await asyncio.to_thread(
-        committed_url_allowed, wanted.strip()
+        committed_url_allowed, wanted.strip(), own
     ):
         _audit(request, "denied", "url_blocked")
         return harness_ops.refusal("url_blocked", URL_BLOCKED_TEXT), 200
@@ -1126,7 +1203,7 @@ async def run_browser_op(
                     SITES_REVOKED_TEXT
                     if sites == browser_sites.NO_PAGES
                     else f"{off_site} is not one of the pages this app may browse; "
-                    "open one of its approved sites instead"
+                    f"open one of its approved sites instead: {', '.join(sites)}"
                 ),
             ),
             200,
@@ -1170,7 +1247,7 @@ async def run_browser_op(
             },
             200,
         )
-    ctx = build_context(key, supervisor, hub, caller_key=session_key, sites=sites)
+    ctx = build_context(key, supervisor, hub, caller_key=session_key, sites=sites, own_origins=own)
     # The optional decision-model hooks (``browser.step``), keyed by the caller's own
     # session key -- the identity the gate samples and governance binds on, not the
     # card's slot key. They ask the gate first and run the op exactly as written
@@ -1184,6 +1261,35 @@ async def run_browser_op(
         # ``/api/browser/handback`` until the person lets go, then posts the op
         # again. Nothing waits here, so other chats keep browsing meanwhile.
         return _held(request, hub, key, op, interrupted=False)
+    from kiro_crew.dashboard.handlers import browser_card_ask
+
+    # An upload a person's act grant on this host covers runs with no card; its host
+    # goes down to the op, which re-reads the bound tab before the files go.
+    granted_host = "" if approval else browser_card_ask.upload_grant_host(state, session_key, op)
+    ctx.upload_grant_host = granted_host
+    # The caller as the tool gate names it: an agent- or app-bound profile narrows too.
+    slot = (getattr(state, "_slots", None) or {}).get(key)
+    ctx.read_allowed = functools.partial(
+        _read_permitted,
+        session_key,
+        str(getattr(slot, "agent", "") or ""),
+        str(getattr(slot, "_app", "") or ""),
+    )
+    # Read before the gate spends the answer: an Allow sends the files its card listed.
+    listed = browser_card_ask.approved_upload(state, approval) if approval else None
+    carded = (
+        None
+        if granted_host
+        else await browser_card_ask.gate(state, session_key, op, args, approval, ctx.read_allowed)
+    )
+    if carded is None and op == "upload" and approval:
+        if listed is None:
+            carded = harness_ops.refusal("approval_mismatch", "that card listed no files")
+        ctx.upload_groups = listed
+    if carded is not None:
+        code = str(carded.get("code") or "")
+        _audit(request, "pending" if code == "needs_approval" else "denied", code)
+        return carded, 200
     try:
         await asyncio.wait_for(_OP_LOCK.acquire(), timeout=LOCK_WAIT_S)
     except asyncio.TimeoutError:
@@ -1221,6 +1327,7 @@ async def run_browser_op(
                 budget,
                 caller_key=session_key,
                 sites=sites,
+                granted_host=granted_host,
             )
     finally:
         _OP_LOCK.release()
@@ -1230,6 +1337,13 @@ async def run_browser_op(
         hub.record_op(key, op, args, {"ok": False, "code": "interrupted"}, mark)
         return _held(request, hub, key, op, interrupted=True)
     assert isinstance(result, dict)
+    if granted_host and result.get("code") == "needs_card":
+        # The grant does not cover a strict-hidden path: the person's card does.
+        carded = await browser_card_ask.open_card(state, session_key, op, args, ctx.read_allowed)
+        _audit(
+            request, "pending" if carded.get("code") == "needs_approval" else "denied", "needs_card"
+        )
+        return carded, 200
     # The turn replay's event for this op: generic, from the step it reported and
     # the result it answered (``browser_harness.recording.agent_event``). An ask
     # records its own ``person`` events instead.
@@ -1238,6 +1352,11 @@ async def run_browser_op(
     # A note left for a parked poll that never came back to take it reaches this op.
     # The note is the person's word to the Bot: an app's op leaves it for the Bot.
     said = None if isinstance(request, GatewayCaller) else hub.take_handback(key)
+    if result.get("ok") and sites and sites != browser_sites.NO_PAGES:
+        # An app's own agent browsed: its backend may ask to hear when the media ends.
+        from kiro_crew.dashboard.handlers import browser_media_watch  # noqa: PLC0415
+
+        browser_media_watch.ensure_watch(state, key)
     if result.get("ok"):
         answer: dict[str, Any] = {"ok": True, "result": result}
         if said is not None:
@@ -1337,10 +1456,11 @@ async def api_browser_handback(request: web.Request) -> web.Response:
         hub.set_handback_options(key, body.get("options"))
     released = await hub.wait_for_release(key, HANDBACK_WAIT_S)
     if hub.hold_over(key):
-        # The hub's hold ended first: any hand-back since went to chat, so the op
-        # stops here instead of running behind what the person said there. A note
-        # given to this op before it was taken back again still reaches it here.
-        # The end is left in place, so every call parked in this session hears it.
+        # The hub's hold ended with no hand-back inside it standing: what the person
+        # said since went to chat, so the op stops here instead of running behind
+        # it. A note given to this op before it was taken back again still reaches
+        # it here. The end is left in place, so every call parked in this session
+        # hears it.
         said = hub.take_handback(key)
         return web.json_response(
             {
@@ -1370,6 +1490,7 @@ async def _fenced_op(
     *,
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     """:func:`_run_fenced_op`, with any unreported popup tab move on its answer.
 
@@ -1378,13 +1499,23 @@ async def _fenced_op(
     never saw.
     """
     answer = await _run_fenced_op(
-        request, hub, key, supervisor, ctx, op, args, budget, caller_key=caller_key, sites=sites
+        request,
+        hub,
+        key,
+        supervisor,
+        ctx,
+        op,
+        args,
+        budget,
+        caller_key=caller_key,
+        sites=sites,
+        granted_host=granted_host,
     )
     if op == "ask":
         # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
         # so the move would be cleared without being shown: it waits for the next op.
         return answer
-    return _with_tab_move(hub, key, answer)
+    return _with_tab_move(hub, key, answer, take=not isinstance(request, GatewayCaller))
 
 
 async def _run_fenced_op(
@@ -1399,6 +1530,7 @@ async def _run_fenced_op(
     *,
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
@@ -1422,7 +1554,7 @@ async def _run_fenced_op(
 
     try:
         return await _bound_op(
-            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites
+            request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites, granted_host
         )
     finally:
         relay = getattr(supervisor, "relay", None)
@@ -1442,6 +1574,7 @@ async def _bound_op(
     budget: float,
     caller_key: str,
     sites: tuple[str, ...],
+    granted_host: str = "",
 ) -> dict[str, Any] | object:
     async def _bind() -> dict[str, Any] | None:
         # The bind comes first: it records the context this op browses in, which
@@ -1459,26 +1592,35 @@ async def _bound_op(
             await _bind_target(hub, key, supervisor, ctx.helper)
         return await follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed)
 
+    own = _own_origins(request)
     bound = False
     try:
         await asyncio.wait_for(_bind(), timeout=OP_TIMEOUT_S)
         bound = True
-        moved = _refused_for_tab_move(hub, key, op, args)
+        moved = _refused_for_tab_move(hub, key, op, args, app=isinstance(request, GatewayCaller))
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
+            # Its host-grant note stays for the same call the shim re-posts.
             return _HELD
+        # The call's own host-grant note, taken once whatever this op's answer, so
+        # a later identical call never inherits it.
+        noted_host = browser_host_trust.take_host_approval(key, op, args)
+        # An upload the route let through on an act grant is checked the same way.
+        noted_host = granted_host or noted_host
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
             refused = await follow_current_tab(
-                hub, key, supervisor, caller_key=caller_key, sites=sites
+                hub, key, supervisor, caller_key=caller_key, sites=sites, own_origins=own
             )
             if refused is not None:
                 _audit(request, "denied", str(refused.get("code") or ""))
                 return refused
             from kiro_crew.dashboard.handlers.browser_ask import run_ask
 
-            result = await asyncio.wait_for(run_ask(hub, key, args), timeout=OP_TIMEOUT_S)
+            result = await asyncio.wait_for(
+                run_ask(hub, key, args, own_origins=own), timeout=OP_TIMEOUT_S
+            )
             denied = await _denied_after_op(request, caller_key)
             if denied is not None:
                 return denied
@@ -1487,18 +1629,25 @@ async def _bound_op(
         if moved is not None:
             # The ref or point the agent sent belongs to the page it left.
             result = moved
+        elif off_host := await browser_host_trust.recheck(noted_host, op, args, ctx.helper):
+            # Approved by a host grant, but the tab is on another host now.
+            _audit(request, "denied", browser_host_trust.SCOPE_CHANGED_CODE)
+            result = off_host
         else:
-            max_ops, max_repeats = _run_limits()
+            # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
+            max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
+            counted: tuple[Any, run_budget.RunCount] | None = None
             if max_ops or max_repeats:
                 sess = hub.get(key)
                 if sess is not None:
+                    counted = (sess, dataclasses.replace(sess.run))
                     stopped = run_budget.check(
                         sess.run, op, args, max_ops=max_ops, max_repeats=max_repeats
                     )
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)
                         return stopped
-            task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
+            task = asyncio.ensure_future(browser_sign_in.run_op(op, args, ctx, supervisor))
             hub.op_started(key, task)
             try:
                 result = await asyncio.wait_for(task, timeout=budget)
@@ -1510,6 +1659,14 @@ async def _bound_op(
                 raise
             finally:
                 hub.op_finished(key)
+            if (
+                counted is not None
+                and granted_host
+                and result.get("code") in ("needs_card", browser_host_trust.SCOPE_CHANGED_CODE)
+            ):
+                # Turned away before any file went (the card's call, or the tab left the
+                # granted host after staging): the run that follows is the one that counts.
+                counted[0].run = counted[1]
     except asyncio.TimeoutError:
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
@@ -1534,7 +1691,7 @@ async def _bound_op(
                 # The opener may have been sent somewhere the gate refuses as the
                 # popup closed: that refusal is the answer, as on the success path.
                 refused = await follow_current_tab(
-                    hub, key, supervisor, caller_key=caller_key, sites=sites
+                    hub, key, supervisor, caller_key=caller_key, sites=sites, own_origins=own
                 )
                 if refused is not None:
                     _audit(request, "denied", str(refused.get("code") or ""))
@@ -1554,7 +1711,9 @@ async def _bound_op(
         await _follow_popup_after_op(hub, key, supervisor, ctx, op)
     if not hub.in_control(key):
         # Asked again: the person may have taken the tab during the late looks.
-        refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key, sites=sites)
+        refused = await follow_current_tab(
+            hub, key, supervisor, caller_key=caller_key, sites=sites, own_origins=own
+        )
         if refused is not None:
             _audit(request, "denied", str(refused.get("code") or ""))
             return refused

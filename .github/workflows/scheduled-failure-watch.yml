@@ -81,6 +81,7 @@ name: Scheduled Failure Watch
 on:
   workflow_run:
     workflows:
+      - "CI Red-Cause Census"
       - "CI Runner Watchdog"
       - "CodeQL"
       - "Connections L0 Static Metadata Probe"

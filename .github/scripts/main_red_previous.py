@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main-red watch: is a failure seen in one job the same one the previous run saw?
+"""Main-red watch: what the push runs of main before this one say about a red run.
 
 A test red in one job of one run is as often a flake as a break, so
 `main-red-watch.yml` opens no issue for it. A break that shows on one leg only
@@ -20,8 +20,33 @@ The unit is the test file, not the node id: a break often fails a different
 test of one file on each run (another parameter, another method of one class),
 and a node id that differs would hide it.
 
-Nothing is stored between runs. The previous run is read again each time, and
-only on a run that is red in one job with no issue open.
+A watcher run that the API rate limit ended, or that a newer one replaced in
+the queue, records nothing. So every red run that names a test asks which red
+runs before it no watcher recorded, and replays them under the watcher's own
+rules:
+
+    unfinished RUNS.json --run-number N --prev-body BODY [--closed ISSUES.json]...
+                             print `<id> TAB <url>`, oldest first, of the red
+                             verdict runs directly before run number N that
+                             neither the record in BODY (the open issue's, or
+                             empty) nor the record of a closed issue in any
+                             ISSUES.json holds: back to the first green run, to
+                             the last run a record holds, or MAX_UNFINISHED runs
+    replay RUNS.json PASTDIR --run-number N --prev-body BODY [--closed ISSUES.json]...
+                             --out-body OUT
+                             read `PASTDIR/<id>/` (per-job files) for each of
+                             those runs and write to OUT the record the watcher
+                             would have left; print what was counted. Exit 1,
+                             writing nothing, when no run adds to the record
+
+A replayed run counts as it would have live: with a record open, when it names
+a failing test; with none, when a test is red in two of its jobs, or its jobs
+share a test file with the verdict run before it. The record a replay writes
+says since when main is red. It does not decide whether the run that asked
+opens an issue: that run's own failures do.
+
+Nothing is stored between runs: the record is the open issue's, and each run
+is read again from the API.
 """
 
 from __future__ import annotations
@@ -29,12 +54,15 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 VERDICTS = ("success", "failure", "timed_out")
 MAX_FILES_SHOWN = 3
+MAX_UNFINISHED = 5
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _sibling() -> Any:
@@ -50,14 +78,14 @@ def _sibling() -> Any:
 watch = _sibling()
 
 
-def previous_verdict(listing: Any, run_number: int) -> dict[str, Any] | None:
-    """The newest run before ``run_number`` that reached a verdict, or ``None``.
+def verdict_runs(listing: Any, run_number: int) -> list[dict[str, Any]]:
+    """Push runs of main before ``run_number`` that reached a verdict, newest first.
 
     ``listing`` is the body of the workflow-runs API. A cancelled run is a
     pending one that a later push replaced, so it says nothing about the tests.
     """
     rows = listing.get("workflow_runs") if isinstance(listing, dict) else None
-    best: dict[str, Any] | None = None
+    found: list[dict[str, Any]] = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
@@ -68,9 +96,60 @@ def previous_verdict(listing: Any, run_number: int) -> dict[str, Any] | None:
             continue
         if row.get("event") != "push" or row.get("head_branch") != "main":
             continue
-        if best is None or number > best["run_number"]:
-            best = row
-    return best
+        found.append(row)
+    return sorted(found, key=lambda row: int(row["run_number"]), reverse=True)
+
+
+def previous_verdict(listing: Any, run_number: int) -> dict[str, Any] | None:
+    """The newest run before ``run_number`` that reached a verdict, or ``None``."""
+    earlier = verdict_runs(listing, run_number)
+    return earlier[0] if earlier else None
+
+
+def last_recorded(issues: Any) -> int:
+    """The newest run id a record in ``issues`` holds, or -1.
+
+    ``issues`` are the closed main-red issues as `gh issue list` prints them. An
+    issue closed while main was still red (by hand, or by a merged pull request
+    that names it) leaves no green run in the run list, so its record is the
+    only sign that a watcher finished those runs. Only the watcher's own issues
+    are read, as for the open one.
+    """
+    newest = -1
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict) or not watch.is_watcher_author(issue.get("author")):
+            continue
+        if not str(issue.get("title", "")).startswith(watch.TITLE_PREFIXES):
+            continue
+        state = watch.parse_state(str(issue.get("body") or ""))
+        if state is not None:
+            newest = max(newest, int(state["last_run_id"]))
+    return newest
+
+
+def unfinished(
+    listing: Any, run_number: int, state: dict[str, Any] | None, recorded: int = -1
+) -> tuple[list[dict[str, Any]], bool]:
+    """Red verdict runs directly before ``run_number`` that no record holds.
+
+    Oldest first. ``state`` is the open issue's record and ``recorded`` the
+    newest run id a closed issue's record holds. The walk back ends at a green
+    run (a streak starts after it), at the last run a record holds, or after
+    ``MAX_UNFINISHED`` runs; the flag says the cap ended it.
+    """
+    last = max(int(state["last_run_id"]) if state is not None else -1, recorded)
+    found: list[dict[str, Any]] = []
+    for row in verdict_runs(listing, run_number):
+        if row["conclusion"] == "success" or int(row["id"]) <= last:
+            break
+        if len(found) == MAX_UNFINISHED:
+            return found[::-1], True
+        found.append(row)
+    return found[::-1], False
+
+
+def run_url(repo: str, row: dict[str, Any]) -> str:
+    return f"https://github.com/{repo}/actions/runs/{row['id']}"
 
 
 def test_file(nodeid: str) -> str:
@@ -90,6 +169,31 @@ def same_files(current: list[dict[str, str]], previous: list[dict[str, str]]) ->
     return seen
 
 
+def replay(
+    state: dict[str, Any] | None,
+    runs: list[tuple[dict[str, Any], list[dict[str, str]]]],
+    repo: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The record after ``runs`` (oldest first, each with its per-job failures).
+
+    Returns it with the runs that added to it. With no record open, a run adds
+    one only under the rules by which a live run opens an issue.
+    """
+    counted: list[dict[str, Any]] = []
+    before: list[dict[str, str]] | None = None
+    for row, per_job in runs:
+        failures = watch.merge_failures(per_job)
+        opens = watch.repeated(per_job) or (before is not None and same_files(per_job, before))
+        if failures and (state is not None or opens):
+            sha = str(row.get("head_sha") or "")
+            after = watch.next_state(state, failures, sha, int(row["id"]), run_url(repo, row))
+            if after is not None:
+                state = after
+                counted.append(row)
+        before = per_job
+    return state, counted
+
+
 def cmd_previous_verdict(args: argparse.Namespace) -> int:
     try:
         listing = json.loads(Path(args.runs).read_text(encoding="utf-8", errors="replace"))
@@ -98,8 +202,52 @@ def cmd_previous_verdict(args: argparse.Namespace) -> int:
     run = previous_verdict(listing, args.run_number)
     if run is None:
         return 1
-    url = f"https://github.com/{args.repo}/actions/runs/{run['id']}"
-    print(f"{run['id']}\t{run['conclusion']}\t{url}")
+    print(f"{run['id']}\t{run['conclusion']}\t{run_url(args.repo, run)}")
+    return 0
+
+
+def _unfinished(args: argparse.Namespace) -> tuple[Any, list[dict[str, Any]], bool]:
+    """The record in ``--prev-body`` and the runs before this one that no record holds."""
+    listing = json.loads(Path(args.runs).read_text(encoding="utf-8", errors="replace"))
+    state = watch.parse_state(watch._read_text(args.prev_body))
+    recorded = -1
+    for path in args.closed or []:
+        recorded = max(recorded, last_recorded(json.loads(watch._read_text(path) or "[]")))
+    rows, capped = unfinished(listing, args.run_number, state, recorded)
+    return state, rows, capped
+
+
+def cmd_unfinished(args: argparse.Namespace) -> int:
+    try:
+        _, rows, _ = _unfinished(args)
+    except (OSError, ValueError, TypeError):
+        return 1
+    for row in rows:
+        print(f"{row['id']}\t{run_url(args.repo, row)}")
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    try:
+        state, rows, capped = _unfinished(args)
+    except (OSError, ValueError):
+        return 1
+    if not all(_FULL_SHA.fullmatch(str(row.get("head_sha") or "")) for row in rows):
+        return 1
+    runs = [(row, watch._per_job(str(Path(args.pastdir) / str(row["id"])))) for row in rows]
+    state, counted = replay(state, runs, args.repo)
+    if state is None or not counted:
+        return 1
+    body = f"<!-- {watch.STATE_MARKER} {watch.dump_state(state)} -->\n"
+    if watch.parse_state(body) is None:
+        return 1
+    Path(args.out_body).write_text(body, encoding="utf-8")
+    urls = ", ".join(run_url(args.repo, row) for row in counted)
+    cap = f" Only the {MAX_UNFINISHED} runs before this one were read." if capped else ""
+    print(
+        f"{len(counted)} earlier red run(s) of main that no main-red issue records"
+        f" are counted now ({urls}); first red is {state['first_sha']}.{cap}"
+    )
     return 0
 
 
@@ -121,6 +269,17 @@ def build_parser() -> argparse.ArgumentParser:
     verdict.add_argument("--run-number", type=int, required=True)
     verdict.add_argument("--repo", required=True)
     verdict.set_defaults(run=cmd_previous_verdict)
+    for name, run in (("unfinished", cmd_unfinished), ("replay", cmd_replay)):
+        past = sub.add_parser(name)
+        past.add_argument("runs")
+        if name == "replay":
+            past.add_argument("pastdir")
+            past.add_argument("--out-body", required=True)
+        past.add_argument("--run-number", type=int, required=True)
+        past.add_argument("--prev-body", required=True)
+        past.add_argument("--closed", action="append")
+        past.add_argument("--repo", required=True)
+        past.set_defaults(run=run)
     same = sub.add_parser("same-files")
     same.add_argument("logdir")
     same.add_argument("prevdir")

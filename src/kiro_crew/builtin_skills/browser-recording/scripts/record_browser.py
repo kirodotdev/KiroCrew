@@ -140,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     node = _probe_node()
     _probe_playwright(project)
 
-    out_dir = Path(args.out).resolve() if args.out else Path(tempfile.mkdtemp(prefix="browser-rec-"))
+    # Resolved like the RECORDED path it must contain, or a temp root that resolve()
+    # spells differently (an 8.3 TEMP, a symlinked TMPDIR) fails that containment check.
+    out_dir = Path(args.out or tempfile.mkdtemp(prefix="browser-rec-")).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = {

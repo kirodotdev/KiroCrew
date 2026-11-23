@@ -219,6 +219,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         SEND_DISCARD_HARD_STOP,
         SEND_DISCARD_HARD_STOP_STEER,
         SEND_DISCARD_QUEUE_CANCEL,
+        SEND_DISCARD_REFUSED_STEER,
+        SEND_DISCARD_UNCONFIRMED_STEER,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
         SESSION_SEND_QUEUED_META,
@@ -297,6 +299,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
         _HANDOFF_LOCK,
+        _check_bind_move,
         _manages_up_the_line,
         _move_tree_edge,
         hand_back_on_close,
@@ -490,9 +493,11 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.context_assembly.markers import _marker_spans  # noqa: F401
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
+    from kiro_crew.dashboard import deferred_steer  # noqa: F401
     from kiro_crew.dashboard import session_managers  # noqa: F401
     from kiro_crew.dashboard.approval_inheritance import inherit_posture  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
+    from kiro_crew.dashboard.chat_delivery import start_queue_persist  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock  # noqa: F401

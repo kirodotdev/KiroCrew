@@ -33,6 +33,7 @@ from .paths_lists import (
     _CREW_HOME_PREFIXES,
     _KEYSTONE_ARTIFACT_PARENTS,
     _KIRO_CLI_WRITE_TIER_LEAVES,
+    _MCP_REGISTRY_ROWS,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
     _leaf_segments,
@@ -184,6 +185,52 @@ class _BuiltTargets(set[str]):
     #: Fail-safe: an unknown build is treated as having traversed a symlink, so a
     #: caller that cannot prove otherwise gets the short expiry.
     resolution_differed: bool = True
+    #: :func:`_target_ancestors` of this set, computed on first use. The set is never
+    #: mutated after the build, so the answer is that of the cached set for its life.
+    ancestors: frozenset[str] | None = None
+
+
+def _target_ancestors(targets: set[str]) -> frozenset[str]:
+    """Every ``t[:i]`` with ``t[i] == os.sep``, for each target *t*.
+
+    A directory *d* contains a target, in :func:`path_contains_sensitive`'s sense
+    (``t.startswith(d + os.sep)``), exactly when *d* is in this set, so that gate
+    looks a candidate up here instead of scanning every target. Kept on a built
+    set so it is paid once per build; a plain ``set`` (a test double) pays it per
+    call, which only costs time.
+    """
+    cached = getattr(targets, "ancestors", None)
+    if cached is not None:
+        return cached
+    found: set[str] = set()
+    for target in targets:
+        i = target.find(os.sep)
+        while i != -1:
+            found.add(target[:i])
+            i = target.find(os.sep, i + 1)
+    ancestors = frozenset(found)
+    if isinstance(targets, _BuiltTargets):
+        targets.ancestors = ancestors
+    return ancestors
+
+
+def _has_target_ancestor(cand_cf: str, targets: set[str]) -> bool:
+    """True when *cand_cf* is a target or lies under one.
+
+    The same answer as ``any(cand_cf == t or cand_cf.startswith(t + os.sep) for t
+    in targets)``: ``cand_cf.startswith(t + os.sep)`` holds exactly when *t* is
+    ``cand_cf[:i]`` for an *i* with ``cand_cf[i] == os.sep``, so the candidate's own
+    ancestors are looked up instead. The cost follows the path's depth, not the
+    number of targets.
+    """
+    if cand_cf in targets:
+        return True
+    i = cand_cf.find(os.sep)
+    while i != -1:
+        if cand_cf[:i] in targets:
+            return True
+        i = cand_cf.find(os.sep, i + 1)
+    return False
 
 
 def _home_dir_targets_uncached(
@@ -717,6 +764,8 @@ def _home_targets_tier(home_dirs: list[str]) -> str:
         return "write"
     if home_dirs == _KEYSTONE_ARTIFACT_PARENTS:
         return "keystone-artifact"
+    if home_dirs == _MCP_REGISTRY_ROWS:
+        return "mcp-registry"
     # The app-declared rows are named from their last listing, never by taking one: a
     # label must not cost a listing, nor a pool submission from an inline caller.
     readonly = _APP_READONLY_ROWS.last_listed()
@@ -1056,7 +1105,23 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
+def _decision_roots(*, inline: bool = False) -> _ResolvedRoots:
+    """Resolve the anchor roots for ONE gate decision.
+
+    A decision matches a path against several lists (the gate's own, the apps'
+    masks, the keystone artifact parents). A gate resolves the roots here once
+    and hands the answer to every :func:`_home_dir_targets` lookup, so no lookup
+    resolves them on its own. Nothing is kept past the decision, so the
+    roots are still fresh for each one. *inline* is :func:`_home_dir_targets`'s.
+    """
+    if inline:
+        return _resolve_root_anchors(str(Path.home()))
+    return _resolved_root_key()
+
+
+def _home_dir_targets(
+    home_dirs: list[str], *, inline: bool = False, roots: _ResolvedRoots | None = None
+) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
@@ -1074,6 +1139,10 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     wedged mount blocks the calling thread here rather than raising a stall --
     which is what the same thread's own ``os.walk`` on that mount does anyway.
 
+    *roots* is :func:`_decision_roots`'s answer, from a gate that looks up several
+    lists for one decision; ``None`` resolves them here. Either way they were
+    resolved for this decision, never kept across decisions.
+
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
     poison the cache for every other caller; copy here if that ever happens.
@@ -1084,7 +1153,8 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
     if inline:
-        roots = _resolve_root_anchors(str(Path.home()))
+        if roots is None:
+            roots = _resolve_root_anchors(str(Path.home()))
         cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
         if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
@@ -1093,7 +1163,9 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
             # captured before another worker's potentially slow rebuild.
             roots = _resolve_root_anchors(str(Path.home()))
             return _cached_home_dir_targets(home_dirs, roots, inline=True)
-    return _cached_home_dir_targets(home_dirs, _resolved_root_key(), inline=False)
+    if roots is None:
+        roots = _resolved_root_key()
+    return _cached_home_dir_targets(home_dirs, roots, inline=False)
 
 
 def _cached_home_dir_targets(
@@ -1395,3 +1467,22 @@ def _app_credential_mask_rows(*, inline: bool = False) -> _AppMaskRows:
     (``credential_masks.tool_gate_crew_leaves``).
     """
     return _listed_rows(_APP_CREDENTIAL_MASK_ROWS, inline=inline)
+
+
+def _machine_token_targets(*, inline: bool = False) -> set[str]:
+    """The KAS machine token file as read+write targets, or empty when machine mode is off.
+
+    An absolute path, not a ``$HOME`` row: the host puts the file wherever it likes
+    (``agent.kas_token_path``, ``agent_sdk/kas_machine.py``). Fenced as itself and as
+    its resolved form, casefolded as every target is; only the engine reads it, by
+    opening it itself, so no agent file tool needs it. *inline* is
+    :func:`_home_dir_targets`'s flag of the same name. A resolution that stalls raises
+    :class:`PathResolutionStalled`, which the gate refuses.
+    """
+    from kiro_crew.agent_sdk.kas_machine import fenced_token_path  # call time
+
+    path = fenced_token_path()
+    if not path or not os.path.isabs(path):
+        return set()
+    resolved = os.path.realpath(path) if inline else _realpaths_or_none([path])[0]
+    return {p.casefold() for p in (os.path.normpath(path), resolved) if p}

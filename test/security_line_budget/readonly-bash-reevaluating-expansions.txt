@@ -1,0 +1,2 @@
++36
+The read-only bash gate treats `${` expansion forms whose result is re-evaluated as not read-only: indirection `${!x}`, a subscript `${a[x]}`, a substring offset `${x:n}`, the `@` transformations, and the bash 5.3 command forms. One linear-scan helper, a short comment, and the call in `_classify_bash`.

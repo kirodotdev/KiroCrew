@@ -1080,6 +1080,7 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     RemoteState,
     _binding,
     _board_dirs,
+    _crew_seen_recently,
     _has_pending_close,
     _open_remote_items,
     _require_peer_text,

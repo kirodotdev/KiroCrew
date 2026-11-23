@@ -142,7 +142,7 @@ const ONE_ROW_CLUSTER_PAD_PX = 12
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
 const COMPOSER_RIM_FROM_PX = 102
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.htm,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz,.tgz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -239,6 +239,7 @@ function ChatInput({
   stopState,
   approvalMode,
   approvalModeRemote,
+  approveForMe,
   afterApprovalMode,
   reasoningEffort,
   effortIsDefault = false,
@@ -468,7 +469,7 @@ function ChatInput({
   const pickerSource = usePickerSource()
   const pickers = useComposerPickers({ source: pickerSource, project, onFileSelect, typedCommandMenus, hiddenCommands, terminalCommands, value, onChange, composerControl, queryClient, slotId, agentName })
   const { anyPickerOpenRef, closePickers, openPickersForText, prefetchSkills } = pickers
-  const { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain } = useDictationControls({
+  const { publishLexicalSelection, recordCaret, holdCaret, showDictation, cancelVoiceDrain } = useDictationControls({
     composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel,
     voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle,
   })
@@ -813,10 +814,10 @@ function ChatInput({
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder, sendZone,
+    voiceModePlaceholder, sendZone, setPointerHoldTarget,
   } = useHoldToTalk({
     onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, typingLocked, optimizing, placeholder, showDictation, holdCaret, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1439,6 +1440,9 @@ function ChatInput({
             the shape flip slides (`shapeAnimating`); a wrapped line inside the
             two-row shape moves the column at once, like the box around it. */}
         <motion.div
+          // The pointer hold-to-talk gesture binds here, the text column, so one
+          // binding covers both editors (see `useHoldToTalk`).
+          ref={setPointerHoldTarget}
           onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined}
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
@@ -1679,7 +1683,7 @@ function ChatInput({
                 />
               )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} approveForMe={approveForMe} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               {!isMobile && afterApprovalMode}
               </div>
@@ -1689,7 +1693,7 @@ function ChatInput({
                   over the translucent composer. */}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} approveForMe={approveForMe} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
             {isMobile && afterApprovalMode}
           </div>
@@ -1846,7 +1850,7 @@ function ChatInput({
               the right group gives way, its model name truncating, so it never
               covers the chips. */}
           <div className={`flex items-center gap-2 flex-1 ${shelfCompact ? 'min-w-21' : 'min-w-28'}`}>
-          {!onAgentClick && agentBadge}
+          {agentBadge}
           {onAgentClick && agentName && (
             <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
           )}

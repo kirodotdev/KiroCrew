@@ -45,13 +45,20 @@ screens, visual quality and colour contrast still need their own checks.
 
 **Look at the page.** `dashboard_snapshot` draws your applied page in the
 same offline run, over your real data, and returns a PNG file path; open it
-with your file-read tool. It is one 1280x800 view of the top of the page, as
-the person's tab shows it in the default light theme, so judge what it says as
-well as layout, colour, type and fit; their own theme pack or dark mode can
-show other colours. A page you only saved has no picture: apply it first. When the
-run cannot start it answers "no image" with the reason and no file; an
-earlier picture is not the page as it is now. A template page has no picture.
-The file holds real values: leave it where it is.
+with your file-read tool. The picture is one 1280x800 view of the top of the
+page, as the person's tab shows it in the default light theme, so judge what it
+says as well as layout, colour, type and fit; their own theme pack or dark mode
+can show other colours. The answer also prints the rendered text of the WHOLE
+page, below the first screen too, between two fixed lines: check each bound
+value there, and look after a field for `[not current]` (the read had no value
+for it) or `[updated <age> · ...]` / `[may be out of date · ...]` (its value is
+stale), in the Dashboard's language. The
+text leaves out canvas drawings, form-control values and what an unfetched CDN
+library would draw, and is cut at 6000 characters (the answer says so). A page
+you only saved has no picture: apply it first. When the run cannot start it
+answers "no image" with the reason and no file; an earlier picture is not the
+page as it is now. A template page has no picture. The file and the text hold
+real values: leave them where they are.
 
 The gateway's secret filter also processes markup and script. A note reports
 how many places changed and the first line, without revealing the replaced
@@ -314,49 +321,9 @@ allowlist. Embedded imagery is an inline `data:` URL, in `view.html` or in
 `theme.css`; `theme.css` refuses a `url()` with an address, which would load
 nothing. A page cannot loosen the frame policy.
 
-The iframe has `allow-scripts` only, an opaque origin, and no access to the
-host's cookies, storage or DOM. If the owner's network policy withholds script,
-a `<noscript>` explanation can say that the view needs it. Start script-filled
-regions hidden and reveal them after drawing; an unfilled placeholder is not
-evidence about the person's work.
-
-Values arrive in three ways:
-
-1. `data-dashboard-field="name"` fills an element with text. Useful for a
-   scalar cell; arrays and objects appear as raw JSON through this path.
-2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
-   `seq` and `missing` beside them.
-3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name, meta)`
-   immediately and on each push that changes the field. Its returned function unsubscribes. A chart or
-   script-only field needs no extra text binding or hidden sink. `meta` is
-   `{missing}`; read the agentic marks from `window.kirocrew.agentic` and
-   the write times from `window.kirocrew.written_at`. When a field you drew
-   stops resolving, `cb` runs again with the value you already drew and `meta.missing === true`; mark
-   that drawing as not current, and keep the value. It runs once more with
-   `missing: false` when the field resolves. A field that never resolved does
-   not call back. So a callback can receive a value it already had: a page
-   that appends each call (a time series, a log) checks `meta.missing` or
-   compares with its last value before adding a point.
-
-Subscribe during parse. The subscription survives a replaced fields object;
-zero is a present value and still reaches the callback. A failing callback
-leaves the others running. The `kirocrew-dashboard` event is also available,
-but only announces a refill rather than naming the field. It fires only when the
-read changed, and at most once a minute on a read that changed nothing, so a
-page drawing elapsed time from the clock stays current.
-Redraw on this event, not on every `message`.
-
-Use `createElement` and `textContent` for recorded text. Inserting recorded
-strings as `innerHTML` would turn somebody's data into page markup. Numerical
-geometry comes from validated numbers. Bindings and graphics read the same
-source, and labels say which subset they describe.
-
-The host retains the last resolved field values, dims a cell named in
-`missing` and labels it "not current", and shows the person no band; a field that does not resolve is
-reported to you in your `[DASHBOARD]` turn block. Draw no freshness or
-staleness badge of your own beyond marking what `meta.missing` names. Preserve the distinction rather than replacing an unread
-value with a made-up zero. Your words and graphics agree with the folded
-numbers; derive changing headlines from those values too.
+Read `references/frame-contract.md` (next to this file) before you write a
+page's script, data bindings or missing-value handling: what the frame runs,
+what it refuses, and how a page shows a value it does not have.
 
 ## 6. Theme and reach
 
@@ -397,55 +364,3 @@ markup reads; the controller pushes only that list.
 
 Search documentation with `search_docs` and locate controls with `find_ui`
 when a fold, field or setting needs clarification.
-
-## 8. Phone widgets
-
-A page can also carry `widgets`: up to four home-screen widgets for the Kiro
-Mobile app, saved with the page by passing `widgets` to `dashboard_save`.
-Leave it out and the stored widgets stay as they are; `[]` removes them.
-Every Bot also gets a built-in `status` widget, so that id is taken. In this
-version only the Bot's owner sees widgets.
-
-A widget is layout, never values or HTML. Each block names one field of your
-`model.types`, and the gateway fills it from the same source the page reads.
-A block cannot show a field the model does not declare, nor one read from a
-tree-keyed fold such as `worktree`. The phone draws every string as plain
-text, so markup in a value shows as typed.
-
-```json
-{
-  "model": {"types": {
-    "pipeline_state": {"type": "enum", "choices": ["green", "amber", "red"], "source": {"agentic": true}},
-    "open_prs":       {"type": "number", "source": {"agentic": true}},
-    "waiting_items":  {"type": "array", "source": {"fold": "waiting", "path": "items"}}
-  }},
-  "widgets": [{
-    "id": "build-health",
-    "title": "Build health",
-    "sizes": ["small", "medium", "large"],
-    "blocks": [
-      {"type": "status", "label": "Pipeline", "field": "pipeline_state",
-       "tones": {"green": "ok", "amber": "warn", "red": "bad"}},
-      {"type": "metric", "label": "Open PRs", "field": "open_prs", "warn_at": 10, "bad_at": 20},
-      {"type": "list", "label": "Waiting on you", "field": "waiting_items", "item_text": "text", "max_items": 3}
-    ],
-    "tap": {"open": "bot"}
-  }]
-}
-```
-
-| Block `type` | Keys (required first) | Field type |
-|---|---|---|
-| `title` | `text` or `field`, exactly one | text, enum |
-| `metric` | `label`, `field`; `format` (`integer`, `decimal`, `percent`, `duration_s`, `text`), `unit`, `warn_at`, `bad_at`, `higher_is_worse` (default true) | number, text |
-| `list` | `label`, `field`, `item_text`; `item_detail`, `max_items` (1 to 5) | array |
-| `progress` | `label`, `field`, and `total` or `total_field` | number |
-| `sparkline` | `label`, `field`; `point`, `max_points` (2 to 48) | array |
-| `status` | `label`, `field`; `tones` (value to `ok`, `warn`, `bad`, `idle`, at most 8) | enum, bool, text |
-
-Limits: 1 to 6 blocks a widget; `id` of lowercase letters, digits and `-`, at
-most 32 characters and unique; `title` and `label` 1 to 40 characters, `unit`
-at most 8; `sizes` a subset of `small`, `medium`, `large`; `tap.open` is
-`bot` only; the stored `widgets` at most 16 KiB. A small widget draws the first
-2 blocks, a medium one 4, a large one all 6, so put the most important first.
-A refusal names the key path and the reason: fix that one and save again.

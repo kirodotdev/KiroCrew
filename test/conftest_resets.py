@@ -13,10 +13,11 @@ import sys
 import warnings
 
 import pytest
+from conftest_guards import per_test_guard
 from conftest_opt_in import drain_breadcrumb_writes
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _ledger_create_ignores_live_memory(_floor_monkeypatch):
     """A work-ledger ``create`` never depends on this runner's free memory.
 
@@ -31,7 +32,25 @@ def _ledger_create_ignores_live_memory(_floor_monkeypatch):
     _floor_monkeypatch.setattr(work_ledger, "_refuse_if_host_critical", lambda: None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
+    """The autonudge boot pacer never waits on this runner's memory.
+
+    ``AutoNudgeService.start()`` releases the loops due at boot through
+    ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
+    while it is critical. A runner short of memory would then stall every test that
+    starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
+    pacing passes its own reader to ``BootPacer``.
+    """
+    from kiro_crew.autonudge_service import boot_pacer
+
+    async def _ample() -> str:
+        return "ample"
+
+    _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+
+
+@per_test_guard
 def _no_host_posture_published(_floor_monkeypatch):
     """No test inherits a host posture an earlier notifier test published.
 
@@ -47,7 +66,7 @@ def _no_host_posture_published(_floor_monkeypatch):
     _floor_monkeypatch.setattr(resource_pressure, "_session_marks", {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _small_default_host(_floor_monkeypatch):
     """Size every ``"auto"`` start limit from a fixed small host, not this machine.
 
@@ -75,7 +94,7 @@ def _small_default_host(_floor_monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_reexec_environment(_floor_monkeypatch):
     """Start every test with nothing kept for an exec successor.
 
@@ -102,7 +121,7 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     _floor_monkeypatch.setattr(agent_socket, "_boot_socket", None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_released_sessions_warning(_floor_monkeypatch):
     """Start every test with the stranded-records warning not yet given.
 
@@ -115,7 +134,7 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
     _floor_monkeypatch.setattr(released_sessions, "_stranded_warned", False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
@@ -201,7 +220,7 @@ def _drop_live_config_snapshot():
     live.reset_for_tests()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_tracing_switch():
     """Give every test an unread tracing switch.
 
@@ -223,7 +242,74 @@ def _forget_tracing_switch():
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _reset_browser_media_watches():
+    """Start each test with no media watch and no ending already handed over.
+
+    ``dashboard.handlers.browser_media_watch`` keeps one task per slot key and the
+    ending each slot last reported, process-wide. Tests reuse slot keys, so a task
+    from a closed loop would stop ``ensure_watch`` starting one, and a kept ending
+    would hide the next test's first one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.browser_media_watch")
+        if module is not None:
+            module._WATCHES.clear()
+            module._ENDED.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_kas_machine_fence_config():
+    """Start each test with no reused config read behind the machine token fence.
+
+    ``agent_sdk.kas_machine.fenced_token_path`` keeps a ``config.json`` read for two
+    seconds where no watcher runs, and the agent file gate asks it on every path, so
+    one test's machine mode would fence (or miss) the next test's token file.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.agent_sdk.kas_machine")
+        if module is not None:
+            module._fence_config = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _forget_pending_trace_links():
+    """Start each test with no pending worker-creation or patrol report links.
+
+    ``tracing.workers`` keeps each new session's creation link until its first turn,
+    and ``tracing.work`` each board's report links until its next patrol turn, keyed
+    by slot key. Tests reuse slot keys, so a link one test left would attach to the
+    next test's first turn or patrol turn on the same xdist worker.
+    """
+
+    def clear():
+        for name in ("kiro_crew.tracing.work", "kiro_crew.tracing.workers"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module.reset_for_testing()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_observed_people():
     """Give every test an empty Shared Crew people registry.
 
@@ -246,7 +332,7 @@ def _forget_observed_people():
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_offered_instance_types():
     """Give every test an empty EC2 instance-type offering cache.
 
@@ -266,7 +352,27 @@ def _forget_offered_instance_types():
         offered.clear_cache()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _forget_declared_mcp_not_ready_notes():
+    """Give every test no scheduled-run MCP note printed before it.
+
+    ``mcp_problems._last_notes`` keeps the last not-ready note each cron job or
+    heartbeat task printed, so the same note is not repeated on every run. A test
+    that runs ``cron:j1`` with a missing server leaves that note recorded, and a
+    later test on the same worker running the same job would get ``""`` instead of
+    its first warning. Cleared before and after, so a test that never imported the
+    module pays one dict lookup.
+    """
+    problems = sys.modules.get("kiro_crew.agent_sdk.mcp_problems")
+    if problems is not None:
+        problems._last_notes.clear()
+    yield
+    problems = sys.modules.get("kiro_crew.agent_sdk.mcp_problems")
+    if problems is not None:
+        problems._last_notes.clear()
+
+
+@per_test_guard
 def _forget_gatewayd_telemetry_override():
     """Give every test the platform-context telemetry provider, not gatewayd's.
 
@@ -290,7 +396,7 @@ def _forget_gatewayd_telemetry_override():
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_env_boot_record_and_ownership():
     """Give every test an empty boot ``.env`` record and ``.env`` ownership set.
 
@@ -322,7 +428,7 @@ def _reset_env_boot_record_and_ownership():
         reset()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _inline_taskq_pump(_floor_monkeypatch):
     """Run the subagent pump and the store open inline for the suite.
 
@@ -339,7 +445,7 @@ def _inline_taskq_pump(_floor_monkeypatch):
     _floor_monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _release_stt_engine():
     """Never let a loaded speech model outlive the test that loaded it.
 
@@ -358,7 +464,7 @@ def _release_stt_engine():
         stt_engine._engine = None
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_safety_override_between_tests():
     """Reset the SafetyOverride singleton between tests to prevent state leaking.
 
@@ -379,6 +485,7 @@ def _reset_safety_override_between_tests():
 
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
     yield
     # Drained BEFORE the reset below, and (by pytest's fixture teardown order --
     # finalizers run in reverse of setup order, so a fixture set up AFTER this
@@ -394,9 +501,29 @@ def _reset_safety_override_between_tests():
     drain_breadcrumb_writes()
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
 
 
-@pytest.fixture(autouse=True)
+def _reset_kept_grants() -> None:
+    """Forget the boot verdict and stop recording kept grants, as a new process would.
+
+    The verdict is decided once per process image and the recorders arm once per
+    boot, so without this the first test that boots a dashboard decides both for
+    every later test in the worker. Imported lazily: only a test that loaded the
+    modules can have armed them.
+    """
+    kept_grants = sys.modules.get("kiro_crew.kept_grants")
+    if kept_grants is not None:
+        kept_grants._reset_for_tests()
+    kept_yolo = sys.modules.get("kiro_crew.kept_yolo")
+    if kept_yolo is not None:
+        kept_yolo._reset_for_tests()
+    chat_trust_restart = sys.modules.get("kiro_crew.dashboard.chat_trust_restart")
+    if chat_trust_restart is not None:
+        chat_trust_restart._reset_for_tests()
+
+
+@per_test_guard
 def _reset_degraded_config_observations():
     """Forget the loader's process-sticky malformed-config observations.
 
@@ -420,7 +547,7 @@ def _reset_degraded_config_observations():
     reset_degraded_observations()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_enterprise_profile_pin():
     """Forget the enterprise profile pin, which a process keeps for its life by design.
 
@@ -433,6 +560,21 @@ def _forget_enterprise_profile_pin():
         module = sys.modules.get("kiro_crew.platform.enterprise_policy_fetch")
         if module is not None:
             module._pinned = ""
+
+    forget()
+    yield
+    forget()
+
+
+@per_test_guard
+def _forget_pinned_gateway_spec_path():
+    """Forget the gateway ``PATH`` part a broker start or gatewayd pins for its life."""
+    import sys
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.env")
+        if module is not None:
+            module._PINNED_GATEWAY_SPEC_PATH = None
 
     forget()
     yield
@@ -478,9 +620,15 @@ def forget_home_bound_caches() -> None:
     if token_auth is not None:
         token_auth._app_perms_cache.clear()
         token_auth._app_perms_denied.clear()
+    # The store listing's in-flight manifest fetches belong to the test's loop,
+    # which closes with the test, so a later test must start its own.
+    catalog = sys.modules.get("kiro_crew.apps.registry_pipeline.catalog")
+    if catalog is not None:
+        for held in ("_MANIFEST_FETCHES", "_MANIFEST_BATCHES", "_MANIFEST_FETCH_GATE"):
+            getattr(catalog, held, {}).clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
     """Forget which roots the legacy auth-store temp sweep has found clean.
 
@@ -495,7 +643,7 @@ def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
     _floor_monkeypatch.setattr(sandbox_staging, "_LEGACY_AUTH_SWEEP_CLEAN", {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_app_declared_row_listings():
     """Forget the tool gate's listings of the apps' declared rows before each test.
 
@@ -509,7 +657,7 @@ def _forget_app_declared_row_listings():
     paths_targets._APP_READONLY_ROWS.reset()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
     """Forget when the periodic mount-source pass last ran and where it stopped.
 
@@ -524,7 +672,7 @@ def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
     _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_CURSORS", {}, raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_registry_ssh_sign_in_refusals():
     """Forget the store listing's remembered ssh sign-in refusals around each test.
 
@@ -546,7 +694,7 @@ def _forget_registry_ssh_sign_in_refusals():
         refused.clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_sandbox_launch_mark():
     """Forget that an entry point saw the sandbox marker.
 
@@ -561,7 +709,7 @@ def _forget_sandbox_launch_mark():
     sandbox_launch_mark._launched_in_sandbox = False
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_channel_turn_ceiling():
     """Forget the channel turn ceiling's process-global per-conversation counts.
 
@@ -589,7 +737,7 @@ def _reset_channel_turn_ceiling():
     set_notification_sink(None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _restore_autonudge_singleton():
     """Floor under ``autonudge._INSTANCE`` — the process-global service reference.
 
@@ -626,25 +774,27 @@ def _restore_autonudge_singleton():
         _an._INSTANCE = inherited
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
     """Start each test with the deploy engine's empty fallback-directory trust state.
 
-    ``deploy.engine`` keeps two process globals for the AWS tooling dirs: the
+    ``deploy.engine`` keeps three process globals for the AWS tooling dirs: the
     ``_TRUSTED_AWS_BIN_DIRS`` snapshot that every resolver walk, ``run_aws`` and
-    ssh spawn republishes, and ``_WARNED_AWS_BIN_DIR_REFUSALS``, the refusals
-    already logged. A test that builds a child env from an absolute head reads
-    the snapshot, so one an earlier test on the same worker left would decide
-    what that child's PATH holds. Patched only when the module is already
-    imported: importing it here would load the deploy engine into every test.
+    ssh spawn republishes, and ``_WARNED_AWS_BIN_DIR_REFUSALS`` and
+    ``_WARNED_AWS_TOOL_REFUSALS``, the refusals already logged. A test that
+    builds a child env from an absolute head reads the snapshot, so one an
+    earlier test on the same worker left would decide what that child's PATH
+    holds. Patched only when the module is already imported: importing it here
+    would load the deploy engine into every test.
     """
     engine = sys.modules.get("kiro_crew.deploy.engine")
     if engine is not None:
         _floor_monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
         _floor_monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
+        _floor_monkeypatch.setattr(engine, "_WARNED_AWS_TOOL_REFUSALS", set())
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _cold_vault_read_audit(_floor_monkeypatch):
     """Start each test with the vault read audit's caches empty.
 
@@ -662,7 +812,7 @@ def _cold_vault_read_audit(_floor_monkeypatch):
         _floor_monkeypatch.setattr(audit, "_seen", {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _cold_source_link_settings(_floor_monkeypatch):
     """Start each test with the source-link settings snapshot a fresh process holds.
 
@@ -689,7 +839,7 @@ def _cold_source_link_settings(_floor_monkeypatch):
         _floor_monkeypatch.setattr(hosts, "_gitlab_hosts_loaded_at", 0.0)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_hardlink_spec_warnings():
     """Start each test with no hardlink refusal of an agent spec already warned about.
 
@@ -707,7 +857,7 @@ def _fresh_hardlink_spec_warnings():
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 
@@ -727,7 +877,7 @@ def _reset_cjk_segmenter():
         module.reset_cjk_segmenter_for_tests()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _forget_app_turn_approver():
     """Forget the gateway's app-turn approval prompt around each test.
 
@@ -744,7 +894,7 @@ def _forget_app_turn_approver():
         module.set_turn_approver(None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     """Stop dev-fleet's app-startup hook from starting its background loops.
 
@@ -759,7 +909,7 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_dev_fleet_service_reads(_floor_monkeypatch):
     """Start each test with no cached start identity and no in-flight service read.
 
@@ -776,7 +926,7 @@ def _fresh_dev_fleet_service_reads(_floor_monkeypatch):
         _floor_monkeypatch.setattr(live_service, "_GATEWAY_SERVICE_INFLIGHT", None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_restart_ready_timeout_override(_floor_monkeypatch):
     """Keep a developer's ``KIROCREW_RESTART_READY_TIMEOUT`` out of every test.
 
@@ -786,7 +936,7 @@ def _no_restart_ready_timeout_override(_floor_monkeypatch):
     _floor_monkeypatch.delenv("KIROCREW_RESTART_READY_TIMEOUT", raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_inherited_git_proxy_env(_floor_monkeypatch):
     """Keep a developer's proxy variables out of every test.
 
@@ -803,7 +953,7 @@ def _no_inherited_git_proxy_env(_floor_monkeypatch):
         _floor_monkeypatch.delenv(key, raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_managed_venv_override(_floor_monkeypatch):
     """Keep a developer's ``KIROCREW_VENV`` out of every test.
 
@@ -816,7 +966,7 @@ def _no_managed_venv_override(_floor_monkeypatch):
     _floor_monkeypatch.delenv("KIROCREW_VENV", raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _session_memory_scope_sample_unshared(_floor_monkeypatch):
     """Start every test with no reused host sample in ``session_memory_scope``.
 
@@ -828,7 +978,7 @@ def _session_memory_scope_sample_unshared(_floor_monkeypatch):
         _floor_monkeypatch.setattr(module, "_last_sample", None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _isolate_kiro_window_cache():
     """Give every test an EMPTY ``model_registry._KIRO_WINDOWS``, then restore it.
 
@@ -867,7 +1017,7 @@ def _isolate_kiro_window_cache():
         _mr._OPERATOR_WINDOWS = saved_operator
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _history_cleanup_throttle_closed(_floor_monkeypatch):
     """Keep ``history``'s hourly retention sweep closed unless a test opens it.
 
@@ -910,7 +1060,24 @@ def _isolate_context_store_caches(_floor_monkeypatch):
     _floor_monkeypatch.setattr(context, "_lesson_stores", dict(context._lesson_stores))
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _isolate_kas_approve_for_me():
+    """Drop the approve-for-me owner check and engine answer a test left behind.
+
+    A gateway boot registers an owner check bound to its own ``DashboardState``
+    and may cache the engine's answer; both are process state. Only a module
+    already imported can hold them, so a run that never imports it pays nothing.
+    """
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+    yield
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+
+
+@per_test_guard
 def _isolate_member_identity_cache(_floor_monkeypatch):
     """Give each test an empty cache of passed member-database identity checks.
 
@@ -925,7 +1092,7 @@ def _isolate_member_identity_cache(_floor_monkeypatch):
     _floor_monkeypatch.setattr(member_db, "_IDENTITY_CACHE", {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry
@@ -935,7 +1102,7 @@ def _isolate_advertised_model_cache(_floor_monkeypatch):
     _floor_monkeypatch.setattr(model_registry, "_PENDING_ADVERTISED_SHRINK", {}, raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_config_load_debug_memories(_floor_monkeypatch):
     """Start each test with no config-load DEBUG line already logged.
 
@@ -952,7 +1119,7 @@ def _fresh_config_load_debug_memories(_floor_monkeypatch):
     _floor_monkeypatch.setattr(resolution, "_logged_extra_key_sets", set(), raising=False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _isolate_display_verdicts():
     """Turn ``display_verdicts`` persistence off after every test.
 
@@ -969,7 +1136,7 @@ def _isolate_display_verdicts():
         _dv.disable_for_tests()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _disarm_agent_slice_memory_high():
     """Disarm the agent-slice ``MemoryHigh`` reconcile for every test.
 
@@ -1008,7 +1175,7 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_LIMITS_EPOCH = saved_limits_epoch
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_crewmate_worker_slots():
     """A test that registers a session key as a crewmate worker must not leak it.
 
@@ -1039,7 +1206,7 @@ def _reset_crewmate_worker_slots():
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_live_execution_records():
     """A reused temporary home must not inherit another test's live records."""
 
@@ -1068,7 +1235,50 @@ def _reset_live_execution_records():
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _reset_subagent_memory_price_holders():
+    """Sizing must not inherit the settled rows of another test's managers.
+
+    Clear both the standalone owner and the facade without importing either:
+    the owner can be loaded before the facade composes its globals.
+    """
+
+    def clear():
+        for name in ("kiro_crew.subagent_parts.host_memory", "kiro_crew.subagent"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module._MEMORY_PRICE_HOLDERS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_builtin_discovery_scan():
+    """Start each test with no kept scan of the package's builtin apps.
+
+    ``apps.discovery._package_scan`` keeps the last whole scan of the package's
+    ``builtins/`` for the process, keyed on that directory's inode and mtime only. A
+    test that patches the manifest reader or the path screen would otherwise read the
+    scan an earlier test on the worker left.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.apps.discovery")
+        if module is not None:
+            module._package_scan = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_subagent_not_due_memo():
     """Start each test with no remembered not-yet-due runs from the tombstone sweep.
 
@@ -1089,7 +1299,52 @@ def _reset_subagent_not_due_memo():
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
+def _reset_persisted_truncation_reports():
+    """Start each test with no truncated spawn listing already reported.
+
+    ``api_spawn_list`` remembers the truncation it last logged per audit identity,
+    and the owner's identity is ``<owner>`` in every test, so a report one test
+    left would turn the next test's WARNING into a DEBUG. A module without the
+    name is left alone, so ``prove.py``'s reverted tree still reaches the tests'
+    own assertions.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.messaging")
+        reported = getattr(module, "_PERSISTED_TRUNCATION_REPORTED", None)
+        if reported is not None:
+            reported.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_chromium_opt_in_record():
+    """Start each test with no browser pid already opted in to page content.
+
+    Tests reuse fake pids, so a record one test left would make the next test's
+    snapshot of a Chromium browser skip the opt-in it should run.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.computer_use.snapshot_macos")
+        record = getattr(module, "_CHROMIUM_OPT_IN_RETRY_AT", None)
+        if record is not None:
+            record.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_resource_subscription_state():
     """Start each test with no MCP resource-subscription state another test left.
 
@@ -1121,7 +1376,7 @@ def _reset_resource_subscription_state():
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_runtime_ownership_tables(request):
     """A kill gate must answer for THIS test's leases, not a neighbour's.
 
@@ -1161,7 +1416,7 @@ def _reset_runtime_ownership_tables(request):
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_session_switch_locks(_floor_monkeypatch):
     """Tests reuse session keys across loops; the gateway has one serving loop."""
     import weakref
@@ -1171,6 +1426,14 @@ def _reset_session_switch_locks(_floor_monkeypatch):
     _floor_monkeypatch.setattr(
         llm_helpers, "_slot_switch_session_locks", weakref.WeakValueDictionary()
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_browser_host_approvals(_floor_monkeypatch):
+    """The op route's pending site-grant approvals are module state; each test starts empty."""
+    from kiro_crew import browser_host_trust
+
+    _floor_monkeypatch.setattr(browser_host_trust, "_pending", {})
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1192,7 +1455,7 @@ def _shut_down_shared_pools_in_session():
     _executors.shutdown_maintenance_executor()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_boot_sandbox_sweep(_floor_monkeypatch):
     """A real ``SessionManager`` must not sweep the host's sandbox profiles from a test.
 
@@ -1216,7 +1479,7 @@ def _no_boot_sandbox_sweep(_floor_monkeypatch):
     _floor_monkeypatch.setattr(session_mod, "cleanup_stale_sandbox_profiles", lambda *a, **kw: 0)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_boot_heap_freeze(_floor_monkeypatch):
     """A test that drives the gateway's ``run()`` must not freeze this worker's heap.
 
@@ -1231,7 +1494,7 @@ def _no_boot_heap_freeze(_floor_monkeypatch):
     _floor_monkeypatch.setattr(gc, "freeze", lambda: None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _ensure_event_loop():
     """Ensure a USABLE (open) event loop exists for tests that call
     ``asyncio.get_event_loop().run_until_complete(...)`` (e.g. test_knowledge).
@@ -1269,7 +1532,7 @@ def _ensure_event_loop():
         pass
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _restore_default_child_watcher():
     """Restore a FRESH ThreadedChildWatcher after every test.
 
@@ -1363,7 +1626,7 @@ def _fake_computer_use_backend():
     reset_shared_backend()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_release_feed_network(_floor_monkeypatch) -> None:
     """Make the update check's network seam unreachable for the whole suite.
 
@@ -1398,7 +1661,7 @@ def _no_release_feed_network(_floor_monkeypatch) -> None:
     )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_carried_auto_update_effect(_floor_monkeypatch) -> None:
     """Start every test with no derived ``auto_update_effect`` on the status frame.
 
@@ -1414,7 +1677,7 @@ def _no_carried_auto_update_effect(_floor_monkeypatch) -> None:
     _floor_monkeypatch.setattr(updates, "_shape_effect", None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_live_kernel_memory_pressure(_floor_monkeypatch) -> None:
     """Pin the macOS kernel memory-pressure level to "unknown" for the suite.
 
@@ -1485,7 +1748,7 @@ def _no_live_catalog_network(_floor_monkeypatch):
     yield original
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_create_rate_limit_buckets():
     """Clear the session/folder creation rate limiter between tests.
 
@@ -1508,7 +1771,7 @@ def _reset_create_rate_limit_buckets():
         create_rate_limit._buckets.clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _crewmate_dynamic_capabilities_on():
     """Run every test with every crewmate's Dynamic capabilities ON unless it says otherwise.
 
@@ -1526,7 +1789,7 @@ def _crewmate_dynamic_capabilities_on():
     crewmate_dynamic_capabilities._override = prior
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_materialized_agents_snapshot():
     """Reset the materialized-agents process-wide snapshot before and after each test.
 
@@ -1585,7 +1848,7 @@ def _reset_materialized_agents_snapshot():
         clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _published_redaction_verdict_on():
     """Every test starts and ends with redaction published ON in this process.
 

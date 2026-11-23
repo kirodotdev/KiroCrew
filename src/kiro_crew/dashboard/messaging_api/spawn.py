@@ -243,6 +243,14 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
     return _backend_name(picked) if picked is not None else ""
 
 
+def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
+    """*backend*, moved onto KAS where a Kiro CLI pick runs there (one rule for every
+    requested backend: :func:`~kiro_crew.agent_sdk.backends.requested_kiro_pick`)."""
+    from kiro_crew.agent_sdk.backends import requested_kiro_pick
+
+    return requested_kiro_pick(backend, available)
+
+
 async def _requested_backend(
     raw: object,
 ) -> tuple[str | None, str | None, web.Response | None]:
@@ -279,6 +287,7 @@ async def _requested_backend(
     ]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
+    backend = _kiro_cli_pick(backend, available)
     if backend is not None and backend in available:
         return backend, None, None
 
@@ -591,6 +600,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "agent": body.get("agent", ""),
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
+                "isolate": body.get("isolate", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
                 "include_memory": body.get("include_memory", True),
@@ -871,6 +881,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             # what it did before.
             **({"failover_from": failover_from} if failover_from else {}),
             label=str(cleaned.get("label") or ""),
+            # Only when asked, so a spawn without it passes exactly what it did before.
+            **({"isolate": str(cleaned["isolate"])} if cleaned.get("isolate") else {}),
             approval_mode=approval_mode or None,
             silent=silent,
             batch_id=batch_id,

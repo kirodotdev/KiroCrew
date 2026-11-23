@@ -314,6 +314,7 @@ def _bare_orchestrator(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
     orch._background_tasks = set()
     orch._test_mode = True
     orch._no_dashboard = False
+    orch._headless = False
     for method in (
         "_init_services",
         "_start_embeddings",

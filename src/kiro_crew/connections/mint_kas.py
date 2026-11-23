@@ -511,7 +511,7 @@ async def mint_on_kas(slug: str, mcp_url: str, token: str, entry: dict[str, Any]
             oauth_url = await asyncio.wait_for(
                 _consent_url(process, alias), timeout=_mint._MINT_READY_TIMEOUT_SECONDS
             )
-            if not await asyncio.to_thread(oauth_url_contains_credential, oauth_url):
+            if not await asyncio.to_thread(oauth_url_contains_credential, oauth_url, alias):
                 break
             # The same refusal the kiro-cli mint applies; the value is never logged.
             logger.warning("OAuth mint for %r produced a URL with a credential pattern", slug)

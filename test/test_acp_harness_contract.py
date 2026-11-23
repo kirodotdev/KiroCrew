@@ -437,13 +437,14 @@ def test_client_capabilities_are_the_shared_constants():
 
 
 def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
-    """KAS's extra capabilities are the settings channel, ``openExternalUrl`` and
-    ``userInput``.
+    """KAS's extra capabilities are the settings channel, ``openExternalUrl``,
+    ``userInput`` and ``approveForMeOption``.
 
     Any other ``_meta.kiro`` capability would invite a request with no handler
     (``secretStorage`` would make Crew the MCP token store). ``userInput`` is served
-    by ``acp/elicitation.py``. The settings channel carries only ``codeIntelligence``
-    here; the runtime adds the rest at spawn.
+    by ``acp/elicitation.py``; ``approveForMeOption`` only lists a session option,
+    which ``acp/kas_approve_for_me.py`` sets. The settings channel carries only
+    ``codeIntelligence`` here; the runtime adds the rest at spawn.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
     assert kas["_meta"] == {
@@ -451,6 +452,7 @@ def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
             "settings": {"codeIntelligence": {"enabled": True}},
             "openExternalUrl": True,
             "userInput": True,
+            "approveForMeOption": True,
         }
     }
     assert harness_for(ACP_BACKEND_KAS).opens_external_urls is True
@@ -1671,6 +1673,7 @@ def test_a_missing_self_served_binary_names_its_install_command(
     import asyncio
 
     from kiro_crew.acp import client as acp_client
+    from kiro_crew.acp import launch as launch_mod
     from kiro_crew.acp.harness import process_adapter_for
     from kiro_crew.acp.transport_errors import AcpError
     from kiro_crew.agent_sdk.backends import launch_for
@@ -1681,6 +1684,9 @@ def test_a_missing_self_served_binary_names_its_install_command(
     monkeypatch.delenv(launch.bin_env_var, raising=False)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
     monkeypatch.setattr(acp_client, "augmented_path", lambda _path: str(empty))
+    # A host whose sandbox floor passes: a harness that applies the floor before the
+    # binary lookup would otherwise refuse with the floor sentence where no backend exists.
+    monkeypatch.setattr(launch_mod, "_sandbox_preflight", lambda backend, mode: ())
     # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
     # host's home, where a real ``.mcp.json`` would refuse the spawn.
     (tmp_path / ".git").mkdir()
