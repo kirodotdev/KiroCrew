@@ -137,6 +137,32 @@ session's start error names the same fix.
 
 Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
+### One harness sandboxed while the sandbox is off
+
+With `agent.sandbox` set to `off`, the harnesses that depend on Kiro Crew's
+OS sandbox to hide your credential files (Settings → Agent Harness shows them as
+refused) cannot start. To run one of them sandboxed while everything else keeps
+`off`, give it a floor in `agent.harness_sandbox`:
+
+```json
+{
+  "agent": {
+    "sandbox": "off",
+    "harness_sandbox": { "antigravity": "auto" }
+  }
+}
+```
+
+A session on a listed harness starts at the stricter of `agent.sandbox` and its
+floor, with its credential mask applied; every other harness, cron and MCP
+server keeps `agent.sandbox`. The values are `auto` (the standard tier) and
+`strict`; `off`, an absent entry or any other value sets no floor, and the
+floor never lowers a tier (`agent.sandbox: "strict"` stays `strict`). It is read
+only for those harnesses: an entry for Kiro CLI, KAS or Claude Code is ignored.
+It needs a working sandbox backend, so on native Windows the harness is still
+refused. A change applies to sessions started after it; a chat already running
+keeps the tier it started with.
+
 ### Read-only paths
 
 `agent.sandbox_readonly_paths` lists directories the sandboxed agent may read but

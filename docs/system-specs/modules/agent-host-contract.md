@@ -467,7 +467,12 @@ the configured tier it sets each `GET /api/acp-backends` row's `sandbox_refusal`
 leaves the one it has off), which disables **Use** on Settings → Agent Harness
 and shows first-run setup's sentence for that cause; and it refuses
 `PATCH agent.acp_backend` (409 `acp_backend_sandbox_refused`) and a crewmate's
-`agents.<name>.acp_backend` pin with the launch's own sentence.
+`agents.<name>.acp_backend` pin with the launch's own sentence. The tier each of
+them judges is the one a session of that harness starts at: `agent.sandbox`
+raised to the harness's `agent.harness_sandbox` floor
+(`tool_gate.configured_harness_sandbox_mode`), so an operator who keeps the
+sandbox off can still run one enforced harness sandboxed, with its mask, and
+first-run setup's `sandbox_blocked_backends` leaves that harness out.
 
 **A provider must declare:** whether it self-sandboxes and how that is detected,
 its nesting compatibility, its delegation predicate, and any additional paths its

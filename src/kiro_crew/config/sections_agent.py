@@ -635,6 +635,21 @@ class AgentConfig:
             enum=["auto", "strict", "off"],
         ),
     )
+    harness_sandbox: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-harness sandbox floor",
+            'Optional sandbox floor per harness, as {"<harness id>": "auto" or '
+            '"strict"}, for example {"antigravity": "auto"}. A session on a listed '
+            "harness starts at the stricter of agent.sandbox and its floor, with its "
+            "credential mask applied, so that harness runs in Kiro Crew's OS sandbox "
+            "while agent.sandbox stays 'off' for every other harness, cron and MCP "
+            "server. The floor only raises a tier. It is read only for the harnesses "
+            "that are refused while the sandbox is off; an entry for Kiro CLI, KAS or "
+            "Claude Code, 'off', or any other value sets no floor. Applies to sessions "
+            "started after the change. Empty by default.",
+        ),
+    )
     sandbox_allow_no_isolation: bool = field(
         default=False,
         metadata=_meta(

@@ -1464,6 +1464,7 @@ class KiroCrewConfig:
         create a per-session subdirectory under ``workspace_root()``.
         """
         from kiro_crew.agent_sdk.drivers.acp import build_acp_provider
+        from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
         from kiro_crew.session_work_dir import is_disposable_session_key
 
         model = self.agent.model
@@ -1471,6 +1472,7 @@ class KiroCrewConfig:
             model = self._resolve_agent_model()
 
         sandbox = self.agent.sandbox
+        harness_sandbox = self.agent.harness_sandbox
         tool_search = self.agent.tool_search
         tool_search_min_pct = self.agent.tool_search_min_pct
         tool_search_min_tokens = self.agent.tool_search_min_tokens
@@ -1702,7 +1704,9 @@ class KiroCrewConfig:
                 model=m,
                 agent=agent,
                 crew_agent=crew_agent,
-                sandbox_mode=sandbox,
+                # The session's tier, chosen once with its backend: the launch's mask
+                # preflight and its wrap both read it (``agent.harness_sandbox``).
+                sandbox_mode=harness_sandbox_mode(_backend, sandbox, harness_sandbox),
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,

@@ -58,6 +58,7 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.tool_search_min_pct",
     "agent.tool_search_min_tokens",
     "agent.sandbox",
+    "agent.harness_sandbox",
     "agent.sandbox_allow_no_isolation",
     "agent.sandbox_allow_unsandboxed_exec",
     # A warm process carries the read-only layer it was spawned under.

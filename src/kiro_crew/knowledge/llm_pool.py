@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
 from kiro_crew.agent_spec_injections import WRITE_BACK_CAUSE
 from kiro_crew.config import live
 from kiro_crew.config.loader import read_merged_config_files
@@ -193,6 +194,12 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
         return mode
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
+
+
+def _get_harness_sandbox(config: Optional[dict] = None) -> object:
+    """The ``agent.harness_sandbox`` floors as stored; ``tool_gate.harness_sandbox_mode`` judges them."""
+    data = _read_config() if config is None else config
+    return _section(data, "agent").get("harness_sandbox")
 
 
 class KnowledgeHarnessUnavailable(RuntimeError):
@@ -1645,8 +1652,10 @@ class LLMPool:
             sessions = self._session_manager()
             acp_backend = await asyncio.to_thread(_get_acp_backend, sessions=sessions)
             if capabilities_for(acp_backend).acp_client_spawnable:
+                floors = await asyncio.to_thread(_get_harness_sandbox)
                 worker = AcpWorker(
-                    sandbox_mode=sandbox_mode,
+                    # A chat session's rule: agent.sandbox raised to the harness's floor.
+                    sandbox_mode=harness_sandbox_mode(acp_backend, sandbox_mode, floors),
                     effort=self._effort,
                     acp_backend=acp_backend,
                 )

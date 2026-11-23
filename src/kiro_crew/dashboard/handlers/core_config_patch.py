@@ -79,15 +79,18 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 def _acp_backend_sandbox_refusal(stored: str) -> str:
     """The launch's refusal of the harness *stored* names, or ``""`` (blocking).
 
-    ``tool_gate.sandbox_floor_refusal`` at the configured tier, the predicate a
-    session start runs. Runs in a worker thread: it can probe for a sandbox backend.
+    ``tool_gate.sandbox_floor_refusal`` at the tier a session of that harness starts
+    at, the predicate a session start runs. Runs in a worker thread: it can probe for
+    a sandbox backend.
     """
-    from kiro_crew import sandbox
     from kiro_crew.agent_sdk.backends import backend_from_stored
-    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+    from kiro_crew.agent_sdk.tool_gate import (
+        configured_harness_sandbox_mode,
+        sandbox_floor_refusal,
+    )
 
     backend = str(backend_from_stored(stored))
-    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode())
+    return sandbox_floor_refusal(backend, configured_harness_sandbox_mode(backend))
 
 
 def _beacon_governance_pinned_off() -> bool:

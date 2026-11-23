@@ -839,7 +839,9 @@ notice, translated, at most once per chat per gateway run (an in-memory flag on 
 slot, `_hidden_scratch_notice_shown`), and the turn describes the folder the session
 runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
 With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
-kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
+kept, unless the `agent.harness_sandbox` floor of the backend the provider factory selects
+for that session raises its tier (a floored harness starts sandboxed, so the cwd is judged masked);
+it is kept on native Windows, where a Kiro spawn is delegated to Kiro's own
 sandbox and no scratch-root mask is applied
 (`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
 cwd may name a different project than the one the capabilities were saved in
@@ -2900,7 +2902,8 @@ document validates. Otherwise it does three things, in order:
   re-derived warm pool is the only way to honour: `agent.model`,
   `agent.reasoning_effort`, `agent.acp_backend`, `agent.role_efforts`,
   `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
-  `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
+  `agent.harness_sandbox`, `agent.sandbox_allow_no_isolation`,
+  `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, `agent.default_agent`, `session.pool_size` /
   `pool_agent` / `pool_ttl_secs`, `workspaces` and `default_workspace` (the last
   three because the warm pool captures its agent and cwd). `refresh_defaults` is the **live-session-preserving** path —

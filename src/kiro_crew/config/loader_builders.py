@@ -845,6 +845,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         strands_model=_strands_str_or_empty(section.get("strands_model")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
         sandbox=section.get("sandbox"),
+        # deepseek_env's type coercion (a str -> str map); the values are judged where
+        # they are read (``tool_gate.harness_sandbox_mode``).
+        harness_sandbox=_sections.coerce_deepseek_env(section.get("harness_sandbox")),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
         sandbox_allow_unsandboxed_exec=bool(
             agent_data.get(

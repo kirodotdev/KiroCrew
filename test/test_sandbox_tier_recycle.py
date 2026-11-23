@@ -855,6 +855,34 @@ async def test_the_shared_background_runtime_is_parked_on_a_tightening(spawned, 
 
 
 @pytest.mark.asyncio
+async def test_a_raised_harness_floor_rebuilds_the_background_runtime_at_the_floored_tier():
+    """``agent.harness_sandbox`` raises the background backend's tier as ``agent.sandbox`` does.
+
+    codex is the enforced harness the shared background runtime runs.
+    """
+    from kiro_crew.session_allocation_parts.companions import sandbox_tier_tightened
+
+    mgr = _bg_manager("auto")
+    mgr._cfg.agent.acp_backend = "codex"
+    mgr._cfg.agent.harness_sandbox = {"codex": "strict"}
+    assert mgr._background_runtime._configured_bg_tier() == "strict"
+    assert sandbox_tier_tightened("auto", mgr._background_runtime._configured_bg_tier())
+    old = _BgRuntime("auto", "codex")
+    mgr._bg_runtime = old
+
+    with patch("kiro_crew.session._load_bg_runtime_types", return_value=(_BgRuntime, OSError)):
+        handle = await asyncio.wait_for(mgr.get_bg_session(), _LOST_RUN_SECS)
+
+    assert old in mgr._draining_bg_runtimes
+    old.kill.assert_not_awaited()
+    assert handle is mgr._bg_runtime and handle is not old
+    assert handle.acp_backend == "codex" and handle.sandbox_mode == "strict"
+    mgr._bg_runtime = None
+    mgr._draining_bg_runtimes.clear()
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
 async def test_a_tightening_during_the_background_spawn_is_met_at_the_next_reuse():
     """The spawn read the old tier and the slot was empty while it ran."""
     from _hot_reload_helpers import cfg_with

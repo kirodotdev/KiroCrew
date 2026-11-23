@@ -117,6 +117,27 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
 
 
 @per_test_guard
+def _fresh_harness_floor_warnings():
+    """Clear the bad ``agent.harness_sandbox`` warn-once set before and after each test.
+
+    ``agent_sdk.tool_gate._FLOOR_WARNED`` holds the (harness, value) pairs this
+    process logged once, so one test's entry would silence a later test's WARNING.
+    """
+
+    def clear():
+        tool_gate = sys.modules.get("kiro_crew.agent_sdk.tool_gate")
+        warned = getattr(tool_gate, "_FLOOR_WARNED", None)
+        if warned is not None:
+            warned.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
