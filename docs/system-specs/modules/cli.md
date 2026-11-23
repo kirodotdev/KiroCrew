@@ -2150,6 +2150,10 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
 
 1. The code goes in: `dep_sync.sync_or_reinstall` into the checkout's venv, or
    the shadow tree the wheel engine builds and verifies beside the running one.
+   The shadow tree is installed with every optional extra the running tree has
+   (each `kiro_crew.extras.REQUIREMENTS` entry whose distributions are all
+   installed, as `<wheel>[extra,...]` in the one pip command); a carried extra
+   that cannot be installed fails the update.
 2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
    interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
    it installs is the new release's, never the one the updating process

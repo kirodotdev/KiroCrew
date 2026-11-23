@@ -318,7 +318,10 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install. The opt-in is not remembered. To compile a dependency
+managed-venv install, where an extra the update carries with no wheel for the
+host also fails the update; uninstall the package that has no wheel from the
+running install to stop carrying that extra.
+The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
 environment, while the gateway's automatic and approved updates run their build
@@ -524,7 +527,9 @@ Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
 runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
-prints the exact command, already pointed at the right interpreter.
+prints the exact command, already pointed at the right interpreter. On a
+`cli.sh` managed-venv install, an update keeps every extra the running install
+has.
 
 | Extra | Adds | For |
 |-------|------|-----|
