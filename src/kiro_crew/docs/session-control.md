@@ -1258,7 +1258,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself. session_close and session_release are the exceptions: both accept the caller as the target |
 | `not_creator` | The caller is fenced to sessions it created itself (a Bot's DM slot, a scheduled run, and anything either of them created) |
-| `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
+| `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary. When you are also fenced from the target, the message names that reason too, since moving workspaces would not clear it |
 | `ephemeral_target` | Incognito and temporary sessions are not addressable |
 | `app_scoped_target` | App-scoped sessions are not addressable, in either direction |
 | `unattended_caller` / `unattended_target` | Scheduled runs cannot be controlled; a cron caller reaches only what it created |
