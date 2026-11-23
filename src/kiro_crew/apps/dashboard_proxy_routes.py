@@ -52,6 +52,8 @@ def _view(name: str) -> dict[str, object]:
         "offer": dashboard_proxy.prompt_text(name),
         "platform_supported": dashboard_proxy.platform_supported(),
         "needs_access": dashboard_proxy.needs_access(name),
+        # Granted, but the running backend was not spawned with it: offer the restart.
+        "restart_required": dashboard_proxy.restart_required(name),
         # An app installed before the gateway sealed install records has none, so no offer and
         # no stand-in: the owner's one way forward is the App Store update.
         "update_to_enable": dashboard_proxy.platform_supported()

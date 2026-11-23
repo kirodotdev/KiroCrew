@@ -12660,7 +12660,7 @@
       "dashboard_access_confirm_body_bundled": "Autoriser « {{app}} » {{version}} (catalogue intégré, source « {{source}} ») à utiliser ce tableau de bord en ton nom ?",
       "dashboard_access_on_pending": "L'accès au tableau de bord est autorisé. Il s'applique après un redémarrage.",
       "dashboard_access_remove": "Retirer l'accès au tableau de bord",
-      "dashboard_access_remove_confirm_title": "Retirer l'accès au tableau de bord ?",
+      "dashboard_access_remove_confirm_title": "Retirer l'accès au tableau de bord ?",
       "dashboard_access_remove_confirm_body": "« {{name}} » ne pourra plus utiliser ce tableau de bord en ton nom. L'app reste installée et activée.",
       "dashboard_access_removed": "Accès au tableau de bord retiré.",
       "dashboard_access_revoke_incomplete": "L'accès est terminé, mais le retrait n'a pas pu être enregistré. Si l'autorisation enregistrée reste aussi, l'accès revient après un redémarrage de la passerelle. Corrige l'erreur de disque, puis retire-le à nouveau.",

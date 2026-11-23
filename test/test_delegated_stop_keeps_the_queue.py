@@ -118,37 +118,52 @@ async def test_the_owner_second_stop_still_escalates(tmp_path, monkeypatch) -> N
     assert {line["metadata"]["via"] for line in _stop_lines(lines)} == {"dashboard"}
 
 
-async def _cron_cancel_allowed(monkeypatch, *, via_app: str) -> bool:
+async def _cron_cancel_allowed(
+    monkeypatch, *, via_app: str = "", app: str = ""
+) -> tuple[bool, AsyncMock]:
     """Whether a Stop on a ``cron:`` tab may run the cron service's cancel.
 
-    The owner gate and the foreign-job check both pass, as they do for the owner and for
-    a delegated token on the owner's machine, so only the ``via_app`` claim decides.
+    The owner gate passes, as it does for the owner and for a delegated token on the
+    owner's machine (it is stubbed and its call asserted). The foreign-app-job guard is
+    the real one, so an app caller meets its refusal.
     """
     from aiohttp.test_utils import make_mocked_request
 
     from kiro_crew.dashboard.chat_api import turn_stop
 
+    owner_gate = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers._shared.require_owner_dashboard_request",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.cron._refuse_foreign_app_job",
-        AsyncMock(return_value=None),
+        "kiro_crew.dashboard.handlers._shared.require_owner_dashboard_request", owner_gate
     )
     request = make_mocked_request("POST", "/api/chat/slots/cron:job1/stop")
-    request["app"] = ""
+    request["app"] = app
     if via_app:
         request["via_app"] = via_app
-    return await turn_stop._may_cancel_cron_run(request, MagicMock(), "cron:job1")
+    state = MagicMock()
+    # The owner's job: no ``app:<name>`` stamp, so no app owns it.
+    state.crons.get_job.return_value = MagicMock(created_by="dashboard")
+    allowed = await turn_stop._may_cancel_cron_run(request, state, "cron:job1")
+    return allowed, owner_gate
 
 
 @pytest.mark.asyncio
 async def test_a_delegated_stop_on_a_cron_tab_never_cancels_the_job(monkeypatch) -> None:
     """The cron cancel pauses a one-shot job: a control-plane write no stop row allows."""
-    assert await _cron_cancel_allowed(monkeypatch, via_app="tunnel") is False
+    allowed, owner_gate = await _cron_cancel_allowed(monkeypatch, via_app="tunnel")
+    assert allowed is False
+    owner_gate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_the_owner_stop_on_a_cron_tab_still_cancels_the_job(monkeypatch) -> None:
-    assert await _cron_cancel_allowed(monkeypatch, via_app="") is True
+    allowed, owner_gate = await _cron_cancel_allowed(monkeypatch)
+    assert allowed is True
+    owner_gate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_app_stop_on_another_owners_cron_tab_meets_the_real_guard(monkeypatch) -> None:
+    """The foreign-app-job guard runs for real: an app does not own the owner's job."""
+    allowed, owner_gate = await _cron_cancel_allowed(monkeypatch, app="notes")
+    assert allowed is False
+    owner_gate.assert_not_awaited()

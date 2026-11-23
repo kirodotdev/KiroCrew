@@ -64,6 +64,9 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
     )
   }
   const canUpdate = !!onUpdate && !!data?.update_to_enable
+  // The gateway knows whether the running backend holds the grant, so a restart the owner
+  // has not done yet is offered on every visit, not only right after granting.
+  const needsRestart = !!data?.granted && (restartAsked || !!data?.restart_required)
   if (!data || (!data.granted && !data.offer && !data.needs_access && !canUpdate)) return null
 
   const scope = i18nT('pages.appDetailPage.dashboard_access_scope')
@@ -174,7 +177,7 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
       ) : data.granted ? (
         <>
           <div className="mt-2 text-[13px] text-text" data-testid="dashboard-access-on">
-            {i18nT(restartAsked ? 'pages.appDetailPage.dashboard_access_on_pending' : 'pages.appDetailPage.dashboard_access_on')}
+            {i18nT(needsRestart ? 'pages.appDetailPage.dashboard_access_on_pending' : 'pages.appDetailPage.dashboard_access_on')}
           </div>
           <div className="mt-1 text-[12px] text-muted" data-testid="dashboard-access-scope">{scope}</div>
           <div className="mt-3">
@@ -202,7 +205,7 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
           </div>
         </>
       )}
-      {restartAsked && data.granted && (
+      {needsRestart && (
         <div className="mt-3 flex items-center gap-2" data-testid="dashboard-access-restart">
           <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_restart_hint', { name: displayName || appName })}</span>
           <Btn onClick={restart} disabled={busy}>{i18nT('pages.appDetailPage.dashboard_access_restart')}</Btn>

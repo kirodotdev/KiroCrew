@@ -77,6 +77,10 @@ _gateway_secret = ""
 #: backend asks on every start, so the owner sees the state again within one retry.
 _refused_mints: set[str] = set()
 _refused_lock = threading.Lock()
+#: The grant id each app's backend was last spawned with (``""``: spawned without one). An
+#: app whose current grant is not the one its backend holds needs a restart to use it, and
+#: the card offers that restart from this fact, on every visit (``restart_required``).
+_spawned_grant: dict[str, str] = {}
 
 
 #: Fail-closed marks, checked before any sealed record is read. A record that cannot be
@@ -97,6 +101,7 @@ def reset_marks() -> None:
     with _marks_lock:
         _ended_grants.clear()
         _unsealed_installs.clear()
+        _spawned_grant.clear()
 
 
 def _mark(marks: set[str], app_name: str, on: bool) -> None:
@@ -620,6 +625,7 @@ def stand_in_pairs(app_name: str, masked_paths: tuple[str, ...]) -> tuple[tuple[
     """
     value = stand_in_value(app_name)
     if value is None:
+        _note_spawn(app_name, "")
         return ()
     try:
         source = _path(app_name, _STAND_IN_SUFFIX)
@@ -627,8 +633,28 @@ def stand_in_pairs(app_name: str, masked_paths: tuple[str, ...]) -> tuple[tuple[
         atomic_write(source, value, fsync=True, restrict_to_owner=True)
     except (OSError, ValueError):
         logger.warning("could not stage the dashboard_proxy stand-in for %r", app_name)
+        _note_spawn(app_name, "")
         return ()
+    _note_spawn(app_name, _stored_grant_id(app_name) or "")
     return tuple((masked, str(source)) for masked in masked_paths)
+
+
+def _note_spawn(app_name: str, grant_id: str) -> None:
+    with _marks_lock:
+        _spawned_grant[app_name] = grant_id
+
+
+def restart_required(app_name: str) -> bool:
+    """Whether *app_name* holds the grant but its backend was not spawned with it.
+
+    True after a grant until a backend spawn binds that grant's value, so the owner is
+    offered the restart on any visit to the card, not only right after granting.
+    """
+    if not granted(app_name):
+        return False
+    with _marks_lock:
+        spawned = _spawned_grant.get(app_name, "")
+    return not spawned or spawned != (_stored_grant_id(app_name) or "")
 
 
 def _namespace_backend() -> bool:

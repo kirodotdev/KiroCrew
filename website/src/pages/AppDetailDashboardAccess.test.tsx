@@ -144,6 +144,20 @@ describe('AppDetailDashboardAccess', () => {
     expect(screen.getByRole('button', { name: 'Restart app' })).toBeInTheDocument()
   })
 
+  it('offers the restart on a later visit while the backend still lacks the grant', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true, restart_required: true })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    expect(await screen.findByRole('button', { name: 'Restart app' })).toBeInTheDocument()
+    expect(screen.getByTestId('dashboard-access-on')).toHaveTextContent('It takes effect after a restart.')
+  })
+
+  it('offers no restart once the backend holds the grant', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true, restart_required: false })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restart app' })).toBeNull()
+  })
+
   it('says the access waits for a restart until the restart succeeds', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))

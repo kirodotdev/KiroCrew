@@ -139,6 +139,9 @@ async def test_an_app_backend_is_refused_a_session_and_still_gets_its_link(
     fake_sel, owner_process, monkeypatch
 ) -> None:
     """The refusal is for ``kind=session`` alone, and nothing is signed for it."""
+    # A host with no sandbox, where an app backend may still hold the real secret; on a
+    # sandboxed one it is refused before the kind is read (test_dashboard_proxy_mint.py).
+    monkeypatch.setattr("kiro_crew.apps.dashboard_proxy.sandboxed_backend", lambda: False)
     monkeypatch.setattr(auth, "_verified_host_process", lambda _pid: False)
     monkeypatch.setattr(
         auth, "_gateway_spawned_app_backend", lambda pid: "demo-app" if pid == _PEER_PID else None

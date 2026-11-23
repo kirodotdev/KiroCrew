@@ -944,3 +944,33 @@ async def test_the_route_grants_the_install_the_offer_showed(records, installed,
     shown = dashboard_proxy.prompt_text(_APP)["identity"]
     status, body = await _put(monkeypatch, {"confirm": True, "identity": shown})
     assert status == 200 and body["granted"] is True
+
+
+# -- The card offers the restart until a backend spawn binds the current grant --
+
+
+def _spawn(records) -> None:
+    """What a backend spawn asks for its masks (``apps.backend``)."""
+    dashboard_proxy.backend_masks(_APP, (str(records / ".local_secret"),))
+
+
+def test_a_grant_the_running_backend_lacks_asks_for_a_restart(records, installed):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    _spawn(records)  # the backend ran before the grant, with no stand-in
+    assert dashboard_proxy.restart_required(_APP) is False  # nothing granted yet
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
+    assert dashboard_proxy.restart_required(_APP) is True
+    assert routes._view(_APP)["restart_required"] is True
+    _spawn(records)  # the restart binds the grant's value
+    assert dashboard_proxy.restart_required(_APP) is False
+    assert routes._view(_APP)["restart_required"] is False
+
+
+def test_a_new_grant_asks_for_a_restart_again(records, installed):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
+    _spawn(records)
+    assert dashboard_proxy.revoke(_APP) is True
+    assert dashboard_proxy.restart_required(_APP) is False  # nothing to apply
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
+    assert dashboard_proxy.restart_required(_APP) is True  # a new grant id
