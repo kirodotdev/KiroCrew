@@ -134,6 +134,12 @@ RECORD_CAP = 128 * 1024 * 1024
 # it takes 18 ms alone. A megabyte per read keeps those hand-backs rare.
 _FRAME_CHUNK = 1 << 20
 
+# Most bytes of whole lines the framer takes from the read-ahead per call. The
+# returned block is a copy held beside the read-ahead, so this bounds what a
+# block adds to a read's peak; 256 KiB still serves hundreds of typical
+# transcript rows per call.
+_FRAME_BLOCK = 1 << 18
+
 # Public so a caller can tell this refusal from an unrelated EINVAL, which shares its errno.
 NOT_REGULAR_FILE = "refusing a non-regular file"
 
@@ -365,6 +371,27 @@ class _ChunkedLines:
                 break
         return parts[0] if len(parts) == 1 else b"".join(parts)
 
+    def read_lines(self, size: int) -> bytes:
+        """Every whole line left in the read-ahead, up to *size* bytes.
+
+        Like :meth:`readline`, but hands the framer all the complete lines one
+        chunk holds in a single call, so a chunk of short records costs one call
+        and one buffer append rather than one per record. Without a ``\\n`` in
+        reach it is exactly :meth:`readline`, which joins a long line from
+        successive chunks in one pass rather than re-copying a growing buffer.
+        """
+        if self._pos >= len(self._buf):
+            self._buf = self._read(_FRAME_CHUNK)
+            self._pos = 0
+            if not self._buf:
+                return b""
+        stop = min(len(self._buf), self._pos + size, self._pos + _FRAME_BLOCK)
+        nl = self._buf.rfind(b"\n", self._pos, stop)
+        if nl == -1:
+            return self.readline(size)
+        start, self._pos = self._pos, nl + 1
+        return self._buf[start : nl + 1]
+
 
 def _frames_with_offsets(
     handle: IO[bytes], cap: int
@@ -391,7 +418,7 @@ def _frames_with_offsets(
     # bytes, so framing and offsets are identical; only the syscalls differ. A
     # chunk read moves the handle past the record a caller stops at, so every
     # caller takes positions from the yielded offsets, never from ``tell``.
-    readline = _ChunkedLines(handle).readline if hasattr(handle, "read") else handle.readline
+    readline = _ChunkedLines(handle).read_lines if hasattr(handle, "read") else handle.readline
     # True while discarding the remainder of an over-cap record, whose own
     # terminator is what ends the discard.
     dropping = False
