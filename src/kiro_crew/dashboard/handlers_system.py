@@ -938,13 +938,6 @@ async def api_system(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
-    """The shared owner gate, imported late: ``handlers`` imports this module."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
-
-
 def _reconciler(request: web.Request) -> Any:
     sessions = getattr(request.app["state"], "sessions", None)
     return sessions.runtime_reconciler() if sessions is not None else None
@@ -971,7 +964,10 @@ async def api_leaked_runtimes(request: web.Request) -> web.Response:
 
 async def api_leaked_runtimes_reclaim(request: web.Request) -> web.Response:
     """Owner-only, confirm-required: end the leaked runtimes once through the gated kill path."""
-    denied = await _require_owner(request, "leaked_runtimes.reclaim")
+    # Imported late: ``handlers`` imports this module.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "leaked_runtimes.reclaim")
     if denied is not None:
         return denied
     try:
