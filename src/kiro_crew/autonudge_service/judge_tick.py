@@ -153,17 +153,26 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
             return None
         logger.debug("AutoNudge: loop %s has a judge spec naming no usable target", loop.id)
         return False
-    if brief_kind == judge.BRIEF_DEFAULT and all(
-        judge.is_session_target(target) and self._worker_closed(target) for target in targets_wanted
-    ):
-        # Every session the default brief would read is closed or deleted, so it has
-        # nothing to read, as above. Counted as unread, a gone session would fire every
-        # tick until the loop ends; one that is only unreadable for now still fires.
-        logger.debug("AutoNudge: loop %s names only sessions that are gone", loop.id)
-        return None
+    gone_unread = 0
+    if brief_kind == judge.BRIEF_DEFAULT:
+        # The default brief reads around a session that is closed or deleted. Counted
+        # as unread on every tick, a gone session would fire until the loop ends,
+        # because it never comes back on its own. It counts once, on the tick that
+        # finds it gone while it still holds a read cursor, since nothing it wrote
+        # after that read can be read once it is gone. One only unreadable for now
+        # still fires.
+        gone = [t for t in targets_wanted if judge.is_session_target(t) and self._worker_closed(t)]
+        targets_wanted = [target for target in targets_wanted if target not in gone]
+        if not targets_wanted:
+            # Every session it would read is gone, so it has nothing to read, as above.
+            logger.debug("AutoNudge: loop %s names only sessions that are gone", loop.id)
+            return None
+        # The collector hands back no cursor for a target it was not given, so the
+        # verdict that commits this count also drops the gone session's cursor.
+        gone_unread = sum(1 for target in gone if target in loop.judge_cursors)
     verdict_trace: dict[str, Any] = {}
     try:
-        evidence, dropped, staged_cursors = await self._collect_judge_evidence(loop)
+        evidence, dropped, staged_cursors = await self._collect_judge_evidence(loop, targets_wanted)
     except Exception:
         logger.debug(
             "AutoNudge: judge evidence collection failed for loop %s -- firing as usual",
@@ -171,6 +180,7 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
             exc_info=True,
         )
         return False
+    dropped += gone_unread
     # Minted before the call so the decision row and the label row that judges it
     # later carry the same key. Random, because the tick and the turn-complete hook
     # do not lock against each other and a restart between them must not reissue a
