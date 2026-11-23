@@ -159,6 +159,17 @@ describe('AppDetailDashboardAccess', () => {
     expect(screen.queryByTestId('dashboard-access-update')).toBeNull()
   })
 
+  it('reloads after the page reports an app change, so a revoked grant shows as off', async () => {
+    api.getAppDashboardAccess.mockResolvedValueOnce({ ...OFFERED, granted: true })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
+    // A disable revokes the grant; the page reloads in place and announces the change.
+    window.dispatchEvent(new Event('mc:apps-changed'))
+    expect(await screen.findByRole('button', { name: 'Allow dashboard access' })).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard access is on for this app.')).toBeNull()
+    expect(api.getAppDashboardAccess).toHaveBeenCalledTimes(2)
+  })
+
   it('shows no update action where the page cannot run an update (not a registry install)', async () => {
     api.getAppDashboardAccess.mockResolvedValue({ granted: false, offer: null, platform_supported: true, needs_access: false, update_to_enable: true })
     const { container } = render(wrap(<AppDetailDashboardAccess appName="tunnel" />))

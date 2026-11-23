@@ -32,6 +32,14 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
   const queryClient = useQueryClient()
   const queryKey = ['apps', appName, 'dashboard-proxy']
   const access = useQuery<AppDashboardAccess>({ queryKey, queryFn: () => api.getAppDashboardAccess(appName) })
+  const { refetch } = access
+  // A disable, re-enable or update on the page revokes or reseals the grant; the page
+  // reloads in place and announces it, so read the access again then.
+  useEffect(() => {
+    const refresh = () => { void refetch() }
+    window.addEventListener('mc:apps-changed', refresh)
+    return () => window.removeEventListener('mc:apps-changed', refresh)
+  }, [refetch])
   const { confirm, confirmDialog } = useConfirm()
   const [busy, setBusy] = useState(false)
   const [restartAsked, setRestartAsked] = useState(false)

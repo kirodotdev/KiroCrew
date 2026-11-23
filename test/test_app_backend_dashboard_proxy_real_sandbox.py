@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,6 +94,23 @@ async def _gateway(home: Path, monkeypatch, state) -> TestServer:
     return server
 
 
+async def _reap_group(proc: asyncio.subprocess.Process, seconds: float = 30) -> None:
+    """Kill the stub's whole process group and wait, at most *seconds*, for the launcher.
+
+    The namespace launcher forks the stub, so killing the launcher alone can leave the child
+    holding the pipes. The stub runs in its own session, so its group is the launcher's pid.
+    """
+    if proc.returncode is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    waiter = asyncio.ensure_future(proc.wait())
+    done, _pending = await asyncio.wait({waiter}, timeout=seconds)
+    if not done:
+        waiter.cancel()
+
+
 async def _stub_report_line(proc: asyncio.subprocess.Process, seconds: float = 60) -> str:
     """The stub's one report line, once it has exited, within *seconds*.
 
@@ -104,9 +123,11 @@ async def _stub_report_line(proc: asyncio.subprocess.Process, seconds: float = 6
     if not done:
         # Not cancelled: the reader finishes at EOF after the kill and still returns what it
         # drained, which a cancelled ``communicate`` would lose.
-        proc.kill()
-        _out, err = await reader
-        await proc.wait()
+        await _reap_group(proc)
+        drained, _still = await asyncio.wait({reader}, timeout=30)
+        if not drained:
+            reader.cancel()
+        err = reader.result()[1] if drained else b"(the pipes stayed open after the kill)"
         pytest.fail(
             f"the stub backend did not finish within {seconds} s; "
             f"stderr: {err.decode('utf-8', 'replace')}"
@@ -147,6 +168,8 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=home,
+        # Its own session, so one killpg reaches the launcher and the child it forks.
+        start_new_session=True,
     )
     registration = bmod.AppProcess(
         app_name=_APP,
@@ -168,6 +191,7 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         # Proves the start-id leg: an exited pid is refused on its start id as well.
         assert spawned_backend_owner(proc.pid, verify_start=True) is None
     finally:
+        await _reap_group(proc)
         bmod._processes.pop(_APP, None)
         await server.close()
     return json.loads(line)
