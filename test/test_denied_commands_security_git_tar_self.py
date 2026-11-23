@@ -1683,6 +1683,34 @@ class TestSandboxEscapeGitTarSelf:
     def test_heredoc_body_a_shell_runs_is_refused(self, cmd, rule):
         assert _denied_by(cmd) == rule, cmd
 
+    # A quote inside a here-document body is data: bash reads the text after the
+    # closing line with no quote open. The floor's second reading removes each body
+    # and its closing line, so a transport written after a body, or between two
+    # bodies, is read as the command bash runs. A remote host stays allowed.
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            ("cat <<EOF\nit's\nEOF\ngit clone localhost:/srv/repo.git\n# '", _RULE),
+            ("cat <<A\nit's\nA\ngit clone localhost:/srv/repo.git\ncat <<B\nok'\nB", _RULE),
+            ("cat <<EOF\nit's\nEOF\ntar -cf localhost:/x .\n# '", _RULE),
+            ("cat <<EOF\nit's\nEOF\ntar -cf - x | ssh localhost tar -xf -\n# '", _SSH_RULE),
+            ("cat <<EOF\nit's\nEOF\ngit clone github.com:/srv/repo.git\n# '", None),
+            ("cat <<A\nit's\nA\ngit clone github.com:/srv/repo.git\ncat <<B\nok'\nB", None),
+            ("cat > notes.md <<'EOF'\nit's\ngit clone localhost:/srv/repo.git\nEOF", None),
+        ],
+        ids=[
+            "after-body",
+            "between-two-bodies",
+            "tar-after-body",
+            "tar-over-ssh-after-body",
+            "after-body-remote-host",
+            "between-two-bodies-remote-host",
+            "inside-data-body",
+        ],
+    )
+    def test_transport_after_a_heredoc_body_is_read_unquoted(self, cmd, rule):
+        assert _denied_by(cmd) == rule, cmd
+
     # An unquoted tag runs each ``$( )`` and backtick in the body, so a transport
     # inside one is refused under any reader; a remote host stays allowed.
     @pytest.mark.parametrize(

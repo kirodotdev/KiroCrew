@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from .argv_floor_self import _quoted_assignment_scripts
+from .argv_floor_self import _heredoc_data_view, _quoted_assignment_scripts, _shell_payload_sources
 from .argv_floor_ssh import (
     _EMPTY_EXPANSION_RE,
     _HEREDOC_RESET,
@@ -34,6 +34,7 @@ from .shell_commands import (
 )
 from .shell_normalizer import (
     _backtick_closer,
+    _cased_payload,
     _iter_shell_chars,
     _matching_close_paren,
     _nested_shell_payloads,
@@ -174,6 +175,33 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
                 return True
         finally:
             _HEREDOC_RESET.reset(token)
+    # Extra pass, ADDED to the readings above: a nested shell payload that spans
+    # lines is read as a command line of its own. The line's frame walk reads the
+    # payload from text whose quoted newlines are masked to data, so a command on a
+    # later line of the payload, or one bash runs from a here-document the payload
+    # opens, is not seen there. As for a substitution body, the text of a quoted-tag
+    # body a bare ``cat`` prints is cut first; the rest is found on the words as
+    # written, so a body no program runs stays data. The payloads are found in the
+    # self floor's here-document data view, under the guards ``_is_ssh_to_self``
+    # takes it with, so a payload written in a body no program runs is not read.
+    if "\n" in text_lower:
+        cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+        view = text_lower
+        if (
+            cased is not None
+            and "\r" not in text_lower
+            and not any("<<" in ln and ln.endswith("\\") for ln in text_lower.split("\n"))
+        ):
+            view = _heredoc_data_view(cased).lower()
+        for source in _shell_payload_sources(view):
+            if source == view or "\n" not in source:
+                continue
+            payload_cased = _cased_payload(cased, text_lower, source)
+            if payload_cased is not None:
+                payload_cased = _without_quoted_heredoc_text(payload_cased)
+            payload = _without_quoted_heredoc_text(source)
+            if _is_ssh_to_self(payload, raw_text=payload_cased):
+                return True
     token = _MAIN_READING.set(True)
     try:
         return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(

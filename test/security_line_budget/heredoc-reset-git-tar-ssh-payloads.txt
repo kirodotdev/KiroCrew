@@ -1,0 +1,7 @@
++50
+The git/tar-to-self floor also runs the here-document reset reading
+(`_is_git_tar_to_self`), and the ssh-to-self floor reads each nested shell
+payload that spans lines (`_reaches_self_over_ssh`), so a transport or ssh to
+this host that a here-document would otherwise hide is refused. The facade names
+the one shell_normalizer helper the ssh-body reader newly imports. Both readings
+are additive.

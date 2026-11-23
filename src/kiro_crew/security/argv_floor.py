@@ -454,6 +454,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _SHELL_WRAPPER_CHARS,
         _argv_programs,
         _backtick_closer,
+        _cased_payload,
         _cut_at_operator,
         _data_consumer_exempt,
         _debracket,

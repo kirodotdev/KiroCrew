@@ -1472,13 +1472,17 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
     read nested in it shares (``_READ_MEMO``) and keeps *raw_text*, the command as
     submitted (*text_lower* when not given), for them all (``_RAW_COMMAND``).
 
-    The outermost read runs TWICE over one command, each pass with its own memo
-    and its own environment tracking, and refuses if EITHER refuses.  The first
-    pass takes main's exact command boundaries (``_GLUE_SPLIT`` False), so no
-    refusal main reaches can be lost however the glued-operator splitter behaves;
-    the second takes the glued-split boundaries (``_GLUE_SPLIT`` True), which only
-    ADD command boundaries, so it can only ADD refusals.  A newly over-refused
-    shape is therefore the splitter's worst case, never a newly allowed one.
+    The outermost read runs the as-written command under both command-boundary
+    splits -- the exact boundaries (``_GLUE_SPLIT`` False), so no refusal reachable
+    without the glued-operator splitter is lost, and the glued-split boundaries
+    (``_GLUE_SPLIT`` True), which only ADD boundaries -- each pass with its own memo
+    and its own environment tracking, and refuses if any pass refuses. When a ``<<``
+    is present it then runs one more reading with every here-document body and its
+    closing line removed (``_heredoc_body_quotes_literal``, found on the words as
+    written when *raw_text* is that command), again under both splits, so a quote
+    inside a body cannot pair across its closing line with the text after it. Every
+    reading only ADDS refusals: a newly over-refused shape is the worst case, never
+    a newly allowed one.
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
@@ -1489,6 +1493,23 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
             split = _GLUE_SPLIT.set(glue)
             try:
                 if _git_tar_read(text_lower, typed=True):
+                    return True
+            finally:
+                _GLUE_SPLIT.reset(split)
+                _READ_MEMO.reset(memo)
+        if "<<" not in text_lower:
+            return False
+        cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+        reset_raw = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
+        reset = reset_raw.lower()
+        if reset == text_lower:
+            return False
+        _RAW_COMMAND.set(reset_raw)
+        for glue in (False, True):
+            memo = _READ_MEMO.set({})
+            split = _GLUE_SPLIT.set(glue)
+            try:
+                if _git_tar_read(reset, typed=True):
                     return True
             finally:
                 _GLUE_SPLIT.reset(split)

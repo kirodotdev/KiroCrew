@@ -1189,6 +1189,13 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     reading and the main-reading pass keep a body's quotes as origin/main read them,
     so the reset pass only ADDS a denial and never removes one. The here-document
     body readers and the untracked fallback are unchanged.
+    `_reaches_self_over_ssh` also reads each nested shell payload that spans lines
+    (`_shell_payload_sources`) as a command line of its own, because the line's frame
+    walk reads a payload from text whose quoted newlines are masked to data. As for a
+    substitution body, the text of a quoted-tag body that a bare `cat` prints is cut
+    first (`_without_quoted_heredoc_text`), and the payload's slice of the submitted
+    text goes to `raw_text`, so a body that no program runs stays data. This pass,
+    too, only adds a denial.
   - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
     (`_reaches_self_over_ssh`). The static splice reads only the first command of a
     `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
@@ -1267,12 +1274,12 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   The default stays the stopping read, for callers that do not ask.
   `read_commands` resumes after a tag line in a CLOSED quote state, so a floor that
   reads through it (the rm floor) already reads the text after a here-document's
-  closing line as the fresh command bash runs. The self and ssh floors do not read
-  through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
+  closing line as the fresh command bash runs. The self, ssh and git/tar floors do not
+  read through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
   scan it with the ssh floor's own quote mask, both quote-blind to a here-document,
   so a quote left open in a body would pair with a quote after the closing line and
   bury the command on it (`cat <<EOF` NL `it's` NL `EOF` NL `kirocrew restart` NL
-  `# '`). So each of those two floors evaluates the command through TWO INDEPENDENT
+  `# '`). So each of those floors evaluates the command through TWO INDEPENDENT
   readings and refuses if EITHER reading does: the command as written, and a second
   reading with `shell_normalizer._heredoc_body_quotes_literal` applied. Each reading
   runs the floor in FULL on its own — its own tokenization, alias and assignment
@@ -1310,7 +1317,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   its own tokens and descent, deduping nested payloads per reading so each reading walks
   every one — alongside the as-written pass whenever a `<<` is present;
   the ssh floor adds its reset reading the same way, through its own `_HEREDOC_RESET`
-  flag. The second reading runs only when the command contains `<<`, so a command with
+  flag. The git/tar floor (`_is_git_tar_to_self`) reads the same way too: when the
+  as-written read allows, its outermost read runs once more on the helper's output
+  (found on `raw_text` when that is the submitted command, then lowered), with that
+  output as the command it keeps as submitted. The second reading runs only when the command contains `<<`, so a command with
   no here-document keeps the single reading and its linear cost. The quote-reset applies
   only to a reader-CONFIRMED here-document: a `<<` the reader held inside an open
   `$(( ))` / `(( ))` is a left SHIFT, not a body (`HereDoc.arith_held`), so its fictional
