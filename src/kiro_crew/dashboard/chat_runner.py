@@ -516,7 +516,7 @@ from kiro_crew.slack.code_channels.binding import (
 )
 from kiro_crew.slack.code_channels.worker_approvals import finish as finish_worker_approval
 from kiro_crew.slack.code_channels.worker_approvals import start as start_worker_approval_relay
-from kiro_crew.slack.handler import post_linked_approval
+from kiro_crew.slack.handler import _reply_by_voice, post_linked_approval
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
@@ -989,6 +989,11 @@ async def _run_chat(
     # or channel gets only the final reply -- no "Thinking…" placeholder, no task
     # stream, and no outcome line for a quiet end.
     _mirror_reply_only: bool = False,
+    # The Slack message this turn answers, routed from its linked thread
+    # (``route_linked_thread``): the thread's session key, the sender, and whether
+    # it was a voice memo. The mirror speaks the answer there as an unlinked
+    # thread's is spoken. None (every other turn) keeps the mirror text-only.
+    _slack_voice: tuple[str, str, bool] | None = None,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1038,6 +1043,7 @@ async def _run_chat(
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
         _mirror_reply_only=_mirror_reply_only,
+        _slack_voice=_slack_voice,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,

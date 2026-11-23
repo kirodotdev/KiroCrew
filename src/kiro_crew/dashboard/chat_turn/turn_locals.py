@@ -101,6 +101,7 @@ class _ChatTurn:
     _card_origin: "bool"
     _prompt_on_channel: "bool"
     _mirror_reply_only: "bool"
+    _slack_voice: "tuple[str, str, bool] | None"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -401,6 +402,7 @@ class _ChatTurn:
         _card_origin: "bool",
         _prompt_on_channel: "bool" = False,
         _mirror_reply_only: "bool" = False,
+        _slack_voice: "tuple[str, str, bool] | None" = None,
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -441,6 +443,7 @@ class _ChatTurn:
         self._card_origin = _card_origin
         self._prompt_on_channel = _prompt_on_channel
         self._mirror_reply_only = _mirror_reply_only
+        self._slack_voice = _slack_voice
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed

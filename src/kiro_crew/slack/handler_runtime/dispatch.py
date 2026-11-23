@@ -203,6 +203,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         # an action button's payload must ride along (unpinned keeps today's path).
         turn_context=turn.action_context if route_pinned else None,
         interpret_commands=interpret_commands,
+        had_voice_input=turn.had_voice_input,
     ):
         return False
 
