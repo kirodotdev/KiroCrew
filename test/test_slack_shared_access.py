@@ -426,6 +426,26 @@ async def test_a_shared_user_answers_their_own_linked_prompt(
 
 
 @pytest.mark.asyncio
+async def test_a_requester_removed_during_the_code_channel_check_answers_nothing(
+    _floor_monkeypatch, _linked_slot_state
+) -> None:
+    # The opener check (code channels) awaits a store read before the requester
+    # gate; the owner removes the requester from shared access meanwhile.
+    from kiro_crew.slack.code_channels import shared_refusal
+
+    await _confirmed_friend()
+    fut = _linked_card(_floor_monkeypatch, requester=FRIEND)
+
+    def removed_while_checked(*_a: Any) -> bool:
+        _floor_monkeypatch.setattr(handler, "_orch_cfg", _cfg(ids=()))
+        return False
+
+    _floor_monkeypatch.setattr(shared_refusal, "opener_answers_prompt", removed_while_checked)
+    assert await handle_interaction("C1", "card1", "approve_tool", user_id=FRIEND) is None
+    assert _linked_slot_state == [] and not fut.done()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("requester", [OWNER, OTHER, ""])
 async def test_a_shared_user_cannot_answer_someone_elses_linked_prompt(
     _floor_monkeypatch, _linked_slot_state, requester: str
@@ -969,6 +989,8 @@ async def test_is_allowed_user_stays_owner_only_for_a_confirmed_shared_user() ->
 #: is_shared_user(x)``). A new one is a decision, made here.
 _ADMISSION_SITES = {
     "slack/agent_sessions/session_events.py",
+    # A code channel a shared user opened admits them (opener_admitted, opener_of_request).
+    "slack/code_channels/shared_refusal.py",
     "slack/events.py",
     "slack/events_inbound.py",
     "slack/events_queue.py",
@@ -1253,8 +1275,6 @@ def test_every_queued_message_records_whether_its_sender_is_shared() -> None:
     "action_id",
     [
         "kc_code_channel_trust_call",
-        "kc_code_channel_worker_approve",
-        "kc_code_channel_worker_reject",
         "kc_code_channel_worker_trust",
         "kc_code_channel_approval",
         "kc_code_channel_approval_confirm",
@@ -1264,8 +1284,10 @@ def test_every_queued_message_records_whether_its_sender_is_shared() -> None:
 async def test_a_shared_user_presses_no_code_channel_trust_or_approval_control(
     _floor_monkeypatch, action_id: str
 ) -> None:
-    # Slack Code's Trust, worker-approval, approval-mode and agent controls are the
-    # owner's by identity: refused (and audited) before any handler, wherever posted.
+    # Slack Code's Trust (a worker card's too), approval-mode and agent controls are
+    # the owner's by identity: refused (and audited) before any handler, wherever
+    # posted. A worker card's Approve / Reject reach their handler, which admits only
+    # the owner or the channel's opener (test_slack_shared_access_code_channel_notices).
     from unittest.mock import MagicMock
 
     await _confirmed_friend()
@@ -1420,7 +1442,9 @@ async def test_a_shared_users_stop_button_naming_a_code_channel_session_is_refus
     _floor_monkeypatch.setattr(handler, "sel", lambda: audit)
     _floor_monkeypatch.setattr(routing, "shared_user_refused_here", AsyncMock(return_value=False))
     _floor_monkeypatch.setattr(interactions, "_outside_code_channel", AsyncMock(return_value=True))
-    _floor_monkeypatch.setattr(routing, "shared_user_refused_for_slot", lambda s, t: s == value)
+    _floor_monkeypatch.setattr(
+        routing, "shared_user_refused_for_slot", lambda s, t, **_k: s == value
+    )
     payload = {
         "type": "block_actions",
         "user": {"id": FRIEND},
