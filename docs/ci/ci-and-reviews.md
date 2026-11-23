@@ -5268,7 +5268,14 @@ Two subtleties:
   only when the newest issue comment is newer than the verdict. A disposition record is
   an issue comment and an edit moves its `updatedAt` as creation does, so a record
   created or edited after the verdict always opens that gate; a label, a review or a
-  push, which also move the pull request's `updatedAt`, do not. Only an answer skips a
+  push, which also move the pull request's `updatedAt`, do not. The scan is read
+  minutes before the loop that uses it, so a record posted after the scan read that
+  pull request is seen on the next tick, in either direction: a green that such a
+  record contradicts can stand one tick longer. The REST read has the same race for a
+  record posted just after it, and what bounds both is the disposition rule's harm
+  model: a violating record acts only on a later review round, which takes a push, and a
+  push recomputes readiness.
+  Only an answer skips a
   read: a row whose description key is absent, whose `comments_read` is not true, or
   whose comment time does not parse gets the REST read. A page the query cannot get with
   the two fields is asked once without them (`PR_PAGE_QUERY_PLAIN`), and the rest of

@@ -15,7 +15,9 @@ once with one that does not -- and pin three things:
 - a read is skipped only when the scan's answer proves it can find nothing,
   and anything short of an answer makes the read.
 
-Uses the same harness as test_pr_readiness_sweep.py.
+Uses the same harness as test_pr_readiness_sweep.py. The run block's `jq` is
+supplied: every test runs with the stand-in in pr_readiness_sweep_jq_stand_in.py
+and, where the host has a `jq`, once more with that.
 """
 
 from __future__ import annotations
@@ -29,15 +31,15 @@ from pathlib import Path
 
 import pytest
 from pr_readiness_sweep_helpers import SCANNER, WORKFLOW, Runner, _gnu_date, _script
+from pr_readiness_sweep_jq_stand_in import JQ_MODES, install_jq
 
 pytestmark = pytest.mark.skipif(
     not WORKFLOW.exists()
     or not SCANNER.exists()
     or os.name == "nt"
     or shutil.which("bash") is None
-    or shutil.which("jq") is None
     or not _gnu_date(),
-    reason="requires the workflow plus a POSIX bash, jq and GNU date",
+    reason="requires the workflow plus a POSIX bash and GNU date",
 )
 
 # A verdict far older than the publish lag, and offsets around it in seconds.
@@ -60,9 +62,12 @@ def script() -> str:
     return _script()
 
 
-@pytest.fixture
-def runner(tmp_path: Path, script: str) -> Runner:
-    return Runner(tmp_path, script)
+@pytest.fixture(params=JQ_MODES)
+def runner(tmp_path: Path, script: str, request: pytest.FixtureRequest) -> Runner:
+    """A sweep whose `jq` is the stand-in, and the host's own when it has one."""
+    runner = Runner(tmp_path, script)
+    install_jq(tmp_path / "bin", request.param)
+    return runner
 
 
 def _token(script: str, name: str) -> str:
