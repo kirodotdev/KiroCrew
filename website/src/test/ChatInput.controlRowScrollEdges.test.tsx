@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { installInitialResizeObserver } from './initialResizeObserver'
 import ChatInput from '../components/ChatInput'
 
 /** `hidden` px of content beyond the right edge, `scrolled` px already past the left. */
@@ -47,16 +48,10 @@ const rightCue = () => (controlRow().hasAttribute('data-fade-right') ? controlRo
 const controlRow = () => screen.getByTestId('composer-control-row')
 
 describe('ChatInput control-row scroll-edge cues', () => {
-  beforeEach(() => {
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
-  })
-  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+  // The row's first measurement comes from its observer's first delivery, as a
+  // browser makes it after layout.
+  beforeEach(() => { installInitialResizeObserver() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup() })
 
   it('shows no cue when every control fits', () => {
     stubGeometry({ hidden: 0 })

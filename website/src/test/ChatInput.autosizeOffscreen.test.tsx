@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ChatInput from '../components/ChatInput'
+import { waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 
 /**
@@ -75,7 +76,7 @@ describe('composer autosize measures off-screen', () => {
     expect(twin).toMatch(/el\.value \|\| el\.placeholder/)
   })
 
-  it('routes the measurement through an off-screen twin carrying the live value', () => {
+  it('routes the measurement through an off-screen twin carrying the live value', async () => {
     // Behavioural floor that jsdom can honestly check. It has no layout, so the
     // HEIGHT cannot be asserted here without mocking the very thing under test —
     // but the twin's existence and its value are real, observable facts, and they
@@ -90,9 +91,11 @@ describe('composer autosize measures off-screen', () => {
     const ta = container.querySelector('textarea')
     expect(ta).not.toBeNull()
 
-    const twins = Array.from(document.body.querySelectorAll('textarea[aria-hidden="true"]'))
+    // The first measurement after mount runs on the next frame.
+    const offscreenTwins = () => Array.from(document.body.querySelectorAll('textarea[aria-hidden="true"]'))
       .filter(t => !container.contains(t))
-    expect(twins.length).toBe(1)
+    await waitFor(() => expect(offscreenTwins().length).toBe(1))
+    const twins = offscreenTwins()
     const twin = twins[0] as HTMLTextAreaElement
     expect(twin.value).toBe(draft)
     expect(twin.style.position).toBe('fixed')

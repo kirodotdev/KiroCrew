@@ -375,8 +375,8 @@ function ComposerControlPlugin({
   useEffect(() => {
     if (!controlRef && !onSelectionChange) return
     const control: ComposerControl = {
-      focus: () => {
-        editor.getRootElement()?.focus()
+      focus: (options) => {
+        editor.getRootElement()?.focus(options)
         editor.focus()
       },
       getRootElement: () => editor.getRootElement(),
