@@ -189,6 +189,31 @@ async def test_a_delegated_token_never_opens_a_crew_api_route(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/models", "/v1/crew/owner/bots"])
+async def test_a_delegated_link_token_is_not_taken_for_an_app_credential(
+    state, granted, monkeypatch, path
+):
+    """The Crew API recognises an app credential only when local authorization issued it.
+    A delegated link token is signed by the gateway, so as a bearer it stays a plain 401,
+    never the ``owner_only`` answer of a known app, and no app-credential audit row names it."""
+    from kiro_crew.dashboard import crew_api_auth
+
+    audited: list[tuple[str, str]] = []
+
+    async def _record(request, caller, error, resources):
+        audited.append((caller, error))
+
+    monkeypatch.setattr(crew_api_auth, "_audit_app_credential", _record)
+    async with _serve(state) as client:
+        headers = {"Authorization": "Bearer " + _delegated()["token"]}
+        resp = await client.request("GET", path, headers=headers)
+        body = await resp.text()
+        assert resp.status == 401, body
+        assert "owner_only" not in body
+    assert audited == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "method,path",
     [
@@ -199,9 +224,7 @@ async def test_a_delegated_token_never_opens_a_crew_api_route(
         ("POST", "/v1/crew/owner/grant-requests/abc/decision"),
     ],
 )
-async def test_a_delegated_session_bearer_is_refused_on_the_crew_api(
-    state, granted, method, path
-):
+async def test_a_delegated_session_bearer_is_refused_on_the_crew_api(state, granted, method, path):
     """The bearer check passes a ``kind=session`` token, so a session that carries ``via_app``
     meets the delegated rows next: no row opens ``/v1/``, so each answers 403."""
     from kiro_crew.apps import dashboard_proxy
