@@ -20,6 +20,7 @@ from kiro_crew.auth.service import (
     SignedOutDuringLoginError,
     UnknownIdentityError,
     UnknownLoginError,
+    UnknownProfileError,
 )
 from kiro_crew.auth.store import TokenStore, TokenStoreError
 from kiro_crew.config.paths import data_home
@@ -253,7 +254,10 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
 
 
 async def api_kas_login_poll(request: web.Request) -> web.Response:
-    """POST /api/kas-login/poll {login_id} — one non-blocking poll of a pending login."""
+    """POST /api/kas-login/poll {login_id, profile_arn?} — one non-blocking poll of a pending login.
+
+    ``profile_arn`` picks a profile for a company sign-in that answered ``choose_profile``.
+    """
     denied = await _require_owner(request, "kas_login_poll")
     if denied is not None:
         return denied
@@ -266,12 +270,20 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Missing 'login_id'.", "code": "missing_login_id"}, status=400
         )
+    profile_arn = (body or {}).get("profile_arn")
     try:
-        result = await service.poll_device(login_id)
+        result = await service.poll_device(
+            login_id, profile_arn if isinstance(profile_arn, str) else None
+        )
     except UnknownLoginError:
         return web.json_response(
             {"error": "No pending login with that id.", "code": "unknown_login_id"},
             status=404,
+        )
+    except UnknownProfileError:
+        return web.json_response(
+            {"error": "That profile is not one this sign-in offered.", "code": "unknown_profile"},
+            status=400,
         )
     except (aiohttp.ClientError, asyncio.TimeoutError) as err:
         # Auth service offline / slow during a poll: coded 502, not an uncoded 500.
