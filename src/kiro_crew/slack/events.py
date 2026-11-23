@@ -1968,6 +1968,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_slash import _handle_allowlist_cmd  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_bot  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_channel_cmd  # noqa: F401
+    from kiro_crew.slack.events_slash import _handle_conductor  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_config  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_dashboard  # noqa: F401
     from kiro_crew.slack.events_slash import _handle_sessions  # noqa: F401

@@ -124,6 +124,7 @@ async def _handle_slash_command(
         "!link-to-dashboard": _bang_link_to_dashboard,
         "!ta": _bang_thread_agent,
         "!bot": _bang_bot,
+        "!conductor": _bang_conductor,
         "!project": _bang_project,
         "!allowlist": _bang_allowlist,
         "!channel": _bang_channel,
@@ -956,6 +957,43 @@ async def _bang_thread_agent(
     return ""
 
 
+# ── !conductor [goal] — make this thread a Conductor thread, for good ──
+async def _bang_conductor(
+    cmd_text: str,
+    slack: SlackClientOps,
+    sessions: SessionManager,
+    channel: str,
+    reply_ts: str,
+    msg_ts: str,
+    session_key: str,
+    user_id: str,
+    conversation_log: ConversationLog | None,
+) -> str:
+    """Turn this thread into a Conductor thread (``kiro_crew.slack.conductor_thread``).
+
+    Owner-only like every ``!`` command but ``!stop``, ``!title`` and ``!dashboard``:
+    the router refuses anyone else first, and the start asks ``is_owner`` again. The
+    rest of the message is the goal, the conductor's first turn.
+    """
+    from kiro_crew.slack import conductor_thread
+
+    parts = cmd_text.split(maxsplit=1)
+    goal = parts[1].strip() if len(parts) > 1 else ""
+    started, text = await conductor_thread.start(
+        slack,
+        channel,
+        reply_ts,
+        user_id,
+        goal,
+        session_key=session_key,
+        msg_ts=msg_ts,
+        in_thread=reply_ts != msg_ts,
+    )
+    if not started:
+        await slack.post_message(channel, f"❌ {text}", reply_ts)
+    return ""
+
+
 # ── !bot [name|off] — run this thread as a Crew Bot ──
 async def _bang_bot(
     cmd_text: str,
@@ -976,6 +1014,13 @@ async def _bang_bot(
     outlives a restart and beats the channel's pin. Owner-only like every ``!`` command
     but ``!stop``, ``!title`` and ``!dashboard``: the router refuses anyone else first.
     """
+    from kiro_crew.slack import conductor_thread
+
+    # A Conductor thread keeps its conductor for good (the one Bot-versus-Conductor rule).
+    locked = conductor_thread.switch_refusal("!bot", channel, reply_ts, session_key)
+    if locked:
+        await slack.post_message(channel, locked, reply_ts)
+        return ""
     parts = cmd_text.split(maxsplit=1)
     typed = parts[1].strip() if len(parts) > 1 else ""
     if not typed:

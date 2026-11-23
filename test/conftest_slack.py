@@ -88,6 +88,28 @@ def _reset_thread_board():
 
 
 @per_test_guard
+def _reset_conductor_thread_notices():
+    """Forget which people a Conductor thread already told it is the owner's.
+
+    ``kiro_crew.slack.conductor_thread`` tells each non-owner once per thread and keeps
+    that in a process-global map keyed by ``(channel, thread, user)``; tests reuse those
+    ids, so a notice one test sent would suppress the next test's. Looked up in
+    ``sys.modules`` so a run that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.conductor_thread")
+        if module is not None:
+            module.forget_told()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
