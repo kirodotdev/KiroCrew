@@ -143,6 +143,31 @@ def test_decisions_reads_the_name_as_the_provider_does() -> None:
         assert _collect(readers.scan_decisions, sagemaker, {VAULT_SECRET_NAME}) == {}
 
 
+def test_decisions_does_not_list_the_key_for_an_aws_signed_https_endpoint() -> None:
+    """An ``aws-https://`` endpoint is signed with AWS credentials: the key is never read."""
+    from kiro_crew.decisions.impl_systemone import VAULT_SECRET_NAME
+
+    ref = f"secret://{VAULT_SECRET_NAME}"
+    signed = _config(
+        decisions=SimpleNamespace(
+            provider=SimpleNamespace(
+                api_key=ref,
+                endpoint="aws-https://decider.example.com/v1/decisions"
+                "?service=execute-api&region=us-west-2",
+            )
+        )
+    )
+    # The control: the same reference on a plain https endpoint is listed.
+    plain = _config(
+        decisions=SimpleNamespace(
+            provider=SimpleNamespace(api_key=ref, endpoint="https://decider.example.com/v1")
+        )
+    )
+    with patch("kiro_crew.decisions.consent.permits", return_value=True):
+        assert _collect(readers.scan_decisions, signed, {VAULT_SECRET_NAME}) == {}
+        assert VAULT_SECRET_NAME in _collect(readers.scan_decisions, plain, {VAULT_SECRET_NAME})
+
+
 def test_decisions_unreadable_consent_raises() -> None:
     from kiro_crew.decisions.impl_systemone import VAULT_SECRET_NAME
 

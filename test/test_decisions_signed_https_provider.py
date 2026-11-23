@@ -120,6 +120,23 @@ def _seed_endpoint(endpoint: str, **extra) -> None:
     update_config_locked(config_path(), mutate=_seed)
 
 
+def _ceiling_policy(monkeypatch, scopes: dict) -> None:
+    """A real parsed ceiling whose ``capabilities.decisions`` row carries *scopes*."""
+    from types import SimpleNamespace
+
+    from kiro_crew.platform import context as pc
+    from kiro_crew.platform.governance import parse_policy
+
+    ceiling = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {"decisions": {"enabled": True, "scopes": scopes}},
+        }
+    )
+    monkeypatch.setattr(pc, "current_context", lambda: SimpleNamespace(governance=ceiling))
+
+
 async def _put(body, **kw):
     from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
 
@@ -317,6 +334,108 @@ class TestGet:
         _seed_endpoint("aws-https://decider.example.com/v1?region=us-west-2")
         payload = json.loads((await api_decisions_provider_get(_request())).text)
         assert (payload["active"], payload["aws_https"]) == ("custom", None)
+
+    @pytest.mark.asyncio
+    async def test_a_configured_endpoint_whose_host_is_refused_reads_none(
+        self, audit, provider_config, monkeypatch
+    ):
+        """The ``endpoints`` list is asked about the ``https://`` host; the config is kept."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_get
+
+        _ceiling_policy(
+            monkeypatch,
+            {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}},
+        )
+        _seed_endpoint(GOOD_ADDRESS, model="decider-model-v2")
+        before = provider_config()
+        payload = json.loads((await api_decisions_provider_get(_request())).text)
+        assert payload["active"] == "none"
+        assert payload["configured_refused"] is True
+        assert payload["configured_endpoint"] == GOOD_ADDRESS
+        assert provider_config() == before
+
+    @pytest.mark.asyncio
+    async def test_a_configured_endpoint_the_providers_list_refuses_reads_none(
+        self, audit, provider_config, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_get
+
+        _ceiling_policy(monkeypatch, {"providers": {"mode": "allow", "allow": ["sagemaker"]}})
+        _seed_endpoint(GOOD_ADDRESS)
+        before = provider_config()
+        payload = json.loads((await api_decisions_provider_get(_request())).text)
+        assert payload["provider_permitted"]["aws_https"] is False
+        assert payload["provider_permitted"]["sagemaker"] is True
+        assert (payload["active"], payload["configured_refused"]) == ("none", True)
+        assert provider_config() == before
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_configured_endpoint_is_not_refused(self, audit, monkeypatch):
+        """The control: the same reads with the host and the id allowed."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_get
+
+        _ceiling_policy(
+            monkeypatch,
+            {
+                "providers": {"mode": "allow", "allow": ["aws_https"]},
+                "endpoints": {"mode": "allow", "allow": ["decider.example.com"]},
+            },
+        )
+        _seed_endpoint(GOOD_ADDRESS)
+        payload = json.loads((await api_decisions_provider_get(_request())).text)
+        assert (payload["active"], payload["configured_refused"]) == ("aws_https", False)
+
+
+class TestConsent:
+    """Turning consent on for a configured ``aws-https://`` address asks its host."""
+
+    @pytest.fixture(autouse=True)
+    def _sel(self, monkeypatch):
+        # The audited governance probe writes an SEL row; without one it fails closed,
+        # which would make every refusal below pass for the wrong reason.
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: MagicMock())
+
+    @pytest.fixture(autouse=True)
+    def _configured(self, monkeypatch):
+        # The gate reads the live config snapshot; pin it to the address under test.
+        from kiro_crew.decisions import gate
+
+        monkeypatch.setattr(gate, "configured_endpoint", lambda config=None: GOOD_ADDRESS)
+
+    async def _enable(self):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": GOOD_ADDRESS})
+        )
+        return resp.status, json.loads(resp.text)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_host_records_no_consent(self, audit, keystone, monkeypatch):
+        _ceiling_policy(monkeypatch, {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}})
+        _seed_endpoint(GOOD_ADDRESS)
+        status, body = await self._enable()
+        assert status == 403
+        assert body["code"] == "decisions_capability_denied"
+        assert not keystone.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_host_records_consent_for_the_address(
+        self, audit, keystone, monkeypatch
+    ):
+        _ceiling_policy(
+            monkeypatch,
+            {
+                "providers": {"mode": "allow", "allow": ["aws_https"]},
+                "endpoints": {"mode": "allow", "allow": ["decider.example.com"]},
+            },
+        )
+        _seed_endpoint(GOOD_ADDRESS)
+        status, _ = await self._enable()
+        assert status == 200
+        assert consent.permits(GOOD_ADDRESS) is True
 
 
 class TestConnectionTest:

@@ -38,11 +38,14 @@ _PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
     "accounts": _OFF,
 }
 #: ``capabilities.decisions`` ``providers`` (``decisions.capability.provider_ids``):
-#: every decision model but hosted Jev, plus Clef (``PROVIDER_CLEF``). Spelled here
-#: because this module is data only; ``test_decisions_lts_jev_lock.py`` pins it.
+#: the decision models RFC D13 names -- the local presets, SageMaker and Clef
+#: (``PROVIDER_CLEF``). Hosted Jev is left out, and so is an AWS-signed HTTPS endpoint
+#: (``PROVIDER_SIGNED_HTTPS``): it names a host of the owner's choosing, so it stays off
+#: until a remote policy names it in this list. Spelled here because this module is
+#: data only; ``test_decisions_lts_jev_lock.py`` pins it.
 _DECISION_PROVIDERS: Mapping[str, object] = {
     "mode": "allow",
-    "allow": ["plumb-4b", "strands-decider-2b", "laya", "sagemaker", "aws_https", "clef"],
+    "allow": ["plumb-4b", "strands-decider-2b", "laya", "sagemaker", "clef"],
 }
 
 BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {

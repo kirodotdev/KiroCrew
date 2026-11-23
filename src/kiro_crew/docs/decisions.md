@@ -86,7 +86,7 @@ When decision models are turned off for the dashboard, the Decisions card shows 
 
 When only some are allowed, each model that is not allowed is still listed under **Decision model**, greyed out with "Not allowed by your administrator.", and cannot be chosen. A model that is not allowed is sent nothing wherever your administrator's policy refuses it, even if you chose it earlier or wrote its address into `config.json` by hand. A consent you gave stays recorded and counts again if your administrator later allows that model. **No model** is always available. An address of your own that you set in `config.json` (`decisions.provider.endpoint`) is not one of the listed models, so this list does not limit it; turning decision models off entirely still does.
 
-In the LTS edition, Jev hosted by TypeSafe is always off, and so is any address of your own: neither is ever sent anything, whatever the policy or `config.json` says. The other models (the local models, SageMaker and Cloudflare Clef) work unless your administrator's policy turns them off.
+In the LTS edition, Jev hosted by TypeSafe is always off, and so is any address of your own: neither is ever sent anything, whatever the policy or `config.json` says. The other models (the local models, SageMaker and Cloudflare Clef) work unless your administrator's policy turns them off. An AWS-signed HTTPS endpoint is off in the LTS edition until your administrator's policy allows it by name, because it can point at any host.
 
 The hosted provider's API key field is part of that provider's entry under **Decision model**: choose **Jev, hosted by TypeSafe** and the field appears beneath it.
 
@@ -94,7 +94,7 @@ The hosted provider's API key field is part of that provider's entry under **Dec
 
 Cloudflare's Clef decision model on Workers AI answers the same questions in the same format as Jev, so it works as the Decisions provider. Cloudflare wraps its answer in a `result` object, and Kiro Crew reads either shape. A failure reply carries no `answers` and is refused like any other unusable answer, and nothing from it is logged.
 
-Set `provider` in `config.json` by hand (the Decision model picker only offers Jev and local models), using your own Cloudflare account id. On Linux, where Kiro Crew's sandbox protects `config.json`, an edit made outside the dashboard does not take effect on its own: Settings > Security shows the changed keys, and you choose **Apply** to start using it or **Discard** to put back the version Kiro Crew last saved. The same goes for every hand edit in this page.
+Set `provider` in `config.json` by hand (the Decision model picker does not offer Clef), using your own Cloudflare account id. On Linux, where Kiro Crew's sandbox protects `config.json`, an edit made outside the dashboard does not take effect on its own: Settings > Security shows the changed keys, and you choose **Apply** to start using it or **Discard** to put back the version Kiro Crew last saved. The same goes for every hand edit in this page.
 
 ```json
 {
@@ -180,7 +180,7 @@ By hand in `config.json`:
 
 - `endpoint` is `aws-https://<host>[:<port>]/<path>?service=<signing-service>&region=<aws-region>`, with an optional `&profile=<aws-profile>`. The request goes to `https://<host>[:<port>]/<path>`. Nothing else may appear in the address.
 - Each request is signed with your AWS credentials for that service and region. No API key is read and `api_key` is ignored. The credentials need whatever permission the endpoint asks for.
-- An organisation's endpoint allow or deny list is checked against the `https://` host. The `providers` list names this option `aws_https`.
+- An organisation's endpoint allow or deny list is checked against the `https://` host. The `providers` list names this option `aws_https`; in the LTS edition it is off until that list names it.
 - Text questions only: no screenshots or Box questions are sent to this endpoint.
 - A 401 or 403 is reported as refused credentials; other errors name the HTTP status without quoting your messages or credentials. A redirect is never followed.
 

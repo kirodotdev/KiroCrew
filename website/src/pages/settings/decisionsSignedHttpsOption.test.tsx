@@ -119,4 +119,42 @@ describe('DecisionsProviderPicker AWS-signed HTTPS option', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Use / }))
     expect(await screen.findByText(/Use an https:\/\/ address with a host name and a path/)).toBeInTheDocument()
   })
+
+  it('names the saved endpoint, not Jev, when the administrator refuses it, and offers only to clear it', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(provider('none'))
+    await renderPicker(
+      provider('none', {
+        configured_endpoint: 'aws-https://decider.example.com/v1/decisions?service=execute-api&region=us-west-2',
+        hosted_permitted: true,
+        provider_permitted: { jev: true, sagemaker: true, aws_https: false },
+        configured_refused: true,
+      }),
+    )
+    expect(
+      await screen.findByText(/Your AWS-signed HTTPS endpoint is still saved in your settings, but your administrator does not allow it/),
+    ).toBeTruthy()
+    expect(screen.queryByText(/Jev, hosted by TypeSafe is still saved in your settings/)).toBeNull()
+    // Greyed, not choosable, and no option drawn selected over the refused one.
+    expect(screen.getByRole('radio', { name: OPTION })).toBeDisabled()
+    expect(screen.queryByRole('radio', { checked: true })).toBeNull()
+    expect(screen.queryByLabelText('Endpoint URL')).toBeNull()
+    const clear = screen.getAllByRole('button', { name: 'Clear from settings' })
+    expect(clear).toHaveLength(1)
+    fireEvent.click(clear[0])
+    await waitFor(() => expect(save).toHaveBeenCalledWith('none'))
+  })
+
+  it('keeps a saved endpoint selected when the administrator allows it', async () => {
+    await renderPicker(
+      provider('aws_https', {
+        aws_https: SAVED,
+        configured_endpoint: 'aws-https://decider.example.com/v1/decisions?service=execute-api&region=us-west-2',
+        provider_permitted: { jev: true, sagemaker: true, aws_https: true },
+        configured_refused: false,
+      }),
+    )
+    expect(await screen.findByRole('radio', { name: OPTION })).toBeChecked()
+    expect(screen.queryByText(/is still saved in your settings, but your administrator does not allow it/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Clear from settings' })).toBeNull()
+  })
 })

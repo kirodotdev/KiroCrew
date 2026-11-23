@@ -39,7 +39,14 @@ CLEF = (
     + "0123abcd" * 4
     + "/ai/run/@cf/cloudflare/clef"
 )
-NON_JEV = (*(m.id for m in local_models.LOCAL_MODELS), "sagemaker", "aws_https", "clef")
+#: The models the LTS baseline allows with no policy (RFC D13).
+NON_JEV = (*(m.id for m in local_models.LOCAL_MODELS), "sagemaker", "clef")
+#: An AWS-signed HTTPS endpoint names a host of the owner's choosing: not in the
+#: baseline, so only a policy that names it allows it.
+SIGNED_HTTPS = "aws_https"
+SIGNED_HTTPS_ADDRESS = (
+    "aws-https://decider.example.com/v1/decisions?service=execute-api&region=us-west-2"
+)
 
 
 class _Recording:
@@ -104,17 +111,26 @@ def oracle(monkeypatch, tmp_path):
     return recording
 
 
-def _policy(monkeypatch, decisions: dict | None) -> None:
+@pytest.fixture
+def signed_https_oracle(monkeypatch, tmp_path):
+    import kiro_crew.decisions.impl_signed_https as impl_mod
+    from kiro_crew.decisions import log as log_mod
+
+    monkeypatch.setattr(log_mod, "log_dir", lambda: tmp_path / "decisions")
+    recording = _Recording()
+    monkeypatch.setattr(impl_mod, "SignedHttpsProvider", lambda provider: recording)
+    return recording
+
+
+def _policy(monkeypatch, decisions: dict | None, *, empty: bool = False) -> None:
     from kiro_crew.platform import context as pc
     from kiro_crew.platform.governance import parse_policy
 
     ceiling = None
-    if decisions is not None:
-        doc = {
-            "version": 1,
-            "boot": {"fail_closed": True},
-            "capabilities": {"decisions": decisions},
-        }
+    if decisions is not None or empty:
+        doc: dict = {"version": 1, "boot": {"fail_closed": True}}
+        if decisions is not None:
+            doc["capabilities"] = {"decisions": decisions}
         ceiling = parse_policy(doc)
     monkeypatch.setattr(pc, "current_context", lambda: SimpleNamespace(governance=ceiling))
 
@@ -123,7 +139,7 @@ def _policy(monkeypatch, decisions: dict | None) -> None:
 _WIDEN_TO_JEV = {
     "enabled": True,
     "scopes": {
-        "providers": {"mode": "allow", "allow": ["jev", *NON_JEV]},
+        "providers": {"mode": "allow", "allow": ["jev", *NON_JEV, SIGNED_HTTPS]},
         "endpoints": {"mode": "allow", "allow": ["api.typesafe.ai", "*.typesafe.ai"]},
     },
 }
@@ -163,7 +179,47 @@ def test_baseline_providers_list_is_every_id_but_jev() -> None:
 
     allow = BASELINE_INNER_LISTS["capabilities.decisions"]["providers"]["allow"]
     assert set(allow) == set(NON_JEV)
-    assert set(capability.provider_ids()) - {"jev"} | {"clef"} == set(allow)
+    assert set(capability.provider_ids()) - {"jev", SIGNED_HTTPS} | {"clef"} == set(allow)
+
+
+def test_signed_https_is_off_under_the_baseline_and_sends_nothing(
+    edition, monkeypatch, consent, signed_https_oracle
+) -> None:
+    """Not in the baseline: under a policy that does not name it, consent alone sends
+    nothing to an owner-chosen host, while a baseline model stays usable."""
+    _policy(monkeypatch, None, empty=True)
+    assert capability.is_decisions_denied(provider=SIGNED_HTTPS) is True
+    assert capability.is_decisions_denied(provider="sagemaker") is False
+    consent(SIGNED_HTTPS_ADDRESS)
+    cfg = _config(endpoint=SIGNED_HTTPS_ADDRESS, model="decider-model-v2")
+    assert gate_mod.is_enabled(POINT, config=cfg) is False
+    assert asyncio.run(gate_mod.decide(POINT, "hi", QUESTIONS, config=cfg)) is None
+    assert signed_https_oracle.calls == []
+
+
+def test_signed_https_sends_once_a_policy_names_it(
+    edition, monkeypatch, consent, signed_https_oracle
+) -> None:
+    _policy(
+        monkeypatch,
+        {"enabled": True, "scopes": {"providers": {"mode": "allow", "allow": [SIGNED_HTTPS]}}},
+    )
+    consent(SIGNED_HTTPS_ADDRESS)
+    cfg = _config(endpoint=SIGNED_HTTPS_ADDRESS, model="decider-model-v2")
+    assert asyncio.run(gate_mod.decide(POINT, "hi", QUESTIONS, config=cfg)) is not None
+    assert len(signed_https_oracle.calls) == 1
+
+
+def test_the_jev_host_behind_the_signed_scheme_never_sends(
+    edition, monkeypatch, consent, signed_https_oracle
+) -> None:
+    """A policy naming the option cannot reach Jev's host through it."""
+    _policy(monkeypatch, _WIDEN_TO_JEV)
+    address = "aws-https://api.typesafe.ai/v1/systemone?service=execute-api&region=us-west-2"
+    consent(address)
+    cfg = _config(endpoint=address, model="decider-model-v2")
+    assert asyncio.run(gate_mod.decide(POINT, "hi", QUESTIONS, config=cfg)) is None
+    assert signed_https_oracle.calls == []
 
 
 @pytest.mark.parametrize(
