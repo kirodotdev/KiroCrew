@@ -52,10 +52,15 @@ The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
                                                # last N first-parent commits
     "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
 
-and two tables no reader on main takes yet (`scripts/ci_test_os_tables.py`):
+two tables the verdict's `windows` block is chosen from
+(`scripts/ci_test_os_tables.py`, `scripts/ci_test_selection_windows.py`):
 
     "os_sensitive": {src file: "W1" | "W2"},
     "windows_targeting": [test file, ...]
+
+and when the `bundle` command wrote the file, which says how old those tables are:
+
+    "built_at": ISO 8601 time, UTC
 
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
@@ -115,6 +120,7 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -564,6 +570,7 @@ def bundle(
 def _cmd_bundle(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     doc, absent = bundle(load_map(Path(args.map)), root, args.ref, args.commits)
+    doc["built_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     data = gzip.compress(text.encode("utf-8"), mtime=0)
     Path(args.out).write_bytes(data)

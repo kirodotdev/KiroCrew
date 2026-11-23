@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         _dedup_text,
         _defer_cron_before_dispatch,
         _GateTally,
+        _normalize_slot_key,
         _result_hash,
         _subagent_work_pending,
         acp_error_after_tool_activity,
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         configured_fallback_chain,
         consume_reinjection,
         context_meter_reading,
+        cron_tab_name,
         dataclass,
         declared_mcp_not_ready_note,
         declared_mcp_note_change,
@@ -63,6 +65,7 @@ if TYPE_CHECKING:
         live,
         logger,
         note_turn_landed,
+        open_turn_crew_log,
         persist_token_record_async,
         provider_fallback_active,
         provider_last_turn_usage,
@@ -343,6 +346,16 @@ async def _cron_run_sequence(
                 # empty parent ("notification only (parent=)") unless an
                 # unrelated surface happened to be mid-turn.
                 await publish_turn_identity(self.sessions, agent_session_key)
+                # The step's crew log, which its ledger records into, filed under the
+                # key's tab name: the name the ledger's ``canonical_slot`` folds a
+                # session-less read of the key to.
+                open_turn_crew_log(
+                    client,
+                    session_key=agent_session_key,
+                    agent=step.dispatch_agent or "",
+                    resumed=_resumed,
+                    slot=_normalize_slot_key(cron_tab_name(agent_session_key)),
+                )
                 if is_new:
                     # Unattended: hold the first prompt (bounded) for the
                     # agent spec's MCP servers, which nobody can reconnect.
@@ -935,6 +948,17 @@ async def _cron_run_single(
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
         await publish_turn_identity(self.sessions, session_key)
+        if job.persistent_session:
+            # The job's crew log, as on the sequence site; its tab name is also the
+            # slot a dashboard turn in the job's tab records. A stateless run's key is
+            # new on every fire and its reset unit is never collected, so it opens none.
+            open_turn_crew_log(
+                client,
+                session_key=session_key,
+                agent=_dispatch_agent or "",
+                resumed=_resumed,
+                slot=_normalize_slot_key(cron_tab_name(session_key)),
+            )
         if is_new:
             # Unattended: hold the first prompt (bounded) for the agent spec's
             # MCP servers, which nobody can reconnect by hand in this run.

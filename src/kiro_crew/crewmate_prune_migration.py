@@ -610,7 +610,8 @@ def _chatted(cfg: KiroCrewConfig, name: str, sessions_dir: Path) -> bool:
     the caller keeps the crewmate.
     """
     from kiro_crew import members as members_mod
-    from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, _safe_key
+    from kiro_crew.history import ARCHIVE_DIR_NAME, _safe_key
+    from kiro_crew.history_files import archive_segment_stem
 
     try:
         slug = members_mod.member_slug(name, cfg)
@@ -629,22 +630,19 @@ def _chatted(cfg: KiroCrewConfig, name: str, sessions_dir: Path) -> bool:
         stems.append(stem)
 
     archive = sessions_dir / ARCHIVE_DIR_NAME
-    prefixes = tuple(f"{stem}{ARCHIVE_SEGMENT_DELIMITER}" for stem in stems)
+    # Whole-stem match: a chat whose stem is <stem>__more shares the <stem>__ prefix.
     try:
         with os.scandir(archive) as entries:
             archive_names = sorted(
-                entry.name
-                for entry in entries
-                if entry.name.endswith(".jsonl") and entry.name.startswith(prefixes)
+                entry.name for entry in entries if archive_segment_stem(entry.name) in stems
             )
     except FileNotFoundError:
         archive_names = []
     except OSError as exc:
         raise HistoryUnreadable(f"could not list archived transcripts: {exc}") from exc
     for stem in stems:
-        prefix = f"{stem}{ARCHIVE_SEGMENT_DELIMITER}"
         for name in archive_names:
-            if name.startswith(prefix) and _transcript_has_a_turn(
+            if archive_segment_stem(name) == stem and _transcript_has_a_turn(
                 archive / name, missing_is_doubt=True
             ):
                 return True

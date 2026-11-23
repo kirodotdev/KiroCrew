@@ -61,7 +61,9 @@ def is_member_message(msg: dict[str, Any]) -> bool:
     ends on, a system notice, or a completion envelope.
     """
     role = msg.get("role")
-    return role == "assistant" and is_speech_row(role, msg.get("content"), msg.get("meta"))
+    return role == "assistant" and is_speech_row(
+        role, msg.get("content"), msg.get("meta"), variants=msg.get("variants")
+    )
 
 
 def _thread_url(name: str) -> str:

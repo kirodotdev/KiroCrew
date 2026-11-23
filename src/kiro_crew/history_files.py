@@ -350,3 +350,47 @@ def transcript_lock_stems(key: str) -> tuple[str, ...]:
     if bare is None:
         return (_safe_key(key),)
     return (_safe_key(f"slack:{bare}"), _safe_key(bare))
+
+
+def archive_segment_split(stem_part: str) -> tuple[str, str] | None:
+    """Split an archive file name without its ``.jsonl`` into ``(owner, stamp)``.
+
+    The owner is everything before the LAST ``ARCHIVE_SEGMENT_DELIMITER``: the
+    ``YYYYMMDD-HHMMSS[-N]`` stamp after it holds no underscore, while a stem may
+    (``_safe_key`` keeps them), so a prefix match on ``<stem>__`` would also take
+    the segments of a chat whose stem is ``<stem>__more``. ``None`` when the
+    name holds no delimiter.
+    """
+    owner, delimiter, stamp = stem_part.rpartition(ARCHIVE_SEGMENT_DELIMITER)
+    return (owner, stamp) if delimiter else None
+
+
+def archive_segment_stem(name: str) -> str | None:
+    """The transcript stem archive file *name* belongs to, or ``None`` if it is not a segment.
+
+    Case-exact on the ``.jsonl`` suffix; callers compare the result to their
+    stem exactly.
+    """
+    if not name.endswith(".jsonl"):
+        return None
+    split = archive_segment_split(name[: -len(".jsonl")])
+    return split[0] if split else None
+
+
+def archive_segments_of(adir: Path, stem: str) -> list[Path]:
+    """The segments of transcript *stem* in archive directory *adir*, as a list.
+
+    Globs ``<stem>__*.jsonl`` and keeps what the glob matched, under the OS's
+    case and suffix rule, except a name whose LAST delimiter is not right after
+    *stem*, which belongs to a longer stem such as ``<stem>__more``. The list is
+    built here, so any ``OSError`` the glob raises surfaces from this call,
+    inside the caller's own handler.
+    """
+    kept = []
+    for p in adir.glob(f"{stem}{ARCHIVE_SEGMENT_DELIMITER}*.jsonl"):
+        split = archive_segment_split(p.name[: -len(".jsonl")])
+        # The glob matched "<stem>__" under the OS's case rule, so an owner of
+        # stem's length is that stem in whatever case the file carries.
+        if split and len(split[0]) == len(stem):
+            kept.append(p)
+    return kept

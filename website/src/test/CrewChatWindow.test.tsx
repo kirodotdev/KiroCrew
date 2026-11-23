@@ -1404,6 +1404,20 @@ describe('CrewChatWindow', () => {
     expect(within(reply).getByRole('button', { name: 'Regenerate response' })).toBeTruthy()
   })
 
+  it('offers no Regenerate on an older reply when an inject opened the newest turn and its reply is hidden', async () => {
+    // The press re-runs the newest turn, so a button on "hello" would answer the workflow follow-up instead.
+    detail = { running: false, messages: [
+      { role: 'user', content: 'hi', ts: 't1' }, { role: 'assistant', content: 'hello', ts: 't2' },
+      { role: 'inject', content: 'workflow done', ts: 't3', meta: { injectKind: 'workflow' } },
+      { role: 'assistant', content: '\u200b', ts: 't4' },
+    ] }
+    renderWindow()
+    const reply = await screen.findByTestId('crew-window-assistant', {}, PEER_ROW_WAIT)
+    // The row's actions are drawn, so the missing button is the anchor, not a missing footer.
+    expect(within(reply).getAllByRole('button', { name: 'Copy' }).length).toBeGreaterThan(0)
+    expect(within(reply).queryByRole('button', { name: 'Regenerate response' })).toBeNull()
+  })
+
   it('shows a refused effort pick on the window itself', async () => {
     slotRow = { ...slotRow, model: 'claude-opus', reasoning_effort: 'high' }
     mocks.crewPeerGet.mockImplementation((_id: string, path: string) => Promise.resolve(

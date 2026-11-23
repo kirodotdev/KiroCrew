@@ -403,6 +403,32 @@ async def test_a_non_conductor_wake_is_refused(wake_env: dict[str, Any], agent: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent", "session_key", "applied"),
+    [
+        ("kirocrew-conductor", SESSION, True),
+        ("my-team-bot", SESSION, False),
+        ("my-team-bot", "chat-botthread", False),
+    ],
+)
+async def test_the_outcome_says_whether_the_wake_reset_applied(
+    wake_env: dict[str, Any], agent: str, session_key: str, applied: bool
+) -> None:
+    """Both refusal branches, a surfaced key and one with no user surface, report
+    not applied: the out-of-band consumer logs "applied" from this flag alone."""
+    outcome = await sda.apply_session_directive_outcome(
+        _state(),
+        _slot(agent=agent),
+        session_key,
+        "reset_conversation",
+        {},
+        producer_is_self_wake=True,
+        producer_wake_loop_id=LOOP_ID,
+    )
+    assert outcome.applied is applied, outcome.text
+
+
+@pytest.mark.asyncio
 async def test_the_deprecated_conductor_alias_is_admitted(wake_env: dict[str, Any]) -> None:
     slot = _slot(agent="kirocrew-ledger-conductor")
     result = await _wake_reset(slot, _state())

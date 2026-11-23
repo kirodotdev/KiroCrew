@@ -28,6 +28,7 @@ from urllib.parse import quote
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.urls import dashboard_link_origin
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,8 @@ def _is_conversational(row: object) -> bool:
     meta = row.get("meta")
     if is_system_notice(role, meta):
         return False
-    return True
+    # The backend's alternation placeholder an older build stored: not an answer either.
+    return not is_stored_echo_row(row)
 
 
 def group_turns(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:

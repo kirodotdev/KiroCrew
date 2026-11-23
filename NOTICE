@@ -47,3 +47,11 @@ Desktop releases bundle an audio-only build of FFmpeg 7.1.1, licensed under
 the GNU Lesser General Public License v2.1 or later, as a separate executable.
 Its license text and the location of its corresponding source are under
 "Bundled Programs" in THIRD-PARTY-NOTICES.
+
+The Python package vendors llama-cpp-python 0.3.34 (MIT) under
+src/kiro_crew/_vendor/llama_cpp/ and the llama.cpp and ggml native libraries
+it loads (MIT) under src/kiro_crew/_vendor/llama_cpp_libs/. The Linux
+library directories also carry the GNU OpenMP runtime (libgomp), licensed
+under the GNU General Public License v3 with the GCC Runtime Library
+Exception 3.1. Their notices and license texts are under "Vendored
+Libraries" in THIRD-PARTY-NOTICES.

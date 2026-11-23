@@ -37,6 +37,7 @@ from kiro_crew.crew_log.writer import (
     WriteJob,
     WriterLimits,
 )
+from kiro_crew.testing.wait import default_timeout
 
 UNIT = "acp-writer-0001"
 OTHER = "acp-writer-0002"
@@ -954,7 +955,7 @@ def test_shutdown_writes_what_is_buffered(units, clock):
     units.create(UNIT)
     writer = _writer(units, clock)
     _on_loop(lambda: [writer.submit(UNIT, _step(units, UNIT, n)) for n in (1, 2, 3)])
-    assert writer.drain_for_shutdown(5.0) == DrainReport(True, 0, 0, False)
+    assert writer.drain_for_shutdown(5.0) == DrainReport(True, 0, 0, 0, False)
     assert units.steps(UNIT) == [1, 2, 3]
 
 
@@ -994,8 +995,8 @@ def test_shutdown_names_a_marker_it_could_not_land(units, clock, caplog):
     writer.submit(UNIT, _step(units, UNIT, 1))
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         report = writer.drain_for_shutdown(0.5)
-    assert report == DrainReport(False, 0, 1, False)
-    assert _messages(caplog, "0 append(s) buffered, 1 loss marker(s) owed")
+    assert report == DrainReport(False, 0, 0, 1, False)
+    assert _messages(caplog, "0 append(s) buffered, 0 entry(ies) claimed, 1 loss marker(s) owed")
 
 
 def test_shutdown_counts_a_marker_still_waiting_inside_its_retained_job(units, clock, caplog):
@@ -1013,8 +1014,8 @@ def test_shutdown_counts_a_marker_still_waiting_inside_its_retained_job(units, c
     assert writer.flush(timeout=0.01) is False
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         report = writer.drain_for_shutdown(0.01)
-    assert report == DrainReport(False, 1, 1, False)
-    assert _messages(caplog, "1 append(s) buffered, 1 loss marker(s) owed")
+    assert report == DrainReport(False, 1, 0, 1, False)
+    assert _messages(caplog, "1 append(s) buffered, 0 entry(ies) claimed, 1 loss marker(s) owed")
 
 
 def test_a_hung_write_holds_the_backlog_and_a_bounded_shutdown_says_so(units, pool, caplog):
@@ -1038,11 +1039,45 @@ def test_a_hung_write_holds_the_backlog_and_a_bounded_shutdown_says_so(units, po
         assert stats.peak_buffered == _BACKLOG
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             report = writer.drain_for_shutdown(0.2)
-        assert report == DrainReport(False, _BACKLOG, 0, True)
+        assert report == DrainReport(False, _BACKLOG, 0, 0, True)
         assert _messages(caplog, "did not finish writing")
     finally:
         release.set()
     assert writer.flush(timeout=20.0), writer.stats()
+    assert units.steps(UNIT) == list(range(_BACKLOG))
+
+
+def test_a_bounded_shutdown_counts_the_batch_the_writer_already_claimed(units, pool, caplog):
+    """A claimed batch is out of the buffer, so a report read from the buffer alone says 0
+    while every entry the batch has not attempted is still unwritten. The entry being
+    written when the drain gives up is the one ``batch_in_flight`` names."""
+    units.create(UNIT)
+    writer = _writer(units, executor=lambda: pool)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _holds_the_first_step(unit: str, kind: str, data: dict) -> BaseException | None:
+        if kind == "step/started" and data["step"] == 0:
+            entered.set()
+            release.wait(30.0)
+        return None
+
+    units.fault = _holds_the_first_step
+    # The one worker waits on this, so the whole backlog is buffered before a pass claims it.
+    started = threading.Event()
+    pool.submit(started.wait, 30.0)
+    try:
+        _on_loop(lambda: [writer.submit(UNIT, _step(units, UNIT, n)) for n in range(_BACKLOG)])
+        started.set()
+        assert entered.wait(20.0), "the writer never claimed the backlog"
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            report = writer.drain_for_shutdown(0.2)
+        assert _messages(caplog, f"0 append(s) buffered, {_BACKLOG - 1} entry(ies) claimed")
+        assert report == DrainReport(False, 0, _BACKLOG - 1, 0, True)
+    finally:
+        started.set()
+        release.set()
+    assert writer.flush(timeout=default_timeout()), writer.stats()
     assert units.steps(UNIT) == list(range(_BACKLOG))
 
 
@@ -1166,7 +1201,7 @@ def test_an_entry_submitted_during_the_inline_shutdown_drain_queues_behind_it(
         release.set()
         shutdown.join(20.0)
     assert not shutdown.is_alive(), "the shutdown drain never returned"
-    assert reports == [DrainReport(True, 0, 0, False)]
+    assert reports == [DrainReport(True, 0, 0, 0, False)]
     assert units.steps(UNIT) == [1, 2]
 
 

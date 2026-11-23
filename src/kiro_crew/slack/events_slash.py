@@ -223,6 +223,34 @@ async def _handle_voice(
 
 register_slash_command("dashboard", _handle_dashboard, "get a dashboard access link")
 register_slash_command("agent", _handle_agent, "switch the active agent")
+
+
+async def _handle_bot(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """List the Crew Bots. A thread is put on one by ``!bot <name>`` sent in that thread.
+
+    Slack does not run a slash command typed inside a thread, and its payload names no
+    thread, so this command cannot switch one. It answers where a person looks first.
+    """
+    from kiro_crew.slack.handler import (  # circular import: handler.py imports events.py for command dispatch
+        bots_text,
+        resolve_bot_name,
+    )
+
+    typed = args.strip()
+    if typed and await asyncio.to_thread(resolve_bot_name, typed) is None:
+        await respond(f"❌ Unknown Bot `{typed}`. Crew Bots: {await asyncio.to_thread(bots_text)}")
+        return
+    pick = f"`!bot {typed}`" if typed else "`!bot <name>`"
+    await respond(
+        f"Crew Bots: {await asyncio.to_thread(bots_text)}\n"
+        f"Slack does not run slash commands in a thread. To put a thread on a Bot, "
+        f"send {pick} in that thread. `!bot off` goes back."
+    )
+
+
+register_slash_command("bot", _handle_bot, "list Crew Bots (`!bot <name>` in a thread switches it)")
 register_slash_command("voice", _handle_voice, "configure TTS voice settings")
 
 

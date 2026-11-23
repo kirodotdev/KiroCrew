@@ -10,6 +10,7 @@ import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
   isAppDetailPath,
+  isMembersPath,
   claimChatLaunch,
   takeDeferredPendingInput,
   writePrefill,
@@ -723,5 +724,19 @@ describe('isAppDetailPath', () => {
     expect(isAppDetailPath('/apps')).toBe(false)
     expect(isAppDetailPath('/settings/about')).toBe(false)
     expect(isAppDetailPath('/chat?sid=apps/detail/x')).toBe(false)
+  })
+})
+
+describe('isMembersPath', () => {
+  it('recognises the Bots page, bare or on one Bot', () => {
+    expect(isMembersPath('/members')).toBe(true)
+    expect(isMembersPath('/members?member=Code%20Reviewer')).toBe(true)
+  })
+
+  it('rejects other routes that merely mention members', () => {
+    expect(isMembersPath('/members/extra')).toBe(false)
+    expect(isMembersPath('/membersx')).toBe(false)
+    expect(isMembersPath('/chat?sid=member-fixer')).toBe(false)
+    expect(isMembersPath('/settings/members')).toBe(false)
   })
 })

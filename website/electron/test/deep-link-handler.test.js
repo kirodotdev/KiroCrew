@@ -68,6 +68,16 @@ describe("createDeepLinkHandler", () => {
     assert.equal(h.pending(), null);
   });
 
+  it("a Bots page link is held and flushed exactly like a session link", () => {
+    const { fn, calls } = fakeDeliver();
+    const h = createDeepLinkHandler({ deliver: fn });
+    assert.equal(h.handleUrl("kirocrew://members?member=Code%20Reviewer"), false);
+    assert.equal(h.pending(), "/members?member=Code%20Reviewer");
+    assert.equal(h.navigateReady(), true);
+    assert.deepEqual(calls, ["/members?member=Code%20Reviewer"]);
+    assert.equal(h.pending(), null);
+  });
+
   it("an acked document that cannot take the route keeps the link held", () => {
     // e.g. the ack came from a page that is not the dashboard origin.
     const accepts = { value: false };

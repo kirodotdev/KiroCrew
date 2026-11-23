@@ -178,6 +178,7 @@ sentence. New copy must not add fragments: one key per sentence.
 | no unreachable plural suffixes | `zhStyle.test.ts` |
 | selected terminology mappings | `zhStyle.test.ts` |
 | CJK punctuation, ellipsis, no corner brackets, mixed parentheses or source-layout line breaks | `zhStyle.test.ts` |
+| no space after `。` | `sentenceJoin.test.ts` |
 | no 您, 这将, doubled particles or three-的 clauses | `zhStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 

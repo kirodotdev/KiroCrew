@@ -291,6 +291,55 @@ def test_a_boot_restore_keeps_only_the_creator_the_spawn_records(tmp_path, monke
     assert state._slots["chat-x"]._created_by == UNVERIFIED_CREATOR
 
 
+def test_a_restore_fence_lifts_when_the_tree_learns_the_creator_later(tmp_path, monkeypatch):
+    """A restore that runs before the tree holds the creation record fences the worker.
+    When the record arrives later in the same process, the next tree push lifts the
+    fence for the creator the record names, and only for that one."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config.paths import config_dir
+    from kiro_crew.dashboard.chat import restore_open_slots
+    from kiro_crew.dashboard.handlers.crew_log import CrewLogPublisher
+    from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+
+    _open_creator("s-l", "chat-l")
+    _open_creator("s-z", "chat-z")
+    assert_drained()
+    stp.reset_for_tests()
+    emit.reset_caches()
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    for slot in ("chat-w", "chat-x", "chat-y"):
+        (history / f"dashboard_{slot}.jsonl").write_text(
+            json.dumps({"_type": "metadata", "title": slot, "created_by": "chat-l"})
+            + "\n"
+            + json.dumps({"role": "user", "content": "task"})
+            + "\n",
+            encoding="utf-8",
+        )
+    (config_dir() / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-w", "chat-x", "chat-y"], "ts": 0.0}), encoding="utf-8"
+    )
+    state = _make_state(history)
+    assert restore_open_slots(state) == 3
+    for slot in ("chat-w", "chat-x", "chat-y"):
+        assert state._slots[slot]._created_by == UNVERIFIED_CREATOR
+
+    # The tree learns two creation records after the restore: one confirms the claim,
+    # one names another creator. chat-y gets none.
+    emit.on_session_spawned("s-l", creator_slot="chat-l", child_slot="chat-w")
+    emit.on_session_spawned("s-z", creator_slot="chat-z", child_slot="chat-x")
+    assert_drained()
+    CrewLogPublisher(state)._push_tree()
+
+    assert state._slots["chat-w"]._created_by == "chat-l"
+    assert state._slots["chat-x"]._created_by == UNVERIFIED_CREATOR
+    assert state._slots["chat-y"]._created_by == UNVERIFIED_CREATOR
+    assert state._slots["chat-x"]._unconfirmed_creator == "chat-l"
+
+
 def test_the_spawn_survives_a_restart_through_the_checkpoint_too():
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Callable
 
 from aiohttp import web
@@ -308,11 +309,39 @@ def _notes(state: Any) -> list[tuple[dict, dict]]:
     return found
 
 
+def _fenced(lines: list[str]) -> str:
+    """*lines* as one Markdown code block whose fence no line can close early."""
+    longest = max((len(run) for line in lines for run in re.findall(r"`+", line)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return "\n".join([fence, *lines, fence])
+
+
+def _note_text(entry: dict) -> tuple[str, str]:
+    """The note's title and body. An edit that changes ``slack.*`` lists the changed
+    keys, redacted as ``kirocrew config pending`` prints them, and sends the owner there
+    to review and apply: a member id listed by hand is expected to work at once."""
+    leaf, rows = entry["leaf"], entry.get("changes") or []
+    if not lp.touches_slack(leaf, rows):
+        return (
+            "Your config was changed outside Kiro Crew",
+            f"{leaf} was edited outside Kiro Crew. Review to apply or discard it.",
+        )
+    lines = lp.change_lines(rows, bool(entry.get("truncated")))
+    return (
+        "A Slack settings edit is held for review",
+        f"{leaf} was edited outside Kiro Crew and changes Slack settings (slack.*). "
+        "It is held for review and not in effect; a restart does not apply it. "
+        f"Changed keys:\n\n{_fenced(lines)}\n\n"
+        "Review it and apply or discard it with `kirocrew config pending`, or here.",
+    )
+
+
 async def _publish(state: Any, pending: list[dict]) -> None:
     """Notify each newly pending version once; acknowledge resolved ones; push a change."""
     from kiro_crew.notifications.bus import NotificationPayload
 
-    current = {p["leaf"]: p["signature"] for p in pending}
+    entries = {p["leaf"]: p for p in pending}
+    current = {leaf: p["signature"] for leaf, p in entries.items()}
     notes = _notes(state)
     # A resolved note (applied, discarded or put back by hand) answers for a version
     # that STOPPED being pending: the same bytes going pending again later -- a file
@@ -325,6 +354,7 @@ async def _publish(state: Any, pending: list[dict]) -> None:
     for leaf, signature in current.items():
         if (leaf, signature) in seen or published.get(leaf) == signature:
             continue
+        title, body = _note_text(entries[leaf])
         note = state.notification_bus.push(
             NotificationPayload(
                 source="system",
@@ -333,8 +363,8 @@ async def _publish(state: Any, pending: list[dict]) -> None:
                 # A user override on the channel can still raise it.
                 priority="default",
                 kind="agent",
-                title="Your config was changed outside Kiro Crew",
-                body=f"{leaf} was edited outside Kiro Crew. Review to apply or discard it.",
+                title=title,
+                body=body,
                 url=SETTINGS_URL,
                 group_key=f"config-pending:{leaf}",
                 meta={"config_pending_leaf": leaf},

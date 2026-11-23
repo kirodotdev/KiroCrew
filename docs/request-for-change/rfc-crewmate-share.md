@@ -21,6 +21,7 @@ superseded-by: []
 - Amended 2026-10-23 on the owner's ruling (pending the owner's acceptance of this text): a card cannot hold the files a bundle carries, so raising an import card keeps one owner-only staged copy of the checked file on the local backend, and one new owner route writes the carried files on the press (§5.4, "The staged copy"). Bundled skills land in `.kiro/skills/<name>/` of the member's workspace, the tree its sessions read.
 - Amended 2026-10-31 by the maintainer iamwhatever, who decided that the share file follows the Crew Jam rename ([#26601](https://github.com/kirodotdev/KiroCrew/pull/26601)): export writes `<name>.crewjam`, with the manifest entry `crewjam.json` and `"format": "kirocrew.crewjam"`. Import still takes the old `.crewmate` form (`crewmate.json`, `kirocrew.crewmate`) through the same checks, so files already shared keep importing. A file holding both manifest entries is refused (§5.2, "File names").
 - Amended 2026-11-04 by the maintainer CrysisDeu, after the product name became Bot ([2026-11-04 decision](../decisions/2026-11-04-the-share-file-is-a-kirobot-file.md)): export writes `<name>.kirobot`, with the manifest entry `kirobot.json` and `"format": "kirocrew.kirobot"`. Import still takes the `.crewjam` and `.crewmate` forms through the same checks. A file holding more than one manifest entry is refused (§5.2, "File names").
+- Amended 2026-11-23 by the maintainer bolichen97 ([2026-11-23 decision](../decisions/2026-11-23-a-kirobot-import-skips-the-empty-folder-entries-an-archiver-writes.md)): the reader skips the empty `skills/`, `skills/<name>/` and `crons/` folder entries an archiver adds (§5.2).
 - Builds on: [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (draft). Its per-mate file `~/.kiro/mates/agents/<id>.json` is the agent part of the bundle below. That RFC lists "a shared/importable crewmate-definition format" as a non-goal (§4); this RFC is that separate effort.
 - Follows: [TENETS.md](../../TENETS.md) tenet 8, "Everything is an app"; §5.6 says why these two entries sit in core.
 
@@ -103,7 +104,7 @@ The file is untrusted. Core re-checks everything in it, exactly as it re-checks 
 
 ### 5.2 The `.crewmate` file
 
-A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`.
+A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`. The empty folder entries an archiver adds for these folders, `skills/`, `skills/<name>/` and `crons/`, are skipped and still count toward the 64 entries; any other folder entry, or one that declares bytes, is refused (amendment of 2026-11-23).
 
 | Entry | Required | Holds |
 |---|---|---|

@@ -1794,9 +1794,16 @@ against sweep completeness, and are torn down at `close_all`.
   and any words after it in the same segment are kept. A segment that stops
   matching is replayed in order. A turn is judged as if the dropped
   placeholder never came: one whose only text was the placeholder gets the
-  usual empty-reply handling, the same as a turn with no text at all. Rows an
-  older build stored with only that text stay visible as they were stored. The
-  backend's own history keeps its placeholder.
+  usual empty-reply handling, the same as a turn with no text at all. A row an
+  older build stored with only that text (`is_stored_echo_row`: an assistant
+  row, no `variants`, no `meta.file_changes`) keeps its place on disk and is
+  sent by `_prepare_messages` with the content U+200B, the say-nothing reply
+  the client hides; the sidebar summary (`summarize_rows`), `is_speech_row`,
+  the Sessions-list preview and the channel backfill pass over it, and
+  Regenerate targets it only when its turn has no other reply, keeping no
+  variant of it. The page and the crew window draw no Regenerate for such a
+  turn: the reply above it belongs to an older turn and a press re-runs the
+  newest one. The backend's own history keeps its placeholder.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened
@@ -2806,7 +2813,13 @@ against sweep completeness, and are torn down at `close_all`.
   `dashboard/state.wire_session_recycle_callback()` from both `server.py`
   start paths to post a user-visible "session recycled" notice into
   `dashboard:` slots, tagged `meta={"kind": "compaction"}` so the [OPTIONS:]
-  backward scan skips it). Idle/orphan sweeps fire the recycle callback only
+  backward scan skips it). The same callback queues
+  `injected_turns.session_restarted_notice(reason)` on the slot's
+  `_pending_subagent_failures`, so the agent's next prompt is told that the
+  harness's background work ended with the process: a session resumed through
+  `session/load` replays only the harness's own transcript, where that work
+  still reads as started. One such note waits at a time; a `/clear`
+  discard drops it with the other queued notices. Idle/orphan sweeps fire the recycle callback only
   for a session whose harness launched background work past the hold (see
   "Harness background work" below). Linux sums the `/proc` tree; Windows uses
   `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's

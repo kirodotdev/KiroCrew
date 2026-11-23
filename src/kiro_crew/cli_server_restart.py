@@ -830,8 +830,8 @@ def _print_running_cron_runs() -> None:
     desktop app's), and then nothing was signalled. The source is the in-flight
     marker a run writes once its payload starts (``cron_inflight``), kept to
     markers whose writer is alive here: one a crashed gateway left names no run
-    that is still going. A run still in its jitter wait has started nothing and
-    writes no marker. Best-effort: nothing readable prints nothing.
+    that is still going. A run still in its jitter wait has started nothing, and
+    ``read_markers`` leaves its marker out. Best-effort: nothing readable prints nothing.
     """
     from kiro_crew import cron_inflight
 

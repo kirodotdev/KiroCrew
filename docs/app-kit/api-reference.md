@@ -1875,6 +1875,21 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
 
+**From a spawned backend.** A backend process does not run your hooks and never holds
+the log's signing key, so it asks the gateway to write the row:
+`POST /api/apps/<name>/_sel` with your app token (from `POST /api/apps/<name>/token`)
+and a JSON body of exactly `{"method": "log_api_access", "kwargs": {...}}`. `kwargs`
+takes `operation` and `outcome` (both required strings), and optionally `resources`
+and `error` (strings) and `critical` (a boolean); any other field, including
+`caller`, `source` or `session_key`, is a 400. The gateway writes the row as
+`app:<name>` with source `app`, and prefixes `operation` with `<name>.` when it does
+not already start with it. The route is in your own namespace, so it needs no
+`permissions.api` entry, and a token for another app gets `403 app_token_required`.
+A success is `204` with no body. A refusal is a fixed `{"error", "code"}` that never
+echoes your body: `sel_invalid_body` (400, a wrong shape or an `operation` over 200
+characters), `sel_body_too_large` (413, over 16 KiB), `sel_rate_limited` (429, past
+50 rows a second with a burst of 200, per app) or `sel_write_failed` (500).
+
 ### Background agents (`ctx.spawn`)
 
 Present when the manifest declares `permissions.spawn`, and `None` otherwise.

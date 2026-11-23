@@ -821,25 +821,24 @@ async def api_session_archive_list(request: web.Request) -> web.Response:
     from typing import Any
 
     from kiro_crew.history import _archive_dir, _safe_key
+    from kiro_crew.history_files import archive_segment_split, archive_segments_of
 
     key = request.query.get("key", "").strip()
     adir = _archive_dir()
     if not await asyncio.to_thread(adir.exists):
         return web.json_response({"archives": []})
-    prefix = f"{_safe_key(key)}__" if key else ""
 
     def _collect() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
-        for p in adir.glob(f"{prefix}*.jsonl"):
+        paths = archive_segments_of(adir, _safe_key(key)) if key else adir.glob("*.jsonl")
+        for p in paths:
             try:
                 st = p.stat()
             except OSError:
                 continue
-            stem = p.stem
-            # Archive filenames use '__' delimiter: {safekey}__{stamp}.jsonl
-            sep = stem.find("__")
-            safekey = stem[:sep] if sep >= 0 else stem
-            stamp = stem[sep + 2 :] if sep >= 0 else ""
+            # {safekey}__{stamp}.jsonl, split at the LAST delimiter: a safekey may
+            # hold one, so <key>__more's segments also carry the <key>__ prefix.
+            safekey, stamp = archive_segment_split(p.stem) or (p.stem, "")
             items.append(
                 {
                     "name": p.name,

@@ -18,6 +18,7 @@ import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
   isAppDetailPath,
+  isMembersPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -984,11 +985,11 @@ export function useAppShell() {
         navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
-      // An app detail link names an app installed in the local Crew. Over a
+      // An app detail or Bots page link names an app or Bot in the local Crew. Over a
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
+      if ((isAppDetailPath(path) || isMembersPath(path)) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry

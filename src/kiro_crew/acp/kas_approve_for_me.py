@@ -171,8 +171,6 @@ async def settle(handle: Any) -> None:
     current = option_value(getattr(handle, "config_options", None))
     if current is None:
         return
-    import asyncio
-
     await asyncio.to_thread(refresh_engine_support)
     target = settle_target(current, allowed=current is not None and may_stay_on(_key_of(handle)))
     if target is None:

@@ -121,7 +121,7 @@ describe('ChatPage renderMessage dep hygiene', () => {
     const depMatch = src.match(/\}, (\[[^\]]*handleFileOpen[^\]]*\])\)\n\n  \/\/ Hoisted out of the row map/)
     expect(depMatch, 'renderMessage dep array not found — update this ratchet if the anchor moved').toBeTruthy()
     const deps = depMatch![1]
-    for (const banned of ['messages', 'visibleIndexMap', 'lastTextIdx', 'slotState']) {
+    for (const banned of ['messages', 'visibleIndexMap', 'lastTextIdx', 'regenerateIdx', 'slotState']) {
       expect(deps.includes(banned), `"${banned}" is back in renderMessage's deps — read it through its ref instead`).toBe(false)
     }
   })

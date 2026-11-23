@@ -347,6 +347,70 @@ reply against the ephemeral's own `thread_ts` (falling back to its message ts)
 rather than the session key, because for a linked dashboard session those differ and
 the session key is not a valid Slack thread.
 
+## Sub-agents of the stopped session
+
+A Stop names the parent's turn, and the parent's sub-agents are separate runs
+with their own sessions. Each kind of Stop, and the end of the conversation,
+treats them in its own way. Stop-all (`cancel_for_parent`) is the explicit "stop
+the children too" action and is not covered here.
+
+**A soft Stop leaves the children running.** The user stopped one turn, not the
+work it delegated, so an acknowledged soft cancel in `stop_turn` or the
+dashboard's `stop_slot_turn` cancels or pauses no child. A cancel that is not
+acknowledged within the budget escalates to the hard kill, and the hard-Stop rule
+below then applies. A child that finishes after the Stop is delivered like any
+other completion, so it starts a new parent turn, which the person who pressed
+Stop can read as the Stop being undone. This is current behavior, not a settled
+rule: whether such a completion should wait for the person instead is an open
+design question. For a dashboard tab, `slack/gateway_runtime/subagent_injection.py`
+queues a completion as a `subagent_completion` entry whether the parent is idle
+or busy, and an idle parent starts it through `_start_next_queued_turn` once
+`idle_slot_admits_drain` admits the drain. That gate's only Stop check is that no
+Stop is still in flight. On a Stop, `dashboard/chat_turn/queue_drain.py` gates
+priority entries and drops superseded continuations and revoked recovery replays,
+but a `subagent_completion` entry is not among them, so after the Stop settles it
+still drains and starts a parent turn. A parent with no dashboard tab (a Slack or
+other channel session) has no slot: its completion goes straight into the
+parent's session through `_inject_subagent_into_channel_parent`, which does not
+check for a Stop at all.
+
+**A hard Stop reaps the children that share the parent's process, with a
+reason.** The hard kill's `reset` is a recycle that spares the parent's runs by
+design, but the provider shutdown it ends with takes down every run that opened
+its session on the parent's runtime (`session_sharing`, the default). Left alone,
+each of those runs would fail as an unclaimed runtime death ("killed (provider
+shutdown)") with an error tombstone and a failure report into the parent. So
+`reset(stop_shared_children=True)` selects those runs
+(`_select_shared_children`) and stops them first (`_stop_shared_children`):
+each is stamped `_reap_reason = "user_stop"` with the origin "stopped by a hard
+Stop of the parent", and the reset waits up to `_SHARED_CHILD_STOP_WAIT_SECS`
+(2s) for every reap to start. A started reap is what makes `_run` read the
+shutdown's runtime death as the echo of this stop. A run on a dedicated process
+survives the recycle and is left running, as on a soft Stop. The compaction
+restart's wait for co-tenants uses the same selection.
+
+**The end of the conversation refuses children that were claimed but not
+started.** Conversation teardown cancels the parent's queued and running
+children, and a report from any of them that has not yet passed the delivery
+gate is dropped (`_teardown_cancelled_ids`). A report already past the gate can
+still deliver, as the residual note in `cancellation.py` records.
+Two kinds of child are deliberately left uncancelled. A child parked on a spawn
+approval keeps the person's decision: if they approve it later, it runs and its
+report is dropped. A child whose row a claimer has admitted but not yet started
+is left to that claimer, because the row may carry a decision the person made (a
+spawn approval is the visible case), which a teardown has no standing to revoke.
+The claimer ends it instead of starting it: the pump in
+`subagent_manager/admission/pump.py` reads the teardown mark (`_parent_ended`)
+before the start write and again after it, and a marked row is cancelled
+(`_cancel_torn_down_claim`) rather than started, so no run executes against a
+conversation that has ended.
+
+**A child parked on a spawn approval does not hold the parent's user messages.**
+`subagents_hold_user_messages` skips it, as it skips a stalled child. The rule
+and its reason live in the sub-agent spec
+([`subagent.md`](../../system-specs/modules/subagent.md), the `_STALL_IDLE_SECS`
+row).
+
 ## Context restore after a soft cancel
 
 kiro-cli does not persist a cancelled turn to its ACP conversation log, so after a

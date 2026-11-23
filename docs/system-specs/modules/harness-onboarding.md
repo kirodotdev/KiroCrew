@@ -319,6 +319,20 @@ resolver ladder is shared either way:
 the install probe, so one wording answers "the adapter is not installed" wherever
 the question is asked.
 
+The ROUTING line above is about the spawn. After the spawn, a per-session harness,
+table member or not, splits its code by when it runs. What a routing read-back found
+stays in the adapter's `read_back`, as above, and a value the launch hands on to
+turn-time code is a field on the session. What the harness does during its session
+and its turns goes in an `AcpClient` subclass of its own,
+`class <Name>AcpClient(AcpClient, serves=<backend>)` in `acp/client_<name>.py`, whose
+bodies live in owner modules such as `acp/client_<name>_session.py` that the class
+binds. The class sets the fields that behaviour needs; a field its launch reads or
+writes is also declared on a `<Name>ProcessSession` protocol in
+`acp/harness/<name>.py`, as `ClaudeProcessSession` and `DeepseekProcessSession` are.
+Where a shared client file has to act for the harness, `AcpClient` declares a hook
+with the behaviour every other backend keeps, and the subclass fills it
+([acp-client.md](acp-client.md), the client-class paragraph).
+
 What a hand-written harness needs, using the Codex adapter as the shape:
 
 - **The adapter, and whether one is needed at all.** `codex-acp` exists because
