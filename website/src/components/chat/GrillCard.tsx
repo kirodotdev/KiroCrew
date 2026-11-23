@@ -20,10 +20,11 @@
  * staged; a picture shows as added only once the server has its path, and
  * Start waits while one is uploading.
  *
- * Both texts end with a `key: <mid>:<version>` line naming this card. A reload
- * locks the card again once a later stored user message carries that exact
- * line; the conductor reads the same line to ignore a repeated start. A row the
- * server has not named yet sends no key line, and that card reopens on reload.
+ * Both texts end with a `key: <mid>:0` line naming this card's reply version
+ * (`grillKey`). A reload locks the card again once a later stored user message
+ * carries that exact line; the conductor reads the same line to ignore a
+ * repeated start. A row the server has not named yet, or a version stored
+ * without an id, sends no key line, and that card reopens on reload.
  */
 import { useEffect, useId, useRef, useState, type ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'

@@ -1960,7 +1960,12 @@ no longer destroy older turns.
   when the turn produced a reply, through one rewrite pinned to the transcript
   and slot the Regenerate was authorized against that names the rows it removes
   (`retired_rows`). The variants stashed at the press keep the endpoint's
-  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  existing cap (`_MAX_VARIANTS`, the newest kept). Each keeps the `mid` of the
+  row it was written as (`variant_from_row`), so that id names the same version
+  after the swap moves it into the new reply's list; the discussion card keys
+  its sends on it (`grillKey`). A stash of a row that already has versions
+  takes no id: that row's `mid` names its newest version, not always the one it
+  shows. They stay stashed while
   the turn runs: the segment flush attaches none to a reply of a turn that owns
   the target, and the reply gets them only from the committed rewrite, so a
   declined swap (refused or failed write, a reply trimmed into the frozen

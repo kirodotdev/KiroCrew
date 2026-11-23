@@ -620,6 +620,56 @@ async def test_a_regenerate_turn_with_a_reply_replaces_the_previous_one(
 
 
 @pytest.mark.asyncio
+async def test_each_regenerated_version_keeps_the_id_of_the_row_it_was_written_as(
+    tmp_path, monkeypatch
+) -> None:
+    """A discussion card keys its sends on that id, so it must hold through the
+    swap, the saved transcript and the rows the page is sent."""
+    from kiro_crew.dashboard.chat_utils import _prepare_messages
+    from kiro_crew.dashboard.state import row_mid
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _run_chat_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    old_mid = row_mid(slot.append("assistant", "old"))
+    slot.drain()
+    _save_slot_to_history(state, slot)
+
+    await _regenerate_through_the_runner(
+        state,
+        slot,
+        [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="fresh answer"),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ],
+    )
+
+    (reply,) = [m for m in slot.messages if m.get("role") == "assistant"]
+    new_mid = row_mid(reply)
+    assert old_mid and new_mid and new_mid != old_mid
+    (stored,) = [m for m in _disk_rows(state, slot) if m.get("role") == "assistant"]
+    (shown,) = [
+        m
+        for m in _prepare_messages(slot.messages, False, live_child="")
+        if m["role"] == "assistant"
+    ]
+    for row in (reply, stored, shown):
+        assert [v.get("mid") for v in row["variants"]] == [old_mid, new_mid]
+
+
+def test_a_row_with_versions_gives_its_mid_to_none_of_them() -> None:
+    """Its ``mid`` names its newest version, which may not be the one it shows."""
+    from kiro_crew.dashboard.chat_utils import variant_from_row
+
+    single = {"content": "a", "ts": "1", "meta": {"mid": "m-a"}}
+    versions = [{"content": "a", "mid": "m-a"}, {"content": "b", "mid": "m-b"}]
+    listed = {"content": "a", "ts": "1", "meta": {"mid": "m-b"}, "variants": versions}
+    assert variant_from_row(single)["mid"] == "m-a"
+    assert "mid" not in variant_from_row(listed)
+
+
+@pytest.mark.asyncio
 async def test_switching_regenerated_replies_shows_each_ones_turn_stats(
     tmp_path, monkeypatch
 ) -> None:

@@ -124,16 +124,16 @@ export function stripPartialGrillMarker(content: string): string {
 }
 
 /**
- * The key naming one card: its reply row's server `mid` plus the reply version.
- * Only a reply with one version gets one (`AssistantMessage`): a regenerated
- * row's versions share its `mid`, and a Regenerate settles which version is
- * which only at its turn's end. No `mid` (a row the server has not
- * named yet, or an old one it never will): no key, and the card sends without
- * one. Never a client stamp or `ts`: those change on refresh, so a lock keyed on
- * them would not hold.
+ * The key naming one card: the server `mid` of the row its reply version was
+ * written as, plus `:0`, that row's first version. A Regenerate keeps that
+ * `mid` on the version it moves into another row's list (`variants[i].mid`),
+ * so the key still names the same version after the swap. No `mid` (a row the
+ * server has not named yet, or a version stored without one): no key, and the
+ * card sends without one. Never a client stamp or `ts`: those change on
+ * refresh, so a lock keyed on them would not hold.
  */
-export function grillKey(mid: string | undefined, version: number): string | undefined {
-  return mid ? `${mid}:${version}` : undefined
+export function grillKey(mid: string | undefined): string | undefined {
+  return mid ? `${mid}:0` : undefined
 }
 
 /** The continuation lines a card field adds after its labelled line. */
@@ -169,24 +169,27 @@ function serverHeld(r: KeyedRow): boolean {
 }
 
 /**
- * The keys of this row's cards that a later message the server holds already
- * sent, newline-joined (a string, so a memoized row only redraws when it
- * changes). A refused optimistic bubble does not count, so it cannot lock a
- * card again after the card reopened. `queued`: the session's queued entries,
- * for a host that keeps them out of `rows`. Undefined for a row with no `mid`
- * or no card marker.
+ * The keys of this row's cards that a message the server holds already sent,
+ * newline-joined (a string, so a memoized row only redraws when it changes).
+ * Every row counts, earlier ones too: a Regenerate's swap puts the row where
+ * the new reply was written, after any answer sent while that turn ran. A
+ * refused optimistic bubble does not count, so it cannot lock a card again
+ * after the card reopened. `queued`: the session's queued entries, for a host
+ * that keeps them out of `rows`. A key counts when it names the row's `mid` or
+ * one of its versions' (`grillKey`). Undefined for a row with no such `mid` or
+ * no card marker.
  */
 export function grillKeysSentAfter(rows: readonly KeyedRow[], index: number, queued: readonly KeyedRow[] = []): string | undefined {
-  const row = rows[index] as (KeyedRow & { variants?: { content?: unknown }[] }) | undefined
-  const mid = row?.meta?.mid
-  if (typeof mid !== 'string' || !mid) return undefined
-  const texts = [row?.content, ...(row?.variants ?? []).map(v => v?.content)]
+  const row = rows[index] as (KeyedRow & { variants?: { content?: unknown; mid?: unknown }[] }) | undefined
+  const versions = row?.variants ?? []
+  const mine = [row?.meta?.mid, ...versions.map(v => v?.mid)].flatMap(m => (typeof m === 'string' && m ? [`${m}:`] : []))
+  if (!mine.length) return undefined
+  const texts = [row?.content, ...versions.map(v => v?.content)]
   if (!texts.some(c => typeof c === 'string' && c.includes(OPEN))) return undefined
-  const mine = `${mid}:`
   const found: string[] = []
-  for (const r of [...rows.slice(index + 1), ...queued]) {
+  for (const r of [...rows, ...queued]) {
     if (!serverHeld(r)) continue
-    for (const k of grillKeysIn(r.content as string)) if (k.startsWith(mine) && !found.includes(k)) found.push(k)
+    for (const k of grillKeysIn(r.content as string)) if (mine.some(p => k.startsWith(p)) && !found.includes(k)) found.push(k)
   }
   return found.length ? found.join('\n') : undefined
 }
