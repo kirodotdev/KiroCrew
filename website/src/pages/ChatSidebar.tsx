@@ -18,6 +18,7 @@ import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/shar
 import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
 import { SessionRefStageContext } from '../components/sessionRefStage'
+import { RowStatusContext, useRowStatusStore } from './chat-sidebar/rowStatus'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
@@ -940,8 +941,10 @@ function ChatSidebar({
   // A worker in the pane is not listed, so its root's row is marked as its parent.
   // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
+  // What the rows read for themselves (./chat-sidebar/rowStatus).
+  const rowStatusStore = useRowStatusStore({ activeSlot, crewWindow, crewParent, splitMode, openFailed, unread: unreadSet })
   const rowScene: RowScene = {
-    activeSlot, crewWindow, crewParent, splitMode, openFailed, shell: rowShell,
+    activeSlot, crewWindow, shell: rowShell,
     local: {
       recentRank, subagentCounts, subagentApprovalCounts, poppedOut,
       digits: digitModifierHeld ? shortcutDigitByKey : null,
@@ -1079,6 +1082,7 @@ function ChatSidebar({
   return (
     <SharedCrewBylineContext.Provider value={creatorView.bylines}>
     <SessionRefStageContext.Provider value={!!canStageSessionRef}>
+    <RowStatusContext.Provider value={rowStatusStore}>
     {/* stable theming hook 'sidebar' — see website/docs/theming-contract.md
         The region is the session picker a guide's "choose the session" step
         points at (`sessions.list`): both layouts draw their rows inside it. */}
@@ -1246,6 +1250,7 @@ function ChatSidebar({
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
     </>
+    </RowStatusContext.Provider>
     </SessionRefStageContext.Provider>
     </SharedCrewBylineContext.Provider>
   )

@@ -28,6 +28,7 @@ import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
+import { isActiveIn } from './rowStatus'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
 import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
@@ -239,15 +240,8 @@ export interface RowScene {
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
    *  null. While one is open it is the active row, and no local row is. */
   crewWindow: { instanceId: string; key: string } | null
-  /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
-   *  are not listed, so the root's row is marked as the shown worker's parent. */
-  crewParent: string | null
-  /** The chat page is in Split View (`ChatSidebarProps.splitMode`). */
-  splitMode: boolean
-  /** The last open of the active chat failed and has not loaded since
-   *  (`ChatState.slotOpenFailed`): a click on its row retries the open instead
-   *  of toggling. */
-  openFailed: boolean
+  // The crew-parent mark, Split View and a failed open reach rows through the
+  // row-status store (./rowStatus), with the active slot and unread.
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -292,24 +286,9 @@ export interface SessionRowView {
   folderConductor: boolean
   /** See `RowPlacement.crew`. */
   crew: CodeChannelCrewView | null
-  isActive: boolean
-  /** Whether this row's own slot IS the sidebar's active slot — the raw
-   *  `key === activeSlot` test, independent of the crew-window logic `isActive`
-   *  folds in (a crew window over the pane makes `isActive` false while the
-   *  session is still the active one). The row menu's "Reference in chat" reads
-   *  it to refuse a self-reference, matching what the drop handler refuses. A
-   *  per-row view field so a chat switch re-renders only the two rows whose
-   *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
-   *  would cause). */
-  isSidebarActiveSlot: boolean
-  /** A plain click on this row shows or hides the side panel: it is the active
-   *  LOCAL row, outside Split View (lib/reclickPanelToggle). The row's tooltip and
-   *  its click both read this one field, so the tooltip never promises a toggle
-   *  the click will not make. */
-  reclickPanel: boolean
-  /** This row is the Crew Mode root whose worker the chat pane shows: not the
-   *  active row, but the way the person found the worker, so it stays marked. */
-  isCrewParent: boolean
+  // Active, the open-row reclick, the crew-parent mark and unread are not view
+  // fields: the row reads them from the row-status store (./rowStatus), so a chat
+  // switch repaints only the rows whose answer flips.
   /** Whether a crew window is open over the chat pane. While it is, the active
    *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
    *  staged reference would land on a composer the user cannot see — the same
@@ -319,7 +298,6 @@ export interface SessionRowView {
   crewWindowCovers: boolean
   isOut: boolean
   isPinned: boolean
-  isUnread: boolean
   /** A peer row reports its own `running`; a local row the widened running set. */
   isRunning: boolean
   recent: number | undefined
@@ -871,21 +849,9 @@ function makeStaleSplit(listNarrowed: boolean, sortKey: SortKey, clock: () => nu
 interface ViewModel {
   pinned: ReadonlySet<string>
   pinnedRank: ReadonlyMap<string, number>
-  unread: ReadonlySet<string>
   isRunning: (slot: Slot) => boolean
   searchRanks: ReadonlyMap<string, number> | null
   drawnIndex: ReadonlyMap<string, number>
-}
-
-/** The active row. A peer row is active only for the crew window open on its own
- *  (crew, key) PAIR -- its raw key alone can equal another crew's, or a local slot's.
- *  A local row is active only while no crew window is open, because the window then
- *  covers the pane its slot would show. */
-function isActiveIn(scene: RowScene, slot: Slot): boolean {
-  const key = localKeyOf(slot)
-  const win = scene.crewWindow
-  if (key === null) return !!win && win.instanceId === slot.peer_id && win.key === slot.key
-  return !win && scene.activeSlot === key
 }
 
 function makeViews(model: ViewModel): SidebarRows['views'] {
@@ -1008,7 +974,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     isPinned,
     isRunning,
     staleSplit: makeStaleSplit(listNarrowed, sortKey, clock),
-    views: makeViews({ pinned, pinnedRank, unread, isRunning, searchRanks, drawnIndex }),
+    views: makeViews({ pinned, pinnedRank, isRunning, searchRanks, drawnIndex }),
   }
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
@@ -1043,20 +1009,12 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
     crew: placement.crew ?? null,
-    isActive: isActiveIn(scene, slot),
-    // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
-    // when a crew window covers the pane (where isActiveIn is false but the
-    // session is still active). Matches the key the drop handler refuses against.
-    isSidebarActiveSlot: local !== null && scene.activeSlot === local,
-    reclickPanel: local !== null && !scene.splitMode && !scene.openFailed && isActiveIn(scene, slot),
-    isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
     // A crew window covers the chat pane, so no composer is visible to stage a
     // reference into — withhold "Reference in chat" on every row, same reason as
     // the no-active-slot case.
     crewWindowCovers: scene.crewWindow !== null,
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
-    isUnread: local !== null && model.unread.has(local),
     isRunning: model.isRunning(slot),
     recent: local === null ? undefined : scene.local.recentRank.get(local),
     subagentCount: local === null ? 0 : (scene.local.subagentCounts[local] || 0),
@@ -1095,7 +1053,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true, crew: true,
-  isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  crewWindowCovers: true, isOut: true, isPinned: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

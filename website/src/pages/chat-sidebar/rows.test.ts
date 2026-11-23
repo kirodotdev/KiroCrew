@@ -16,6 +16,7 @@ import {
   type ConductorRowView, type RowPlacement, type RowScene, type RowShell, type SidebarRowInputs, type SidebarRows,
 } from './rows'
 import type { SessionFilterKey, Slot } from './types'
+import { rowStatusOf, type RowStatus } from './rowStatus'
 import type { GuideStepPlan } from '../../guide/guideActions'
 
 const NOW = Date.parse('2026-10-05T12:00:00Z')
@@ -80,9 +81,14 @@ const SHELL: RowShell = {
   guideOnRowControl: false,
 }
 
+/** The row-status store's values (./rowStatus), for the answers rows read from it. */
+function status(over: Partial<RowStatus> = {}): RowStatus {
+  return { activeSlot: null, crewWindow: null, crewParent: null, splitMode: false, openFailed: false, unread: new Set(), ...over }
+}
+
 function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowScene['local']> } = {}): RowScene {
   return {
-    activeSlot: null, crewWindow: null, crewParent: null, shell: SHELL, drag: null,
+    activeSlot: null, crewWindow: null, shell: SHELL, drag: null,
     ...over,
     local: {
       recentRank: new Map(), subagentCounts: {}, subagentApprovalCounts: {}, poppedOut: new Set(), digits: null,
@@ -121,7 +127,7 @@ describe('a peer row never carries local state', () => {
     expect(full.windowOf(thePeer)).toEqual(empty.windowOf(thePeer))
     expect(full.view(thePeer, AT)).toMatchObject({
       identity: 'inst-a:k', localKey: '', peerId: 'inst-a', peerName: 'astro',
-      isActive: false, isOut: false, isPinned: false, isUnread: false,
+      isOut: false, isPinned: false,
       recent: undefined, subagentCount: 0, subagentApprovalCount: 0, digitBadge: undefined, isRenaming: false,
       renamingHere: false, renameValue: '', revealFlash: null, pinnedOrderIndex: -1, pinnedReorderEnabled: false,
       opensElsewhere: null,
@@ -129,6 +135,9 @@ describe('a peer row never carries local state', () => {
       isRunning: true,
     })
     expect(full.windowOf(thePeer).keepMounted).toBe(false)
+    expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']), crewParent: 'k' }), thePeer)).toEqual({
+      isActive: false, isSidebarActiveSlot: false, reclickPanel: false, isCrewParent: false, isUnread: false,
+    })
   })
 
   it('while the local row it collides with carries every piece of it', () => {
@@ -136,11 +145,14 @@ describe('a peer row never carries local state', () => {
       .views(scene({ activeSlot: 'k', local: FULL_SCENE_LOCAL }))
     expect(views.view(theLocal, AT)).toMatchObject({
       identity: 'k', localKey: 'k', peerId: undefined, peerName: undefined,
-      isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true,
+      isOut: true, isPinned: true, isRunning: true,
       recent: 1, subagentCount: 2, subagentApprovalCount: 1, digitBadge: '1', isRenaming: true, renamingHere: true,
       renameValue: 'draft', revealFlash: 'flash', pinnedOrderIndex: 0, pinnedReorderEnabled: true,
     })
     expect(views.windowOf(theLocal).keepMounted).toBe(true)
+    expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']) }), theLocal)).toEqual({
+      isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: false, isUnread: true,
+    })
   })
 
   it('names its crew by display name, falling back to the crew id', () => {
@@ -181,9 +193,9 @@ describe('a peer row never carries local state', () => {
     // The same raw key `k` on a local slot, on this crew and on another crew.
     const otherCrew = peer('k', { peer_id: 'inst-b', peer_name: 'beta', row_identity: 'inst-b:k' })
     const rows = buildSidebarRows(inputs([theLocal, thePeer, otherCrew]))
-    const lit = (over: Parameters<typeof scene>[0]) => {
+    const lit = (over: Pick<RowStatus, 'activeSlot'> & Partial<Pick<RowStatus, 'crewWindow'>>) => {
       const views = rows.views(scene(over))
-      return [theLocal, thePeer, otherCrew].map(s => [views.isActive(s), views.view(s, AT).isActive, views.windowOf(s).keepMounted])
+      return [theLocal, thePeer, otherCrew].map(s => [views.isActive(s), rowStatusOf(status(over), s).isActive, views.windowOf(s).keepMounted])
     }
 
     it('lights the peer row its window names, and neither the colliding local nor the other crew', () => {
@@ -206,11 +218,8 @@ describe('a peer row never carries local state', () => {
   it('marks the Crew Mode root as the parent of the worker in the pane, never a peer or under a window', () => {
     const root = local('root', { crew_mode_root: true } as Partial<Slot>)
     const plain = local('plain')
-    const rows = buildSidebarRows(inputs([root, plain, thePeer]))
-    const parent = (over: Parameters<typeof scene>[0]) => {
-      const views = rows.views(scene(over))
-      return [root, plain, thePeer].map(s => [views.view(s, AT).isCrewParent, views.view(s, AT).isActive])
-    }
+    const parent = (over: Partial<RowStatus>) =>
+      [root, plain, thePeer].map(s => [rowStatusOf(status(over), s).isCrewParent, rowStatusOf(status(over), s).isActive])
     // The worker 'w1' is not listed; its root is marked, not lit as active.
     expect(parent({ activeSlot: 'w1', crewParent: 'root' })).toEqual([[true, false], [false, false], [false, false]])
     // A plain chat in the pane marks nothing.
