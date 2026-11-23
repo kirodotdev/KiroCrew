@@ -73,7 +73,11 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             "(the queued list is partial: more spawns may be queued than listed here; "
             "they are accepted and start on their own -- do not spawn them again)"
         )
-    if not agents and not lines:
+    if d.get("error"):
+        # A failed read (a timeout, a refused connection, an HTTP error) has no
+        # run list; calling it empty would tell the caller its runs do not exist.
+        lines.append(f"Error: {d['error']}")
+    elif not agents and not lines:
         lines.append("No subagents running.")
     else:
         for a in agents:
