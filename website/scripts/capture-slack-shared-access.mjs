@@ -4,14 +4,15 @@
  * Runs the REAL built SPA (website/dist) behind `serveDist` and answers every
  * /api/** call from fixtures through `stubDashboardApi`. No gateway, no Slack.
  *
- * Thirteen shots: the switch off with the warning already on the page, the confirm
+ * Fourteen shots: the switch off with the warning already on the page, the confirm
  * that turning it on opens (naming who gets access), the switch on with two
  * people listed (one Slack did not confirm), the hint a malformed member ID gets,
  * what turning it on with nobody listed says, the read-only remote view, the hint
  * when Slack confirmed nobody, a person Slack could not be asked about, the switch
  * refused while someone listed is unconfirmed, a change saved but not applied, a
- * failed save, a failed load, and the Try again notice when the section's own chunk
- * fails to load.
+ * failed save, a failed load, the Try again notice when the section's own chunk
+ * fails to load, and the switch on with `verify_with_slack` off (listed people, no
+ * Slack check, the not-checked warning).
  *
  * Usage: node scripts/capture-slack-shared-access.mjs [outDir]
  */
@@ -151,6 +152,13 @@ try {
 
   const noChunk = await loadPanel(null, { blockChunk: true })
   await shotOf(noChunk.section, '13-try-again')
+
+  const listed = [
+    { user_id: 'U0ADA00001', name: '', confirmed: true, reason: 'listed' },
+    { user_id: 'U0BO000001', name: '', confirmed: true, reason: 'listed' },
+  ]
+  const unverified = await loadPanel({ enabled: true, verify_with_slack: false, users: listed, read_only: false })
+  await shotOf(unverified.section, '14-on-listed-not-checked')
 } finally {
   await browser.close()
   srv.close()
