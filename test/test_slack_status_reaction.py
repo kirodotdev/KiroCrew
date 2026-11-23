@@ -157,9 +157,12 @@ class TestTransportRenderer:
 
 
 class _RefusingPostSlack(_StatusSlack):
-    """Every plain message post fails, so the answer never reaches the reader."""
+    """Every message post fails, so the answer never reaches the reader."""
 
     async def post_message(self, channel, text, thread_ts=None, **kw):
+        raise RuntimeError("slack is down")
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
         raise RuntimeError("slack is down")
 
     async def update_message(self, channel, ts, text="", blocks=None, **kw):

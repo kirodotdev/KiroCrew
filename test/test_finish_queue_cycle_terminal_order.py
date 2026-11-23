@@ -292,6 +292,7 @@ def _projected_row(*, turn_running: bool, task, admission_running: bool) -> dict
         parse_cls_meta=lambda cls: None,
         is_turn_interrupted=lambda messages: False,
         is_interruption_stale=lambda messages, now: False,
+        newest_error_is_sign_in=lambda messages: False,
         is_system_notice=lambda role, meta: False,
         latest_transcript_ts=lambda *stamps: "",
         last_message_preview=lambda text: text,

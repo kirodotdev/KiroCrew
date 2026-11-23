@@ -20,6 +20,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.session import SessionManager
+from kiro_crew.session_parts import record as session_record
 from kiro_crew.testing.wait import await_until, until_parked
 
 
@@ -160,6 +161,41 @@ class TestStopTurn:
         assert respawned is not None, "the hard stop left no session behind"
         assert respawned.provider is not provider
         assert not respawned.semaphore.locked(), "the respawn kept the turn permit"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_hard_stop_successor_runs_on_the_stopped_sessions_agent(self, cfg):
+        """The chat keeps running on the agent it is set to after a hard Stop."""
+        inner = _mock_provider_factory()
+        built_for: list[str | None] = []
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            built_for.append(agent)
+            provider = inner(session_key, agent, channel_id, **kwargs)
+            provider._agent = agent or "kirocrew"
+            return provider
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        provider, _, _ = await mgr.get_or_create("key1", agent="my-conductor")
+        mgr.release("key1")
+        provider.cancel = AsyncMock(return_value="timeout")
+
+        assert await mgr.stop_turn("key1") == "hard"
+        await await_until(asyncio.gather(*list(mgr._background_tasks)), what="hard-stop respawn")
+
+        respawned = mgr._sessions.get("key1")
+        assert respawned is not None, "the hard stop left no session behind"
+        assert respawned.provider is not provider
+        assert respawned.agent == "my-conductor"
+        assert respawned.provider._agent == "my-conductor"
+        assert built_for == ["my-conductor", "my-conductor"]
+        assert not respawned.semaphore.locked(), "the respawn kept the turn permit"
+        # Re-armed for the first turn, as a reset successor is: a failed native
+        # resume then replays the history.
+        assert respawned.first_turn in (
+            session_record.FirstTurnState.FRESH,
+            session_record.FirstTurnState.RESUMED,
+        )
         await mgr.close_all()
 
     @pytest.mark.asyncio

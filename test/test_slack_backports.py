@@ -536,11 +536,11 @@ class TestFenceSafeSplitting:
         await _turn(renderer, "short and sweet")
 
         updates = [kw["text"] for m, kw in slack.calls if m == "update_message"]
-        posts = [kw["text"] for m, kw in slack.calls if m == "post_message"]
+        posts = [kw["text"] for m, kw in slack.calls if m in ("post_message", "post_blocks")]
         assert updates[-1] == "short and sweet"
-        # Only the fallback's own placeholder: an answer that fits gains no
-        # continuation replies.
-        assert posts == [_THINKING]
+        # Only the fallback's own placeholder (and the timing footer): an answer
+        # that fits gains no continuation replies.
+        assert [p for p in posts if not p.startswith("Finished")] == [_THINKING]
 
     @pytest.mark.asyncio
     async def test_the_splitter_runs_off_the_event_loop(self) -> None:

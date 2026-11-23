@@ -44,6 +44,7 @@ from kiro_crew.skills_builtin_provenance import (
 )
 from kiro_crew.skills_discovery import (
     _BUILTIN_SKILLS_DIR,
+    _installed_package_bytes_match,
     _iter_skill_files,
     _project_skills_dir,
     skills_dir,
@@ -392,7 +393,9 @@ def _carried_skill_md(src_dir: Path) -> bytes | None:
 
     The input is the PACKAGED file, never the installed one: the carried bytes
     are staged before anything is published, so no installed file is read and
-    then rewritten while a concurrent writer could replace it.
+    then rewritten while a concurrent writer could replace it. A hardlinked
+    packaged ``SKILL.md`` is read only when its bytes match the installer's
+    RECORD digest (:func:`_installed_package_bytes_match`).
 
     Returns None (install the packaged file verbatim) when the packaged copy
     already opts out, so the install still equals the packaged tree the marker
@@ -400,7 +403,11 @@ def _carried_skill_md(src_dir: Path) -> bytes | None:
     never a reason to fail the sync.
     """
     try:
-        data = safe_read_file_bytes_nolink(str(src_dir / "SKILL.md"), within_root=str(src_dir))
+        data = safe_read_file_bytes_nolink(
+            str(src_dir / "SKILL.md"),
+            within_root=str(src_dir),
+            admit_hardlinked=_installed_package_bytes_match,
+        )
     except (OSError, ValueError, FileTooLargeError):
         return None
     if data is None:

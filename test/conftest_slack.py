@@ -132,7 +132,7 @@ class MockSlackClient(SlackClientOps):
         )
         return ts
 
-    async def update_message(self, channel, ts, text):
+    async def update_message(self, channel, ts, text="", blocks=None):
         self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
 
     async def delete_message(self, channel, ts):
