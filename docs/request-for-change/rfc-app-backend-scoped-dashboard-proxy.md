@@ -4,8 +4,8 @@ status: draft
 kind: decision
 author: kirocrew-worker (drafted for maintainer decision)
 created: 2026-11-22
-last-audited: 2026-11-22
-audited-at: a4a99c183b
+last-audited: 2026-11-23
+audited-at: e7ab2e7ac6
 doc-pr:
 implementation-prs: [40783]
 tracking-issues: []
@@ -39,6 +39,8 @@ A sandboxed running app backend reads none of the gateway secret files. An app t
 - disabling the app ends it.
 
 The design and its security read are in #40783.
+
+Accepting this document also changes the `AGENTS.md` rule that ends "Do not re-add either until an app-scoped token path exists and Crew Tunnel uses it": #40783 rewrites that sentence to say the mask is back and the app-scoped path (the `dashboard_proxy` grant) now exists, so the mask stays and a backend is never handed the real secret. The old condition that Crew Tunnel already uses the path is dropped; the macOS gap it left is Removal 2 below.
 
 ## The removals, stated plainly
 
