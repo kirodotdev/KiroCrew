@@ -3878,6 +3878,43 @@ longer matches the mark, or that has none, shows the whole text. The mark has it
 own key because the drain copies entry meta onto the user row, and a row's
 `meta.knowledge` draws the knowledge chip from the full record.
 
+**Discard all queued messages.** With two or more cards, the collapsed
+`QueueStack` shows a Discard all button beside the "N queued" count. The button
+shows the ListX icon and a visible "Discard all…" label, which is also its
+accessible name; the ellipsis says a dialog follows, and the dialog's confirm
+button is the bare "Discard all". Its tooltip is the longer "Discard all queued
+messages". On a card narrower than 360 px only the icon shows, as for the
+knowledge chip, and the label stays the button's accessible name.
+The button is shown only when the host passes `onCancelAll`. `ChatPage` and
+`ChatPane` pass it. `SideChat`, `ChatEmbed` and the crew chat window do not.
+In a crewmate pane the stack lists only the held entries, so Discard all
+discards only those, and the queued bubbles in the thread stay queued.
+The button opens a
+`useConfirm` dialog that names the count. The ids are read when the user presses
+the button, so a card queued while the dialog is open stays queued. A card whose
+action is in flight is left out. A card whose user row is already written
+(`meta.written`) is also left out of the count and the request, as the per-card
+cancel leaves it out. The gateway refuses to cancel such an entry with a 409
+`queue_item_already_sent`, and the message still runs. The button is disabled
+when no card is left to discard. On confirm,
+`useQueuedMessageActions.onCancelAll` cancels each card that is still shown, not
+written and not in flight. It sends the per-entry
+`DELETE /api/chat/slots/{slot}/queue/{queue_id}`, and only after that succeeds
+does it remove the card from the store and drop its `queuedSendStash` record. A
+refused request leaves the card shown and still queued, because the gateway
+still holds that entry; a request whose answer is lost leaves the card shown
+until the gateway's own queue update removes it, if the gateway did act on it.
+`onCancelAll` resolves to the id and reason of each request that failed, and
+the stack then shows an inline `ErrorNotice` above itself (above, since the
+collapsed card slides under the composer) that names how many of those cards
+are still shown and the first failure's text. It goes when it is dismissed or
+once none of those cards is left. It offers no hand-off to the agent, because
+the composer below holds an unsent draft. Each entry keeps the cancel notice and hold
+release of a single cancel. There is no bulk endpoint. Unlike a single cancel,
+Discard all puts no text back in the composer, and so it does not remove a card
+before the server answers. The expanded stack has no Discard all, because each
+of its cards has its own cancel.
+
 **An open queue editor holds the queue.** Opening a card's editor posts
 `{"editing": true}` to `/api/chat/slots/{slot}/queue/{queue_id}/editing`, which
 stamps the in-memory entry's `_edit_holds` (`queue_edit_hold`, 90 s, never

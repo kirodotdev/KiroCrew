@@ -224,6 +224,50 @@ describe('ChatPane queue actions (issue #5891)', () => {
     expect(paneInputValue).toContain('compare @a.txt')
   })
 
+  it('Discard all cancels every card in this pane and puts none of their text in its composer', async () => {
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [
+        { role: 'queued', content: 'first queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-a' } },
+        { role: 'queued', content: 'second queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-b' } },
+      ],
+      running: true,
+      has_more: false,
+      total: 2,
+    } as unknown as Awaited<ReturnType<typeof api.chatSlotDetail>>)
+    const { store } = renderPane('pane-discard-all')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard all…' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard all' }))
+    // A card leaves only after its cancel resolved, so wait on the store itself.
+    await waitFor(() => expect(
+      selectSlotMessages(store.getState() as RootState, 'pane-discard-all').filter((m) => m.role === 'queued'),
+    ).toEqual([]))
+    expect(vi.mocked(api.cancelQueuedMessage).mock.calls).toEqual([['pane-discard-all', 'q-a'], ['pane-discard-all', 'q-b']])
+    expect(paneInputValue ?? '').toBe('')
+  })
+
+  it('Discard all names a cancel the gateway refused, and that card stays queued in the pane', async () => {
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [
+        { role: 'queued', content: 'first queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-a' } },
+        { role: 'queued', content: 'second queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-b' } },
+      ],
+      running: true,
+      has_more: false,
+      total: 2,
+    } as unknown as Awaited<ReturnType<typeof api.chatSlotDetail>>)
+    vi.mocked(api.cancelQueuedMessage)
+      .mockResolvedValueOnce({ ok: true } as never)
+      .mockRejectedValueOnce(new Error('HTTP 503: gateway restarting'))
+    const { store } = renderPane('pane-discard-fail')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard all…' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard all' }))
+    const notice = await screen.findByTestId('queue-discard-all-error')
+    expect(notice).toHaveTextContent('Could not discard 1 queued message')
+    expect(notice).toHaveTextContent('HTTP 503: gateway restarting')
+    const msgs = selectSlotMessages(store.getState() as RootState, 'pane-discard-fail')
+    expect(msgs.filter((m) => m.role === 'queued').map((m) => m.meta?.queueId)).toEqual(['q-b'])
+  })
+
   it('spells a restored mention of a file in the pane project relative to that project (#14617)', async () => {
     // The pane hands the hook its slot's project, so a file at src/a.ts in
     // it comes back as the `@src/a.ts` its own picker would insert.
