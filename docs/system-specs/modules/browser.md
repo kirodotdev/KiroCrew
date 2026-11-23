@@ -783,7 +783,15 @@ gateway-wide lock and is preceded by a tab bind: the session keeps the agent tab
 it was bound to while the browser still has it (`switch_tab` back to it if the
 daemon moved), adopts the daemon's current tab when no other session owns it,
 and otherwise opens a tab of its own; a daemon whose current tab was closed (an
-ended chat's, or one the person closed) counts as having none. Chat B therefore
+ended chat's, or one the person closed) counts as having none. The ledger alone
+does not prove the browser still has the bound tab: when the `switch_tab` back
+to it fails, the bind asks the browser (`Target.getTargets` through the relay,
+`browser_ops._browser_has_target`), and a tab the browser no longer lists -- a
+close whose `targetDestroyed` never reached the relay -- leaves the ledger
+(`CdpRelay.forget_target`) and the bind takes the opener / adopt / new-tab path,
+so one missed event does not fail every op of the chat until a restart rebuilds
+the ledger; a switch that fails while the browser still lists the tab, or when
+the browser cannot be asked, fails the op and keeps the binding. Chat B therefore
 never clicks on chat A's page, `tabs` lists and switches only the caller's own
 tabs, and a takeover in chat A fences A's tab while B keeps browsing. A popup
 belongs to the chat that owns its nearest owned ancestor by opener links, which
