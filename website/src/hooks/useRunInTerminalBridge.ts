@@ -10,7 +10,9 @@ import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopou
 import { isTerminalAtLimit, onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
 import { errMessage } from '../utils/thunkError'
 import { noteTerminalRun, type TerminalRunOutcome, type TerminalRunReason, type TerminalRunSource } from '../utils/terminalRunNote'
-import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from './useBottomTerminal'
+import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal, shownTabId as shownDockTerminal } from './useBottomTerminal'
+import { isTouchDevice } from '../utils/isTouchDevice'
+import { skipFocusOnNextShow } from '../utils/terminalQuietShow'
 
 /** The refs the Run-in-terminal handler reads at event time. They mirror the
  *  host page's state so the listener installs once. */
@@ -159,7 +161,11 @@ export function useRunInTerminalBridge({
         // copy proceeds whether or not a reusable tab exists. `reuseCurrentTab`
         // returns null when there is no settled tab to focus; that is not a
         // reason to run, only a reason to skip the focus step.
+        const shownBefore = shownDockTerminal()
         const reusedId = reuseDockTerminal()
+        // On a touch device the terminal it brings up stays unfocused, so the
+        // on-screen keyboard does not cover it (terminalQuietShow).
+        if (reusedId && reusedId !== shownBefore && isTouchDevice()) skipFocusOnNextShow(reusedId)
         // Raise the popped-out window whenever a tab was reused: the main-window
         // BroadcastChannel map (isTerminalPopoutOpen) is not synchronously
         // correct across a main-window reload — in the beacon-only window it
@@ -222,6 +228,7 @@ export function useRunInTerminalBridge({
         showActionError(i18nT('pages.chatPage.run_in_terminal_config_read_failed_error'))
       }
       const sessionId = addDockTerminal(cwdRef.current ?? undefined, slotRef?.current ?? undefined)
+      if (isTouchDevice()) skipFocusOnNextShow(sessionId)
       let settled = false
       const emit = (ok: boolean, noTab = false) => {
         if (settled) return
