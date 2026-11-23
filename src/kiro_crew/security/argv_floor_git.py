@@ -431,7 +431,7 @@ def _git_push_args(segment: str) -> list[str] | None:
     may take (e.g. ``-C <path>``) — but never swallows ``push`` itself. A
     skipped word carrying an unquoted expansion leads the returned tokens.
     """
-    return _git_push_view(_split_git_words(segment))[1]
+    return next((args for _, args in _git_push_views(segment) if args is not None), None)
 
 
 def _git_push_views(segment: str) -> list[tuple[bool, list[str] | None]]:

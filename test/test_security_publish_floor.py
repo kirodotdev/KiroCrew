@@ -359,6 +359,15 @@ class TestPublishFloorNestedPayloads:
         assert [c for c in protected if is_denied(c) is None] == []
         assert [c for c in allowed if is_denied(c) is not None] == []
 
+    def test_windows_push_args_fall_back_to_the_bash_reading(self, monkeypatch) -> None:
+        """A line only bash can read (an ANSI-C quote) still yields its arguments."""
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        command = "git push origin feature > >(echo $'a\\'b') main"
+        assert fg._git_push_args(command) == ["origin", "feature", "main"]
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 
