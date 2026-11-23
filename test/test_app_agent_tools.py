@@ -221,6 +221,30 @@ def test_a_declaration_outside_the_rules_is_refused(block, message):
     assert any(message in e for e in errors), errors
 
 
+@pytest.mark.parametrize("kind", [[], 5, ["strng"], ["string", []], {}, None, "null"])
+@pytest.mark.parametrize("array_item", [False, True])
+def test_wrong_typed_schema_types_are_validation_errors(kind, array_item):
+    prop = {"type": kind}
+    if array_item:
+        prop = {"type": "array", "items": prop}
+    block = AgentToolsConfig.from_value(_block(_tool(inputSchema=_schema_with(prop))))
+    assert block.validate(_APP)
+    assert block.tools == []
+
+
+@pytest.mark.parametrize("kind", [["string", "null"], ["string"], []])
+def test_a_list_type_is_refused_with_the_tool_and_argument_named(kind):
+    raw = _block(_tool(inputSchema=_schema_with({"type": kind})))
+    block = AgentToolsConfig.from_value(raw)
+    assert block.validate(_APP) == [
+        "agentTools tool 'fake_app_note' argument 'x': "
+        "type must be a single type name string, not a list"
+    ]
+    assert block.tools == []
+    _install(block=raw)
+    assert app_tools.schemas() == []
+
+
 def test_the_block_is_validated_signed_and_carried_through_every_round_trip():
     raw = {
         "name": _APP,

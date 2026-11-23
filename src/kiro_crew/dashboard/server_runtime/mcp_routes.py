@@ -698,6 +698,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/app-tools/call", _deferred("app_agent_tools", "api_app_agent_tool_call")
     )
+    # The approved third-party tools that server lists: the approvals are in a store
+    # the session sandbox masks. Same trust class as the call.
+    app.router.add_get(
+        "/api/app-tools/list", _deferred("app_agent_tools", "api_app_agent_tool_list")
+    )
     # The parked ``browser`` tool's hand-back poll while the person holds the browser.
     app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
     # The parked ``ask`` op's poll: an outcome word, never what the person typed.

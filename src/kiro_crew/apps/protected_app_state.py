@@ -9,7 +9,9 @@ file tools refuse (:mod:`kiro_crew.member_records`):
 * ``app-grants/<app>.json`` -- which of the app's declared staged permission entries
   (``permissions.api``, ``permissions.events`` and the point families) the owner
   approved. ``manager_records`` reads and writes it through
-  ``_read_approved_grants`` / ``_write_approved_grants``.
+  ``_read_approved_grants`` / ``_write_approved_grants``. Beside it,
+  ``app-grants/<app>.agent-tools-revoked.json`` names the ``agentTools`` the owner
+  turned off on the app's page; only the owner's revoke and turn-on write it.
 * ``app-disabled/<app>`` -- present while the owner's disable of the app stands. Every
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
@@ -344,21 +346,113 @@ def forget_owner_browser_sites(app_name: str) -> None:
         _owner_sites_path(app_name).unlink(missing_ok=True)
 
 
-def snapshot_app(app_name: str) -> tuple[str | None, bool, str | None]:
+def _revoked_tools_path(app_name: str) -> Path:
+    return _record_path(APP_GRANTS_KIND, app_name, ".agent-tools-revoked.json")
+
+
+def _revoked_tools_lock(app_name: str) -> contextlib.AbstractContextManager[None]:
+    return _exclusive_lock(_record_path(APP_GRANTS_KIND, app_name, ".agent-tools-revoked.lock"))
+
+
+def read_revoked_agent_tools(app_name: str) -> frozenset[str]:
+    """The ``agentTools`` tool names the owner turned off on the app's page.
+
+    Kept by name, beside the approved set, so a revoked tool stays off when an update
+    changes its entry, until the owner turns it on. Raises ``OSError``/``ValueError``
+    when the record cannot be read, so a caller that approves from it fails closed.
+    """
+    try:
+        data = json.loads(_revoked_tools_path(app_name).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return frozenset()
+    names = data.get("revoked") if isinstance(data, dict) else None
+    if not isinstance(names, list):
+        raise ValueError("an app's revoked agent tools record is not a list")
+    return frozenset(n for n in names if isinstance(n, str) and n)
+
+
+def revoked_agent_tools_or_none(app_name: str) -> frozenset[str] | None:
+    """:func:`read_revoked_agent_tools`, or None when the record cannot be read.
+
+    None, not an empty set: each caller then treats every tool as off, so an
+    unreadable list approves, offers and counts no tool.
+    """
+    try:
+        return read_revoked_agent_tools(app_name)
+    except (OSError, ValueError):
+        logger.warning("Could not read an app's revoked agent tools; treating every tool as off")
+        return None
+
+
+def update_revoked_agent_tools(
+    app_name: str, *, add: frozenset[str] = frozenset(), remove: frozenset[str] = frozenset()
+) -> None:
+    """Add and remove names in *app_name*'s revoked list, under one lock.
+
+    Only the owner's revoke and the owner's turn-on call this. Raises
+    ``OSError``/``ValueError`` when the record cannot be read or written.
+    """
+    path = _revoked_tools_path(app_name)
+    with _revoked_tools_lock(app_name):
+        names = (read_revoked_agent_tools(app_name) | add) - remove
+        if not names:
+            path.unlink(missing_ok=True)
+            return
+        mkdirs_owner_only(path.parent)
+        atomic_write(path, json.dumps({"revoked": sorted(names)}) + "\n")
+
+
+def _read_revoked_text(app_name: str) -> str | None:
+    try:
+        return _revoked_tools_path(app_name).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def _write_revoked_text(app_name: str, text: str | None) -> None:
+    path = _revoked_tools_path(app_name)
+    with _revoked_tools_lock(app_name):
+        if text is None:
+            path.unlink(missing_ok=True)
+            return
+        mkdirs_owner_only(path.parent)
+        atomic_write(path, text)
+
+
+def revoked_tools_snapshot(app_name: str) -> str | None:
+    """The revoked record's text, including absence, before an owner change."""
+    return _read_revoked_text(app_name)
+
+
+def restore_revoked_tools(app_name: str, text: str | None) -> None:
+    """Put back a revoked record after a failed grants write; log a restore failure."""
+    try:
+        _write_revoked_text(app_name, text)
+    except (OSError, ValueError):
+        logger.warning("Could not restore an app's revoked agent tools", exc_info=True)
+
+
+def snapshot_app(app_name: str) -> tuple[str | None, bool, str | None, str | None]:
     """Every record of *app_name*, for :func:`restore_app` after a failed uninstall."""
-    return read_grants_text(app_name), owner_disabled(app_name), read_startup_text(app_name)
+    return (
+        read_grants_text(app_name),
+        owner_disabled(app_name),
+        read_startup_text(app_name),
+        _read_revoked_text(app_name),
+    )
 
 
-def restore_app(app_name: str, snapshot: tuple[str | None, bool, str | None]) -> None:
+def restore_app(app_name: str, snapshot: tuple[str | None, bool, str | None, str | None]) -> None:
     """Put back what :func:`snapshot_app` read; the disable first, so a fault keeps it."""
-    grants_text, disabled, startup_text = snapshot
+    grants_text, disabled, startup_text, revoked_text = snapshot
     set_owner_disabled(app_name, disabled)
     write_grants_text(app_name, grants_text)
     write_startup_text(app_name, startup_text)
+    _write_revoked_text(app_name, revoked_text)
 
 
 def forget_grants(app_name: str) -> None:
-    """Remove the approved set and the startup approval, for an uninstall.
+    """Remove the approved set, the startup approval and the revoked tools, for an uninstall.
 
     A later app under the name starts clean. The disable record stays until the
     uninstall commits (``uninstall_app`` removes it then), so the app is never
@@ -367,6 +461,7 @@ def forget_grants(app_name: str) -> None:
     with contextlib.suppress(ValueError):
         write_grants_text(app_name, None)
         _record_path(APP_STARTUP_KIND, app_name, ".json").unlink(missing_ok=True)
+        _write_revoked_text(app_name, None)
 
 
 def secret_path(app_name: str) -> Path:

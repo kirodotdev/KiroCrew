@@ -372,7 +372,9 @@ class TestRegistryInstallStream:
     ) -> None:
         """When install fails, done event should contain the error."""
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, agent_tools_consent: Any = ()
+        ) -> dict[str, Any]:
             if log_lines is not None:
                 log_lines.append("cloning...")
             return {
@@ -407,7 +409,9 @@ class TestRegistryInstallStream:
     ) -> None:
         """needsClientInstall results should be forwarded in the done event."""
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, agent_tools_consent: Any = ()
+        ) -> dict[str, Any]:
             return {
                 "ok": False,
                 "needsClientInstall": True,
@@ -439,7 +443,9 @@ class TestRegistryInstallStream:
     ) -> None:
         """Unhandled exceptions should be caught and streamed as done error."""
 
-        async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
+        async def _fake_install(
+            name: str, log_lines: list[str] | None = None, agent_tools_consent: Any = ()
+        ) -> dict[str, Any]:
             if log_lines is not None:
                 log_lines.append("starting...")
             raise RuntimeError("unexpected crash")

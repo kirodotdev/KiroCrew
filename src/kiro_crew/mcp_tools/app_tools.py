@@ -1,14 +1,16 @@
-"""The tools first-party apps declare in their manifests, listed and forwarded, never run here.
+"""The tools apps declare in their manifests, listed and forwarded, never run here.
 
-``apps.app_agent_tools`` reads each first-party app's ``agentTools`` block. This domain
+``apps.app_agent_tools`` reads each first-party app's ``agentTools`` block, and the
+gateway answers ``GET /api/app-tools/list`` with the third-party tools the owner
+approved (the approvals live in a store this process may not read). This domain
 turns it into ``kirocrew-core`` tools without running any app code in this process,
 which holds the gateway's internal secret:
 
 - ``schemas()`` lists every tool a shipped first-party manifest declares, installed or
   not: it is the names build an app agent's deny universe reads, and that universe is
   fixed when the agent is materialized. ``advertised()`` lists the tools of the
-  installed first-party apps that are not switched off (hidden only on a readable
-  ``False``, listed on a read that fails);
+  installed first-party apps and the approved third-party ones that are not switched
+  off (hidden only on a readable ``False``, listed on a read that fails);
 - ``HANDLERS`` answers each declared name with ONE core handler, :func:`app_agent_tool`,
   which posts the validated call to the gateway's ``/api/app-tools/call``, waits the
   tool's declared ``timeoutSeconds``, and returns the answer redacted and cut at the
@@ -33,6 +35,7 @@ from kiro_crew.apps import app_agent_tools
 from kiro_crew.mcp_tools.catalog.app_tools import (  # noqa: F401
     _DOMAIN,
     _core_tool_names,
+    _third_party_tools,
     _tools,
     _universe,
     advertised,
@@ -55,10 +58,18 @@ _CODE_RE = re.compile(r"[a-z0-9_.-]{1,64}")
 
 
 def declared(name: str) -> app_agent_tools.DeclaredTool | None:
-    """The app tool called *name*, or ``None`` when no app owns that name."""
+    """The app tool called *name*, or ``None`` when no app owns that name.
+
+    Read in this process first. A third-party tool is found here only where this process
+    can read the owner's approvals; inside the session sandbox it is not, so the
+    gateway's answer is asked then (``catalog.app_tools._third_party_tools``).
+    """
     if name in _core_tool_names():
         return None
-    return app_agent_tools.declared_tool(name)
+    tool = app_agent_tools.declared_tool(name)
+    if tool is not None:
+        return tool
+    return next((t for t in _third_party_tools() if t.name == name), None)
 
 
 def tool_schema(name: str) -> Any:
@@ -86,7 +97,7 @@ def _is_credential(value: Any) -> bool:
     return isinstance(value, str) and _CREDENTIAL_RE.fullmatch(value) is not None
 
 
-def _text_answer(name: str, resp: dict[str, Any]) -> str:
+def _text_answer(name: str, resp: dict[str, Any], *, credential_passthrough: bool = True) -> str:
     """The model-facing text of a ``result: "text"`` tool's answer *resp*.
 
     ``{"text": <str>}`` is that text, redacted. A tool whose answer hands over a
@@ -95,16 +106,22 @@ def _text_answer(name: str, resp: dict[str, Any]) -> str:
     credential cut out at each place it stands. Each piece is redacted on its own and
     the credential is put back between them, so the one string the app names survives
     verbatim and every other character of the reply is redacted as a JSON answer is.
+    That verbatim credential is a first-party app's only: with *credential_passthrough*
+    false (a third-party app's tool), any answer carrying ``credential`` is refused
+    without echoing its body, even when the redactor would keep that token.
 
     Anything else is a failure and reads as one, an ``Error:`` line the tool-call audit
     records as failed: ``{"error", "code"?}`` is a refusal the gateway, the app or the
     transport produced (a timeout, a gateway that is restarting).
     """
+    if not credential_passthrough and "credential" in resp:
+        return f"Error: {name} returned no result: invalid credential response"
     text, credential = resp.get("text"), resp.get("credential")
     if set(resp) == {"text"} and isinstance(text, str):
         return redact(text)
     if (
-        set(resp) == {"text", "credential"}
+        credential_passthrough
+        and set(resp) == {"text", "credential"}
         and _is_credential(credential)
         and isinstance(text, list)
         and 2 <= len(text) <= _MAX_CREDENTIAL_PIECES
@@ -149,7 +166,7 @@ def app_agent_tool(name: str, args: dict[str, Any]) -> str:
     else:
         resp = mcp_core._post(_CALL_PATH, body, timeout=tool.decl.timeout_seconds)
     if tool.decl.result == "text":
-        text = _text_answer(name, resp)
+        text = _text_answer(name, resp, credential_passthrough=not tool.third_party)
     else:
         text = redact(_answer_text(resp))
     cap = tool.decl.max_result_chars
@@ -162,11 +179,13 @@ class _DeclaredHandlers(Mapping[str, Any]):
     """``HANDLERS`` for a tool set read from manifests: every name ``schemas()`` lists maps to one handler.
 
     A tool whose app is not installed has the handler too, which answers with an error
-    and posts nothing.
+    and posts nothing. An approved third-party tool is answered by the same handler but
+    not iterated: its name is not known until the gateway lists it, and the names a
+    scoped agent's deny universe reads stay the shipped ones.
     """
 
     def __getitem__(self, name: str) -> Any:
-        if name not in self:
+        if name not in self and declared(name) is None:
             raise KeyError(name)
         return app_agent_tool
 

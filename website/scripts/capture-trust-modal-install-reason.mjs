@@ -111,7 +111,7 @@ const ON_CANCEL = 'Cancel changes nothing'
 /** The install path's own copy (#19645): its Cancel line (nothing is installed yet),
  *  its outcome line (an install lands switched off) and its not-granted headline. */
 const INSTALL_ON_CANCEL = 'Cancel changes nothing: nothing is installed'
-const INSTALL_OUTCOME = 'it installs switched off'
+const INSTALL_OUTCOME = 'Remove it later in Settings'
 const INSTALL_GENERIC = 'could not be installed, and trust was not saved'
 const INSTALL_GRANTED = 'is now trusted, but it could not be installed'
 const INSTALL_ON_CANCEL_GRANTED = 'trusted, and the install does not run again'
@@ -332,6 +332,7 @@ async function capturePermanent(context, base) {
     if (await modal.getByRole('button', { name: 'Cancel', exact: true }).count() !== 0) {
       fail('a permanent refusal offers Close alone, not Cancel', body)
     }
+    if (body.includes(INSTALL_OUTCOME)) fail('unsaved trust has no take-back line', body)
     if (body.includes(ON_CANCEL)) fail('no sentence about Cancel while there is no Cancel button', body)
     if (!body.includes(ON_CLOSE_PERMANENT)) fail('the permanent refusal says no trust decision is left to make', body)
     if (body.includes(ON_CANCEL_GRANTED)) fail('the permanent refusal must not carry the granted state\'s exit sentence', body)
@@ -359,9 +360,9 @@ async function captureTransient(context, base) {
   if (await modal.getByRole('button', { name: 'Cancel', exact: true }).count() !== 1) {
     fail('a transient failure still offers Cancel', body)
   }
-  if (!body.includes(INSTALL_ON_CANCEL)) fail('the install sentence describing Cancel stays while Cancel is offered', body)
+  if (body.includes(INSTALL_ON_CANCEL)) fail('the not-saved headline already says trust was not saved; no Cancel line repeats it', body)
   if (body.includes('stays in place')) fail('the install path must not say the app stays in place', body)
-  if (body.includes(INSTALL_OUTCOME)) fail('the outcome line goes once a failure headline shows', body)
+  if (body.includes(INSTALL_OUTCOME)) fail('unsaved trust has no take-back line', body)
   await modal.screenshot({ path: `${OUT}/${PREFIX}-02-transient-failure.png` })
   await page.close()
 }
@@ -544,6 +545,7 @@ async function captureGranted(context, base) {
   const body = await modal.innerText()
   if (await modal.getByRole('button', { name: 'Cancel', exact: true }).count() !== 1) fail('the granted failure still offers Cancel', body)
   if (await modal.getByRole('button', { name: RETRY_BUTTON, exact: true }).count() !== 1) fail('the granted failure still offers the retry, named for the grant it re-writes', body)
+  if (!body.includes(INSTALL_OUTCOME)) fail('retained trust keeps the take-back line', body)
   if (!body.includes(ON_CANCEL_GRANTED)) fail('the granted state names what Cancel leaves: trusted, and switched off', body)
   if (body.includes(ON_CANCEL)) fail('the granted state must not say Cancel changes nothing beside a notice that says the app is now trusted', body)
   if (body.includes(ON_CLOSE_PERMANENT)) fail('the granted state must not carry the permanent refusal\'s exit sentence', body)
@@ -559,8 +561,8 @@ async function captureInstallConsent(context, base) {
   await modal.waitFor({ timeout: 15000 })
   await page.waitForTimeout(400)
   const body = await modal.innerText()
-  if (!body.includes(INSTALL_OUTCOME)) fail('the install path says confirming installs the app switched off', body)
-  if (!body.includes(INSTALL_ON_CANCEL)) fail('the install path says Cancel leaves nothing installed', body)
+  if (!body.includes(INSTALL_OUTCOME)) fail('the install path ends on the take-back line', body)
+  if (body.includes(INSTALL_ON_CANCEL)) fail('the consent card has no Cancel line', body)
   if (body.includes('stays in place')) fail('the install path must not say the app stays in place', body)
   await modal.screenshot({ path: `${OUT}/${PREFIX}-08-install-consent.png` })
   await page.close()
@@ -579,7 +581,7 @@ async function captureInstallGranted(context, base) {
   const body = await modal.innerText()
   if (!body.includes(INSTALL_ON_CANCEL_GRANTED)) fail('the install granted state names what Cancel leaves', body)
   if (body.includes(ON_CANCEL_GRANTED)) fail('the install path must not use the enable path\'s Cancel line', body)
-  if (body.includes(INSTALL_OUTCOME)) fail('the outcome line goes once a failure headline shows', body)
+  if (!body.includes(INSTALL_OUTCOME)) fail('the take-back line stays once a failure headline shows', body)
   await modal.screenshot({ path: `${OUT}/${PREFIX}-07-install-trust-saved-failure.png` })
   await page.close()
 }

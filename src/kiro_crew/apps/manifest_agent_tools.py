@@ -17,7 +17,8 @@ What a declaration can and cannot do is decided here, before anything reads it:
 - the route is a plain path below the app's own API, never a URL, a query or ``..``;
 - an argument schema uses the small JSON Schema subset the core validator enforces
   (``string`` with ``enum`` / ``maxLength``, ``integer``, ``number``, ``boolean``, and
-  arrays of strings or integers), so every declared constraint is one the core checks;
+  arrays of strings or integers), each ``type`` one name, so every declared constraint
+  is one the core checks;
 - ``strictSession: true`` asks the core to forward a call only from a session it
   identifies directly, never one a subagent's ancestor walk lands on, and to send
   that session's key with the call. Only an app whose routes run in the gateway may
@@ -312,9 +313,11 @@ def _schema_errors(where: str, schema: Any) -> list[str]:
 
 
 def _property_errors(where: str, prop: Any) -> list[str]:
-    if not isinstance(prop, dict) or prop.get("type") not in _SCALAR_KEYS:
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if isinstance(kind, list):
+        return [f"{where}: type must be a single type name string, not a list"]
+    if not isinstance(kind, str) or kind not in _SCALAR_KEYS:
         return [f"{where}: type must be one of {sorted(_SCALAR_KEYS)}"]
-    kind = prop["type"]
     errors: list[str] = []
     unknown = sorted(set(prop) - _SCALAR_KEYS[kind])
     if unknown:
@@ -340,7 +343,11 @@ def _property_errors(where: str, prop: Any) -> list[str]:
             errors.append(f"{where}: {bound} must be a number")
     if kind == "array":
         items = prop.get("items")
-        if not isinstance(items, dict) or items.get("type") not in _ITEM_KEYS:
+        if (
+            not isinstance(items, dict)
+            or not isinstance(items.get("type"), str)
+            or items["type"] not in _ITEM_KEYS
+        ):
             errors.append(f"{where}: items must be a string or integer schema")
         else:
             stray = sorted(set(items) - _ITEM_KEYS[items["type"]])

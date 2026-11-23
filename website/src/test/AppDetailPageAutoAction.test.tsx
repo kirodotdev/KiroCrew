@@ -83,7 +83,8 @@ describe('AppDetailPage — auto-action deep links', () => {
   it('starts the install when navigated in-app with autoAction state', async () => {
     renderDetail({ state: { autoAction: 'install' } })
     await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledWith(
-      'secretary', expect.any(Function), expect.anything(),
+      // No trust card preceded this install, so it names no agent tool to approve.
+      'secretary', expect.any(Function), expect.anything(), undefined,
     ))
   })
 

@@ -49,9 +49,8 @@ function renderModal(app: TrustAppTarget) {
 function expectConsentStepsIntact(dialog: HTMLElement) {
   const text = dialog.textContent ?? ''
   for (const key of [
-    `${K}.scope`, `${K}.intro`, `${K}.capability_python`, `${K}.capability_backend`,
-    `${K}.capability_shell`, `${K}.capability_note`, `${K}.source`, `${K}.not_reviewed`,
-    `${K}.install_outcome`, `${K}.install_on_cancel`, `${K}.revocable`,
+    `${K}.can_heading`, `${K}.capability_python`, `${K}.capability_backend`,
+    `${K}.capability_shell`, `${K}.source`, `${K}.not_reviewed`, `${K}.revocable`,
   ]) expect(text).toContain(key)
   expect(within(dialog).getByRole('button', { name: `${K}.confirm_install` })).toBeTruthy()
   expect(within(dialog).getByRole('button', { name: `${K}.cancel` })).toBeTruthy()
@@ -144,13 +143,12 @@ describe('TrustAppModal registry tier', () => {
 })
 
 describe('TrustAppModal for a LOCAL install', () => {
-  it('claims no listing on the source line or in the review note', () => {
+  it('claims no listing on the source line', () => {
     const dialog = within(renderModal({ name: 'folder-app', displayName: 'Folder App', origin: 'local' }))
     expect(dialog.getByText('appStoreSources.source')).toBeTruthy()
     expect(dialog.getByText('appStoreSources.local')).toBeTruthy()
-    expect(dialog.getByText(`${K}.not_reviewed_local`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.not_reviewed`)).toBeTruthy()
     expect(dialog.queryByText(`${K}.source`)).toBeNull()
-    expect(dialog.queryByText(`${K}.not_reviewed`)).toBeNull()
   })
 })
 

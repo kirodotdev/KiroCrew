@@ -59,6 +59,8 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Strict internal path: the ``app_store_search`` tool's read leg, called with the
     # internal secret; a loopback cookie also reaches it (apps/routes_registry.py).
     ("GET", "/api/app-store/search"): RouteAccess("app_store.search", UNSTABLE),
+    # Internal secret only (strict internal; dashboard/handlers/app_agent_tools.py).
+    ("GET", "/api/app-tools/list"): RouteAccess("apps.agent_tools.list", UNSTABLE),
     # App token, owner dashboard or internal caller may read (apps/browser_sites_routes.py).
     ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.

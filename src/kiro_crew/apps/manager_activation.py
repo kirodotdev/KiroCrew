@@ -1,7 +1,7 @@
 """Switching an installed app on and off.
 
-``enable_app``, ``disable_app`` and the governance check every activation passes
-(``_app_activation_denied``).
+``enable_app``, ``disable_app``, ``revoke_agent_tools`` and the governance check every
+activation passes (``_app_activation_denied``).
 
 Part of the ``kiro_crew.apps.manager`` family: callers and tests reach every name here
 as ``kiro_crew.apps.manager.<name>``, and a patch there reaches this module too
@@ -27,6 +27,7 @@ from kiro_crew.apps.manager_records import (
     _import_app_tree_grants,
     _is_sidecar_entry,
     _now_iso,
+    _read_approved_grants,
     _read_installed,
     _session_approval_consent_unrecorded,
     _write_approved_grants,
@@ -275,7 +276,30 @@ def enable_app(
             kept_set.update(kept)
             approved[family] = kept
             still_staged = still_staged or any(e not in kept_set for e in declared[family])
-        _write_approved_grants(name, approved)
+        turned_on = frozenset(
+            e.partition("@")[0]
+            for e in approved.get("agentTools", ())
+            if e not in current_grants.get("agentTools", ())
+        )
+        try:
+            if turned_on:
+                # The owner's turn-on is the one write that ends a revoke.
+                revoked_snapshot = protected_app_state.revoked_tools_snapshot(name)
+                protected_app_state.update_revoked_agent_tools(name, remove=turned_on)
+            try:
+                _write_approved_grants(name, approved)
+            except (OSError, ValueError):
+                if turned_on:
+                    protected_app_state.restore_revoked_tools(name, revoked_snapshot)
+                raise
+        except (OSError, ValueError):
+            logger.warning("Could not update an app's agent tool grants")
+            return AppResult(
+                ok=False,
+                name=name,
+                error="the change was not saved; try again",
+                error_code="agent_tools_not_saved",
+            )
         meta.approvedGrantsStored = True
         sel().log_api_access(
             caller="app_enable",
@@ -313,6 +337,53 @@ def enable_app(
         name=name,
         message=f"enabled {name}",
     )
+
+
+@holds_app_record_locks
+def revoke_agent_tools(name: str, entries: list[str]) -> AppResult:
+    """Revoke every approved entry for the tool names in *entries*; nothing else changes.
+
+    Only narrows: a name the set does not hold is ignored, and an unreadable set
+    reads as approving nothing (``_read_approved_grants``), so nothing is written.
+    A write that fails is reported, and the stored set is left as it was.
+    """
+    if not _check_path_safety(name):
+        return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
+    hold_app_record_lock(name)
+    if not _read_installed(name):
+        return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+    current = _read_approved_grants(name) or {}
+    approved = current.get("agentTools", [])
+    revoked = {e.partition("@")[0] for e in entries}
+    kept = [e for e in approved if e.partition("@")[0] not in revoked]
+    if kept == approved:
+        return AppResult(ok=True, name=name, message="nothing to revoke")
+    try:
+        # Keep the name first so an update that changes the tool keeps it off.
+        revoked_snapshot = protected_app_state.revoked_tools_snapshot(name)
+        protected_app_state.update_revoked_agent_tools(
+            name, add=frozenset(e.partition("@")[0] for e in approved) & revoked
+        )
+        try:
+            _write_approved_grants(name, {**current, "agentTools": kept})
+        except (OSError, ValueError):
+            protected_app_state.restore_revoked_tools(name, revoked_snapshot)
+            raise
+    except (OSError, ValueError):
+        logger.warning("Could not store an app's revoked agent tools")
+        return AppResult(
+            ok=False,
+            name=name,
+            error="the change was not saved; try again",
+            error_code="agent_tools_not_saved",
+        )
+    sel().log_api_access(
+        caller="app_enable",
+        operation="agent_tools_revoked",
+        outcome="success",
+        resources=f"name={name!r} revoked={len(approved) - len(kept)}",
+    )
+    return AppResult(ok=True, name=name, message="revoked")
 
 
 def _session_approval_consent_unrecorded_on_disk(name: str) -> bool:

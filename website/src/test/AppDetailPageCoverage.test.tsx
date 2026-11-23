@@ -854,6 +854,20 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await waitFor(() => expect(getAppBotGrants).toHaveBeenCalledTimes(2))
   })
 
+  it('names the per-tool switches, not disabling the app, when held-back agent tools are shown', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [] } },
+      approvedGrants: { api: [], events: [] },
+      agentToolsGrant: { approved: [], staged: [{ name: 'lens_tag', description: 'Tag a ledger row.', entry: 'lens_tag@cccccccccccc' }] },
+    }))
+    renderDetail()
+    await loaded()
+
+    const undo = await screen.findByTestId('grants-reconsent-undo')
+    expect(undo.textContent).toBe('After you approve, you can turn off each tool with its own switch on this page.')
+    expect(screen.queryByText(/using them by disabling it/)).not.toBeInTheDocument()
+  })
+
   it('lists held-back permissions and approves them on click', async () => {
     getApp.mockResolvedValue(installedApp({
       manifest: {

@@ -50,6 +50,9 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # calls it (the store reads ``/api/apps/registry``). A loopback cookie still
         # reaches it, as it does every strict path, and sees the same rows there.
         "/api/app-store/search",
+        # Its listing twin: the ``kirocrew-core`` server reads the third-party tools
+        # the owner approved, which the session sandbox cannot read itself.
+        "/api/app-tools/list",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so

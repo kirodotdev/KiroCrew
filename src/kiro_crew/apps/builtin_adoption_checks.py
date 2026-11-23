@@ -240,7 +240,11 @@ def widening_refusal(manifest: Any, baseline: GrantBaseline) -> str | None:
         old_permissions=baseline.grants,
         new_permissions=grant_source(manifest),
     )
-    if any(_held_back_entries(approved, grant_source(manifest)).values()):
+    held = _held_back_entries(approved, grant_source(manifest))
+    # An adopted record's agent tools are held to the wheel copy's
+    # (``app_agent_tools._within_wheel_copy``), never to an approved set.
+    held.pop("agentTools", None)
+    if any(held.values()):
         return "permission_widening"
     return None
 

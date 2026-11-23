@@ -46,11 +46,9 @@ const LISTING = 'the Kiro Crew team did not vet this listing'
 const CREDENTIALS = 'downloads it with your saved Git sign-in'
 /** Lines of the consent body that must render unchanged at every tier. */
 const KEPT = [
-  'has not reviewed its code',
-  'Run its own code inside Kiro Crew',
-  'Trusting the app grants all three',
-  'changes nothing: nothing is installed',
-  'You can take this back at any time',
+  'Not reviewed by Kiro Crew.',
+  "Run its own code with Kiro Crew's access",
+  'Remove it later in Settings',
 ]
 
 const REGISTRY_APP = {

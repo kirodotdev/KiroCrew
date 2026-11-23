@@ -1,4 +1,4 @@
-"""The agent tools first-party apps declare, read once per manifest change, for every reader.
+"""The agent tools apps declare, read once per manifest or approval change, for every reader.
 
 An app's manifest ``agentTools`` block (``apps/manifest_agent_tools.py``) declares MCP
 tools the app serves from its own process. Three core readers build on this module, and
@@ -13,7 +13,7 @@ none of them names an app:
   against the declaration and hands it to the app's own declared route.
 
 Trust. A declaration is data the core checks; no app code is imported here or in the
-MCP server. Only a FIRST-PARTY app's block is read, in one of two ways:
+MCP server. A FIRST-PARTY app's block is read with no grant, in one of two ways:
 
 - a name in ``execution.builtin_app_names()`` (a shipped manifest declares it AND the
   builtin owns the installed slot), with the block read from that shipped
@@ -30,10 +30,13 @@ MCP server. Only a FIRST-PARTY app's block is read, in one of two ways:
   for it (:func:`shipped_tools`), so the ceiling is the last shipped copy's, no wider.
 
 The tools are listed under ``kirocrew-core``, which the default agent auto-approves as
-a whole server, so a tool listed there skips the permission prompt; a third-party
-app's tools have no such grant, and any other installed or registry app's block is
-therefore ignored here until a listing path exists that asks before each call. Such an
-app can still ship its own ``mcpServers`` entry, which is approved per call.
+a whole server, so a tool listed there skips the permission prompt. A third-party app's
+block is therefore listed only tool by tool, as the owner approved it: the install card
+shows each declared tool, installing approves those entries, and an update that adds or
+changes a tool holds it back until the owner approves it on the app's page
+(:func:`third_party_tools`, ``apps/agent_tool_grants.py``). Those rules are narrower:
+the block is read from the data-home ``app.json``, with no stated ``namespace`` other
+than the app's own, no ``strictSession`` tool, and no name a first-party tool has.
 
 The reader keeps a tool only when the app's whole block parsed cleanly, its name is in
 the app's namespace, and no other app declares the same name. A name a core tool
@@ -53,12 +56,13 @@ adopted-record trust is read only for an installed name whose wheel copy declare
 
 from __future__ import annotations
 
+import copy
 import functools
 import logging
 import os
 import threading
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +72,7 @@ from kiro_crew.apps.manifest import (
     AgentToolDecl,
     AppManifest,
 )
+from kiro_crew.apps.manifest_agent_tools import AgentToolsConfig
 
 if TYPE_CHECKING:
     from kiro_crew.validation_parts.field_engine import ToolSchema
@@ -77,11 +82,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DeclaredTool:
-    """One tool a first-party app declares, with the app and route that serve it."""
+    """One tool an app declares, with the app and route that serve it."""
 
     app: str
     route: str
     decl: AgentToolDecl
+    #: The app is not first party: the tool is listed only once the owner approved it.
+    third_party: bool = False
 
     @property
     def name(self) -> str:
@@ -90,6 +97,7 @@ class DeclaredTool:
 
 _cache_lock = threading.Lock()
 _cache: tuple[tuple[Any, ...], tuple[DeclaredTool, ...]] | None = None
+_third_party_cache: tuple[tuple[Any, ...], tuple[DeclaredTool, ...]] | None = None
 
 
 def _fingerprint(root: str) -> tuple[Any, ...]:
@@ -135,12 +143,26 @@ def _adopted_first_party_apps(installed: Iterable[str], builtin: frozenset[str])
     return frozenset(name for name in sorted(candidates) if adopted_under_pin_trust(name))
 
 
+def _read_data_home_manifest(name: str) -> AppManifest:
+    """Read the app manifest without following links."""
+    from kiro_crew import hooks
+    from kiro_crew.apps.manager import app_dir
+    from kiro_crew.user_json import loads_user_json
+
+    root = app_dir(name)
+    raw = hooks.safe_read_file_bytes_nolink(str(root / "app.json"), str(root))
+    if raw is None:
+        raise ValueError("app.json is unreadable")
+    data = loads_user_json(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"app.json must be a JSON object, got {type(data).__name__}")
+    return AppManifest.from_dict(data)
+
+
 def _adopted_manifest(name: str) -> AppManifest | None:
     """The adopted record's own ``app.json``; its tools are held to the wheel copy's."""
-    from kiro_crew.apps.manager import app_dir
-
     try:
-        return AppManifest.from_json_file(app_dir(name) / "app.json")
+        return _read_data_home_manifest(name)
     except Exception:  # noqa: BLE001 - an unreadable manifest declares nothing
         logger.warning("app %s: adopted manifest unreadable; agentTools ignored", name)
         return None
@@ -314,9 +336,138 @@ def shipped_tools() -> tuple[DeclaredTool, ...]:
     return _collect(sorted({*roots, *frozen}), drop_clashes=False, read=read)
 
 
+def _third_party_manifest(name: str) -> AppManifest | None:
+    """*name*'s data-home ``app.json`` when its block may list, else ``None``.
+
+    A third-party block names tools in the app's own namespace only: a stated
+    ``namespace`` keeps a former core tool's name for a first-party app, and no
+    third-party app has one. A ``strictSession`` tool acts as the calling session,
+    which stays first-party only, so a block that declares one lists nothing.
+    """
+    try:
+        manifest = _read_data_home_manifest(name)
+    except Exception:  # noqa: BLE001 - an unreadable manifest declares nothing
+        logger.warning("app %s: manifest unreadable; agentTools ignored", name)
+        return None
+    block = manifest.agentTools
+    if block.namespace and block.namespace != name.replace("-", "_"):
+        logger.warning("app %s: agentTools namespace %r ignored", name, block.namespace)
+        return None
+    if any(tool.strict_session for tool in block.tools):
+        logger.warning("app %s: strictSession agentTools are first-party only", name)
+        return None
+    return manifest
+
+
+def _third_party_names(installed: list[str]) -> list[str]:
+    """The *installed* names that are not first party, not adopted, and no shipped app's."""
+    trusted = _first_party_apps()
+    # Adopted candidates come from shipped_tools(), so shipped names already exclude them.
+    # Its apps add a deleted copy's pin-frozen name; it reads no record, so no get_app.
+    shipped = frozenset(_shipped_first_party_roots()) | {t.app for t in shipped_tools()}
+    return [n for n in installed if n not in trusted and n not in shipped]
+
+
+def is_third_party(name: str) -> bool:
+    """Whether installed app *name* is third party, so its tools list only once approved."""
+    return bool(_third_party_names([name]))
+
+
+def _approved_only(tools: Iterable[DeclaredTool]) -> list[DeclaredTool]:
+    """The *tools* whose ``agentTools`` entry their app's approved set holds."""
+    from kiro_crew.apps.agent_tool_grants import GRANT_FAMILY, tool_entry
+    from kiro_crew.apps.manager import staged_app_grants
+
+    by_app: dict[str, list[DeclaredTool]] = {}
+    for tool in tools:
+        by_app.setdefault(tool.app, []).append(tool)
+    kept: list[DeclaredTool] = []
+    for app, app_tools in by_app.items():
+        entries = {tool_entry(t.route, t.decl): t for t in app_tools}
+        approved = set(staged_app_grants(app, GRANT_FAMILY, lambda: list(entries)))
+        kept.extend(t for entry, t in entries.items() if entry in approved)
+    return kept
+
+
+def third_party_tools() -> tuple[DeclaredTool, ...]:
+    """The tools of the installed third-party apps that the owner approved, enabled or not.
+
+    A third-party app is an installed app that is not first party, not adopted and
+    not under a shipped manifest's name. Its block is read from its data-home
+    ``app.json``, and a tool is kept only when the app's approved ``agentTools`` set
+    holds the tool's current entry (``apps/agent_tool_grants.py``), so a new or changed
+    declaration lists nothing until the owner approves it. A name a first-party app
+    declares, installed or shipped, stays the first-party app's, and a name two
+    third-party apps declare is neither's.
+
+    The approved set lives in a store the session sandbox masks, so this reader
+    answers in the gateway only; inside a sandbox it finds no approval and lists
+    nothing (``mcp_tools/catalog/app_tools.py`` asks the gateway instead).
+    """
+    global _third_party_cache
+    from kiro_crew.apps.manager import apps_dir
+
+    rows = _fingerprint(str(apps_dir()))
+    if not rows:
+        return ()
+    names = _third_party_names([row[0] for row in rows[1:]])
+    # Only the declarations are cached. The approval filter runs on every lookup: a
+    # lookup inside an update's swap or an install's record write is granted nothing,
+    # and a cached empty answer would outlive that window under an unchanged key.
+    key = (rows, tuple(names))
+    with _cache_lock:
+        cached = (
+            _third_party_cache[1] if _third_party_cache and _third_party_cache[0] == key else None
+        )
+    if cached is None:
+        first_party = {t.name for t in shipped_tools()} | {t.name for t in declared_tools()}
+        found = [
+            t for t in _collect(names, read=_third_party_manifest) if t.name not in first_party
+        ]
+        cached = tuple(replace(t, third_party=True) for t in found)
+        with _cache_lock:
+            _third_party_cache = (key, cached)
+    return tuple(_approved_only(cached))
+
+
+def tool_row(tool: DeclaredTool) -> dict[str, Any]:
+    """*tool* as the gateway's listing route answers it: the app, the route, and the
+    declaration in its manifest form, so :func:`tool_from_row` parses it again."""
+    decl = tool.decl
+    raw: dict[str, Any] = {
+        "name": decl.name,
+        "description": decl.description,
+        "inputSchema": copy.deepcopy(decl.input_schema),
+        "maxResultChars": decl.max_result_chars,
+        "strictSession": decl.strict_session,
+        "timeoutSeconds": decl.timeout_seconds,
+        "result": decl.result,
+    }
+    if decl.title:
+        raw["title"] = decl.title
+    return {"app": tool.app, "route": tool.route, "tool": raw}
+
+
+def tool_from_row(row: Any) -> DeclaredTool | None:
+    """The third-party tool a listing row names, checked as a manifest block is; else ``None``."""
+    if not isinstance(row, dict) or not isinstance(row.get("app"), str):
+        return None
+    block = AgentToolsConfig.from_value({"route": row.get("route"), "tools": [row.get("tool")]})
+    if block.validate(row["app"]) or len(block.tools) != 1 or block.tools[0].strict_session:
+        return None
+    return DeclaredTool(app=row["app"], route=block.route, decl=block.tools[0], third_party=True)
+
+
 def declared_tool(name: str) -> DeclaredTool | None:
-    """The declared tool called *name*, or ``None``."""
+    """The tool called *name* that a first-party app declares or the owner approved, or ``None``.
+
+    The gateway's reader: a third-party tool is looked up only when no first-party one
+    has the name, and only this process can read the owner's approvals.
+    """
     for tool in declared_tools():
+        if tool.name == name:
+            return tool
+    for tool in third_party_tools():
         if tool.name == name:
             return tool
     return None

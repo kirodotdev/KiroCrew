@@ -61,7 +61,9 @@ async def run_lifecycle_script(
     Returns dict with ``output`` (str) and ``failed`` (bool).
     """
     app_root = apps_dir() / app_name
-    denied = app_execution_denied(
+    # Off-loop: a granted app's admission reads its installed row (``get_app``).
+    denied = await asyncio.to_thread(
+        app_execution_denied,
         app_name,
         action=action,
         app_root=app_root,

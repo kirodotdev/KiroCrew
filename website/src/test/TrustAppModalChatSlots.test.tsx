@@ -42,7 +42,7 @@ describe('TrustAppModal chat slots disclosure', () => {
     expect(dialog.getByTestId('trust-chat-slots')).toBeTruthy()
     expect(dialog.getByText(`${K}.chat_slots_heading`)).toBeTruthy()
     expect(dialog.getByText(`${K}.chat_slots_desc`)).toBeTruthy()
-    expect(dialog.getByText(`${K}.capability_note`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.capability_shell`)).toBeTruthy()
   })
 
   it('says the chats stay out of the session list when the app also hides them', () => {

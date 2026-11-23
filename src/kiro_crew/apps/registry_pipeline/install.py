@@ -282,6 +282,7 @@ async def install_from_registry(
     start_disabled: bool = False,
     before_replace: Callable[[], Awaitable[None]] | None = None,
     via: str = "store",
+    agent_tools_consent: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Clone an app from its git repo and install it.
 
@@ -318,6 +319,9 @@ async def install_from_registry(
         via: How the install was asked for, the ``via`` of
             ``kirocrew.app.installed`` and ``kirocrew.app.updated``: ``store`` (the
             store routes, the default) or ``default`` (the default-apps pass).
+        agent_tools_consent: The ``agentTools`` entries the owner's trust card
+            listed, approved by a fresh install where the manifest declares them
+            (``install_app``). An update approves no tool of its own.
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -456,7 +460,7 @@ async def install_from_registry(
         # It is the normalized form, which the storefront rows already expose as
         # ``trustRepository``; the clone URL itself stays out of the response.
         trust_repository = ""
-        if not granted_repository and _trust_grant_would_stay_local(name):
+        if not granted_repository and await asyncio.to_thread(_trust_grant_would_stay_local, name):
             code = "app_trust_local_only"
             trust_repository = _normalize_git_target(git_url)
             reason = (
@@ -602,7 +606,7 @@ async def install_from_registry(
     # Capture event kind before clone/build/install scripts can register or
     # otherwise change app state. The receipt describes this call's starting
     # state, not an intermediate side effect.
-    was_installed = get_app(name) is not None
+    was_installed = await asyncio.to_thread(get_app, name) is not None
 
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
@@ -1450,6 +1454,7 @@ async def install_from_registry(
             # The app will update its own registration on next launch.
             # ``manifest_data`` is the identity-checked read from above — reusing
             # it avoids a second read that could see different bytes.
+            from kiro_crew.apps import app_agent_tools
             from kiro_crew.apps.admission import app_version_refusal
             from kiro_crew.apps.manager import (
                 _app_activation_denied,
@@ -1485,6 +1490,8 @@ async def install_from_registry(
             # The apps activation check reads the same store, so it is asked off the
             # loop too and its verdict passed in.
             activation_permitted = await asyncio.to_thread(_app_activation_denied, name) is None
+            # Agent-tool provenance scans shipped apps and installed records too.
+            third_party = await asyncio.to_thread(app_agent_tools.is_third_party, name)
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -1496,6 +1503,8 @@ async def install_from_registry(
                 start_disabled=start_disabled,
                 version_checked=True,
                 activation_permitted=activation_permitted,
+                third_party=third_party,
+                agent_tools_consent=agent_tools_consent,
             )
             if not reg_result.ok:
                 # A refused registration leaves the prior record as it was, so the
@@ -1566,7 +1575,7 @@ async def install_from_registry(
         # Lock-free: the route handler holds app_lifecycle_lock(name) across
         # the whole transaction (clone/build → copy → register → backend
         # start); asyncio.Lock is not reentrant, so no acquisition here.
-        existing = get_app(name)
+        existing = await asyncio.to_thread(get_app, name)
         if before_replace is not None:
             await before_replace()
         # Off-loop: install_app/update_app do a blocking filesystem copy
@@ -1580,7 +1589,9 @@ async def install_from_registry(
             if existing:
                 result = await asyncio.to_thread(update_app, str(app_source))
             else:
-                result = await asyncio.to_thread(install_app, str(app_source))
+                result = await asyncio.to_thread(
+                    install_app, str(app_source), agent_tools_consent=agent_tools_consent
+                )
         log_lines.append(result.message or result.error or "done")
         if not result.ok:
             await _roll_back_refused()

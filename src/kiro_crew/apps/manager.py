@@ -62,6 +62,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         disable_app,
         enable_app,
         mark_session_approval_consent_pending,
+        revoke_agent_tools,
         session_approval_consent_candidates,
     )
     from kiro_crew.apps.manager_adopt import (  # noqa: F401
@@ -184,6 +185,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _approved_grants_snapshot,
         _approved_grants_stored,
         _approved_grants_text,
+        _card_approved_agent_tools,
         _config_keys_refresh_lock,
         _consented_grant_entries,
         _credential_free_source_metadata,
@@ -229,6 +231,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_retired_tree_prefix,
         _update_tree_prefix,
         _UpdateMarker,
+        _widening_entries,
         _write_approve_declared,
         _write_approved_grants,
         _write_awaiting_manifest,

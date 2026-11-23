@@ -29,14 +29,15 @@ from kiro_crew.apps.manager_records import (
     InstalledApp,
     _approved_grants_after_manifest_change,
     _approved_grants_snapshot,
+    _card_approved_agent_tools,
     _consented_grant_entries,
     _effective_approved_grants,
-    _held_back_entries,
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
     _restore_approved_grants,
     _session_control_widening,
+    _widening_entries,
     _write_approved_grants,
     _write_awaiting_manifest,
     _write_installed,
@@ -82,6 +83,8 @@ def register_external_app(
     start_disabled: bool = False,
     version_checked: bool = False,
     activation_permitted: bool | None = None,
+    third_party: bool | None = None,
+    agent_tools_consent: list[str] | tuple[str, ...] = (),
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
 
@@ -90,6 +93,8 @@ def register_external_app(
     admission skips that blocking read here. ``activation_permitted`` is the caller's
     off-loop answer to the ``apps`` activation check (``_app_activation_denied``) that
     a carried-over record's owner-enable marker waits on; ``None`` asks it here.
+    ``third_party`` is the caller's off-loop provenance check for agent-tool widening;
+    ``None`` computes it here when tools are held back.
 
     Self-managed apps (``resources="app"``) handle their own agent/skill/MCP
     registration.  Kiro Crew only tracks metadata so the dashboard can display them.
@@ -110,6 +115,8 @@ def register_external_app(
             is a metadata refresh, not permission to erase its provenance.
         start_disabled: Create a new record disabled until an explicit enable.
             Existing records retain their enabled state, subject to consent.
+        agent_tools_consent: Entries the owner's install card disclosed. Only a
+            fresh registration approves entries its manifest still declares.
 
     Returns:
         AppResult indicating success or failure.
@@ -351,8 +358,11 @@ def register_external_app(
         )
     else:
         approved_grants = _consented_grant_entries(new_permissions)
+        approved_grants["agentTools"] = _card_approved_agent_tools(
+            name, new_permissions, agent_tools_consent
+        )
     widened_grants = bool(manifest_data) and any(
-        _held_back_entries(approved_grants, new_permissions).values()
+        _widening_entries(name, approved_grants, new_permissions, third_party=third_party).values()
     )
 
     if existing:

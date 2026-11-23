@@ -3867,7 +3867,8 @@ answers `tools/list` from):
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App-declared tools:** whatever a first-party app declares in its manifest
-  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`, Issue
+  `agentTools` block, and the tools of a third-party app's block that the owner
+  approved, such as Design Tweak's `design_tweak_update_thread`, Issue
   Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
   `issue_radar_crew_record`, Dev Fleet's `pod_up`, `pod_restart`, `pod_down`,
   `pod_status` and `pod_ls` (declared under the namespace `pod`, so they keep the
@@ -3913,14 +3914,19 @@ answers `tools/list` from):
 
 - **App-declared tools (credentialed, app-served):** the `app_tools` domain
   (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
-  first-party app declares in its manifest `agentTools` block (a third-party app
-  would inherit this server's whole-server auto-approval, so its block lists
-  nothing; app-kit-platform.md section 30.1), validates a call
+  first-party app declares in its manifest `agentTools` block, and each tool of a
+  third-party app's block that the owner approved (the `agentTools` grant family;
+  this server's whole-server auto-approval then covers it, so the approval is the
+  owner's one decision; app-kit-platform.md section 30.1). The server cannot read
+  those approvals inside the session sandbox, so it asks the strict internal route
+  `GET /api/app-tools/list` for them. It validates a call
   against the declared schema, and posts `{tool, arguments}` to the strict
   internal route `POST /api/app-tools/call`. The gateway checks the call again
   against the declaration and hands it to the declaring app's own route, through
   the signed app proxy or the app route registry, so no app code runs in this
-  server and no app route is admitted to internal-secret callers. A name another
+  server and no app route is admitted to internal-secret callers. A third-party
+  text response carrying `credential` is rejected without echoing its body; only
+  first-party text tools may use credential passthrough. A name another
   domain declares is never an app's. Design Tweak's `design_tweak_update_thread`
   is served this way: `status` is restricted to `done` and every string is
   bounded by its declaration. So are Issue Radar's three tools; its two crew tools

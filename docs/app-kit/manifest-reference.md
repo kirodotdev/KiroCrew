@@ -246,16 +246,26 @@ your schema, and posts the call to your route. Your code runs where it already r
 MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ignores
 the block and installs the app without the tools.
 
-Today the gateway lists the tools of first-party apps only (the apps that ship with
-Kiro Crew, including one that moved to its own repository, up to the tools its shipped
-copy declares). `kirocrew-core` is auto-approved as a whole server, and a third-party
-app's tools do not get that approval, so an installed or registry app's block
-validates and installs but lists nothing yet. Until it does, ship an MCP server of your
-own (`mcpServers`); the user approves each of its calls.
+A first-party app's tools (the apps that ship with Kiro Crew, including one that moved
+to its own repository, up to the tools its shipped copy declares) are listed with no
+approval step. A third-party app's tools are listed once the owner approved them:
+the install card lists each tool by name and description, and installing from that
+card approves exactly the tools it listed. An install that showed no such card (the
+registry row lists no tools, the repository was already trusted, or a CLI install)
+approves none, and the owner approves them on the app's page. `kirocrew-core` is auto-approved as a whole server, so an approved tool is then
+called with no card per call. An update that adds a tool, or changes one (its route,
+title, description, input schema, `timeoutSeconds`, `result` or `maxResultChars`), holds
+that tool back: it is not listed until the owner approves the change on the app's page,
+and the other tools keep working. The app's page has a switch for each approved tool:
+turning one off stops listing it and refuses its calls at once, and it stays off across
+updates, even ones that change it, until the owner turns it on again. A third-party block that states another app's
+`namespace` or declares a `strictSession` tool lists nothing, and a call from a session
+another app owns is refused (`cross_app`).
 
-A listed tool is also called without an approval card by the app's own agents (the
-ones its `agents` declare), in the app's chats and in its cron jobs. An agent of
-another app, and any other tool your agent calls, asks as usual.
+A first-party app's listed tool is also called without an approval card by the app's
+own agents (the ones its `agents` declare), in the app's chats and in its cron jobs. A
+third-party app's own agents ask for each call, like an agent of another app and any
+other tool your agent calls.
 
 ```json
 "agentTools": {
@@ -286,7 +296,7 @@ another app, and any other tool your agent calls, asks as usual.
 | `tools[].name` | string | A lowercase identifier (`[a-z][a-z0-9_]{0,63}`) that must begin with your namespace, or by default your app's name with `-` read as `_`, then `_` (app `my-app`: `my_app_...`). A name a built-in core tool already has is never yours |
 | `tools[].description` | string | What the model reads, up to 4,000 characters |
 | `tools[].title` | string | Optional one-line display title, up to 80 characters |
-| `tools[].inputSchema` | object | An object schema of at most 32 arguments using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
+| `tools[].inputSchema` | object | An object schema of at most 32 arguments using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). Each `type` is one type name; a list such as `["string", "null"]` is refused. A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
 | `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
 | `tools[].timeoutSeconds` | integer | How long the core waits for your answer, 1 to 600; default 30 |
 | `tools[].result` | string | `json` (default): any JSON object, serialized and redacted by the core. `text`: model-facing text you formatted, redacted and relayed as text |

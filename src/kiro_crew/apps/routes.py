@@ -90,11 +90,13 @@ from kiro_crew.apps.manager import (
     refresh_app_config_keys,
     register_external_app,
     resolve_mcp_backend_url,
+    revoke_agent_tools,
     trust_grant_removal_blocked,
     uninstall_app,
     update_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig, app_endpoint_allowed
+from kiro_crew.apps.manifest_agent_tools import MAX_AGENT_TOOLS_PER_APP  # noqa: F401
 from kiro_crew.apps.market_source import LISTING_REF_RE  # noqa: F401
 from kiro_crew.apps.marketplace_install import (  # noqa: F401
     MarketInstallError,
@@ -366,13 +368,8 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.apps.bot_grant_store import (  # noqa: F401
-        MAX_BOT_GRANTS,
-    )
-    from kiro_crew.apps.bot_grants import (  # noqa: F401
-        app_granted_bots,
-        set_app_granted_bots,
-    )
+    from kiro_crew.apps.bot_grant_store import MAX_BOT_GRANTS  # noqa: F401
+    from kiro_crew.apps.bot_grants import app_granted_bots, set_app_granted_bots  # noqa: F401
     from kiro_crew.apps.bridges import (  # noqa: F401
         _prune_stale_app_resources,
         _registration_source,
@@ -384,9 +381,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         call_kiro_operation,
         parse_json_body,
     )
-    from kiro_crew.apps.kiro_operations import (  # noqa: F401
-        MAX_KIRO_OPERATIONS,
-    )
+    from kiro_crew.apps.kiro_operations import MAX_KIRO_OPERATIONS  # noqa: F401
     from kiro_crew.apps.market_registries import (  # noqa: F401
         MAX_ADDED,
         NEEDS_SIGN_IN,
@@ -405,12 +400,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         sign_in_view,
         write_added_ids,
     )
-    from kiro_crew.apps.point_grants import (  # noqa: F401
-        point_grant_families,
-    )
-    from kiro_crew.apps.registry_pipeline.checkout import (  # noqa: F401
-        _mkdtemp_settled,
-    )
+    from kiro_crew.apps.point_grants import point_grant_families  # noqa: F401
+    from kiro_crew.apps.registry_pipeline.checkout import _mkdtemp_settled  # noqa: F401
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,
@@ -425,20 +416,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_declared_art,
         _touch_served_blob,
     )
-    from kiro_crew.apps.routes_bot_grants import (  # noqa: F401
-        _not_installed,
-        _view,
-    )
+    from kiro_crew.apps.routes_bot_grants import _not_installed, _view  # noqa: F401
     from kiro_crew.apps.routes_enable import (  # noqa: F401
         _APP_STATE_BOOT,
         _APP_STATE_SEQ_LOCK,
         _BUILTIN_SERVICE_APPS,
         _OPEN_COMMAND_DESKTOP_ENV_KEYS,
+        MAX_AGENT_TOOLS_REVOKE,
         _announce_app_state,
         _app_state_last_seq,
         _end_turned_off_app_views,
         _next_app_state_seq,
         _notify_builtin_service,
+        _revoke_agent_tools,
         _sync_builtin_config,
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
@@ -572,6 +562,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _store_row_words,
         _store_search_words,
         _write_registries_config,
+        agent_tools_consent,
         search_store_rows,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401

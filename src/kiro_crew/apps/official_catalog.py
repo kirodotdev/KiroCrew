@@ -567,11 +567,17 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     is a list of verbs too, and ``kiroOperations`` a list of the valid operation names
     (``apps/kiro_operations.py``). ``chatLaunch`` is kept only as it
     parses (``apps/chat_launch.py``), normalized. ``api`` is kept to its non-empty
-    string entries, the ones the scope check can match.
+    string entries, the ones the scope check can match. A top-level ``agentTools``
+    block is kept to each tool's name and description (:func:`_disclosed_agent_tools`).
     """
+    try:
+        tools = _disclosed_agent_tools(entry.get("agentTools"))
+    except (TypeError, ValueError, AttributeError):
+        logger.debug("app %s: invalid agentTools omitted", entry.get("name"), exc_info=True)
+        tools = None
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
-        return None
+        return {"agentTools": tools} if tools else None
     disclosed: dict[str, Any] = {
         key: True for key in _DISCLOSED_PERMISSIONS if permissions.get(key) is True
     }
@@ -599,10 +605,33 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     if isinstance(api, list) and (paths := [p for p in api if isinstance(p, str) and p.strip()]):
         disclosed["api"] = paths
     if not disclosed:
-        return None
+        return {"agentTools": tools} if tools else None
     if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:
         disclosed["memberThreads"] = True
-    return {"permissions": disclosed}
+    return {"permissions": disclosed, **({"agentTools": tools} if tools else {})}
+
+
+def _disclosed_agent_tools(block: Any) -> dict[str, Any] | None:
+    """The tools an entry's ``agentTools`` block names, as the trust prompt lists them.
+
+    Each tool's name, description and grant entry (``agent_tool_grants.tool_entry``),
+    kept as the manifest parser keeps them (``apps/manifest_agent_tools.py``). The
+    prompt sends back the entries it listed, and the install approves only those the
+    cloned manifest still declares, so a block that changed since this row was
+    disclosed approves no changed tool.
+    """
+    from kiro_crew.apps.agent_tool_grants import tool_entry  # noqa: PLC0415
+    from kiro_crew.apps.manifest_agent_tools import AgentToolsConfig  # noqa: PLC0415
+
+    parsed = AgentToolsConfig.from_value(block) if isinstance(block, dict) else None
+    if parsed is None or parsed.errors or not parsed.tools or not parsed.route:
+        return None
+    return {
+        "tools": [
+            {"name": t.name, "description": t.description, "entry": tool_entry(parsed.route, t)}
+            for t in parsed.tools
+        ]
+    }
 
 
 #: The largest integer JavaScript can represent exactly (2**53 - 1). A star

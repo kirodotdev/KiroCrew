@@ -120,10 +120,11 @@ async def test_install_persists_credential_free_source_provenance(monkeypatch, t
     installed: dict[str, object] = {}
     provenance: dict[str, object] = {}
 
-    def _install(path):
-        # The manager callable contract remains one positional argument; the
-        # safe server-resolved coordinate crosses the to_thread boundary in a
-        # task-local context rather than in app-controlled manifest data.
+    def _install(path, agent_tools_consent=()):
+        # The manager callable takes the path plus the card's agent-tool
+        # consent; the safe server-resolved coordinate crosses the to_thread
+        # boundary in a task-local context rather than in app-controlled
+        # manifest data.
         from kiro_crew.apps.manager import _effective_source_repository
 
         installed["source_repository"] = _effective_source_repository("")

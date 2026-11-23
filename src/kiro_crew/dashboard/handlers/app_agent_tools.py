@@ -1,8 +1,10 @@
 """``POST /api/app-tools/call`` -- hand one app agent tool call to the app that declares it.
 
-A first-party app may declare MCP tools in its manifest (``agentTools``) and serve them
-from its own process (``apps/app_agent_tools.py`` says which apps are read). The ``kirocrew-core`` MCP server lists those tools and posts each
-call here; this handler is where the call is decided:
+An app may declare MCP tools in its manifest (``agentTools``) and serve them from its
+own process (``apps/app_agent_tools.py`` says which apps are read, and that a
+third-party app's tool counts only once the owner approved it). The ``kirocrew-core``
+MCP server lists those tools and posts each call here; this handler is where the call
+is decided:
 
 1. MACHINE-only. The route is in ``_STRICT_INTERNAL_API_PATHS`` and the handler
    re-asserts ``request["internal_auth"] is True``, because a ``local_only=False``
@@ -16,6 +18,12 @@ call here; this handler is where the call is decided:
 5. A tool declared ``strictSession`` must arrive with an ``X-Session-Key``: the MCP
    server sends the strictly resolved key for one and posts nothing without it, so a
    call without the header did not come through that gate.
+6. A third-party app's tool is refused to a session that ANOTHER app owns (403
+   ``cross_app``): a scoped app agent's deny universe names only shipped tools, so the
+   gateway holds that line. ``token_auth`` names the app that owns the calling
+   session (``request["app"]``). With no owning app the call is the person's and is
+   served, except from a dashboard slot that is gone (403 ``caller_unattributable``),
+   whose app cannot be known any more.
 
 Then the call goes where the app's code runs, through the dispatcher that already
 serves that app, so no new trust path exists: the app's own gateway route when it
@@ -29,8 +37,13 @@ forward the body this request already holds (the proxy is handed the bytes read 
 the MCP server redacts and caps it.
 
 Body: ``{"tool": str, "arguments": object}``. Refusals: 403 ``loopback_only``,
-``app_not_enabled`` and ``session_required``, 404 ``unknown_tool``, 400 ``invalid_json``
-and ``invalid_arguments``.
+``app_not_enabled``, ``session_required``, ``cross_app`` and ``caller_unattributable``,
+404 ``unknown_tool``, 400 ``invalid_json`` and ``invalid_arguments``.
+
+``GET /api/app-tools/list`` answers the approved third-party tools (``{"tools": [row]}``,
+``app_agent_tools.tool_row``), so the ``kirocrew-core`` server can list them without
+reading the owner's approvals, which the session sandbox masks. Same trust class:
+strict internal, and the handler re-asserts ``internal_auth``.
 """
 
 from __future__ import annotations
@@ -79,6 +92,40 @@ def _resolve(name: str) -> tuple[app_agent_tools.DeclaredTool | None, bool, bool
     return tool, is_app_enabled(tool.app), manifest is not None and process_backed(manifest)
 
 
+def _cross_app_refusal(
+    request: web.Request, tool: app_agent_tools.DeclaredTool, resource: str
+) -> web.Response | None:
+    """403 when a session another app owns calls *tool*, or names a slot that is gone."""
+    calling_app = request.get("app") or ""
+    if not calling_app:
+        from kiro_crew.dashboard.token_auth_callers import refuse_unattributable_caller
+
+        return refuse_unattributable_caller(
+            request.app.get("state"), request, "app_agent_tool_call"
+        )
+    if calling_app != tool.app:
+        # The signed proxy refuses a cross-app call on its own, but the route registry
+        # does not, so the refusal is made here for both.
+        return _refuse(
+            403,
+            "cross_app",
+            f"a session app {calling_app!r} owns may not call app {tool.app!r}",
+            resource,
+        )
+    return None
+
+
+def _third_party_rows() -> list[dict[str, Any]]:
+    return [app_agent_tools.tool_row(t) for t in app_agent_tools.third_party_tools()]
+
+
+async def api_app_agent_tool_list(request: web.Request) -> web.StreamResponse:
+    """GET /api/app-tools/list -- the approved third-party tools; see the module docstring."""
+    if request.get("internal_auth") is not True:
+        return _refuse(403, "loopback_only", "internal-secret authentication required", "")
+    return web.json_response({"tools": await asyncio.to_thread(_third_party_rows)})
+
+
 async def api_app_agent_tool_call(request: web.Request) -> web.StreamResponse:
     """POST /api/app-tools/call -- see the module docstring."""
     if request.get("internal_auth") is not True:
@@ -106,6 +153,10 @@ async def api_app_agent_tool_call(request: web.Request) -> web.StreamResponse:
         return _refuse(400, "invalid_arguments", "arguments are not in validated form", resource)
     if not enabled:
         return _refuse(403, "app_not_enabled", f"app {tool.app!r} is not enabled", resource)
+    if tool.third_party:
+        refusal = _cross_app_refusal(request, tool, resource)
+        if refusal is not None:
+            return refusal
     if tool.decl.strict_session and not request.headers.get("X-Session-Key", "").strip():
         return _refuse(
             403, "session_required", f"{name!r} needs the calling session's key", resource

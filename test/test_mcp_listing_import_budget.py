@@ -140,8 +140,12 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: config validation checks the schema with the in-house
 #: ``kiro_crew.config.schema_check`` instead of importing ``jsonschema`` (66 modules,
 #: none of them ``kiro_crew``); that one file is the whole rise.
+#: Raised by 1 more for ``mcp-core`` (507 to 508): its list asks the gateway for the
+#: third-party agent tools the owner approved (``GET /api/app-tools/list``), through
+#: ``kiro_crew.mcp_core_parts.gateway``, the client the small servers use; every module
+#: that client imports was loaded already, so the count rose by that one file.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 507,
+    "mcp-core": 508,
     "mcp-cron": 373,
     "mcp-guide": 367,
     "mcp-mate": 370,
@@ -203,7 +207,8 @@ _REQUESTS = "".join(
 
 
 class _Policy(http.server.BaseHTTPRequestHandler):
-    """The one gateway read a listing makes: this session's tool policy."""
+    """The gateway reads a listing makes: this session's tool policy, and core's approved
+    third-party agent tools, which an answer with no ``tools`` lists none of."""
 
     def do_GET(self) -> None:  # noqa: N802 - the handler protocol's name
         body = b'{"exclude": []}'

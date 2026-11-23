@@ -129,13 +129,9 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
   'apps.mochi.reset.title', // quoted by #4677
   'apps.mochi.reset.desc', // #4676
-  // The code-execution grant's title AND body. #5725 quoted only the title, which left
-  // the scope sentence one line under it reading as prose about every app (#6016).
+  // The code-execution grant's title and failure lines (#5725, #6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
   'components.appstore.trustAppModal.failed_generic', // bare {{app}} #6016
-  'components.appstore.trustAppModal.intro', // bare {{app}} #6016
-  'components.appstore.trustAppModal.on_cancel', // bare {{app}} #6016
-  'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appsPage.uninstall_app_title', // app-name operand of the Library and App detail uninstall confirmations, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725

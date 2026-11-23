@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, MousePointerClick, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, MousePointerClick, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook, Wrench } from 'lucide-react'
 import { recipeLines } from './browserRecipes'
 import { BrowserRecipeList } from './BrowserRecipeList'
 
@@ -38,6 +38,7 @@ import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../..
 import { safeHref } from '../../utils/safeHref'
 import { sourceLabel, type RegistryApp } from './types'
 import { desktopCapabilityLine, knownDesktopCapabilities } from './desktopCapabilities'
+import type { DeclaredAgentTool } from './agentTools'
 import { browserVerbLine, knownBrowserVerbs } from './browserVerbs'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_APP_BROWSER_SDK } from '../../utils/previewFlags'
@@ -92,6 +93,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   kiroOperations?: string[]
   /** The `permissions.browserRecipes`: the fixed clicks Crew makes on its agent's browser tab. Install approves none. */
   browserRecipes?: unknown[]
+  /** The tools its manifest `agentTools` block gives agents. Installing approves them. */
+  agentTools?: DeclaredAgentTool[]
   /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
   webhookSource?: boolean
   /**
@@ -585,8 +588,9 @@ function terminalState({ failed, granted, detail, detailCode }: {
  * strings rather than carrying key names.
  *
  * The exit sentence describes the footer control this state offers and the state
- * it leaves behind, which is not the same everywhere: on `consent` and
- * `failed_generic` Cancel truly changes nothing (nothing was saved); on `granted`
+ * it leaves behind, so only the states where that is not obvious have one: on
+ * `consent` and `failed_generic` Cancel changes nothing (the failure headline
+ * already says trust was not saved), so there is no sentence; on `granted`
  * Cancel keeps the grant, so the sentence names both facts the reader leaves with
  * -- trusted, and switched off -- and promises nothing about the retry; on
  * `permanent` the footer is Close alone and no trust decision is left to make, so
@@ -596,7 +600,7 @@ function terminalState({ failed, granted, detail, detailCode }: {
 function terminalCopy(state: TerminalState, app: string, path: TrustPath): {
   headline: string | null
   help: string | null
-  exit: string
+  exit: string | null
 } {
   // Each path has its own headline and exit sentences. The enable path's say
   // trusting "turns it on" and that the app "stays in place, switched off":
@@ -636,30 +640,23 @@ function terminalCopy(state: TerminalState, app: string, path: TrustPath): {
           return {
             headline: i18nT('components.appstore.trustAppModal.install_failed_generic', { app }),
             help: null,
-            exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }),
+            exit: null,
           }
         case 'update':
           return {
             headline: i18nT('components.appstore.trustAppModal.update_failed_generic', { app }),
             help: null,
-            exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }),
+            exit: null,
           }
         case 'enable':
           return {
             headline: i18nT('components.appstore.trustAppModal.failed_generic', { app }),
             help: null,
-            exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }),
+            exit: null,
           }
       }
     case 'consent':
-      switch (path) {
-        case 'install':
-          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }) }
-        case 'update':
-          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }) }
-        case 'enable':
-          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }) }
-      }
+      return { headline: null, help: null, exit: null }
   }
 }
 
@@ -702,9 +699,6 @@ export default function TrustAppModal({
   const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
   const path = trustPath(app)
-  // A first install only: an Update re-runs the install over an app that is
-  // already there, where "nothing is installed" would be false.
-  const freshInstall = path === 'install'
   const copy = terminalCopy(state, name, path)
   const permanentRefusal = state === 'permanent'
   // The not-saved state's next step, shared by every path. It names the retry
@@ -788,15 +782,6 @@ export default function TrustAppModal({
     >
       {app && (
         <div className="flex flex-col gap-3.5 text-[13px]">
-          <p className="text-muted leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.scope', { app: name })}
-          </p>
-          {/* The take-back line sits at the top on every path: on a phone the
-              bottom of the dialog is a scroll away, and this line is what
-              makes the consent safe to give. */}
-          <p className="text-muted leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.revocable')}
-          </p>
           {/* The switch changes where the app comes from: the local-folder copy
               is replaced by the repository's, and its trust follows the
               repository. Above the list so a phone shows it without scrolling. */}
@@ -806,7 +791,7 @@ export default function TrustAppModal({
             </p>
           )}
           <p className="text-text leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.intro', { app: name })}
+            {i18nT('components.appstore.trustAppModal.can_heading')}
           </p>
           {/* Explicit color-mix rather than a `bg-card/88` opacity modifier:
               theme colors are raw `var(--x)`, so the translucency depends on
@@ -821,11 +806,8 @@ export default function TrustAppModal({
               </li>
             ))}
           </ul>
-          {/* The three rows are a CEILING, not a manifest reading: trust grants all
-              three regardless of what this app happens to use, and Kiro Crew
-              cannot narrow it. Listing them without saying so reads as "here is what it
-              does", which would be a promise we do not keep. */}
-          <p className="text-muted leading-relaxed">
+          {/* The ceiling: the grant is all three or nothing, which the list alone does not say. */}
+          <p className="text-muted leading-relaxed" data-testid="trust-app-ceiling">
             {i18nT('components.appstore.trustAppModal.capability_note')}
           </p>
           {/* The sessionApproval grant is NOT part of that ceiling: it is a separate,
@@ -980,6 +962,25 @@ export default function TrustAppModal({
               )}
             </div>
           )}
+          {/* The manifest `agentTools`: installing approves these, and agents then call them
+              unasked. An update that adds or changes one waits on the app's page. */}
+          {(app.agentTools?.length ?? 0) > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-agent-tools">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Wrench size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.agent_tools_heading')}</span>
+              </div>
+              <ul className="flex flex-col gap-1">
+                {app.agentTools?.map(tool => (
+                  <li key={tool.name} className="text-text leading-relaxed">
+                    <code className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text break-all">{tool.name}</code>
+                    {tool.description && <span className="text-muted"> {tool.description}</span>}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.agent_tools_note')}</p>
+            </div>
+          )}
           {/* The Kiro Crew endpoints the manifest declares beyond the app's own
               namespace, listed as declared: the reach a page or backend of this
               app has into the host's API. */}
@@ -1016,7 +1017,11 @@ export default function TrustAppModal({
               </p>
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-2 text-muted">
+          {/* One row: the link truncates (full URL in `title`) and never splits
+              mid-word; the chip wraps to its own line only when the row is too
+              narrow for the label, a useful part of the link and the chip. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted">
+            <div className="flex min-w-0 grow shrink basis-64 items-center gap-2">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">
               {localInstall ? i18nT('appStoreSources.source') : i18nT('components.appstore.trustAppModal.source')}
@@ -1038,23 +1043,22 @@ export default function TrustAppModal({
                     href={safeHref(app.trustRepository) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="font-mono text-[12px] text-accent underline break-all hover:text-accent-hover"
+                    title={app.trustRepository}
+                    className="min-w-0 truncate font-mono text-[12px] text-accent underline hover:text-accent-hover"
                   >
                     {app.trustRepository}
                   </a>
                 )
                 : (
-                  <span className="font-mono text-[12px] text-text break-all">{app.trustRepository}</span>
+                  <span title={app.trustRepository} className="min-w-0 truncate font-mono text-[12px] text-text">{app.trustRepository}</span>
                 )
             )}
-            <Badge variant="muted">{sourceLabel(app)}</Badge>
+            </div>
+            <Badge variant="muted" className="shrink-0">{sourceLabel(app)}</Badge>
           </div>
-          {/* The registry badge above reads as an endorsement. It is not one. A
-              local install has no listing, so its line claims none. */}
+          {/* The registry badge above reads as an endorsement. It is not one. */}
           <p className="text-muted leading-relaxed">
-            {localInstall
-              ? i18nT('components.appstore.trustAppModal.not_reviewed_local')
-              : i18nT('components.appstore.trustAppModal.not_reviewed')}
+            {i18nT('components.appstore.trustAppModal.not_reviewed')}
           </p>
           {/* A community registry's listing was not vetted by the team. Below the
               not-an-endorsement line, so that line stays next to the badge it
@@ -1090,18 +1094,9 @@ export default function TrustAppModal({
               this state's footer actually offers (Cancel, or Close on the
               permanent refusal) and the state that control LEAVES, which differs
               per state -- see the table. */}
-          {/* The install path's confirm button says "Trust this app" and nothing
-              more, so this line says where confirming leaves the app: installed
-              and switched off. Only before an attempt: once a failure headline
-              shows, it states what happened and this promise no longer applies. */}
-          {freshInstall && !failed && (
-            <p className="text-text leading-relaxed">
-              {i18nT('components.appstore.trustAppModal.install_outcome', { app: name })}
-            </p>
-          )}
           {/* The Update path's own outcome line, so the dialog says this is an
-              update and not a first install: the title and the scope line read
-              the same on every path. It stays after a retryable failure, because
+              update and not a first install: the title reads the same on every
+              path. It stays after a retryable failure, because
               the footer's retry label is shared by every path and this line is
               what says the retry still runs the update. A permanent refusal
               offers Close alone and nothing was changed, so the line goes. */}
@@ -1110,7 +1105,23 @@ export default function TrustAppModal({
               {i18nT('components.appstore.trustAppModal.update_outcome', { app: name })}
             </p>
           )}
-          <p className="text-muted leading-relaxed">{copy.exit}</p>
+          {/* A first install lands switched off, and the confirm label does not say
+              so. Only before an attempt: a failure headline then says what happened. */}
+          {path === 'install' && !failed && (
+            <p className="text-text leading-relaxed" data-testid="trust-app-install-outcome">
+              {i18nT('components.appstore.trustAppModal.install_outcome')}
+            </p>
+          )}
+          {copy.exit && <p className="text-muted leading-relaxed">{copy.exit}</p>}
+          {/* The last line, the same on every path: Trust adds a per-app grant
+              (`POST /api/security/trusted-apps/{name}`), removed in Settings →
+              Security → Third-party apps. A failure that saved no trust has
+              nothing to remove, and its notice says so, so the line goes. */}
+          {!(failed && !granted) && (
+            <p className="text-muted leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.revocable')}
+            </p>
+          )}
           {/* Two failure strings, because the two cases need different advice: if
               the grant landed and only the enable failed, the user has state to
               clean up; if nothing was written, telling them to go check Settings

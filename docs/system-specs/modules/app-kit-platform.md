@@ -3200,7 +3200,8 @@ the one-time import first, so the import's lock is the only lock needed.
   record. `update_app` and a re-registration store the previous set limited to
   what the new manifest still declares, so an added entry is not approved and a
   dropped one must be approved again if a later version brings it back; when
-  anything is held back `update_app` logs SEL `grants_widened` / `staged`
+  anything is held back (`agentTools` only for a third-party app, section 30.1)
+  `update_app` logs SEL `grants_widened` / `staged`
   (caller `app_update`, or `app_register` for a re-registration) and says so in
   its message, and the app stays enabled. The set only ever narrows on these
   paths, so it is written before the manifest it goes with. `update_app` writes
@@ -7607,8 +7608,9 @@ install that breaks one:
 - an `inputSchema` uses only the subset the core enforces: `string` (with `enum` and
   `maxLength`, default and ceiling 65,536), `integer` and `number` (with `minimum` and
   `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, default and
-  ceiling 256, item `maxLength`); `additionalProperties` may only be false, and
-  `required` names declared arguments. A bool is refused where an integer is declared,
+  ceiling 256, item `maxLength`); each `type` is one type name, so a list such as
+  `["string", "null"]` is refused and the tool not listed; `additionalProperties` may
+  only be false, and `required` names declared arguments. A bool is refused where an integer is declared,
   as an argument or as an array item;
 - `strictSession`, when present, is `true` or `false` (default `false`). A
   `strictSession` tool is one whose call acts as the calling session: the core forwards
@@ -7635,12 +7637,91 @@ A built-in whose wheel copy is released by adoption is first party too, under th
 the tool gate's own-server grant rests on (section 33, "Agent tools through adoption"):
 its block is read from the adopted record's own `app.json`, and a tool lists only when it
 equals, route included, one its wheel copy's shipped block declares (or, once a release
-deletes that copy, the block its pin row froze, section 33). Any other installed
-or registry app's `agentTools` block lists nothing: it still validates and installs, and
-the app can ship its own `mcpServers` entry, whose calls are approved one by one
-(`_register_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
-path that asks before each call (a server of its own outside `allowedTools`, or a
-per-tool approval); that is a maintainer's decision, not this seam's.
+deletes that copy, the block its pin row froze, section 33).
+
+**Third-party apps** (RFC app-agent-tools-third-party-grant, and the owner's ruling on
+issue 32727: approve once on the install card, ask again only on change, on by default
+once approved). Any other installed app is third party, and its block is read from its
+data-home `app.json` by `app_agent_tools.third_party_tools`, which keeps a tool only
+when the app's approved set holds the tool's entry in the `agentTools` grant family
+(`apps/agent_tool_grants.py`). An entry is `<tool name>@<digest>`, the digest the first
+12 hex characters of SHA-256 over the canonical JSON of the block's `route` and the
+tool's `title`, `description`, input schema, `timeoutSeconds`, `result`, `strictSession`
+and `maxResultChars`, so any change to those is a new entry. The family is a top-level
+manifest family (`point_grants.register_manifest_grants`, read by `grant_source`) and
+explicit-only: a set stored before this host knew it approves no tool. It is also an
+owner-approved family (`manager_records._OWNER_APPROVED_FAMILIES`), so no install, first
+registration or import approves it on its own. The one exception is exact: a registry
+row's block is disclosed with each tool's name, description and entry
+(`official_catalog._disclosed_agent_tools`), the trust card lists those (`trustGrants`,
+`TrustAppModal`), and the install it confirms sends them back as `agentToolsConsent`
+(`POST /api/apps/registry/install` and `/install-stream`, owner dashboard only,
+`routes_registry.agent_tools_consent`). `install_app(agent_tools_consent=...)` and
+fresh `register_external_app(agent_tools_consent=...)` registrations for self-managed
+registry apps approve only the listed entries the cloned manifest still declares.
+Re-registration never adds approval from this argument. An install with no card
+(the row lists no tools, the repository was already trusted, a CLI or folder install)
+approves none, and the detail page's approval notice offers them. An update holds a
+new or changed tool back like any widening (`_approved_grants_after_manifest_change`):
+it stops listing at once, the app's other tools keep working, and the notice offers the
+held-back tools (`agentToolsGrant.staged`, by name and description) for the owner to
+approve through `enable_app(grants_consent=...)`. A first-party or adopted app's tools need no
+grant, so its held-back `agentTools` entries never count as a widening
+(`manager_records._widening_entries`): its update or re-registration logs no
+`grants_widened` and its message asks for nothing, because the page offers nothing.
+The widening check asks provenance only when agent tools are held back. The self-managed
+registry install computes that provenance off the event loop and passes it through
+`register_external_app(third_party=...)`, so registration does not scan shipped apps
+on the loop. Synchronous callers may omit it and compute it in the widening check.
+
+A dashboard user can also turn a tool off. The detail page's agent tools card
+(`AppDetailAgentTools`) has a switch for each approved tool (on) and each revoked one
+(off, `agentToolsGrant.revoked`); a held-back tool is in the notice only. Turning a
+tool off sends `{"agentToolsRevoke": [entry]}` to the same
+`POST /api/apps/{name}/enable`, which then does nothing else. Its existing gates decide
+who may: an app token is refused 403, and `require_owner_dashboard_request` refuses the
+internal secret, an agent and a missing session while admitting any signed-in dashboard
+user, the owner or a Shared Crew teammate (the owner's ruling: Shared Crew has no
+owner-versus-teammate limits for now). It takes at most 16 strings (else 400
+`invalid_agent_tools_revoke`), and calls `revoke_agent_tools`. That adds the tool's
+name to the app's revoked list, then removes every entry for that name from the stored
+`agentTools` family; a name with no approved entry is ignored, other families stay as stored,
+and a write that fails answers 500 `agent_tools_not_saved`. Both revoke and turn-on
+snapshot the revoked record before changing it and restore its exact text (or absence)
+if the approved-set write fails. A restore failure is logged and still reports not saved.
+The revoked tool stops
+listing on the next `GET /api/app-tools/list`, and `POST /api/app-tools/call` refuses it
+404 `unknown_tool`. The revoked list (`protected_app_state.read_revoked_agent_tools`,
+`member-records/app-grants/<app>.agent-tools-revoked.json`) is kept by tool name, so a
+revoked tool stays off, and out of the notice, when an update changes its entry. No
+install card approves a revoked name (`manager_records._card_approved_agent_tools`),
+and a list that cannot be read makes the card approve no tool and the page count every
+held-back tool as revoked. Turning a revoked tool on asks in a confirm card,
+then approves that one entry through `enable_app(grants_consent=...)`, which keeps it
+only while the live manifest declares it and removes the name from the list. It is
+offered on a running app only, as the enable route would switch a disabled one on, and
+it passes the same gates as the revoke. An uninstall
+removes the list with the approved set. An adopted former built-in's tools are held to its
+wheel copy instead, so the adoption checks (`builtin_adoption_checks.permission_refusal`,
+the `_adoption` branch of `update_app`) do not count this family as widening. A
+third-party block that states a `namespace` other than the app's own, or declares a
+`strictSession` tool, lists nothing; a name a first-party app declares, installed or
+shipped, stays the first-party app's, and a name two third-party apps declare is
+neither's. The approved set lives in the gateway-only store that the session sandbox
+masks, so `kirocrew-core` asks the strict internal route `GET /api/app-tools/list`
+(`apps.agent_tools.list`) for the approved tools and lists what it answers. That route
+is read-only, in `_STRICT_INTERNAL_API_PATHS` (loopback and the internal secret), and
+its handler re-checks `internal_auth`, so a dashboard, teammate or app token without
+the secret is refused 403; it answers each tool's app, route and declaration only
+(`app_agent_tools.tool_row`), never a secret, an environment or a path. The call
+route reads the same gated reader, so a tool that is not approved gets 404
+`unknown_tool`. A third-party tool's call from a session another app owns is refused
+403 `cross_app`, because a scoped app agent's deny universe (`shipped_tools`) cannot
+name it; a call with no owning app is the person's and is served, except from a
+dashboard slot that is gone (403 `caller_unattributable`). A third-party text answer
+never keeps a credential verbatim. Its own agents get no `app-own-tools` grant, so they
+ask for each call; the default agent's whole-server approval of `kirocrew-core` is the
+"no prompt per call" the owner approved at install.
 
 **The app's own agent calls them unasked too.** An app agent carries no `allowedTools`,
 so on its own its call to a tool listed here reaches the approval card, and an
@@ -7665,7 +7746,7 @@ in it names an app:
 
 | Reader | What it does |
 |---|---|
-| `mcp_tools/app_tools.py`, the last domain of `kirocrew-core` | `schemas()` names every tool a shipped first-party manifest declares, installed, released by adoption or neither (`app_agent_tools.shipped_tools`, read once per process with no release check, so this names-only build reads no config). It is the names-only build an app agent's deny universe reads, and that universe is fixed when the agent is materialized, so a tool is withheld from a scoped agent before its app is installed. `advertised()` lists the installed first-party apps' tools in `tools/list`, minus a readably disabled app's (the `apps.advertised` rule). Every name in `schemas()` is answered by one core handler, `app_agent_tool`, which refuses a tool no installed first-party app declares without posting |
+| `mcp_tools/app_tools.py`, the last domain of `kirocrew-core` | `schemas()` names every tool a shipped first-party manifest declares, installed, released by adoption or neither (`app_agent_tools.shipped_tools`, read once per process with no release check, so this names-only build reads no config). It is the names-only build an app agent's deny universe reads, and that universe is fixed when the agent is materialized, so a tool is withheld from a scoped agent before its app is installed. `advertised()` lists the installed first-party apps' tools in `tools/list`, then the approved third-party tools that `GET /api/app-tools/list` answers, minus a readably disabled app's (the `apps.advertised` rule). Every name in `schemas()` is answered by one core handler, `app_agent_tool`, which refuses a tool no installed first-party app declares without posting |
 | `mcp_core._validate_args` | checks a call against the declared schema through the field engine every core tool uses (`app_tools.tool_schema`): strings sanitized and bounded, enums held, an undeclared argument refused |
 | `dashboard/handlers/app_agent_tools.py`, `POST /api/app-tools/call` | decides the call (below) |
 
@@ -7714,7 +7795,9 @@ replaces never redacted it either. Every other answer of such a tool is an `Erro
 which the tool-call audit records as failed: `Error: <tool> failed [<code>]: <message>`
 for a refusal the gateway, the app or the transport produced (a timeout, a gateway that
 is restarting), and `Error: <tool> returned no result: <the answer>` for any other
-body, both redacted. Only a first-party app's block is read at all (above).
+body, both redacted. Credential passthrough is first-party only: a third-party text
+answer carrying a `credential` key is refused with a generic `Error:` line that echoes
+none of the response body, even if the redactor would keep the token.
 No app route is admitted to internal-secret callers, so the one path in is the declared
 route, with declared arguments.
 
@@ -7750,7 +7833,9 @@ Two shipped tools are on the seam. Design Tweak's `design_tweak_update_thread`: 
 `/thread` write the tool always made. Its row in the title table stays, so its chat label
 and its remote-session grant are unchanged; the row leaves with the app. `test/test_app_agent_tools.py` pins the seam with
 synthetic apps, including every way a call beyond the declaration is refused before it
-reaches the app; `src/kiro_crew/apps/builtins/design_tweak/tests/test_agent_api_tool.py`
+reaches the app; `test/test_app_agent_tools_third_party.py` pins the third-party grant
+(the digest, install, update, approval, listing, `cross_app` and the listing route);
+`src/kiro_crew/apps/builtins/design_tweak/tests/test_agent_api_tool.py`
 pins Design Tweak's declaration and route. `test/test_core_design_tweak_decoupling.py`
 is Design Tweak's gate, on the shared `test/core_app_independence.py` scans: no core
 module or script imports the app, and the only core strings naming it are the
@@ -11541,8 +11626,8 @@ manifest declares the names the approved set holds.
 - `await ctx.kiro_call(operation, input)` (`AppContext.kiro_call`): the same core function,
   keyed on the context's own app name, raising `KiroCallError`.
 
-An app's future `agentTools` handler (RFC app-agent-tools-third-party-grant) reaches the
-seam the same way: its handler holds the app's token or its `ctx`.
+A third-party app's `agentTools` handler (RFC app-agent-tools-third-party-grant) reaches
+the seam the same way: its handler holds the app's token or its `ctx`.
 
 **The call** (`apps/kiro_calls.call_kiro_operation`), in a fixed order; a refusal at any
 step sends nothing: exact membership in `app_kiro_operations` (an app that is not enabled
