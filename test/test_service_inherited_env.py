@@ -506,3 +506,23 @@ class TestMissingLauncherDirsNote:
         note = mod.missing_launcher_dirs_warning({}, Platform.SYSTEMD)
         assert f"PATH=~/bin:{target}" in note, "~ kept as written, local overlay wins"
         assert "write the file as svc" in note, "names the account to write it as"
+
+    def test_the_service_accounts_config_is_read_past_a_byte_order_mark(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import env as crew_env
+
+        target = tmp_path / "svc" / "launchers"
+        target.mkdir(parents=True)
+        crew = tmp_path / "svc" / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        bom = chr(0xFEFF)
+        (crew / "config.json").write_text(
+            bom + json.dumps({"mcp": {"extra_path_dirs": ["~/launchers"]}}), encoding="utf-8"
+        )
+        (crew / "config.local.json").write_text(bom + "[1]", encoding="utf-8")
+        monkeypatch.setattr(crew_env, "_registered_path_dirs", [])
+        dirs = _inherited_env()._configured_launcher_dirs(
+            crew / ".env", "svc", str(tmp_path / "svc")
+        )
+        assert dirs == [str(target)], "the marked config is read; a non-object overlay skipped"

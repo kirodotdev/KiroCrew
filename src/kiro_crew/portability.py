@@ -156,14 +156,18 @@ class _SettingsRefused(Exception):
 
 
 def _read_archive_text(path: Path) -> str:
-    """The archive's *path* as text, read no further than the settings-document cap."""
+    """The archive's *path* as text, read no further than the settings-document cap.
+
+    One leading UTF-8 byte-order mark is dropped, as the live stores' own readers
+    drop it, so a document saved "UTF-8 with BOM" vets the same as one without.
+    """
     with open(path, "rb") as fh:
         raw = bounded_read(fh, _MAX_SETTINGS_DOCUMENT_BYTES + 1)
     if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
         raise _SettingsRefused(
             f"the archive's {path.name} is larger than {_MAX_SETTINGS_DOCUMENT_BYTES} bytes"
         )
-    return raw.decode("utf-8")
+    return strip_utf8_bom(raw.decode("utf-8"))
 
 
 def _read_archive_object(path: Path) -> dict:
