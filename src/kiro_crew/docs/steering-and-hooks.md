@@ -29,7 +29,7 @@ retype every conversation.
 kiro-cli and KAS load these roots natively. On Claude Code, Codex, OpenCode and Pi, the
 gateway loads them for the Kiro Crew default agent when project context is
 included. Custom agents on those backends receive the trees through folder
-steering instead. Copilot, Goose, DeepSeek and Strands load
+steering instead. Copilot, Goose, DeepSeek, Strands, MiMo Code and Antigravity load
 neither root: on those backends a steering document reaches the model only
 when a chat folder lists its directory under folder steering, where it shares
 that section's character cap.
