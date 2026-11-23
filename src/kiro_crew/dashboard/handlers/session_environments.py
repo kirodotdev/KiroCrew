@@ -132,6 +132,77 @@ def _connected_computer_choices(section: Any) -> list[dict[str, object]]:
     ]
 
 
+# The providers a Bot's worker may run on. Kiro Cloud is left out: its sandbox
+# gets no MCP servers (`set_cloud_sandbox`), so a worker there could never call
+# `work_report` and its Bot would never hear back.
+WORKER_ENVIRONMENT_PROVIDERS = frozenset({"coder", "sprites", "boxd"})
+
+
+def bot_worker_backend(config: Any, crew: str | None) -> str:
+    """The harness the bot *crew*'s workers run on, the one judge both the
+    Settings readout and ``create_session``'s bind read; "" when it cannot start.
+
+    ``mate_worker.crewmate_worker_backend``: the bot's own harness pin, else
+    ``agent.member_acp_backend`` through the selection gate."""
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.mate_worker import crewmate_worker_backend
+
+    try:
+        return crewmate_worker_backend(config, crew)
+    except CrewmateHarnessUnavailable:
+        return ""
+
+
+def worker_environment_profiles(backend: str) -> list[dict[str, object]]:
+    """The profiles a Bot's worker on *backend* may run on; [] when it has none.
+
+    A worker on a remote workspace needs KAS (`check_remote_workspace_supported`
+    refuses every other harness), so any other *backend* gets none. Read like
+    `_profiles`, so none while session environments are off. Blocking."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    if backend == ACP_BACKEND_KAS:
+        return [p for p in _profiles() if p["provider"] in WORKER_ENVIRONMENT_PROVIDERS]
+    return []
+
+
+async def bind_worker_environment(
+    slot: Any, state: Any, wanted: str, backend: str, worker_backend: str
+) -> tuple[str, str]:
+    """Bind a bot's new worker to the profile its bot names (``worker_environment``).
+
+    *backend* is the harness this child starts on; *worker_backend* is
+    ``bot_worker_backend`` for its bot, the harness the Settings row offered the
+    choice for. The child is bound only when the two agree and are KAS, so the
+    choice never applies to a child the row did not describe (a bot naming
+    another harness on the call, or a child on the default harness).
+
+    Answers ``(bound, dropped)``: the profile id the worker now runs on, or the
+    one it named but could not use, so it runs on this machine. Like a stale
+    model pin, an unusable id (gone, Kiro Cloud, a worker off KAS, session
+    environments off) or a bind that does not land is DROPPED, never fatal;
+    ``create_session`` records it in its audit. ``("", "")`` for no choice. The
+    caller skips the prewarm of a bound worker: a local spawn would run on the
+    wrong machine, and the remote start waits for its first message."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    wanted = wanted.strip()
+    if not wanted:
+        return "", ""
+    # Only KAS may run on a remote workspace. The provider is checked on the same
+    # profile read the choice is recorded from, so a profile id re-saved as Kiro
+    # Cloud in between is never bound.
+    same_harness = backend == worker_backend == ACP_BACKEND_KAS
+    bound = same_harness and await apply_default_environment(
+        slot,
+        getattr(state, "sessions", None),
+        getattr(state, "_terminal_sessions", None),
+        profile=wanted,
+        allowed_providers=WORKER_ENVIRONMENT_PROVIDERS,
+    )
+    return (wanted, "") if bound else ("", wanted)
+
+
 def _fixed_by_provider(profile: str, session_key: str) -> bool:
     """Whether the session's provider keeps its choice fixed with no workspace.
 
@@ -729,10 +800,20 @@ def _slot_memory_mode(slot: Any) -> str:
 
 
 async def apply_default_environment(
-    slot: Any, sessions: Any = None, terminals: dict | None = None
+    slot: Any,
+    sessions: Any = None,
+    terminals: dict | None = None,
+    profile: str | None = None,
+    allowed_providers: frozenset[str] | None = None,
 ) -> bool:
-    """Bind a new empty chat to the default profile; True when bound. Any failure
-    leaves it local without failing the create; nothing starts.
+    """Bind a new empty chat to the default profile, or to *profile* when given;
+    True when bound. Any failure leaves it local without failing the create;
+    nothing starts.
+
+    *profile* is a Bot's ``worker_environment`` for a worker it just created
+    (``create_session``); None reads ``session_environments.default_profile``.
+    *allowed_providers*, when given, are the only providers the profile may be of,
+    judged on the same profile read the recorded choice takes its provider from.
 
     The check and the write run under the session's switch lock, the one turn
     admission holds while it registers a cold start. So a first message sent by
@@ -748,8 +829,11 @@ async def apply_default_environment(
     from kiro_crew.llm_helpers_parts.model_fallback import slot_switch_session_lock
 
     try:
-        section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
-        default = str(getattr(section, "default_profile", "") or "")
+        if profile is None:
+            section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
+            default = str(getattr(section, "default_profile", "") or "")
+        else:
+            default = profile
         if not default or _environment_locked(slot):
             return False
         providers = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
@@ -757,6 +841,8 @@ async def apply_default_environment(
             return False
         if providers[default] == "connected_computer":
             # A person's own computer is chosen per chat, never by a default.
+            return False
+        if allowed_providers is not None and providers[default] not in allowed_providers:
             return False
         from kiro_crew.coder.session_launch import cloud_needs_persistent_chat
 

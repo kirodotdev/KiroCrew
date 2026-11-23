@@ -677,8 +677,11 @@ async def create_session(
     model_from_worker_pin = False
     effort_is_crewmates_own = False
     child_is_crewmate = bool(agent.strip()) and bindings.selection_kind == "member"
-    if (not model.strip() or not reasoning_effort) and not child_is_crewmate:
-        crewmate = _dispatching_crewmate(cfg, caller_execution)
+    # The crewmate doing the dispatch, read off the config snapshot. None for a
+    # child that is itself a crewmate (see above) and for a caller that is none.
+    dispatcher = None if child_is_crewmate else _dispatching_crewmate(cfg, caller_execution)
+    if not model.strip() or not reasoning_effort:
+        crewmate = dispatcher
         if crewmate is not None:
             worker_model, worker_effort = worker_session_defaults(crewmate)
             explicit_worker_effort = coerce_effort(crewmate.worker_reasoning_effort)
@@ -1610,8 +1613,20 @@ async def create_session(
     # Through chat_runner, lazily, like the other session-control parts: its
     # import is what binds the eager-spawn module's names (``chat_turn.compose``).
     from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
+    from kiro_crew.dashboard.handlers.session_environments import (
+        bind_worker_environment,
+        bot_worker_backend,
+    )
 
-    schedule_eager_spawn(state, slot)
+    # A bot's worker starts on its profile's `worker_environment`, unprewarmed. Its
+    # harness is judged for the record identified above (an id-less bot has no id).
+    wanted_env = dispatcher.worker_environment if dispatcher else ""
+    bot = next((k for k, v in cfg.agents.items() if v is dispatcher), "") if wanted_env else ""
+    worker_environment, worker_environment_dropped = await bind_worker_environment(
+        slot, state, wanted_env, child_backend, bot_worker_backend(cfg, bot) if bot else ""
+    )
+    if not worker_environment:
+        schedule_eager_spawn(state, slot)
     lineage_recorded = await _record_spawn(caller_key, slot)
     _audit(
         caller_session_key=caller_key,
@@ -1632,6 +1647,10 @@ async def create_session(
             # The profile model the picker guard refused and the create dropped
             # (the child started on the default instead). "" when none was.
             "inherited_model_dropped": redact(inherited_model_dropped),
+            # The environment the child was bound to from `worker_environment`,
+            # and the one named but unusable (the child runs here). "" when none.
+            "worker_environment": redact(worker_environment),
+            "worker_environment_dropped": redact(worker_environment_dropped),
             # What the child was BORN with, so an auto-approved tool call in it is
             # traceable to the creator's grant rather than appearing unexplained.
             # Always present: "false" is the record that the grant did not transfer.

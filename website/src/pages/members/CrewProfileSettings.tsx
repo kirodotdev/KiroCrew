@@ -3,12 +3,13 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList, fmtPercent, joinSentences } from '../../i18n/format'
-import { Check, Cpu, Gauge, Layers, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Layers, Loader2, Puzzle, SendHorizontal, Server, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { Btn, Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { SLOT_ENVIRONMENT_RETRY, isOwnerOnlyRefusal, slotEnvironmentQueryKey } from '../../components/sessionEnvironmentHooks'
 import { INHERIT_MODEL } from '../../components/crew/useCrewEditor'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { acpBackendName } from '../../api/acpBackend'
@@ -24,9 +25,11 @@ import { Row, RowGroup, RowStatic, type TONE } from './profileRow'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
-type Setting = 'approval_mode' | 'acp_backend' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort' | 'max_workers' | 'autocompact_pct'
+type Setting = 'approval_mode' | 'acp_backend' | 'model' | 'reasoning_effort' | 'worker_model' | 'worker_reasoning_effort' | 'max_workers' | 'worker_environment' | 'autocompact_pct'
 /** The record's "workers run the crewmate's own" spelling for both worker fields. */
 const SAME_AS_CREWMATE = ''
+/** The record's "this machine" spelling for `worker_environment`. */
+const THIS_MACHINE = ''
 /** A REAL worker-model pin, unlike the crewmate's own `model` where it means
  *  inherit: dispatched sessions run on the backend's default. */
 const WORKER_AUTO = 'auto'
@@ -160,6 +163,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     worker_model: String(member.worker_model || SAME_AS_CREWMATE),
     worker_reasoning_effort: String(member.worker_reasoning_effort || SAME_AS_CREWMATE),
     max_workers: String(member.max_workers ?? NO_WORKER_LIMIT),
+    worker_environment: String(member.worker_environment || THIS_MACHINE),
     autocompact_pct: member.autocompact_pct ? String(member.autocompact_pct) : '',
   }
   const value = (k: Setting) => draft[k] ?? stored[k]
@@ -413,6 +417,43 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     return undefined
   }
   const workerCapLabel = (n: string) => (n === NO_WORKER_LIMIT ? t('pages.membersPage.profile_worker_cap_none') : n)
+  // Where the Bot's workers run: this machine or a session environment profile.
+  // The server lists only the profiles they can use (Coder, Sprites or boxd, on
+  // KAS), and none while session environments are off, which hides the row.
+  // The Bot's own chat is never moved by this; nothing is added to its composer.
+  const workerEnvs = resolved?.worker_environments ?? []
+  const workerEnv = value('worker_environment')
+  const workerEnvLabel = (id: string) => (id === THIS_MACHINE
+    ? t('sessionEnvironments.picker.thisMachine')
+    : workerEnvs.find((p) => p.id === id)?.name ?? t('pages.membersPage.profile_worker_environment_unavailable', { profile: id }))
+  // Under each option, what it is: which machine "This machine" is, and each
+  // profile's provider (a profile name alone may name nothing to the reader).
+  const workerEnvDesc = (id: string) => {
+    if (id === THIS_MACHINE) return t('pages.membersPage.profile_worker_environment_this_machine_desc')
+    const provider = workerEnvs.find((p) => p.id === id)?.provider
+    return provider === 'coder' ? t('pages.membersPage.profile_worker_environment_coder_desc')
+      : provider === 'sprites' ? t('pages.membersPage.profile_worker_environment_sprites_desc')
+        : provider === 'boxd' ? t('pages.membersPage.profile_worker_environment_boxd_desc')
+          : undefined
+  }
+  const workerEnvGone = workerEnv !== THIS_MACHINE && !workerEnvs.some((p) => p.id === workerEnv)
+  // Where the Bot's OWN chat runs, read-only. A chat bound to a profile before
+  // the chip left the Bot's composer still runs there; "Move back" is offered
+  // only while the gateway says that choice is not fixed yet (`locked: false`).
+  const threadEnvKey = slotEnvironmentQueryKey(slotKey ?? '')
+  const { data: threadEnv, error: threadEnvError } = useQuery({
+    queryKey: threadEnvKey,
+    queryFn: () => api.chatSlotEnvironment(slotKey as string),
+    enabled: !!slotKey,
+    staleTime: 30_000,
+    ...SLOT_ENVIRONMENT_RETRY,
+  })
+  const moveThreadHome = useMutation({
+    mutationFn: () => api.setChatSlotEnvironment(slotKey as string, null),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: threadEnvKey }),
+  })
+  const threadProfile = threadEnv?.profile || null
+  const threadProfileName = threadProfile ? threadEnv?.profiles?.find((p) => p.id === threadProfile)?.name ?? threadProfile : ''
   const autocompact = value('autocompact_pct')
   // What Inherited leaves in force. On a harness that compacts on its own (KAS)
   // the global is not used, so the hint names the harness, as the chat
@@ -558,6 +599,23 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       options: withCurrent(MAX_WORKERS_OPTIONS, value('max_workers')).map((n) => ({ value: n, label: workerCapLabel(n) })),
       caption: t('pages.membersPage.profile_worker_cap_hint', { name }),
     },
+    ...(workerEnvs.length || workerEnv !== THIS_MACHINE ? [{
+      // Shown while the server names a profile the workers can use, and while
+      // a choice is stored that it no longer offers (environments turned off,
+      // the profile removed, the bot moved off KAS): that value stays visible
+      // and This machine clears it.
+      key: 'worker_environment' as const,
+      label: t('pages.membersPage.profile_worker_environment'),
+      icon: <Server size={16} />, tone: 'info' as const,
+      value: workerEnv, valueLabel: workerEnvLabel(workerEnv),
+      options: withCurrent([THIS_MACHINE, ...workerEnvs.map((p) => p.id)], workerEnv)
+        .map((id) => ({ value: id, label: workerEnvLabel(id), desc: workerEnvDesc(id) })),
+      // A stored choice no longer offered: say where the workers run meanwhile.
+      caption: joinSentences([
+        workerEnvGone ? t('pages.membersPage.profile_worker_environment_unavailable_hint') : '',
+        t('pages.membersPage.profile_worker_environment_hint', { name }),
+      ]),
+    }] : []),
     {
       // How full the crewmate's chats may get before they compact. Its thread
       // has no context meter of its own (CrewComposer), so this is where the
@@ -789,6 +847,35 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       <RowGroup>
         {pickers.map(row)}
       </RowGroup>
+      {threadProfile && (
+        <RowGroup
+          caption={threadEnv?.locked === false
+            ? t('pages.membersPage.profile_thread_environment_movable_hint', { name })
+            : t('pages.membersPage.profile_thread_environment_locked_hint', { name })}
+          testId="crew-profile-thread-environment"
+        >
+          <RowStatic icon={<Server size={16} />} tone="info" label={t('pages.membersPage.profile_thread_environment', { name, profile: threadProfileName })} testId="crew-profile-thread-environment-row" />
+        </RowGroup>
+      )}
+      {/* Under the group, so the line naming the profile keeps its full width. */}
+      {threadProfile && threadEnv?.locked === false && (
+        <div className="flex flex-col items-start px-3.5">
+          <Btn type="button" onClick={() => moveThreadHome.mutate()} disabled={moveThreadHome.isPending} data-testid="crew-profile-thread-environment-move-home">
+            {t('pages.membersPage.profile_thread_environment_move_home')}
+          </Btn>
+        </div>
+      )}
+      {/* No hand-off: the Crewmates page's composer may hold an unsent draft. A
+          failed read is said, never shown as a chat on this machine; a caller
+          that is not the owner cannot bind chats, so its refusal is not one. */}
+      <ErrorNotice
+        message={threadEnvError && !isOwnerOnlyRefusal(threadEnvError) ? t('pages.membersPage.profile_thread_environment_read_failed', { name }) : null}
+        testId="crew-profile-thread-environment-read-error"
+      />
+      <ErrorNotice
+        message={moveThreadHome.isError ? t('pages.membersPage.profile_thread_environment_move_failed', { name }) : null}
+        testId="crew-profile-thread-environment-error"
+      />
       {/* Its own group, so its caption (what a click on a card does) sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
         <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">

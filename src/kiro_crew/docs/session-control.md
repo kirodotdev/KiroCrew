@@ -75,6 +75,16 @@ child starts on the default model. A model you name yourself is still refused
 with `model_rejected`. The reply names what was copied from your profile, and
 says so when that model was dropped.
 
+When the owner picked where your workers run (Settings, **Workers run on**:
+`worker_environment` on your profile), a session you open this way starts on
+that session environment instead of this machine. Your own chat never moves.
+A worker there gets no scheduled jobs, cannot use file paths on this machine, and starts
+one billed workspace. Only a Coder, Sprites or boxd profile is used, and only
+for a worker on KAS, the harness your workers run on; a profile that is gone,
+session environments turned off, or a session you open on another harness
+leaves the worker on this machine. A child that is itself a bot, or a
+caller that is no bot, is never moved by it.
+
 No argument is formally required. Without `message` the new session **starts
 empty** — nothing runs in it until the person types, or until you send it a
 message. With `message`, its first turn starts on that message in this same

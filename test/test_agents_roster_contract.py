@@ -99,6 +99,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # read by `session_create`, which the crew editor never shows.
         "worker_model",
         "worker_reasoning_effort",
+        # Same home and same reason: the profile card's Workers run on choice,
+        # read by `session_create`.
+        "worker_environment",
         # Same home and same reason: the profile card's Workers at once limit,
         # read by `session_create`.
         "max_workers",

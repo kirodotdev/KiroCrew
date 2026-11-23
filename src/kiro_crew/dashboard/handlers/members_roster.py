@@ -453,6 +453,9 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # The session environment profile those workers run on ("" =
+                # this machine), the profile card's Workers run on picker.
+                "worker_environment": _roster_mask(agent_cfg.worker_environment),
                 # How many workers this Bot may have open at once; the owner's
                 # limit, enforced by `session_create`.
                 "max_workers": agent_cfg.max_workers,

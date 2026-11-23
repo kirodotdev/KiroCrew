@@ -194,8 +194,10 @@ function BotSessionView({ root, sessionKey, liveSlots, slotsLoaded, onBack, onRe
   } else if (slot) {
     body = (
       <RunInTerminalScope.Provider value={terminalScope}>
+        {/* No environment chip under a bot session's input: where a bot's
+            workers run is the bot's Settings page's Workers run on choice. */}
         <ChatPane slotKey={sessionKey} frameless focused={claimsKeys || undefined} pushToTalk={claimsKeys}
-          onFocus={() => setPaneFocused(true)} />
+          environmentChipHidden onFocus={() => setPaneFocused(true)} />
       </RunInTerminalScope.Provider>
     )
   } else if (!slotsLoaded) {

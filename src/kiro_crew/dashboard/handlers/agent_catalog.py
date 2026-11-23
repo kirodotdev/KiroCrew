@@ -184,7 +184,7 @@ def _own_setup(name: str, member: KiroCrewAgentConfig, config: KiroCrewConfig) -
     listed only when it has nothing of its own (``withoutCoveredCrewmates`` in
     ``website/src/hooks/useAgents.ts``). The row's own fields (workspace, model,
     effort, label, description, triggers) are judged there. This answers for the
-    rest: a harness, worker model or effort, approval mode or dynamic capabilities
+    rest: a harness, worker model, effort or environment, approval mode or dynamic capabilities
     chosen for this crewmate, and its permanent rules, goals or briefing on disk.
     A record that cannot be read counts as setup, so the crewmate stays offered:
     an extra row is the only way this can err. Blocking file IO.
@@ -193,6 +193,7 @@ def _own_setup(name: str, member: KiroCrewAgentConfig, config: KiroCrewConfig) -
         _is_set(member.acp_backend)
         or _is_set(member.worker_model)
         or _is_set(member.worker_reasoning_effort)
+        or _is_set(member.worker_environment)
         or _is_set(member.approval_mode)
         or member.dynamic_capabilities is True
     ):
