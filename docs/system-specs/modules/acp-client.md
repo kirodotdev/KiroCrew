@@ -242,6 +242,7 @@ names its responsibility, bound in the class under that owner's header.
 | `acp/runtime_host_requests.py` | requests the agent sends this host that no session turn answers: permission requests for unregistered sessions (bounded off-loop answers and their audit), the host credential callback, MCP sign-in and re-attempt, the consent URL, the engine's MCP secret store (`_kiro/secret/*`), and ownerless requests |
 | `acp/runtime_frame_accounting.py` | what the reader drops or truncates, counted instead of logged per frame: the backend subagent roster and its overflow episodes, whether a roster child's frames reach a session (`routes_roster_children_to`) and how many frames naming a session reached none (`unrouted_child_frames`), and the unroutable-frame drop summaries |
 | `acp/runtime_reader_loop.py` | the single stdout reader: routing every frame by id and sessionId, the host's notification aliases, oversize-frame recovery, and the error an awaited request fails with |
+| `acp/frame_payload_sharing.py` | `RepeatedPayloads`: before a frame is queued for a session, the tool, prompt and resource lists of a `_kiro/mcp/status` entry and the `configOptions` of a `config_option_update` are pointed at an equal list the runtime already holds |
 | `acp/runtime_remote_workspace.py` | a remote session's workspace: built-in file and shell tools giving way to its server, the cloud sandbox (`set_cloud_sandbox`) and the cloud resume hold (`hold_cloud_resume`) |
 | `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and the `_MEMBER_OWNERS` set it passes to `own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
 
@@ -5410,6 +5411,17 @@ Both transports share one parser — `acp/_dispatch.py` and its owners in
 handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.
+
+**Re-sent catalogs share one copy.** A KAS engine re-sends a session's whole MCP
+status and its whole `configOptions` whenever something changes, idle sessions
+included, and an idle session holds those frames on its queue until its next
+turn. Before a frame is queued, `RepeatedPayloads.share` (`acp/frame_payload_sharing.py`)
+replaces each server's `tools`, `prompts`, `resources` and `resourceTemplates`
+list, and an update's `configOptions`, with an equal list the runtime already
+holds (by server name for the catalogs). Every frame, its order and the queue's
+length stay as the engine sent them, and every value a reader compares is
+equal, so no reader can tell; none writes to these lists. At most
+`MAX_SERVERS` server names are held.
 
 They share the stdio framing (`acp/transport_framing.py`), the error taxonomy
 (`acp/transport_errors.py`), the model catalog (`acp/runtime_models.py`) and
