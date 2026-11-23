@@ -2748,7 +2748,9 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   on the surface record). It rides only a bar sent with the channel's binding and is
   scope-checked right before that send; a refresh sends the bar again once its board is
   known (a digest match sends nothing). The bar's ONE PR slot is the channel's own PR;
-  each worker's PR is the board's. The label is counts only, so
+  with none (and no Create PR) it shows the board's newest open or draft worker PR
+  (highest number), which rides with the board and so only where its scope admits
+  it. The label is counts only, so
   a worker's new report line edits the board without resending the bar.
 - **Triggers.** The conductor's own turn end (the core's hooks); a session in the
   channel's folder starting or ending a turn (the workspace's own folder watcher,
@@ -2842,7 +2844,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   the turn end's refresh drops it), then ONE PR slot: the channel's own PR with its CI
   in one label, else the **Create PR** action when there is no PR at
   all, `pr_capability` holds and the branch has commits past the Code tab's own base
-  (`_fork_point`). Each worker's PR is on the board. That is five at most; the agent's items and then **Open in
+  (`_fork_point`), else the newest open or draft PR a worker opened in the channel's
+  own repository (`_worker_pr`, read from the board snapshot, so it is dropped with the
+  board wherever the board's scope refuses; a merged or closed one drops off, the
+  board keeps it). That is five at most; the agent's items and then **Open in
   dashboard** (a `session_deep_link`, never a click token; only an https one) take only
   a slot left free. Icons: **Workers** `life-ring`, **Stop** `terminal`, the PR item
   and **Create PR** `link`, repo `folder`, branch `branch`, dashboard `link`; the PR,

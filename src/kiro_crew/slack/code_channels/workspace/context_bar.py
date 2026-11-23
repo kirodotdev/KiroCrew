@@ -26,14 +26,28 @@ priority order, each at most once:
    bar is sent, so a refresh racing a turn start or end never sends a stale one)
 5. ONE pull-request slot: the channel's own PR with its CI (``PR #42 is open ·
    tests passing``); else, with no PR and commits on the channel's branch, the
-   ``create-pr`` action
+   ``create-pr`` action; else the newest open PR a helper agent opened (below)
 
 That is five at most, so the rest only ever take a slot nothing above wanted:
 the agent's own items (``code_channel_set_context_bar``), then ``dashboard``
 (Open in dashboard, a plain link, never a sign-in token). Without a board the
 workspace's own items take at most four slots, so it fits unless the agent's
 items fill the fifth; a conductor channel's board links the conductor's session
-itself. Each worker's PR is on the board, not here.
+itself.
+
+**A helper agent's PR.** In a conductor-led channel the PR is usually a
+worker's, and the channel has none of its own; Slack's partners found that PR's
+link buried in the reply text, with the bar left empty until someone asked the
+agent to set it. So with no PR (and no Create PR) of the channel's own, the slot
+shows the newest open (or draft) PR on the board: the highest number, since
+every row's PR is in the channel's own repository. It comes from the board
+snapshot alone, so it rides exactly where the Workers item does: a channel the
+board's scope refuses (shared, Off, Review, archived ...) is sent the bar
+without the board (:func:`..publishing.publish_bar`), and so without it. A PR
+in another repository never reaches a row (``WorkerPrs._fill_worker_prs``), nor
+does a number the forge could not confirm (no state). A merged or closed worker
+PR drops off the bar (the board keeps it); the channel's own PR, in any state,
+always takes the slot back.
 
 CI shares the PR's item because five slots cannot hold repo, branch, PR, CI and
 the actions the channel needs; the PR link still leads to its checks.
@@ -178,14 +192,32 @@ def _pr_item(pr: PullRequest) -> dict[str, str]:
 def _pr_slot(state: BarState) -> dict[str, str] | None:
     """The bar's ONE pull-request item (see the module's budget), or None.
 
-    The channel's own PR only: each worker's PR is on the work board.
+    The channel's own PR, else its Create PR, else a helper agent's open PR.
     """
     pr = state.pr
     if pr is not None and pr.state in _PR_LABEL:
         return _pr_item(pr)
     if state.can_open_pr and state.branch and state.branch_has_commits:
         return _action(ACTION_CREATE_PR, CREATE_PR_LABEL, CREATE_PR_ICON)
-    return None
+    worker = _worker_pr(state.board)
+    return _pr_item(worker) if worker is not None else None
+
+
+def _worker_pr(board: BoardSnapshot | None) -> PullRequest | None:
+    """The newest open or draft PR on the board (the module's "A helper agent's PR")."""
+    from kiro_crew.slack.code_channels.board.model import CLOSED
+
+    if board is None:
+        return None
+    live = [
+        r
+        for r in board.rows
+        if r.pr_number > 0 and r.pr_state in {"open", "draft"} and r.state != CLOSED
+    ]
+    if not live:
+        return None
+    row = max(live, key=lambda r: r.pr_number)
+    return PullRequest(row.pr_number, row.pr_url, row.pr_state, row.pr_ci)
 
 
 def build_items(state: BarState) -> list[dict[str, str]]:
