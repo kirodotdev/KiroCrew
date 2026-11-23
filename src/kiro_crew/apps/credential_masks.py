@@ -91,6 +91,7 @@ Process state only (a cache of parsed manifests); no per-caller data.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -373,15 +374,35 @@ def _read_declaration(
     return entries, clean
 
 
+@functools.cache
+def _builtins_root() -> Path:
+    """The shipped ``builtins/`` directory, resolved once: this module does not move."""
+    return Path(__file__).resolve().parent / "builtins"
+
+
+@functools.cache
+def _builtin_manifest_path(root: Path, package: str) -> Path:
+    """``<root>/<package>/app.json``, built and parsed once per directory and package.
+
+    Every sandboxed spawn asks for the declared masks several times, and building
+    and formatting these paths would otherwise be most of what each ask costs.
+    :func:`_builtin_manifests` lists the directory and every manifest is stat'ed
+    on each ask, so a package or a manifest that changes is read as it is on disk.
+    """
+    path = root / package / "app.json"
+    str(path)  # pathlib parses lazily; parse here so the cached path never parses again
+    return path
+
+
 def _builtin_manifests() -> list[tuple[str, Path]]:
     """``(installed name, app.json)`` for every shipped built-in package."""
-    root = Path(__file__).resolve().parent / "builtins"
+    root = _builtins_root()
     try:
         packages = sorted(entry.name for entry in os.scandir(root) if entry.is_dir())
     except OSError:
         return []
     return [
-        (package.replace("_", "-"), root / package / "app.json")
+        (package.replace("_", "-"), _builtin_manifest_path(root, package))
         for package in packages
         if not package.startswith(("_", "."))
     ]
