@@ -2191,7 +2191,17 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   requested before the quit, so a quit-time apply that is refused (governance,
   a newer feed, a gateway still running) still brings the app back; the feed
   lane asks for it explicitly on each of those stand-downs, because only
-  `quitAndInstall` honors its relaunch flag.
+  `quitAndInstall` honors its relaunch flag. The update modal and Settings →
+  About show Restart now only where that IPC would accept the window:
+  `updateAPI.canRelaunch()` (the `update:can-relaunch` IPC) runs the same
+  `assertLocalDashboard` check and answers a boolean, like
+  `gateway:can-restart`. `useInstallDispatch` asks it when the update arms and
+  again whenever the window regains focus or becomes visible, and only the
+  newest answer counts, so one transient `false` does not hide the action for
+  the rest of the session. Where it answers `false` (a gateway reached through
+  a port another process forwards, say), only "Install when I quit" is
+  offered. A shell without `canRelaunch` offers Restart now whenever
+  `relaunch` exists.
 - **Every apply is logged to `gateway-launch.log`.** `updateCommand` writes
   `[update] managed update command started (pid N)` when it spawns and
   `... ended: <outcome>, ran N ms, N bytes of output` when it ends, on quit and
