@@ -26,6 +26,7 @@ from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.history_files import _safe_key
 from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, mkdirs_owner_only
+from kiro_crew.security.credential_sources import bounded_credential_records
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -49,8 +50,11 @@ THREADS_SIDECAR_SUFFIX = ".json"
 
 
 #: The reply-row schema the thread sidecar holds; :meth:`ConversationLog.read_threads`
-#: keeps these keys and no other.
+#: keeps these keys and, beside them, only :data:`THREAD_REPLY_RECORDS_KEY`.
 THREAD_REPLY_FIELDS: tuple[str, ...] = ("id", "role", "content", "ts")
+#: A Bot reply's credential records (what its lock tags draw from), kept only as
+#: :func:`bounded_credential_records` rebuilds them, the way a transcript row's are.
+THREAD_REPLY_RECORDS_KEY = "redactions"
 
 #: What :meth:`ConversationLog.read_threads` RETAINS of a sidecar, whatever the
 #: file holds. The writer (``dashboard/chat_threads.py``) never exceeds these --
@@ -88,7 +92,9 @@ def _thread_reply_row(raw: dict) -> dict[str, Any] | None:
     """*raw* reduced to :data:`THREAD_REPLY_FIELDS`, or ``None`` when a field is
     missing, not a string, or -- for ``id``, ``role`` and ``ts`` -- not in the
     shape the writer produces. ``content`` is the only free-text field; it is
-    cut at :data:`THREAD_REPLY_CONTENT_MAX_CHARS`."""
+    cut at :data:`THREAD_REPLY_CONTENT_MAX_CHARS`. An assistant row also keeps
+    the credential records under :data:`THREAD_REPLY_RECORDS_KEY` that
+    :func:`bounded_credential_records` accepts, and none it refuses."""
     row: dict[str, Any] = {}
     for key in THREAD_REPLY_FIELDS:
         value = raw.get(key, "" if key == "ts" else None)
@@ -100,6 +106,10 @@ def _thread_reply_row(raw: dict) -> dict[str, Any] | None:
     if row["ts"] and not _THREAD_REPLY_TS_RE.match(row["ts"]):
         return None
     row["content"] = row["content"][:THREAD_REPLY_CONTENT_MAX_CHARS]
+    if row["role"] == "assistant":
+        records = bounded_credential_records(raw.get(THREAD_REPLY_RECORDS_KEY))
+        if records:
+            row[THREAD_REPLY_RECORDS_KEY] = records
     return row
 
 
@@ -162,7 +172,8 @@ def read_threads(self: ConversationLog, key: str) -> dict[str, list[dict[str, An
     file with an empty map and lose every reply it held. Rows and threads of
     the wrong shape are dropped individually; only the document as a whole
     refuses. Each retained row is NORMALIZED to the reply schema -- ``id``,
-    ``role``, ``content``, ``ts``, all strings -- and nothing else: the file
+    ``role``, ``content``, ``ts``, all strings, plus an assistant row's bounded
+    and re-checked credential records -- and nothing else: the file
     sits beside the transcript under the data home, so a field an agent or
     an older writer put there must never reach the dashboard through the
     detail response's spread. A row missing ``id``, ``role`` or ``content``
