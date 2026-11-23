@@ -1383,6 +1383,7 @@ class TestWindowsKillByNamePrograms:
             "echo taskkill /im {n}.exe | sh",
             # The image as the last segment of an executable path.
             "wmic process where \"executablepath like '%\\{n}.exe'\" delete",
+            "wmic process where \"commandline like '%{n}%'\" delete",
         ],
     )
     def test_a_spelling_around_the_target_does_not_hide_it(self, cmd):
@@ -1410,6 +1411,7 @@ class TestWindowsKillByNamePrograms:
             # A product-named checkout folder earlier in an executable path.
             "wmic process where \"name='node.exe' and executablepath like"
             " '%\\{N}\\frontend\\node_modules\\%'\" delete",
+            "wmic process where \"name='node.exe' and commandline like '%\\{N}\\frontend\\%'\" delete",
             # The program named as prose (heredoc bodies) or in a comment.
             "git commit -F - <<'EOF'\nfix: x\n\nThe floor now reads taskkill /im {n}.exe,"
             " Stop-Process -Name {n}\nand Get-Process {n} | Stop-Process.\nEOF",
@@ -1421,3 +1423,19 @@ class TestWindowsKillByNamePrograms:
     )
     def test_the_name_outside_the_target_place_stays_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, N=_NAME.upper())) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A heredoc body line that starts with the program is read as a command,
+            # as it is for pkill; so is a line whose echo the shell reader cannot
+            # tell from an executing consumer.
+            "cat >> docs/t.md <<'EOF'\nTo stop it from PowerShell:\n\n    {verb} {n}\nEOF",
+            "cat >> docs/w.md <<'EOF'\n| Command | Effect |\n| {verb} {n}.exe | stops it |\nEOF",
+            "robocopy dist C:\\Tools\\x\\dist /e & echo Restart it with {verb} {n}.exe then relaunch",
+        ],
+    )
+    @pytest.mark.parametrize("verb", ["taskkill /im", "Stop-Process -Name"])
+    def test_a_windows_kill_is_read_where_the_pkill_twin_is(self, cmd, verb):
+        windows = _denied_by(cmd.format(verb=verb, n=_NAME))
+        assert windows == _denied_by(cmd.format(verb="pkill -f", n=_NAME)) == _RULE_KILL

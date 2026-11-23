@@ -13,7 +13,7 @@ exclusion filter, a later command or a printed message is not a kill:
 * ``wmic``: an ``=`` or ``like`` comparison in the ``where`` clause of a ``delete``
   or ``terminate``. A comparison after ``not`` spares the name.
 
-  For ``executablepath`` only the last path segment, the image, counts.
+  For ``executablepath`` and ``commandline`` only the last path segment counts.
 
 A program counts only in the position a command runs, as ``argv_rules`` reads it
 (past ``VAR=value`` words, the wrappers in ``argv_rules._WRAPPERS`` and ``cmd /c``), so heredoc
@@ -104,8 +104,8 @@ def _wmic_kills_product(args: "list[str]") -> bool:
         negated, field, operator, value = match.groups()
         if negated or operator not in ("=", "like"):
             continue
-        if field == "executablepath":
-            # The image is the last path segment; a product-named checkout folder
+        if field in ("executablepath", "commandline"):
+            # The last path segment names what runs; a product-named checkout folder
             # earlier in the path (``%\kirocrew\frontend\...``) is not the target.
             value = _PATH_SEPARATOR_RE.split(value.strip("'\"%").rstrip("\\/%"))[-1]
         if _names_product(value):
