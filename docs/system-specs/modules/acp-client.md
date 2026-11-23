@@ -3204,7 +3204,8 @@ first declared at load included (probed on the 0.66.33 bundle with a stdio
 probe server, and on 0.66.91 from a cold process), and only a block entry
 carries a user server's `timeout`. A session-level element gets KAS's 60 s
 unless its `_meta.kiro` names a `timeout` on an engine that reads it (below),
-and only Crew's own elements carry one, so a user server hoisted there would lose the default
+and only Crew's own elements and the pooled broker stubs (below) carry one, so a user
+server hoisted there would lose the default
 `kas_settings_mcp.finish_settings_mcp` gives the block (120 s, 300 s for a remote one). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry with a
@@ -3242,9 +3243,15 @@ each of them 120 s to connect instead of 60 s. A server waiting in the gateway's
 spawn queue after a restart can take longer than 60 s. The engine
 copies every `_meta.kiro` key of a session-level entry into the server's config
 from 0.66.111 on; 0.66.102 and older read only `disabledTools`, `waitForReady`
-and `versionNegotiation` there and ignore the timeout. A non-managed or
-command-less entry keeps the host defaults, and the agent-block path carries no
-pin.
+and `versionNegotiation` there and ignore the timeout. A pooled broker stub of
+any other server (`mcp_mount_check.stub_server`) carries `_meta.kiro.timeout`
+only: the `timeout` (or `timeoutMs`) it copies from its declaration, which KAS
+does not read on a session-level element, else the active agent's block default
+(`_crewSettingsMcp`, `kas_settings_mcp.stamp_settings_mcp`; 120 s for an agent
+that carries no stamp), so the server gets
+the budget `finish_settings_mcp` would give it in the block instead of 60 s. Any
+other non-managed or command-less entry keeps the host defaults, and the
+agent-block path carries no pin.
 
 **v2 parity of the projected entry.** The projection answers the same
 spec the same way kiro-cli v2 does where the wire allows it:

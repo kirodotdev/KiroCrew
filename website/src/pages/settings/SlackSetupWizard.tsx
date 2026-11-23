@@ -8,7 +8,9 @@
  * Saved credentials and a first owner apply with Reconnect, not a restart.
  * The slash command saved at Create applies without a restart only on a
  * gateway that hot-applies `slack.command`; elsewhere the step says a restart
- * is needed. The owner step is today's member-ID field.
+ * is needed. The owner step offers Claim in Slack first and the member-ID
+ * field as the fallback; an owner other than the one the gateway runs with
+ * asks for a restart, since Reconnect refuses an owner change.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -31,6 +33,11 @@ export function manifestAppName(manifest: string | undefined): string {
 
 /** The alias shape the backend accepts (`ALIAS_RE` in `slack_manifest.py`). */
 const ALIAS_RE = /^[A-Za-z0-9_-]{1,32}$/
+/** The alias room in the slash command, which `slash_command` lowercases and
+ *  cuts to Slack's 32 characters after `/kirocrew-`. The input keeps the alias
+ *  inside it, so the app name a later manifest update reads back from the saved
+ *  command is the one the user saw at Create. */
+const ALIAS_ROOM = 22
 /** The scope an app-level token needs for Socket Mode: a Slack identifier, never translated. */
 export const APP_TOKEN_SCOPE = 'connections:write'
 
@@ -169,7 +176,13 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
       if (res.verify_warning) setNotice(res.verify_warning)
       if (body.bot_token) { setBotToken(''); setStep(WIZARD_STEPS.indexOf('app_token')) }
       if (body.app_token) { setAppToken(''); setStep(WIZARD_STEPS.indexOf('owner')) }
-      if (body.owner_id) { setOwnerId(''); reconnectMut.mutate() }
+      if (body.owner_id) {
+        setOwnerId('')
+        // A different owner than the one the gateway runs with applies only on
+        // a restart, and Reconnect refuses it.
+        if (res.restart_required) setNotice(i18nT('pages.settings.slackPanel.connect_error_owner_change_needs_restart'))
+        else reconnectMut.mutate()
+      }
     },
   })
 
@@ -181,6 +194,10 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
       if (res.connected && !res.connect_error) {
         void qc.invalidateQueries({ queryKey: ['slack-manifest-status'] })
         setStep(WIZARD_STEPS.indexOf('test'))
+      } else if (res.connect_error === 'invalid_auth') {
+        // The panel's sentence points at its own token fields below; here the
+        // tokens are pasted on earlier steps.
+        setError(i18nT('pages.settings.slackWizard.reconnect_invalid_auth', { step: WIZARD_STEPS.indexOf('bot_token') + 1 }))
       } else {
         setError(i18nT('pages.settings.slackWizard.reconnect_failed', { reason: describeConnectError(res.connect_error) }))
       }
@@ -224,7 +241,7 @@ export function SlackSetupWizard({ data, onSaved, orgGuideUrl, describeConnectEr
         {!ro && (
           <>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <Input value={alias} onChange={e => setAlias(e.target.value.trim())}
+              <Input value={alias} onChange={e => setAlias(e.target.value.trim().toLowerCase().slice(0, ALIAS_ROOM))}
                 placeholder={i18nT('pages.settings.slackWizard.alias_placeholder')}
                 aria-label={i18nT('pages.settings.slackWizard.alias_label')}
                 className="min-w-0 flex-1 font-mono" data-testid="slack-wizard-alias" />
