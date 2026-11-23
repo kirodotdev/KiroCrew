@@ -1144,6 +1144,14 @@ def _isolate_member_identity_cache(_floor_monkeypatch):
 
 
 @per_test_guard
+def _isolate_member_records_seal(_floor_monkeypatch):
+    member_records = sys.modules.get("kiro_crew.member_records")
+    if member_records is None:
+        return
+    _floor_monkeypatch.setattr(member_records, "_sealed_homes", set())
+
+
+@per_test_guard
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

@@ -135,6 +135,7 @@ def test_records_left_in_the_old_layout_are_moved_before_the_child_starts(home, 
         (old / f"{_SLUG}.json").write_bytes(data)
         (root / kind / f"{_SLUG}.json").unlink()
     (root / member_records.MIGRATION_MARKER).unlink()
+    member_records._sealed_homes.clear()
     old_paths = [home / "trust" / kind / f"{_SLUG}.json" for kind in contents]
 
     report = _run(mode, home, [*old_paths, *paths])

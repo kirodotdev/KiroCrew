@@ -1369,7 +1369,8 @@ def _member_records_move() -> bool:
     """Run the crewmate records' one-time move out of ``trust/`` before this sandbox launches.
 
     Spawn prep runs it so the move and its marker land before an agent of this build gets a
-    shell on a fresh upgrade; after that it is one ``stat``. The move lives in
+    shell on a fresh upgrade; after that it is a resolve and one ``stat``, made even
+    when this process has already seen the move sealed. The move lives in
     :mod:`kiro_crew.member_records`, which every gateway-side reader also calls.
 
     **A move that did not finish refuses the spawn** (:class:`SandboxCeilingUnsealable`)
@@ -1384,7 +1385,7 @@ def _member_records_move() -> bool:
     # Local, not top-level, for the reason the Notes move above gives.
     from kiro_crew import member_records
 
-    if member_records._inside_sandbox() or member_records.ensure_migrated():
+    if member_records._inside_sandbox() or member_records.ensure_migrated(recheck=True):
         return True
     # Unsealed refuses whatever the old layout holds now: a sandbox launched before the
     # seal could write a record there for the next pass to promote. A fresh data home is
