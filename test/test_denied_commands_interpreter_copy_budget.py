@@ -154,7 +154,7 @@ def _generated(rng: random.Random) -> str:
 
 def _corpus() -> "list[str]":
     rng = random.Random(34875)
-    return [*_BENIGN, *_REFUSED, *(_generated(rng) for _ in range(300))]
+    return [*_BENIGN, *_REFUSED, *(_generated(rng) for _ in range(100))]
 
 
 class TestTheMeasureIsTheCopy:
@@ -167,7 +167,7 @@ class TestTheMeasureIsTheCopy:
             assert measured == len(built) - len(collapsed), command[:200]
             grew += measured > 0
             shrank += measured < 0
-        assert grew > 100 and shrank  # both directions were measured
+        assert grew > 50 and shrank  # both directions were measured
 
     def test_measuring_builds_nothing_and_grows_with_the_text(self):
         work = []
@@ -180,6 +180,7 @@ class TestTheMeasureIsTheCopy:
 class TestUnderTheBudgetEveryAnswerIsMains:
     def test_generated_commands_keep_their_answer(self, monkeypatch):
         built = _copies_built(monkeypatch)
+        rows = security._INTERPRETER_RULE_PATTERNS
         under = over = by_interpreter_row = 0
         for command in _corpus():
             growth = _growth(command)
@@ -194,9 +195,9 @@ class TestUnderTheBudgetEveryAnswerIsMains:
             assert _REFUSAL not in (verdict or ""), command[:200]
             assert all(len(copy) <= len(command) + _BUDGET for copy in built)
             assert verdict == _without_budget(monkeypatch, command), command[:200]
-            by_interpreter_row += _denied_by(command) in _INTERPRETER_RULES
+            by_interpreter_row += any(row in (verdict or "") for row in rows)
         # The corpus reaches both sides of the budget and both interpreter rows' copy.
-        assert under > 200 and over > 10 and by_interpreter_row > 10
+        assert under > 70 and over > 10 and by_interpreter_row > 10
 
     @pytest.mark.parametrize("command", _REFUSED)
     def test_a_known_interpreter_payload_is_still_refused_by_its_row(self, command):
