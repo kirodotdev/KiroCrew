@@ -91,6 +91,23 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
         return True
 
 
+def _is_data_home(raw: str) -> bool:
+    """Whether workspace folder *raw* resolves to exactly the data home.
+
+    A relative folder is anchored at the data home first (the runtime's placement rule), so
+    ``"."`` and ``"workspace/.."`` are the data home and ``"workspace/proj"`` is not.
+    """
+    from kiro_crew.config.paths import config_dir
+
+    home = os.path.realpath(config_dir())
+    try:
+        # An absolute folder wins the join, so this is also the absolute case.
+        folder = os.path.realpath(os.path.join(home, os.path.expanduser(raw)))
+    except ValueError:  # an embedded NUL: not resolvable, so not the data home
+        return False
+    return os.path.normcase(folder) == os.path.normcase(home)
+
+
 def config_document_refusal(data: Any) -> str | None:
     """Why the parsed archive ``config.json`` *data* must not be installed, or ``None``.
 
@@ -114,4 +131,6 @@ def config_document_refusal(data: Any) -> str | None:
             raw = entry.get("dir") if isinstance(entry, dict) else entry
             if isinstance(raw, str) and raw and _dir_outside_roots(raw, roots):
                 return f"workspace {_shown(str(name))} places its folder outside the workspace root"
+            if isinstance(raw, str) and raw and _is_data_home(raw):
+                return f"workspace {_shown(str(name))} places its folder on the data home itself"
     return None

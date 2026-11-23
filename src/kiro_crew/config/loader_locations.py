@@ -763,16 +763,29 @@ def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
     return config_dir() / dirname
 
 
+def _is_broad_root(real: str) -> bool:
+    """Whether real path *real* is exactly the filesystem root, the owner's home or the data home.
+
+    Exact match only: a folder below any of them is not broad.
+    """
+    norm = os.path.normcase(real)
+    if os.path.dirname(norm) == norm:  # "/" or a bare drive root
+        return True
+    broad = (os.path.expanduser("~"), str(config_dir()))
+    return norm in {os.path.normcase(os.path.realpath(p)) for p in broad}
+
+
 def usable_workspace_dir_from_entry(
     entry: WorkspaceConfig | None, name: str = "", *, must_exist: bool = True
 ) -> Path:
     """:func:`workspace_dir_from_entry`, held to the rule chat applies to a workspace folder.
 
-    A folder on the sensitive-path list, or missing when *must_exist*, is not used as the
-    working directory of a scheduled run or a channel turn: the base workspace folder is
-    returned instead and one line is logged. A scheduled run passes ``must_exist=False``:
-    a folder that is not there yet is created on use, so only the sensitive-path half
-    applies. The base folder itself is returned as it is.
+    A folder on the sensitive-path list, a broad root (the filesystem root, the owner's
+    home folder or the data home, matched exactly), or missing when *must_exist*, is not
+    used as the working directory of a scheduled run or a channel turn: the base workspace
+    folder is returned instead and one line is logged. A scheduled run passes
+    ``must_exist=False``: a folder that is not there yet is created on use, so the
+    missing half does not apply. The base folder itself is returned as it is.
     """
     ws = workspace_dir_from_entry(entry)
     base = workspace_dir_from_entry(None)
@@ -782,12 +795,16 @@ def usable_workspace_dir_from_entry(
 
     try:
         real = os.path.realpath(str(ws))
-        if (not must_exist or os.path.isdir(real)) and not is_sensitive_canonical_path(real):
+        if (
+            (not must_exist or os.path.isdir(real))
+            and not _is_broad_root(real)
+            and not is_sensitive_canonical_path(real)
+        ):
             return ws
     except Exception:  # noqa: BLE001 - an unjudgeable folder is not used
         pass
     logger.warning(
-        "workspace %r: its folder is not usable (on the sensitive-path list, or missing); "
+        "workspace %r: its folder is not usable (sensitive, a broad root, or missing); "
         "using the base workspace folder",
         name,
     )
