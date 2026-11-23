@@ -1430,7 +1430,13 @@ async def release_deleted_worker(state: DashboardState, history_key: str) -> web
         return None
     if not crew_log_emit.enabled():
         return _refuse_release(worker, "the crew log is off")
-    unit = await asyncio.to_thread(_conductor_unit, state, board)
+    try:
+        unit = await asyncio.to_thread(
+            functools.partial(_conductor_unit, strict=True), state, board
+        )
+    except Exception:
+        logger.warning("History delete: conductor unit lookup failed for %s", board, exc_info=True)
+        return _refuse_release(worker, "the board's crew log could not be read")
     if not unit:
         # No conductor unit (its chat was deleted first) means no record the fold
         # could rebuild the binding from, so the local release is the whole job.

@@ -287,7 +287,7 @@ async def test_a_board_with_no_conductor_unit_releases_locally_instead_of_refusi
     item_id = await _board()
     from kiro_crew.dashboard.handlers import work_ledger_conductor as conductor
 
-    monkeypatch.setattr(conductor, "_conductor_unit", lambda state, board: "")
+    monkeypatch.setattr(conductor, "_conductor_unit", lambda state, board, **_kw: "")
 
     resp = await release_deleted_worker(_state(), HISTORY_KEY)
 
@@ -295,3 +295,77 @@ async def test_a_board_with_no_conductor_unit_releases_locally_instead_of_refusi
     assert wl.read_binding(WORKER) is None
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None and item.state == "open" and item.worker_session_key is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_conductor_log_refuses_instead_of_releasing_locally(monkeypatch):
+    _real_units(monkeypatch)
+    item_id = await _board()
+    from kiro_crew.dashboard.handlers import work_ledger_conductor as conductor
+
+    def _unreadable(state, board, *, strict=False):
+        assert strict
+        raise OSError("crew log tree unreadable")
+
+    monkeypatch.setattr(conductor, "_conductor_unit", _unreadable)
+
+    resp = await release_deleted_worker(_state(), HISTORY_KEY)
+
+    assert resp is not None and json.loads(resp.text)["code"] == CODE_WORKER_RELEASE_UNRECORDED
+    assert wl.read_binding(WORKER) == (CONDUCTOR, item_id)
+    assert "release" not in _events(item_id)
+
+
+def _claim(*, verified: bool = False, complete: bool = True):
+    from kiro_crew.dashboard.handlers.sessions_parts.delete_claim import _HistoryDeleteClaim
+
+    return _HistoryDeleteClaim(
+        registry_key=WORKER,
+        slot=object(),
+        history_key=HISTORY_KEY,
+        session_key=HISTORY_KEY,
+        session_generation=0,
+        path_match_verified=verified,
+        complete=complete,
+    )
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_transcript_that_does_not_own_the_binding_releases_nothing(
+    monkeypatch, tmp_path
+):
+    _real_units(monkeypatch)
+    item_id = await _board()
+    log = ConversationLog(base_dir=tmp_path / "history")
+    state = _state()
+    state.conversation_log = log
+    stacked = f"dashboard_{HISTORY_KEY}"
+
+    # Canonical and stacked transcripts coexist; the live slot owns the canonical one.
+    assert await delete_routes._release_work_binding(state, stacked, _claim()) is None
+    assert wl.read_binding(WORKER) == (CONDUCTOR, item_id)
+    assert "release" not in _events(item_id)
+
+    # Deleting the transcript the slot does own releases it.
+    assert await delete_routes._release_work_binding(state, HISTORY_KEY, _claim()) is None
+    assert wl.read_binding(WORKER) is None
+    assert _events(item_id)[-1] == "release"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_transcript_ownership_refuses_the_release(monkeypatch, tmp_path):
+    _real_units(monkeypatch)
+    item_id = await _board()
+    state = _state()
+    state.conversation_log = ConversationLog(base_dir=tmp_path / "history")
+
+    def _broken(self, key):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(ConversationLog, "_path", _broken)
+
+    resp = await delete_routes._release_work_binding(state, f"dashboard_{HISTORY_KEY}", _claim())
+
+    assert resp is not None and resp.status == 409
+    assert json.loads(resp.text)["code"] == CODE_WORKER_RELEASE_UNRECORDED
+    assert wl.read_binding(WORKER) == (CONDUCTOR, item_id)

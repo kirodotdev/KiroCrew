@@ -1063,7 +1063,7 @@ async def test_a_report_with_no_board_unit_lands_in_the_workers_log(recorded, mo
     item_id = await _board()
     from kiro_crew.dashboard.handlers import work_ledger as work_ledger_handlers
 
-    monkeypatch.setattr(work_ledger_handlers, "_conductor_unit", lambda state, key: "")
+    monkeypatch.setattr(work_ledger_handlers, "_conductor_unit", lambda state, key, **_kw: "")
     recorded.clear()
     status, body = await _report(WORKER, {"status": "progress", "summary": "still heard"})
     assert status == 200, body
