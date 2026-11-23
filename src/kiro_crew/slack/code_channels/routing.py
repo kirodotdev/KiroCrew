@@ -169,7 +169,7 @@ def channel_and_origin_permit(cfg: Any, channel: str, origin_channel: str) -> bo
     """Both the code channel and its origin admit the channel's turns.
 
     The origin's rule is inherited; the code channel's own activation (set with
-    ``/kirocrew channel`` or ``slack.channels.<id>``) applies on top of it, so an
+    ``/kirocrew channels`` or ``slack.channels.<id>``) applies on top of it, so an
     operator who puts the code channel itself in review mode or turns the bot
     off there is obeyed too.
     """

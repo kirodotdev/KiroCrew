@@ -755,7 +755,7 @@ async def route_linked_thread(
 
     Shared by the native ``handle_message`` path and the messaging-transport
     ``handle_message_transport`` path so a thread linked via
-    ``/kirocrew link-to-dashboard`` behaves identically on both.
+    ``!link-to-dashboard`` behaves identically on both.
 
     Returns :attr:`LinkedRoute.ROUTED` when the message was run or queued on
     the linked slot, and :attr:`LinkedRoute.REFUSED` when it was answered
