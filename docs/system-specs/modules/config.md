@@ -515,6 +515,16 @@ so there is one source of truth for the location.
 Direct `config_dir()` callers keep the maintenance behaviour; a hot or async path
 should call `data_home()` instead.
 
+**A worker thread is handed its home, not left to read the variable.**
+`run_with_data_home(home, target, *args)` is a thread's entry: until `target(*args)`
+returns, `config_dir()`, `data_home()` and `peek_data_home()` answer *home* on that
+thread without reading `KIROCREW_HOME`. Other threads are unaffected, the pin never
+enters `config_dir()`'s process-wide memo, and `_valid_override_home()` (the "is an
+override in force" predicate) does not see it. The dispatcher resolves the home while
+its own override is in force (the metrics consent re-check, `metrics/provider.py`), so
+a test that clears the variable before the worker reads (`patch.dict`'s exit, an
+empty pin) cannot send that worker to the default home.
+
 ## Workspace Root
 
 `workspace_root()` returns the base directory for all LLM working directories (kiro-cli cwd, task runner output, etc.):
@@ -2816,6 +2826,7 @@ Returns `~/.kiro/crew/` (nested under kiro-cli's `~/.kiro/` base). Overridden by
 `KIROCREW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`,
 `/etc`). It creates the selected home and, on the default path, refreshes the
 recovery breadcrumb; it never reads or migrates a leftover `~/.kirocrew` tree.
+Inside `run_with_data_home(home, ...)` it returns *home* on that thread (see above).
 
 ### `config_path() -> Path`
 Returns `~/.kiro/crew/config.json` (or `$KIROCREW_HOME/config.json` if overridden).
