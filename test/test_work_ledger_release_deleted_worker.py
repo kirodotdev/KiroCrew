@@ -285,9 +285,7 @@ def test_the_delete_routes_spell_the_refusal_code_the_release_answers():
 async def test_a_board_with_no_conductor_unit_releases_locally_instead_of_refusing(monkeypatch):
     _real_units(monkeypatch)
     item_id = await _board()
-    from kiro_crew.dashboard.handlers import work_ledger_conductor as conductor
-
-    monkeypatch.setattr(conductor, "_conductor_unit", lambda state, board, **_kw: "")
+    monkeypatch.setattr(routes, "_conductor_unit", lambda state, board, **_kw: "")
 
     resp = await release_deleted_worker(_state(), HISTORY_KEY)
 
@@ -301,13 +299,12 @@ async def test_a_board_with_no_conductor_unit_releases_locally_instead_of_refusi
 async def test_an_unreadable_conductor_log_refuses_instead_of_releasing_locally(monkeypatch):
     _real_units(monkeypatch)
     item_id = await _board()
-    from kiro_crew.dashboard.handlers import work_ledger_conductor as conductor
 
     def _unreadable(state, board, *, strict=False):
         assert strict
         raise OSError("crew log tree unreadable")
 
-    monkeypatch.setattr(conductor, "_conductor_unit", _unreadable)
+    monkeypatch.setattr(routes, "_conductor_unit", _unreadable)
 
     resp = await release_deleted_worker(_state(), HISTORY_KEY)
 
