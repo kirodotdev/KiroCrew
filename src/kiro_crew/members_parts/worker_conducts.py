@@ -13,8 +13,10 @@ facts kept apart on purpose:
   beside the backend-pick table (``member_sessions._SESSION_BACKEND_PICKS``), fed at
   mint by ``session_create`` and ``session_fork`` from the caller's key, and at
   restore by the slot metadata reader and at a revive by ``session_revive`` from the
-  slot's VERIFIED ``created_by`` (an ``UNVERIFIED_CREATOR`` verdict marks nothing; a
-  History resume, which restores no creator, drops the mark). A
+  slot's VERIFIED ``created_by`` (an ``UNVERIFIED_CREATOR`` verdict marks nothing
+  until the session tree confirms the claim, when
+  ``session_revive.reconfirm_restored_creators`` marks it; a History resume, which
+  restores no creator, drops the mark). A
   conducting worker's own children and forks are created by a ``chat-`` key, so they
   are never marked, whatever ``work_ledger.max_depth`` says: one conducting level, by
   lineage.
@@ -57,7 +59,8 @@ def note_worker_lineage(session_key: str, creator_key: str) -> None:
     The one writer of the thread-born mark, called where the slot's creator is
     known on a gateway-vouched path: at mint, with the ``session_create`` or
     ``session_fork`` caller's slot key; at restore and at a revive, with the slot's
-    verified ``created_by``; at a History resume, with no creator, since that path
+    verified ``created_by``, and when the session tree lifts a restore's fence, with
+    the creator it confirms; at a History resume, with no creator, since that path
     restores none. A creator that is a member DM key (``member-<slug>``,
     any layer spelling) marks the session; any other creator, a ``chat-`` key (a
     conducting worker's own child or fork), a cron stamp or an unverified claim

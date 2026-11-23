@@ -250,3 +250,23 @@ class TestRestoreReMarksFromTheVerifiedCreator:
         slot = self._restore(tmp_path, monkeypatch, created_by="chat-3-1785396000", verified=True)
         assert slot._created_by == "chat-3-1785396000"
         assert not members.is_thread_born_worker_session(WORKER)
+
+    @pytest.mark.parametrize("creator, thread_born", [(THREAD, True), ("chat-3-1785396000", False)])
+    def test_a_fence_the_tree_lifts_later_marks_from_the_creator_it_confirms(
+        self, tmp_path, monkeypatch, creator, thread_born
+    ):
+        """A restore that runs before the tree holds the creation record fences the
+        worker and marks nothing. When the record arrives later in the same process, the
+        tree push lifts the fence (``reconfirm_restored_creators``), and the creator the
+        record names marks the worker as a restore that found the record would have."""
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+
+        slot = self._restore(tmp_path, monkeypatch, created_by=creator, verified=False)
+        assert slot._created_by == UNVERIFIED_CREATOR
+        assert not members.is_thread_born_worker_session(WORKER)
+
+        monkeypatch.setattr(sc, "_creation_parent", lambda key: creator if key == WORKER else "")
+        assert sc.reconfirm_restored_creators(SimpleNamespace(_slots={WORKER: slot})) == 1
+        assert slot._created_by == creator
+        assert members.is_thread_born_worker_session(WORKER) is thread_born

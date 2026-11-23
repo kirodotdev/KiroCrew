@@ -4992,8 +4992,10 @@ in-memory registry beside the backend-pick table fed once per session by
 `note_new_worker`, from the caller's `member-<slug>` key: the thread's fork of its
 worker is thread-born, any other caller's fork is plain), at restore by
 `metadata_codec._read_created_by` and at a revive by `session_revive` from the
-slot's VERIFIED `created_by` (an unverified claim marks nothing; a History resume,
-which restores no creator, drops the mark); and the switch, read from the Bot's
+slot's VERIFIED `created_by` (an unverified claim marks nothing; when the session
+tree confirms a restore's fenced claim later, `reconfirm_restored_creators` marks
+it as it lifts the fence; a History resume, which restores no creator, drops the
+mark); and the switch, read from the Bot's
 record at every session start through
 `members.conducting_worker_session` (marked, known as the Bot's worker,
 `worker_conducts` true now; an unreadable or degraded config fails closed), never

@@ -296,8 +296,13 @@ def reconfirm_restored_creators(state: Any) -> int:
 
     Only a slot the restore fenced carries a claim (``_unconfirmed_creator``). A slot
     whose ``_created_by`` was set some other way since is left alone and loses the
-    claim. Returns how many fences were lifted.
+    claim. A lifted fence also gives the slot the thread-born mark the restore would
+    have given it had the tree held the record then (``members.note_worker_lineage``,
+    from the creator the record names). Returns how many fences were lifted.
     """
+    # Circular at runtime: ``members`` imports this module.
+    from kiro_crew.members import note_worker_lineage
+
     lifted = 0
     for slot in list(getattr(state, "_slots", {}).values()):
         claimed = str(getattr(slot, "_unconfirmed_creator", "") or "")
@@ -310,6 +315,7 @@ def reconfirm_restored_creators(state: Any) -> int:
             continue
         slot._created_by = claimed
         slot._unconfirmed_creator = ""
+        note_worker_lineage(slot.key, claimed)
         lifted += 1
         logger.info(
             "session %s: creator %s confirmed by the session tree after restore", slot.key, claimed
