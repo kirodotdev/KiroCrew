@@ -273,7 +273,7 @@ def test_the_prompt_and_the_card_say_what_the_rows_allow_and_nothing_more() -> N
         "approvals",
     ):
         assert word in low.split("cannot", 1)[1], word
-    assert "turning the app off removes this access" in low
+    assert "removing dashboard access or turning the app off ends this access" in low
     for promised in (
         "read your chats",
         "read your sessions",

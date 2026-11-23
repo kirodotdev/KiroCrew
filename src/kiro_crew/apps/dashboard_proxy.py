@@ -62,7 +62,7 @@ DASHBOARD_ACCESS_SCOPE = (
     "their titles, whether they are running and when they last changed), and stop a "
     "running chat turn. It can use its own backend. It cannot read chat messages, send "
     "them, read your preferences, change settings, credentials, apps, the terminal or "
-    "approvals. Turning the app off removes this access."
+    "approvals. Removing dashboard access or turning the app off ends this access."
 )
 
 _RECORD_MAX_BYTES = 4096
@@ -439,6 +439,8 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "registry": registry,
         "source": source,
         "version": version,
+        # Sent back with the owner's yes; the grant refuses another install (grant()).
+        "identity": install_identity(app_name) or "",
         "text": text,
     }
 
@@ -507,8 +509,13 @@ def granted(app_name: str) -> bool:
     return bool(enabled and not_disabled)
 
 
-def grant(app_name: str) -> tuple[bool, str]:
+def grant(app_name: str, expected_identity: str | None) -> tuple[bool, str]:
     """Record the owner's grant. Call only from the owner-authenticated grant route.
+
+    *expected_identity* is the :func:`install_identity` the owner's offer showed. The check
+    and the record write are one step here, run by the route under the app's lifecycle
+    lock, so an update between the offer and the yes is refused ``offer_changed`` instead
+    of granting an install the owner never saw. There is no "current install" default.
 
     Returns ``(True, "")`` or ``(False, reason)``; never raises for a refusal. Refused with
     ``platform-unsupported`` where the sandbox cannot bind a stand-in.
@@ -520,6 +527,10 @@ def grant(app_name: str) -> tuple[bool, str]:
     identity = install_identity(app_name)
     if not identity:
         return False, "not-installed"
+    if not isinstance(expected_identity, str) or not hmac.compare_digest(
+        identity.encode(), expected_identity.encode()
+    ):
+        return False, "offer_changed"
     enabled, not_disabled = _marker_state(app_name)
     if not (enabled and not_disabled):
         return False, "not-enabled"

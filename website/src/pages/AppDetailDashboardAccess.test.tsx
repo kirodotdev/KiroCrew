@@ -1,7 +1,8 @@
 /**
  * The "Dashboard access" card: hidden when there is nothing to say, a confirmed grant,
- * a restart offered after the grant, the "needs dashboard access" state for an app whose
- * last token request was refused, and the platform reason in place of the control.
+ * a restart offered after the grant, the removal of a granted access, the "needs dashboard
+ * access" state for an app whose last token request was refused, and the platform reason in
+ * place of the control.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -12,6 +13,7 @@ const api = vi.hoisted(() => ({
   getAppDashboardAccess: vi.fn(),
   grantAppDashboardAccess: vi.fn(),
   restartAppForDashboardAccess: vi.fn(),
+  revokeAppDashboardAccess: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api }))
 
@@ -27,6 +29,7 @@ const OFFER = {
   registry: 'crew-tunnels',
   source: 'https://example.invalid/tunnel.git',
   version: '0.9.4',
+  identity: 'install-identity-1',
   // The server's English sentence is for the API; the dialog words come from the locale catalog.
   text: 'SERVER-ENGLISH-SENTENCE',
 }
@@ -43,6 +46,7 @@ beforeEach(() => {
   api.getAppDashboardAccess.mockResolvedValue(OFFERED)
   api.grantAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true, offer: OFFER, restart_required: true })
   api.restartAppForDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true, restarted: true })
+  api.revokeAppDashboardAccess.mockResolvedValue(OFFERED)
 })
 
 describe('AppDetailDashboardAccess', () => {
@@ -69,7 +73,7 @@ describe('AppDetailDashboardAccess', () => {
   it('confirms with the offer text, grants, then offers a restart', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
-    await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
+    await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel', 'install-identity-1'))
     expect(confirmMock.mock.calls[0][0].body).not.toContain('SERVER-ENGLISH-SENTENCE')
     expect(confirmMock.mock.calls[0][0].body).toContain(
       'Allow “tunnel” 0.9.4 (registry “crew-tunnels”, source “https://example.invalid/tunnel.git”) to use this dashboard on your behalf?',
@@ -77,25 +81,25 @@ describe('AppDetailDashboardAccess', () => {
     expect(confirmMock.mock.calls[0][0].body).toContain('stop a running chat turn')
     expect(confirmMock.mock.calls[0][0].body).toContain('cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals')
     expect(confirmMock.mock.calls[0][0].body).not.toContain('run agents as you')
-    expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
+    expect(await screen.findByText('Dashboard access is allowed. It takes effect after a restart.')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
     await waitFor(() => expect(api.restartAppForDashboardAccess).toHaveBeenCalledWith('tunnel'))
     expect(await screen.findByRole('status')).toHaveTextContent('App restarted.')
   })
 
-  it('says on the card what the access can do and that turning the app off removes it', async () => {
+  it('says on the card what the access can do and how to take it back', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     const scope = await screen.findByTestId('dashboard-access-scope')
     expect(scope).toHaveTextContent('show the dashboard page with your theme and a list of your chats (only their titles, whether they are running and when they last changed), and stop a running chat turn')
     expect(scope).toHaveTextContent('cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals')
     expect(scope).not.toHaveTextContent('run agents as you')
-    expect(scope).toHaveTextContent('Turning the app off removes this access.')
+    expect(scope).toHaveTextContent('Removing dashboard access or turning the app off ends this access.')
   })
 
   it('shows the same scope line while the access is on', async () => {
     api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true })
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
-    expect(await screen.findByTestId('dashboard-access-scope')).toHaveTextContent('Turning the app off removes this access.')
+    expect(await screen.findByTestId('dashboard-access-scope')).toHaveTextContent('Removing dashboard access or turning the app off ends this access.')
   })
 
   it('renders a failed load, with the agent hand-off, instead of nothing', async () => {
@@ -136,6 +140,59 @@ describe('AppDetailDashboardAccess', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
     expect(await screen.findByText(/did not start again/)).toBeInTheDocument()
+    // The row stays, so the owner can try again from the card.
+    expect(screen.getByRole('button', { name: 'Restart app' })).toBeInTheDocument()
+  })
+
+  it('says the access waits for a restart until the restart succeeds', async () => {
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
+    expect(await screen.findByTestId('dashboard-access-on')).toHaveTextContent('It takes effect after a restart.')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart app' }))
+    await waitFor(() => expect(screen.getByTestId('dashboard-access-on')).toHaveTextContent('Dashboard access is on for this app.'))
+  })
+
+  it('asks again when the app changed while the dialog was open', async () => {
+    const { ApiError } = await import('../api/apiError')
+    api.grantAppDashboardAccess.mockRejectedValue(
+      new ApiError(409, 'Conflict', JSON.stringify({ error: 'server text', code: 'offer_changed' })),
+    )
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
+    expect(await screen.findByText(/The app changed while you were deciding/)).toBeInTheDocument()
+    await waitFor(() => expect(api.getAppDashboardAccess).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('dashboard-access-restart')).toBeNull()
+  })
+
+  it('removes a granted access on confirm, and the card offers it again', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" displayName="Crew Tunnels" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove dashboard access' }))
+    await waitFor(() => expect(api.revokeAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
+    expect(confirmMock.mock.calls[0][0].body).toContain('“Crew Tunnels” can no longer use this dashboard')
+    expect(confirmMock.mock.calls[0][0].danger).toBe(true)
+    expect(await screen.findByText('Dashboard access removed.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Allow dashboard access' })).toBeInTheDocument()
+  })
+
+  it('removes nothing when the owner declines the removal', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true })
+    confirmMock.mockResolvedValue(false)
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove dashboard access' }))
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+    expect(api.revokeAppDashboardAccess).not.toHaveBeenCalled()
+  })
+
+  it('says a removal that could not be saved may come back after a restart', async () => {
+    const { ApiError } = await import('../api/apiError')
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true })
+    api.revokeAppDashboardAccess.mockRejectedValue(
+      new ApiError(500, 'Internal Server Error', JSON.stringify({ error: 'server text', code: 'revoke_incomplete' })),
+    )
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove dashboard access' }))
+    expect(await screen.findByText(/the access comes back after a gateway restart/)).toBeInTheDocument()
   })
 
   it('names the app and what a restart stops', async () => {

@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.manager_activation import (  # noqa: F401
         _app_activation_denied,
         _owner_enable_unrecorded,
+        _revoke_incomplete,
         _session_approval_consent_unrecorded_on_disk,
         disable_app,
         enable_app,
@@ -262,6 +263,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _has_trust_grant,
         _holds_base_grant,
         _restore_trust_grant,
+        _RevokeIncomplete,
         _rmtree_app_dir,
         _trust_grant_local,
         _trust_grant_repository,

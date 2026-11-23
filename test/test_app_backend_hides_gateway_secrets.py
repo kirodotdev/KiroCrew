@@ -117,7 +117,7 @@ def test_a_granted_app_gets_its_derived_value_over_each_masked_path(app_env, tmp
     _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
-    assert dashboard_proxy.grant(_APP)[0] is True
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
 
     bmod.start_app_backend(_APP)
 
@@ -149,7 +149,7 @@ def test_a_second_app_does_not_get_the_first_apps_value(app_env, tmp_path, monke
     _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
-    dashboard_proxy.grant(_APP)
+    dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))
     first = dashboard_proxy.stand_in_value(_APP)
     assert first and dashboard_proxy.stand_in_value("another-app") != first
 
@@ -164,7 +164,7 @@ def test_the_grant_ends_with_the_app(app_env, tmp_path, monkeypatch, what):
     _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
-    dashboard_proxy.grant(_APP)
+    dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))
     assert dashboard_proxy.granted(_APP)
 
     (disable_app if what == "disable" else uninstall_app)(_APP)

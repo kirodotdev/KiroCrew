@@ -3,17 +3,19 @@
  * drives this dashboard on their behalf (a Crew Tunnel, say). Shows the words the gateway
  * offers (publisher, source and version come from the install record, not the manifest),
  * asks the owner to confirm, grants, then offers a restart because the access is bound
- * into the app backend when it starts.
+ * into the app backend when it starts. Granted, it offers the removal too: the access ends
+ * at once, with no restart, and the app stays installed and on.
  *
  * Shown only when something is to be said: an offer exists, the access is on, or the app
  * asked for it and was refused (the "needs dashboard access" state). Where the sandbox
  * cannot bind the access, the card gives that reason in place of the control.
  *
- * Owner only: `PUT /api/apps/{name}/dashboard-proxy` refuses any other caller.
+ * Owner only: `PUT` and `DELETE /api/apps/{name}/dashboard-proxy` refuse any other caller.
  */
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { apiErrorCode } from '../api/apiError'
 import type { AppDashboardAccess } from '../api/client/apps'
 import { Btn, Card, CardTitle } from '../components/ui'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -68,6 +70,8 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
   const store = (next: AppDashboardAccess) => queryClient.setQueryData(queryKey, next)
   const allow = async () => {
     if (!data.offer) return
+    // The install this dialog names: the grant refuses a newer one (`offer_changed`).
+    const { identity } = data.offer
     const ok = await confirm({
       title: i18nT('pages.appDetailPage.dashboard_access_confirm_title'),
       // Worded from the locale catalog; the server's English `offer.text` is for the API only.
@@ -90,10 +94,14 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
     setBusy(true)
     setError('')
     try {
-      store(await api.grantAppDashboardAccess(appName))
+      store(await api.grantAppDashboardAccess(appName, identity))
       setRestartAsked(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (apiErrorCode(e) === 'offer_changed') {
+        // The app changed while the dialog was open: show the new offer and ask again.
+        setError(i18nT('pages.appDetailPage.dashboard_access_offer_changed'))
+        await queryClient.invalidateQueries({ queryKey })
+      } else setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -113,15 +121,42 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
       setBusy(false)
     }
   }
+  const remove = async () => {
+    const ok = await confirm({
+      title: i18nT('pages.appDetailPage.dashboard_access_remove_confirm_title'),
+      body: i18nT('pages.appDetailPage.dashboard_access_remove_confirm_body', { name: displayName || appName }),
+      confirmLabel: i18nT('pages.appDetailPage.dashboard_access_remove'),
+      danger: true,
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      store(await api.revokeAppDashboardAccess(appName))
+      setRestartAsked(false)
+      setNotice(i18nT('pages.appDetailPage.dashboard_access_removed'))
+    } catch (e) {
+      // Ended in memory, not saved: the card says what a restart would do (the route's code).
+      if (apiErrorCode(e) === 'revoke_incomplete') {
+        setError(i18nT('pages.appDetailPage.dashboard_access_revoke_incomplete'))
+        await queryClient.invalidateQueries({ queryKey })
+      } else setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   const restart = async () => {
     setBusy(true)
     setError('')
     try {
       const next = await api.restartAppForDashboardAccess(appName)
       store(next)
-      setRestartAsked(false)
-      if (next.restarted) setNotice(i18nT('pages.appDetailPage.dashboard_access_restarted'))
-      else setError(i18nT('pages.appDetailPage.dashboard_access_restart_failed'))
+      // A failed restart keeps the row, so the owner can try again from here.
+      if (next.restarted) {
+        setRestartAsked(false)
+        setNotice(i18nT('pages.appDetailPage.dashboard_access_restarted'))
+      } else setError(i18nT('pages.appDetailPage.dashboard_access_restart_failed'))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -138,8 +173,15 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
         </div>
       ) : data.granted ? (
         <>
-          <div className="mt-2 text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_on')}</div>
+          <div className="mt-2 text-[13px] text-text" data-testid="dashboard-access-on">
+            {i18nT(restartAsked ? 'pages.appDetailPage.dashboard_access_on_pending' : 'pages.appDetailPage.dashboard_access_on')}
+          </div>
           <div className="mt-1 text-[12px] text-muted" data-testid="dashboard-access-scope">{scope}</div>
+          <div className="mt-3">
+            <Btn onClick={remove} disabled={busy} data-testid="dashboard-access-remove">
+              {i18nT('pages.appDetailPage.dashboard_access_remove')}
+            </Btn>
+          </div>
         </>
       ) : (
         <>

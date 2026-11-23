@@ -5,8 +5,10 @@ Owner only, app tokens included: the path sits in the app's own namespace
 itself. A delegated (``via_app``) token is refused too: no ``READ_ALLOW`` row names this
 path (``dashboard.delegated_scope``). ``apps.dashboard_proxy`` says what the grant is.
 
-GET reads the grant and the words to show the owner. PUT grants it, and only with
-``{"confirm": true}`` and only for an app the gateway recorded as installed from a registry.
+GET reads the grant and the words to show the owner, with the install identity they name.
+PUT grants it, only with ``{"confirm": true, "identity": <that identity>}``, only for that
+same install (``offer_changed`` otherwise), and only for an app the gateway recorded as
+installed from a registry.
 DELETE revokes it. The grant reaches a backend at its next start, because the value is
 bound into the backend's sandbox when it is spawned.
 """
@@ -24,7 +26,9 @@ from kiro_crew.sel import sel
 logger = logging.getLogger("kiro_crew.apps.routes")
 
 #: Refusals that are the install's state, not a fault of the gateway.
-_REFUSED_REASONS = frozenset({"not-registry-verified", "not-enabled", "platform-unsupported"})
+_REFUSED_REASONS = frozenset(
+    {"not-registry-verified", "not-enabled", "platform-unsupported", "offer_changed"}
+)
 
 
 #: The answer when a revoke could not write its restart guard. True in both cases: when the
@@ -56,7 +60,7 @@ def _view(name: str) -> dict[str, object]:
 
 
 async def handle_dashboard_proxy(request: web.Request) -> web.Response:
-    """GET reads; PUT ``{"confirm": true}`` grants; DELETE revokes."""
+    """GET reads; PUT ``{"confirm": true, "identity": ...}`` grants; DELETE revokes."""
     name = request.match_info["name"]
     method = request.method
     operation = {"GET": "read", "PUT": "grant", "DELETE": "revoke"}.get(method, "read")
@@ -98,7 +102,18 @@ async def handle_dashboard_proxy(request: web.Request) -> web.Response:
                 {"error": "the owner must confirm the grant", "code": "confirm_required"},
                 status=400,
             )
-        ok, reason = await asyncio.to_thread(dashboard_proxy.grant, name)
+        # The install the owner's offer showed. No identity, no grant: never "whatever is
+        # installed now".
+        identity = body.get("identity")
+        if not isinstance(identity, str) or not identity:
+            return web.json_response(
+                {
+                    "error": "the grant must name the install it confirms",
+                    "code": "identity_required",
+                },
+                status=400,
+            )
+        ok, reason = await asyncio.to_thread(dashboard_proxy.grant, name, identity)
     sel().log_api_access(
         caller=caller,
         operation="apps.dashboard_proxy.grant",

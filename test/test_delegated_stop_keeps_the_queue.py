@@ -133,7 +133,7 @@ async def _cron_cancel_allowed(monkeypatch, *, via_app: str) -> bool:
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.cron_shared._refuse_foreign_app_job",
+        "kiro_crew.dashboard.handlers.cron._refuse_foreign_app_job",
         AsyncMock(return_value=None),
     )
     request = make_mocked_request("POST", "/api/chat/slots/cron:job1/stop")

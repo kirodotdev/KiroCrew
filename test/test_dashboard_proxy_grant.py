@@ -54,7 +54,10 @@ def test_no_grant_or_offer_on_a_backend_that_cannot_bind_a_stand_in(
 ):
     """Seatbelt and every other non-namespace backend: refuse, and keep every mask."""
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
-    assert dashboard_proxy.grant(_APP) == (False, "platform-unsupported")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "platform-unsupported",
+    )
     assert dashboard_proxy.prompt_text(_APP) is None
     assert dashboard_proxy.granted(_APP) is False
 
@@ -63,7 +66,7 @@ def test_a_granted_app_stays_masked_when_the_backend_cannot_bind_a_stand_in(
     records, installed, monkeypatch
 ):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     masks = (str(records / ".local_secret"),)
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
     assert dashboard_proxy.backend_masks(_APP, masks) == (masks, ())
@@ -74,7 +77,7 @@ def test_an_installed_app_is_never_pre_granted(records, installed):
 
 
 def test_the_grant_is_recorded_for_this_install_only(records, installed):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
     stored = json.loads(
         (records / "member-records/app-dashboard-proxy" / f"{_APP}.json").read_text()
@@ -90,7 +93,10 @@ def test_the_grant_is_recorded_for_this_install_only(records, installed):
 def test_only_a_registry_install_can_be_offered_the_grant(records, installed):
     installed.origin = "local"
     assert dashboard_proxy.prompt_text(_APP) is None
-    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "not-registry-verified",
+    )
     assert dashboard_proxy.granted(_APP) is False
 
 
@@ -115,7 +121,7 @@ def test_the_offer_names_publisher_and_package_from_the_install_record(records, 
 
 
 def test_the_grant_counts_only_while_the_enable_marker_stands(records, installed, monkeypatch):
-    dashboard_proxy.grant(_APP)
+    dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (False, True))
     assert dashboard_proxy.granted(_APP) is False
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, False))
@@ -124,12 +130,15 @@ def test_the_grant_counts_only_while_the_enable_marker_stands(records, installed
 
 def test_no_grant_without_the_enable_marker(records, installed, monkeypatch):
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (False, True))
-    assert dashboard_proxy.grant(_APP) == (False, "not-enabled")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "not-enabled",
+    )
 
 
 def test_revoke_removes_the_record_and_the_stand_in_source(records, installed):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    dashboard_proxy.grant(_APP)
+    dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))
     pairs = dashboard_proxy.stand_in_pairs(_APP, (str(records / ".local_secret"),))
     assert pairs
     dashboard_proxy.revoke(_APP)
@@ -155,7 +164,7 @@ def test_a_revoke_with_no_grant_on_disk_writes_nothing(records, installed, monke
 
 def test_a_revoke_with_a_grant_on_disk_still_writes_its_tombstone(records, installed, monkeypatch):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP)[0] is True
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
     writes: list[str] = []
     real = dashboard_proxy._put_grant_tombstone
 
@@ -194,7 +203,10 @@ def forged_apps(records, tmp_path, monkeypatch):
 def test_a_forged_installed_json_does_not_make_an_app_grantable(forged_apps):
     assert dashboard_proxy.registry_verified(_APP) is False
     assert dashboard_proxy.prompt_text(_APP) is None
-    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "not-registry-verified",
+    )
     assert dashboard_proxy.granted(_APP) is False
 
 
@@ -210,7 +222,7 @@ def test_the_gateway_install_record_is_what_makes_an_app_grantable(forged_apps):
     assert dashboard_proxy.registry_verified(_APP) is True
     offer = dashboard_proxy.prompt_text(_APP)
     assert offer is not None and offer["source"] == "https://example.invalid/tunnel.git"
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
 
 
@@ -218,7 +230,7 @@ def test_a_forged_installed_json_cannot_change_a_recorded_install(forged_apps):
     dashboard_proxy.record_install(
         _APP, version="0.9.4", registry="r", url="https://example.invalid/a.git"
     )
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     (forged_apps / _APP / "installed.json").write_text(
         json.dumps({"name": _APP, "version": "6.6.6", "origin": "registry"}), encoding="utf-8"
     )
@@ -228,7 +240,7 @@ def test_a_forged_installed_json_cannot_change_a_recorded_install(forged_apps):
 
 def test_a_new_install_record_ends_the_grant_and_forget_removes_the_record(forged_apps):
     dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
     assert dashboard_proxy.granted(_APP) is False, "a reinstall is another install"
     dashboard_proxy.forget_install(_APP)
@@ -237,13 +249,13 @@ def test_a_new_install_record_ends_the_grant_and_forget_removes_the_record(forge
 
 def test_each_grant_gets_its_own_id_and_revoke_ends_it(records, installed):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     first = dashboard_proxy.grant_claim(_APP)
     assert first and dashboard_proxy.grant_current(_APP, first)
     dashboard_proxy.revoke(_APP)
     assert dashboard_proxy.grant_claim(_APP) == ""
     assert not dashboard_proxy.grant_current(_APP, first)
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.grant_claim(_APP) != first
     assert not dashboard_proxy.grant_current(_APP, first)
     assert not dashboard_proxy.grant_current(_APP, "")
@@ -288,7 +300,7 @@ def test_a_revoke_that_cannot_remove_the_record_still_ends_the_grant(
     records, installed, monkeypatch, error
 ):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     claim = dashboard_proxy.grant_claim(_APP)
     assert claim and dashboard_proxy.stand_in_value(_APP)
     _nothing_lands(monkeypatch, error)
@@ -305,12 +317,12 @@ def test_a_new_grant_follows_a_revoke_that_could_not_remove_the_record(
     records, installed, monkeypatch
 ):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     first = dashboard_proxy.grant_claim(_APP)
     with monkeypatch.context() as refused:
         _nothing_lands(refused)
         assert dashboard_proxy.revoke(_APP) is False
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
     assert dashboard_proxy.grant_claim(_APP) not in ("", first)
     assert not dashboard_proxy.grant_current(_APP, first)
@@ -326,7 +338,7 @@ async def test_the_revoke_route_answers_an_error_when_the_record_stays(
     monkeypatch.setattr(routes, "_owner_denial", _owner)
     monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda _name: object())
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     _tombstone_write_refused(monkeypatch)  # K1: the tombstone cannot be written
     resp = await routes.handle_dashboard_proxy(_request("DELETE"))
     assert resp.status == 500
@@ -352,7 +364,7 @@ def _tombstone_dir(records: Path) -> Path:
 
 def test_a_revoke_that_cannot_delete_stays_revoked_after_a_restart(records, installed, monkeypatch):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     claim = dashboard_proxy.grant_claim(_APP)
     stored_id = json.loads(
         (records / "member-records/app-dashboard-proxy" / f"{_APP}.json").read_text()
@@ -374,7 +386,7 @@ def test_a_revoke_whose_tombstone_cannot_be_written_refuses_the_grant_in_process
     records, installed, monkeypatch
 ):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     _tombstone_write_refused(monkeypatch)
     assert dashboard_proxy.revoke(_APP) is False, "K1: no tombstone, so the caller hears 500"
     assert not list(_tombstone_dir(records).glob("*"))
@@ -385,7 +397,7 @@ def test_a_revoke_whose_tombstone_cannot_be_written_refuses_the_grant_in_process
 def test_the_tombstone_and_its_directory_are_fsynced_before_any_record_is_unlinked(
     records, installed, monkeypatch
 ):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     events: list[str] = []
     real_unlink = Path.unlink
     real_write = dashboard_proxy.atomic_write
@@ -416,7 +428,7 @@ def test_the_tombstone_and_its_directory_are_fsynced_before_any_record_is_unlink
 
 
 def test_a_directory_fsync_failure_counts_as_no_tombstone(records, installed, monkeypatch):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
 
     def _boom(*args, **kwargs):
         raise OSError("fsync refused")
@@ -432,7 +444,7 @@ def test_a_directory_fsync_failure_counts_as_no_tombstone(records, installed, mo
     ids=["empty", "not-json", "not-an-object", "other-app", "not-utf8"],
 )
 def test_a_corrupt_tombstone_counts_as_ended_never_as_absent(records, installed, content):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
     leaf = _tombstone_dir(records)
     leaf.mkdir()
@@ -444,20 +456,20 @@ def test_a_corrupt_tombstone_counts_as_ended_never_as_absent(records, installed,
 
 
 def test_an_unreadable_tombstone_counts_as_ended(records, installed):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     (_tombstone_dir(records) / f"{_APP}.grant").mkdir(parents=True)  # a directory: unreadable
     assert dashboard_proxy.granted(_APP) is False
 
 
 def test_a_fresh_grant_clears_the_tombstone(records, installed, monkeypatch):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.revoke(_APP) is True
     tombstone = _tombstone_dir(records) / f"{_APP}.grant"
     assert json.loads(tombstone.read_text())["active"] is True
     dashboard_proxy.reset_marks()
     assert dashboard_proxy.granted(_APP) is False
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert json.loads(tombstone.read_text())["active"] is False, "cleared by the new grant"
     assert dashboard_proxy.granted(_APP) is True
     dashboard_proxy.reset_marks()
@@ -467,12 +479,15 @@ def test_a_fresh_grant_clears_the_tombstone(records, installed, monkeypatch):
 def test_an_old_record_with_an_ended_grant_id_never_stands_again(records, installed, monkeypatch):
     record = records / "member-records/app-dashboard-proxy" / f"{_APP}.json"
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     old_bytes = record.read_bytes()
     with monkeypatch.context() as refused:
         _unlink_refused(refused)  # the record stays on disk
         assert dashboard_proxy.revoke(_APP) is True
-    assert dashboard_proxy.grant(_APP) == (True, "")  # a new grant id, tombstone cleared
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        True,
+        "",
+    )  # a new grant id, tombstone cleared
     new_bytes = record.read_bytes()
     assert new_bytes != old_bytes
     record.write_bytes(old_bytes)  # the old record comes back (a restore, a copy)
@@ -486,10 +501,13 @@ def test_an_old_record_with_an_ended_grant_id_never_stands_again(records, instal
 def test_a_grant_whose_tombstone_cannot_be_cleared_is_refused_and_stays_off(
     records, installed, monkeypatch
 ):
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.revoke(_APP) is True
     _tombstone_write_refused(monkeypatch)
-    assert dashboard_proxy.grant(_APP) == (False, "write-failed")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "write-failed",
+    )
     assert dashboard_proxy.granted(_APP) is False
 
 
@@ -504,11 +522,11 @@ def test_the_tombstone_leaf_is_private_to_the_owner_user(records, installed):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     old = os.umask(0o022)  # the gateway may run with a looser umask than a worker shell
     try:
-        assert dashboard_proxy.grant(_APP)[0] is True
+        assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
         assert dashboard_proxy.revoke(_APP) is True
         assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
         leaf.chmod(0o755)  # a leaf an older gateway made wider
-        assert dashboard_proxy.grant(_APP)[0] is True
+        assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
         assert dashboard_proxy.revoke(_APP) is True
         assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
     finally:
@@ -551,7 +569,7 @@ def test_an_uninstall_that_cannot_remove_the_install_record_leaves_no_grant_or_o
     forged_apps, monkeypatch
 ):
     dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     _unlink_refused(monkeypatch)
     dashboard_proxy.forget_install(_APP)
     assert dashboard_proxy.granted(_APP) is False
@@ -561,7 +579,7 @@ def test_an_uninstall_that_cannot_remove_the_install_record_leaves_no_grant_or_o
 
 def test_an_update_whose_install_seal_fails_leaves_no_grant_and_no_offer(forged_apps, monkeypatch):
     dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     _write_refused(monkeypatch)
     sealed = dashboard_proxy.record_install(
         _APP, version="2", registry="r", url="https://x.invalid/a.git"
@@ -649,7 +667,9 @@ async def test_a_grant_without_confirm_is_refused(records, installed, monkeypatc
     resp = await routes.handle_dashboard_proxy(_request("PUT", {}))
     assert resp.status == 400
     assert dashboard_proxy.granted(_APP) is False
-    resp = await routes.handle_dashboard_proxy(_request("PUT", {"confirm": True}))
+    resp = await routes.handle_dashboard_proxy(
+        _request("PUT", {"confirm": True, "identity": dashboard_proxy.install_identity(_APP)})
+    )
     assert resp.status == 200
     assert dashboard_proxy.granted(_APP) is True
 
@@ -684,7 +704,9 @@ async def test_the_grant_route_grants_on_a_cold_probe_cache(records, installed, 
         "_namespace_backend",
         lambda: sandbox.detect_backend(config_mode="standard") == "namespace",
     )
-    resp = await routes.handle_dashboard_proxy(_request("PUT", {"confirm": True}))
+    resp = await routes.handle_dashboard_proxy(
+        _request("PUT", {"confirm": True, "identity": dashboard_proxy.install_identity(_APP)})
+    )
     assert resp.status == 200
     assert dashboard_proxy.granted(_APP) is True
 
@@ -695,7 +717,7 @@ def test_a_refused_mint_marks_the_app_until_it_holds_the_grant(records, installe
     dashboard_proxy.note_refused_mint(_APP)
     assert dashboard_proxy.needs_access(_APP) is True
     assert routes._view(_APP)["needs_access"] is True
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.needs_access(_APP) is False
     assert routes._view(_APP)["needs_access"] is False
 
@@ -733,7 +755,7 @@ async def test_the_restart_needs_the_owner_and_a_grant_then_restarts_the_backend
     resp = await routes.handle_dashboard_proxy_restart(_request("POST", None))
     assert resp.status == 409
     assert calls == []
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     resp = await routes.handle_dashboard_proxy_restart(_request("POST", None))
     assert resp.status == 200
     assert json.loads(resp.text or "{}")["restarted"] is True
@@ -750,7 +772,10 @@ def test_a_pre_upgrade_app_mints_nothing_and_gets_no_offer_until_one_owner_updat
     view = routes._view(_APP)
     assert view["offer"] is None and view["granted"] is False
     assert view["update_to_enable"] is True, "the card must offer the owner the update"
-    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "not-registry-verified",
+    )
     assert dashboard_proxy.stand_in_value(_APP) is None
     assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
     masks = ("/gateway/.local_secret",)
@@ -805,7 +830,7 @@ def test_an_unsigned_official_catalog_install_is_offered_and_grantable(forged_ap
     assert "from the bundled catalog" in offer["text"]  # type: ignore[index]
     assert 'registry "the bundled catalog"' not in offer["text"]  # type: ignore[index]
     assert "registry " not in offer["text"]  # type: ignore[index]
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
 
 
@@ -820,7 +845,10 @@ def test_the_official_catalog_marker_is_sealed_only_by_the_install_path(forged_a
     )
     assert dashboard_proxy.registry_verified(_APP) is False
     assert routes._view(_APP)["update_to_enable"] is True
-    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (
+        False,
+        "not-registry-verified",
+    )
     # A sealed record made without the install path's marker stays unverified too.
     dashboard_proxy.record_install(_APP, version="1", registry="", url="https://x.invalid/a.git")
     assert dashboard_proxy.registry_verified(_APP) is False
@@ -845,3 +873,74 @@ def test_a_third_party_registry_row_is_unchanged_by_the_official_marker(forged_a
     # No source url: not a registry install at all, marker or not.
     assert _provenance(monkeypatch, url="", registry="") is True
     assert dashboard_proxy.registry_verified(_APP) is False
+
+
+# -- The owner's yes grants the install the offer showed, never a newer one --
+
+
+def test_the_offer_names_the_install_identity_the_grant_checks(records, installed):
+    offer = dashboard_proxy.prompt_text(_APP)
+    assert offer is not None
+    assert offer["identity"] == dashboard_proxy.install_identity(_APP)
+
+
+def test_a_grant_for_an_install_that_changed_since_the_offer_is_refused(records, installed):
+    shown = dashboard_proxy.prompt_text(_APP)["identity"]
+    installed.installedAt = "2026-11-22T12:00:00Z"  # an update reseals the install
+    assert dashboard_proxy.grant(_APP, shown) == (False, "offer_changed")
+    assert dashboard_proxy.granted(_APP) is False
+    assert not (records / "member-records/app-dashboard-proxy" / f"{_APP}.json").exists()
+
+
+@pytest.mark.parametrize("expected", [None, ""])
+def test_a_grant_that_names_no_install_is_refused(records, installed, expected):
+    assert dashboard_proxy.grant(_APP, expected) == (False, "offer_changed")
+    assert dashboard_proxy.granted(_APP) is False
+
+
+async def _put(monkeypatch, body: object) -> tuple[int, dict]:
+    """``PUT /api/apps/{name}/dashboard-proxy`` as the owner, through the real handler."""
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    monkeypatch.setattr(routes, "_owner_denial", _no_denial)
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda name: {"name": name})
+    monkeypatch.setattr(routes, "sel", MagicMock)
+    app = web.Application()
+    app.router.add_put("/api/apps/{name}/dashboard-proxy", routes.handle_dashboard_proxy)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.put(f"/api/apps/{_APP}/dashboard-proxy", json=body)
+        return resp.status, await resp.json()
+
+
+async def _no_denial(_request, _operation):
+    return None
+
+
+@pytest.mark.asyncio
+async def test_the_route_refuses_a_confirm_without_the_install_identity(
+    records, installed, monkeypatch
+):
+    status, body = await _put(monkeypatch, {"confirm": True})
+    assert (status, body["code"]) == (400, "identity_required")
+    assert dashboard_proxy.granted(_APP) is False
+
+
+@pytest.mark.asyncio
+async def test_the_route_refuses_a_confirm_for_an_install_that_changed(
+    records, installed, monkeypatch
+):
+    shown = dashboard_proxy.prompt_text(_APP)["identity"]
+    installed.installedAt = "2026-11-22T12:00:00Z"
+    status, body = await _put(monkeypatch, {"confirm": True, "identity": shown})
+    assert (status, body["code"]) == (409, "offer_changed")
+    assert dashboard_proxy.granted(_APP) is False
+
+
+@pytest.mark.asyncio
+async def test_the_route_grants_the_install_the_offer_showed(records, installed, monkeypatch):
+    shown = dashboard_proxy.prompt_text(_APP)["identity"]
+    status, body = await _put(monkeypatch, {"confirm": True, "identity": shown})
+    assert status == 200 and body["granted"] is True

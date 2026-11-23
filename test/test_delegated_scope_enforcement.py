@@ -103,7 +103,7 @@ def real_grant(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     monkeypatch.setattr(dashboard_proxy, "_gateway_secret", "")
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
     yield record
     dashboard_proxy.set_gateway_secret("")
 
@@ -405,7 +405,7 @@ async def test_a_cookie_from_install_one_fails_after_uninstall_reinstall_and_a_n
         # Uninstall (revoke), reinstall (a new install record), then the owner grants again.
         dashboard_proxy.revoke(_APP)
         real_grant.installedAt = "2026-11-22T12:00:00Z"
-        assert dashboard_proxy.grant(_APP) == (True, "")
+        assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
         assert dashboard_proxy.granted(_APP) is True
         resp = await client.get(_READ)
         assert resp.status == 403, "the cookie of install 1"
@@ -421,7 +421,7 @@ async def test_a_cookie_fails_after_revoke_and_a_new_grant_of_the_same_install(s
         old = _delegated()
         assert (await client.get(_READ, params=old)).status == 200
         dashboard_proxy.revoke(_APP)
-        assert dashboard_proxy.grant(_APP) == (True, "")
+        assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP)) == (True, "")
         assert (await client.get(_READ)).status == 403
 
 

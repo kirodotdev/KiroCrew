@@ -150,7 +150,7 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
     await asyncio.to_thread(dashboard_proxy.platform_supported)
     if grant:
         monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _n: True)
-        assert dashboard_proxy.grant(_APP)[0] is True
+        assert dashboard_proxy.grant(_APP, dashboard_proxy.install_identity(_APP))[0] is True
     server = await _gateway(home, monkeypatch, state)
     (home / "run").mkdir(exist_ok=True)
     secret_file = home / "run" / f"gateway-{server.port}.secret"
