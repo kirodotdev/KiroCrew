@@ -2783,6 +2783,28 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   creation; a channel whose session turned conductor mode on keeps its workers out
   of folders, as conductor mode does everywhere. The board writes no `folder_id`:
   it only reads, and it follows its workers by lineage, wherever they are filed.
+- **In a Conductor thread** (the thread-conductor RFC, [#41214](https://github.com/kirodotdev/KiroCrew/pull/41214),
+  part C). The same board, posted INTO the thread by `board/thread_board.py` instead of
+  the workspace refresh (a thread has no folder, worktree, Code tab or context bar).
+  Its records are keyed by `surface_store.room_key(binding)`: the channel id for a code
+  channel, `<channel_id>:<anchor_ts>` for a thread, so a channel's threads never share a
+  message. The one message is posted with `thread_ts` set to the anchor and edited with
+  `chat.update`; it is NOT pinned (`pins:write` is a code-channel scope and a pin on a
+  thread reply would surface in the whole channel), and no permalink, live summary, tab
+  or `agents.*` call is made, so it needs no new scope. The look is `brief`: one row per
+  worker with the title (linking the worker's dashboard chat), a one-word state, and its
+  PR and CI; the plan look shows the same and an "Open in dashboard" link per task.
+  `render.brief_snapshot` takes the summary, step, branch, approval wording and goal off
+  every row BEFORE the render, so the thread never carries what a worker said or ran.
+  The needs-you page goes into the thread (to the anchor) with the title and the link
+  only. Scope is `source.scope_admits` as for a code channel, with the thread binding
+  read from `thread_bindings` (an ended thread, a switch that is off, or a room that is
+  not admitted shows nothing; `slack.thread_conductor` is the switch). The refresh
+  triggers are the package's own (`note_ledger_write`, `note_session_turn`, which find a
+  thread through the store's live `thread_bindings`); the conductor's own turn end is not
+  one, as a thread's turns fire no code-channel hooks. PR and CI are read as a code
+  channel's are (`WorkerPrs._fill_worker_prs`) from the conductor session's project; a
+  project `gh` cannot read leaves the PR number the worker reported, with no CI.
 
 ## Code-channel agent surface
 
