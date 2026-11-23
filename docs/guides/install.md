@@ -350,7 +350,11 @@ reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
 checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
-when `origin` has none of them. After the reset the update rebuilds the
+when `origin` has none of them. A checkout detached exactly at a release tag can
+instead take `kirocrew update --release VERSION`, which fetches only the release
+tag of VERSION and moves to it, and does nothing when the checkout is already on
+that release or a newer one; this is what **Update** runs on a cloud crew from a
+release-build hub. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
 `logs/frontend-build.log` in the data home; on Windows no log is written, so
 that output is not kept. If the build fails, the update still installs the new

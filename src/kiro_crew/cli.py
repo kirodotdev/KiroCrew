@@ -1209,7 +1209,7 @@ def main() -> None:
         else:
             from kiro_crew.cli_server import _update
 
-            _update(force=args.force)
+            _update(force=args.force, release=args.release)
             # A manual update that finished is the fix for a failed boot apply.
             from kiro_crew import update_next_start
 
