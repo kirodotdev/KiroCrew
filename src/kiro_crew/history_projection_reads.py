@@ -400,7 +400,7 @@ class TranscriptReadProjection:
             return (stamp, n)
 
         try:
-            segs = sorted((p for p in adir.glob(f"{stem}*.jsonl")), key=_seg_order)
+            segs = sorted(facade.archive_segments_of(adir, facade._safe_key(key)), key=_seg_order)
         except OSError as exc:
             # `return []` here is indistinguishable from "this session never
             # rotated", and that is the one answer this function must not guess.
@@ -632,9 +632,8 @@ class TranscriptReadProjection:
         facade = _history_facade()
         adir = facade._archive_dir(self._log._dir)
         for chained_key in keys[1:]:
-            stem = facade._safe_key(chained_key) + facade.ARCHIVE_SEGMENT_DELIMITER
             try:
-                if next(adir.glob(f"{stem}*.jsonl"), None) is not None:
+                if facade.archive_segments_of(adir, facade._safe_key(chained_key)):
                     return True
             except OSError as exc:
                 # NOT `continue`. This predicate is consumed as a decision, not a
