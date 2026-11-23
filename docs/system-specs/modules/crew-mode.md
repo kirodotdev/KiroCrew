@@ -4422,7 +4422,11 @@ worker it dispatched, the session it is answering about — as a `/chat?sid=…`
 link, a bare slot key, or a short name (`chat-1380`). In this chat those behave
 exactly as they do on the single-chat page: a plain click switches to that
 session, a key chip is an affordance, and an unresolvable one stays muted text
-with its href intact. There is no second resolver — the
+with its href intact. A key of another shape, such as a cron-born session's
+title-derived key (`_nightly-report-…`, possibly ending in `...`), resolves only
+as the exact key of an OPEN session (`rosterKeyFrom`); a `chat-…` span never
+takes that path, so a short name keeps its write-time pin and ambiguity refusal,
+and a closed session of another shape is not probed. There is no second resolver — the
 markdown renderer's own `SessionActionCtx` does the work on both surfaces, and it
 gates on (`onSessionOpen` AND `sessions`), so what changed is only who supplies
 them. `ChatPane` takes the triple as optional props and hands it to
