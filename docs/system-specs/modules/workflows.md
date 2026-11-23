@@ -789,8 +789,8 @@ so is a run started from a step session (`taskrunner:<task_id>:...`) of a task
 whose shared run is R (`WorkflowService(run_of_session=...)`, which the gateway
 wires to the task runner's runs). A run started from a dashboard session that R
 opened is `depth(R) + 1` as well: `WorkflowSessionPort.open_session` calls
-`NestingLedger.bind_session` with the new slot key, and a `session_create` from a
-session that already works for R binds the session it creates to R
+`NestingLedger.bind_session` with the new slot key, and a `session_create` or
+`session_fork` from a session that already works for R binds the session it opens to R
 (`handlers/session_control.py::_inherit_workflow_lineage`).
 `workflow_startup.workflow_run_of_session` maps such a session's history key to
 its slot key before the lookup. A

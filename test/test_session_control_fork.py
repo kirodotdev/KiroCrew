@@ -757,6 +757,20 @@ class TestTheRoute:
         assert child is not None and len(_contents(child)) == 4
         assert child.title == "split"
 
+    def test_a_fork_works_for_the_workflow_run_its_caller_works_for(self, tmp_path):
+        """A run the fork starts must count against the caller's run's nesting caps."""
+        state, caller, req = self._request(tmp_path, internal=True, body={})
+        bound: dict[str, str] = {}
+        state.workflow_service = SimpleNamespace(
+            nesting=SimpleNamespace(
+                parent_run_of=lambda key: "wf_root" if key == _key(caller) else "",
+                bind_session=lambda key, run_id: bound.update({key: run_id}),
+            )
+        )
+        resp = asyncio.run(handlers_sc.api_session_control_fork(req))
+        assert resp.status == 200
+        assert bound == {self._body(resp)["target"]: "wf_root"}
+
     def test_a_boolean_fork_point_is_refused_not_read_as_one(self, tmp_path):
         _, _, req = self._request(tmp_path, internal=True, body={"at_message_index": True})
         resp = asyncio.run(handlers_sc.api_session_control_fork(req))

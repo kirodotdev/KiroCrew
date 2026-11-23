@@ -2191,8 +2191,8 @@ launching session's own posture, judged again after the write. The rest
 is in [workflows](workflows.md) (ports native to Kiro Crew).
 
 A session a run opens works for that run: `open_session` binds the new slot to
-the run (`NestingLedger.bind_session`), and `api_session_control_create` binds a
-session it creates to the run its caller already works for
+the run (`NestingLedger.bind_session`), and `api_session_control_create` and
+`api_session_control_fork` bind a session they open to the run their caller already works for
 (`_inherit_workflow_lineage`), so a workflow started from either counts against
 the run's nesting caps (see [workflows: Nested runs](workflows.md#nested-runs)).
 

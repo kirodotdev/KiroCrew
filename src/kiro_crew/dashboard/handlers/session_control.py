@@ -671,6 +671,9 @@ async def api_session_control_fork(request: web.Request) -> web.Response:
             str(result.get("target") or ""),
             trace_workers.OP_FORK,
         )
+        _inherit_workflow_lineage(
+            state, _read_session_key(request), str(result.get("target") or "")
+        )
     return web.json_response(result)
 
 
