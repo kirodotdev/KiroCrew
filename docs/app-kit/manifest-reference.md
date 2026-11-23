@@ -1628,6 +1628,11 @@ your backend answers is in [api-reference](api-reference.md#memory-provider-cont
 > reason; the app itself still enables, since its other parts do not need the
 > backend.
 
+A Node backend runs on the first `node` the gateway finds through nvm, its own
+`PATH`, then the Node.js install directories it also searches for MCP servers
+(Homebrew, `/usr/local/bin`, mise, asdf, fnm, Volta, n), so a gateway opened
+from the macOS Dock still finds a Homebrew Node.js. `npm` is found the same way.
+
 A Node backend gets its npm dependencies from the gateway, because an install
 never copies `node_modules`. Before the backend starts, the gateway runs
 `npm install --production` in every directory from the app root down to the

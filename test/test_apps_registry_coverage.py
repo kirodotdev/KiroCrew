@@ -27,7 +27,7 @@ from apps_registry_coverage_helpers import pip_importable_fixture  # noqa: F401
 from apps_registry_coverage_helpers import _DATA_IS_A_FILE, _asgi_backend, _fake_sandbox, _FakeProc
 
 from conftest import requires_symlinks
-from kiro_crew.apps import registry
+from kiro_crew.apps import backend, registry
 from kiro_crew.apps.manifest import AppManifest
 
 # Build step selection + execution
@@ -44,11 +44,36 @@ class TestRunAppBuild:
     @pytest.mark.asyncio
     async def test_missing_npm_is_a_soft_skip(self, tmp_path, monkeypatch):
         (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+        monkeypatch.setattr(registry.shutil, "which", lambda name, **_kw: None)
+        monkeypatch.setattr(backend, "_resolve_nvm_path", lambda _name: None)
         log: list[str] = []
         result = await registry._run_app_build(tmp_path, "demo", log, manifest=AppManifest.from_dict({}), self_managed=False)
         assert result == {"ok": True}
         assert any("npm not found on PATH" in line for line in log)
+
+    @pytest.mark.asyncio
+    async def test_npm_off_path_is_found_in_a_node_install_directory(self, tmp_path, monkeypatch):
+        """A launchd PATH omits Homebrew; the build finds its npm off PATH, and
+        npm's ``#!/usr/bin/env node`` reaches the node the backend lookup finds, even
+        in another directory (a user-level npm prefix)."""
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setattr(registry.shutil, "which", lambda name, **_kw: None)
+        monkeypatch.setattr(backend, "_find_npm_binary", lambda: "/home/u/.npm-packages/bin/npm")
+        monkeypatch.setattr(backend, "_find_node_binary", lambda: "/opt/homebrew/bin/node")
+        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        fake_spawn = registry.create_subprocess_limited
+        child_paths: list[str] = []
+
+        async def _spawn(*argv, **kwargs):
+            child_paths.append(kwargs["env"]["PATH"])
+            return await fake_spawn(*argv, **kwargs)
+
+        monkeypatch.setattr(registry, "create_subprocess_limited", _spawn)
+        log: list[str] = []
+        assert await registry._run_app_build(tmp_path, "demo", log, manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
+        assert spawned == [["/home/u/.npm-packages/bin/npm", "install"]]
+        assert child_paths == [os.pathsep.join(["/usr/bin", "/opt/homebrew/bin"])]
 
     @pytest.mark.asyncio
     async def test_npm_install_only_when_no_build_script(self, tmp_path, monkeypatch):
