@@ -83,6 +83,7 @@ RATES = REPO_ROOT / "scripts" / "ci_test_selection_rates.json"
 TABLES = ("tests", "files", "cochange")
 TIMEOUT_SECS = 60.0
 GIT_TIMEOUT_SECS = 30.0
+NARROW_SEARCH_MAX = 200
 
 # `(modules, root)`, and `(modules, root, within)` to search those files alone.
 Grep = Callable[..., set[str]]
@@ -195,13 +196,18 @@ def name_patterns(
 def git_grep(modules: list[str], root: Path, within: Iterable[str] | None = None) -> set[str]:
     """Tracked files under the test paths that name one of `modules`.
 
-    `within` narrows the search to those files: a caller that knows which files
-    can name them reads only those.
+    `within` keeps only those files, for a caller that knows which files can
+    name them. Up to `NARROW_SEARCH_MAX` of them are searched alone; git matches
+    every file against every path it is given, so a longer list costs more than
+    the whole tree, which is then searched and filtered.
     """
     fixed, confirm, wrapped = name_patterns(modules)
-    scope = list(ctm.TESTPATHS) if within is None else sorted(within)
-    if not fixed or not scope:
+    wanted = None if within is None else set(within)
+    if not fixed or wanted == set():
         return set()
+    scope = list(ctm.TESTPATHS)
+    if wanted is not None and len(wanted) <= NARROW_SEARCH_MAX:
+        scope = sorted(wanted)
     # A module anywhere; its package only on a line that also names the leaf or
     # wraps, which keeps `kiro_crew` (every top-level module's package) from
     # matching every line of the tree.
@@ -231,7 +237,7 @@ def git_grep(modules: list[str], root: Path, within: Iterable[str] | None = None
     continued: set[str] = set()
     for row in done.stdout.splitlines():
         path, _, line = row.partition("\0")
-        if path in hits:
+        if path in hits or (wanted is not None and path not in wanted):
             continue
         if confirm.search(line):
             hits.add(path)
@@ -467,7 +473,9 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
 
     body = tiered(changes, functions)
     try:
-        body["windows"] = _windows_block(changes, body, bundle, universe, meta, root, tiered)
+        body["windows"] = _windows_block(
+            changes, body, bundle, (universe, guard), meta, root, tiered
+        )
     except Exception as exc:  # noqa: BLE001  (its failure is a `full` Windows verdict)
         body["windows"] = windows.full(f"error: {type(exc).__name__}: {exc}")
     return {**meta, "bundle_commit": bundle.get("commit") or None}, body
@@ -477,12 +485,14 @@ def _windows_block(
     changes: list[tuple[str, list[str]]],
     body: Mapping[str, Any],
     bundle: Mapping[str, Any],
-    universe: list[str],
+    tests: tuple[list[str], list[str]],
     meta: Mapping[str, Any],
     root: Path,
     tiered: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     """The verdict's `windows` block; what it reads from the tree is read only for `select`.
+
+    `tests` is the test files of the checkout and the guard tier the diff was scored with.
 
     A part of the diff is tiered without a second search of the test tree: a
     test file that names one of its modules names a module of the whole diff,
@@ -497,7 +507,7 @@ def _windows_block(
         changes,
         body,
         bundle,
-        universe,
+        *tests,
         added=windows.git_added_lines(base, head, root) if base and head else None,
         bucket=windows.path_bucket(root),
         ignored=ost.collect_ignored(root) if ignore.is_file() else set(),

@@ -87,7 +87,12 @@ def _block(diff: str, **over: Any) -> dict[str, Any]:
         narrow_reach_max=20,
         grep=lambda m: set(),
     )
-    block = win.block(changes, linux, bundle, sorted(TESTS), **args)
+    guard = args.pop("guard", GUARD)
+    block = win.block(changes, linux, bundle, sorted(TESTS), guard, **args)
+    # Every `select` runs the whole guard tier, less what Windows never collects.
+    if block["verdict"] == "select":
+        assert set(guard) - args["ignored"] <= set(block["run"])
+        assert not args["ignored"] & set(block["run"])
     # The miss ledger, the block's reader, takes every block as it is written.
     parsed = ledger.parse_windows(json.loads(json.dumps(block)))
     assert parsed is not None and parsed["verdict"] == block["verdict"]
@@ -101,23 +106,28 @@ def _ad(diff: str) -> set[str]:
     return {test for tier in win.RUN_TIERS for test in body["tiers"][tier]}
 
 
-def test_the_run_is_the_union_of_its_three_parts() -> None:
+def test_the_run_is_the_union_of_its_parts_and_always_holds_the_guard_tier() -> None:
     plain = "M\tsrc/kiro_crew/plain.py\n"
     lock = "M\tsrc/kiro_crew/lock.py\n"
     edited = "M\ttest/test_other.py\n"
-    # Part 2 alone: the Windows-targeting files among the diff's tiers A to D.
-    assert set(_block(plain)["run"]) == {"test/test_win_only.py"}
+    guard = set(GUARD)
+    # The Windows-targeting files among the diff's tiers A to D, and the guard tier.
+    assert set(_block(plain)["run"]) == {"test/test_win_only.py"} | guard
     assert "test/test_plain.py" in _ad(plain) - set(_block(plain)["run"])
-    # Part 3: a file the table names brings its own tiers A to D, the guard tier with them.
-    assert set(_block(lock)["run"]) == _ad(lock) - IGNORED == {"test/test_lock.py", *GUARD}
-    # Part 1: a changed test file, whatever its tier.
-    assert set(_block(edited)["run"]) == {"test/test_other.py"}
+    # A file the table names brings its own tiers A to D.
+    assert set(_block(lock)["run"]) == _ad(lock) - IGNORED == {"test/test_lock.py"} | guard
+    # A changed test file, whatever its tier.
+    assert set(_block(edited)["run"]) == {"test/test_other.py"} | guard
     every = _block(plain + lock + edited)
     assert set(every["run"]) == (
         set(_block(plain)["run"]) | set(_block(lock)["run"]) | set(_block(edited)["run"])
     )
     assert every["verdict"] == "select" and every["reason"] is None
     assert every["run"] == sorted(every["run"])
+    # The guard tier is the one the diff was scored with, whatever its size, and a
+    # guard file Windows never collects is left out like any other.
+    wide = [*GUARD, "test/test_named.py", "test/test_posix_only.py"]
+    assert set(_block(plain, guard=wide)["run"]) == {"test/test_win_only.py", *wide} - IGNORED
 
 
 def test_a_file_windows_never_collects_is_left_out_of_every_part() -> None:
@@ -219,7 +229,8 @@ def test_a_docs_only_diff_is_full_and_a_plain_src_diff_runs_guard_and_targeting_
     assert path not in BUNDLE["os_sensitive"] and cts.ost.tier_of("x = 1\n") is None
     plain = _block(f"M\t{path}\n", added={path: "x = 1\n"})
     assert plain["verdict"] == "select" and plain["reason"] is None
-    assert plain["run"] and set(plain["run"]) <= set(GUARD) | set(BUNDLE["windows_targeting"])
+    reached = set(BUNDLE["windows_targeting"]) & _ad(f"M\t{path}\n")
+    assert set(plain["run"]) == (set(GUARD) | reached) - IGNORED
     # The tests the map links to the file run on Linux; Windows leaves the others out.
     assert "test/test_plain.py" in _ad(f"M\t{path}\n") - set(plain["run"])
 
@@ -265,6 +276,7 @@ def test_a_changed_path_in_the_bucket_is_a_full_windows_verdict(glob: str) -> No
             linux,
             BUNDLE,
             sorted(TESTS),
+            GUARD,
             added={},
             bucket=bucket,
             ignored=set(),
@@ -281,7 +293,12 @@ def test_the_share_weighs_the_files_windows_collects_by_their_node_counts() -> N
         sum(collected[name] for name in block["run"]) / sum(collected.values())
     )
     assert 0 < block["would_run_share"] < 1
-    assert _block("M\tsrc/kiro_crew/grown.py\n")["would_run_share"] == 0
+    # A diff that reaches nothing on Windows still runs the guard tier.
+    alone = _block("M\tsrc/kiro_crew/grown.py\n")
+    assert alone["run"] == GUARD
+    assert alone["would_run_share"] == pytest.approx(
+        sum(collected[name] for name in GUARD) / sum(collected.values())
+    )
     assert win.full("why")["would_run_share"] == 1.0
 
 
@@ -331,7 +348,12 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_a_search_within_some_files_finds_what_the_whole_search_finds_there(repo: Path) -> None:
+@pytest.mark.parametrize("narrow_max", [0, 1, cts.NARROW_SEARCH_MAX])
+def test_a_search_within_some_files_finds_what_the_whole_search_finds_there(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, narrow_max: int
+) -> None:
+    # Whether the files are searched alone or the whole tree is searched and filtered.
+    monkeypatch.setattr(cts, "NARROW_SEARCH_MAX", narrow_max)
     modules = ["kiro_crew.grown"]
     whole = cts.git_grep(modules, repo)
     assert whole == {"test/test_other.py"}
@@ -387,6 +409,34 @@ def test_the_cli_writes_the_block_and_prints_its_reason_and_share(
     by_file = _score(repo, tmp_path, fresh, "--name-status", str(diff))["windows"]
     assert set(by_file["run"]) == _ad("M\tsrc/kiro_crew/plain.py\n") - IGNORED
     assert _score(repo, tmp_path, old, "--name-status", str(diff))["windows"]["verdict"] == "full"
+
+
+def test_the_guard_tier_of_the_block_is_the_one_the_diff_was_scored_with(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    diff = tmp_path / "diff.txt"
+    diff.write_text("M\tsrc/kiro_crew/plain.py\n", encoding="utf-8")
+    fresh = {**BUNDLE, "built_at": datetime.now(timezone.utc).isoformat()}
+    # A diff given as a file has no added lines, so the file's own tiers A to D run too.
+    reached = _ad("M\tsrc/kiro_crew/plain.py\n") - set(GUARD)
+    live = ["test/test_named.py", "test/test_posix_only.py"]
+    monkeypatch.setattr(cts.ctm, "guard_tier", lambda root: live)
+    # The bundle's own guard table, then the live scan for a bundle without one.
+    for bundle, guard in (({**fresh, "guard": GUARD}, GUARD), (fresh, live)):
+        block = _score(repo, tmp_path, bundle, "--name-status", str(diff))["windows"]
+        assert block["verdict"] == "select"
+        assert set(block["run"]) == (set(guard) | reached) - IGNORED
+    # A head that adds a line no pattern hits, to a file the table does not name:
+    # nothing but the live guard tier puts a test in the run.
+    base = _git(repo, "rev-parse", "HEAD")
+    _write(repo, {"src/kiro_crew/grown.py": "x = 1\ny = 2\n"})
+    _git(repo, "commit", "-qam", "head", when=datetime.now(timezone.utc))
+    quiet = _score(repo, tmp_path, fresh, "--base", base, "--head", "HEAD")["windows"]
+    assert quiet["verdict"] == "select" and set(quiet["run"]) == set(live) - IGNORED
+    # No guard tier at all refuses to narrow on Linux, and so on Windows.
+    monkeypatch.setattr(cts.ctm, "guard_tier", lambda root: [])
+    none = _score(repo, tmp_path, fresh, "--name-status", str(diff))
+    assert none["verdict"] == "full" and none["windows"]["reason"].startswith("linux_full: ")
 
 
 def test_every_failure_is_a_full_windows_verdict(

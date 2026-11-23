@@ -10,7 +10,9 @@ No lane runs fewer tests because of it.
 `run`, under `select`, is the union of
 1. the test files the diff changes;
 2. the bundle's `windows_targeting` test files the scorer put in tiers A to D;
-3. tiers A to D of the OS-sensitive changed files scored as a diff of their own:
+3. the whole guard tier: it is there for what the map cannot see reach a test,
+   and an OS effect is of that kind;
+4. tiers A to D of the OS-sensitive changed files scored as a diff of their own:
    a changed `.py` file the bundle's `os_sensitive` table names, or one whose
    added lines hit a pattern of `ci_test_os_tables` (W1, W2 or W3). The added
    lines are matched as they are, comments included, and with no added lines
@@ -178,6 +180,7 @@ def block(
     linux: Mapping[str, Any],
     bundle: Mapping[str, Any],
     universe: Iterable[str],
+    guard: Iterable[str],
     *,
     added: Mapping[str, str] | None,
     bucket: Iterable[str],
@@ -187,8 +190,9 @@ def block(
 ) -> dict[str, Any]:
     """The `windows` block for one diff the scorer gave the verdict body `linux`.
 
-    `score` tiers a diff as the scorer did this one; `added` is `added_lines` of
-    the diff, None when there are none to read; `at` is the head's commit time.
+    `guard` is the guard tier the scorer used. `score` tiers a diff as the scorer
+    did this one; `added` is `added_lines` of the diff, None when there are none
+    to read; `at` is the head's commit time.
     """
     if linux["verdict"] != "select":
         return full(f"linux_full: {linux['reason']}")
@@ -209,6 +213,7 @@ def block(
 
     run = {paths[-1] for _status, paths in changes if paths and ctm.is_test_file(paths[-1])}
     run |= set(bundle["windows_targeting"]) & run_tiers(linux)
+    run |= set(guard)
     sensitive = os_sensitive_changes(changes, bundle["os_sensitive"], added)
     if sensitive:
         scored = score(sensitive)
