@@ -749,6 +749,10 @@ skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
+A task run's planning sandbox refusal is stored nowhere. `POST /api/taskrunner/plan`
+shows its text to the machine owner alone (`host_sandbox_refusal.plan_error_text`) and
+gives anyone else the ordinary plan error.
+
 A teammate keeps their own identity: `request["user"]` stays their subject
 (`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
 their principal, so every audit row and attribution names them, never the owner.
