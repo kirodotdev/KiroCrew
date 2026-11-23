@@ -218,9 +218,16 @@ def _owner_verified_secret_urlopen(
        before any byte is written and raises unless the kernel confirms the peer
        is this principal (``SO_PEERCRED``/``LOCAL_PEERCRED`` via
        :func:`check_peer_is_self`) AND the gateway recorded for this port.
+       A socket file that refuses or has vanished at connect()
+       (``ConnectionRefusedError`` or ``FileNotFoundError``, as a crashed
+       gateway leaves it) fails before the hook runs and before any byte is
+       written, so it falls through to item 2. A socket that connects but
+       fails the peer check refuses and is never retried over TCP; any other
+       connect error is raised as-is.
 
-    2. No ``AF_UNIX`` socket to prefer -- a TCP-only gateway (the server
-       documents these), or native Windows (no ``AF_UNIX`` at all): send over
+    2. No usable ``AF_UNIX`` socket -- a TCP-only gateway (the server
+       documents these), native Windows (no ``AF_UNIX`` at all), or the stale
+       socket file of item 1: send over
        loopback TCP via :func:`tcp_verified_urlopen` with the SAME security
        guarantee bound to the connection -- :func:`_connected_peer_verdict` on
        the CONNECTED socket, right before the first byte, reads the kernel's
@@ -231,7 +238,10 @@ def _owner_verified_secret_urlopen(
        refuses -- a resolved foreign peer and a peer that could not be resolved
        at all (e.g. a host with no trusted ``lsof``) are one fail-closed
        decision, since the unresolvable case is exactly where a foreign listener
-       on a crash-freed port could be the far end.
+       on a crash-freed port could be the far end. When the arm was reached
+       from a stale socket and TCP also refuses, the ``URLError`` keeps a
+       ``ConnectionRefusedError`` reason whose message names the stale socket
+       path and the port; other TCP errors are raised unchanged.
 
     Because POSIX proves ownership by uid here, a legitimate same-user TCP-only
     gateway resolves to ``MATCH`` -- so a supported loopback-TCP configuration
