@@ -21912,7 +21912,19 @@
         "setting_up_progress": "セットアップ中 · {{current}}/{{total}}",
         "launching_crew": "{{name}} を起動中",
         "ssm_start_session_denied": "この AWS ロールには、このインスタンスで SSM セッションを開始する権限がありません。ssm:StartSession を付与するか、その権限を持つ AWS プロファイルを選んでください。",
-        "show_aws_error": "AWS のエラーを表示"
+        "show_aws_error": "AWS のエラーを表示",
+        "warm_cap": "読み込んだままにするクルー",
+        "warm_cap_desc": "同時に読み込んだままにするリモートクルーです。最近開いたものが優先されます。自動では {{auto}} 個です。",
+        "warm_cap_auto": "自動（{{n}}）・多いほど切り替えが速く、メモリを多く使います",
+        "warm_cap_set": "{{n}} に設定済み・多いほど切り替えが速く、メモリを多く使います",
+        "warm_cap_use_auto": "自動にする",
+        "warm_cap_save_failed": "読み込んだままにするクルーの数を保存できませんでした。",
+        "usage_label": "リモートクルーの使用量",
+        "usage_value": "読み込み済み {{panes}} · メモリ {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "読み込まれているリモートクルーはありません。",
+        "usage_shared": "メインウィンドウとプロセスを共有中: {{n}}。その分の使用量は含まれません。",
+        "warm_cap_load_failed": "読み込んだままにするクルーの数を読み取れませんでした。",
+        "usage_failed": "リモートクルーの使用量を読み取れませんでした。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",

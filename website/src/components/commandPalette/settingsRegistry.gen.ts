@@ -3275,6 +3275,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "instances.crews-kept-loaded",
+    "label": "Crews kept loaded",
+    "labelKey": "pages.settings.remoteCrewPanel.warm_cap",
+    "tab": "instances",
+    "type": "stepper",
+    "occurrence": 1
+  },
+  {
     "id": "instances.enable-remote-crew-management",
     "labelKey": "pages.settings.instancesPanel.enable_remote_crew_management",
     "tab": "instances",

@@ -530,6 +530,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # destination crew). It only orders the menu: nothing is sent until the
     # person clicks. Capped like a folder's default_destination_crew.
     "instances.default_destination": {"type": "str", "max_len": MAX_CREW_REF_LEN},
+    # Settings → Remote Crew → Crews kept loaded: 0 is automatic; an explicit
+    # value is honoured exactly, with no tighter maximum than the PATCH default.
+    "instances.warm_set_cap": {"type": "int", "min": 0},
     # Skills: opt in to automatic skill generation (Settings → Skills). Both
     # default OFF/ON respectively in SkillsConfig; generated candidates still
     # require approval unless approval_required is turned off (scripts always

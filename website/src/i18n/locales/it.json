@@ -23024,7 +23024,19 @@
         "setting_up_progress": "Configurazione · {{current}} di {{total}}",
         "launching_crew": "Avvio di {{name}}",
         "ssm_start_session_denied": "Questo ruolo AWS non può avviare una sessione SSM su questa istanza. Dagli ssm:StartSession oppure scegli un profilo AWS che lo abbia.",
-        "show_aws_error": "Mostra l'errore AWS"
+        "show_aws_error": "Mostra l'errore AWS",
+        "warm_cap": "Crew tenute caricate",
+        "warm_cap_desc": "Crew remote tenute caricate insieme, prima quelle aperte più di recente. In automatico ne tiene {{auto}}.",
+        "warm_cap_auto": "Automatico ({{n}}) · di più rende il cambio più rapido, usa più memoria",
+        "warm_cap_set": "Impostato su {{n}} · di più rende il cambio più rapido, usa più memoria",
+        "warm_cap_use_auto": "Usa automatico",
+        "warm_cap_save_failed": "Impossibile salvare quante crew restano caricate.",
+        "usage_label": "Consumo delle crew remote",
+        "usage_value": "Caricate {{panes}} · Memoria {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "Nessuna crew remota è caricata.",
+        "usage_shared": "Condividono il processo della finestra principale: {{n}}. Il loro costo non è contato.",
+        "warm_cap_load_failed": "Impossibile leggere quante crew restano caricate.",
+        "usage_failed": "Impossibile leggere il consumo delle crew remote."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

@@ -333,6 +333,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Only orders *Send a copy to* (the crew it lists first); nothing is
         # sent until the person clicks a row, and no agent path reads it.
         "instances.default_destination",
+        # Only how many remote Crew panes this dashboard keeps loaded; it grants
+        # no access and no agent path reads it.
+        "instances.warm_set_cap",
         "knowledge.auto_ingest_artifacts",
         "knowledge.dedup_every_n_sweeps",
         "knowledge.embed_rate_limit",

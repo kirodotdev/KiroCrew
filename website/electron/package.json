@@ -275,6 +275,7 @@
       "launch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
+      "remote-crew-usage.js",
       "cage-trace.js",
       "pyspy-dump.js",
       "perf-metrics.js",
