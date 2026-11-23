@@ -398,6 +398,13 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
       text: 'b is now set to n, but this chat keeps running r, the agent it started with. Start a new chat with b to use n.',
       tone: 'info',
     })
+    expect(
+      resolveGatewayNotice(row('notice', 'member_harness_elsewhere', { bot: 'b', bot_harness: 'h', chat_harness: 'c' }), [], 0),
+    ).toEqual({
+      card: 'notice',
+      text: "b runs on h in its own chat, and this chat stays on c. Open b's own chat to use h.",
+      tone: 'info',
+    })
     expect(resolveGatewayNotice(row('notice', 'model_throttled_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
       card: 'notice',
       text: 'p is throttled — running on f until p recovers.',

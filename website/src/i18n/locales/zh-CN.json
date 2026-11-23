@@ -13610,6 +13610,7 @@
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "member_rebind_kept_agent": "{{bot}} 现已设为使用 {{agent}}，但此聊天仍在运行它开始时使用的智能体 {{recorded}}。要使用 {{agent}}，请与 {{bot}} 开始一个新聊天。",
+        "member_harness_elsewhere": "{{bot}} 在自己的聊天中运行在 {{bot_harness}} 上，而此聊天仍运行在 {{chat_harness}} 上。要使用 {{bot_harness}}，请打开 {{bot}} 自己的聊天。",
         "agent_no_tools": "{{agent}} 没有列出任何工具，所以在此聊天中无法运行命令、处理文件或使用 MCP 服务器。",
         "agent_no_tools_open": "选择它的工具",
         "harness_mode_changed": "此会话已切换到 {{mode}} 模式。",

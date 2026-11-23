@@ -5831,6 +5831,16 @@ kiro-cli that lacks its engine.
   whose `member_id` `mate_worker.note_worker_session` records beside the worker
   key. No other session (a template chat, a sub-agent, a cron turn not on the
   worker) takes the pin.
+- **A chat running the Bot elsewhere says so once.** The pin is that Bot's own
+  chat and its workers. A dashboard chat running the Bot through the agent picker,
+  a folder default or a new chat on it keeps its own harness; when the Bot's own
+  chat runs another one (`pinned_backend`, its landing rules included), turn
+  admission gives one `notice` row (`member_harness_notice`, token
+  `member_harness_elsewhere`) naming both harnesses, claimed once per chat and
+  per pair on the session's metadata line, and nothing about the selection
+  changes. A pin this gateway cannot start gives none. Agent channels, Slack
+  channels bound to a Bot and cron turns are not told
+  (`docs/decisions/2026-11-22-a-chat-running-a-bot-on-another-harness-says-so-once.md`).
 - **Fails closed, before the gate.** A pin this gateway cannot start (not
   registered, denied by policy, unservable on this host, including one that was
   selectable when it was saved) raises `CrewmateHarnessUnavailable`

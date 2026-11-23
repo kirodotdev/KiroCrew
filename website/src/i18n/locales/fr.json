@@ -14288,6 +14288,7 @@
         "agent_switch_blocked_channel": "Le passage à {{agent}} a été bloqué — ce chat est lié à un canal Slack servi par {{channel_agent}}. Le prochain tour redémarre sur cet agent.",
         "channel_message_not_run": "Un message d'un canal Slack n'a pas été exécuté : l'agent de cette session n'est pas celui qu'utilise ce canal.",
         "member_rebind_kept_agent": "{{bot}} est désormais configuré sur {{agent}}, mais ce chat continue d'exécuter {{recorded}}, l'agent avec lequel il a commencé. Démarre un nouveau chat avec {{bot}} pour utiliser {{agent}}.",
+        "member_harness_elsewhere": "{{bot}} tourne sur {{bot_harness}} dans son propre chat, et ce chat reste sur {{chat_harness}}. Ouvre le chat propre à {{bot}} pour utiliser {{bot_harness}}.",
         "agent_no_tools": "{{agent}} ne liste aucun outil : dans ce chat, il ne peut donc ni exécuter de commandes, ni travailler sur des fichiers, ni utiliser de serveurs MCP.",
         "agent_no_tools_open": "Choisir ses outils",
         "harness_mode_changed": "Cette session est passée en mode {{mode}}.",

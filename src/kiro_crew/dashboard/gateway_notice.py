@@ -119,6 +119,10 @@ GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 # (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
 # chat with the Bot runs) and ``recorded`` (what this chat keeps running).
 GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
+# A chat running a Bot on another harness than the Bot's own chat
+# (``member_harness_notice``). ``notice_args``: ``bot``, ``bot_harness`` (where
+# the Bot's own chat runs) and ``chat_harness`` (where this chat stays).
+GATEWAY_NOTICE_MEMBER_HARNESS_ELSEWHERE = "member_harness_elsewhere"
 # A new KAS chat whose agent, the user's own file, lists no tools
 # (``agent_no_tools_notice``). ``notice_args``: ``agent``.
 GATEWAY_NOTICE_AGENT_NO_TOOLS = "agent_no_tools"

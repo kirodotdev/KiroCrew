@@ -13610,6 +13610,7 @@
         "agent_switch_blocked_channel": "{{agent}}(으)로의 전환이 차단되었습니다 — 이 채팅은 {{channel_agent}}이(가) 담당하는 Slack 채널에 연결되어 있습니다. 다음 턴은 그 에이전트로 다시 시작합니다.",
         "channel_message_not_run": "Slack 채널의 메시지가 실행되지 않았습니다: 이 세션의 에이전트는 그 채널이 사용하는 에이전트가 아닙니다.",
         "member_rebind_kept_agent": "{{bot}}은(는) 이제 {{agent}}(으)로 설정되어 있지만, 이 채팅은 시작할 때의 에이전트인 {{recorded}}(으)로 계속 실행됩니다. {{agent}}을(를) 사용하려면 {{bot}}와(과) 새 채팅을 시작하세요.",
+        "member_harness_elsewhere": "{{bot}}은(는) 자신의 채팅에서는 {{bot_harness}}에서 실행되지만, 이 채팅은 계속 {{chat_harness}}에서 실행됩니다. {{bot_harness}}을(를) 사용하려면 {{bot}} 자신의 채팅을 여세요.",
         "agent_no_tools": "{{agent}}에는 지정된 도구가 없어서 이 채팅에서 명령 실행, 파일 작업, MCP 서버 사용을 할 수 없습니다.",
         "agent_no_tools_open": "도구 선택",
         "harness_mode_changed": "이 세션이 {{mode}} 모드로 전환되었습니다.",

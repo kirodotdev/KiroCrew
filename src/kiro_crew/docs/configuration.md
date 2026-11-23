@@ -285,7 +285,9 @@ One Bot can run on its own harness: `agents.<name>.acp_backend` takes the
 same values as `agent.acp_backend` (`kiro` here means kiro-cli, and runs through
 KAS once Kiro Crew confirms your kiro-cli offers v3, as it does there) and applies to
 that Bot's chat and the worker sessions it opens. Empty inherits
-`agent.member_acp_backend`. A harness this gateway cannot start refuses the
+`agent.member_acp_backend`. A dashboard chat you switch to the Bot with the
+agent picker keeps its own harness, and says so once when it is not the one the
+Bot's own chat runs on. A harness this gateway cannot start refuses the
 Bot's session with `crewmate_harness_unavailable` rather than running it on
 another harness, and the Bot's `model` and `worker_model` are judged against
 the pinned harness when they change or the harness does, so an edit to another
