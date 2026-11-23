@@ -45,6 +45,9 @@ _RECORD_SEPARATOR = "\x1e"
 
 RUN_URL = "https://example.invalid/actions/runs/1"
 
+# What the real ``gh api`` prints on stdout for a non-2xx answer, before it exits 1.
+_GH_NOT_FOUND = '{"message":"Not Found","status":"404"}'
+
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -238,7 +241,8 @@ def _run_step(
     """Run the step with a ``gh`` stub that answers every call the step makes.
 
     ``api .../jobs`` answers ``jobs_json`` through the step's own ``--jq``
-    filter; ``api .../pulls/N`` answers ``pr_author``; ``issue list`` answers
+    filter; ``api .../pulls/N`` answers ``pr_author``, or with ``pr_lookup_exit``
+    set, ``_GH_NOT_FOUND`` and that exit; ``issue list`` answers
     ``open_reply`` / ``closed_reply`` with ``list_exit`` as the ALREADY-SELECTED
     value (the title selector is evaluated on its own, below, with ``jq``);
     ``api .../comments?``
@@ -293,7 +297,8 @@ def _run_step(
         '      id="${2#*/actions/runs/}"; id="${id%%/*}"\n'
         f'      f="{tmp_path}/jobs-$id.json"; [ -f "$f" ] || exit 8\n'
         '      jq -r "$(jq_filter "$@")" < "$f" ;;\n'
-        f"    */pulls/*) [ {pr_lookup_exit} = 0 ] || exit {pr_lookup_exit}; printf '%s\\n' '{pr_author}' ;;\n"
+        f"    */pulls/*) [ {pr_lookup_exit} = 0 ] || {{ printf '%s' '{_GH_NOT_FOUND}'; exit {pr_lookup_exit}; }}\n"
+        f"      printf '%s\\n' '{pr_author}' ;;\n"
         f'    */issues/*/comments?since=*) jq -r "$(jq_filter "$@")" < "{tmp_path / "comments.json"}" ;;\n'
         f"    */issues/*/comments) exit {pr_comment_exit} ;;\n"
         '    *) echo "unexpected gh api $2" >&2; exit 9 ;;\n'
