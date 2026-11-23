@@ -9090,7 +9090,9 @@ it opens does not take focus and takes no anchor (its page is never on screen).
 **The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
 no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
 navigation and redirects pinned to its own document: the host's
-`/popout/desktop/<app>/<id>` route on the gateway origin. `main.tsx` renders that path
+`/popout/desktop/<app>/<id>` route on the gateway origin, loaded with no credential in its
+address: when the host holds a link token, it signs the window's session in first, as the
+dashboard window's load does (`loadDashboardWithToken`). `main.tsx` renders that path
 with `website/src/desktopWindow/DesktopWindowRoot.tsx` instead of the dashboard: it
 requires the shell bridge naming that app and window, reads the app row, and mounts the
 declared `entry` through `AppHost` (§18) with `onFailure`, so a bundle that fails or
@@ -9161,8 +9163,9 @@ set changes is closed, so a withdrawn capability leaves no window opened with it
   non-answer changes nothing, so the app keeps the target it has (this computer's
   gateway until a crew answers). A resolved crew is reused for 60 seconds, only while the app
   declares the same windows here (a window added here is checked against the crew first), and a listing for 10,
-  but a reused crew is re-read from core's registry on every tick and before any window
-  loads or reloads from it: a disconnect frees its local port for the next crew to connect,
+  but a reused crew is re-read from core's registry on every tick, and before any window
+  signs in to it and again before that window's page loads or reloads from it: a
+  disconnect frees its local port for the next crew to connect,
   so a crew no longer connected on that port is dropped (its windows close and re-resolve)
   and is never sent the token minted for it. The shell
   never opens a tunnel and the page never sees a host name, port or credential.
