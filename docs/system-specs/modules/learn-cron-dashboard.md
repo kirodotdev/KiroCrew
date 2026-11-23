@@ -169,7 +169,11 @@ records a dollar cost (`DOLLAR_HARNESS_BACKENDS`, Claude Code;
 so a kiro-cli or KAS install's page is unchanged and a harness that reports no
 cost (codex, pi) shows no zeros. The Daily Token Usage chart draws the 14 calendar days ending at the
 gateway's local day (`localDay`, or the last recorded day when none is given); the history lists only
-days that recorded a turn, so a day missing from it is drawn as an empty bar. The Overview usage card's "Today" line adds today's tokens and cost on
+days that recorded a turn, so a day missing from it is drawn as an empty bar. From the keyboard the chart is
+one stop, a slider over its days: Left or Down and Right or Up step a day, Home and End jump to the first and
+last day, and Escape hides the tooltip. Under keyboard focus it draws a focus ring and shows only the selected
+day's tooltip, and a screen reader hears that day's figures as the slider's value beside the hidden list of
+every day's figures. The Overview usage card's "Today" line adds today's tokens and cost on
 such a harness, read from today's local-day bucket of that history (its totals
 cover 30 days), and stays sessions and messages otherwise.
 
