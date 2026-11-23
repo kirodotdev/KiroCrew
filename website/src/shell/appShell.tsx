@@ -63,7 +63,7 @@ import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
-import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
+import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
@@ -945,8 +945,10 @@ export function useAppShell() {
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
   //
-  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
+  // A crew link (`kirocrew://chat?crew=`) switches panes and connects only from
+  // HERE; the same route on the dashboard's own address only opens the crew window.
   const openCrewLink = useCrewDeepLink()
+  useCrewAddressLink()
   usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
   useEffect(() => {
     return subscribeNativeNavigate(path => {
