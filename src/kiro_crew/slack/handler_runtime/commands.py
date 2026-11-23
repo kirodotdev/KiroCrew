@@ -73,6 +73,7 @@ if TYPE_CHECKING:
         is_slack_born,
         is_yolo_mode,
         logger,
+        memory_binding_refusal,
         note_user_stop,
         overlay_pins,
         read_merged_config_files,
@@ -780,6 +781,19 @@ async def _bang_thread_agent(
     agent_name = cmd_text.split(maxsplit=1)[1].strip() if bot else parts[1]
     # A Bot's key may be "default" (a stock Crew record): only ``!ta`` reads it as a reset.
     if not bot and agent_name.lower() in ("default", "off"):
+        # A thread bound to a Bot's own memory keeps it: no reset (channel_crew).
+        refusal = await memory_binding_refusal(session_key, None)
+        if refusal:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name=_cmd,
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={"agent": "", "user": user_id, "channel": channel, "reason": refusal},
+            )
+            await slack.post_message(channel, f"❌ {refusal}", reply_ts)
+            return ""
         _thread_agents.pop(session_key, None)
         if conversation_log:
             try:
@@ -837,6 +851,19 @@ async def _bang_thread_agent(
             channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
         return ""
+    # ``!bot`` asks this in ``bind_bot_memory``, after the slot pin below.
+    refusal = None if bot else await memory_binding_refusal(session_key, resolved)
+    if refusal:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name=_cmd,
+            tool_kind="command",
+            outcome="agent_denied_memory_binding",
+            metadata={"agent": resolved, "user": user_id, "channel": channel, "reason": refusal},
+        )
+        await slack.post_message(channel, f"❌ {refusal}", reply_ts)
+        return ""
     # A project agent's name is whatever its spec declares; keep it only within the
     # maps' per-value limit, checked before anything is pinned or written.
     too_long = thread_override_slots.setter_refusal("agent", resolved)
@@ -883,6 +910,19 @@ async def _bang_thread_agent(
         except UnknownMemoryStore as exc:
             if not was_pinned:
                 thread_override_slots.unpin(session_key, "agent")
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name=_cmd,
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={
+                    "agent": resolved,
+                    "user": user_id,
+                    "channel": channel,
+                    "reason": str(exc),
+                },
+            )
             await slack.post_message(channel, f"❌ {exc}", reply_ts)
             return ""
     _thread_agents[session_key] = resolved
@@ -965,6 +1005,14 @@ async def _bang_bot(
         try:
             await bind_bot_memory(session_key, None, sessions, conversation_log)
         except UnknownMemoryStore as exc:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!bot",
+                tool_kind="command",
+                outcome="agent_denied_memory_binding",
+                metadata={"agent": "", "user": user_id, "channel": channel, "reason": str(exc)},
+            )
             await slack.post_message(channel, f"❌ {exc}", reply_ts)
             return ""
         return await _bang_thread_agent(
