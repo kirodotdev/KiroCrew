@@ -295,7 +295,8 @@ or fix what their row says, first.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
   prompts their own turns post, and send or edit the review-mode draft of their
-  own turn.
+  own turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  call a background sub-agent makes, the approval prompt goes to the owner.
 - **What stays the owner's.** The access list and the switch; Trust, YOLO and
   approval-mode changes (a shared user's Trust click is refused); approving a
   prompt someone else's turn posted; `!dashboard` and other dashboard links; every
