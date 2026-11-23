@@ -1018,3 +1018,35 @@ ACP_BACKENDS_REPORT_USAGE = frozenset(
 # end signal is known.
 # See docs/request-for-change/rfc-agent-started-turns.md.
 ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends where, while a native sub-agent's card is open, a permission request on
+# the session is the sub-agent's and not the parent's own. Only a member may take
+# the dashboard's native-crew auto-approve rung
+# (``dashboard.chat_turn.tool_approval``, ``hooks.auto_approve_subagent_tools``,
+# session trust or YOLO while a crew card is open), which reads it as
+# ``SessionCapabilities.permission_requests_name_child``. That rung approves without
+# asking which session sent the request, so on a non-member it would approve the
+# parent's own calls with no card. Positive membership: a backend nobody has shown
+# to behave this way, a new one included, keeps every request on the normal gate.
+#
+# kiro-cli and KAS are the members, the two harnesses the rung was written for: a
+# kiro-cli sub-agent runs in its own session, so its requests arrive under a
+# foreign ``sessionId``; a KAS native sub-agent's requests are told apart by the id
+# its ``agentSubtaskId`` frame recorded. In both, the parent's turn is held in the
+# call that started the sub-agent, which is the deadlock the rung avoids.
+#
+# Not the same question as ``ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED`` or
+# ``ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED``. Those say a transport's
+# permission parser can mark ONE request as a child's, which a deny-rule override
+# card needs. This set says the rung may treat EVERY request raised while a card is
+# open as a child's. claude is in those sets and not here: a claude child runs
+# beside the parent, and its request carries no session of its own.
+# opencode is not a member: its ``task`` card is drawn from the parent's own tool
+# row, and its requests name no child either.
+# codex is not a member: an older codex-acp drops the ``subagents`` declaration and
+# draws each sub-agent as a "Start subagent" row on the parent's session, and no
+# capture yet shows which codex-acp releases keep its requests apart. Until one
+# does, a codex sub-agent's call asks like any other.
+# pi, goose, deepseek, copilot, strands, mimocode and antigravity are not members:
+# none of them draws a native sub-agent card, and none was read naming a child.
+ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
