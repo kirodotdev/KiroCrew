@@ -3960,6 +3960,16 @@ stream. Its chunks are held only while their whitespace-stripped text is still a
 prefix of the token and their text is at most 64 characters long; once either
 fails, they go out unchanged, in order and with their message ids. A segment
 that equals the token when it ends is dropped.
+A quiet turn that also folded a mid-turn steer writes the token and then
+kiro-cli's `[STEERING steer-…]` ack in the same segment. Once the token is
+complete the segment stays held while what follows it can still be only steer
+acks and whitespace (judged by `messaging.driver._SteeringMarkerFilter`, at most
+16,384 more characters). A segment that ends that way goes out as one chunk
+holding only the text after the token, so the steer is still recorded and the
+chat draws what it draws for an ack-only reply (a Bot chat hides that row).
+Anything else after the token releases the whole segment unchanged. The turn's
+`quiet_end` and the worker-report check (`mate_thread_wakes.note_turn_end`)
+ignore steer acks, so such a turn still counts as quiet.
 There is no tool-name check and no per-backend branch: a model or injected text
 that writes the token can only turn that one reply into the empty reply a turn
 has today, never end a turn, apply a directive or hide other text. A native

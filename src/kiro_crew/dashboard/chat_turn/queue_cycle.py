@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE, SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.messaging.driver import strip_steering_markers
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -1071,7 +1072,8 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "reply_flushed": _turn_flushed_visible_text,
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
-        quiet_end=turn._terminal_directive_applied and not _turn_full_reply_text(turn)[0].strip(),
+        quiet_end=turn._terminal_directive_applied
+        and not strip_steering_markers(_turn_full_reply_text(turn)[0]).strip(),
     )
     # Every turn end rewrites this, so it describes the newest turn: one that
     # took the arming result and ended successfully on reply text written
