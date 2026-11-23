@@ -660,6 +660,7 @@ async def _on_permission_prompt(
             # Only a prompt that will really wait is bridged: one declined above for
             # lack of budget, or already answered, is not pending. One plain call,
             # never awaited, inside the try whose finally cleans the approval up.
+            from kiro_crew.messaging.renderer import trusted_mcp_identity
             from kiro_crew.notifications.bridge_approval_note import schedule_pending_approval
 
             schedule_pending_approval(
@@ -672,6 +673,8 @@ async def _on_permission_prompt(
                 session_title=slot.display_title,
                 slack_card=_slack_approval_ts is not None,
                 approval_detail=event.tool_input or event.title or "",
+                # The proven MCP server and tool, as the linked Slack card names them.
+                mcp_identity=trusted_mcp_identity(event),
                 # An override card is answered on the dashboard alone, and an
                 # unverified child request shows only agent-authored text.
                 answerable=_override_offer is None and not _child_lf_warning,

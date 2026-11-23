@@ -23,6 +23,7 @@ from kiro_crew.notifications.bridge_approval_note import (
     ACTION_TOKEN_KEY,
     APPROVAL_DETAIL_KEY,
     SLACK_CARD_KEY,
+    approval_mcp_identity,
     is_pending_approval_note,
 )
 from kiro_crew.notifications.bridge_question_note import OPTIONS_KEY, is_pending_question_note
@@ -46,27 +47,31 @@ def _redact(text: str) -> str:
     return text
 
 
-def _detail_blocks(detail: str) -> list[dict[str, Any]]:
+def _detail_blocks(detail: str, mcp_identity: tuple[str, str]) -> list[dict[str, Any]]:
     """What the call will run, drawn by the native approval card's own renderer.
 
     Redacted first (``redact_note`` covers only the title and body), then
     ``approval_card.approval_detail_blocks`` escapes it for Slack's mrkdwn parser,
     breaks backtick runs so nothing closes the code fence, and cuts it to the
-    section limit. Lazy: that module imports the Slack handler facade.
+    section limit. A *mcp_identity* that names a server is drawn above it as the
+    native card's ``MCP tool:`` line. Lazy: that module imports the Slack handler
+    facade.
     """
     from kiro_crew.slack.approval_card import approval_detail_blocks, bounded_scan
 
-    return approval_detail_blocks("", bounded_scan(detail, _redact))
+    return approval_detail_blocks("", bounded_scan(detail, _redact), mcp_identity)
 
 
-def action_blocks(text: str, token: str, detail: str) -> list[dict[str, Any]]:
+def action_blocks(
+    text: str, token: str, detail: str, mcp_identity: tuple[str, str] = ("", "")
+) -> list[dict[str, Any]]:
     """The Block Kit for a pending approval: its text, what will run, then Approve and Deny.
 
     *detail* is the call's input (or its title when it has none), redacted and
-    shown above the buttons so the owner sees what an Approve runs. Each button's
-    ``action_id`` names its answer and its ``value`` is the token, so the press
-    handler reads both from what Slack sends back. The token appears in no text
-    block.
+    shown above the buttons so the owner sees what an Approve runs, under the MCP
+    server and tool *mcp_identity* names, if any. Each button's ``action_id`` names
+    its answer and its ``value`` is the token, so the press handler reads both from
+    what Slack sends back. The token appears in no text block.
     """
     buttons = [
         {
@@ -84,7 +89,7 @@ def action_blocks(text: str, token: str, detail: str) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     if text and len(text) <= _SECTION_MAX:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
-    blocks += _detail_blocks(detail)
+    blocks += _detail_blocks(detail, mcp_identity)
     blocks.append({"type": "actions", "elements": buttons})
     return blocks
 
@@ -140,7 +145,8 @@ def _actions_for(
     if is_pending_approval_note(note):
         detail = note.get(APPROVAL_DETAIL_KEY)
         if isinstance(detail, str) and detail.strip():
-            return token, lambda last: action_blocks(last, token, detail)
+            identity = approval_mcp_identity(note)
+            return token, lambda last: action_blocks(last, token, detail, identity)
     elif is_pending_question_note(note):
         labels = note.get(OPTIONS_KEY)
         if (
