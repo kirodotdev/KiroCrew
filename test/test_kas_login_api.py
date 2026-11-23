@@ -558,12 +558,12 @@ async def test_wait_for_callback_accepts_signin_path():
 
 
 @pytest.mark.asyncio
-async def test_wait_for_callback_state_mismatch_raises():
+async def test_wait_for_callback_without_state_raises():
     sock, port = _bound_loopback()
     task = asyncio.create_task(wait_for_callback(sock, port, "expected", _echo, timeout_secs=10))
     await asyncio.sleep(0.05)
-    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c", "state": "evil"})
-    with pytest.raises(PortalAuthError, match="state mismatch"):
+    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c"})
+    with pytest.raises(PortalAuthError, match="carried no state"):
         await await_until(task, timeout=5)
 
 
