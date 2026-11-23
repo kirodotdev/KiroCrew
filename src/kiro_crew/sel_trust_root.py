@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
-from kiro_crew.owner_only_files import mkdirs_owner_only
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.owner_only_files import _is_link_unsupported, mkdirs_owner_only
 
 if TYPE_CHECKING:
     from kiro_crew.sel import SecurityEvent, SecurityEventLog
@@ -264,53 +264,175 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
     # reports THIS resolved path (normally trust/sel_hmac.key; the legacy
     # path only on a failed migration above).
     self._hmac_key_file = key_path
+    if key_path == legacy_path:
+        # The legacy location is the data-home root, which no mask covers as a
+        # directory, so a staging name there would sit outside every fence.
+        # Publish there by atomic replace only, with no second name.
+        return _load_or_replace_hmac_key(key_path)
+    # Runs on every init at the trust location, whether it loads or creates.
+    _sweep_dead_staging_copies(key_path)
+    # Bounded: a lost publish race goes round once more to load the winner's
+    # key, and a transient link refusal is retried.
+    for _attempt in range(_PUBLISH_MAX_ATTEMPTS):
+        if key_path.exists():
+            return _load_existing_hmac_key(key_path)
+        key = os.urandom(32)
+        if _publish_new_hmac_key(key_path, key):
+            return key
+    # The budget went on link refusals or a name that kept vanishing: load or
+    # publish by atomic replace, so init never fails where a replace succeeds.
+    return _load_or_replace_hmac_key(key_path)
+
+
+#: Load-or-publish attempts before the atomic-replace publish. A lost race needs two.
+_PUBLISH_MAX_ATTEMPTS = 5
+
+#: Whether ``os.link`` can be told not to follow a symlink at its source.
+_LINK_NOFOLLOW = os.link in os.supports_follow_symlinks
+
+#: Staging names are ``.<key name>.<pid>.<16 hex>.tmp``.
+_STAGING_SUFFIX = ".tmp"
+_STAGING_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _load_or_replace_hmac_key(key_path: Path) -> bytes:
+    """Load the key at *key_path*, or publish a fresh one by atomic replace.
+
+    The replace is last-writer-wins, so two first starts on this path can mint two
+    keys. It is the publish for the legacy location, a filesystem that cannot
+    hard-link, and an exhausted link budget.
+    """
     if key_path.exists():
-        existing = key_path.read_bytes()
-        # Validate the key BEFORE it ever signs the chain. A
-        # 0-byte or too-short key is accepted silently by hmac.new(),
-        # producing a predictable, forgeable MAC that disables the audit
-        # chain's tamper-evidence. Fail HARD (mirroring token_secret.py's
-        # >= 32-byte requirement) rather than silently falling back to a
-        # weak key. We RAISE instead of regenerating (unlike
-        # token_secret.py's fall-through) because a fresh key would orphan
-        # every already-chained record — an operator must consciously
-        # rotate/restore the key.
-        if len(existing) < _HMAC_KEY_MIN_BYTES:
-            raise RuntimeError(
-                f"SEL HMAC key {key_path} is too short ({len(existing)} bytes; "
-                f"require >= {_HMAC_KEY_MIN_BYTES}). Refusing to sign the audit "
-                "chain with a weak/forgeable key. Restore the correct key from "
-                "backup, or remove the file to start a fresh chain with a new key."
-            )
-        # Re-enforce owner-only perms at LOAD time, not just at creation:
-        # the mode may have been relaxed since (backup restore, manual edit,
-        # migration) and this key signs the entire audit chain — a
-        # group/world-readable key lets any local user forge valid MACs.
-        # Mirrors token_secret.py's load-time restrict_to_owner. Fail-SOFT
-        # at the call site (warn, don't crash): a read-only FS / chmod
-        # failure must not take down SecurityEventLog init.
-        try:
-            # The only preceding write to key_path is the legacy-key migration rename,
-            # in a mutually exclusive branch.
-            platform_compat.restrict_to_owner(key_path)  # lockdown-ok: load-time re-assert
-        except OSError:
-            # Logs the key file PATH, never the key bytes.
-            logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                "SECURITY: failed to enforce owner-only permissions on SEL HMAC key %s; "
-                "file may be readable by other users",
-                key_path,
-                exc_info=True,
-            )
-        return existing
+        return _load_existing_hmac_key(key_path)
     key = os.urandom(32)
-    # Create the key ATOMICALLY (temp file + rename via ``atomic_write``,
+    # ``restrict_to_owner=True`` locks the temp file down before the key bytes
+    # reach it and implies 0o600 on POSIX; ``restrict_on_error="warn"`` keeps init
+    # fail-soft on a read-only FS (see test_chmod_failure_is_swallowed).
+    atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
+    return key
+
+
+def _staging_pid(name: str, key_name: str) -> int | None:
+    """The pid in a staging name for *key_name*, or None for any other name."""
+    prefix = f".{key_name}."
+    if not (name.startswith(prefix) and name.endswith(_STAGING_SUFFIX)):
+        return None
+    parts = name[len(prefix) : -len(_STAGING_SUFFIX)].split(".")
+    if len(parts) != 2:
+        return None
+    pid, token = parts
+    if not (pid.isascii() and pid.isdigit()) or len(token) != 16:
+        return None
+    if not set(token) <= _STAGING_HEX_DIGITS:
+        return None
+    return int(pid)
+
+
+def _sweep_dead_staging_copies(key_path: Path) -> None:
+    """Remove staging copies of the key left by processes that have exited.
+
+    A process killed between staging and its cleanup leaves a full key copy under
+    its staging name. Only regular files whose name is a staging name for this key
+    and whose pid is reported DEAD are removed; a live, unsignalable or unknown pid
+    keeps its file, and every other entry is left alone.
+    """
+    try:
+        with os.scandir(key_path.parent) as entries:
+            candidates = [e for e in entries if _staging_pid(e.name, key_path.name) is not None]
+    except OSError:
+        return
+    for entry in candidates:
+        pid = _staging_pid(entry.name, key_path.name)
+        if pid is None or pid == os.getpid():
+            continue
+        if platform_compat.pid_liveness(pid) != platform_compat.PID_DEAD:
+            continue
+        try:
+            if entry.is_file(follow_symlinks=False):
+                os.unlink(entry.path)
+        except OSError:
+            logger.debug("could not remove stale SEL HMAC key staging file %s", entry.path)
+
+
+def _reassert_owner_only(key_path: Path) -> None:
+    """Re-lock *key_path* owner-only, warning (path only) when that fails.
+
+    Fail-SOFT (warn, don't crash): a read-only FS / chmod failure must not take
+    down SecurityEventLog init.
+    """
+    try:
+        # Covers an inode this module did not lock down itself: a migrated legacy
+        # key or a restored file, whose mode may be wide.
+        platform_compat.restrict_to_owner(key_path)  # lockdown-ok: load-time re-assert
+    except OSError:
+        # Logs the key file PATH, never the key bytes.
+        logger.warning(  # nosemgrep: python-logger-credential-disclosure
+            "SECURITY: failed to enforce owner-only permissions on SEL HMAC key %s; "
+            "file may be readable by other users",
+            key_path,
+            exc_info=True,
+        )
+
+
+def _load_existing_hmac_key(key_path: Path) -> bytes:
+    """Read, validate and re-lock the key already at *key_path*."""
+    # On Windows a reader that opens the key while a winner unlinks its staging
+    # name (the same inode) can lose a sharing window; the helper retries that
+    # PermissionError with backoff on Windows only and re-raises it at once on POSIX.
+    existing = read_bytes_with_retry(key_path)
+    # Validate the key BEFORE it ever signs the chain. A
+    # 0-byte or too-short key is accepted silently by hmac.new(),
+    # producing a predictable, forgeable MAC that disables the audit
+    # chain's tamper-evidence. Fail HARD (mirroring token_secret.py's
+    # >= 32-byte requirement) rather than silently falling back to a
+    # weak key. We RAISE instead of regenerating (unlike
+    # token_secret.py's fall-through) because a fresh key would orphan
+    # every already-chained record — an operator must consciously
+    # rotate/restore the key.
+    if len(existing) < _HMAC_KEY_MIN_BYTES:
+        raise RuntimeError(
+            f"SEL HMAC key {key_path} is too short ({len(existing)} bytes; "
+            f"require >= {_HMAC_KEY_MIN_BYTES}). Refusing to sign the audit "
+            "chain with a weak/forgeable key. Restore the correct key from "
+            "backup, or remove the file to start a fresh chain with a new key."
+        )
+    # Re-enforce owner-only perms at LOAD time, not just at creation:
+    # the mode may have been relaxed since (backup restore, manual edit,
+    # migration) and this key signs the entire audit chain — a
+    # group/world-readable key lets any local user forge valid MACs.
+    # Mirrors token_secret.py's load-time restrict_to_owner.
+    _reassert_owner_only(key_path)
+    return existing
+
+
+def _publish_new_hmac_key(key_path: Path, key: bytes) -> bool:
+    """Publish *key* at *key_path* only if no key is there yet.
+
+    Returns False when another process published first (the caller then loads
+    that process's key, so every process that starts together signs with ONE
+    key) or when the link was refused for a reason a retry may clear.
+    """
+    # The key is written WHOLE to a private staging name beside the destination
+    # and then hard-linked into place. ``os.link`` never replaces an existing
+    # name, so when two first starts race exactly one link lands and the other
+    # gets FileExistsError. A temp + ``os.replace`` publish is last-writer-wins:
+    # each racer installs its own key and the loser keeps signing with bytes no
+    # longer on disk, so every record it writes fails verify. This is the
+    # publish ``dashboard/token_secret.py`` uses for its signing key.
+    #
+    # The staging file sits in the key's own directory (``trust/``), so it has
+    # the key's own sandbox and file-tool disposition, and a link cannot cross
+    # devices. Linking shares the inode, so the destination name only ever
+    # resolves to a complete key that is already owner-only.
+    staged = key_path.parent / f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    # Create the staging copy ATOMICALLY (temp file + rename via ``atomic_write``,
     # whose short-write loop was modelled on the hand-rolled one this call
     # replaces): a plain os.open()+os.write() is NOT atomic — a crash or
     # full-disk partial write leaves a 0-byte/short key on disk, which the
     # load-time length check above would then reject with a hard
     # RuntimeError on the NEXT boot, bricking every SecurityEventLog()
-    # init until an operator manually removes the file. os.replace() makes
-    # the key file visible only once it is complete.
+    # init until an operator manually removes the file. ``fsync=True`` makes
+    # the bytes durable before a name that other processes trust points at them.
     #
     # ``restrict_to_owner=True`` locks the temp file down BEFORE the key
     # bytes reach it — a post-rename lockdown would leave a brand-new
@@ -322,8 +444,52 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
     # implied by ``restrict_to_owner=True`` raises unconditionally, which
     # is the right behavior for the key that signs the audit chain: a
     # pre-planted link under the trust dir is hostile.
-    atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
-    return key
+    atomic_write(staged, key, fsync=True, restrict_to_owner=True, restrict_on_error="warn")
+    try:
+        # No-follow pins the link to the inode this process just wrote, even if
+        # the staging name is swapped for a symlink after the write.
+        if _LINK_NOFOLLOW:
+            os.link(staged, key_path, follow_symlinks=False)
+        else:
+            os.link(staged, key_path)
+    except FileExistsError:
+        try:
+            st = os.lstat(key_path)
+        except OSError:
+            return False  # gone again; the next pass reads or publishes
+        if stat.S_ISREG(st.st_mode):
+            # Another process published first; never install ours over it.
+            return False
+        # The name is held by something that is not a key file (a dangling or
+        # looping link): publish by atomic replace, which replaces that entry,
+        # rather than retrying into a failure.
+        atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
+    except OSError as exc:
+        logger.debug(
+            "SEL HMAC key link publish failed at %s (errno=%s)",
+            key_path,
+            exc.errno,
+            exc_info=True,
+        )
+        if not _is_link_unsupported(exc):
+            return False  # transient: retried inside the caller's budget
+        # This filesystem cannot hard-link (FAT/exFAT, some network mounts).
+        # Publish by atomic replace instead, so such a home still gets a
+        # persisted key. shortcut: the two-key race stays open on such a
+        # filesystem only; upgrade if one becomes a supported home.
+        if key_path.exists():
+            return False
+        atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
+    finally:
+        # The staging name is ours alone; a leftover is inert, never a key in use,
+        # and _sweep_dead_staging_copies removes one a killed process left behind.
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+    # A creation lockdown failure is logged under the staging name; name the key.
+    _reassert_owner_only(key_path)
+    return True
 
 
 def _compute_hash(self: SecurityEventLog, event: SecurityEvent) -> str:
