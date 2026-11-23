@@ -20377,6 +20377,8 @@
         "side_panel": "Painel lateral",
         "side_panel_always_open": "Manter o painel lateral aberto",
         "side_panel_always_open_hint": "Abre o painel lateral em todos os chats, inclusive nos novos e depois de recarregar. Se você fechar, ele fica fechado até você trocar de chat. No celular, esta configuração não se aplica.",
+        "side_panel_swipe": "Deslizar para abrir e fechar o painel lateral",
+        "side_panel_swipe_hint": "No computador, deslizar dois dedos para o lado no trackpad sobre um chat ou a página Bots abre e fecha o painel lateral. Desative para impedir isso; o botão do painel e o atalho de teclado continuam funcionando. No celular, esta configuração não se aplica.",
         "side_panel_pin_summary": "Fixar o resumo no painel lateral",
         "side_panel_pin_summary_hint": "Mostra o resumo como a primeira aba do painel lateral. Quando o painel abre, ele mostra o resumo. Se você abrir um arquivo ou outro item, esse item continua aparecendo. Precisa dos resumos de sessão ativados.",
         "side_panel_pin_summary_needs_session_summaries": "Os resumos de sessão estão desativados. Ative-os em Configurações → Chat → Sessões para fixar o resumo.",

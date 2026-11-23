@@ -19844,6 +19844,8 @@
         "side_panel": "Seitenleiste",
         "side_panel_always_open": "Seitenpanel offen halten",
         "side_panel_always_open_hint": "Öffnet das Seitenpanel in jedem Chat, auch in neuen Chats und nach dem Neuladen. Schließt du es, bleibt es zu, bis du den Chat wechselst. Auf dem Smartphone gilt diese Einstellung nicht.",
+        "side_panel_swipe": "Seitenpanel per Wischen öffnen und schließen",
+        "side_panel_swipe_hint": "Auf dem Desktop öffnet und schließt ein seitliches Wischen mit zwei Fingern auf dem Trackpad über einem Chat oder der Bots-Seite das Seitenpanel. Schalte das aus, um es zu verhindern; die Panel-Schaltfläche und das Tastenkürzel funktionieren weiter. Auf dem Smartphone gilt diese Einstellung nicht.",
         "side_panel_pin_summary": "Zusammenfassung im Seitenpanel anheften",
         "side_panel_pin_summary_hint": "Zeigt die Zusammenfassung als ersten Tab im Seitenpanel. Wenn sich das Panel öffnet, zeigt es die Zusammenfassung. Öffnest du eine Datei oder ein anderes Element, wird weiterhin dieses angezeigt. Dafür müssen Sitzungszusammenfassungen eingeschaltet sein.",
         "side_panel_pin_summary_needs_session_summaries": "Sitzungszusammenfassungen sind ausgeschaltet. Schalte sie unter Einstellungen → Chat → Sitzungen ein, um die Zusammenfassung anzuheften.",

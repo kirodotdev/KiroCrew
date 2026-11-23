@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import { useMotionValue } from 'framer-motion'
 import { takeOverDrawer } from '../../../hooks/useDrawerSwipe'
 import { shownWithin, useTrackpadSwipe } from '../../../hooks/useTrackpadSwipe'
+import { useSidePanelSwipe } from '../../../hooks/useSidePanelSwipe'
 import { idleTrackpadDrag, leadTrackpadSamples, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../../hooks/trackpadPanelDrag'
 import { openActivityPanel } from '../../../store/chatSlice'
 import { beginPanelSlide, retirePanelSlide } from '../../../utils/panelSlide'
@@ -41,7 +42,8 @@ interface ChatPanelTrackpadSwipeOptions {
  *
  * Bound on the shell grid that holds both the chat and the column, so a run
  * keeps going when the panel arrives under the pointer. Only for a right-docked
- * panel, never while the find pane holds the dock or in an embed frame. The
+ * panel, never while the find pane holds the dock or in an embed frame, and
+ * only while Settings → Chat → Side panel allows the swipe (`useSidePanelSwipe`). The
  * left sessions drawer is a phone surface; on desktop the sessions list is a
  * column with no gesture. A rightward run with the panel closed, or a leftward
  * one with it open, is left to the browser.
@@ -67,7 +69,8 @@ export function useChatPanelTrackpadSwipe({
   // work that width would cause until it docks (panelSlide).
   useLayoutEffect(() => (deskSlide ? beginPanelSlide() : undefined), [deskSlide])
 
-  const enabled = !isMobile && !embedded && !!activitySlot && !searchOpen && sidePanelDock === 'right'
+  const swipeAllowed = useSidePanelSwipe()
+  const enabled = swipeAllowed && !isMobile && !embedded && !!activitySlot && !searchOpen && sidePanelDock === 'right'
   const rootRef = useMemo(() => ({ current: activitySlot?.parentElement ?? null }), [activitySlot])
   // Updated during render, so a callback that outlives a session switch reads
   // the session now on screen, not the one it started in.
