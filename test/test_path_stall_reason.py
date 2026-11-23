@@ -69,7 +69,12 @@ def test_write_stall_still_refuses_and_is_worded_as_a_stall(tmp_path: Path, monk
 
 
 def test_write_match_keeps_its_wording(monkeypatch) -> None:
-    monkeypatch.setattr(paths, "_path_in_home_dirs", lambda *a, **k: True)
+    # Every gate row matches except the MCP registries, whose refusal adds a remedy.
+    monkeypatch.setattr(
+        paths,
+        "_path_in_home_dirs",
+        lambda path, rows, *a, **k: rows is not paths._MCP_REGISTRY_ROWS,
+    )
     reason = security.sensitive_write_path_refusal("/x/config.json")
     assert reason == "Blocked: write to protected path: /x/config.json"
     assert not security.is_unverifiable_path_refusal(reason)

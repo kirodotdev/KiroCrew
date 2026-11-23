@@ -404,6 +404,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # by rename, which detaches this seal in a running sandbox (the ``config.json``
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
+    # The MCP page's server store, absent until the first server is added: while absent
+    # a sandbox could create it holding a server of its choosing. Every reader answers
+    # ``{}`` as an absent file (no servers), which is criterion 1; a reader frozen at
+    # ``{}`` lists fewer servers than are there, which is criterion 2.
+    "mcp.json",
     "decisions_consent.json",
     # The owner's memory egress consent: absent until the first remote provider is
     # chosen, and while absent a sandbox could create it holding a grant. Its writer

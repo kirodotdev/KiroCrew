@@ -529,9 +529,13 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             matched = under(rule_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
+        remedy = matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
-    return f"Blocked: write to protected path: {path_str}" if matched else None
+    if not matched:
+        return None
+    refusal = f"Blocked: write to protected path: {path_str}"
+    return f"{refusal}. {MCP_REGISTRY_REMEDY}" if remedy else refusal
 
 
 def _stall_refusal(exc: PathResolutionStalled, path_str: str) -> str:
@@ -881,8 +885,10 @@ from .paths_lists import (  # noqa: E402
     _KEYSTONE_ARTIFACT_PARENTS,
     _KEYSTONE_ARTIFACT_SUFFIXES,
     _KIRO_PERMISSION_RULE_LEAVES,
+    _MCP_REGISTRY_ROWS,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
+    MCP_REGISTRY_REMEDY,
     _leaf_segments,
     _native_store_write,
 )
@@ -923,6 +929,8 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.security.paths_lists import (  # noqa: F401
+        _CREW_MCP_JSON_LEAF,
+        _CREW_MCP_REGISTRY_ROWS,
         _CREW_SECRET_LEAVES,
         _KIRO_AGENTS_DIR,
         _KIRO_CLI_WRITE_TIER_LEAVES,
