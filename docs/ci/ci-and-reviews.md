@@ -1576,7 +1576,11 @@ calls (the repository tree, then the manifest blob). The composite
 `setup-python` step of a job whose `runs-on` can name a CodeBuild project,
 except in `fast-gate.yml`: that workflow's own contract
 (`test_fast_gate_barrier.py`) puts `setup-python` directly after the checkout,
-so its jobs are not seeded and still make the two calls each. On
+so its jobs are not seeded and still make the two calls each. In a workflow
+another repository can call (`workflow_call`), the checkout is the caller's
+tree, which does not hold the action, so there the seed step carries `if:
+github.repository == 'kirodotdev/KiroCrew'` and is skipped before the action is
+loaded. On
 `runner.environment == 'self-hosted'` it looks up the runner (OS, OS version,
 architecture) and the requested version in `python-versions.txt` beside it,
 downloads that row's archive -- the release asset `setup-python` itself would

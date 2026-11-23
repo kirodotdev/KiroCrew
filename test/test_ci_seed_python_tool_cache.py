@@ -8,6 +8,8 @@ hold for that to be safe, and each is checked against the tree, not a list:
 
 * every ``setup-python`` step a CodeBuild runner can reach is preceded by the
   seed, asking for the same version, in a job whose checkout holds the action
+  -- and in a workflow another repository can call, whose checkout is then
+  the caller's tree, the seed runs only in this repository
   -- except in the Fast Gate workflow, whose own contract
   (``test_fast_gate_barrier.py``) puts ``setup-python`` directly after the
   checkout, and whose jobs therefore carry no seed;
@@ -40,6 +42,7 @@ import pytest
 import test_fast_gate_barrier as barrier
 import yaml
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +56,9 @@ CODEBUILD_LABEL = {
     "linux": "codebuild-kirocrew-gha-linux",
     "win32": "codebuild-kirocrew-gha-windows",
 }
+# The step condition that keeps the seed out of a run whose checkout is another
+# repository's tree. In a called workflow `github.repository` is the caller's.
+THIS_REPOSITORY_ONLY = "github.repository == 'kirodotdev/KiroCrew'"
 WARNING = "::warning title=seed-python-tool-cache::"
 ERROR = "::error title=seed-python-tool-cache::"
 
@@ -92,6 +98,22 @@ def _workflows() -> dict[str, dict]:
         path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted(WORKFLOWS.glob("*.y*ml"))
     }
+
+
+def _callable(workflow: dict) -> bool:
+    """Whether another workflow, possibly in another repository, can call it."""
+    # PyYAML reads the bare key `on` as the boolean True.
+    triggers = workflow.get("on", workflow.get(True))
+    return "workflow_call" in (triggers if isinstance(triggers, (dict, list)) else [triggers])
+
+
+def _expected_seed_condition(site: Site) -> str | None:
+    """The `if` the seed must carry: the setup step's own, plus the repository
+    guard where the checkout can be another repository's tree."""
+    own = site.steps[site.index].get("if")
+    if not _callable(_workflows()[site.workflow]):
+        return own
+    return THIS_REPOSITORY_ONLY if own is None else f"{THIS_REPOSITORY_ONLY} && ({own})"
 
 
 def _codebuild_oses(job: dict) -> list[str]:
@@ -160,12 +182,26 @@ def test_every_codebuild_setup_python_step_follows_the_seed() -> None:
         seeded_version = (seed.get("with") or {}).get("python-version", default)
         if (
             seed.get("uses") != ACTION_REF
-            or seed.get("if") != step.get("if")
+            or seed.get("if") != _expected_seed_condition(site)
             or str(seeded_version) != str(step["with"]["python-version"])
             or "continue-on-error" in seed
         ):
             unseeded.append(f"{site.workflow}:{site.job}")
     assert unseeded == []
+
+
+def test_a_callable_workflow_seeds_only_in_this_repository() -> None:
+    guarded = [site for site in _seeded_sites() if _callable(_workflows()[site.workflow])]
+    assert guarded, "no seeded workflow is callable; this test measures nothing"
+    for site in guarded:
+        condition = str(site.steps[site.index - 1].get("if"))
+        assert condition.startswith(THIS_REPOSITORY_ONLY), f"{site.workflow}:{site.job}"
+    # The guard belongs to callable workflows only: elsewhere the seed keeps
+    # exactly the setup step's own condition.
+    for site in _seeded_sites():
+        if site not in guarded:
+            seed, step = site.steps[site.index - 1], site.steps[site.index]
+            assert seed.get("if") == step.get("if"), f"{site.workflow}:{site.job}"
 
 
 def test_the_seed_appears_only_directly_before_setup_python() -> None:
@@ -207,8 +243,11 @@ def test_every_seeded_job_checks_the_action_out_first() -> None:
         listed = any(
             action_path in str(option.get("sparse-checkout", "")).split() for option in options
         )
-        other_ref = any(option.get("ref") or option.get("repository") for option in options)
-        if not (whole_tree or listed) or other_ref:
+        elsewhere = any(
+            option.get("ref") or option.get("repository") or option.get("path")
+            for option in options
+        )
+        if not (whole_tree or listed) or elsewhere:
             missing.append(f"{site.workflow}:{site.job}")
     assert missing == []
 
@@ -462,7 +501,7 @@ class Seed:
             ["bash", str(self.script)],
             env=env,
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=FALLBACK_TIMEOUT_SECS,
             check=False,
         )
