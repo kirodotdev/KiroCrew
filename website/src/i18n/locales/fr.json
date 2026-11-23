@@ -13605,6 +13605,7 @@
         "ack_failed": "Impossible d'enregistrer l'accusé de réception. Réessaie.",
         "ack_job_gone": "Cette tâche n'existe plus, il n'y a donc rien à confirmer. Tu peux supprimer cette notification.",
         "delete": "Supprimer",
+        "done": "Terminé",
         "delete_failed": "Impossible de supprimer cette notification. Réessaie."
       },
       "errorCard": {

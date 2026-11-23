@@ -4,7 +4,7 @@ The duplicate and silent paths, the dashboard tab and bell, the channel the job 
 scheduled from, and the Slack post with its uploads; the dedup anchor advances only
 on a confirmed delivery.
 
-Orchestrator fields read: ``dashboard_state``, ``sessions``, ``slack``.
+Orchestrator fields read: ``cron_svc``, ``dashboard_state``, ``sessions``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -28,10 +28,12 @@ if TYPE_CHECKING:
         build_cron_ack_block,
         inject_cron_result_to_dashboard,
         logger,
+        note_marks_one_shot,
         prefetch_cron_history,
         redact_credentials,
         redact_exfiltration_urls,
         render_for_slack,
+        run_consumes_one_shot,
         sel,
     )
 
@@ -213,12 +215,17 @@ async def _deliver_cron_agent_result(
         redacted_for_dash, _ = redact_credentials(redacted_for_dash)
         safe_name, _ = redact_exfiltration_urls(job.name)
         safe_name, _ = redact_credentials(safe_name)
-        notify_meta: dict[str, str | float] = {"job_id": job.id}
+        notify_meta: dict[str, str | float | bool] = {"job_id": job.id}
         # `result_ts` names the stored result this note carries, so the dashboard
         # can tell whether the job's current `last_result` is still that one. A
         # 24h repeat reminder carries a rewritten text, so it names none.
         if result_text == job.last_result:
             notify_meta["result_ts"] = job.last_result_ts
+        # A one-shot this run removes has no future run to acknowledge: the
+        # dashboard offers Done, which dismisses the note. A failed run keeps
+        # the job paused, so its note keeps Acknowledge.
+        if run_consumes_one_shot(job) and await note_marks_one_shot(self.cron_svc, job):
+            notify_meta["one_shot"] = True
         # Gate the slot linkage on not hide_in_chat for parity with the
         # three inject sites above. Without this, a job flipped to
         # hide_in_chat=True that still owns an older cron-{id} slot would

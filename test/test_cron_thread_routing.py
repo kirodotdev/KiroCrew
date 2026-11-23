@@ -150,7 +150,8 @@ def _reset_surface_registry():
     set_dashboard_surfaced(())
 
 
-def _run_callback(gateway, job, stream_result="done"):
+def _run_callback(gateway, job, stream_result="done", stored=None):
+    """Run ``job`` through the cron callback; *stored* is the store row it reads back."""
     captured_callback = None
 
     async def fake_stream(client, msg, **kwargs):
@@ -165,6 +166,7 @@ def _run_callback(gateway, job, stream_result="done"):
             captured_callback = on_job
             service = MagicMock()
             service.start = AsyncMock()
+            service.get_job_async = AsyncMock(return_value=stored)
             return service
 
         mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
@@ -705,6 +707,63 @@ class TestCronCallbackDashboardChat:
             "cron output",
             meta={"job_id": "j1", "result_ts": job.last_result_ts},
         )
+
+    @pytest.mark.usefixtures("_reset_surface_registry")
+    def test_one_shot_note_is_marked_one_shot(self) -> None:
+        """A one-shot reminder's note says so, so the dashboard offers Done."""
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _use_real_slots(gateway)
+        job = _make_job(
+            persistent_session=False,
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        stored = _make_job(schedule=job.schedule)
+        _run_callback(gateway, job, stream_result="reminder", stored=stored)
+        gateway.dashboard_state.notify.assert_any_call(
+            "cron",
+            "Cron: test-job",
+            "reminder",
+            meta={"job_id": "j1", "result_ts": job.last_result_ts, "one_shot": True},
+        )
+
+    @pytest.mark.usefixtures("_reset_surface_registry")
+    def test_one_shot_rescheduled_during_the_run_keeps_acknowledge(self) -> None:
+        """A one-shot another writer gave a new schedule is kept, so its note is not one-shot."""
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _use_real_slots(gateway)
+        job = _make_job(
+            persistent_session=False,
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        stored = _make_job(schedule=CronSchedule(kind="every", every_secs=3600))
+        _run_callback(gateway, job, stream_result="reminder", stored=stored)
+        metas = [c.kwargs["meta"] for c in gateway.dashboard_state.notify.call_args_list]
+        assert metas and not any("one_shot" in m for m in metas)
+
+    @pytest.mark.usefixtures("_reset_surface_registry")
+    def test_failed_one_shot_note_keeps_acknowledge(self) -> None:
+        """A failed one-shot is kept and paused, so its note is not marked one-shot."""
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _use_real_slots(gateway)
+        job = _make_job(
+            persistent_session=False,
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+
+        def _refused(job, _tally):
+            job.last_status = "error"
+            return True
+
+        with patch("kiro_crew.slack.gateway._apply_gate_verdict", _refused):
+            _run_callback(gateway, job, stream_result="reminder")
+        metas = [c.kwargs["meta"] for c in gateway.dashboard_state.notify.call_args_list]
+        assert metas and not any("one_shot" in m for m in metas)
 
     @pytest.mark.usefixtures("_reset_surface_registry")
     def test_inject_fires_on_dedup_suppression(self) -> None:

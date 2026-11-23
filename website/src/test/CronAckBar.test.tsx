@@ -73,6 +73,50 @@ describe('CronAckBar', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce())
   })
 
+  it.each([
+    [false, { ok: false, code: 'job_not_found' }],
+    [true, { ok: false, code: 'job_not_found' }],
+    // The run's merge kept the job (another writer re-scheduled it): its ack is saved.
+    [false, { ok: true }],
+  ])('offers Done on a one-shot reminder (read: %s), which dismisses it once the store answers %o', async (acked, reply) => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.ackCron).mockResolvedValueOnce(reply)
+    const onDone = vi.fn()
+    renderWithProviders(<CronAckBar notification={{ ...baseNotif, one_shot: true, acked }} onDone={onDone} />)
+    expect(screen.queryByRole('button', { name: /Acknowledge/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Acknowledged/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Done/ }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce())
+    expect(api.ackCron).toHaveBeenCalledWith('job-123', 'Job output here', baseNotif.ts)
+    expect(api.deleteNotification).toHaveBeenCalledWith(baseNotif.ts)
+  })
+
+  it.each([
+    ['the store saves nothing without saying why', () => Promise.resolve({ ok: false })],
+    ['the ack request fails', () => Promise.reject(new Error('503'))],
+  ])('keeps a one-shot note and deletes nothing when %s', async (_case, reply) => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.ackCron).mockImplementationOnce(reply)
+    const onDone = vi.fn()
+    renderWithProviders(<CronAckBar notification={{ ...baseNotif, one_shot: true }} onDone={onDone} />)
+    fireEvent.click(screen.getByRole('button', { name: /Done/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn't save this acknowledgement/)
+    expect(api.deleteNotification).not.toHaveBeenCalled()
+    expect(onDone).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Done/ })).toBeInTheDocument()
+  })
+
+  it('keeps a one-shot note open and says so when Done fails', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.deleteNotification).mockRejectedValueOnce(new Error('offline'))
+    const onDone = vi.fn()
+    renderWithProviders(<CronAckBar notification={{ ...baseNotif, one_shot: true }} onDone={onDone} />)
+    fireEvent.click(screen.getByRole('button', { name: /Done/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn't delete this notification/)
+    expect(onDone).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Done/ })).toBeInTheDocument()
+  })
+
   it('keeps the panel open and says so when Delete fails', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.deleteNotification).mockRejectedValueOnce(new Error('offline'))

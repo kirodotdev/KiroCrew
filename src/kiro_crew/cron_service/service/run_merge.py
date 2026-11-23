@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.cron_service.execution import (
     apply_run_record,
+    one_shot_consume_owed,
     pause_at_current_limit,
     pause_changed_since_start,
 )
@@ -283,12 +284,7 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
         #   removed_one_shot -- did this path remove a PRESENT job (audit)?
         # Kept apart because `_load` degrades an unreadable store to an empty
         # list without raising, so presence says nothing about what is owed.
-        delete_owed = (
-            job.delete_after_run
-            and job.last_status != "error"
-            and not (job.fire_time_denied or job.run_never_started)
-            and (job.id not in by_id or by_id[job.id].schedule == job.schedule)
-        )
+        delete_owed = one_shot_consume_owed(job, by_id.get(job.id))
         removed_one_shot = False
         restore: list[tuple[CronJob, str]] = []
         consumed_row = False
