@@ -492,9 +492,13 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.dashboard.handlers.config_all_settings import attach_descriptor
     from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
 
+    denied = await require_owner_for_dashboard_caller(request, "config.schema")
+    if denied is not None:
+        return denied
     entries = SCHEMA_REGISTRY
 
     # Filter by tags (comma-separated, intersection)

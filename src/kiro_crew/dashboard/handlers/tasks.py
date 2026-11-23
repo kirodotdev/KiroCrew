@@ -318,6 +318,11 @@ def _list_rows_sync(
 
 async def api_tasks_list(request: web.Request) -> web.Response:
     """GET /api/tasks?state=&lane=&limit= -- task rows, oldest first."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "tasks.list")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     task_state = request.query.get("state") or None
     if task_state is not None and task_state not in taskq_model.STATES:
@@ -377,6 +382,11 @@ def _detail_sync(store: Any, task_id: str) -> dict[str, Any] | None:
 
 async def api_task_detail(request: web.Request) -> web.Response:
     """GET /api/tasks/{task_id} -- one row plus its events tail."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "tasks.detail")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     task_id = request.match_info["task_id"]
     store = _store_of(state)

@@ -801,6 +801,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_STT_FAILED,
         _CODE_STT_MISSING_AUDIO,
         _CODE_STT_UNAVAILABLE,
+        OWNER_ONLY_SPEECH_FIELDS,
         _audit_custom_model_disclosure,
         _audit_stt_custom_model_write_allowed,
         _audit_stt_refusal,
@@ -811,6 +812,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_background_tasks,
         _stt_custom_model_refusal,
         _stt_positive_int,
+        deny_non_owner_speech_fields,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
         _LANGUAGE_IDENTIFYING_PROVIDERS,

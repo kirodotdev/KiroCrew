@@ -1129,9 +1129,10 @@ class TestSttConfigCustomModelBoundary:
         """
         resp = await core_mod.api_stt_config(self._put(body, user=self._OTHER_DASHBOARD))
 
+        # The route's own owner gate refuses this session before the custom-model
+        # check runs (and audits through the shared SEL path).
         assert resp.status == 403
         assert json.loads(resp.body)["code"] == "owner_only"
-        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
         assert self._stored(seeded_config) == {}
 
     @pytest.mark.asyncio
@@ -1162,19 +1163,19 @@ class TestSttConfigCustomModelBoundary:
         assert stored["endpointing"] is False
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_dashboard_token_still_writes_the_ordinary_stt_fields(
+    async def test_a_non_owner_dashboard_token_is_refused_the_ordinary_stt_fields(
         self, seeded_config, fake_sel
     ) -> None:
-        """Narrowing the custom-model pair to the owner must not narrow the rest:
-        a second dashboard session keeps its language and toggles."""
+        """The speech settings are the owner's (and a teammate's): a dashboard
+        session that is neither, such as an allow-listed messaging user's, is
+        refused the whole write, not only the custom-model pair."""
         resp = await core_mod.api_stt_config(
             self._put({"language_code": "de-DE", "streaming": False}, user=self._OTHER_DASHBOARD)
         )
 
-        assert resp.status == 200
-        stored = self._stored(seeded_config)
-        assert stored["language_code"] == "de-DE"
-        assert stored["streaming"] is False
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "owner_only"
+        assert self._stored(seeded_config) == {}
 
     @pytest.mark.asyncio
     async def test_an_app_token_cannot_write_back_a_custom_selection_already_in_force(
@@ -1258,8 +1259,12 @@ class TestSttConfigCustomModelBoundary:
         assert owner["custom_model_path"] == self._PATH
         assert owner["custom_model_sha256"] == self._DIGEST
 
+        # A dashboard session that is neither the owner nor a teammate is refused
+        # the whole read.
+        refused = await core_mod.api_stt_config(self._get(user=self._OTHER_DASHBOARD))
+        assert refused.status == 403
+        assert json.loads(refused.body)["code"] == "owner_only"
         for withheld in (
-            self._get(user=self._OTHER_DASHBOARD),
             self._get(app_token="meetings"),
             self._get(app_token=None),
         ):
@@ -1286,7 +1291,8 @@ class TestSttConfigCustomModelBoundary:
         )
 
         await core_mod.api_stt_config(self._get())
-        await core_mod.api_stt_config(self._get(user=self._OTHER_DASHBOARD))
+        # An app token reads the settings but is withheld the pair.
+        await core_mod.api_stt_config(self._get(app_token="meetings"))
 
         reads = [
             call.kwargs

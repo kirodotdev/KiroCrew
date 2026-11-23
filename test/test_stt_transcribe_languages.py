@@ -21,6 +21,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,8 +42,13 @@ def _req(method: str = "GET", body: dict | None = None) -> Any:
     req = MagicMock(spec=web.Request)
     req.method = method
     req.path = "/api/config/stt"
-    claims = {"user": "dashboard", "app": ""}
+    # The local owner's own session (no owner configured): the route asks the
+    # owner gate before it reads the settings.
+    claims = {"user": "local-app", "app": ""}
     req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = claims.__getitem__
+    req.app = {"state": SimpleNamespace(owner_id="")}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     return req

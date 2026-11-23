@@ -30,7 +30,10 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.chat_utils import run_config_write
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import voice as voice_metrics
 from kiro_crew.sandbox import SandboxUnavailableError, without_python_env
@@ -270,6 +273,11 @@ def _tts_language_codes() -> list[str]:
 
 async def api_voice_config(request: web.Request) -> web.Response:
     """GET/PUT /api/voice/config — read or update voice settings."""
+    # The settings name the host's AWS profile and region, and synthesis spends
+    # on them, so only the owner or a teammate reads or writes them.
+    denied = await require_owner_for_dashboard_caller(request, "voice.config")
+    if denied is not None:
+        return denied
     if request.method == "GET":
         return web.json_response(
             {
@@ -298,6 +306,12 @@ async def api_voice_config(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # An app token reaching this route still may not pick the AWS profile or region.
+    from kiro_crew.dashboard.handlers.core import deny_non_owner_speech_fields
+
+    field_denied = deny_non_owner_speech_fields(request, body, "voice.config")
+    if field_denied is not None:
+        return field_denied
 
     # Validate the WHOLE patch before touching _vc, then apply it in one pass.
     # Mutating as we walk the fields makes a rejected request a torn write: the
@@ -437,6 +451,9 @@ async def api_voice_config(request: web.Request) -> web.Response:
 
 async def api_voice_synthesize(request: web.Request) -> web.Response:
     """POST /api/voice/synthesize — identified, cancellable provider streaming."""
+    denied = await require_owner_for_dashboard_caller(request, "voice.synthesize")
+    if denied is not None:
+        return denied
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err

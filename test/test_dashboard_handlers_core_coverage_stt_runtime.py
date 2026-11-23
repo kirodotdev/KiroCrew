@@ -702,6 +702,22 @@ class TestSttTranscribe:
         )
         _floor_monkeypatch.setattr(core_mod, "audio_exceeds_secs", AsyncMock(return_value=False))
 
+    @pytest.fixture(autouse=True)
+    def _as_the_owner(self, _floor_monkeypatch):
+        """Every request here is the owner's own: transcription asks the owner gate
+        first, which reads the caller's subject against the gateway's owner."""
+        import sys
+
+        module = sys.modules[__name__]
+        plain = _req
+
+        def owner_req(**kwargs):
+            kwargs.setdefault("user", "local-app")
+            kwargs.setdefault("app", {"state": SimpleNamespace(owner_id="")})
+            return plain(**kwargs)
+
+        _floor_monkeypatch.setattr(module, "_req", owner_req)
+
     @pytest.mark.asyncio
     async def test_unavailable_backend_is_503_naming_the_reason(self, monkeypatch) -> None:
         """The provider's own code and prose are forwarded rather than flattened:

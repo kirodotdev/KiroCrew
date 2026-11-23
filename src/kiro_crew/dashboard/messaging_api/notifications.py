@@ -24,6 +24,17 @@ if TYPE_CHECKING:
     )
 
 
+async def _feed_write_refusal(request: web.Request, operation: str) -> web.Response | None:
+    """The owner gate for a feed write: the owner or a teammate, never another session.
+
+    The feed is the owner's record of cron runs and approvals, so a session that is
+    neither may not delete, clear or mark it. Reading it is unchanged.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    return await require_owner_for_dashboard_caller(request, operation)
+
+
 async def api_notifications(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     hidden = _withheld_from(request)
@@ -45,6 +56,9 @@ async def api_notifications(request: web.Request) -> web.Response:
 
 async def api_notification_delete(request: web.Request) -> web.Response:
     """DELETE /api/notifications — delete a single notification by timestamp."""
+    denied = await _feed_write_refusal(request, "notifications.delete")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -113,6 +127,9 @@ def _refuse_owner_only_note(
 
 async def api_notifications_clear(request: web.Request) -> web.Response:
     """POST /api/notifications/clear — clear all notifications."""
+    denied = await _feed_write_refusal(request, "notifications.clear")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     withheld = _withheld_from(request)
     if withheld is not None and any(withheld(note) for note in state._notification_log):
@@ -130,6 +147,9 @@ async def api_notifications_clear(request: web.Request) -> web.Response:
 
 async def api_notification_ack(request: web.Request) -> web.Response:
     """POST /api/notifications/ack — mark a single notification as read."""
+    denied = await _feed_write_refusal(request, "notifications.ack")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -150,6 +170,9 @@ async def api_notification_ack(request: web.Request) -> web.Response:
 
 async def api_notification_unack(request: web.Request) -> web.Response:
     """POST /api/notifications/unack — mark a single notification as unread."""
+    denied = await _feed_write_refusal(request, "notifications.unack")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -192,6 +215,9 @@ async def api_notification_unack(request: web.Request) -> web.Response:
 
 async def api_notifications_ack_all(request: web.Request) -> web.Response:
     """POST /api/notifications/ack-all — mark all notifications as read."""
+    denied = await _feed_write_refusal(request, "notifications.ack_all")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     hidden = _withheld_from(request)
     if hidden is not None:

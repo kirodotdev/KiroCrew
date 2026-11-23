@@ -347,8 +347,21 @@ async def test_reads_in_the_same_modules_stay_open(gate_recorder) -> None:
     # The instances control plane is owner-only by its own contract, so its reads
     # legitimately refuse; every other module's reads must not. Instances gates
     # inside ``_guard``, which the stand-in does not replace, so those surface by
-    # status rather than through the recorder.
-    unexpected = [r for r in gated if not r[1].startswith("/api/instances")]
+    # status rather than through the recorder. The script hooks, the webhook
+    # registry, the denied-command and tool-grant lists, the posture view and the
+    # governance ceiling are the owner's own configuration, read gated one route at
+    # a time (``test_owner_or_teammate_route_gates``), never by a module guard.
+    owner_reads = {
+        "/api/hooks",
+        "/api/webhooks",
+        "/api/security/denied-commands",
+        "/api/security/tool-grants",
+        "/api/security/posture",
+        "/api/governance/policy",
+    }
+    unexpected = [
+        r for r in gated if not r[1].startswith("/api/instances") and r[1] not in owner_reads
+    ]
     assert not unexpected, f"reads closed by the gate: {unexpected}"
 
 
