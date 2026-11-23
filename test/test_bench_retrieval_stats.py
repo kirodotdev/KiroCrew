@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.eval.bench.corpus import (
+    CAT_ADVERSARIAL,
     CAT_MULTI_HOP,
     CAT_SINGLE_HOP,
     BenchInstance,
@@ -269,6 +270,70 @@ def test_instances_without_gold_are_not_counted_in_the_denominator() -> None:
     ok, why = corpus_has_distractors(corpus)
     assert ok is True
     assert "1/1 scorable queries" in why
+
+
+def test_unanswerable_queries_are_not_counted_in_the_denominator() -> None:
+    """The guard counts the same queries that ``scorable_retrieval`` scores.
+
+    LoCoMo's adversarial items are unanswerable yet still carry gold sessions.
+    Retrieval skips them, so the guard's "scorable queries" count must too.
+    """
+    corpus = Corpus(
+        "locomo",
+        "locomo10",
+        (
+            BenchInstance(
+                "conv-1",
+                (
+                    _session("s1", "the scuba lessons in Malta"),
+                    _session("s2", "an unrelated session about bread"),
+                ),
+                (
+                    _query("q1", gold_session_ids=("s1",)),
+                    _query(
+                        "q2",
+                        category=CAT_ADVERSARIAL,
+                        gold_session_ids=("s2",),
+                        unanswerable=True,
+                    ),
+                ),
+            ),
+        ),
+    )
+    scored = sum(1 for i in corpus.instances for q in i.queries if q.scorable_retrieval)
+    ok, why = corpus_has_distractors(corpus)
+    assert ok is True
+    assert scored == 1
+    assert "1/1 scorable queries" in why, why
+
+
+def test_distractors_seen_only_by_unanswerable_queries_do_not_pass_the_guard() -> None:
+    """An evidence-only scorable query stays refused beside an unanswerable one."""
+    corpus = Corpus(
+        "mixed",
+        "v0",
+        (
+            BenchInstance(
+                "i1",
+                (
+                    _session("s1", "the scuba lessons in Malta"),
+                    _session("s2", "an unrelated session about bread"),
+                ),
+                (
+                    _query("q1", gold_session_ids=("s1", "s2")),
+                    _query(
+                        "q2",
+                        category=CAT_ADVERSARIAL,
+                        gold_session_ids=("s1",),
+                        unanswerable=True,
+                    ),
+                ),
+            ),
+        ),
+    )
+    ok, why = corpus_has_distractors(corpus)
+    assert ok is False, why
+    assert "evidence-only" in why
 
 
 def test_run_retrieval_refuses_an_evidence_only_corpus(tmp_path: Path) -> None:
