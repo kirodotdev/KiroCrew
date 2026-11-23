@@ -49,6 +49,11 @@ The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
                                                # last N first-parent commits
     "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
 
+and two tables no reader on main takes yet (`scripts/ci_test_os_tables.py`):
+
+    "os_sensitive": {src file: "W1" | "W2"},
+    "windows_targeting": [test file, ...]
+
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
 clone cannot build `cochange` unless it holds `--commits` commits and the one
@@ -101,6 +106,7 @@ from __future__ import annotations
 import argparse
 import ast
 import gzip
+import importlib
 import json
 import subprocess
 import sys
@@ -109,12 +115,18 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
+# The sibling under the same package this module was loaded from: `scripts.` in
+# the tests, top-level when run as a script, so no path edit and no second copy.
+_os_tables_module = importlib.import_module(
+    f"{__package__ + '.' if __package__ else ''}ci_test_os_tables"
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 1
 FULL = 3
 CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
-BUNDLE_TABLES = ("cochange", "guard")
+BUNDLE_TABLES = ("cochange", "guard", "os_sensitive", "windows_targeting")
 NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
@@ -520,6 +532,18 @@ def bundle(
             "no commit in the window changed a src file and a test file together",
         ),
         ("guard", lambda: guard_tier(root), "corpus_gates failed", NO_GUARD),
+        (
+            "os_sensitive",
+            lambda: _os_tables_module.os_sensitive(root),
+            "src scan failed",
+            "the scan found no OS-sensitive src file",
+        ),
+        (
+            "windows_targeting",
+            lambda: _os_tables_module.windows_targeting(root),
+            "test scan failed",
+            "the scan found no test file that targets Windows",
+        ),
     )
     for name, build, failed, empty in tables:
         try:

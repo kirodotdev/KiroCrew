@@ -142,6 +142,8 @@ def _fixture_repo(tmp_path: Path) -> Path:
     """Four commits: a root, two that change `a.py` with `test_a.py`, one with non-ASCII paths."""
     repo = tmp_path / "repo"
     _write(repo, {"src/kiro_crew/a.py": "", "test/test_a.py": "", "docs/x.md": ""})
+    # One src file and one test file the OS tables name.
+    _write(repo, {"src/kiro_crew/lock.py": "import fcntl\n", "test/test_windows_x.py": ""})
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "one")
@@ -204,6 +206,8 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
     assert doc["guard"] == TIER
     assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
+    assert doc["os_sensitive"] == {"src/kiro_crew/lock.py": "W2"}
+    assert doc["windows_targeting"] == ["test/test_windows_x.py"]
     assert ctm.load_map(out) == doc
     # select reads the bundle as it reads a schema-1 map.
     diff = tmp_path / "diff.txt"
@@ -254,6 +258,9 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     stale = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_stale.py"]}, "guard": ["x"]}
     monkeypatch.setattr(ctm, "guard_tier", scan_fails)
     doc, absent = ctm.bundle(stale, _shallow_clone(repo, 3), timeout=FALLBACK_TIMEOUT_SECS)
+    assert sorted(absent) == ["cochange", "guard"] and not {"cochange", "guard"} & set(doc)
+    # The same in a tree where no table can be built: the map alone is left.
+    doc, absent = ctm.bundle(stale, tmp_path / "no-tree", timeout=FALLBACK_TIMEOUT_SECS)
     assert doc == MAP and sorted(absent) == sorted(ctm.BUNDLE_TABLES)
     # The CLI names each table it left out, and still writes the map.
     map_path = tmp_path / "map.json"
@@ -263,9 +270,10 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     argv = ["--root", str(_shallow_clone(repo, 2)), "bundle", "--map", str(map_path)]
     assert ctm.main([*argv, "--out", str(out)]) == 0
     printed = capsys.readouterr().out
-    assert "bundle: tables none" in printed
-    assert all(f"::warning::{table} left out" in printed for table in ctm.BUNDLE_TABLES)
-    assert ctm.load_map(out) == MAP
+    assert "bundle: tables os_sensitive, windows_targeting," in printed
+    assert all(f"::warning::{table} left out" in printed for table in ("cochange", "guard"))
+    left = {k: v for k, v in ctm.load_map(out).items() if k not in ctm.BUNDLE_TABLES}
+    assert left == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
