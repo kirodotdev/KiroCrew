@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
+        EVENT_THINKING_CHUNK,
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
         FALLBACK_CANDIDATE_ATTEMPTS,
@@ -1180,6 +1181,20 @@ async def _run_inner_impl(
         found = names()
         return tuple(found) if isinstance(found, (tuple, list)) else ()
 
+    from kiro_crew.context_management import cap_streaming_text
+    from kiro_crew.security import StreamRedactor
+
+    # The run's reasoning goes to its card and its status read only: never the
+    # result, its file or the parent's report. Redacted as a stream, so a
+    # credential split across two thinking chunks never reaches the wire.
+    _thinking = StreamRedactor()
+
+    async def _send_thinking(text: str) -> None:
+        if not text:
+            return
+        info.streaming_thinking = cap_streaming_text(info.streaming_thinking + text)
+        await self._manager._fire_event("subagent_thinking", info, {"text": text})
+
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
         # this session (thinking chunks, tool-call updates, etc.) before
@@ -1214,6 +1229,10 @@ async def _run_inner_impl(
         # one.
         if not event.runtime_global:
             await self._manager._touch_activity(info)
+        if event.kind != EVENT_THINKING_CHUNK and not event.runtime_global:
+            # Any sender's frame may sit between two thoughts: release, never flush,
+            # so a credential split around it is still read whole.
+            await _send_thinking(_thinking.release_at_boundary())
         if event.kind == EVENT_TEXT_CHUNK:
             # The CC/raw provider only learns its served model once the
             # backend answers the first turn — by the first text chunk that
@@ -1259,6 +1278,9 @@ async def _run_inner_impl(
             else:
                 _result_file_started = await self._manager._start_result_file(info, result_text)
             await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
+        elif event.kind == EVENT_THINKING_CHUNK:
+            # A thought's last plain word ("now.") goes with its chunk, not after the reply.
+            await _send_thinking(_thinking.feed(event.text) + _thinking.release_sentence_end())
         elif event.kind == EVENT_PERMISSION_REQUEST:
             # Both kiro-cli and claude-agent-acp surface tool calls via
             # session/request_permission. Every one is settled by the run's
@@ -1573,6 +1595,9 @@ async def _run_inner_impl(
             _complete_event = event
             usage.settle(event)
             break
+
+    # The run's end lands whatever the thinking redactor still holds.
+    await _send_thinking(_thinking.flush())
 
     # A provider may finish without an explicit completion event. Its
     # current prompt stats are still the authoritative billing record.
