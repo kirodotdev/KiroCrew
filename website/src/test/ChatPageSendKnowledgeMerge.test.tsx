@@ -22,6 +22,8 @@ import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import type { KnowledgeBlock, KnowledgeResult } from '../pages/chat/useKnowledgeFetch'
+import * as transport from '../chat-core/transport/sendTurn'
+import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 
 const item = (id: string, content = `body-${id}`): KnowledgeResult => ({
   id, title: `T-${id}`, source: null, match_type: 'fts', tokens: 5, summary: '', content,
@@ -216,5 +218,35 @@ describe('create-failure knowledge recovery', { timeout: 20_000 }, () => {
     expect(note.body).toContain('knowledge context was not kept')
     // And it was NOT injected into slot-b's selection.
     expect(knowledge.injected).toHaveLength(0)
+  })
+})
+
+describe('a send Stop cancels before its POST', { timeout: 20_000 }, () => {
+  it('puts the picked knowledge back with the draft', async () => {
+    knowledge.pendingKnowledge = { items: [item('a')], totalTokens: 5 }
+    let release: (v: number | undefined) => void = () => {}
+    const wait = vi.spyOn(revisionSeed, 'baseRevisionForPress').mockReturnValue(new Promise((resolve) => { release = resolve }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/chat?autoSend=1']}><ChatPage /></MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    await waitFor(() => expect(wait).toHaveBeenCalled())
+    await act(async () => {
+      // The first thing requestStop does, while the send waits for the revision.
+      transport.abortPendingSends('slot-a')
+      release(undefined)
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(knowledge.injected.at(-1)?.map(i => i.id)).toEqual(['a']))
+    expect(sendChat).not.toHaveBeenCalled()
   })
 })
