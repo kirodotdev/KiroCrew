@@ -776,10 +776,10 @@ class TestDrivelessPathsOnWindows:
     """
 
     @pytest.fixture(autouse=True)
-    def _windows_reading(self, monkeypatch):
-        monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
-        monkeypatch.setattr(governance, "_expand", _nt_expand)
-        monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
+    def _windows_reading(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
+        _floor_monkeypatch.setattr(governance, "_expand", _nt_expand)
+        _floor_monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
 
     @pytest.mark.parametrize(
         "capability, scope", [("fs_read", "filesystem.read"), ("fs_write", "filesystem.write")]
