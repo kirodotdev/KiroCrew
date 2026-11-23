@@ -8007,6 +8007,7 @@
       "time_limit": "Zeitlimit",
       "time_limit_description": "Einen Lauf, der nach dieser Zeit noch läuft, beenden und als Zeitüberschreitung melden. Gilt für den ganzen Lauf. Standard: 30 Minuten.",
       "time_limit_minutes": "Zeitlimit in Minuten",
+      "time_limit_unrounded": "Das gespeicherte Limit ist {{limit}}. Dieses Feld zeigt es auf ganze Minuten gerundet, und beim Speichern bleibt es bei {{limit}}, solange du das Feld nicht änderst.",
       "mode_advice_minimal_context": "Dieser Job braucht den Agenten, liest sich aber so, als bräuchte er den gespeicherten Kontext nicht. Minimaler Kontext behält den Agenten und lässt den Rest weg.",
       "mode_advice_script": "Dieser Job liest sich wie eine mechanische Prüfung, die gar kein Nachdenken erfordert. Die günstigste Form ist ein Skript-Job, der keinen Agenten-Durchlauf verbraucht; frag im Chat nach, um einen zu erstellen. Minimaler Kontext ist hier die zweitbeste Wahl.",
       "model": "Modell",

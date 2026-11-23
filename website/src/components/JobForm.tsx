@@ -21,7 +21,7 @@ import { cronZonesQuery } from '../api/cronZonesQuery'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { fmtWeekday } from '../i18n/format'
+import { fmtDuration, fmtWeekday } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
 /** The picker's value while the default zone is unknown; Radix refuses an empty value. */
 const DEFAULT_ZONE_CHOICE = '__default__'
@@ -89,6 +89,13 @@ export const MAX_RUN_LIMIT_MIN = 1440
 /** A run limit in whole minutes, as the form shows it. */
 export function runLimitMinutes(secs: number): number {
   return Math.min(MAX_RUN_LIMIT_MIN, Math.max(1, Math.round(secs / 60)))
+}
+
+/** The stored limit as written, `1s` or `16m 40s`, when the minutes field can
+ *  only show it rounded; null when it is a whole number of minutes. */
+export function unroundedRunLimit(secs: number): string | null {
+  if (secs % 60 === 0) return null
+  return fmtDuration([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']], { dropZero: true })
 }
 
 /** Parse a CronJob into initial form state */
@@ -649,9 +656,12 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   /** The run time limit, in minutes: the whole run's budget (`timeout_secs`),
    *  after which the run is stopped and reported as timed out. One control for
    *  both layouts. The horizontal row has no field headings, so there it carries
-   *  its own label, as its checkbox neighbours do. */
+   *  its own label, as its checkbox neighbours do. A stored limit that is not a
+   *  whole number of minutes is named beside the field while the field still
+   *  holds its rounding, since saving then keeps the stored value. */
+  const unroundedLimit = timeLimitMin === runLimitMinutes(timeLimitBase) ? unroundedRunLimit(timeLimitBase) : null
   const timeLimitInput = (width: number, labelled = false) => (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="inline-flex flex-wrap items-center gap-1.5">
       {labelled && <label htmlFor="jobform-time-limit" className="text-muted text-[13px]">{i18nT('components.jobForm.time_limit')}</label>}
       <Input
         id="jobform-time-limit"
@@ -661,11 +671,17 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         style={{ flex: `0 0 ${width}px`, width }}
         aria-label={i18nT('components.jobForm.time_limit_minutes')}
         title={i18nT('components.jobForm.time_limit_description')}
+        aria-describedby={unroundedLimit ? 'jobform-time-limit-unrounded' : undefined}
         value={timeLimitText}
         onChange={e => setTimeLimitText(e.target.value)}
         onBlur={() => setTimeLimitText(String(timeLimitMin))}
       />
       <span className="text-muted text-[13px]">{i18nT('components.jobForm.minutes')}</span>
+      {unroundedLimit && (
+        <span id="jobform-time-limit-unrounded" className="text-[11px] text-muted/70">
+          {i18nT('components.jobForm.time_limit_unrounded', { limit: unroundedLimit })}
+        </span>
+      )}
     </span>
   )
 

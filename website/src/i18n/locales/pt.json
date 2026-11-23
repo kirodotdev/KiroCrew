@@ -8218,6 +8218,7 @@
       "time_limit": "Limite de tempo",
       "time_limit_description": "Interrompa uma execução que ainda esteja em andamento após esse tempo e informe-a como tempo esgotado. Vale para a execução inteira. Padrão: 30 minutos.",
       "time_limit_minutes": "Limite de tempo em minutos",
+      "time_limit_unrounded": "O limite salvo é {{limit}}. Este campo o mostra arredondado para minutos inteiros, e salvar mantém {{limit}} a menos que você altere o campo.",
       "mode_advice_minimal_context": "Este job precisa do agente, mas parece não precisar do seu contexto salvo. O contexto mínimo mantém o agente e descarta o resto.",
       "mode_advice_script": "Este job parece uma verificação mecânica que não exige nenhum raciocínio. A forma mais barata é um job de script, que não consome nenhum turno do agente; peça no chat para criar um. O contexto mínimo é a segunda melhor opção aqui.",
       "model": "Modelo",
