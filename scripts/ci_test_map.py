@@ -16,9 +16,9 @@ to the test files that touched it.
     build   merge the plugin's `part-*.json` files into the map
     bundle  add the co-change history and the guard tier to a map and write
             the gzip selection file the scorer reads (below)
-    check   describe a bundle file in one line (commit, size, rows per table)
-            and exit 1 when it lacks a table: `test-map.yml` publishes a
-            bundle only after this passes
+    check   describe a bundle file in one line (commit, build time, size, rows
+            per table) and exit 1 when it lacks a table: `test-map.yml`
+            publishes a bundle only after this passes
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -592,7 +592,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
     doc = load_map(path)
     rows = bundle_rows(doc)
     counts = ", ".join(f"{name} {count}" for name, count in rows.items())
-    print(f"bundle: commit `{doc.get('commit', '')}`, {path.stat().st_size} bytes, rows: {counts}")
+    built = f", built_at {doc['built_at']}" if "built_at" in doc else ""
+    size = path.stat().st_size
+    print(f"bundle: commit `{doc.get('commit', '')}`{built}, {size} bytes, rows: {counts}")
     missing = [name for name in BUNDLE_TABLES if not rows[name]]
     for name in missing:
         print(f"::error::the bundle has no {name} table")

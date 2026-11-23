@@ -831,8 +831,8 @@ def test_map_job_commands_pass_only_on_a_clone_that_holds_the_window(
         assert _tables_reported_missing(printed) == ({"cochange"} if depth <= window else set())
     status, printed, written = run(repo, TIER)
     assert status == 0 and "::error::" not in printed
-    # The summary line: the commit, the file's size and the rows in each table.
-    assert f"commit `{MAP['commit']}`" in printed
+    # The summary line: the commit, the build time, the file's size and each table's rows.
+    assert f"commit `{MAP['commit']}`, built_at {ctm.load_map(written)['built_at']}," in printed
     assert f"{written.stat().st_size} bytes" in printed
     rows = ctm.bundle_rows(ctm.load_map(written))
     assert all(f"{name} {count}" in printed for name, count in rows.items())
@@ -858,6 +858,11 @@ def test_check_fails_on_every_bundle_that_lacks_a_table(
                 assert ctm.main(["check", "--bundle", str(path)]) == (1 if gone else 0)
                 printed = capsys.readouterr().out
                 assert _tables_reported_missing(printed) == set(gone)
+    # The build time is printed when the file has one, and decides nothing.
+    for extra in ({}, {"built_at": "not a time"}):
+        path.write_bytes(gzip.compress(json.dumps({**whole, **extra}).encode("utf-8")))
+        assert ctm.main(["check", "--bundle", str(path)]) == 0
+        assert ("built_at not a time" in capsys.readouterr().out) == bool(extra)
     # A file that is not a readable schema-1 map is a usage error, never a pass.
     data = path.read_bytes()
     for damaged in (data[: len(data) // 2], b"{}", gzip.compress(b"[]")):
