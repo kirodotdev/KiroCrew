@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { modelHealthKey, useModelsAuthRequired, useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, useModelsAuthRequired, useModelsUnconfirmed } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
 import { setAgentSwitchNotice } from '../store/chatSlice'
@@ -148,11 +148,11 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDD.open)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
-  // backend has one; the degraded flag gates only the list-membership fallback —
-  // a cached list served while /api/models fails is stale and cannot disprove
-  // entitlement — and is subscribed to, since it can flip while the served list
-  // stays identical.
-  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
+  // backend has one; the unconfirmed flag gates only the list-membership
+  // fallback — a cached list served while /api/models fails or answers cold is
+  // stale and cannot disprove entitlement — and is subscribed to, since it can
+  // flip while the served list stays identical.
+  const _modelsUnconfirmed = useModelsUnconfirmed(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   // The configured list is short because kiro-cli's own login is missing (see
   // ComposerDockView); a harness's own list (`models_backend`) never sets it.
   const kiroCliSignedOut = useModelsAuthRequired(provider.id) && selectionCapabilitiesQ.data?.models_backend === undefined
@@ -167,7 +167,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const shownModel = displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     paneSlot?.model_withheld,
     codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
@@ -200,7 +200,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const _pinShownModel = displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     paneSlot?.model_withheld,
   )
   // `default` only for the Settings default (see ChatPage).

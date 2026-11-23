@@ -17,7 +17,7 @@ describe('useModelsDegraded', () => {
     // The scenario the plain getter cannot serve: a failed /api/models resolves
     // SUCCESSFULLY with the last-good cached list, so React Query hands back a
     // structurally identical result and notifies nobody. Only a subscription
-    // sees the flag move, and the composer's displayed model depends on it.
+    // sees the flag move, and the failure notices depend on it.
     const { result } = renderHook(() => useModelsDegraded('acp'))
     expect(result.current).toBe(false)
 
@@ -46,7 +46,7 @@ describe('useModelsDegraded', () => {
   })
 
   it('agrees with the non-reactive getter', () => {
-    // The refetch-cadence path still reads the getter, so the two must not
+    // The hook and the getter answer the same question, so the two must not
     // diverge.
     const { result } = renderHook(() => useModelsDegraded('acp'))
     act(() => {
