@@ -1071,6 +1071,7 @@ def _arm_timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = No
     # Any arm replaces the armed timer, so a push mark naming the old one is stale. A
     # push re-sets it right after this call.
     self._pushed_ticks.discard(loop.id)
+    self._manual_ticks.discard(loop.id)
     self._timers[loop.id] = asyncio.create_task(self._timer(loop, delay))
 
 
