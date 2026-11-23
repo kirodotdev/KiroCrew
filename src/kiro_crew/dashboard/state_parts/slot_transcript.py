@@ -14,7 +14,7 @@ Writes: ``_channel_window_mtime``, ``_dirty_flag``, ``_dirty_gen``,
 ``_resumed_count``, ``_row_links_memo``, ``_row_redacted_memo``,
 ``_row_summary_memo``, ``_slot_links_memo``, ``_unknown_row_fields_bytes``,
 ``_window_loader_thread``, ``total_messages``.
-Reads only: ``_buffers``, ``_coordinator_approvals``, ``_on_card_event``,
+Reads only: ``_buffers``, ``_coordinator_approvals``, ``_full_chat_waits``, ``_on_card_event``,
 ``_on_message``, ``_on_question_retired``, ``_on_row``, ``_pending``, ``_projection``,
 ``event``, ``key``.
 
@@ -736,6 +736,8 @@ def to_dict(
     coordinator_pending: list[dict] = (
         coordinator_approvals(self.key) if coordinator_approvals is not None else []
     )
+    full_chat_waits = self._full_chat_waits
+    needs_full_chat = full_chat_waits(self.key) is True if full_chat_waits is not None else False
     projected: list[dict] | None = None
     ctx = ROW_MEMO.get()
     if not include_check_status and not dashboard_user and ctx is not None:
@@ -760,6 +762,7 @@ def to_dict(
         include_check_status=include_check_status,
         source_links=source_links,
         coordinator_pending=coordinator_pending,
+        needs_full_chat=needs_full_chat,
         prompt_roles=_PROMPT_ROLES,
         transient_roles=_TRANSIENT_ROLES,
         redact=_redact,

@@ -183,6 +183,7 @@ class _ChatSlot:
         "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
+        "_full_chat_waits",
         "_linked_session_busy",
         "_has_reader_flag",
         "_compacting",
@@ -629,6 +630,7 @@ class _ChatSlot:
     _dashboard_card_exempt: bool
     _on_question_retired: object | None
     _coordinator_approvals: Callable[[str], list[dict]] | None
+    _full_chat_waits: Callable[[str], bool] | None
     _linked_session_busy: Callable[[str], bool] | None
     _has_reader_flag: bool
     _compacting: bool

@@ -43,7 +43,7 @@ from aiohttp import web
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
-from kiro_crew.dashboard import chat_cards
+from kiro_crew.dashboard import chat_cards, full_chat_waits
 from kiro_crew.dashboard.change_cards import CardError, CardStore, card_store_for
 from kiro_crew.dashboard.handlers._bounded_read import (
     TIMED_OUT,
@@ -155,6 +155,8 @@ async def _broadcast(state: Any, card: dict[str, Any]) -> int:
     # conversation learns the new status (and the crew log the outcome).
     await chat_cards.load_conversation_window(state, card)
     chat_cards.record_change_status(state, card)
+    # The slot list's ``needs_full_chat`` reads the store this change just moved.
+    full_chat_waits.push_slot_list(state)
     # A finished import card has no use for the file it was raised from.
     await _release_staged_copy(state, card)
     deliver = getattr(state, "deliver_ws_owners", None)
@@ -1900,6 +1902,22 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
             card_member=str(params.get("name") or ""),
         ):
             request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
+
+
+async def warm_after_start(state: Any) -> None:
+    """Load the persisted cards once at start, then show any still open on the slot list.
+
+    The slot list's ``needs_full_chat`` reads the store without loading it, so a
+    card left open across a restart would read as absent until a route warmed it.
+    """
+    store = card_store_for(state)
+    try:
+        await store.warm()
+    except Exception:
+        logger.debug("change cards: start-up warm failed; the first route retries", exc_info=True)
+        return
+    if store.slots_with_open_cards():
+        full_chat_waits.push_slot_list(state)
 
 
 def register_change_card_routes(app: web.Application) -> None:

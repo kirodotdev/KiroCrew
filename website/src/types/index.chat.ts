@@ -479,6 +479,12 @@ export interface ChatSlot extends TurnIdentityFields {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
+  /** The session waits on the person through something only the full chat draws:
+   * a change card that can still be applied, a live guide offer, or a browser
+   * `ask` parked on the live card. `ChatEmbed` cannot show or answer these, so a
+   * host reading this sends the person to the session instead. Absent from an
+   * older gateway. */
+  needs_full_chat?: boolean
   /** The transcript shows the last turn ending without a reply (trailing error
    * row or unanswered user row) — the state behind the composer's Resume
    * button. Always false while `running`. Lets the sidebar stop rendering a
