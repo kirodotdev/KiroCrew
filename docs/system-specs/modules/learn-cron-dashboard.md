@@ -2262,6 +2262,18 @@ flow again. Replay remains merge-only and idempotent.
 
 ## Dashboard (`dashboard/`)
 
+Chat content direction is local to the rendered text, independent of the dashboard
+language. Hebrew and mixed-script prose, reasoning, session titles and drafts use
+automatic direction while the English shell and controls remain LTR. The shared
+Markdown renderer preserves authored direction and language attributes and isolates
+technical text. Prose with no strong character inherits its surrounding direction.
+Native Markdown previews share that behavior. Composers, paste
+mirrors and edit fields keep matching paragraph layout without rewriting text.
+Default table columns keep source order inside RTL prose. Crew Notes retains
+its compact list indentation on each item's inline start.
+Rendering and input details are owned by
+[`website/docs/frontend-conventions.md`](../../../website/docs/frontend-conventions.md).
+
 `responsive_chat.py` coordinates owner-authenticated Bot human priority on
 the existing send, steer and queue paths. Its prompt guidance and raw-to-wire
 steer identities are process-local; user rows retain the original text. Responsive

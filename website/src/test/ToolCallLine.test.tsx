@@ -40,6 +40,15 @@ function toolMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('ToolCallLine simplifiedToolNames', () => {
+  it('isolates Hebrew purpose labels from the English tool controls', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const message = toolMsg({ meta: { tool_call_id: 'tc_he', purpose: 'בדיקת AWS (123)' } })
+    const store = createTestStore({ chat: { messages: [message], toolLog: [], slotRunning: false } as unknown as ChatState })
+    renderWithProviders(<ToolCallLine message={message} running={false} />, { store })
+    expect(screen.getByTestId('tool-pill-label')).toHaveAttribute('dir', 'auto')
+    expect(screen.getByTestId('tool-pill-label')).toHaveTextContent('בדיקת AWS (123)')
+  })
+
   it('shows purpose text when simplifiedToolNames is enabled', () => {
     localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
     const store = createTestStore({

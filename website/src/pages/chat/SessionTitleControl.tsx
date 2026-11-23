@@ -521,13 +521,15 @@ export default function SessionTitleControl({
       }}>
         {pinIcon && <span aria-hidden="true" title={pinnedText} data-testid="session-pinned-glyph">{pinIcon}</span>}
         {glyphIcon && <span aria-hidden="true" title={modeText} data-testid="memory-mode-glyph">{glyphIcon}</span>}
-        <TypewriterText
-          text={shownTitle}
-          placeholder={untitled}
-          className={compact
-            ? 'text-[13px] font-semibold text-text-strong font-body truncate min-w-0'
-            : 'session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]'}
-        />
+        <bdi dir="auto" className={compact ? 'min-w-0 truncate' : 'min-w-0 truncate md:max-w-[50vw]'}>
+          <TypewriterText
+            text={shownTitle}
+            placeholder={untitled}
+            className={compact
+              ? 'text-[13px] font-semibold text-text-strong font-body truncate min-w-0'
+              : 'session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]'}
+          />
+        </bdi>
         <Pen size={compact ? 12 : 13} className={`shrink-0 text-muted opacity-0 group-hover/header:opacity-60 group-focus-visible/title:opacity-60 transition-opacity${compact ? ' @max-[20rem]/panehead:hidden' : ''}`} />
       </Clickable>
       {undo
@@ -629,6 +631,7 @@ function TitleEditor({ initial, className, inputRef, onCommit, onClose }: {
   return (
     <>
     <Input
+      dir="auto" style={{ unicodeBidi: 'isolate' }}
       ref={inputRef}
       className={className}
       aria-label={i18nT('pages.chatPage.rename_session_title', { title: seed })}

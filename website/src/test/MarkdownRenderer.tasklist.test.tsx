@@ -47,6 +47,30 @@ function taskItems(container: HTMLElement): HTMLLIElement[] {
 }
 
 describe('MarkdownRenderer GFM task lists', () => {
+  it.each(['-', '1.'])('keeps ordinary and task siblings on the same logical gutter in a %s list', marker => {
+    const content = [
+      `${marker} ordinary`,
+      '   - nested ordinary',
+      `${marker} [ ] task`,
+      `${marker} רגיל`,
+      `${marker} [x] בוצע`,
+    ].join('\n')
+    const { container } = render(<MarkdownRenderer content={content} />)
+    const list = container.querySelector(marker === '-' ? 'ul' : 'ol')!
+    const items = Array.from(list.querySelectorAll(':scope > li'))
+    expect(items).toHaveLength(4)
+    expect(list).toHaveClass('ps-0', '[&>li]:ms-4')
+    expect(items[0]).toHaveClass('ms-8')
+    expect(items[2]).toHaveClass('ms-8')
+    for (const item of [items[1], items[3]]) {
+      expect(item.querySelector('input[type=checkbox]')).not.toBeNull()
+      expect(item).toHaveClass('ms-4', 'ps-5', '-indent-5')
+    }
+    const nested = items[0].querySelector('ul')!
+    expect(nested).not.toHaveClass('[&>li]:ms-4')
+    expect(nested.querySelector('li')).toHaveClass('ms-8')
+  })
+
   it('renders task items in block flow (no flex), with wrapping enabled', () => {
     const { container } = render(<MarkdownRenderer content={FLAT} />)
     const items = taskItems(container)
@@ -60,7 +84,7 @@ describe('MarkdownRenderer GFM task lists', () => {
   it('keeps the hanging indent pair so the checkbox aligns with the first line', () => {
     const { container } = render(<MarkdownRenderer content={FLAT} />)
     for (const li of taskItems(container)) {
-      expect(li.className).toContain('pl-5')
+      expect(li.className).toContain('ps-5')
       expect(li.className).toContain('-indent-5')
     }
   })
@@ -96,6 +120,6 @@ describe('MarkdownRenderer GFM task lists', () => {
     // The reset that keeps trailing paragraphs out of the checkbox gutter.
     expect(first.className).toContain('[&>p:not(:first-child)]:indent-0')
     // Checkbox styling reaches the nested (non-direct-child) checkbox.
-    expect(first.className).toContain('[&_input[type=checkbox]]:mr-1.5')
+    expect(first.className).toContain('[&_input[type=checkbox]]:me-1.5')
   })
 })

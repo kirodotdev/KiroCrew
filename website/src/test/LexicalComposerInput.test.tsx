@@ -18,6 +18,19 @@ const block: PasteBlock = {
   content: 'alpha\nbeta\ngamma\ndelta',
 }
 
+it('uses plaintext bidi for newline-separated mixed-script paragraphs without rewriting text', async () => {
+  const value = 'שלום @agent (123)\nEnglish שלום\n123 — עברית'
+  render(<ControlledHost initial={value} />)
+  const input = screen.getByRole('textbox', { name: 'Message input' })
+  await waitFor(() => {
+    const paragraphs = input.querySelectorAll('p')
+    expect(Array.from(paragraphs, p => p.getAttribute('dir'))).toEqual(['auto'])
+    expect(paragraphs[0]).toHaveClass('[unicode-bidi:plaintext]', 'text-start')
+    expect(input.querySelectorAll('br')).toHaveLength(2)
+    expect(screen.getByTestId('value').textContent).toBe(value)
+  })
+})
+
 async function dispatchAtEnd<T>(editor: LexicalEditor, command: LexicalCommand<T>, payload: T) {
   act(() => { editor.update(() => $getRoot().selectEnd(), { discrete: true }) })
   await new Promise<void>(resolve => setTimeout(resolve, 0))

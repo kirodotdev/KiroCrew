@@ -412,3 +412,25 @@ describe('ThinkingBlock expanded follow-tail', () => {
     expect(writes).toContain(height)
   })
 })
+
+
+describe('ThinkingBlock content direction', () => {
+  it('isolates the live Hebrew text on an LTR base so the newest words stay at the right edge', () => {
+    const { rerender } = render(<ThinkingBlock content="שלום" />)
+    rerender(<ThinkingBlock content="שלום עולם" />)
+    const line = screen.getByTestId('thinking-live-line')
+    expect(line.querySelector('bdi[dir="ltr"]')?.textContent).toBe('שלום')
+    expect(line.hasAttribute('dir')).toBe(false)
+    expect(line.closest('button')?.hasAttribute('dir')).toBe(false)
+  })
+
+  it('lets each expanded reasoning paragraph choose direction without altering text', () => {
+    const content = 'שלום (API 42)\nEnglish second paragraph'
+    render(<ThinkingBlock content={content} />)
+    fireEvent.click(screen.getByRole('button', { name: /expand model reasoning/i }))
+    const prose = screen.getByText(content, { exact: true, collapseWhitespace: false })
+    expect(prose.getAttribute('dir')).toBe('auto')
+    expect(prose.style.unicodeBidi).toBe('plaintext')
+    expect(prose.textContent).toBe(content)
+  })
+})

@@ -206,7 +206,9 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
             data-clipped={clipped ? 'true' : 'false'}
             className="flex-1 min-w-0 overflow-hidden whitespace-nowrap opacity-70 leading-5 text-[12px]"
             style={clipped ? { maskImage: fade, WebkitMaskImage: fade } : undefined}
-          >{tail}</span>
+          >{/* Base stays LTR: the scroll-to-right effect and the left fade assume the
+              newest text sits at the right edge, which an RTL-resolved line would flip. */}
+          <bdi dir="ltr">{tail}</bdi></span>
         )}
       </button>
       </div>
@@ -236,7 +238,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
                     alignment is worth. */}
                 <div
                   className="py-1 max-w-[65ch] text-[12px] text-muted leading-5 whitespace-pre-wrap"
-                  style={{ wordBreak: 'break-word' }}
+                  dir="auto" style={{ wordBreak: 'break-word', unicodeBidi: 'plaintext' }}
                 >
                   {shown}
                 </div>
