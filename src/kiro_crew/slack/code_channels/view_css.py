@@ -269,6 +269,22 @@ def _https(url: str) -> bool:
     return _URL_LEAD.sub("", _URL_NOISE.sub("", url)).lower().startswith("https:")
 
 
+def string_values(css: str) -> list[str]:
+    """Every string and ``url(`` value in *css*, decoded as a browser reads it.
+
+    A ``\\`` + newline inside a string is a line continuation a browser drops,
+    so only this reading shows a value split across lines whole.
+    """
+    values: list[str] = []
+    try:
+        for kind, value in _Tokens(css):
+            if kind in ("string", "url"):
+                values.append(value)
+    except _Refusal:
+        pass  # refusal() refuses this CSS all the same
+    return values
+
+
 def refusal(css: str, *, inline: bool = False) -> str:
     """Why *css* could show author text or load something (``""`` when it can't).
 

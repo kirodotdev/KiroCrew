@@ -242,5 +242,17 @@ def test_a_whole_credential_in_an_allowed_css_string_publishes_redacted(env: Any
     assert TOKEN not in _calls(env, "agents.conversations.setView")[0]["content"]
 
 
-def test_a_credential_an_escape_hides_in_an_allowed_css_string_is_refused(env: Any) -> None:
-    _refused(env, f"<style>p{{font-family:'\\67 {TOKEN[1:]}'}}</style>")
+@pytest.mark.parametrize(
+    "content",
+    [
+        f"<style>p{{font-family:'\\67 {TOKEN[1:]}'}}</style>",
+        # a line continuation a browser drops inside a string
+        f'<style>p{{font-family:"{HEAD}\\\n{TAIL}"}}</style><p>x</p>',
+        f'<style>p{{font-family:"{HEAD}\\\r\n{TAIL}"}}</style><p>x</p>',
+        f"<style>a[title='{HEAD}\\\n{TAIL}']{{color:red}}</style>",
+        f"<p style=\"font-family:'{HEAD}\\&#10;{TAIL}'\">x</p>",
+        f'<style>p{{background:url("https://x.test/{HEAD}\\\n{TAIL}")}}</style>',
+    ],
+)
+def test_a_credential_hidden_in_an_allowed_css_string_is_refused(env: Any, content: str) -> None:
+    _refused(env, content)

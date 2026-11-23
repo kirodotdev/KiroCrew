@@ -579,7 +579,12 @@ def _audit_view(content: str, redacted: str) -> None:
         "a credential or sensitive value is hidden in an attribute or CSS; nothing was published"
     )
     # Comments are kept for this screen: not shown, but published all the same.
-    for text in published.values + [_css_decoded(css) for css in published.styles]:
+    # Each CSS string is read again as a browser joins it (line continuations).
+    for text in (
+        published.values
+        + [_css_decoded(css) for css in published.styles]
+        + [value for css, _ in published.css for value in view_css.string_values(css)]
+    ):
         if refuses(text, _redact_payload):
             raise ArgumentError(hidden)
     _refuse_hidden_split(zip(_joined(original.shown), _joined(published.shown)))
