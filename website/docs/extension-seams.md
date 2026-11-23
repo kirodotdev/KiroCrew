@@ -408,7 +408,10 @@ but addresses another origin, where this build has no empty page to explain.
 
 **Panel shortcuts.** `registerPanelShortcut({ code, path, label })` identifies the
 chord solely by `KeyboardEvent.code`, and the displayed key is derived from that
-code, so the advertised chord can never diverge from the handled one. Beyond core
+code, so the advertised chord can never diverge from the handled one. A
+single-character key is labelled with what the user's keyboard layout prints on
+that physical key (`navigator.keyboard.getLayoutMap()`, read once per page load in
+Chromium and Electron; elsewhere the label is the US glyph). Beyond core
 panel chords and prior registrations, it rejects any code in
 `RESERVED_PANEL_CODES`: the Alt chords the handler consumes before panel routing
 (shortcuts modal, settings, focus-input, MRU toggle, chat-jump digits, prev/next
