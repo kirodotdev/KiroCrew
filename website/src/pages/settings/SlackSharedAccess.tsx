@@ -105,7 +105,7 @@ function SharedAccessWarning({ id, unchecked }: { id?: string, unchecked: boolea
             )}
           </li>
           {unchecked && (
-            <li>{i18nT('pages.settings.slackSharedAccess.warning_not_checked', { key: VERIFY_KEY })}</li>
+            <li>{i18nT('pages.settings.slackSharedAccess.warning_not_checked', { key: VERIFY_KEY, scope: 'users:read' })}</li>
           )}
           <li>{i18nT('pages.settings.slackSharedAccess.warning_trust')}</li>
         </ul>

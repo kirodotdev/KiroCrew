@@ -21912,7 +21912,7 @@
         "reason_owner": "Este é o seu próprio ID.",
         "reason_listed": "Na sua lista. O Slack não foi solicitado a verificar este ID.",
         "on_note_listed": "Ativado: todas as pessoas da lista abaixo podem usar esta Crew pelo Slack.",
-        "warning_not_checked": "O Slack não verifica os IDs que você adiciona. Um bot, uma conta desativada ou alguém de outro workspace do Slack nesta lista também pode agir como você. Para o Slack verificar cada ID, defina {{key}} como true no config.json; é preciso o escopo users:read.",
+        "warning_not_checked": "O Slack não verifica os IDs que você adiciona. Um bot, uma conta desativada ou alguém de outro workspace do Slack nesta lista também pode agir como você. Para o Slack verificar cada ID, defina {{key}} como true no config.json; é preciso o escopo {{scope}}.",
         "reason_malformed": "Use um ID de membro do Slack que comece com U ou W. Para encontrar um ID de membro, abra o perfil da pessoa no Slack, selecione ⋮ e depois Copiar ID de membro.",
         "reason_unverifiable": "Não foi possível verificar este ID com o Slack. Verifique se o Slack está conectado e tente de novo.",
         "reason_unverifiable_row": "Não foi possível verificar este ID com o Slack. Confira se o Slack está conectado; esta página pergunta ao Slack de novo quando você a reabre ou volta a ela, e uma resposta pode ter até um minuto.",

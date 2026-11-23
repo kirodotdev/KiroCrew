@@ -21359,7 +21359,7 @@
         "reason_owner": "Das ist deine eigene ID.",
         "reason_listed": "Auf deiner Liste. Slack wurde nicht gebeten, diese ID zu prüfen.",
         "on_note_listed": "An: Alle auf der Liste unten können diese Crew über Slack nutzen.",
-        "warning_not_checked": "Slack prüft die IDs, die du hinzufügst, nicht. Ein Bot, ein deaktiviertes Konto oder jemand aus einem anderen Slack-Workspace auf dieser Liste kann ebenfalls als du handeln. Damit Slack jede ID prüft, setze {{key}} in config.json auf true; dafür ist der Scope users:read nötig.",
+        "warning_not_checked": "Slack prüft die IDs, die du hinzufügst, nicht. Ein Bot, ein deaktiviertes Konto oder jemand aus einem anderen Slack-Workspace auf dieser Liste kann ebenfalls als du handeln. Damit Slack jede ID prüft, setze {{key}} in config.json auf true; dafür ist der Scope {{scope}} nötig.",
         "reason_malformed": "Verwende eine Slack-Mitglieds-ID, die mit U oder W beginnt. Für die Mitglieds-ID öffne in Slack das Profil der Person, wähle ⋮ und dann Mitglieds-ID kopieren.",
         "reason_unverifiable": "Diese ID konnte nicht bei Slack geprüft werden. Prüfe, ob Slack verbunden ist, und versuche es erneut.",
         "reason_unverifiable_row": "Diese ID ließ sich nicht bei Slack prüfen. Prüfe, ob Slack verbunden ist; diese Seite fragt Slack erneut, wenn du sie wieder öffnest oder zu ihr zurückkehrst, und eine Antwort kann bis zu einer Minute alt sein.",
