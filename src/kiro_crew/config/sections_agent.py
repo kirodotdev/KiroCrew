@@ -1710,6 +1710,18 @@ class AgentConfig:
             "model and effort it always has.",
         ),
     )
+    subagent_light_lean_context: bool = field(
+        default=False,
+        metadata=_meta(
+            "Light Sub-agent Lean Context",
+            "While agent.subagent_light_tier is on, start a spawn marked light "
+            "without the lessons and memory blocks, since a search, lookup or "
+            "summarize helper rarely needs them. A spawn that sets include_lessons "
+            "or include_memory to true keeps that block, and a spawn that names an "
+            "agent, a crew or a backend is not changed. Off by default: with it off "
+            "every spawn starts with the context it always has.",
+        ),
+    )
     subagent_max_turns: int = field(
         default=_DEFAULT_SUBAGENT_MAX_TURNS,
         metadata=_meta("SubAgent Max Turns", "Default tool-call budget per subagent."),
