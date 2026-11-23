@@ -320,12 +320,15 @@ _AMBIGUOUS_REFS = {"head", "@", "fetch_head"}
 _AMBIGUOUS_REFSPEC_RE = re.compile(r"@\{")
 
 
-def _git_push_refspec_indices(words: list[str]) -> frozenset[int]:
-    """Indices of ``git push`` refspec words: every positional after the remote.
+def _git_refspec_indices(words: list[str]) -> frozenset[int]:
+    """Indices of the refspec words of a git push, fetch or pull: every positional
+    after the remote.
 
     Options are read with the arity tables ``_push_segment_targets_protected``
-    reads them with (abbreviations, bundled shorts, ``--repo``).  An option those
-    tables do not model returns no index, so every word keeps the full reading.
+    reads them with (abbreviations, bundled shorts).  An option those tables do
+    not model, or an expansion up to the remote that could add or drop a word,
+    returns no index, so every word keeps the full reading.  The first
+    positional is the remote even after ``--repo``: git lets it override that.
     """
     refspecs: set[int] = set()
     remote_seen = skip_next = positional_only = False
@@ -335,11 +338,13 @@ def _git_push_refspec_indices(words: list[str]) -> frozenset[int]:
         elif positional_only or word == "-" or not word.startswith("-"):
             if remote_seen:
                 refspecs.add(idx)
+            elif any(ch in w for w in words[: idx + 1] for ch in "$%`"):
+                return frozenset()
             remote_seen = True
         elif word == "--":
             positional_only = True
         elif _push_option_matches(word, _PUSH_REPO_OPTS):
-            remote_seen, skip_next = True, "=" not in word
+            skip_next = "=" not in word
         elif "=" in word:
             continue
         elif word.startswith("--"):

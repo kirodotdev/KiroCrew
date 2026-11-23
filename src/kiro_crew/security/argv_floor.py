@@ -125,7 +125,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SHELL_RESERVED_WORDS,
         _git_publish_floor_tags,
         _git_push_args,
-        _git_push_refspec_indices,
+        _git_refspec_indices,
         _is_git_publish,
         _is_git_push_via_normalizer,
         _is_push_to_protected_branch,

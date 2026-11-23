@@ -142,7 +142,7 @@ def _brace_expansions(token: str) -> "list[str] | None":
 
 _LITERAL_HOSTS = contextvars.ContextVar("ssh_floor_literal_hosts", default=False)
 
-# Set while the git floor reads a push refspec word (``_git_tokens_target_self``):
+# Set while the git floor reads a push/fetch/pull refspec (``_git_tokens_target_self``):
 # a refspec names refs, never a transport, so a Windows own-name in it is a ref.
 _REFSPEC_WORD = contextvars.ContextVar("ssh_floor_refspec_word", default=False)
 

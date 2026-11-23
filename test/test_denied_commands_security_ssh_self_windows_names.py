@@ -169,9 +169,13 @@ def test_a_windows_name_as_a_git_or_tar_remote_host_is_refused(cmd):
         "git push origin %COMPUTERNAME%",
         "git push -o ci.skip origin %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
         "git push --force origin %COMPUTERNAME%:ci/%COMPUTERNAME% build:ci/build",
+        # Fetch and pull refspecs name refs too.
+        "git fetch origin %COMPUTERNAME%:refs/remotes/ci/%COMPUTERNAME%",
+        "git fetch origin $env:COMPUTERNAME:$env:COMPUTERNAME",
+        "git pull origin %COMPUTERNAME%:%COMPUTERNAME%",
     ],
 )
-def test_a_windows_name_in_a_push_refspec_is_not_a_host(cmd):
+def test_a_windows_name_in_a_refspec_is_not_a_host(cmd):
     assert _denied_by(cmd) is None, cmd
 
 
@@ -186,16 +190,24 @@ def test_a_windows_name_in_a_push_refspec_is_not_a_host(cmd):
         "git push -fo ci.skip %COMPUTERNAME%:/srv/repo.git feature",
         "git push --push-opt ci.skip %COMPUTERNAME%:/srv/repo.git feature",
         "git push ssh://%COMPUTERNAME%/srv/repo.git feature",
+        # A positional remote overrides --repo, so it is still the remote.
+        "git push --repo=origin %COMPUTERNAME%:/srv/repo.git feature",
+        "git push --repo origin %COMPUTERNAME%:/srv/repo.git feature",
+        "git fetch %COMPUTERNAME%:/srv/repo.git main",
+        "git pull %COMPUTERNAME%:/srv/repo.git main",
     ],
 )
 def test_a_windows_name_as_a_push_remote_is_refused(cmd):
     assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd
 
 
-def test_the_push_refspec_split_fails_closed_on_an_unmodelled_option():
-    # An option the push arity tables do not model might take a separated value,
-    # so no word is treated as a refspec and every word keeps the full reading.
-    words = ["--unmodelled-option", "x", "%computername%:/srv/repo.git", "feature"]
-    assert _argv_floor._git_push_refspec_indices(words) == frozenset()
-    assert _argv_floor._git_push_refspec_indices(["origin", "a:b", "c"]) == {1, 2}
-    assert _argv_floor._git_push_refspec_indices(["-fo", "x", "origin", "a:b"]) == {3}
+def test_the_refspec_split_fails_closed():
+    split = _argv_floor._git_refspec_indices
+    assert split(["origin", "a:b", "c"]) == {1, 2}
+    assert split(["-fo", "x", "origin", "a:b"]) == {3}
+    assert split(["--repo", "x", "origin", "a:b"]) == {3}
+    # An option the arity tables do not model might take a separated value.
+    assert split(["--unmodelled-option", "x", "%computername%:/srv/r.git", "a"]) == frozenset()
+    # An expansion up to the remote may add or drop a word and shift the remote.
+    assert split(["$empty", "%computername%:/srv/r.git", "a:b"]) == frozenset()
+    assert split(["-o", "$opts", "origin", "a:b"]) == frozenset()

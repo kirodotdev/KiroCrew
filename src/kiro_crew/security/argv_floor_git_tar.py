@@ -57,7 +57,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from . import shell_normalizer as _shell_normalizer
-from .argv_floor_git import _git_push_refspec_indices
+from .argv_floor_git import _git_refspec_indices
 from .argv_floor_self import _SELF_FLOOR_MACHINERY_RE, _SELF_FLOOR_QUOTE_JUNK_RE
 from .argv_floor_ssh import (
     _FUNCTION_BIND_CAP,
@@ -691,11 +691,12 @@ def _git_transport_modes(verb: str, tokens: "list[str]") -> "tuple[bool, bool]":
     return False, False
 
 
-def _git_tokens_target_self(tokens: "list[str]", *, push: bool = False) -> bool:
+def _git_tokens_target_self(tokens: "list[str]", *, refspecs_follow: bool = False) -> bool:
     """True if any post-verb transport operand or executable targets self.
 
-    With *push*, a refspec word (``_git_push_refspec_indices``) is read without
-    the Windows own-name spellings: its source and destination are refs.
+    With *refspecs_follow* (push, fetch, pull), a refspec word
+    (``_git_refspec_indices``) is read without the Windows own-name spellings:
+    its source and destination are refs.
 
     An ``ext::`` operand is read with the operands after it up to the next
     ``ext::`` operand, and an option's ``ext::`` value (``--opt=ext::x``,
@@ -720,7 +721,7 @@ def _git_tokens_target_self(tokens: "list[str]", *, push: bool = False) -> bool:
         elif any(_git_ext_command(candidate, []) is not None for candidate in candidates[idx]):
             value_end = idx
     payload_ends.reverse()
-    refspecs = _git_push_refspec_indices(words) if push else frozenset()
+    refspecs = _git_refspec_indices(words) if refspecs_follow else frozenset()
     for idx, token_candidates in enumerate(candidates):
         for position, masked_candidate in enumerate(token_candidates):
             candidate = _unmasked(masked_candidate)
@@ -888,7 +889,7 @@ def _git_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") 
 
     # Remote and command discovery is token-agnostic: no option grammar
     # decision can hide a self-targeting operand or executable override.
-    if _git_tokens_target_self(command_tokens, push=verb == "push"):
+    if _git_tokens_target_self(command_tokens, refspecs_follow=verb in ("push", "fetch", "pull")):
         return True
     return _git_rewritten_remotes_dial_self(
         verb == "push",
