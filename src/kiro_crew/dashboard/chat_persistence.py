@@ -36,6 +36,7 @@ time, so such a patch reaches the code that moved.
 from __future__ import annotations
 
 import asyncio
+import codecs  # noqa: F401  (transcript_merge's prefix copy)
 import hashlib
 import json
 import logging

@@ -688,19 +688,33 @@ def _save_slot_to_history(
                 # re-raises at once and never sleeps.
                 if tail is not None:
                     _transcript_merge.append_tail(path, tail)
-                else:
+                elif isinstance(payload, str):
                     atomic_write(
                         path,
                         payload,
                         fsync=True,
                         replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
                     )
+                else:
+                    written_as_text = _transcript_merge.write_range_payload(
+                        path,
+                        payload,
+                        write=atomic_write,
+                        replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+                    )
+                    if written_as_text is not None:
+                        # The cache below then measures the prefix as written.
+                        frozen_prefix = written_as_text
             except BaseException:
                 # A failed save keeps nothing staged: its rows stay unjudged and
                 # the next save offers them again. Nor does it keep an archive of
                 # rows the unchanged transcript still holds.
                 _display_verdicts.take_pending()
                 drop_archives()
+                if not isinstance(payload, str):
+                    # The next save reads the prefix from the file again rather
+                    # than retry a range that may not hold it.
+                    slot._frozen_prefix_cache = None
                 raise
             # The rows just written are judged for display once, now, on the
             # verdict worker (display_verdicts); a cheap hand-off, not the work.

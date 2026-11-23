@@ -1466,7 +1466,16 @@ no longer destroy older turns.
   committed save `slot._frozen_prefix_cache` holds where the prefix sits in the
   file it wrote (`transcript_merge.prefix_range`: byte offset and size), not its
   text, and the fast path reads that range back (`read_prefix_range`); a range
-  that does not read back as whole UTF-8 lines takes the full read instead. The
+  that does not read back as whole UTF-8 lines takes the full read instead. A
+  save that is not a rewrite (an in-place edit of a window row, say) does not
+  read the range back at all where a text write puts `\n` on disk (not
+  Windows): the payload is a `transcript_merge.RangePayload`, and
+  `write_range_payload` stages the metadata line, copies the range from the old
+  file in 1 MiB chunks and writes the window after it, so the older history is
+  never held in memory. A copy that meets a `\r`, a byte that is not UTF-8 or a
+  short file writes the prefix as text instead, and the cache then measures that
+  text as written, since its size can differ from the range's; a failed write drops the
+  cache so the next save reads the file again. The
   cache written before the write keeps the text, so a failed write retries on
   the same bytes. A row
   older than the chat's newest `session.file_changes_keep_turns` rows carrying

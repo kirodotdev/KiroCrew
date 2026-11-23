@@ -17,6 +17,7 @@ New rules about what a save keeps from the file it replaces belong here.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import logging
@@ -24,7 +25,7 @@ import marshal
 import os
 import re
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from kiro_crew.chat_attachments import same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig
@@ -435,6 +436,128 @@ def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
     return text.replace("\r\n", "\n") if "\r" in text else text
 
 
+class RangePayload(NamedTuple):
+    """A full save's file, its frozen prefix left in the file it replaces.
+
+    ``head`` is the metadata line, ``prefix`` the ``(offset, size)`` of the frozen
+    prefix in the file on disk, and ``tail`` the rows after it.
+    :func:`write_range_payload` copies the prefix bytes in chunks, so the save never
+    holds the older history in memory.
+    """
+
+    head: str
+    prefix: tuple[int, int]
+    tail: str
+
+
+#: Chunk size for :func:`write_range_payload`'s copy of the frozen prefix.
+_PREFIX_COPY_CHUNK = 1 << 20
+
+
+class _PrefixMoved(Exception):
+    """The cached range does not hold the prefix this slot wrote."""
+
+
+def _range_in_place(path: Path, where: str | tuple[int, int]) -> tuple[int, int] | None:
+    """*where* when it is a range :func:`write_range_payload` can copy as it is, else ``None``.
+
+    The range must start just after a newline and end on one. Copied bytes are
+    written as they are, so only a platform whose text writes put ``\\n`` on disk
+    qualifies: on Windows the text path rebuilds every line ending.
+    """
+    if isinstance(where, str) or os.linesep != "\n":
+        return None
+    offset, size = where
+    if offset <= 0 or size <= 0:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset - 1)
+            before = fh.read(1)
+            fh.seek(offset + size - 1)
+            last = fh.read(1)
+    except OSError:
+        return None
+    return where if before == b"\n" and last == b"\n" else None
+
+
+def _write_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written == 0:
+            raise OSError("short write staging a transcript save")
+        view = view[written:]
+
+
+def write_range_payload(
+    path: Path,
+    payload: RangePayload,
+    *,
+    write: Callable[..., None],
+    replace_budget_s: float | None,
+) -> str | None:
+    """Write *payload* over *path*, copying its frozen prefix from *path* in chunks.
+
+    *write* is ``atomic_write``. It stages ``head``, then the copy appends the
+    prefix bytes and ``tail`` and syncs, before the rename. Bytes that do not
+    read as this slot's prefix (a ``\\r``, a byte that is not UTF-8, a short file)
+    abort the copy, and the save writes the prefix as text instead, or raises when
+    that read fails too. Returns ``None`` when the bytes were copied, else the
+    prefix text written, whose size on disk can differ from the range's. The
+    caller holds the transcript lock.
+    """
+    offset, size = payload.prefix
+
+    def copy_prefix(fd: int) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        # Closed before this returns: on Windows the rename cannot swap a file
+        # another handle holds.
+        with open(path, "rb") as src:
+            src.seek(offset)
+            left = size
+            while left:
+                chunk = src.read(min(_PREFIX_COPY_CHUNK, left))
+                if not chunk or b"\r" in chunk:
+                    raise _PrefixMoved
+                # Rows are written ASCII-escaped, so the decode check is usually
+                # skipped; a sequence split across chunks is still fed.
+                if not chunk.isascii() or decoder.getstate()[0]:
+                    try:
+                        decoder.decode(chunk)
+                    except UnicodeDecodeError:
+                        raise _PrefixMoved from None
+                _write_fd(fd, chunk)
+                left -= len(chunk)
+        try:
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            raise _PrefixMoved from None
+        _write_fd(fd, payload.tail.encode("utf-8"))
+        os.fsync(fd)
+
+    try:
+        write(
+            path,
+            payload.head,
+            fsync=False,
+            replace_budget_s=replace_budget_s,
+            on_staged=copy_prefix,
+        )
+        return None
+    except _PrefixMoved:
+        prefix = read_prefix_range(path, payload.prefix)
+    if prefix is None:
+        raise OSError(f"the frozen prefix of {path} moved under the transcript lock")
+    write(
+        path,
+        payload.head + prefix + payload.tail,
+        fsync=True,
+        replace_budget_s=replace_budget_s,
+    )
+    return prefix
+
+
 def _frozen_prefix_and_foreign_appends(
     slot: _ChatSlot,
     path,
@@ -445,8 +568,13 @@ def _frozen_prefix_and_foreign_appends(
     bound_prefix: Callable[[list[str]], list[str]] | None = None,
     archive_dedup: Callable[[list[str]], object],
     retired_entries: list[dict] | None = None,
-) -> tuple[str, list[str], list[str]]:
+    prefix_in_place: bool = False,
+) -> tuple[str | tuple[int, int], list[str], list[str]]:
     """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
+
+    With *prefix_in_place*, a fast path whose cached range can be copied as it
+    is (:func:`_range_in_place`) returns that ``(offset, size)`` range instead of
+    the prefix text, for :func:`write_range_payload`.
 
     ``retired_entries`` are the serialized rows a rewrite removes on purpose
     (a Regenerate's previous reply). They take part in the identity scan as
@@ -547,7 +675,11 @@ def _frozen_prefix_and_foreign_appends(
         # an idle slot does not keep a copy of its older history in memory. The
         # range is read back here; a range that does not read back as whole
         # lines falls through to the full read below.
-        prefix = read_prefix_range(path, cache[3])
+        prefix: str | tuple[int, int] | None = (
+            _range_in_place(path, cache[3]) if prefix_in_place else None
+        )
+        if prefix is None:
+            prefix = read_prefix_range(path, cache[3])
         if prefix is not None:
             carriers = [*window_entries, *(retired_entries or ())]
             return (prefix, _drop_carried_foreign(list(cache[4]), carriers), [])
@@ -974,10 +1106,13 @@ def compose_payload(
     rewrite: bool,
     retired_rows: list[dict] | None = None,
     digests: list[bytes] | None = None,
-) -> tuple[str, str, list[str], Callable[[], None]]:
+) -> tuple[str | RangePayload, str | tuple[int, int], list[str], Callable[[], None]]:
     """The file a full save writes: ``(payload, frozen_prefix, foreign_lines, drop_archives)``.
 
-    Called under the transcript lock. Archives the ambiguous dedup drops, the rows
+    A save whose file is the one this slot last wrote (an in-place edit) leaves
+    its frozen prefix in that file: the payload is then a :class:`RangePayload`
+    and ``frozen_prefix`` the range the prefix takes in the file written. Called
+    under the transcript lock. Archives the ambiguous dedup drops, the rows
     the file-change bound rewrote and, for a rewrite, the dropped window tail before
     the caller's atomic replace.
 
@@ -1067,6 +1202,8 @@ def compose_payload(
         window_entries,
         collect_foreign=not rewrite or retired_entries is not None,
         retired_entries=retired_entries,
+        # A rewrite diffs its payload against the old lines, so it needs the text.
+        prefix_in_place=not rewrite,
         bound_prefix=(
             None
             if rewrite
@@ -1087,11 +1224,15 @@ def compose_payload(
     # case (indistinguishable from a distinct same-content message without
     # a stable per-message id), so ``archive_dedup`` archives it before the
     # atomic replace, and keeps it in ``foreign_lines`` when that fails.
-    payload = (
-        meta_str
-        + frozen_prefix
-        + "".join(_interleave_foreign_lines(window_entries, window_lines, foreign_lines))
+    window_text = "".join(_interleave_foreign_lines(window_entries, window_lines, foreign_lines))
+    payload: str | RangePayload = (
+        meta_str + frozen_prefix + window_text
+        if isinstance(frozen_prefix, str)
+        else RangePayload(meta_str, frozen_prefix, window_text)
     )
+    if not isinstance(frozen_prefix, str):
+        # Where the prefix sits in the file this save writes, behind its own line 0.
+        frozen_prefix = (_written_size(meta_str), frozen_prefix[1])
 
     # Refresh the slot's ordering floor from what is actually going to
     # disk, foreign rows included. This is the only place the slot can
@@ -1121,6 +1262,8 @@ def compose_payload(
     if rewrite and path.exists():
         from kiro_crew.history_projection import _split_transcript_bytes
 
+        # A rewrite never takes the prefix in place (prefix_in_place above).
+        assert isinstance(payload, str)
         old_lines = _split_transcript_bytes(path.read_bytes())
         new_lines = payload.splitlines(keepends=True)
         archived.append(_archive_dropped_lines(state, history_key, old_lines, new_lines))
