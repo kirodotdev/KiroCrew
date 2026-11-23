@@ -218,6 +218,18 @@ goes to the owner of its responsibility:
 and `gen` is the revocation generation `validate_token` compares against the persisted
 value. `app`, `prompt`, `peer_key` and the scoping claims below are added only when set.
 
+A token that carries a `prompt` is capped at `LINK_TOKEN_MAX_CHARS` (3,000)
+characters. The prompt is signed into the URL as ASCII-escaped JSON, so a long or
+non-ASCII message makes a long link, and Slack splits a message line at about
+4,000 bytes. A cut link fails its signature, so it signs nobody in, and a channel
+challenge link never opens its window. When the token would pass the cap,
+`generate_token` drops the `prompt` claim and logs a warning; the other claims
+stay. The dashboard still reconnects to the signed `session_key`, or creates a
+session and links it to the signed `channel` + `thread_ts`. It skips prompt
+prefill and auto-send when no prompt is present; the message is still in the
+chat it came from (`test_token_auth_link_prompt_size.py`). A token with neither
+a prompt nor Slack context does not route a session.
+
 `kind` is `"session"` only on a token minted as a session: the middleware's
 link→session exchange and the refresh rotation pass `generate_token(...,
 session=True)`. Every other dashboard-user token omits it and is a one-time link.
