@@ -182,10 +182,8 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
         return True
     # The view above reads ``\`` as a POSIX escape, so an unquoted Windows path
     # (``c:\git\cmd\git.exe``, ``.\git.exe``) reaches it with its separators gone.
-    # PowerShell and cmd keep ``\`` as a separator, so on Windows the same walk also
-    # runs over the separator-preserving split. It only adds detection, and only a
-    # segment's command word is read as the program there: a path ARGUMENT ending in
-    # ``\git`` (``Get-ChildItem C:\src\git push``) is data, not git.
+    # PowerShell and cmd keep ``\`` as a separator, so on Windows the words are also
+    # read with it kept (``_windows_words_hold_git_push``). It only adds detection.
     from kiro_crew import platform_compat
 
     # Without a ``\`` the escaped view lost no separator, so the walk is skipped and
@@ -193,22 +191,47 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     if not platform_compat.IS_WINDOWS or "\\" not in text_lower:
         return False
     try:
-        for segment in _split_push_command_segments(text_lower):
-            words = _split_shell_words(segment)
-            while words and _cut_at_operator(words[0]) in ("", "{"):
-                words = words[1:]  # PowerShell's ``&`` call operator, ``(``, ``{``
-            if _has_git_push_word_pair(words, first_word_only=True):
-                return True
+        return any(
+            _windows_words_hold_git_push(_split_shell_words(segment))
+            for segment in _split_push_command_segments(text_lower)
+        )
     except Exception:
         return False
+
+
+def _windows_words_hold_git_push(words: list[str]) -> bool:
+    """True when PowerShell or cmd *words*, ``\\`` kept, run git with subcommand ``push``.
+
+    Quotes and glued operators are stripped without touching ``\\``, so ``"push"`` and
+    ``"-C"`` read as PowerShell passes them. ``git.exe``/``.cmd``/``.bat`` by any path is
+    git at every position, as the escaped view already reads ``git.exe`` (``cmd /c``, a
+    ``{ }`` block). A bare ``...\\git`` is git only as a command word -- first, or after
+    ``&``, ``(`` or ``{`` -- so a path ARGUMENT (``Get-ChildItem C:\\src\\git push``) is data.
+    """
+    view = [_cut_at_operator(word).strip("'\"") for word in words]
+    for i, word in enumerate(view):
+        if not _is_git_program_word(word):
+            continue
+        command_word = i == 0 or view[i - 1] in ("", "{", "(")
+        if not command_word and ntpath.basename(word) == "git":
+            continue
+        j = i + 1
+        while j < len(view):
+            if not view[j].strip():
+                j += 1
+            elif view[j] in _GIT_ARG_FLAGS:
+                j += 2
+            elif view[j].startswith("-"):
+                j += 1
+            else:
+                break
+        if j < len(view) and view[j] == "push":
+            return True
     return False
 
 
-def _has_git_push_word_pair(tokens: list[str], *, first_word_only: bool = False) -> bool:
-    """True when *tokens* hold a git program word whose subcommand is ``push``.
-
-    With *first_word_only*, only ``tokens[0]`` may be that program word.
-    """
+def _has_git_push_word_pair(tokens: list[str]) -> bool:
+    """True when *tokens* hold a git program word whose subcommand is ``push``."""
     if not tokens:
         return False
 
@@ -236,8 +259,6 @@ def _has_git_push_word_pair(tokens: list[str], *, first_word_only: bool = False)
 
     i = 0
     while i < len(tokens):
-        if first_word_only and i:
-            return False
         token = tokens[i]
         # Check if this token resolves to "git"
         if _resolves_to(token, "git"):

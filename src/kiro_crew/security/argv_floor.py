@@ -132,6 +132,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _normalize_ref,
         _process_substitution_word_is_opaque,
         _push_segment_targets_protected,
+        _windows_words_hold_git_push,
     )
     from kiro_crew.security.argv_floor_git_tar import (  # noqa: F401
         _CARRIED_READ_CHAR_BUDGET,

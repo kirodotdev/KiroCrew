@@ -267,9 +267,25 @@ class TestPublishFloorNestedPayloads:
             "& C:\\Git\\cmd\\git.exe push origin main",
             ".\\git.exe push origin main",
             "echo x; C:\\Git\\cmd\\git.exe -C C:\\repo push origin main",
+            # PowerShell passes a quoted subcommand or flag unquoted.
+            'C:\\Git\\cmd\\git.exe "push" origin main',
+            "C:\\Git\\cmd\\git.exe 'push' origin main",
+            '.\\git.exe "push" origin main',
+            'C:\\Git\\cmd\\git.exe "-C" repo push origin main',
+            # git.exe by path is git wherever it runs: a block, a dot-sourced block, cmd /c.
+            "if ($true) { C:\\Git\\cmd\\git.exe push origin main }",
+            "if ($true) { .\\git.exe push origin main }",
+            ". { C:\\Git\\cmd\\git.exe push origin main }",
+            "cmd /c C:\\Git\\cmd\\git.exe push origin main",
+            # A bare ``\git`` as a command word, after ``&`` or ``{``.
+            "& C:\\Git\\cmd\\git push origin main",
+            "if ($true) { C:\\Git\\cmd\\git push origin main }",
         )
         allowed = (
             "C:\\Git\\cmd\\git.exe push origin feature",
+            'C:\\Git\\cmd\\git.exe "push" origin feature',
+            "if ($true) { C:\\Git\\cmd\\git.exe push origin feature }",
+            "cmd /c C:\\Git\\cmd\\git.exe push origin feature",
             "C:\\Git\\cmd\\git.exe status",
             "C:\\Tools\\legit.exe push origin main",
             # A path ARGUMENT ending in ``\git`` is data; only the command word is git.
