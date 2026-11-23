@@ -33,7 +33,7 @@ import { usePointerMotion } from '../../hooks/usePointerMotion'
 import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS, actionLabel, headerOf, rootRowCopyable, type Scope } from './commandBarOverlayModel'
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
-import { crewWaitingApprovals } from '../../pages/chat/command-center/model'
+import { crewWaitingApprovals, mateWaitingThreads } from '../../pages/chat/command-center/model'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
@@ -192,6 +192,9 @@ export default function CommandBarOverlay({
   const crewMode = useCrewMode()
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the conductor mode read crewWaitingApprovals makes
   const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
+  // A live Bot thread's sessions leave the person's list too; what they owe the
+  // person rides on the Bot thread (All Dashboards reads the same `mateWaitingThreads`).
+  const mateWaiting = useMemo(() => mateWaitingThreads(liveSlots), [liveSlots])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
@@ -322,7 +325,7 @@ export default function CommandBarOverlay({
   commandByIdRef.current = commandById
 
   const ranked = useCommandBarOverlayRootRows({
-    liveSlots: personSlots, crewWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, compactingKeys, dispatch, navigate, store, cycleTheme,
+    liveSlots: personSlots, crewWaiting, mateWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, compactingKeys, dispatch, navigate, store, cycleTheme,
     commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
     setAttentionExpanded,
   })
