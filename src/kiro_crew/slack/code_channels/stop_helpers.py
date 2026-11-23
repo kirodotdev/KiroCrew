@@ -292,6 +292,9 @@ async def stop_channel(
     where = f"{channel} thread={anchor}" if thread else channel
     state = routing._dashboard_state()
     slot = routing.bound_slot(state, binding) if binding is not None else None
+    if thread and slot is not None:
+        # First, before any await: the stopped turn dispatches nothing more.
+        fence_thread_dispatch(slot)
     conductor = binding.session_key if binding is not None else ""
     # Read before the first await: a turn the channel's session starts during the
     # sweep (the person's next message) began after the press and is not stopped.
@@ -340,6 +343,31 @@ async def stop_channel(
         return info
     await routing._post(orch, channel, thread_runtime.say(binding, reply_text(own, tally)), anchor)
     return info
+
+
+def fence_thread_dispatch(slot: Any) -> None:
+    """Refuse any further dispatch from a stopped Conductor thread's current turn.
+
+    A code channel's Stop does this through its channel-wide stop fence, which the
+    dispatch exemption reads (``surface.channel_stopped``); that fence is keyed by
+    the channel and a thread's turns never record their start in it. A thread's
+    Stop instead narrows the conductor's running turn to channel authority
+    (``_turn_channel_narrowed``, which the turn runner resets at the turn's end
+    and the next turn's start) and drops its recorded Slack authors, so the
+    exemption's author clause refuses every ``session_create`` and ``send`` the
+    unwinding turn still makes: a stopped worker is not started again from it,
+    and no new worker is born after the Stop's sweeps. The owner's next message
+    records the owner again; a new dashboard turn starts un-narrowed.
+
+    shortcut: reaches into the exemption's author record; give it a per-slot
+    ``forget_sender(slot)`` when that module is next edited.
+    """
+    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as cce
+
+    slot._turn_channel_narrowed = True
+    key = str(getattr(slot, "key", "") or "")
+    with cce._senders_lock:
+        cce._senders.pop(key, None)
 
 
 async def _stop_channel_session(

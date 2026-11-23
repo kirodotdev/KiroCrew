@@ -1972,11 +1972,11 @@ async def _stop_bound(
     """Stop the channel's session, its helper agents and their sub-agents (:mod:`.stop_helpers`)."""
     from kiro_crew.slack.code_channels import stop_helpers, surface
 
-    # shortcut: a Conductor thread sets no channel-wide stop fence or status hold
-    # (both are keyed by the channel, which holds other threads); its Stop stops
-    # the conductor, its recorded workers and their sub-agents, and a worker born
-    # during the Stop is caught by stop_helpers' second pass. Key the fence by
-    # thread when part C's board writes need it.
+    # A Conductor thread sets no channel-wide stop fence or status hold (both are
+    # keyed by the channel, which holds other threads): its Stop fences the
+    # stopped turn's dispatch itself (stop_helpers.fence_thread_dispatch).
+    # shortcut: a thread's own Slack writes admitted before the Stop are not
+    # fenced; key the fence by thread when part C's board writes need it.
     if not thread_runtime.is_thread(binding):
         # First, before any await: work admitted before this press (an in-flight
         # tool call, a wrap-up) writes nothing more to Slack.
