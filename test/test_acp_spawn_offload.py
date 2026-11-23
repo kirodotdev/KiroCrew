@@ -1357,6 +1357,9 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         backend = SimpleNamespace(
             create_windows_cleanup_owned_process=with_fake_process,
             finish_windows_cleanup_owned_spawn=with_fake_process,
+            # Not Linux: the fake tree has no sessions, so the teardown's
+            # session-leftover read stays off the host's /proc.
+            IS_LINUX=False,
             IS_POSIX=not windows,
             IS_WINDOWS=windows,
             terminate_windows_asyncio_tree=terminate_windows_tree,
@@ -1375,6 +1378,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             kill_process_tree_pinned=lambda pid, start, sig: (
                 (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
             ),
+            # A kill whose root exited inside the grace waits for the root's group.
+            pgroup_exists=lambda pgid: pgid in groups.values(),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )

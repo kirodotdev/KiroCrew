@@ -811,8 +811,8 @@ async def test_platform_limited_model_wait_probes_past_the_extended_window():
 
 @pytest.mark.asyncio
 async def test_dead_model_wait_probes_immediately():
-    """A DEAD model-wait verdict (no backend socket, flat counters — the
-    done-but-lost-frame wedge) probes without waiting for the stale window."""
+    """A DEAD model-wait verdict after an own frame (no backend socket, flat counters:
+    the done-but-lost-frame wedge) probes without waiting for the stale window."""
     wd = WatchdogSettings(
         check_after_secs=0.01,
         stale_window_secs=999.0,
@@ -820,7 +820,8 @@ async def test_dead_model_wait_probes_immediately():
         tool_stall_hard_cap_secs=999.0,
     )
     handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
-    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._queue = _SilentQueueWithBacklog()  # type: ignore[assignment]
+    handle._queue.put_nowait(_thought_frame())
     handle._oracle.check_model_wait = lambda pid: (
         "dead",
         "no established backend socket and flat counters",

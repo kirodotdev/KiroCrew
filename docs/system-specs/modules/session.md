@@ -1382,8 +1382,11 @@ in the store, and without the key component it read as signed out on every
 turn — every dashboard send retired idle sessions and cancelled their
 `spawn_run` children (#15126). The key joins only a DEFINITIVE store answer
 (read and audited with every credential row identified, or no store file at
-all): after an unauditable, unreadable or relocated store read, or one that
-found a login no stable claim identifies (a social login), only the key
+all). Only a row whose value is a JSON object is a credential row: any other
+value, such as the `kirocli:auth:last-forced-refresh-at` timestamp an earlier
+login leaves behind, names no login and is ignored. After an unauditable,
+unreadable or relocated store read, or one that found a login no stable claim
+identifies (a social login), only the key
 component is withheld and the fingerprint is exactly what it was before the key
 was counted, because a child can authenticate from the store rather than the
 key, and a key-only baseline would let a store account switch compare equal.
@@ -2614,7 +2617,14 @@ against sweep completeness, and are torn down at `close_all`.
   session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
   (`SessionManager.on_leftover_memory`, wired by the dashboard). With
   `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
-  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  then. `AcpRuntime.kill` and `AcpClient.shutdown` also read their root's
+  leftovers before they signal and end them the same way once the root is gone
+  (`runtime_tree_kill.kill_ending_session_leftovers`), so a job a closed chat's
+  shell already left does not outlive it, and a recycle through either leaves
+  `end_after_recycle` nothing to end. A job whose shell is still running at that
+  read is in the live tree, so this step does not read or end it. Ending is
+  Linux only, as the pinned terminator is; macOS reports and its teardown leaves
+  them running.
   Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,

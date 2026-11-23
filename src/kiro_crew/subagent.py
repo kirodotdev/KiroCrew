@@ -47,6 +47,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
     STOP_CLASS_CANCELLED,
     STOP_CLASS_FAILED,
     STOP_CLASS_SUCCEEDED,
+    STOP_REASON_STALE_RECOVER,
     STOP_RECOVERY_MAX_RETRIES,
     TERMINAL_TOOL_STATUSES,
     classify_stop_reason,

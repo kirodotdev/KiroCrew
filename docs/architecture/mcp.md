@@ -554,6 +554,18 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+The writers that share `agents_spec_lock` — the agent-detail PATCH, fork and
+publish, the background fork refresh — are serialized from the other end, because
+the rebuild reads its merge base long before it takes that lock. Under the lock,
+just before the write, it reads the file again: identical bytes change nothing,
+and otherwise every top-level key the rebuild left as its base had it takes the
+file's current value (`_carry_concurrent_spec_edits`), so a save committed mid
+rebuild is kept instead of reverted. A key the rebuild derived itself stays as
+derived, the `includeMcpJson: false` pin included, a carried `allowedTools`
+runs through the final auto-approve pass again, and a carried `toolsSettings`
+loses the retired `deniedCommands`/`autoAllowReadonly` again, so carrying can
+never widen a grant.
+
 ## Discovery and probing
 
 Source: `mcp_discovery.py`, a mirror facade (`kiro_crew._facade_mirror`) over sibling
@@ -2130,6 +2142,16 @@ way: a malformed project spec yields `Error: Json supplied at ... is invalid` an
 zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, and
 its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
+
+A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
+not a checkout for this rule. The home folder is exactly that when the user-level
+agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
+finds the user-level spec itself there. `session_servers._is_overlay_source`
+compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+spec is not a shadow: the overlay stays in effect and every shared server stays
+brokered. Counted as a shadow, it would run those servers raw inside the session;
+on the Claude Code backend that is inside the chat's sandbox, where a stdio server
+that keeps its sign-in outside its own process finds none.
 
 ### Bot overlays
 

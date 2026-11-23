@@ -9,6 +9,8 @@ every sweep and leak until reboot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ctypes
 import os
 import signal
 import sys
@@ -18,9 +20,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import _process_group_supervisor, platform_compat
 from kiro_crew.acp import runtime as rt
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.process_identity import ProcessHandle, process_survived
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 
 def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
@@ -675,6 +678,11 @@ _ROOT_THAT_DIES_FIRST = (
 )
 
 
+#: One worker runs the tests that start a real interpreter tree: each kill ends its
+#: own tree, so the trees cannot be one module-scoped child, and cold-starting them on
+#: several workers at once stalls a shard.
+_REAL_TREE_GROUP = "acp_runtime_kill_real_tree"
+
 #: The liveness oracle's own reads, bound at import, before any fixture or test patch
 #: runs: whatever a test stubs on the kill path, the oracle still asks the kernel.
 _kernel_start_id = platform_compat.get_process_start_id
@@ -689,6 +697,7 @@ def _still_running(pid: int, start: str | None) -> bool:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX teardown; Windows drains by handle")
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
 @pytest.mark.asyncio
 async def test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof(monkeypatch):
     """A tree no signal reaches still ends when the kill releases the root's stdin.
@@ -736,3 +745,339 @@ async def test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof(monkey
         if _still_running(child, child_start):
             # The child still holds the group the root led, so its number is still ours.
             os.killpg(proc.pid, signal.SIGKILL)
+
+
+#: On SIGTERM, closes its stdio -- the pipes the root's transport waits on -- and
+#: holds its exit until a byte (or EOF) arrives on the gate fd in argv[1]: the agent
+#: below the sandbox launcher, whose exit closes those pipes before the init it was
+#: reparented to has reaped it.
+_AGENT_SLOW_TO_STOP = (
+    "import os, signal, sys\n"
+    "gate = int(sys.argv[1])\n"
+    "def _stop(*_):\n"
+    "    for fd in (0, 1, 2):\n"
+    "        os.close(fd)\n"
+    "    os.read(gate, 1)\n"
+    "    os._exit(0)\n"
+    "signal.signal(signal.SIGTERM, _stop)\n"
+    "print('ready', flush=True)\n"
+    "while True:\n"
+    "    signal.pause()\n"
+)
+#: The sandbox launcher's shape: forks that agent into its own process group and
+#: waits for it under the default SIGTERM disposition, so a group SIGTERM ends the
+#: launcher at once while the agent is still stopping.
+_LAUNCHER_ROOT = (
+    "import os, sys\n"
+    "pid = os.fork()\n"
+    "if pid == 0:\n"
+    f"    os.execv(sys.executable, [sys.executable, '-c', {_AGENT_SLOW_TO_STOP!r}, sys.argv[1]])\n"
+    "print(pid, flush=True)\n"
+    "os.waitpid(pid, 0)\n"
+)
+
+#: ``prctl`` option that makes a process the reaper of the orphans in its subtree.
+_PR_SET_CHILD_SUBREAPER = 36
+
+
+def _set_child_subreaper(on: bool) -> None:
+    """Make this process the reaper of its subtree's orphans (Linux), or stop being it.
+
+    The test that sets it reaps the one orphan its own tree leaves, so the group it
+    waits on empties without help from whatever init the host runs.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(on), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER)")
+
+
+def _reap_group(pgid: int) -> None:
+    """Reap each child of this process left in process group *pgid*, until none is left."""
+    with contextlib.suppress(ChildProcessError):
+        while True:
+            os.waitpid(-pgid, 0)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the sandbox launcher that forks the agent is Linux's"
+)
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
+@pytest.mark.asyncio
+async def test_kill_waits_for_the_group_a_root_that_dies_at_once_leaves(monkeypatch):
+    """A root that dies on the SIGTERM at once does not end the kill for its group.
+
+    The sandbox launcher is that root: the group's SIGTERM ends it immediately, and
+    the agent it forked into the same group closes the root's pipes as it exits, so
+    the root's ``wait()`` returns while that agent is still in the group -- exiting,
+    or a zombie the init it was reparented to has not reaped yet. A kill that returns
+    there hands every check after it -- the descendant prune, a sub-agent's survivor
+    check -- a process the SIGTERM already ended, which they read as one that
+    survived the teardown and force-kill. The kill waits the group out for the rest
+    of the grace instead. The agent's exit is held on a gate the group probe opens,
+    so the wait is observed, not timed, and this test is the subreaper that reaps
+    the orphaned agent, so the group empties whatever init the host runs.
+    """
+    proc: asyncio.subprocess.Process | None = None
+    agent: int | None = None
+    agent_start: str | None = None
+    reaped: list[int] = []
+    subreaper = False
+    gate_w = -1
+    try:
+        _set_child_subreaper(True)
+        subreaper = True
+        gate_r, gate_w = os.pipe()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _LAUNCHER_ROOT,
+                str(gate_r),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                pass_fds=(gate_r,),
+            )
+        finally:
+            os.close(gate_r)
+        assert proc.stdout is not None
+        lines = [await asyncio.wait_for(proc.stdout.readline(), timeout=60) for _ in range(2)]
+        agent = int(next(line for line in lines if line.strip().isdigit()))
+        agent_start = _kernel_start_id(agent)
+        asked: list[bool] = []
+
+        def _pgroup_exists(pgid: int) -> bool:
+            if asked:
+                # The root is gone, so the agent is this subreaper's: reap it once it exits.
+                with contextlib.suppress(ChildProcessError):
+                    if os.waitpid(agent, os.WNOHANG)[0] == agent:
+                        reaped.append(agent)
+            alive = platform_compat.pgroup_exists(pgid)
+            if alive and not asked:
+                os.write(gate_w, b"x")  # the kill is waiting on the group: let the agent stop
+            asked.append(alive)
+            return alive
+
+        stub = rt.platform_compat
+        monkeypatch.setattr(stub, "kill_process_tree", platform_compat.kill_process_tree)
+        monkeypatch.setattr(stub, "pid_exists", platform_compat.pid_exists)
+        monkeypatch.setattr(stub, "pgroup_exists", _pgroup_exists, raising=False)
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 60.0)
+        monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+        monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+        r = _bare_runtime(pid=proc.pid)
+        r._process = proc
+        r._start_time = _kernel_start_id(proc.pid)
+        r._child_pids = {agent: (agent_start, b"python")}
+        # The handle a sub-agent reset takes of this runtime before it resets.
+        handle = ProcessHandle(
+            pid=proc.pid, start_id=r._start_time, pgid=proc.pid, child_pids=dict(r._child_pids)
+        )
+
+        await r.kill()
+
+        assert proc.returncode == -signal.SIGTERM
+        assert not process_survived(handle), "a reset's survivor check would force-kill it"
+        assert not _still_running(agent, agent_start), "kill() returned with the agent stopping"
+        assert asked and asked[-1] is False, asked
+        assert reaped == [agent], "the group emptied without this subreaper reaping the agent"
+        assert r._process_tree_confirmed_dead is True
+    finally:
+        try:
+            if gate_w >= 0:
+                os.close(gate_w)  # EOF releases an agent the kill never waited for
+            if proc is not None:
+                if proc.returncode is None or (
+                    agent is not None and _still_running(agent, agent_start)
+                ):
+                    # A member is still in the group, so its number is still the root's.
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                await asyncio.wait_for(proc.wait(), timeout=60)
+                # The root is reaped, so what is left of its group is this subreaper's.
+                await asyncio.wait_for(asyncio.to_thread(_reap_group, proc.pid), timeout=60)
+        finally:
+            if subreaper:
+                _set_child_subreaper(False)
+
+
+#: A runtime root whose shell job outlived its shell: the middle process starts a
+#: child in a process group of its own and exits, so init adopts the child, which
+#: keeps the root's session id. The root prints the child's pid and waits on stdin.
+_ROOT_THAT_LEAVES_A_SESSION_JOB = (
+    "import os, subprocess, sys\n"
+    "read_end, write_end = os.pipe()\n"
+    "if os.fork() == 0:\n"
+    "    job = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+    "                           preexec_fn=os.setpgrp, stdin=subprocess.DEVNULL,\n"
+    "                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    "    os.write(write_end, str(job.pid).encode())\n"
+    "    os._exit(0)\n"
+    "os.wait()\n"
+    "print(os.read(read_end, 32).decode(), flush=True)\n"
+    "sys.stdin.read()\n"
+)
+
+
+async def _start_root_with_session_job() -> tuple[asyncio.subprocess.Process, int, str | None]:
+    """A session leader running ``_ROOT_THAT_LEAVES_A_SESSION_JOB``, and its job's identity."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _ROOT_THAT_LEAVES_A_SESSION_JOB,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    try:
+        job = int(await asyncio.wait_for(proc.stdout.readline(), timeout=60))
+    except BaseException:
+        # Not handed to the caller's cleanup yet: its group is ended here.
+        os.killpg(proc.pid, signal.SIGKILL)
+        raise
+    return proc, job, _kernel_start_id(job)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or not _process_group_supervisor.can_reap(),
+    reason="the pinned terminator needs Linux and a kernel that pins processes with pidfd_open",
+)
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
+@pytest.mark.asyncio
+async def test_kill_ends_a_job_the_root_left_in_its_session_outside_its_group(monkeypatch):
+    """The reported leak: a closed chat's shell job outlived its runtime.
+
+    The job is in the root's session, reparented to init and in a process group
+    of its own, so neither the walk from the root nor the group signal reaches it.
+    The kill reads it while the root lives and ends it once the root is gone. A
+    second runtime's job of the same shape is in another session and is untouched.
+    """
+    started: list[tuple[asyncio.subprocess.Process, int, str | None]] = []
+    try:
+        started.append(await _start_root_with_session_job())
+        started.append(await _start_root_with_session_job())
+        (proc, job, job_start), (other, other_job, other_job_start) = started
+        other_start = _kernel_start_id(other.pid)
+        assert _still_running(job, job_start) and os.getsid(job) == proc.pid
+        assert os.getpgid(job) == job, "the job must have left the root's process group"
+        r = _bare_runtime(pid=proc.pid)
+        r._process = proc
+        r._start_time = platform_compat.get_process_start_id(proc.pid)
+        # Real processes this test started: the real terminate, pinned to the root.
+        for name in ("kill_process_tree", "kill_process_tree_pinned", "pid_exists"):
+            monkeypatch.setattr(rt.platform_compat, name, getattr(platform_compat, name))
+        # The kill waits for the root's reap, as in production; the zero waits this
+        # file's fixture sets could leave it an unreaped zombie, which still reads
+        # as the root, so nothing would be ended. Lost-run bounds only: it exits at once.
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_REAP_TIMEOUT", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+        monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+        await r.kill()
+
+        await async_wait_until(
+            lambda: not _still_running(job, job_start),
+            off_loop=True,
+            describe=lambda: f"session job {job} still running after kill()",
+        )
+        assert _still_running(other.pid, other_start), "another runtime was signalled"
+        assert _still_running(other_job, other_job_start), "another session's job was ended"
+    finally:
+        for root, leftover, leftover_start in started:
+            if _still_running(leftover, leftover_start):
+                os.kill(leftover, signal.SIGKILL)
+            if root.returncode is None:
+                # The root leads its own group, so its number is still ours to signal.
+                os.killpg(root.pid, signal.SIGKILL)
+            await await_until(asyncio.ensure_future(root.wait()), what=f"root {root.pid}'s exit")
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_leftover_read_still_runs_the_kill(monkeypatch):
+    """A cancel that lands while the session is being read cannot skip the kill.
+
+    The read is the teardown's first await, before anything is signalled: a cancel
+    that ended the teardown there would leave the runtime alive and unmarked. The
+    kill runs, the cancel then propagates, and nothing read is ended.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    killed: list[bool] = []
+
+    async def _cancelled_read(pid: int, start_id: str) -> None:
+        raise asyncio.CancelledError
+
+    async def _kill() -> None:
+        killed.append(True)
+
+    async def _end(pid: int, leftovers: object) -> None:
+        raise AssertionError("nothing read may be ended after a cancel")
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _cancelled_read)
+    monkeypatch.setattr(runtime_tree_kill, "_end_root_leftovers", _end)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_tree_kill.kill_ending_session_leftovers(4242, "root-start", _kill)
+    assert killed == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_kill_still_ends_what_was_read(monkeypatch):
+    """A cancel that lands in the kill does not leave the leftovers it read running.
+
+    The kill finishes its signals on a cancel and then re-raises, so the root is gone
+    by then; what was read is still ended, and the cancel then propagates.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    read = object()
+    ended: list[tuple[int, object]] = []
+
+    async def _read(pid: int, start_id: str) -> object:
+        return read
+
+    async def _cancelled_kill() -> None:
+        raise asyncio.CancelledError
+
+    async def _end(pid: int, leftovers: object) -> None:
+        ended.append((pid, leftovers))
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _read)
+    monkeypatch.setattr(runtime_tree_kill, "_end_root_leftovers", _end)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_tree_kill.kill_ending_session_leftovers(4242, "root-start", _cancelled_kill)
+    assert ended == [(4242, read)]
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_kill_marks_the_runtime_dead_before_the_leftover_read(monkeypatch):
+    """A turn cannot claim the runtime while its session is being read.
+
+    The read is an await between the ownership gate's yes and the signal. The runtime
+    is already dead then, so a turn that claims it in that gap is refused before its
+    prompt is sent instead of being killed mid-turn.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    r = _bare_runtime()
+    dead_at_read: list[bool] = []
+
+    async def _read(pid: int, start_id: str) -> None:
+        dead_at_read.append(r._dead)
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _read)
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+    monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+    await r.kill()
+
+    assert dead_at_read == [True]
