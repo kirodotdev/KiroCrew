@@ -1,11 +1,11 @@
 ---
 title: One exploratory tip beside "Thinking..." while a turn runs, on by default
-status: draft
+status: accepted
 author: chenmingwei23, with a kirocrew agent session
 created: 2026-11-22
-last-audited: 2026-11-22
+last-audited: 2026-11-24
 audited-at: cb3c2f0703
-doc-pr: null
+doc-pr: 40792
 implementation-prs: [39769]
 tracking-issues: [39753]
 supersedes: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Exploratory tips beside "Thinking..."
 
-- Status: draft. Nothing on main follows it. It asks a maintainer to accept one change to what the chat shows by default while a turn runs. A maintainer records acceptance on this Status line, in the `status` field and in the index row.
+- Status: accepted on 2026-11-22. The code change approver approved head `ec0a3ada5d` of [#40792](https://github.com/kirodotdev/KiroCrew/pull/40792), and maintainer chenmingwei23 merged it to main as `fbca546eb9`. That accepts one change to what the chat shows by default while a turn runs. Nothing on main follows it yet; the implementation is [#39769](https://github.com/kirodotdev/KiroCrew/pull/39769). Revised on 2026-11-24 to follow the phone design: on a phone the tip shows on its own line under "Thinking...", and only when it fits on one line. Maintainer chenmingwei23 accepted that phone revision on 2026-11-24 in [a comment on #41015](https://github.com/kirodotdev/KiroCrew/pull/41015#issuecomment-7122892634); it replaces the "no tip on phones" rule accepted with #40792.
 - Tracking issue: [#39753](https://github.com/kirodotdev/KiroCrew/issues/39753) (its design comment has the same screenshots).
 - Implementation: draft [#39769](https://github.com/kirodotdev/KiroCrew/pull/39769), read at head `02e732ded1`. Main was read at `cb3c2f0703`.
 - Why this lands first: the First Principles lane blocked #39769 because the tip shows on every desktop turn by default and the only tips RFC on the base, [rfc-tips-kit.md](rfc-tips-kit.md), is `draft`. That lane reads the decision off the base branch, so it needs this document merged with a non-draft status.
@@ -53,7 +53,7 @@ Small controls are found by accident or not at all. In the card they compete wit
 
 - Picking a tip from the current task. Tips are picked at random among the eligible ones.
 - Clickable chips. `/side`, `Ctrl+K` and the like are plain text.
-- Phones, embedded chats, popped-out chats and temporary sessions. They show no tip.
+- Embedded chats, popped-out chats and temporary sessions. They show no tip.
 - Any change to the card's pool, cadence, selection or look.
 - A new setting.
 
@@ -69,7 +69,9 @@ On hover or keyboard focus, a small x shows at the end of the tip:
 
 ![The dismiss x on hover](assets/exploratory-tips-hover-dismiss.png)
 
-When the tip does not fit after "Thinking...", it drops to its own line and wraps. It is never cut off with an ellipsis, and the divider hides while the two are on separate lines. The fade-in is off under reduced motion.
+On desktop, when the tip does not fit after "Thinking...", it drops to its own line and wraps. It is never cut off with an ellipsis, and the divider hides while the two are on separate lines. The fade-in is off under reduced motion.
+
+On a phone (below the 768 px width), the tip never sits beside "Thinking...". It shows on its own full-width line under the "Thinking..." loader, with no divider. It must fit on that one line at the current width: a tip that would wrap or be cut off is not shown for that turn. It is never cut off with an ellipsis.
 
 If reading the tips fails with an error other than 404, the row shows a short inline error beside "Thinking..." in place of a tip, for that turn only. A 404 means an older gateway with no tips route, and shows nothing.
 
@@ -95,7 +97,8 @@ The list is its own file, `src/kiro_crew/data/tips_exploratory.json`, separate f
 
 ### When it shows
 
-- Only in the full desktop dashboard chat: not below the 768 px phone width, not in an embedded or popped-out chat, not in a temporary session.
+- Only in the full dashboard chat, on desktop and on a phone: not in an embedded or popped-out chat, not in a temporary session.
+- On a phone, only when the tip fits on one line at the current width.
 - Only when the dashboard confirms every key in the tip's `requires`, for example a fine pointer for `keyboard`, Terminal enabled for `terminal`, a browser that can record for `microphone`. A key the dashboard does not know is never confirmed, so a tip that names it stays hidden.
 - One tip per turn. It is picked at random when the turn starts, never changes mid-turn, and leaves with the "Thinking..." row when the turn ends.
 - Showing it does not start the card's cadence gate, and the card's gate does not hold it back.
@@ -117,7 +120,7 @@ This is the product-shape decision the First Principles lane asked for, and the 
 2. **It matches the default the user already has.** `dashboard.tips_enabled` is `True` today and the card is on by default. This adds a second place under the same switch, not a new default.
 3. **It costs little space and attention.** The row exists only while the user waits on the agent, the tip takes the free end of it, and it is gone when the answer arrives. It takes no focus, opens nothing, makes no sound and needs no click. The costs it does have are listed under "Downsides".
 4. **It is bounded.** There are 11 tips. Each one can be hidden for good with one click, and one switch hides all of them. A user who never wants to see one again is at most one Settings toggle away.
-5. **It stays out of the way of work.** No tip shows where its control does not work, on a phone, in an embedded or popped-out chat, or in a temporary session.
+5. **It stays out of the way of work.** No tip shows where its control does not work, in an embedded or popped-out chat, or in a temporary session. On a phone a tip shows only when it fits on one line.
 
 One tip on every turn is the part of this that could be too much for a heavy user. This RFC accepts it for the first release and sets a number for when it is revisited (Open question 1). The follow-up then is a cap per user per day, not a different default.
 
@@ -126,9 +129,9 @@ One tip on every turn is the part of this that could be too much for a heavy use
 Each cost below is accepted for the first release. The line under it says how it is bounded.
 
 1. **An agent with many short turns shows a new line every few seconds.** A chat answering a cron, or a steer loop, can start a turn every few seconds, and each turn picks a new tip.
-   Bounded: a tip shows only while that chat is open in the full desktop view, and `shown` is sent only when the tip renders. Each tip the user does not want is gone for good with one click, and there are 11. If the dismiss rate passes the threshold in Open question 1, the per-day cap in Alternatives 9 is added.
+   Bounded: a tip shows only while that chat is open in the full dashboard view, and `shown` is sent only when the tip renders. Each tip the user does not want is gone for good with one click, and there are 11. If the dismiss rate passes the threshold in Open question 1, the per-day cap in Alternatives 9 is added.
 2. **The row gets wider when the tip appears, which can pull the eye.** The tip is added to the right of "Thinking...".
-   Bounded: the ghost and "Thinking..." keep their place; the tip only fills the free space to their right. The tip never changes mid-turn and has no timer of its own; it shows and hides with the row. The fade-in is short and off under reduced motion. In a narrow window the wrapped tip adds one line under "Thinking...".
+   Bounded: the ghost and "Thinking..." keep their place; the tip only fills the free space to their right. The tip never changes mid-turn and has no timer of its own; it shows and hides with the row. The fade-in is short and off under reduced motion. In a narrow desktop window the wrapped tip adds one line under "Thinking...", and on a phone the tip always takes one line under it.
 3. **The tip competes with "Thinking..." itself,** which is the one signal a waiting user is reading.
    Bounded: the tip is muted text after a divider, and "Thinking..." stays first. The tip sits outside the row's `role="status"` element, so screen readers still announce only the status. No tip shows when the row says something other than "Thinking...", such as a stage label or a browser in control.
 
@@ -140,7 +143,7 @@ Only what #39769 emits at `02e732ded1`. It uses the existing counter `kirocrew.t
 - `feature` is the tip id, such as `e07-side-chat`. Only ids shipped in `tips_exploratory.json` pass; anything else reads `other`.
 - `action` is `shown`, sent the first time the tip renders in a turn, or `dismiss`, sent from the x. The route also accepts `ack`, but nothing sends it, because the chips are not clickable.
 
-Expected volume: at most one `shown` per turn in each open view that renders the tip. A turn whose row never shows, or with no eligible tip left, sends none. This repository holds no public figure for turns per user per day, so the range here is an estimate: a user who runs 20 to 100 turns a day in an open desktop chat sends 20 to 100 `shown` a day until they dismiss tips. Card tips are held to at most about four a day by their six-hour gate. So `source=exploratory` will likely be the largest `source` on `kirocrew.tips.feedback`, and dashboards on that counter should split by `source`.
+Expected volume: at most one `shown` per turn in each open view that renders the tip. A turn whose row never shows, or with no eligible tip left, sends none. This repository holds no public figure for turns per user per day, so the range here is an estimate: a user who runs 20 to 100 turns a day in an open dashboard chat sends 20 to 100 `shown` a day until they dismiss tips. Card tips are held to at most about four a day by their six-hour gate. So `source=exploratory` will likely be the largest `source` on `kirocrew.tips.feedback`, and dashboards on that counter should split by `source`.
 
 From this we can read, per tip, how often it was shown and how often it was dismissed. We cannot yet read adoption, meaning whether people start using a control after seeing its tip: most of these controls have no use counter (`kirocrew.voice.stt.started` for dictation is one exception). Until a use signal exists per control, a high dismiss rate on one tip is the signal to fix or drop it.
 
@@ -172,7 +175,7 @@ One new read-only route and one new value on an existing counter. Every existing
 2. **Put these tips in the existing card.** That is today's state. The card's six-hour gate means a control tip is rarely seen, and it takes a slot from a capability tip.
 3. **Rotate tips on a timer within a turn.** Text that changes while the user reads it is a distraction, and `shown` would fire many times per turn.
 4. **Keep the tip after the turn ends.** It would leave a stale line in the transcript.
-5. **Cut long tips with an ellipsis in narrow windows.** The hidden part is often the key or command. The row wraps instead.
+5. **Cut long tips with an ellipsis in narrow windows.** The hidden part is often the key or command. On desktop the row wraps instead; on a phone a tip that does not fit on one line is not shown.
 6. **Pick the tip on the server.** Most eligibility facts live only in the browser.
 7. **A `placement` attribute on the counter.** Built and removed in #39769: every exploratory tip shows only on the Thinking row and every other source only in the card, so it restated `source` and would have cost a permanent key on an append-only schema.
 8. **A separate setting for Thinking-row tips.** One Feature Tips switch is easier to find, and the per-tip x covers "not this one".
