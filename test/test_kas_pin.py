@@ -17,7 +17,7 @@ from kiro_crew.acp import kas_pin
 
 #: An engine release, optionally followed by the Node runtime a republish of that
 #: same engine build bundles (``0.66.117-node22.23.4``).
-_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+)?$")
+_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+(?:-al2)?)?$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -28,12 +28,16 @@ def test_the_pinned_version_is_a_release_with_an_optional_node_suffix() -> None:
     assert _PIN_VERSION.match(kas_pin.KAS_PIN_VERSION), kas_pin.KAS_PIN_VERSION
 
 
-@pytest.mark.parametrize("version", ["0.66.117", "0.66.117-node22.23.4"])
+@pytest.mark.parametrize(
+    "version", ["0.66.117", "0.66.117-node22.23.4", "0.66.117-node22.23.4-al2"]
+)
 def test_the_pin_version_shape_accepts_a_release_and_a_node_republish(version: str) -> None:
     assert _PIN_VERSION.match(version)
 
 
-@pytest.mark.parametrize("version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66"])
+@pytest.mark.parametrize(
+    "version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66", "0.66.117-al2"]
+)
 def test_the_pin_version_shape_refuses_anything_else(version: str) -> None:
     assert not _PIN_VERSION.match(version)
 
