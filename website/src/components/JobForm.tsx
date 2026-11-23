@@ -506,6 +506,14 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const errorRef = useRef<HTMLDivElement | null>(null)
   const [errorTick, setErrorTick] = useState(0)
   const setError = (e: string) => { setErrorState(e); if (e) setErrorTick(t => t + 1) }
+  // A "required" refusal is stale once its field has a value, so typing clears
+  // it rather than leaving it on screen until the next submit.
+  const editRequired = (set: (v: string) => void, key: string) => (value: string) => {
+    set(value)
+    if (value && error === i18nT(key)) setError('')
+  }
+  const editName = editRequired(setName, 'components.jobForm.name_is_required')
+  const editMsg = editRequired(setMsg, 'components.jobForm.message_is_required')
   useEffect(() => {
     if (error) errorRef.current?.scrollIntoView?.({ block: 'nearest' })
   }, [error, errorTick])
@@ -841,7 +849,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.name')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.a_short_label_for_this_job')}</span>
-          <Input id="jobform-name" aria-label={i18nT('components.jobForm.name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input id="jobform-name" aria-label={i18nT('components.jobForm.name')} value={name} onChange={e => editName(e.target.value)} />
         </div>
         <div className="flex flex-col gap-1">
           {job?.script ? (<>
@@ -854,13 +862,13 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <div className="flex flex-col gap-1">
             <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.message')}</span>
             <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.the_prompt_or_task_sent_to_the_agent_when_this_j')}</span>
-            <textarea id="jobform-message" aria-label={i18nT('components.jobForm.message')} className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden resize-y min-h-[60px] focus-ring" value={msg} onChange={e => setMsg(e.target.value)} />
+            <textarea id="jobform-message" aria-label={i18nT('components.jobForm.message')} className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden resize-y min-h-[60px] focus-ring" value={msg} onChange={e => editMsg(e.target.value)} />
           </div>)}
         </div>
       </>) : (
         <div className="flex gap-2 items-center flex-wrap">
-          <Input aria-label={i18nT('components.jobForm.name')} placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
-          <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.name')} placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => editName(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => editMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
