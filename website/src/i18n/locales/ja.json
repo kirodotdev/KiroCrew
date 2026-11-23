@@ -6956,7 +6956,7 @@
       "stop_failed_owner_only": "この実行を停止できるのはダッシュボードの所有者だけです。所有者に停止を依頼してください。",
       "split_down": "下に分割",
       "split_right": "右に分割",
-      "split_right_d": "右に分割 (⌘D)",
+      "split_right_d": "右に分割 ({{shortcut}})",
       "type_to_filter": "フィルタリングするには入力…",
       "earlier_conversation_show": "{{time}} にリセットして再開 · 以前のメッセージを表示 ({{count}})",
       "earlier_conversation_hide": "{{time}} にリセットして再開 · 以前のメッセージを隠す (もう覚えていません)",
@@ -9254,7 +9254,7 @@
       "search_sessions": "セッションを検索…",
       "split_down": "下に分割",
       "split_right": "右に分割",
-      "split_right_d": "右に分割 (⌘D)",
+      "split_right_d": "右に分割 ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "ターミナルペイン — フェーズ 2 で提供予定"
     },
     "sessionMoveUndoBar": {
@@ -14481,7 +14481,7 @@
       "session_options": "セッションのオプション",
       "show_sessions": "セッションを表示",
       "show_sessions_sidebar": "セッションのサイドバーを表示",
-      "split_view_d": "分割表示 (⌘D)",
+      "split_view_d": "分割表示 ({{shortcut}})",
       "start_a_new_chat": "新しいチャットを開始",
       "session_closed_in_another_window": "このセッションは別のウィンドウで閉じられました",
       "close_window": "ウィンドウを閉じる",

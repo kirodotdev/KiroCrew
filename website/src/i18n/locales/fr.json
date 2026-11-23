@@ -7334,7 +7334,7 @@
       "stop_failed_owner_only": "Seul le propriétaire du tableau de bord peut arrêter cette exécution. Demande-lui de l’arrêter.",
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
-      "split_right_d": "Diviser vers la droite (⌘D)",
+      "split_right_d": "Diviser vers la droite ({{shortcut}})",
       "type_to_filter": "Saisir pour filtrer…",
       "earlier_conversation_show": "Repartir à zéro à {{time}} · Afficher les messages précédents ({{count}})",
       "earlier_conversation_hide": "Repartir à zéro à {{time}} · Masquer les messages précédents (plus en mémoire)",
@@ -9724,7 +9724,7 @@
       "search_sessions": "Rechercher des sessions…",
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser à droite",
-      "split_right_d": "Diviser à droite (⌘D)",
+      "split_right_d": "Diviser à droite ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Volet terminal — à venir en phase 2"
     },
     "sessionMoveUndoBar": {
@@ -15193,7 +15193,7 @@
       "session_options": "Options de session",
       "show_sessions": "Afficher les sessions",
       "show_sessions_sidebar": "Afficher la barre latérale des sessions",
-      "split_view_d": "Vue divisée (⌘D)",
+      "split_view_d": "Vue divisée ({{shortcut}})",
       "start_a_new_chat": "Démarrer un nouveau chat",
       "session_closed_in_another_window": "Cette session a été fermée dans une autre fenêtre",
       "close_window": "Fermer la fenêtre",

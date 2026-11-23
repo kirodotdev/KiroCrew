@@ -6956,7 +6956,7 @@
       "stop_failed_owner_only": "只有仪表板所有者才能停止此次运行。请让所有者来停止。",
       "split_down": "向下分屏",
       "split_right": "向右分屏",
-      "split_right_d": "向右分屏（⌘D）",
+      "split_right_d": "向右分屏（{{shortcut}}）",
       "type_to_filter": "输入以筛选…",
       "earlier_conversation_show": "{{time}} 重新开始 · 显示之前的消息（{{count}}）",
       "earlier_conversation_hide": "{{time}} 重新开始 · 隐藏之前的消息（已不再记得）",
@@ -9254,7 +9254,7 @@
       "search_sessions": "搜索会话…",
       "split_down": "向下分屏",
       "split_right": "向右分屏",
-      "split_right_d": "向右分屏（⌘D）",
+      "split_right_d": "向右分屏（{{shortcut}}）",
       "terminal_pane_coming_in_phase_2": "终端窗格 — 将在第二阶段推出"
     },
     "sessionMoveUndoBar": {
@@ -14481,7 +14481,7 @@
       "session_options": "会话选项",
       "show_sessions": "展开会话",
       "show_sessions_sidebar": "展开会话侧边栏",
-      "split_view_d": "分屏视图 (⌘D)",
+      "split_view_d": "分屏视图 ({{shortcut}})",
       "start_a_new_chat": "开始新聊天",
       "session_closed_in_another_window": "此会话已在另一个窗口中关闭",
       "close_window": "关闭窗口",

@@ -7523,7 +7523,7 @@
       "stop_failed_owner_only": "Остановить этот запуск может только владелец панели. Попроси его остановить запуск.",
       "split_down": "Разделить вниз",
       "split_right": "Разделить вправо",
-      "split_right_d": "Разделить вправо (⌘D)",
+      "split_right_d": "Разделить вправо ({{shortcut}})",
       "type_to_filter": "Введите для фильтрации…",
       "earlier_conversation_show": "Начать заново в {{time}} · Показать прошлые сообщения ({{count}})",
       "earlier_conversation_hide": "Начать заново в {{time}} · Скрыть прошлые сообщения (он их больше не помнит)",
@@ -9959,7 +9959,7 @@
       "search_sessions": "Поиск сеансов…",
       "split_down": "Разделить вниз",
       "split_right": "Разделить вправо",
-      "split_right_d": "Разделить вправо (⌘D)",
+      "split_right_d": "Разделить вправо ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Панель терминала — появится на этапе 2"
     },
     "sessionMoveUndoBar": {
@@ -15549,7 +15549,7 @@
       "session_options": "Параметры сессии",
       "show_sessions": "Показать сессии",
       "show_sessions_sidebar": "Показать панель сессий",
-      "split_view_d": "Разделённый вид (⌘D)",
+      "split_view_d": "Разделённый вид ({{shortcut}})",
       "start_a_new_chat": "Начать новый чат",
       "session_closed_in_another_window": "Эта сессия была закрыта в другом окне",
       "close_window": "Закрыть окно",

@@ -20,6 +20,7 @@ import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
 import { crewModeView } from '../lib/crewMode'
 import { isSplitChord } from '../hooks/splitChord'
+import { platformShortcut } from '../utils/platform'
 type Slot = {
   key: string
   /** Set on a Crew Mode worker: the root it works for. */
@@ -381,7 +382,7 @@ function PlaceholderPane({
           aria-label={i18nT('components.sessionGridView.search_sessions')}
           className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-hidden focus-visible:border-accent"
         />
-        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
+        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
           <SplitGlyph />
         </button>
         <button onClick={onSplitDown} title={i18nT('components.sessionGridView.split_down')} aria-label={i18nT('components.sessionGridView.split_down')} className={ctrlBtn}>
