@@ -252,6 +252,11 @@ def test_a_whole_credential_in_an_allowed_css_string_publishes_redacted(env: Any
         f"<style>a[title='{HEAD}\\\n{TAIL}']{{color:red}}</style>",
         f"<p style=\"font-family:'{HEAD}\\&#10;{TAIL}'\">x</p>",
         f'<style>p{{background:url("https://x.test/{HEAD}\\\n{TAIL}")}}</style>',
+        # a URL parser drops a tab, LF or CR an escape or reference puts in
+        f'<style>p{{background:url("https://x.test/{HEAD}\\9 {TAIL}")}}</style><p>x</p>',
+        f"<style>p{{background:url(https://x.test/{HEAD}\\a {TAIL})}}</style><p>x</p>",
+        f'<a href="https://x.test/{HEAD}&#9;{TAIL}">x</a>',
+        f'<img src="https://x.test/{HEAD}&#13;{TAIL}" alt="x">',
     ],
 )
 def test_a_credential_hidden_in_an_allowed_css_string_is_refused(env: Any, content: str) -> None:

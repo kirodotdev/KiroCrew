@@ -585,7 +585,9 @@ def _audit_view(content: str, redacted: str) -> None:
         + [_css_decoded(css) for css in published.styles]
         + [value for css, _ in published.css for value in view_css.string_values(css)]
     ):
-        if refuses(text, _redact_payload):
+        # A URL parser drops every tab, LF and CR, so a value split by one
+        # (``\9 `` in CSS, ``&#9;`` in an attribute) loads whole.
+        if refuses(text, _redact_payload) or refuses(_URL_NOISE.sub("", text), _redact_payload):
             raise ArgumentError(hidden)
     _refuse_hidden_split(zip(_joined(original.shown), _joined(published.shown)))
 
