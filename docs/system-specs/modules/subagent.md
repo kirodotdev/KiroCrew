@@ -4780,7 +4780,10 @@ steer-…]` acks (`messaging.driver.strip_steering_markers`): the line acknowled
 steer the host or the parent sent, and it is protocol, not the answer. The
 text is finished, so an unclosed `[STEER…` tail is the answer's own and stays. A streamed
 file an ending caps in place, and the turn-limit and escalation bails' result, keep
-them. A failed write records `result_complete=False` and
+them. The alternation placeholder the model repeats at the start of a prompt after
+one that ended on a tool result never reaches the text, the streamed file or the
+live partial: every prompt of the run streams through `alternation_echo.drop_echo`
+([messaging](messaging.md)). A failed write records `result_complete=False` and
 falls back to capping the streamed file in place. Every other ending -- the
 tail's, the turn-limit and escalation bails, the deadline, a cancel, a raised
 error, a reap -- caps the streamed file in place (`cap_result_file`) and records

@@ -46,6 +46,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.permission_floor import (
@@ -1456,7 +1457,10 @@ async def _send_and_print(
     try:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
-        async for event in continue_timed_out_calls(provider.stream, message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(provider.stream(prompt)), message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 print(quoted.feed(event.text), end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
