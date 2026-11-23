@@ -55,7 +55,7 @@ class TestCliChatSpecPreToolHooks(_TestChatPermissionRequestHarness):
         )
         read_for: list = []
 
-        async def fake_turn_spec_hooks(provider, agent):
+        async def fake_turn_spec_hooks(provider, agent, **_kw):
             read_for.append(agent)
             return spec_hooks.TurnSpecHooks([] if unreadable else [guard], "/w", unreadable, True)
 
@@ -79,3 +79,136 @@ class TestCliChatSpecPreToolHooks(_TestChatPermissionRequestHarness):
         else:
             assert provider.calls == [("approve", 7, False)]
             assert reads["n"] == 1
+
+
+_AGENT = "cli-guard"
+
+
+def _write_spec(raw: str | None = None) -> None:
+    import json
+
+    import kiro_crew.config.paths as paths_mod
+
+    agents = paths_mod.kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    hooks = {
+        "agentSpawn": [{"command": "spawn"}],
+        "userPromptSubmit": [{"command": "prompt"}],
+        "postToolUse": [{"matcher": "execute_bash", "command": "post"}],
+        "stop": [{"command": "stop"}],
+    }
+    spec = {"name": _AGENT, "prompt": "p", "tools": ["*"], "hooks": hooks}
+    (agents / f"{_AGENT}.json").write_text(raw or json.dumps(spec), encoding="utf-8")
+
+
+class _KasProvider:
+    """A KAS session running ``cli-guard`` that runs one shell call and replies."""
+
+    capabilities = capabilities_for(ACP_BACKEND_KAS)
+    session_id = "acp-1"
+    kas_projected_agent = _AGENT
+
+    def __init__(self, cwd: str) -> None:
+        self.cwd = cwd
+        self.prompts: list[str] = []
+
+    async def stream(self, message):
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        self.prompts.append(str(message))
+        yield LLMEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id="t1",
+            title="Running: echo hi",
+            tool_kind="execute",
+            is_shell=True,
+            harness_tool_id="run_command",
+        )
+        yield LLMEvent(
+            kind=EVENT_TOOL_RESULT, tool_call_id="t1", tool_status="completed", tool_output="hi"
+        )
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Ran it.")
+        yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+    def context_usage_pct(self):
+        return 0.0
+
+
+class TestCliChatSpecObserverHooks:
+    """The spec's other events fire in ``kirocrew chat`` on KAS, as in a dashboard chat."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        spec_hooks._cache.clear()
+        yield
+        spec_hooks._cache.clear()
+
+    @pytest.fixture
+    def runs(self, monkeypatch) -> list[tuple[str, str]]:
+        """``(command, context)`` of every hook run; each prints ``out-<command>``."""
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+
+        async def run(hook, context="", hook_event=None, **_kw):
+            seen.append((hook.command, str(context)))
+            return ScriptHookResult(
+                hook_id=hook.id,
+                hook_name=hook.name,
+                event=hook.event,
+                exit_code=0,
+                stdout=f"out-{hook.command}",
+            )
+
+        monkeypatch.setattr(hooks_mod, "run_script_hook", run)
+        monkeypatch.setattr(spec_hooks, "_user_hooks_dir", lambda: None)
+        return seen
+
+    @staticmethod
+    async def _send(tmp_path, *, new_session: bool) -> _KasProvider:
+        import asyncio
+
+        import kiro_crew.cli_chat as cli_chat
+        from kiro_crew.hooks import HookManager, HooksConfig
+
+        provider = _KasProvider(str(tmp_path))
+        gate = cli_chat._ToolGate(
+            hooks=HookManager(HooksConfig.from_dict({})), agent=_AGENT, kiro_agent=_AGENT
+        )
+        await asyncio.wait_for(
+            cli_chat._send_and_print(
+                provider, "run echo hi", interactive=False, gate=gate, new_session=new_session
+            ),
+            timeout=10.0,
+        )
+        return provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("new_session", [True, False], ids=["new-session", "later-turn"])
+    async def test_spawn_prompt_post_tool_and_stop_hooks_run(self, tmp_path, runs, new_session):
+        _write_spec()
+
+        provider = await self._send(tmp_path, new_session=new_session)
+
+        commands = [command for command, _ in runs]
+        assert commands == (["spawn"] if new_session else []) + ["prompt", "post", "stop"]
+        assert dict(runs)["stop"] == "Ran it."
+        # The prompt-side hooks' output reaches the agent in front of the message.
+        (prompt,) = provider.prompts
+        assert prompt.startswith("[Hook context]")
+        assert "out-prompt" in prompt and "run echo hi" in prompt
+        assert ("out-spawn" in prompt) is new_session
+
+    @pytest.mark.asyncio
+    async def test_a_new_session_says_when_the_spec_cannot_be_read(self, tmp_path, runs, capsys):
+        _write_spec(raw="{not json")
+
+        await self._send(tmp_path, new_session=True)
+
+        assert runs == []
+        assert f"The hooks of agent {_AGENT} could not be read" in capsys.readouterr().err
