@@ -41,7 +41,7 @@ def declared(monkeypatch: pytest.MonkeyPatch) -> dict[str, tuple[bool, frozenset
     """The manifest read, per app: ``(enabled, declared events)``."""
     answers: dict[str, tuple[bool, frozenset[str]]] = {APP: (True, frozenset())}
     monkeypatch.setattr(ws_event_scope, "_declared_cache", {})
-    monkeypatch.setattr(ws_event_scope, "_read_declared_events", lambda app: answers[app])
+    monkeypatch.setattr(ws_event_scope, "_read_declared_events_checked", lambda app: answers[app])
     return answers
 
 

@@ -51,7 +51,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
-from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
     continue_timed_out_calls,
 )
@@ -59,6 +59,10 @@ from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
 )
+from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
+    pre_tool_refusal as spec_pre_tool_refusal,
+)
+from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
