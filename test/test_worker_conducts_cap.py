@@ -18,7 +18,13 @@ import dataclasses
 import json
 
 import pytest
-from test_mate_worker_dispatch import _create, _fresh_create_budget, _start, crewmate  # noqa: F401
+from test_mate_worker_dispatch import (  # noqa: F401
+    _create,
+    _fresh_create_budget,
+    _start,
+    _write_config,
+    crewmate,
+)
 
 from kiro_crew import members
 from kiro_crew.config.loader import KiroCrewAgentConfig, _invalidate_config_cache
@@ -38,7 +44,7 @@ def _bot(tmp_path, **fields) -> None:
     path = tmp_path / "config.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     config["agents"]["pixel"].update(fields)
-    path.write_text(json.dumps(config), encoding="utf-8")
+    _write_config(path, config)
     _invalidate_config_cache()
 
 

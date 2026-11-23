@@ -25,6 +25,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MATE_WORKER_KIT,
 )
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import loader
 from kiro_crew.crewmate_harness import harness_label
 from kiro_crew.dashboard import create_rate_limit
@@ -253,12 +254,20 @@ class _LiveSession:
 # ── a conducting worker's children are the crewmate's own workers (worker_conducts) ──
 
 
+def _write_config(path, config: dict) -> None:
+    """Replace config.json whole, through a temp file in its folder, as the gateway's
+    own save does. A load that races an in-place rewrite can read the file empty, and
+    the loader then reports the whole config unreadable for the rest of the test, so
+    the worker runs plain."""
+    atomic_write(path, json.dumps(config))
+
+
 def _switch(tmp_path, *, on: bool) -> None:
     """Set pixel's owner switch ``worker_conducts`` as the Profile's PUT would store it."""
     path = tmp_path / "config.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     config["agents"]["pixel"]["worker_conducts"] = on
-    path.write_text(json.dumps(config), encoding="utf-8")
+    _write_config(path, config)
     loader._invalidate_config_cache()
 
 
@@ -336,7 +345,7 @@ class TestAConductingWorkersChildren:
         path = tmp_path / "config.json"
         config = json.loads(path.read_text(encoding="utf-8"))
         config["agents"]["pixel"]["max_workers"] = 1
-        path.write_text(json.dumps(config), encoding="utf-8")
+        _write_config(path, config)
         loader._invalidate_config_cache()
         with pytest.raises(sc.SessionControlError) as refused:
             _create(state, worker)
@@ -536,7 +545,7 @@ def _profile_mode(tmp_path, mode: str) -> None:
     path = tmp_path / "config.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     config["agents"]["pixel"]["approval_mode"] = mode
-    path.write_text(json.dumps(config), encoding="utf-8")
+    _write_config(path, config)
     loader._invalidate_config_cache()
 
 
