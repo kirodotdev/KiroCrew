@@ -36,6 +36,13 @@ written at daemon launch from the rewriter's ``target_env``, and a stub carries
 its target only in its argv and its fallback log -- so an overlay written for a
 project agent after launch has no target the daemon can resolve.
 
+A checkout whose ``.kiro/agents/`` IS the folder the overlay was rewritten from
+declares nothing of its own: the home folder is exactly that when ``~/.kiro/agents``
+is the user-level directory, so a chat working there would otherwise run every
+shared server unpooled. Such a folder holds no spec of its own, so the lookup
+answers as it does with no checkout and the overlay stays in effect
+(``_is_overlay_source``).
+
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
 kiro-cli is on PATH and ``KIROCREW_E2E_REAL_KIRO_CLI=1`` is set) but is NOT
@@ -50,9 +57,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.config.paths import spec_dir_for
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
@@ -271,6 +280,15 @@ def _project_spec_for_agent(
                 agent,
             )
             return None
+        if _is_overlay_source(agent, spec):
+            logger.debug(
+                "MCP-gateway: %s is the spec the overlay for %r was rewritten from "
+                "(this checkout's .kiro/agents is the user-level folder), so the "
+                "overlay stays in effect",
+                spec,
+                agent,
+            )
+            return None
         return spec
     except Exception:
         logger.debug(
@@ -332,6 +350,25 @@ def _pinned_overlay(overlay_dir: Path, agent: str) -> tuple[bool, dict[str, Any]
         path,
     )
     return True, None
+
+
+def _is_overlay_source(agent: str, spec: Path) -> bool:
+    """Whether *spec* sits in the folder the overlay for *agent* is rewritten from.
+
+    That folder is :func:`~kiro_crew.config.paths.spec_dir_for`, the folder the
+    rewriter reads this agent's source from. A checkout whose ``.kiro/agents``
+    resolves to it (the home folder, with the user-level agents in
+    ``~/.kiro/agents``) holds no spec of its own, so the lookup resolves the agent
+    exactly as it does with no checkout: a pin, then the by-name overlay.
+    Compared by identity rather than by path text, so a symlinked folder answers
+    the same. A folder that cannot be compared answers ``False``:
+    the file still counts as a shadow, the direction this module already takes
+    for a stub it cannot vouch for.
+    """
+    try:
+        return os.path.samefile(spec.parent, spec_dir_for(agent))
+    except (OSError, ValueError):
+        return False
 
 
 def _load_overlay_for_agent(

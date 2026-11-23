@@ -2285,6 +2285,16 @@ zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, 
 its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
 
+A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
+not a checkout for this rule. The home folder is exactly that when the user-level
+agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
+finds the user-level spec itself there. `session_servers._is_overlay_source`
+compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+spec is not a shadow: the overlay stays in effect and every shared server stays
+brokered. Counted as a shadow, it would run those servers raw inside the session;
+on the Claude Code backend that is inside the chat's sandbox, where a stdio server
+that keeps its sign-in outside its own process finds none.
+
 ### Bot overlays
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
