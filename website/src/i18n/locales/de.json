@@ -14495,7 +14495,8 @@
         "quoting_author": "Zitat von {{author}}",
         "remove_quote": "Zitat entfernen",
         "jump_to_quoted_message": "Zur zitierten Nachricht springen",
-        "message_unavailable": "Sprung nicht möglich — die ursprüngliche Nachricht ist nicht mehr in dieser Unterhaltung."
+        "message_unavailable": "Sprung nicht möglich — die ursprüngliche Nachricht ist nicht mehr in dieser Unterhaltung.",
+        "message_not_loaded": "Sprung nicht möglich — die zitierte Nachricht ist nicht unter den hier geladenen Nachrichten."
       },
       "crewWindow": {
         "close": "Crew-Chat schließen",

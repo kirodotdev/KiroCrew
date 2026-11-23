@@ -14149,7 +14149,8 @@
         "quoting_author": "{{author}} 인용 중",
         "remove_quote": "인용 제거",
         "jump_to_quoted_message": "인용한 메시지로 이동",
-        "message_unavailable": "이동할 수 없습니다 — 원본 메시지가 더 이상 이 대화에 없습니다."
+        "message_unavailable": "이동할 수 없습니다 — 원본 메시지가 더 이상 이 대화에 없습니다.",
+        "message_not_loaded": "이동할 수 없습니다 — 인용한 메시지가 여기에 불러온 메시지 중에 없습니다."
       },
       "crewWindow": {
         "close": "크루 채팅 닫기",

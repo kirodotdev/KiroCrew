@@ -14841,7 +14841,8 @@
         "quoting_author": "Citando {{author}}",
         "remove_quote": "Remover citação",
         "jump_to_quoted_message": "Ir para a mensagem citada",
-        "message_unavailable": "Não é possível ir até ela — a mensagem original não está mais nesta conversa."
+        "message_unavailable": "Não é possível ir até ela — a mensagem original não está mais nesta conversa.",
+        "message_not_loaded": "Não é possível ir até ela — a mensagem citada não está entre as mensagens carregadas aqui."
       },
       "crewWindow": {
         "close": "Fechar chat da equipe",

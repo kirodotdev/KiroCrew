@@ -92,6 +92,7 @@ export function createCrewWindowRenderers(o: {
           messageTs={m.ts || ''}
           onEditResend={(_i, ts, content) => o.onRewind(ts, content)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+          onJumpToQuote={ctx.onJumpToQuote}
         />,
         true,
       ),

@@ -14841,7 +14841,8 @@
         "quoting_author": "Citando a {{author}}",
         "remove_quote": "Quitar cita",
         "jump_to_quoted_message": "Ir al mensaje citado",
-        "message_unavailable": "No se puede saltar a él: el mensaje original ya no está en esta conversación."
+        "message_unavailable": "No se puede saltar a él: el mensaje original ya no está en esta conversación.",
+        "message_not_loaded": "No se puede saltar a él: el mensaje citado no está entre los mensajes cargados aquí."
       },
       "crewWindow": {
         "close": "Cerrar chat de la tripulación",

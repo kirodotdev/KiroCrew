@@ -27,6 +27,7 @@ import TurnBlock from '../pages/chat/TurnBlock'
 import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, opensDisplayTurn, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
+import { isJumpTarget, useJumpReveal } from '../hooks/JumpRevealContext'
 import { MessageSearchScope } from '../hooks/SearchHighlightContext'
 import {
   type MessageRenderer,
@@ -106,6 +107,10 @@ export interface ChatMessageListProps {
   /** Quote a whole row into the host's next send. Host capability; absent
    *  hides the action on every row (see `MessageRenderContext.onQuoteMessage`). */
   onQuoteMessage?: MessageRenderContext['onQuoteMessage']
+  /** Jump to the message a sent quote card quotes, in this host's transcript.
+   *  Host capability; absent, no sent quote card is a control (see
+   *  `MessageRenderContext.onJumpToQuote`). */
+  onJumpToQuote?: MessageRenderContext['onJumpToQuote']
   /** Reply threads on this transcript's messages (a crewmate's chat): footer
    *  data per `mid` and the open action. Absent on every other surface. */
   threads?: ThreadHooks
@@ -247,6 +252,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onQuote,
   onAsk,
   onQuoteMessage,
+  onJumpToQuote,
   threads,
   renderTool,
   hideCardOwnedOAuth = false,
@@ -373,11 +379,16 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   // the same lookup serves a plain embed and a store-connected dashboard.
   const activeRenderers = useMemo(() => mergeRenderers(renderers), [renderers])
 
+  // The row the host's JumpRevealContext names wears the landing ring.
+  const { ts: revealTs, mid: revealMid } = useJumpReveal()
   const renderMessage = useCallback((m: ChatMessage, i: number) => {
     const key = msgKey(m, i)
+    const ring = isJumpTarget(m, revealTs, revealMid) ? ' animate-msg-highlight rounded-lg' : ''
+    // What TurnBlock scrolls to once its step fold opens onto this row.
+    const jumpTarget = ring ? m.ts : undefined
     const wrapper = (children: React.ReactNode, isUser = false) => (
       <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
-        <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
+        <div data-jump-target={jumpTarget} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}${ring}`}>
           <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
             {children}
           </div>
@@ -385,7 +396,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       </div>
     )
     const row = (children: React.ReactNode, tight = false) => (
-      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
+      <div key={key} data-jump-target={jumpTarget} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}${ring}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         {children}
       </div>
     )
@@ -416,6 +427,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       onQuote,
       onAsk,
       onQuoteMessage,
+      onJumpToQuote,
       threads,
       hideCardOwnedOAuth,
       handOff,
@@ -429,7 +441,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     return searchRows && node != null
       ? <MessageSearchScope key={key} messageIdx={i}>{node}</MessageSearchScope>
       : node
-  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, onJumpToQuote, revealTs, revealMid, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
 
 
   // Render a TurnItem (single or group)

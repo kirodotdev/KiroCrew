@@ -14149,7 +14149,8 @@
         "quoting_author": "{{author}}を引用中",
         "remove_quote": "引用を削除",
         "jump_to_quoted_message": "引用元のメッセージへ移動",
-        "message_unavailable": "移動できません — 元のメッセージはこの会話にありません。"
+        "message_unavailable": "移動できません — 元のメッセージはこの会話にありません。",
+        "message_not_loaded": "移動できません — 引用元のメッセージはここに読み込まれたメッセージに含まれていません。"
       },
       "crewWindow": {
         "close": "クルーチャットを閉じる",
