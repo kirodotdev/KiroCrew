@@ -89,18 +89,22 @@ def deny_key_is_self_guard(key: str) -> bool:
     floor's unverifiable-target key, the substitution-depth cap's key (past it no
     floor can read the command, so a waiver would only refuse again), and every
     rule of the self-protection or credential-exfil family, by category or id
-    prefix. No override reaches one:
+    prefix, and the interpreter-copy budget's key (the two rows it stands in for
+    are self-guard rules). No override reaches one:
     waiving the credential-mint rule would hand the agent the owner credential
     that answers override cards, and waiving the unverifiable-target key would let
     a push to a protected branch through behind any ``$(...)``. A pattern resolves
     to its rule id, so an operator rule typed identical to one is held the same way.
     """
-    from kiro_crew.security.deny_gate import _DEPTH_REFUSAL  # the gate imports this module
+    from kiro_crew.security.deny_gate import (  # the gate imports this module
+        _DEPTH_REFUSAL,
+        _INTERP_COPY_REFUSAL,
+    )
 
     rule_id = _rule_id_for_pattern(key) or key
     rule = _RULES_BY_ID.get(rule_id)
     return bool(key) and (
-        key in (_UNVERIFIABLE_PUSH_KEY, _DEPTH_REFUSAL)
+        key in (_UNVERIFIABLE_PUSH_KEY, _DEPTH_REFUSAL, _INTERP_COPY_REFUSAL)
         or rule_id in _SELF_PROTECTION_UNGATED_FLOOR_IDS
         or rule_id in _SELF_PROTECTION_FLOOR_RULE_IDS
         or (rule is not None and rule.category in _SELF_GUARD_FAMILIES)
