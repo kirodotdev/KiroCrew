@@ -254,6 +254,18 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     expect(hold.mock.invocationCallOrder[0]).toBeLessThan(revision.mock.invocationCallOrder[0])
   })
 
+  it('keeps the comments pending when Stop cancelled the send before its POST left', async () => {
+    vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'response-late', body: {}, unsent: true })
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(false)
+  })
+
+  it('still counts a late answer to a POST that left as maybe-delivered', async () => {
+    vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'response-late', body: {} })
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(true)
+  })
+
   it('keeps a send queued behind a running turn out of Stop\'s reach', async () => {
     setMode('queue')
     sendChat.mockResolvedValue(queued())

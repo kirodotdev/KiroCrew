@@ -932,8 +932,9 @@ export function useComposerSend({
       }
       // An unconfirmed STEER is not counted as delivered: the steer receipt
       // policy hands its text back (applySteerReceipt), so a caller that
-      // persists on this verdict (a comment batch) keeps its payload.
-      const lateVerdict = !steerNow
+      // persists on this verdict (a comment batch) keeps its payload. Nor is a
+      // send Stop cancelled before its POST left: nothing reached the gateway.
+      const lateVerdict = !steerNow && !receipt.unsent
       // A busy-slot Queue send minted no bubble, so there is no row to mark and
       // the notice below would point at nothing. It keeps the bare pending
       // verdict; what becomes of its text is the restore decision this arm
