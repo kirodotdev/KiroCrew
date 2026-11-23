@@ -118,6 +118,20 @@ def test_replace_drops_a_bots_carried_approval_grant(tmp_path, monkeypatch, caps
     assert restored["owner_member_id"] == "bot-1"
 
 
+def test_replace_drops_the_person_tab_mark(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    job = {
+        **_risky_job(),
+        "session_key": "dashboard:far-tab",
+        "person_owner_key": "dashboard:far-tab",
+    }
+    bundle = _bundle(tmp_path, {"crons.json": json.dumps({"jobs": [job]})})
+
+    assert _restore(bundle, home, monkeypatch, "--mode", "replace") == 0
+
+    assert not _jobs(home)["nightly"].get("person_owner_key")
+
+
 def test_merge_restores_a_message_only_cron_paused_and_reset(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
 

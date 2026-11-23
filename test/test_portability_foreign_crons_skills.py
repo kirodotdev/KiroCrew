@@ -92,6 +92,17 @@ def test_helper_drops_a_bots_carried_approval_grant_and_keeps_its_owner(tmp_path
     assert restored["owner_member_id"] == "bot-1"
 
 
+def test_helper_drops_the_person_tab_mark_this_install_never_saw(tmp_path):
+    # cron_add marks a job made from a person's tab; that mark lets the job's cron
+    # session run once its tab is closed. A job from another install has no such tab here.
+    job = _risky_job(session_key="dashboard:far-tab", person_owner_key="dashboard:far-tab")
+    path = _store(tmp_path, [job])
+
+    _sanitize_imported_crons(path, hold_all=True, known_agents=frozenset())
+
+    assert not _read(path)["nightly"].get("person_owner_key")
+
+
 def test_a_reset_bot_job_no_longer_holds_the_owner_grant(tmp_path):
     from types import SimpleNamespace
 

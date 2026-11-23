@@ -162,9 +162,12 @@ _UNREADABLE_STORE = "<the whole cron store was unreadable>"
 #: channel type, target id, thread) and a model. A job from another install loses
 #: them on restore; the loader's empty defaults take over. ``owner_member_id`` stays:
 #: it names who made the job, and grants nothing without ``owner_approval_mode``.
+#: ``person_owner_key`` goes: it marks a job made from a person's tab on the install
+#: that wrote it, and that mark lets the job's cron session run once the tab is closed.
 _FOREIGN_JOB_FIELDS = (
     "approval_mode",
     "owner_approval_mode",
+    "person_owner_key",
     "project_path",
     "env",
     "secret_env",
