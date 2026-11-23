@@ -392,6 +392,7 @@ def _service() -> AutoNudgeService:
     svc = AutoNudgeService.__new__(AutoNudgeService)
     svc._collect_judge_evidence = None
     svc._emit_judge_notice = None
+    svc._worker_closed_resolver = None
 
     # Built without ``__init__``, so it holds no service lock, no store path and no
     # in-flight task set: the real durable write would fail on all three. The judge
@@ -812,6 +813,36 @@ class TestTheDefaultBrief:
         loop.message = PATROL_MESSAGE
         assert self._run(svc, loop, asked) is False
         assert asked == []
+
+    def test_a_default_brief_whose_only_session_is_gone_leaves_the_probe_s_answer(self) -> None:
+        # A closed or deleted worker session never comes back on its own, so counting it
+        # as unread fired every quiet probe tick until the loop ended.
+        svc, asked, _ = self._sees_criteria()
+
+        async def collect(lp: NudgeLoop) -> tuple[list[dict], int, dict]:
+            raise AssertionError("a loop whose only session is gone must not collect evidence")
+
+        svc._collect_judge_evidence = collect
+        svc._worker_closed_resolver = lambda key: key == "chat-2-2"
+        assert self._run(svc, _loop(), asked) is None
+        assert asked == [], "the judge was not asked"
+
+    def test_a_default_brief_whose_session_is_only_unreadable_for_now_still_fires(self) -> None:
+        # The session is still open, so an unread tick spends the turn as before.
+        svc, _, _ = self._sees_criteria()
+
+        async def unread(lp: NudgeLoop) -> tuple[list[dict], int, dict]:
+            return [], 1, {}
+
+        svc._collect_judge_evidence = unread
+        svc._worker_closed_resolver = lambda key: False
+        loop = _loop()
+        with (
+            patch("kiro_crew.decisions.is_enabled", lambda *a, **k: True),
+            patch("kiro_crew.decisions.judge_evidence_scope_granted", lambda **k: True),
+        ):
+            assert asyncio.run(svc._judge_tick_is_quiet(loop)) is False
+        assert loop.judge_last_verdict["outcome"] == "fallback"
 
     def test_the_notice_names_the_default_brief(self) -> None:
         svc, asked, sink = self._sees_criteria()
