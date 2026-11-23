@@ -195,7 +195,10 @@ describe('TurnBlock — two panes showing the same transcript', () => {
     })
     // Another pane, earlier in the document, holds a row with the same marker.
     const other = document.createElement('div')
-    other.innerHTML = '<div data-jump-target="2">other pane</div>'
+    const otherRow = document.createElement('div')
+    otherRow.dataset.jumpTarget = '2'
+    otherRow.textContent = 'other pane'
+    other.appendChild(otherRow)
     document.body.appendChild(other)
     const markedItem = (it: TurnItem) => (
       <div data-jump-target={it.kind === 'single' ? it.msg.ts : undefined}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
