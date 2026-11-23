@@ -163,6 +163,19 @@ def register_update_parser(sub: _Commands) -> None:
             "upstream (git installs only)"
         ),
     )
+    # A plain string, never validated here: argparse's exit 2 is what tells the
+    # hub's "Update remote" this CLI predates the option, so a bad value must be
+    # refused by the update itself (exit 1), never by the parser.
+    update_parser.add_argument(
+        "--release",
+        metavar="VERSION",
+        default=None,
+        help=(
+            "For a git checkout detached at a release tag, move to the release tag "
+            "of VERSION (never an older one) instead of origin's main branch; "
+            "other installs ignore it"
+        ),
+    )
 
 
 def register_stop_parser(sub: _Commands) -> None:
