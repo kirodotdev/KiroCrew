@@ -235,10 +235,14 @@ provider reports `"idle"`, the orphaned card is resolved immediately. When that
 `"idle"` lands on a slot that still reads `running` — the turn reached its done
 boundary at the provider but the slot has not seen the terminal event settle it —
 the reply carries `info: "no active turn"` so it does not read as "stopped a
-running turn". A genuine in-flight turn whose cooperative cancel does not confirm
-answers `stop_turn` with a non-acked outcome instead, which escalates to the hard
-kill on its own (step 2 above); `"idle"` is the signal that there is no provider
-turn to kill, so the handler names the state rather than forcing a reset.
+running turn". Two cases answer `{"ok": true}` instead, because the press ends a
+turn that has no provider turn yet (session.md): a runner still preparing its turn
+(`turn_stop._cancel_preparing_runner`), and a dashboard send still waiting in Shared
+Crew fair admission before its runner starts (`admission_entry.cancel_waiting_send`).
+A genuine in-flight turn whose cooperative cancel does not confirm answers
+`stop_turn` with a non-acked outcome instead, which escalates to the hard kill on
+its own (step 2 above); `"idle"` is the signal that there is no provider turn to
+kill, so the handler names the state rather than forcing a reset.
 That settle, and the `"compacting"` undo, apply only while `_stop_generation`
 still equals the value this press claimed. A turn end can reset the posture
 during the `stop_turn` await and a later press can claim a new generation;

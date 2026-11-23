@@ -3172,8 +3172,21 @@ slot kept reading running until preparation finished. The dispatch gate's
 stream edge. An `"idle"` answer for a runner that has already opened its stream
 (the provider finished, the slot has not settled) cancels nothing and answers
 `{"ok": true, "info": "no active turn"}`. A dashboard send still waiting in
-fair admission before its runner starts has no record yet and is not covered
-(#36433). Tests: `test/test_stop_during_turn_preparation.py`.
+fair admission before its runner starts has no record yet: when no runner was
+cancelled, the handler cancels that wait instead (`turn_stop._cancel_admission_wait`,
+`admission_entry.cancel_waiting_send`, `cancelled_by_user`). The turn ends
+unstarted at once, its own hand-off drains the queue, and Stop answers
+`{"ok": true}`. A Stop pressed after admission grants the send and before its
+runner starts finds neither and is not caught. Tests:
+`test/test_stop_during_turn_preparation.py`, `test/test_stop_during_admission_wait.py`.
+
+A Stop recorded on the session from another surface (a linked channel) while a
+turn waits in fair admission, on the send path or in `gate_turn`, reaches no
+runner either. The wait's revalidation reads the session's Stop count and, when
+it grew since the wait began, ends the turn unstarted once the wait ends
+(`admitted_chat_turn`'s `stop_count`). Only growth counts: a teardown resetting
+the count is not a Stop. An agent-started turn's `gate_turn` wait is left out,
+for the same reason as above: only its own open stream can cancel its cycle.
 
 ### Cancelled-turn context restore
 

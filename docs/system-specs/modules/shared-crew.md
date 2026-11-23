@@ -1426,12 +1426,18 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 `Admission.run` waits for a slot, then revalidates right before starting: queue
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
-and the entry point's own check (a chat slot must still be live). `running` is
+and the entry point's own check (a chat slot must still be live, and no Stop was
+recorded on its session since the wait began: `admitted_chat_turn`'s `stop_count`,
+not read for an agent-started turn; either ends the turn `cancelled_by_user` with no
+capacity note). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
 names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
-queued prompt is never delivered as a steer.
+queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
+while a send waits there, before its runner starts, cancels the work
+(`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
+hand-off.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends
