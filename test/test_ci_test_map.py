@@ -20,6 +20,7 @@ Four properties are pinned:
 from __future__ import annotations
 
 import gzip
+import io
 import itertools
 import json
 import os
@@ -670,11 +671,12 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     page = {"total_count": len(jobs), "jobs": jobs}
     monkeypatch.setattr(shadow, "_gh_json", lambda args, root: listed.append(args) or page)
 
-    def fake_run(argv: list[str], root: Path) -> str:
+    def fake_run(argv: list[str], root: Path, most: int) -> bytes:
         fetched.append(argv)
-        return "2026-11-18T00:00:00.0Z FAILED test/test_a.py::test_one - assert 1 == 2\n"
+        assert most == shadow.MAX_LOG_BYTES
+        return b"2026-11-18T00:00:00.0Z FAILED test/test_a.py::test_one - assert 1 == 2\n"
 
-    monkeypatch.setattr(shadow, "_run", fake_run)
+    monkeypatch.setattr(shadow, "_gh_bytes", fake_run)
     run = {"id": 9, "run_attempt": 2, "head_sha": "f" * 40, "pull_requests": [{"number": 7}]}
     row = shadow._red_row(run, ROOT, shadow._nodeid_parser())
     assert row == {"run": 9, "pr": 7, "head": "f" * 40, "failing": ["test/test_a.py"]}
@@ -682,12 +684,33 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     # The jobs of THIS attempt: a rerun keeps the run id.
     assert listed[0][1] == f"repos/{shadow.REPO}/actions/runs/9/attempts/2/jobs?per_page=100&page=1"
 
-    def unreadable(argv: list[str], root: Path) -> str:
+    def unreadable(argv: list[str], root: Path, most: int) -> bytes:
         raise subprocess.CalledProcessError(1, argv)
 
     # One unreadable shard log leaves the sample incomplete: none, not a partial row.
-    monkeypatch.setattr(shadow, "_run", unreadable)
+    monkeypatch.setattr(shadow, "_gh_bytes", unreadable)
     assert shadow._red_row(run, ROOT, shadow._nodeid_parser()) is None
+    # So does one larger than is ever held: it is cut off at the limit, not read whole.
+    monkeypatch.setattr(shadow, "_gh_bytes", lambda argv, root, most: None)
+    assert shadow._red_row(run, ROOT, shadow._nodeid_parser()) is None
+
+
+@pytest.mark.parametrize("size", [0, 1, 7, 8, 9, 64])
+def test_a_stream_is_held_to_its_limit_and_no_further(size: int) -> None:
+    most = 8
+
+    class Counting(io.BytesIO):
+        asked = 0
+
+        def read(self, wanted: int | None = -1) -> bytes:
+            assert wanted is not None and wanted >= 0
+            Counting.asked += wanted
+            return super().read(wanted)
+
+    held = shadow.capped(Counting(b"x" * size), most)
+    assert held == (b"x" * size if size <= most else None)
+    # One byte past the limit says it is over; nothing beyond that is ever asked for.
+    assert Counting.asked == most + 1
 
 
 def test_shadow_summary_states_both_invariants() -> None:

@@ -156,7 +156,9 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   types. Accidentally entering a normal channel ID does not enable it.
 - **Global intent scope.** Enabling any server thread or allowed parent channel turns on Discord's global Message Content intent. Discord then delivers content from every server channel the bot can see; Kiro Crew immediately discards traffic outside approved threads and parent channels and does not audit routine background chatter.
 - **Shared output warning.** Every member who can view an approved thread can
-  read agent replies, tool output, and interactive approvals. Approve only
+  read agent replies, tool output, and interactive approvals, including each
+  approval's tool input. Credentials are redacted from that input, but other
+  contents such as file paths and command text are shown. Approve only
   threads whose membership and history are appropriate for that disclosure. An
   allowed *channel* is wider still: anyone who can see the channel can open the
   public thread a turn runs in, so only add a channel whose whole membership may
@@ -171,9 +173,11 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   the gateway. A config reload alone keeps those threads answering until the
   next restart. Removing one thread's ID from `allowed_thread_ids` stops that
   thread at once, and the bot does not re-admit it until the next restart.
-- **Slash commands answer privately.** A `/` command reply is ephemeral, so only
-  the person who ran it sees it, which is what keeps a refusal or a status line
-  out of a shared thread.
+- **Slash commands answer privately.** Every `/` command reply is ephemeral, so
+  only the person who ran it sees it, which is what keeps a refusal, a status
+  line or the `/model` list out of a shared thread. A reply that is not ready
+  within Discord's 15-minute interaction window is dropped, never posted to the
+  thread instead.
 - **No credential-minting or approval-granting command.** Discord's command set
   is deliberately narrower than Slack's: nothing here mints a dashboard login
   link or changes the gateway's auto-approve grant. Those act on the OPERATOR's
@@ -194,8 +198,10 @@ Discord ingests incoming attachments and can upload local image references from 
 
 Every listed command accepts both `!` and `/` prefixes; the `/` form is Discord's own command menu,
 which autocompletes as you type and answers **only to you**, so nobody else in a
-shared thread sees the reply. The `!` form is plain message text and always
-works, including before the `applications.commands` scope is installed.
+shared thread sees the reply (in a DM, `/sessions` and `/bot` show their picker as
+an ordinary DM message). The `!` form is plain message text that posts its reply
+where everyone in the conversation can read it, and it always works, including
+before the `applications.commands` scope is installed.
 
 | Command | Effect |
 |---------|--------|
@@ -207,7 +213,7 @@ works, including before the `applications.commands` scope is installed.
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
-| `!stop` / `!cancel` | Stop the current reply and clear its queue |
+| `!stop` / `!cancel` | Stop the current reply and clear your queued messages (the reply's ⏹ Stop button does the same) |
 | `!help` | Show commands |
 
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
@@ -299,8 +305,22 @@ never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
-running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as
-buttons, and interactive tool approvals render as Approve/Deny buttons. A
+running turn or `!queue` to answer it afterward. The reply being written carries a
+⏹ Stop button that does what `!stop` does, for anyone who could send `!stop` there; it
+goes away when the reply finishes, and a press on an old one stops nothing. The button
+arrives with the reply's first text or tool line, so while the agent is still thinking
+before either, send `!stop`. `[OPTIONS:]` choices render as
+buttons, and interactive tool approvals render as Approve/Deny buttons under
+the tool's name, its MCP server when it has one, its stated purpose, and its
+input, each shown as code so Discord formatting in them never renders.
+Credentials are redacted from what the prompt shows. A field is shown only if
+it is plain printable ASCII (the input may also hold tabs and line breaks):
+any other character, such as an accent, a non-Latin script, an emoji or an
+invisible character, replaces that field with a "hidden" notice, as does
+formatting that disguises a credential. The tool name, MCP names and purpose
+are never shortened: one that holds a backtick, starts or ends with a space,
+or is longer than 200 characters (100 for an MCP name) is hidden instead. A
+long input is cut to fit one Discord message and marked `… [truncated]`. A
 sub-agent spawn started from Discord asks for approval the same way, with
 Approve/Deny buttons in the DM or thread it came from; there is no Trust button,
 because standing trust is granted only on the dashboard. With `messaging.dm_scope` set to `unified`, a DM session cannot be traced back to

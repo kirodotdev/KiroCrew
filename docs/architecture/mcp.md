@@ -1460,7 +1460,12 @@ the new pair and drops the older expansion of the same launch: the values come
 from the gateway environment (the operator's shell and the crew `.env`), which
 no agent can write. A sidecar publication failure drops every rebind from that
 pass, so gatewayd refuses the changed expansion and the next boot retries. A
-changed command, argument or declared env text is still refused.
+changed command, argument or declared env text is still refused, with one
+exception: a command that `env.saved_command_casing` produced from an approved
+spelling (the PATHEXT extension case, read from the directory entry) keeps the
+approval when the same args and env pair are approved with a stored display. It
+is recorded beside the old spelling and audited as
+`approved launch, Windows command casing repaired`.
 Both halves of the fingerprint fold exactly three gateway-computed spellings
 (`hashing.install_aliases`), each in the ONE slot the gateway's own writer
 (`apps/bridges_mcp.py`) emits it in: `sys.executable` (what the rewriter substitutes
@@ -5288,7 +5293,8 @@ mid-conversation and a signed thinking block stays valid. Measured on the bundle
 third-party tools on separate turns: no rejection, and the first request's MCP share
 fell from 156,746 characters to 0. KAS ignores the toggle and the
 thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so for an
-agent whose `tools` grants no `tool_search` Crew sends that list with each of the
+agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
+is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
 it already holds; a server it holds none for stays deferred. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
@@ -5301,7 +5307,7 @@ trip, the load. For an agent whose whole procedure is a few MCP tools that is a
 round trip on every session, so each shipped agent declares its job tools, once, in
 `JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
 the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
-`tool_search`. Everything else the spec mounts stays deferred.
+`tool_search` while `agent.tool_search` is on. Everything else the spec mounts stays deferred.
 
 | Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|
@@ -6375,7 +6381,7 @@ A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
 raw arguments, never the payload) to `POST /api/session-directive`; the gateway
 re-runs the tool on those arguments (`mcp_core.derive_directive`) and parks the
-record in `dashboard/directive_queue.py`, keyed by the digest of the raw call
+record in `directive_queue.py`, keyed by the digest of the raw call
 input. The runner applies it only when `directive_queue.claim` finds a record
 whose digest equals the one the turn's own `tool_call` frame carried, parked
 during that turn; on such a backend the marker in the result text is display
@@ -6385,7 +6391,15 @@ logs the claim as applied only when `DirectiveOutcome.applied` is set; a
 refusal or an error is logged as not applied, with its text. Records are in
 memory, expire after `MAX_AGE_SECS` (300 s), and are capped
 per session (`MAX_PER_SESSION`) and in total (`MAX_SESSIONS`). The messaging
-`TurnDriver` applies directives from the verified marker alone.
+`TurnDriver` (and the Slack thread's plain wake) claims the same way through
+`messaging/directive_tracker.py`: a call with no trusted tool name records the
+digest of its `tool_call` frame's raw input, and the final result frame claims the
+record parked under it during this turn, through the `claim_parked` that
+`messaging.dispatch.build_directive_consumer` binds to the channel session. A
+native sub-agent's call is refused and its record retired, and a parent call that
+shares a sub-agent call's digest is refused, as in the dashboard runner. The input
+is read from the `tool_call` frame only; a backend that sends it on a later
+`tool_call_update` (opencode, Claude) is not claimed on a channel turn.
 
 The route's reply also carries `turn_wrote_text`: whether the caller's running
 turn has already streamed reply text, read from the session's dashboard tab

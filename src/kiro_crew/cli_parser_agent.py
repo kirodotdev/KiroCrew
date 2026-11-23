@@ -1006,6 +1006,9 @@ def register_memory_parser(sub: _Commands) -> None:
         help="Save facts from a text or Markdown file another assistant wrote about you",
     )
     mem_import_text.add_argument("file", help="Path to a plain text or Markdown file")
+    mem_import_text.add_argument(
+        "--store", default=None, help="Store to save into (default: the default store)"
+    )
     mode = mem_import_text.add_mutually_exclusive_group()
     mode.add_argument("--yes", action="store_true", help="Save every listed fact without asking")
     mode.add_argument("--dry-run", action="store_true", help="List the facts and save nothing")

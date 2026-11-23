@@ -150,7 +150,12 @@ have no checkout to package, so `ec2.deploy` omits `SourceBucket` by default and
 the template clones the public repository instead. With no explicit ref and not a
 dry run, `ec2.resolve_public_ref` pins the first release tag this build's version
 names (`release_channel.release_refs`) that the remote confirms with `git ls-remote`
-(`release_tag_exists`), so the instance runs the same release as this machine. On a
+(`release_tag_exists`), so the instance runs the same release as this machine. That
+clone is depth-1 at the tag, and **Update** on it keeps the pair: a release-build hub
+runs `kirocrew update --release <its version>` there, which fetches only the hub's
+release tag and moves to it, never to an older release (the bare update would fetch
+`main`'s whole history and then refuse it as diverged); see
+[instances](instances.md) `POST /api/instances/{id}/update`. On a
 machine with no trusted `git` (most Windows desktops), and only for the default public
 repository, `cloud/github_tag_probe.py` confirms the tag instead with one unauthenticated
 HTTPS GET of GitHub's exact-ref endpoint (`/git/ref/tags/<tag>`), spawning nothing; a fork

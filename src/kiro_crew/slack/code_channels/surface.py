@@ -123,7 +123,7 @@ def caller_slot_key(state: Any, session_key: str) -> str:
 
 
 async def binding_for_slot(state: Any, slot_key: str) -> Binding | None:
-    """The code channel bound to *slot_key*, when that binding still names it.
+    """The code channel (or Conductor thread) bound to *slot_key*, when that binding still names it.
 
     A binding is the caller's only when its session key IS the slot AND the
     channel's Slack link still resolves to that slot: a channel whose session was
@@ -133,7 +133,13 @@ async def binding_for_slot(state: Any, slot_key: str) -> Binding | None:
         return None
     from kiro_crew.slack.code_channels.binding import bound_slot
 
-    for binding in await asyncio.to_thread(store().bindings):
+    current = store()
+    # A Conductor thread's binding is the same record, kept in its own table; an
+    # ended one is no conductor any more, so it is never the caller's.
+    candidates = await asyncio.to_thread(lambda: (*current.bindings(), *current.thread_bindings()))
+    for binding in candidates:
+        if binding.thread and binding.ended_at:
+            continue
         if binding.session_key != slot_key:
             continue
         slot = bound_slot(state, binding)
@@ -166,7 +172,16 @@ def unfence(channel_id: str) -> None:
 
 
 async def is_archived(binding: Binding) -> bool:
-    """Whether the channel is archived: fenced here, or stamped on the stored binding."""
+    """Whether the channel is archived: fenced here, or stamped on the stored binding.
+
+    A Conductor thread is never archived; the same word answers for a thread that
+    has ENDED (``ended_at`` on the stored binding), which is shown nothing more.
+    """
+    if getattr(binding, "thread", False) is True:
+        thread = await asyncio.to_thread(
+            store().get_thread_binding, binding.channel_id, binding.anchor_ts
+        )
+        return bool((thread or binding).ended_at)
     if binding.channel_id in _archived_here:
         return True
     current = await asyncio.to_thread(store().get_binding, binding.channel_id)

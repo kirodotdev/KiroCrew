@@ -1336,7 +1336,7 @@ untouched.
 | `<app>:<server>` on disk | **persisted as submitted** — the snapshot still wins where the platform agrees the name exists |
 | `<app>:<server>` NOT on disk, app uninstalled | **dropped** — `_deregister_mcp_servers` removed it |
 | `<app>:<server>` NOT on disk, app installed but DISABLED | **dropped** — same, and reconciliation never revisits it |
-| `<app>:<server>` NOT on disk, app installed, ENABLED and DECLARING it | **it depends** — `_register_mcp_servers` scrubs an HTTP server with no live port only when the app runs a GATEWAY-MANAGED backend (`backend.entryPoint` set); a manifest's illustrative port is then a dead URL that breaks every kiro session. A SELF-MANAGED app (empty `backend.entryPoint`) has an authoritative fixed url and is **persisted** — mirroring `_collect_app_mcp_servers` |
+| `<app>:<server>` NOT on disk, app installed, ENABLED and DECLARING it | **it depends** — `_register_mcp_servers` scrubs an HTTP server with no live port only when the app runs a GATEWAY-MANAGED backend (`backend.entryPoint` set); a manifest's illustrative port is then a dead URL that breaks every kiro session. A SELF-MANAGED app (empty `backend.entryPoint`) has an authoritative fixed url and is **persisted** — mirroring `_collect_app_mcp_servers`. Only a loopback url names the backend (`bridges_mcp.is_app_backend_mcp_url`): a url on any other host, such as a hosted MCP gateway, is **persisted** as declared for either kind of app, and its port is never swapped for the backend's |
 | host-owned name containing `:` (an edition extra), not on disk | **persisted** — the host's key, not an app's; the host axis is unchanged |
 | any, spec readable but carrying no `mcpServers` key | **dropped** — a keyless spec holds no bridge, which is a definite answer; reading it as "unknown" lets the resurrection through |
 | any, spec unreadable, or `mcpServers` present but not an object | **persisted** — best-effort, so this endpoint stays the repair path for a corrupt spec, and nothing is deleted on evidence that cannot be read |
@@ -3183,6 +3183,15 @@ the one-time import first, so the import's lock is the only lock needed.
   `approvedGrants`. The approved event set is part of `hook_signature`, so
   approving events reloads the app's hooks and rebuilds its event bus; the API
   and WebSocket caches pick an approval up within their refresh interval.
+  Until the owner approves, an app-token call on an `/api/` path that only a
+  held-back `api` entry covers answers 403 `app_permission_not_approved`, whose
+  body lists those entries as `pending_approval` and tells the app the owner's
+  step: the app's page (`/apps/detail/<name>`), the "Approve new
+  permissions" button, and the refresh interval. A path no declared entry
+  covers answers `app_permission_not_declared`, which names the `app.json`
+  change, the update and the approval (dashboard-token-auth, App-token scope
+  confinement). `held_back_app_grants` supplies the entries; it reads the same
+  approved set and lists nothing when none is stored.
   `get_app` is read-only, like `list_apps`.
 - **Failure direction is closed.** An install without the file whose old
   manifest is unreadable gives an empty previous set on update; a stored set
@@ -5950,8 +5959,9 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
 one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
-`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
-rows, all four of which the route serves. They are App Kit seam level 6.
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira, Linear and
+ServiceNow rows, all five of which the route serves. A ServiceNow list offers no label
+filter, since its records have none, and like Jira and Linear it shows no comment count. They are App Kit seam level 6.
 
 The transport is chosen the way §18g chooses the pull-request client, from the
 published identity: an **external** app posts through its scoped client once
@@ -7099,7 +7109,7 @@ which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `manager.py` | The facade: the only import path and patch surface. It defines nothing and installs `kiro_crew._facade_mirror` over the owners below |
-| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), `AppResult` and `get_app_manifest` |
+| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), the declared entries still waiting for approval that a refusal names (`held_back_app_grants`), `AppResult` and `get_app_manifest` |
 | `manager_tree.py` | Validating a source directory (`_validate_source_path`, `_check_min_version`), the copy (`_copy_app_tree`, `copy_app_tree_as_installed`), the preserved-`data/` rules (`gateway_data_dir_obstruction`, `_owned_data_dir`), `_remove_any_shape` and `InstalledTreeRefused` |
 | `manager_install.py` | `install_app`, `update_app`, the per-app `app_lifecycle_lock` and the scoped `registry_source_repository` |
 | `manager_activation.py` | `enable_app`, `disable_app` and the governance check every activation passes (`_app_activation_denied`) |
@@ -7147,7 +7157,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_agents.py` | Materializing an app's agents: the app MCP policy (`_apply_agent_mcp_policy`, `_apply_agent_prompt`), host-managed MCP references, user edits carried across a refresh, shipped agent templates, `_register_agents` / `_deregister_agents` and `purge_uninstalled_agent_residue` |
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
-| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
+| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite of a loopback url (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
 | `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, the per-app boot reconcile `reconcile_enabled_app_resources(app_name)`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,

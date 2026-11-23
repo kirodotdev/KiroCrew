@@ -212,8 +212,11 @@ that a running gateway picks it up at restart, while a `config.json` Apply reach
 watcher like a `kirocrew config set`, so only a restart-marked key waits for the restart. A
 heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
 channel, and acknowledges it once resolved; the scan and the note writes together are bounded
-so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
-through the leaf's endorsing writer, so its own saves take effect at once and are never
+so a stalled disk never holds the heartbeat. A leaf not yet announced counts only once two
+scans in a row list it (`config_pending._settled`; a heartbeat sync and the snapshot an Apply
+or Discard publishes are both scans): a save endorses its copy before the rename, so a scan
+between the two lists a file the next scan does not. Every Kiro Crew writer of these four
+files goes through the leaf's endorsing writer, so its own saves take effect at once and are never
 pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
 telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
 and restore and import (`endorse_installed`). `kirocrew config edit` endorses too: it stages a
@@ -514,6 +517,18 @@ so there is one source of truth for the location.
 
 Direct `config_dir()` callers keep the maintenance behaviour; a hot or async path
 should call `data_home()` instead.
+
+**A worker thread is handed its home, not left to read the variable.**
+`run_with_data_home(home, target, *args)` is a thread's entry: until `target(*args)`
+returns, `config_dir()`, `data_home()` and `peek_data_home()` answer *home* on that
+thread without reading `KIROCREW_HOME`. Other threads are unaffected, the pin never
+enters `config_dir()`'s process-wide memo, and `_valid_override_home()` (the "is an
+override in force" predicate) does not see it. The dispatcher resolves the home while
+its own override is in force (the metrics consent re-check, `metrics/provider.py`; the
+node compile-cache prewarm, `acp/node_compile_cache.py`; the crew-log eager fold worker,
+per home of each wake, `crew_log/eager.py`; its cold-cell prime, `crew_log/slot_prime.py`), so
+a test that clears the variable before the worker reads (`patch.dict`'s exit, an
+empty pin) cannot send that worker to the default home.
 
 ## Workspace Root
 
@@ -2603,8 +2618,12 @@ The snapshot is only ever rebuilt off-loop:
   spec it skipped did not parse, in either directory: the same bytes fail the
   same way, while a failed read or listing can pass a moment later. So one
   unparseable spec keeps the memo on, and a transient failure is read again. A
-  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
-  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  key `agents_dir_revision` cannot prove (a symlinked spec, more than 64 entries
+  or 8 MiB younger than 2 s, on Windows more than 256 MiB of specs, since there
+  every entry is pinned on a digest of its bytes) scans every time. An entry it
+  must hash but cannot is logged at WARNING, naming the folder and the
+  entry, once until that folder next yields a revision; a spent byte budget is
+  not logged. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
   flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
@@ -2812,6 +2831,7 @@ Returns `~/.kiro/crew/` (nested under kiro-cli's `~/.kiro/` base). Overridden by
 `KIROCREW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`,
 `/etc`). It creates the selected home and, on the default path, refreshes the
 recovery breadcrumb; it never reads or migrates a leftover `~/.kirocrew` tree.
+Inside `run_with_data_home(home, ...)` it returns *home* on that thread (see above).
 
 ### `config_path() -> Path`
 Returns `~/.kiro/crew/config.json` (or `$KIROCREW_HOME/config.json` if overridden).

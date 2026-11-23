@@ -860,6 +860,12 @@ class TestUncProbeGate:
             (r"C:\Users\me\x.png", False),
             ("C:/Users/me/x.png", False),
             ("/tmp/x.png", False),
+            # NT-namespace spelling of a share, and its local-drive twin.
+            (r"\??\UNC\host\share\x.png", True),
+            (r"\??\unc\host\share\x.png", True),
+            (r"\??\C:\Users\me\x.png", False),
+            (r"\\?\UNC\host\share\x.png", True),
+            (r"\\?\C:\Users\me\x.png", False),
         ],
     )
     def test_unc_shape_detection(self, raw, want):

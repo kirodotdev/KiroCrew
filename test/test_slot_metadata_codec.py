@@ -554,6 +554,40 @@ def test_resume_binds_a_review_transcripts_own_link_for_the_dashboard_user_only(
     assert "linked_session_key" not in app
 
 
+# A metadata line with no link, as a cron run's first append writes it.
+_LINE = {"_type": "metadata", "created_at": "2026-11-01T00:00:00"}
+
+
+@pytest.mark.parametrize(
+    ("meta", "history_key", "expected"),
+    [
+        (_LINE, "cron_0a1b2c3d", "cron:0a1b2c3d"),
+        ({"linked_session_key": "cron:0a1b2c3d"}, "cron_0a1b2c3d", "cron:0a1b2c3d"),
+        # No line: there is no transcript to reopen.
+        ({}, "cron_0a1b2c3d", ""),
+        # Only a job's own transcript is keyed by its name: not a sequence
+        # agent's, not a stateless run's, not a name a job id cannot have.
+        (_LINE, "cron_0a1b2c3d_writer", ""),
+        (_LINE, "cron_0a1b2c3d_deadbeef", ""),
+        (_LINE, "cron_job1", ""),
+        (_LINE, "dashboard_cron_0a1b2c3d", ""),
+        (_LINE, "0a1b2c3d", ""),
+        # A line linked to another file is not overridden by the name.
+        ({"linked_session_key": "cron:ffffffff"}, "cron_0a1b2c3d", ""),
+    ],
+)
+def test_a_jobs_unlinked_transcript_is_bound_by_its_name_on_the_users_resume(
+    meta, history_key, expected
+):
+    user = codec.slot_args(meta, codec.Resume(history_key=history_key))
+    assert codec.own_cron_link(meta, history_key) == expected
+    assert user.get("linked_session_key", "") == expected
+    # An app's resume binds only a link the line carries.
+    app = codec.slot_args(meta, codec.Resume(app="a", history_key=history_key))
+    linked = "linked_session_key" in meta
+    assert app.get("linked_session_key", "") == (expected if linked else "")
+
+
 @pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
 def test_a_null_origin_reads_as_no_origin(purpose):
     """A JSON ``null`` origin is no origin, never the string ``"None"``."""

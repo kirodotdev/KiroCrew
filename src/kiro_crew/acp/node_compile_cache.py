@@ -393,10 +393,15 @@ def prewarm_engine_bundle_cache(argv: list[str], cache: str | None = None) -> bo
 def ensure_engine_bundle_cache(argv: list[str]) -> None:
     """Start one background prewarm per engine build per gateway process. Never raises.
 
-    The session that triggers it starts without a cache; later ones read it.
+    The session that triggers it starts without a cache; later ones read it. The
+    home and the cache directory are resolved here, on the caller's thread, and the
+    worker runs through ``config.paths.run_with_data_home`` with that home.
     """
     try:
+        from kiro_crew.config.paths import data_home, run_with_data_home
+
         stamp = _stamp_name(argv)
+        home = data_home()
         cache = node_compile_cache_dir(ROUTE_ENGINE_BUNDLE)
         if os.path.exists(os.path.join(cache, stamp)):
             return
@@ -409,8 +414,8 @@ def ensure_engine_bundle_cache(argv: list[str]) -> None:
         _prewarm_started.add(stamp)
     try:
         threading.Thread(
-            target=prewarm_engine_bundle_cache,
-            args=(list(argv), cache),
+            target=run_with_data_home,
+            args=(home, prewarm_engine_bundle_cache, list(argv), cache),
             name=PREWARM_THREAD_NAME,
             daemon=True,
         ).start()

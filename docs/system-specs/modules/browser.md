@@ -1502,6 +1502,13 @@ A `target` with no hook to resolve it (`OpContext.decisions` unset, or every gat
 closed) is refused `needs_ref` without touching the page, so the agent is told to
 pass a `ref` rather than having text typed into whatever holds focus.
 
+A provider that typically answers after the 500 ms text wait (its declared
+`latency_ms` above it, read through `decide.capabilities`; a local preset declares
+its own measured median where that is slower, `decisions.md` section 16) is not
+asked for a pick or a check either: the op takes a timeout's path at once, with no
+outline read and no request. `reflex` still runs, its wait sized from the same
+figure.
+
 Cost when off: no network, no governance probe and no page call. Only the ops above
 pay one keystone read off the event loop (`gate.is_enabled`), and none when the
 configured provider is `none`. Each request is capped at 500 ms (text) or 800 ms
@@ -1567,8 +1574,9 @@ The loop reads the provider's capabilities (`decide.capabilities`, which is
 `gate.capabilities`), never its name: a provider that takes one request at a time
 runs `realtime` as `virtual_time`, one with no image support runs `see` on state
 only, and a slow one gets a per-call ceiling of three times its declared latency
-(still clamped by the gate). Each is said in `notes`. The timed modes open the
-provider's connection first (`decide.warm`, which is `gate.warm`).
+(a local preset's own median where that is slower; still clamped by the gate).
+Each is said in `notes`. The timed modes open the provider's connection first
+(`decide.warm`, which is `gate.warm`).
 
 `virtual_time` is not CDP virtual time. Chromium's `Emulation.setVirtualTimePolicy`
 cannot be handed back: `advance` without a budget fast-forwards an idle page
@@ -1834,8 +1842,9 @@ The config section is `browser`: `choice`, `isolation`, `report_changes`,
 `live.enabled`, `live.quality`, `live.max_fps`, `live.mask_passwords`,
 `credentials.enabled`, `credentials.domains`, `recording.enabled`,
 `recording.max_session_mb`, `recording.max_total_mb`, and `run.max_ops` /
-`run.max_repeats` (0, the default, sets no limit; past a limit the chat's next op
-is refused `run_budget`, and a takeover or a new chat counts again from zero).
+`run.max_repeats` / `run.max_minutes` (0, the default, sets no limit; past a limit the
+chat's next op is refused `run_budget`, and a takeover or a new chat counts again from
+zero; the minutes run from the run's first op on a monotonic clock).
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys

@@ -1730,9 +1730,10 @@ async def run(self: GatewayOrchestrator) -> None:
         # that boot's init_socket_mode then replaces without closing; until
         # then the route answers 503 slack_reconnect_unavailable. The
         # API-only server leaves it None.
-        from kiro_crew.slack.reconnect import reconnect_slack
+        from kiro_crew.slack.reconnect import reconnect_slack, wait_for_reconnect
 
         self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
+        self.dashboard_state.slack_reconnect_wait = lambda: wait_for_reconnect(self)
         from kiro_crew.slack.owner_claim import OwnerClaim
 
         self.dashboard_state.slack_owner_claim = OwnerClaim(self)

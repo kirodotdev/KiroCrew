@@ -19,6 +19,7 @@ import re
 import stat
 import sys
 import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 import pytest
@@ -175,16 +176,26 @@ class TestStartupInstall:
         kas_engine_startup.ensure_engine_at_startup()
 
 
+#: The pure wheel's WHEEL as setuptools writes it: the headers, then a blank line.
+_SETUPTOOLS_WHEEL = (
+    "Wheel-Version: 1.0\nGenerator: setuptools (84.2.1)\nRoot-Is-Purelib: true\n"
+    "Tag: py3-none-any\n\n"
+)
+
+
 def _pure_wheel(tmp_path: Path, version: str = "9.9.9") -> Path:
     wheel = tmp_path / f"kirocrew-{version}-py3-none-any.whl"
     dist = f"kirocrew-{version}.dist-info"
     with zipfile.ZipFile(wheel, "w") as zf:
         zf.writestr("kiro_crew/__init__.py", "")
-        zf.writestr(
-            f"{dist}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
-        )
+        zf.writestr(f"{dist}/WHEEL", _SETUPTOOLS_WHEEL)
         zf.writestr(f"{dist}/RECORD", "")
     return wheel
+
+
+def _pip_tags(wheel_meta: str) -> list[str]:
+    """The tags `pip check` reads: a blank line ends the header block."""
+    return Parser().parsestr(wheel_meta).get_all("Tag", [])
 
 
 class TestBuilder:
@@ -209,8 +220,11 @@ class TestBuilder:
         assert out.name == "kirocrew-9.9.9-py3-none-manylinux_2_28_x86_64.whl"
         with zipfile.ZipFile(out) as zf:
             wheel_meta = zf.read("kirocrew-9.9.9.dist-info/WHEEL").decode()
-            assert "Tag: py3-none-manylinux_2_28_x86_64" in wheel_meta.splitlines()
-            assert "Tag: py3-none-any" not in wheel_meta
+            assert _pip_tags(wheel_meta) == ["py3-none-manylinux_2_28_x86_64"]
+            assert wheel_meta == (
+                "Wheel-Version: 1.0\nGenerator: setuptools (84.2.1)\nRoot-Is-Purelib: true\n"
+                "Tag: py3-none-manylinux_2_28_x86_64\n"
+            )
             record = zf.read("kirocrew-9.9.9.dist-info/RECORD").decode().splitlines()
             for line in record:
                 name, digest, size = line.rsplit(",", 2)
@@ -239,6 +253,25 @@ class TestBuilder:
                 )
         with pytest.raises(builder.GateError, match="differs from the pure wheel"):
             builder.verify_wheel(out, "https://k", pure=other)
+
+    def test_the_gate_refuses_a_tag_pip_does_not_read(self, builder, tmp_path):
+        """A Tag after the blank line is body text: pip reads no tag and calls the
+        wheel unsupported, so the gate must refuse it too."""
+        out = builder.build(_pure_wheel(tmp_path), "manylinux_2_28_x86_64", tmp_path, "https://k")
+        broken = tmp_path / "broken" / out.name
+        broken.parent.mkdir()
+        wheel_name = "kirocrew-9.9.9.dist-info/WHEEL"
+        with zipfile.ZipFile(out) as src, zipfile.ZipFile(broken, "w") as dst:
+            for info in src.infolist():
+                data = src.read(info)
+                if info.filename == wheel_name:
+                    data = (
+                        b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\n\n"
+                        b"Tag: py3-none-manylinux_2_28_x86_64\n"
+                    )
+                dst.writestr(info, data)
+        with pytest.raises(builder.GateError, match="WHEEL metadata tags are"):
+            builder.verify_wheel(broken, "https://k")
 
     def test_the_gate_refuses_a_wheel_without_the_engine(self, builder, tmp_path):
         bare = tmp_path / "kirocrew-9.9.9-py3-none-manylinux_2_28_x86_64.whl"

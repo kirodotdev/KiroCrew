@@ -97,7 +97,10 @@ Initial sends and zero-activity resends reuse that same segmented prompt, so
 memory and hook image paths stay text while the task's own images can attach.
 
 Continuation tools retain the original `subagent:<conversation-id>` while each
-follow-up has its own run ID. Ordinary HTTP caller recognition uses the unique
+follow-up has its own run ID. A request naming a running follow-up's ID checks
+its owner's conversation for activity and is refused as `conversation_busy`. A
+request naming a finished follow-up's ID continues under `subagent:<that-id>`.
+Ordinary HTTP caller recognition uses the unique
 active continuation for that conversation; queued or completed runs cannot supply
 a live caller. The frozen record supplies memory and app scope independently of
 that liveness check.
@@ -2812,13 +2815,18 @@ Providers that do not bill in credits report `0`; display surfaces omit the cred
 label for that value rather than claiming the run was free. The cumulative credit total is
 included in live and reconnect `subagent_done` frames, shown in the expanded
 terminal card body as the localized “Used … credits” summary, and included in
-completion, delivery-failure, and wave-digest messages. Restart-orphan notices
+completion, delivery-failure, and wave-digest messages. The same accounting sums the
+run's dollar cost, and `SubagentInfo.cost_usd` keeps that sum when it is finite and
+non-negative (else `0`); the live and reconnect `subagent_done` frames carry it as
+`cost_usd`, and `subagent_snapshot` does not. Restart-orphan notices
 omit usage because a run the restart caught has no settled terminal billing record.
 Card headers retain elapsed time only so billing text does not crowd the status
 and model chips in a narrow rail. A managed terminal card without positive reported
-credits identifies the usage as unreported in the expanded card body. Backend
-and dashboard duration formatting both round to
-whole seconds before applying the one-minute display boundary. Native harness
+credits shows the run's dollar cost, formatted as the chat's turn line formats it,
+when that cost is positive, and identifies the usage as unreported only when neither
+is reported. A card rebuilt from the crew log after a restart shows credits only,
+since the crew log records no dollar cost. Backend and dashboard duration formatting
+both round to whole seconds before applying the one-minute display boundary. Native harness
 subagents omit the usage summary because they share the parent billed turn and
 have no independent run record.
 
@@ -4780,7 +4788,10 @@ steer-…]` acks (`messaging.driver.strip_steering_markers`): the line acknowled
 steer the host or the parent sent, and it is protocol, not the answer. The
 text is finished, so an unclosed `[STEER…` tail is the answer's own and stays. A streamed
 file an ending caps in place, and the turn-limit and escalation bails' result, keep
-them. A failed write records `result_complete=False` and
+them. The alternation placeholder the model repeats at the start of a prompt after
+one that ended on a tool result never reaches the text, the streamed file or the
+live partial: every prompt of the run streams through `alternation_echo.drop_echo`
+([messaging](messaging.md)). A failed write records `result_complete=False` and
 falls back to capping the streamed file in place. Every other ending -- the
 tail's, the turn-limit and escalation bails, the deadline, a cancel, a raised
 error, a reap -- caps the streamed file in place (`cap_result_file`) and records

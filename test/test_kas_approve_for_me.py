@@ -322,6 +322,46 @@ def test_any_mode_set_through_the_shared_mutation_ends_approve_for_me(tmp_path, 
     assert key not in approve_for_me_keys(state)
 
 
+@pytest.mark.parametrize("second", ["s1", "dashboard_s1", "dashboard:s1"])
+def test_a_new_slot_under_a_deleted_slots_name_starts_with_approve_for_me_off(
+    tmp_path, monkeypatch, second
+):
+    """The live slot keeps approve-for-me; a slot made again under its name does not inherit it."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.dashboard import approve_for_me as afm_dash
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.dashboard.state_parts.slot_directory import SlotOrigin
+    from kiro_crew.history import ConversationLog
+
+    monkeypatch.setattr(afm_dash, "session_mode_permitted", lambda _m: True)
+    monkeypatch.setattr(afm_dash, "profile_binds", lambda *_a, **_k: False)
+    sessions = MagicMock(count=0)
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_provider = MagicMock(return_value=None)
+    sessions.remove = AsyncMock()
+    sessions._fold_key = lambda k: k
+    state = DashboardState(
+        sessions=sessions,
+        crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
+        lessons=MagicMock(load_all=MagicMock(return_value=[])),
+        start_time=0.0,
+        conversation_log=ConversationLog(base_dir=tmp_path),
+    )
+    slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+    key = effective_session_key(slot)
+    afm_dash.approve_for_me_keys(state).add(key)
+    assert afm_dash.owner_allows(state, key) is True
+    # Getting the live slot again (a second tab, a later send) keeps it on.
+    assert state.get_or_create_slot("s1") is slot
+    assert afm_dash.owner_allows(state, key) is True
+    state._slots.pop(slot.key)  # where close_slot ends
+    again = state.get_or_create_slot(second, origin=SlotOrigin.USER)
+    assert effective_session_key(again) == key
+    assert afm_dash.owner_allows(state, key) is False
+
+
 @pytest.mark.parametrize(
     "module",
     [

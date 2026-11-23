@@ -559,6 +559,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     task_name = getattr(args, "name", "")
     # Local: this module's top-level imports are a frozen facade inventory.
     from kiro_crew.hooks import FileTooLargeError
+    from kiro_crew.taskrunner_parts.run_reporting import live_error
 
     try:
         try:
@@ -575,7 +576,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         if result.status == "completed":
             print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
         elif result.status == "failed":
-            print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
+            print(f"\n❌ Task failed ({label}): {live_error(result)}", file=sys.stderr)
             sys.exit(1)
         elif result.status == "cancelled":
             print("\n⚠️  Task cancelled")
@@ -973,7 +974,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DETACHED_BRANCH_ORDER,
         _detached_upstream_branch,
         _gateway_holds_update_lock,
+        _head_oid,
+        _is_release_tag,
+        _is_shallow_clone,
         _refresh_agent_config,
+        _release_tag_checkout,
+        _release_update_tag,
+        _remote_refs_present,
         _report_already_latest,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,

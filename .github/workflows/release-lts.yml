@@ -53,9 +53,17 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing LTS $VERSION on channel lts"
 
-  # Same gate as release.yml's prerelease candidates: the exact tagged commit
-  # passes the backend suite before anything is built or published. An LTS
-  # release has no prerelease lane to soak on.
+  # The exact tagged commit passes the backend suite before anything is
+  # PUBLISHED. An LTS release has no prerelease lane to soak on.
+  #
+  # It gates every publish job and every sign-and-notarize call, and no build.
+  # The builds only make artifacts on this run, so running them beside the
+  # suite instead of after it changes nothing a user can fetch; it takes the
+  # suite off the front of the macOS chain. Measured on lts-v0.1.0 (run
+  # 42712315572): the suite ended 43 minutes in and the universal macOS build
+  # only started then, so signing started at 77 minutes. Built in parallel,
+  # signing waits for the later of the suite and build + smoke (~25 minutes),
+  # about 25-35 minutes sooner. test_release_lts_workflow.py pins both halves.
   release-candidate-tests:
     name: Test Release Candidate SHA
     needs: version
@@ -132,7 +140,7 @@ jobs:
 
   build-wheel:
     name: Build Wheel
-    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.version }}
@@ -146,7 +154,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop
-    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -156,7 +164,7 @@ jobs:
 
   build-windows:
     name: Build Windows Desktop
-    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    needs: [version, dependency-vulnerability-gate]
     permissions:
       contents: read
       id-token: write
@@ -172,7 +180,7 @@ jobs:
 
   publish-cli:
     name: Publish CLI (lts channel)
-    needs: [version, build-wheel, build-platform-wheels]
+    needs: [version, release-candidate-tests, build-wheel, build-platform-wheels]
     permissions:
       contents: read
       id-token: write
@@ -187,7 +195,7 @@ jobs:
 
   publish-linux-appimage-x64:
     name: Publish Linux appimage (lts channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -205,7 +213,7 @@ jobs:
 
   publish-linux-appimage-arm64:
     name: Publish Linux appimage (lts channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -223,7 +231,7 @@ jobs:
 
   publish-linux-deb-x64:
     name: Publish Linux deb (lts channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -241,7 +249,7 @@ jobs:
 
   publish-linux-deb-arm64:
     name: Publish Linux deb (lts channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -259,7 +267,7 @@ jobs:
 
   publish-linux-rpm-x64:
     name: Publish Linux rpm (lts channel · x64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -277,7 +285,7 @@ jobs:
 
   publish-linux-rpm-arm64:
     name: Publish Linux rpm (lts channel · arm64)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -295,7 +303,7 @@ jobs:
 
   publish-windows-x64:
     name: Publish Windows Desktop (lts channel · x64)
-    needs: [version, build-windows]
+    needs: [version, release-candidate-tests, build-windows]
     permissions:
       contents: read
       actions: read
@@ -312,7 +320,7 @@ jobs:
 
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop]
+    needs: [version, release-candidate-tests, build-wheel, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -330,7 +338,7 @@ jobs:
 
   sign-and-notarize-arm64:
     name: Sign + Notarize macOS (arm64 only)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -350,7 +358,7 @@ jobs:
 
   sign-and-notarize-x64:
     name: Sign + Notarize macOS (x64 only)
-    needs: [version, build-desktop]
+    needs: [version, release-candidate-tests, build-desktop]
     permissions:
       contents: read
       id-token: write

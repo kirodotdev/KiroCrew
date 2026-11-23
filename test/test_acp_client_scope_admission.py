@@ -403,9 +403,16 @@ async def test_ensure_ready_retries_a_death_during_admission_once_as_before(
     seen = _counted_start(client, lambda proc: _reaped_with(proc, 1))
     _patch_wait(monkeypatch, seen["read"], ManualClock(monotonic_start=1000.0))
 
-    with pytest.raises(AcpProcessDied, match="stage=scope_admission"):
+    # The death ends the start as one non-transient error the chat shows, not an
+    # ``AcpProcessDied`` it retries behind "Connection lost"; the stage stays on
+    # its cause.
+    with pytest.raises(AcpError, match=r"^the agent exited during initialize \(code=1\)") as raised:
         await finished(client.ensure_ready(), "the start")
 
+    assert not isinstance(raised.value, AcpProcessDied)
+    assert raised.value.transient is False
+    assert isinstance(raised.value.__cause__, AcpProcessDied)
+    assert "stage=scope_admission" in str(raised.value.__cause__)
     assert seen["spawns"] == 2
     for proc in seen["procs"]:
         proc.stdin.write.assert_not_called()

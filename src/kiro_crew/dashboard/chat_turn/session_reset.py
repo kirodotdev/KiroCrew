@@ -289,7 +289,8 @@ async def _consume_pending_reset(
     """Apply a deferred session reset queued on *slot*, if any.
 
     Returns whether a teardown actually ran, so a caller can decide whether a
-    respawn is owed. A deferral left armed returns False.
+    respawn is owed. A deferral that tore nothing down returns False; a teardown
+    that leaves the project reset owed (below) returns True.
 
     Two independent deferrals share this consumer, and both are queued rather
     than applied inline because their producer runs INSIDE the turn they would
@@ -343,7 +344,9 @@ async def _consume_pending_reset(
 
     Each flag is cleared only after its own effect succeeds, and compare-and-
     cleared so a key queued by a concurrent producer during the await is not
-    clobbered.
+    clobbered. A rebind during the children probe moves the project reset to the
+    slot's new key without tearing the old one down, and a rebind or another
+    project change during the teardown keeps it owed on the key the slot runs on.
     """
     torn_down = False
     if slot._pending_reset_history_key:
@@ -363,7 +366,17 @@ async def _consume_pending_reset(
             slot._pending_reset_history_key = current_key
             _arm_pending_reset_retry(state, slot)
             return torn_down
-        if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
+        children_attached = await subagents_attached_async(
+            state, slot, pending_key, "consume_pending_reset"
+        )
+        if effective_session_key(slot) != pending_key:
+            # The slot rebound during the probe: the reset follows it, as above,
+            # rather than tearing down the session it just left.
+            if slot._pending_reset_history_key == pending_key:
+                slot._pending_reset_history_key = effective_session_key(slot)
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if children_attached:
             # Left armed on purpose, same as the discard branch below: the
             # reset releases the shared runtime attached children run on, so
             # applying it now would discard their work. The retry task owns
@@ -396,6 +409,7 @@ async def _consume_pending_reset(
                     # Again here: a cold start already in flight when the project was
                     # cleared stores the old directory as it registers.
                     state.sessions.retract_cwd(pending_key)
+                settled_project = slot.project
                 # Shielded: the eager-spawn task awaiting this is cancelled by the
                 # next slot signal, and a cancel after the pop would leak the
                 # process holding the session lock. Cancelled, the flag stays armed.
@@ -424,7 +438,15 @@ async def _consume_pending_reset(
                     # show a withheld model as available.
                     slot.forget_session_model_state()
                     torn_down = True
-                    if slot._pending_reset_history_key == pending_key:
+                    rebound = effective_session_key(slot) != pending_key
+                    if rebound or slot.project != settled_project:
+                        # A rebind or another project change landed during the
+                        # teardown, which did not cover it: the reset stays owed
+                        # on the key the slot runs on now.
+                        if slot._pending_reset_history_key == pending_key:
+                            slot._pending_reset_history_key = effective_session_key(slot)
+                        _arm_pending_reset_retry(state, slot)
+                    elif slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
                         slot._pending_reset_clears_cwd = False
                     # Freshness push for open tabs; verdict-driven (see

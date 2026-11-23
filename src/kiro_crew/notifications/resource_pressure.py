@@ -424,7 +424,7 @@ class ResourcePressureNotifier:
         # until the gateway wires it.
         self.memory_guard: Callable[[ResourceStatus, float | None, str], object] | None = None
         # Free memory (GB) and worst disk free space (%) the next step is measured
-        # from: the reading at the last posture wake, raised by a recovery.
+        # from: the reading at the last posture wake, never raised by a recovery.
         self._worsen_ref: tuple[float, float | None] = (0.0, None)
         # Which level period this is (this notifier's start time and a count of its
         # level changes, so a restart never repeats one) and the steps it has made.
@@ -692,8 +692,9 @@ class ResourcePressureNotifier:
         reading after start pulls only when it is not ample. While the level stays
         tight or critical, a fall by one step (:data:`WORSEN_STEPS`) below the
         reading at the last posture wake publishes a new :func:`worsened` and pulls
-        again; a recovery inside the level wakes nobody and raises that reference
-        (rfc-resource-control.md §4.2).
+        again; a recovery inside the level wakes nobody and leaves that reference
+        where it is, so one input that recovers and falls back steps at most once
+        until the other input steps (rfc-resource-control.md §4.2).
         """
         global _current_posture, _worsened
         combined = combined_posture(status, self._disk)
@@ -718,8 +719,8 @@ class ResourcePressureNotifier:
         if moved is None:
             return
         # The level period and a count of its steps, beside the reading: the same
-        # reading again (after a recovery, or in a later period at this level) is a
-        # new step, never one the seen set already holds.
+        # reading again in a later period at this level is a new step, never one
+        # the seen set already holds.
         self._decline_count += 1
         disk = "-" if reading[1] is None else f"{reading[1]:.0f}"
         _worsened = (
@@ -738,19 +739,21 @@ class ResourcePressureNotifier:
         """What fell a step below the reference, or ``None``. Moves the reference.
 
         Only an axis at the current level (*binding*: memory, disk) can step: on a
-        host tight on disk alone, ordinary swings of ample memory are not news. An
-        axis that is not binding follows its reading, so a step is measured from
-        where it stood when it became binding. On a binding axis a better reading
-        becomes the reference and a worse one keeps it.
+        host tight on disk alone, ordinary swings of ample memory are not news. No
+        reference rises between two wakes: a binding axis keeps its reference, and
+        an axis that is not binding follows its reading down only, so a step is
+        measured from the lowest it stood since the last wake and a recovery
+        followed by a fall back is no step.
         """
         (memory, disk), (now_memory, now_disk) = self._worsen_ref, reading
         moved: list[str] = []
-        new_memory = now_memory if not binding[0] else max(memory, now_memory)
+        new_memory = memory if binding[0] else min(memory, now_memory)
         if binding[0] and memory - now_memory >= step[0]:
             moved.append(f"memory {now_memory:.1f} GB free, was {memory:.1f} GB at the last wake")
-        new_disk = (
-            now_disk if not binding[1] or disk is None or now_disk is None else max(disk, now_disk)
-        )
+        if disk is None or now_disk is None:
+            new_disk = now_disk
+        else:
+            new_disk = disk if binding[1] else min(disk, now_disk)
         if binding[1] and disk is not None and now_disk is not None and disk - now_disk >= step[1]:
             moved.append(f"worst temp root {now_disk:.0f}% free, was {disk:.0f}% at the last wake")
         # A step is a posture wake: the whole reading becomes the next reference.

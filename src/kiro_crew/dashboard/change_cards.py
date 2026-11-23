@@ -107,6 +107,12 @@ from kiro_crew.dashboard.change_cards_records import (
 
 logger = logging.getLogger("kiro_crew.dashboard.change_cards")
 
+#: The outcomes :meth:`CardStore._refresh_verdict` decides for a record.
+_KEEP = "keep"
+_REVIEW = "review"
+_EXPIRE = "expire"
+_ABANDON = "abandon"
+
 
 def _store_unavailable() -> "CardError":
     return CardError(
@@ -397,38 +403,47 @@ class CardStore:
             # :meth:`pending` hides a dismissed card whether or not it has expired,
             # so a cleared one leaves nothing for the person to act on here either.
             return False
-        status = rec["status"]
-        if status == STATUS_APPLYING:
-            return cls._stays_applying(rec, now)
-        if status not in (STATUS_PENDING, STATUS_FAILED):
+        if rec["status"] not in (STATUS_PENDING, STATUS_FAILED, STATUS_APPLYING):
             return False
-        kept, inflight = cls._inflight_at(rec, now)
-        return kept and (bool(inflight) or now < rec["expires_at"])
+        return cls._refresh_verdict(rec, now)[1] == _KEEP
 
     @classmethod
-    def _stays_applying(cls, rec: dict[str, Any], now: float) -> bool:
-        """Whether :meth:`_refresh` at *now* would leave this ``applying`` record ``applying``."""
-        kept, inflight = cls._inflight_at(rec, now)
-        if not kept:
-            return False
-        if inflight or now < rec["expires_at"]:
-            return True
-        if any(s.get("repeat") for s in rec["plan"]["apply"]):
-            return False
-        return bool(rec["evidence"])
+    def _refresh_verdict(cls, rec: dict[str, Any], now: float) -> tuple[bool, str]:
+        """What :meth:`_refresh` at *now* does to *rec*, decided without changing it.
 
-    @classmethod
-    def _inflight_at(cls, rec: dict[str, Any], now: float) -> tuple[bool, Any]:
-        """What :meth:`_refresh` at *now* would make of this record's ``inflight``.
-
-        ``(True, step)`` while the step is still running, ``(True, None)`` where a
-        stale poll is cleared and the record keeps its status, and ``(False, None)``
-        where a stale write sends it to review instead.
+        The one copy of the rule: :meth:`_refresh` applies this verdict and
+        :meth:`_is_open` reads it, so the two cannot drift apart. The answer is
+        ``(clear_inflight, outcome)``. *clear_inflight* is True when a stale poll is
+        dropped. *outcome* is :data:`_KEEP` (the status stays), :data:`_REVIEW` (a
+        stale write goes to review), :data:`_EXPIRE`, or :data:`_ABANDON` (an
+        unfinished approval fails retryably).
         """
         inflight = rec.get("inflight")
+        clear_inflight = False
         if inflight and now - float(inflight.get("started_at", 0)) > INFLIGHT_STALE_SECONDS:
-            return cls._idempotent_step(rec, inflight), None
-        return True, inflight
+            if not cls._idempotent_step(rec, inflight):
+                # A write that has not reported back for this long may or may
+                # not have happened: never re-admitted, the same verdict a
+                # restart gives it (:meth:`_load`).
+                return False, _REVIEW
+            # A stale poll (a repeat GET) changed nothing: admit it again.
+            inflight = None
+            clear_inflight = True
+        if inflight or now < rec["expires_at"]:
+            return clear_inflight, _KEEP
+        status = rec["status"]
+        if status in (STATUS_PENDING, STATUS_FAILED):
+            return clear_inflight, _EXPIRE
+        if status == STATUS_APPLYING:
+            # An approval the person never finished (an OAuth poll) grants
+            # nothing, so it fails retryably. A multi-step plan whose browser
+            # vanished between two writes stays ``applying``: the next load
+            # continues from the step the gateway expects.
+            if any(s.get("repeat") for s in rec["plan"]["apply"]):
+                return clear_inflight, _ABANDON
+            if not rec["evidence"]:
+                return clear_inflight, _EXPIRE
+        return clear_inflight, _KEEP
 
     def last_finished_at(self, slot_key: str, statuses: "frozenset[str]") -> float:
         """When a card of *slot_key* last finished in one of *statuses*, else ``0.0``.
@@ -480,48 +495,28 @@ class CardStore:
         self._dirty()
 
     def _refresh(self, rec: dict[str, Any]) -> bool:
-        now = self._clock()
-        changed = False
-        inflight = rec.get("inflight")
-        if inflight and now - float(inflight.get("started_at", 0)) > INFLIGHT_STALE_SECONDS:
-            if not self._idempotent_step(rec, inflight):
-                # A write that has not reported back for this long may or may
-                # not have happened: never re-admitted, the same verdict a
-                # restart gives it (:meth:`_load`).
-                self.mark_needs_review(rec, CODE_INTERRUPTED, _INTERRUPTED_MESSAGE)
-                return True
-            # A stale poll (a repeat GET) changed nothing: admit it again.
+        clear_inflight, outcome = self._refresh_verdict(rec, self._clock())
+        if outcome == _REVIEW:
+            self.mark_needs_review(rec, CODE_INTERRUPTED, _INTERRUPTED_MESSAGE)
+            return True
+        if clear_inflight:
             rec["inflight"] = None
-            changed = True
-        if rec["status"] in (STATUS_PENDING, STATUS_FAILED) and now >= rec["expires_at"]:
-            if not rec.get("inflight"):
-                self._finish(rec, STATUS_EXPIRED)
-                return True
-        if (
-            rec["status"] == STATUS_APPLYING
-            and not rec.get("inflight")
-            and now >= rec["expires_at"]
-        ):
-            # An approval the person never finished (an OAuth poll) grants
-            # nothing, so it fails retryably. A multi-step plan whose browser
-            # vanished between two writes stays ``applying``: the next load
-            # continues from the step the gateway expects.
-            if any(s.get("repeat") for s in rec["plan"]["apply"]):
-                self._fail_now(
-                    rec,
-                    catalog.OP_APPLY,
-                    len(rec["evidence"]),
-                    "abandoned",
-                    "the approval was not finished",
-                    nothing_applied=True,
-                )
-                return True
-            if not rec["evidence"]:
-                self._finish(rec, STATUS_EXPIRED)
-                return True
-        if changed:
+        if outcome == _EXPIRE:
+            self._finish(rec, STATUS_EXPIRED)
+            return True
+        if outcome == _ABANDON:
+            self._fail_now(
+                rec,
+                catalog.OP_APPLY,
+                len(rec["evidence"]),
+                "abandoned",
+                "the approval was not finished",
+                nothing_applied=True,
+            )
+            return True
+        if clear_inflight:
             self._dirty()
-        return changed
+        return clear_inflight
 
     def sweep(self) -> list[dict[str, Any]]:
         """Expire and prune. Returns the public form of every card that changed."""

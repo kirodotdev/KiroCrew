@@ -2532,7 +2532,9 @@ is a code channel's. Every other caller meets exactly the refusals above.
   `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
 - *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
   the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
-  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  (the handler's `is_owner`, not the allow-list), or the shared user who opened that channel
+  and is listed and Slack-confirmed now (`shared_refusal.opener_admitted`, read without the
+  confirmation cache's expiry, so a long turn keeps it). The clause governs who DRIVES the session; third-party text it reads
   as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
   is bounded by reach, not by authorship.
 
@@ -2594,6 +2596,27 @@ card's save path (config lock, `validate_code_settings` with its overlay 409s,
 `_LockedSectionWrite` under `live.hold()`, SEL `slack.config.update` with `source=slack`, hot
 apply), then edits the notice to "Helper agents are on. Send your request again." It never re-runs the
 refused call; the conductor's next turn dispatches.
+
+**Conductor threads** (the thread-conductor RFC, [#41214](https://github.com/kirodotdev/KiroCrew/pull/41214),
+part A; nothing starts one yet). A Conductor thread is one thread of an ordinary channel or DM
+bound to a dashboard slot, kept in the store's `thread_bindings` table (keyed `<channel>:<anchor>`,
+`Binding.thread` true, with `team_id`, `room` and `ended_at`); a channel can hold many, and
+`bindings` stays code channels only. *Identity* reads both tables with the same cross-check, and the
+store's `session_keys` (so `code_channel_root`), the anchor guard (`anchor_owner_by_ts`) and the
+shared-user refusals (`shared_user_refused_in(channel, thread_ts)`, `shared_user_refused_for_slot`)
+cover threads too. Its *switch* is `binding.thread_conductor_on`: `slack.thread_conductor is True`
+AND `THREAD_CONDUCTOR_RUNTIME_BUILT`, which stays false until Slack shows the thread's approval
+cards, Stop and resume (the RFC's part D, #41322, which also declares both config keys; until then
+the reads find no key and answer off); it needs no
+code-channel scope, and the degradation and torn-file readings apply as above. Its *channel state*
+adds: an ended thread refuses, and the room must be admitted -- the owner's DM (`room=im`, a `D` id,
+which skips the share and archive readings), a private channel whose fresh `conversations.info`
+reading still says `is_private` (`audience.channel_private`; unknown refuses and re-reads), or a
+public one only while `slack.thread_conductor_public_channels` is on. The thread's start opens its
+first turn itself, so `note_thread_conductor_start` records the owner (by `is_owner`) as its author;
+anyone else records nothing and the turn refuses. Ended threads move into `revoked` after
+`THREAD_ENDED_TTL_SECS` (`prune_ended_threads`), keeping their anchor fenced and their session key
+retired. Workers file beside the thread's slot (`code_channel_folder`) and inherit its posture.
 
 **What reaches the channel.** Ledger reads and record replies for an exempt caller are the
 published-fields projection only: the goal's first line (`published_goal`, at most 200

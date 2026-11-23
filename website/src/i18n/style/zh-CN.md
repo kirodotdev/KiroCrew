@@ -95,6 +95,8 @@ conventions a reviewer checks, and context may require variation.
 | effort (reasoning) † | 强度 | 投入度 |
 | reject † | 拒绝 | 驳回 |
 | WeCom † | 企业微信 | WeCom |
+| Command Bar † | 命令栏 | Command Bar |
+| Side Chat † | 随手问 | Side Chat |
 
 † gates one Avoid rendering per row, the one `zhStyle.test.ts` `BANNED` lists (for
 example `工作空间`, `子智能体`, `仪表盘`); the other Avoid entries in those rows

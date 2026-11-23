@@ -17,6 +17,7 @@ import { pathBasename, decodePathForDisplay } from '../utils/pathBasename'
 import { ChatProjectDirCtx } from './markdown/contexts'
 import { joinProjectRelative } from './markdown/pathReferences'
 import { useCanOpenFile } from './FilePathMenu'
+import TruncatedText from './TruncatedText'
 import { canPickFolderNatively, hasNativeFolderPicker } from '../lib/electron'
 import { isMac } from '../utils/platform'
 
@@ -186,14 +187,9 @@ function modeWords({ from, to }: { from: string; to: string }): string {
 /** The row's note, after the filename: shrinks and truncates like the title,
  *  because at 320px the row holds it beside the label, the controls and the
  *  counts, and a fixed-width item there pushes the row past the card. The
- *  whole wording stays reachable as the tooltip. */
+ *  whole wording stays reachable in the shared bubble. */
 function changeNote(words: string[]) {
-  const text = words.join(' · ')
-  return (
-    <span data-change-note className="min-w-0 truncate text-[11px] font-normal text-muted" title={text}>
-      {text}
-    </span>
-  )
+  return <TruncatedText data-change-note full={words.join(' · ')} className="min-w-0 text-[11px] font-normal text-muted" />
 }
 
 /** `lineLinks={false}`: the gutter is not the file's lines even where the hunks

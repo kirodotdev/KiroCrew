@@ -65,6 +65,37 @@ def code_channels_on(cfg: Any | None) -> bool:
     return cfg is not None and features.code_channels_enabled(cfg)
 
 
+#: Whether the Conductor-thread runtime Slack needs before dispatch is safe --
+#: worker approval cards, Stop and restart resume in the thread (RFC
+#: ``rfc-slack-thread-conductor.md``, part D) -- is built. While it is False,
+#: nothing turns the feature on. The config keys read below are not declared
+#: yet: part D adds ``slack.thread_conductor`` and
+#: ``slack.thread_conductor_public_channels`` with that runtime, so until then
+#: the ``getattr`` reads find no attribute and answer off; tests patch both.
+#: shortcut: part D sets this True in the same change that builds that runtime.
+THREAD_CONDUCTOR_RUNTIME_BUILT = False
+
+
+def thread_conductor_on(cfg: Any | None) -> bool:
+    """The Conductor-thread switch: ``slack.thread_conductor`` is ``True`` AND the
+    runtime it needs is built (:data:`THREAD_CONDUCTOR_RUNTIME_BUILT`).
+
+    Needs no code-channel scope: a Conductor thread runs on the base app. A
+    missing, unreadable or non-boolean value reads as off.
+    """
+    if not THREAD_CONDUCTOR_RUNTIME_BUILT or cfg is None:
+        return False
+    return getattr(getattr(cfg, "slack", None), "thread_conductor", False) is True
+
+
+def thread_public_rooms_on(cfg: Any | None) -> bool:
+    """Whether ``slack.thread_conductor_public_channels`` admits public channels."""
+    if cfg is None:
+        return False
+    slack = getattr(cfg, "slack", None)
+    return getattr(slack, "thread_conductor_public_channels", False) is True
+
+
 @dataclass(frozen=True)
 class SessionSpec:
     """Resolved settings for a code channel's new dashboard session."""
@@ -635,7 +666,7 @@ def anchor_owner_by_ts(thread_ts: str | None) -> str | None:
     cc = store()
     if not cc.loaded:
         return None
-    for binding in cc.bindings():
+    for binding in (*cc.bindings(), *cc.thread_bindings()):
         if binding.anchor_ts == thread_ts and binding.session_key:
             return binding.session_key
     return None

@@ -123,7 +123,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "resource_status",
             "ask_question",
             "skill_search",
-            "tool_search",
+            "[TOOL NAMES]",
         ):
             assert named in prompt, named
         for forbidden in ("spawn_run", "spawn_sub_agents", "workflow_run", "task_run"):
@@ -337,16 +337,17 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         `web_fetch` serves the skill's worked example (reading an issue list
         during triage). `web_search`, `grep` and `glob` appeared in neither the
         prompt nor the skill and were dropped — `fs_read` covers every read the
-        charter describes. `tool_search` stays and is now NAMED in the prompt:
-        with MCP Tool Search active the session-control specs are deferred, so
-        without it the conductor cannot reach `session_create` at all.
+        charter describes. `tool_search` stays, and the prompt says to load a
+        deferred tool as the `[TOOL NAMES]` block says: with MCP Tool Search
+        active the session-control specs are deferred, so without it the
+        conductor cannot reach `session_create` at all.
         """
         data = self._install(tmp_path, monkeypatch)
         for absent in ("web_search", "grep", "glob"):
             assert absent not in data["tools"], absent
         assert "web_fetch" in data["tools"]
         assert "tool_search" in data["tools"]
-        assert "tool_search" in data["prompt"]
+        assert "[TOOL NAMES]" in data["prompt"]
 
     def test_mounts_no_tool_that_can_write_a_file(self, tmp_path, monkeypatch):
         """The no-write property must hold against the tool list, not the prose.

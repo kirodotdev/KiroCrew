@@ -923,13 +923,14 @@ def _patch_glibc(version: tuple[int, int] | None):
 
 
 class TestOldGlibcRefusal:
-    """A Linux host below the official Node glibc floor (Amazon Linux 2 ships glibc
-    2.26) cannot run the bundle: the Node build needs glibc 2.28, and AL2-era hosts
-    below glibc 2.27 also lack the glibc 2.27 the engine's onnxruntime library
-    needs. The install refuses up front with a message naming the found glibc, the
-    minimum, and onnxruntime, before anything is downloaded or published -- not the
+    """A Linux host below the release's glibc floor cannot run the bundle. A
+    release on nodejs.org's Node needs glibc 2.28 (and its npm onnxruntime 2.27);
+    the pinned AL2 release needs 2.26 on linux-x64 and still 2.28 on linux-arm64.
+    The install refuses up front with a message naming the found glibc, the
+    minimum, and the reason, before anything is downloaded or published -- not the
     raw loader line the probe would surface after a download. Every other host is
-    unchanged. The glibc reader is mocked, so results do not depend on the CI libc."""
+    unchanged. The glibc reader is mocked, so results do not depend on the CI libc;
+    glibc 2.17 stands for a host below every floor."""
 
     def test_old_glibc_refuses_before_download_naming_the_reason(self, source_dir, tmp_path):
         root = tmp_path / "root"
@@ -959,8 +960,8 @@ class TestOldGlibcRefusal:
             "fetch_manifest",
             lambda *a, **k: pytest.fail("fetched the manifest on a host that cannot run it"),
         )
-        with _patch_glibc((2, 26)):
-            with pytest.raises(kas_bundle.KasHostUnsupported, match=r"glibc \(2\.26\)"):
+        with _patch_glibc((2, 17)):
+            with pytest.raises(kas_bundle.KasHostUnsupported, match=r"glibc \(2\.17\)"):
                 kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
 
     def test_modern_glibc_installs_as_before(self, source_dir, tmp_path):
@@ -976,13 +977,45 @@ class TestOldGlibcRefusal:
             installed = _install(source_dir, root)
         assert installed.version == "0.66.33"
 
+    @pytest.mark.parametrize("glibc", [(2, 25), (2, 26), (2, 27), (2, 28)], ids=str)
+    @pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+    @pytest.mark.parametrize("pin_floor", ["stock", "al2"])
+    def test_floor_per_arch_follows_the_pin(self, monkeypatch, glibc, machine, pin_floor):
+        """A pin on nodejs.org's Node needs 2.28 on both arches. A pin naming an AL2
+        release lowers linux-x64 alone to 2.26; arm64 has no AL2 build and stays at
+        2.28. Both pin shapes are set here, so this does not depend on today's pin."""
+        x64 = (2, 26) if pin_floor == "al2" else (2, 28)
+        monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-x64", x64)
+        monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-arm64", (2, 28))
+        floor = (2, 26) if pin_floor == "al2" and machine == "x86_64" else (2, 28)
+        with _patch_glibc(glibc):
+            if glibc >= floor:
+                kas_bundle._require_loadable_glibc("Linux", machine)
+                kas_bundle._require_loadable_glibc("Linux", machine, kas_bundle.KAS_PIN_VERSION)
+            else:
+                key = "linux-x64" if machine == "x86_64" else "linux-arm64"
+                with pytest.raises(kas_bundle.KasHostUnsupported) as exc:
+                    kas_bundle._require_loadable_glibc("Linux", machine)
+                msg = str(exc.value)
+                assert f"glibc ({glibc[0]}.{glibc[1]})" in msg and key in msg
+                assert f"glibc {floor[0]}.{floor[1]}+" in msg
+
+    def test_an_al2_floor_does_not_reach_another_version(self, monkeypatch):
+        """The lowered floor describes the pinned bytes only: any other version
+        (``--unpinned``, ``--from``) is held to the nodejs.org floor."""
+        monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-x64", (2, 26))
+        with _patch_glibc((2, 26)):
+            kas_bundle._require_loadable_glibc("Linux", "x86_64")
+            with pytest.raises(kas_bundle.KasHostUnsupported, match="onnxruntime"):
+                kas_bundle._require_loadable_glibc("Linux", "x86_64", "0.66.33")
+
     def test_non_linux_never_consults_glibc(self):
         # The refusal is Linux-only; a non-Linux host never reads glibc.
-        with _patch_glibc((2, 26)) as reader:
+        with _patch_glibc((2, 17)) as reader:
             kas_bundle._require_loadable_glibc("Darwin", "arm64")
             reader.assert_not_called()
             # The same old glibc on Linux is refused, so the Darwin pass is the OS gate.
-            with pytest.raises(kas_bundle.KasBundleError, match="2.26"):
+            with pytest.raises(kas_bundle.KasBundleError, match="2.17"):
                 kas_bundle._require_loadable_glibc("Linux", "x86_64")
 
 

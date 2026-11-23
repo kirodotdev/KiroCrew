@@ -130,6 +130,11 @@ def _is_sign_in_command(args: argparse.Namespace) -> bool:
     )
 
 
+def _headless_ssh_skips_browser_here() -> bool:
+    """Whether an SSH session with no display skips the browser here (not on macOS)."""
+    return not platform_compat.IS_MACOS
+
+
 def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     """Gateway boot failed for *exc*: show the sign-in screen if nobody is signed in.
 
@@ -164,7 +169,7 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     no_open = (
         bool(gw["no_open"])
         or not cfg.dashboard.auto_open_browser
-        or (is_ssh and not has_display and sys.platform != "darwin")
+        or (is_ssh and not has_display and _headless_ssh_skips_browser_here())
     )
     _host, port = parse_dashboard_url(cfg.dashboard.url)
     override = gw["port_override"]
@@ -1150,6 +1155,7 @@ def main() -> None:
         from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError, AcpRuntimeError
         from kiro_crew.agent_sdk.host_auth import for_terminal
         from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
+        from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
         from kiro_crew.terminal_safe import safe_terminal_line
 
         _eval_refusal = _eval_run_flag_refusal(args)
@@ -1160,11 +1166,17 @@ def main() -> None:
             sys.exit(_run_eval_tasks(args))
         try:
             asyncio.run(_run_eval(args))
-        except (AcpError, AcpRuntimeError) as exc:
-            # The backend refused to start a scenario or judge session (a signed-out
-            # kiro-cli, a KAS engine that cannot be installed). Its text names what
-            # failed, so that one line is the output; the traceback is logged at DEBUG.
-            logger.debug("eval: the backend refused to start a session", exc_info=True)
+        except (
+            AcpError,
+            AcpRuntimeError,
+            SandboxCeilingUnsealable,
+            SandboxUnavailableError,
+        ) as exc:
+            # A scenario or judge session could not start: the backend refused it (a
+            # signed-out kiro-cli, a KAS engine that cannot be installed) or the host
+            # cannot sandbox it. Its text names what failed, so that one line is the
+            # output; the traceback is logged at DEBUG.
+            logger.debug("eval: a session could not start", exc_info=True)
             print(f"Error: {safe_terminal_line(for_terminal(str(exc)))}", file=sys.stderr)
             sys.exit(1)
     elif args.command == "security":
@@ -1209,7 +1221,7 @@ def main() -> None:
         else:
             from kiro_crew.cli_server import _update
 
-            _update(force=args.force)
+            _update(force=args.force, release=args.release)
             # A manual update that finished is the fix for a failed boot apply.
             from kiro_crew import update_next_start
 

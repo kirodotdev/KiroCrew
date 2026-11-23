@@ -749,6 +749,10 @@ skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
+A task run's planning sandbox refusal is stored nowhere. `POST /api/taskrunner/plan`
+shows its text to the machine owner alone (`host_sandbox_refusal.plan_error_text`) and
+gives anyone else the ordinary plan error.
+
 A teammate keeps their own identity: `request["user"]` stays their subject
 (`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
 their principal, so every audit row and attribution names them, never the owner.
@@ -1426,12 +1430,18 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 `Admission.run` waits for a slot, then revalidates right before starting: queue
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
-and the entry point's own check (a chat slot must still be live). `running` is
+and the entry point's own check (a chat slot must still be live, and no Stop was
+recorded on its session since the wait began: `admitted_chat_turn`'s `stop_count`,
+not read for an agent-started turn; either ends the turn `cancelled_by_user` with no
+capacity note). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
 names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
-queued prompt is never delivered as a steer.
+queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
+while a send waits there, before its runner starts, cancels the work
+(`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
+hand-off.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends

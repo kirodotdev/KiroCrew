@@ -32,6 +32,7 @@ from acp_runtime_helpers import (
 )
 
 from kiro_crew import cli_doctor, kiro_sandbox_conflict, sandbox
+from kiro_crew.acp import kas_route
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.session_handle import AcpRuntimeError
 from kiro_crew.acp.transport_errors import AcpError
@@ -40,9 +41,13 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
+    STORED_BACKEND_KIRO,
 )
 from kiro_crew.doctor_checks import confinement
 from kiro_crew.testing.wait import await_until
+
+#: Rule 2 as shipped, captured at import, before conftest's per-test floor closes it.
+_REAL_AUTOMATIC_SWITCH_ALLOWED = kas_route.automatic_switch_allowed
 
 #: The reporter's error ``data``, verbatim from the issue.
 _REPORTED = (
@@ -64,6 +69,42 @@ def _host(monkeypatch: pytest.MonkeyPatch, *, platform: str, enabled: bool, tier
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
+
+
+def _kas_route_on_host(
+    monkeypatch: pytest.MonkeyPatch, *, saved: bool | None, build_prefers_bundle: bool
+) -> None:
+    """Pin every input of ``resolve_kas_route`` but the saved setting, the build's
+    preference and the Bot pin: installation backend KAS, Crew signed in, and a
+    usable kiro-cli relay (found and signed in)."""
+    from kiro_crew.acp import client as acp_client
+    from kiro_crew.acp import kas_build_default
+    from kiro_crew.auth import bridge
+    from kiro_crew.config import loader_document
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.kas_bundle = bool(saved)
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+    monkeypatch.setattr(loader_document, "kas_bundle_declared", lambda: saved is not None)
+    monkeypatch.setattr(
+        kas_build_default, "kas_bundle_preferred_by_build", lambda: build_prefers_bundle
+    )
+    monkeypatch.setattr(kas_build_default, "first_switch_cooling_down", lambda: False)
+    monkeypatch.setattr(kas_build_default, "engine_has_run", lambda: False)
+    monkeypatch.setattr(kas_route, "sharing_preview_selects_bundle", lambda **_: False)
+    # conftest closes the switch for every test; reopen it with rule 2 as written,
+    # for an installation whose stored backend is KAS (not a Kiro CLI pick).
+    monkeypatch.setattr(kas_route, "_stored_as_kiro_pick", lambda: False)
+    monkeypatch.setattr(
+        kas_route, "automatic_switch_allowed", _REAL_AUTOMATIC_SWITCH_ALLOWED, raising=True
+    )
+    monkeypatch.setattr(kas_route, "_crew_signed_in", lambda: True)
+    monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda **_: "/opt/kiro-cli")
+    monkeypatch.setattr(bridge, "vault_holds_identity", lambda: True)
+    monkeypatch.setattr(kas_route, "crew_entry_skips_launcher", lambda *_: False)
+    monkeypatch.setattr(kas_route, "relay_unusable_reason", lambda **_: "")
 
 
 class TestSessionStartHint:
@@ -140,21 +181,69 @@ class TestSessionStartHint:
         for backend in (ACP_BACKEND_DEEPSEEK, ACP_BACKEND_CLAUDE):
             assert kiro_sandbox_conflict.session_start_hint(_REPORTED, backend) is None
 
-    @pytest.mark.parametrize(("bundle", "hinted"), [(False, True), (True, False)])
-    def test_kas_is_hinted_only_on_the_relay_route(
-        self, monkeypatch: pytest.MonkeyPatch, bundle: bool, hinted: bool
+    @pytest.mark.parametrize(
+        ("saved", "build_prefers_bundle", "route_reason", "hinted"),
+        [
+            # Explicit true: the configured engine, never kiro-cli.
+            (True, False, kas_route.REASON_CONFIGURED, False),
+            # Unset on a build that prefers the engine: the bundle, no kiro-cli.
+            (None, True, kas_route.REASON_BUILD_DEFAULT, False),
+            # Unset on a build that does not: kiro-cli's relay.
+            (None, False, "", True),
+            # Explicit false wins over the build's preference: kiro-cli's relay.
+            (False, True, "", True),
+        ],
+    )
+    def test_kas_is_hinted_only_on_the_route_the_spawn_takes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        saved: bool | None,
+        build_prefers_bundle: bool,
+        route_reason: str,
+        hinted: bool,
     ) -> None:
-        """Relay KAS runs inside kiro-cli; Kiro Crew's own KAS bundle does not."""
-        from kiro_crew.config.loader import KiroCrewConfig
+        """Relay KAS runs inside kiro-cli; Kiro Crew's own KAS bundle does not.
 
+        The route is the spawn's own (``resolve_kas_route``), not the
+        ``agent.kas_bundle`` setting alone: an insider or stable build runs the
+        bundle with the setting unset.
+        """
         _host(monkeypatch, platform="darwin", enabled=True)
-        cfg = KiroCrewConfig()
-        cfg.agent.kas_bundle = bundle
-        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        _kas_route_on_host(monkeypatch, saved=saved, build_prefers_bundle=build_prefers_bundle)
+        assert kas_route.resolve_kas_route().reason == route_reason
 
         hint = kiro_sandbox_conflict.session_start_hint(_REPORTED, ACP_BACKEND_KAS)
 
         assert (hint is not None) is hinted
+
+    def test_kas_bot_pinned_to_kiro_cli_is_hinted_on_a_bundle_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Bot pinned to the Kiro CLI keeps the relay where the installation
+        takes the bundle, so its failed start still gets the hint."""
+        _host(monkeypatch, platform="darwin", enabled=True)
+        _kas_route_on_host(monkeypatch, saved=None, build_prefers_bundle=True)
+        assert kas_route.resolve_kas_route().bundle
+        assert not kas_route.resolve_kas_route(pin=STORED_BACKEND_KIRO).bundle
+
+        pinned = kiro_sandbox_conflict.session_start_hint(
+            _REPORTED, ACP_BACKEND_KAS, STORED_BACKEND_KIRO
+        )
+        unpinned = kiro_sandbox_conflict.session_start_hint(_REPORTED, ACP_BACKEND_KAS)
+
+        assert pinned is not None
+        assert unpinned is None
+
+    def test_kas_unresolvable_route_gives_no_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A route that cannot be resolved is no evidence KAS runs inside kiro-cli."""
+        _host(monkeypatch, platform="darwin", enabled=True)
+
+        def _boom(**_: object) -> kas_route.KasRoute:
+            raise RuntimeError("route could not be resolved")
+
+        monkeypatch.setattr(kas_route, "resolve_kas_route", _boom)
+
+        assert kiro_sandbox_conflict.session_start_hint(_REPORTED, ACP_BACKEND_KAS) is None
 
     def test_unreadable_setting_gives_no_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _host(monkeypatch, platform="darwin", enabled=True)
@@ -277,9 +366,12 @@ _RUNTIME_ERROR = {
 }
 
 
-async def _runtime_session_error() -> AcpRuntimeError:
+async def _runtime_session_error(*, backend: str = "", pin: str = "") -> AcpRuntimeError:
     """Start a session on the shared runtime and answer ``session/new`` with the error."""
     rt, reader, _ = _make_runtime()
+    if backend:
+        rt._acp_backend = backend
+    rt._harness_pin = pin
     reader_task = await _start_reader(rt)
     create_task = asyncio.create_task(rt.create_session(cwd="/w"))
     try:
@@ -311,6 +403,20 @@ class TestRuntimeSessionStartErrorCarriesTheHint:
         assert emitted.startswith("RPC error: ")
         assert f'{settings_path} sets "{key}": true' in emitted
         assert f'Set "{key}" to false' in emitted
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pin", "hinted"), [(STORED_BACKEND_KIRO, True), ("", False)])
+    async def test_kas_runtime_judges_the_route_by_its_own_bot_pin(
+        self, monkeypatch: pytest.MonkeyPatch, pin: str, hinted: bool
+    ) -> None:
+        """The runtime passes its Bot pin: a Kiro CLI pin keeps the relay on a host
+        whose installation takes the bundle, so only that start gets the hint."""
+        _host(monkeypatch, platform="darwin", enabled=True)
+        _kas_route_on_host(monkeypatch, saved=None, build_prefers_bundle=True)
+
+        exc = await _runtime_session_error(backend=ACP_BACKEND_KAS, pin=pin)
+
+        assert ("Likely cause" in str(exc)) is hinted
 
     @pytest.mark.asyncio
     async def test_unchanged_when_the_setting_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:

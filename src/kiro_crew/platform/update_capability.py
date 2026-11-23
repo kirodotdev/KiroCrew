@@ -390,14 +390,23 @@ def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
 
 
+#: Set to ``"1"`` by the test harness: its gateway imports the package from this
+#: checkout without being installed from it, so the checkout is no install root.
+NO_CHECKOUT_ROOT_ENV = "KIROCREW_UPDATE_NO_CHECKOUT_ROOT"
+
+
 def default_install_root() -> str:
     """The root every update surface judges: the project dir, else the running checkout.
 
     A gateway started outside its clone with no saved project dir has the
     variable empty, and the checkout the package loads from is then the same
     root ``kirocrew update`` resolves; a release install has none and stays ``""``.
+    :data:`NO_CHECKOUT_ROOT_ENV` withholds that fallback from a test-harness gateway.
     """
-    return os.environ.get("KIROCREW_PROJECT_DIR", "") or str(_source_checkout_root() or "")
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    if proj or os.environ.get(NO_CHECKOUT_ROOT_ENV) == "1":
+        return proj
+    return str(_source_checkout_root() or "")
 
 
 def derive_capability(
