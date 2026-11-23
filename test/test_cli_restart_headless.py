@@ -10,9 +10,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import cli_restart_headless, cli_server, platform_compat, platform_compat_identity
+# ``cli`` is imported here, under this host's real OS flag: the restart's parser
+# imports it on first use, and a test that fakes ``IS_WINDOWS`` must not be the one
+# that runs its import-time platform branches.
+from kiro_crew import (
+    cli,
+    cli_restart_headless,
+    cli_server,
+    platform_compat,
+    platform_compat_identity,
+)
 from kiro_crew.config.paths import config_dir
-from kiro_crew.gateway_lock import LockProbeError
+from kiro_crew.gateway_lock import LockHolder, LockProbeError
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 _WARNING = (
@@ -313,8 +322,6 @@ def test_another_homes_listener_on_the_port_does_not_set_the_mode(
 
 
 def test_the_restart_parser_is_mains_gateway_parser(monkeypatch):
-    from kiro_crew import cli
-
     seen: list[argparse.ArgumentParser] = []
     real = cli.add_gateway_arguments
 
@@ -564,20 +571,7 @@ def _replacement_dropped_headless(restart) -> bool:
     return stopped.called and "--headless" not in spawned.call_args.args[0]
 
 
-@pytest.mark.parametrize(
-    "windows",
-    [
-        True,
-        # The lock guard after the stop is the real one. Told it is not on Windows,
-        # it opens the home directory, which a Windows host refuses.
-        pytest.param(
-            False,
-            marks=pytest.mark.skipif(
-                sys.platform == "win32", reason="the real lock guard needs a POSIX host here"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("windows", [True, False])
 @pytest.mark.parametrize("ours", [True, False])
 @pytest.mark.parametrize("headless", [True, False])
 @pytest.mark.parametrize("state", sorted(_NOT_HELD))
@@ -586,6 +580,10 @@ def test_an_indeterminate_probe_reads_the_fresh_run_record(
 ):
     """Whatever the argv classifier says of the listener, the record names the gateway."""
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+    # The lock guard after the stop reads the same flag. Told it runs on the other
+    # OS, the real one makes that OS's system calls on this host, so it is given
+    # its answer: after the stop, nothing holds this home's lock.
+    monkeypatch.setattr(cli_server, "lock_holder", lambda home: LockHolder(None, False, "none"))
     holder.holder = _NOT_HELD[state]
     holder.ours = ours
     holder.record = _GATEWAY
