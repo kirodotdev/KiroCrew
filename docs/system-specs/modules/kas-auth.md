@@ -307,7 +307,10 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `error` (with this sign-in's `state`, or none) fails the sign-in at once, and the
   tab names the reason in fixed words for each RFC 6749 §4.1.2.1 code
   (`_PORTAL_ERROR_REASONS`); nothing the request carries, `error_description`
-  included, reaches the page.
+  included, reaches the page. Every page the tab can land on (signed in, failed,
+  already finished, replaced, wrong address) is one titled HTML page, "Kiro Crew
+  sign-in", whose line sends the user back to the Kiro Crew dashboard (`_page`); a
+  stray hit without this sign-in's `state` gets a plain-text "Not found.".
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
