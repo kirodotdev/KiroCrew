@@ -1464,3 +1464,22 @@ def _app_credential_mask_rows(*, inline: bool = False) -> _AppMaskRows:
     (``credential_masks.tool_gate_crew_leaves``).
     """
     return _listed_rows(_APP_CREDENTIAL_MASK_ROWS, inline=inline)
+
+
+def _machine_token_targets(*, inline: bool = False) -> set[str]:
+    """The KAS machine token file as read+write targets, or empty when machine mode is off.
+
+    An absolute path, not a ``$HOME`` row: the host puts the file wherever it likes
+    (``agent.kas_token_path``, ``agent_sdk/kas_machine.py``). Fenced as itself and as
+    its resolved form, casefolded as every target is; only the engine reads it, by
+    opening it itself, so no agent file tool needs it. *inline* is
+    :func:`_home_dir_targets`'s flag of the same name. A resolution that stalls raises
+    :class:`PathResolutionStalled`, which the gate refuses.
+    """
+    from kiro_crew.agent_sdk.kas_machine import fenced_token_path  # call time
+
+    path = fenced_token_path()
+    if not path or not os.path.isabs(path):
+        return set()
+    resolved = os.path.realpath(path) if inline else _realpaths_or_none([path])[0]
+    return {p.casefold() for p in (os.path.normpath(path), resolved) if p}

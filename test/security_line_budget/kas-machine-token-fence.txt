@@ -1,0 +1,2 @@
++26
+KAS machine mode's host token file joins the read+write floor while machine mode is on (owner ruling on #40803): paths_targets._machine_token_targets turns the configured absolute agent.kas_token_path into targets (as written and resolved, through the bounded resolver), and _matches_gate_rows and path_contains_sensitive match it beside the app credential masks. One helper, its reason, and two call sites; no other target, rule or threshold moved.
