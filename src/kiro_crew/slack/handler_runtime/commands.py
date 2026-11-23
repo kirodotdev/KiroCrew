@@ -167,6 +167,8 @@ async def _bang_yolo(
         # revocation. ``disable_yolo`` was already corrected to read
         # ``has_grant``; this is its CALLER, which was still gating it out.
         if safety_override().has_grant():
+            from kiro_crew import kept_grants
+
             disable_yolo()
             sel().log_api_access(
                 caller=user_id,
@@ -175,7 +177,10 @@ async def _bang_yolo(
                 source="slack",
                 resources="yolo_off",
             )
-            await slack.post_message(channel, "🔒 YOLO mode disabled.", reply_ts)
+            reply = "🔒 YOLO mode disabled."
+            if not await kept_grants.settle():  # the answer waits for the disk
+                reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
+            await slack.post_message(channel, reply, reply_ts)
         else:
             await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
     elif len(parts) >= 2 and parts[1].lower() == "on":

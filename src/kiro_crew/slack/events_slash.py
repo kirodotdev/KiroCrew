@@ -272,6 +272,7 @@ async def _handle_yolo(
             f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
+        from kiro_crew import kept_grants
         from kiro_crew.slack.handler import (
             disable_yolo,  # circular import: handler.py imports events.py for command dispatch registration
         )
@@ -286,7 +287,10 @@ async def _handle_yolo(
         )
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
-        await respond("🔴 YOLO mode *OFF* — tools require approval.")
+        reply = "🔴 YOLO mode *OFF* — tools require approval."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
+        await respond(reply)
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.

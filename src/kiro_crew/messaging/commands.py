@@ -338,12 +338,16 @@ async def run_yolo_command(
             reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
             outcome = "denied"
     elif action == YOLO_OFF:
+        from kiro_crew import kept_grants
+
         # Unconditional: deactivate() also zeroes the deadline of a grant that
         # already lapsed, which closes the renew grace window so a later
         # "/yolo renew" cannot resurrect it, and records the operator's decision
         # either way.
         await asyncio.to_thread(so.deactivate, source)
         reply = "🔴 YOLO OFF — tools ask for approval again."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
     else:
         renewed = (await asyncio.to_thread(so.renew, source)).renewed
         reply = (
