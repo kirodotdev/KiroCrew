@@ -1302,6 +1302,13 @@ def _seed_framing(origin_channel: str, context: str) -> str:
         "[Slack code channel]",
         f"This session is a Slack code channel opened from a thread in <#{origin_channel}>. "
         "Your replies are posted to this code channel.",
+        # Without this an agent asked for a preview reaches for a file upload or
+        # a screenshot, which a code channel may refuse.
+        "To show a preview of a page or site here (an html preview), call "
+        "code_channel_set_view with type html and the page as one self-contained HTML "
+        "document (inline <style>, no external files or data: URLs). It opens as a tab in "
+        "this channel, with no upload or screenshot. Slack shows it as a sandboxed static "
+        "preview where scripts may not run, so put the visible result in the markup and CSS.",
     ]
     # Only while hand-off is on: with the switch off (its default) the guidance
     # would steer the conductor into a call that is refused.
