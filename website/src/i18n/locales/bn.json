@@ -22424,6 +22424,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB ডিস্ক",
         "tier_price": "~{{hourly}}/ঘণ্টা · চালু রেখে দিলে ~{{monthly}}/মাস (আনুমানিক)",
         "price_region_note": "দামগুলো {{priceRegion}}-এর অন-ডিমান্ড রেট; অন্য রিজিয়নে দাম আলাদা হতে পারে।",
+        "stopped_billing_note": "থামানো ক্রুর ডিস্ক এবং S3-এ রাখা যেকোনো সেটআপ ফাইলের বিল আসতে থাকে, যতক্ষণ না তুমি ক্রুটি মুছে ফেলো।",
         "transport_hint_fargate": "Session Manager-এর মাধ্যমে AWS Fargate টাস্কে পৌঁছায়। এটি চ্যাট API দেয়, ড্যাশবোর্ড নয়।",
         "transport_hint_ssh": "SSH-এর মাধ্যমে সংযোগ করে।",
         "transport_hint_ssm": "AWS Systems Manager Session Manager-এর মাধ্যমে সংযোগ করে।",

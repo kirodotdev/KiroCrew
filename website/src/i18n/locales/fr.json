@@ -22980,6 +22980,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} Go de RAM · {{diskGb}} Go de disque",
         "tier_price": "~{{hourly}}/h · ~{{monthly}}/mois s’il reste allumé (approx.)",
         "price_region_note": "Les prix sont les tarifs à la demande de {{priceRegion}} ; ils peuvent différer dans les autres régions.",
+        "stopped_billing_note": "Une crew arrêtée reste facturée pour son disque, et pour tout fichier de configuration conservé dans S3, jusqu’à ce que tu supprimes la crew.",
         "transport_hint_fargate": "Atteint une tâche AWS Fargate via Session Manager. Elle sert une API de chat, pas un tableau de bord.",
         "transport_hint_ssh": "Se connecte via SSH.",
         "transport_hint_ssm": "Se connecte via AWS Systems Manager Session Manager.",

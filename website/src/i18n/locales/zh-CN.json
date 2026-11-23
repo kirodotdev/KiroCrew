@@ -21868,6 +21868,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB disk",
         "tier_price": "约 {{hourly}}/小时 · 持续运行约 {{monthly}}/月（估算）",
         "price_region_note": "价格为 {{priceRegion}} 按需费率；其他区域的价格可能不同。",
+        "stopped_billing_note": "已停止的 Crew 仍会按其磁盘以及保留在 S3 中的任何设置文件计费，直到你删除这个 Crew。",
         "transport_hint_fargate": "通过 Session Manager 到达 AWS Fargate 任务。它提供的是聊天 API，而不是仪表板。",
         "transport_hint_ssh": "通过 SSH 连接。",
         "transport_hint_ssm": "通过 AWS Systems Manager Session Manager 连接。",
