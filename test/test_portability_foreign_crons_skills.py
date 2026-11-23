@@ -79,6 +79,37 @@ def test_helper_pauses_a_message_only_job_and_resets_its_fields(tmp_path):
     assert job["message"] == "check the build"
 
 
+def test_helper_drops_a_bots_carried_approval_grant_and_keeps_its_owner(tmp_path):
+    # A Bot's job carries its Profile grant in owner_approval_mode. Left in place, a
+    # restart rebuilds the job's execution context and the grant auto-approves again.
+    job = _risky_job(owner_member_id="bot-1", owner_approval_mode="trust")
+    path = _store(tmp_path, [job])
+
+    _sanitize_imported_crons(path, hold_all=True, known_agents=frozenset())
+
+    restored = _read(path)["nightly"]
+    assert not restored.get("owner_approval_mode")
+    assert restored["owner_member_id"] == "bot-1"
+
+
+def test_a_reset_bot_job_no_longer_holds_the_owner_grant(tmp_path):
+    from types import SimpleNamespace
+
+    from kiro_crew.cron_service import owner_grant
+
+    path = _store(tmp_path, [_risky_job(owner_member_id="bot-1", owner_approval_mode="trust")])
+    _sanitize_imported_crons(path, hold_all=True, known_agents=frozenset())
+    restored = SimpleNamespace(**_read(path)["nightly"])
+    execution = SimpleNamespace(template_id="worker", member_id="bot-1")
+
+    with (
+        patch.object(owner_grant, "_profile_mode", return_value="trust"),
+        patch("kiro_crew.mate_worker.MATE_WORKER_AGENT", "worker"),
+        patch("kiro_crew.dashboard.crewmate_approval.crewmate_name_for", return_value="Bot"),
+    ):
+        assert owner_grant.owner_grant_holds(restored, execution, object()) is False
+
+
 def test_helper_resets_the_channel_delivery_pin(tmp_path):
     path = _store(
         tmp_path,

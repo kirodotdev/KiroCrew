@@ -106,6 +106,18 @@ def test_replace_restores_a_message_only_cron_paused_and_reset(tmp_path, monkeyp
     assert "Restored PAUSED" in out and "nightly" in out.split("Restored PAUSED", 1)[1]
 
 
+def test_replace_drops_a_bots_carried_approval_grant(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    job = {**_risky_job(), "owner_member_id": "bot-1", "owner_approval_mode": "trust"}
+    bundle = _bundle(tmp_path, {"crons.json": json.dumps({"jobs": [job]})})
+
+    assert _restore(bundle, home, monkeypatch, "--mode", "replace") == 0
+
+    restored = _jobs(home)["nightly"]
+    assert not restored.get("owner_approval_mode")
+    assert restored["owner_member_id"] == "bot-1"
+
+
 def test_merge_restores_a_message_only_cron_paused_and_reset(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
 

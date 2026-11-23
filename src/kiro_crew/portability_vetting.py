@@ -156,12 +156,15 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
 _UNREADABLE_STORE = "<the whole cron store was unreadable>"
 
 
-#: Job-record fields that widen what a job may do when it fires: an approval mode,
-#: a working folder, environment, an agent order, a channel (with its delivery pin:
-#: channel type, target id, thread) and a model. A job from
-#: another install loses them on restore; the loader's empty defaults take over.
+#: Job-record fields that widen what a job may do when it fires: an approval mode
+#: (the job's own, and a Bot's carried Profile grant in ``owner_approval_mode``), a
+#: working folder, environment, an agent order, a channel (with its delivery pin:
+#: channel type, target id, thread) and a model. A job from another install loses
+#: them on restore; the loader's empty defaults take over. ``owner_member_id`` stays:
+#: it names who made the job, and grants nothing without ``owner_approval_mode``.
 _FOREIGN_JOB_FIELDS = (
     "approval_mode",
+    "owner_approval_mode",
     "project_path",
     "env",
     "secret_env",
