@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useInRouterContext } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsLink } from '../../components/SettingsLink'
@@ -45,7 +46,8 @@ export function KiroAccountStatusLine() {
       <ErrorNotice
         className="mb-3"
         title={i18nT('pages.developer.kiroSignInCard.could_not_read_sources')}
-        message={sourcesError?.message || null}
+        // Not the owner: the sign-in reads are refused, and only the link shows.
+        message={isPermissionRefusal(sourcesError) ? null : sourcesError?.message || null}
         testId="kiro-sign-in-sources-error"
       />
       <SignInStoreUnreadableErrors sources={sources} />

@@ -78,6 +78,7 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "_engine_promoted_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
         "_crew_log_previous_undecided",
@@ -182,6 +183,7 @@ class _ChatSlot:
         "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
+        "_full_chat_waits",
         "_linked_session_busy",
         "_has_reader_flag",
         "_compacting",
@@ -470,6 +472,7 @@ class _ChatSlot:
     _crew_log_opened_sid: str
     _crew_log_pending_channel: bool
     served_model: str
+    _engine_promoted_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
     memory_store: str
@@ -627,6 +630,7 @@ class _ChatSlot:
     _dashboard_card_exempt: bool
     _on_question_retired: object | None
     _coordinator_approvals: Callable[[str], list[dict]] | None
+    _full_chat_waits: Callable[[str], bool] | None
     _linked_session_busy: Callable[[str], bool] | None
     _has_reader_flag: bool
     _compacting: bool

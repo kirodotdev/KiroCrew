@@ -29,6 +29,7 @@ import { type MembersPageTeamsRead } from './useMembersPageTeams'
 import type { MembersPageProfileState } from './MembersPageProfile'
 import type { MembersPageSidePanelState } from './MembersPageSidePanel'
 import { shownWithin, useTrackpadSwipe } from '../../hooks/useTrackpadSwipe'
+import { useSidePanelSwipe } from '../../hooks/useSidePanelSwipe'
 import { beginPanelSlide, retirePanelSlide } from '../../utils/panelSlide'
 
 /** How long a drawer pick waits for the router to report the pop of the
@@ -514,7 +515,8 @@ interface MembersPageTrackpadSwipeOptions {
  * the Dashboard tab is on screen.
  *
  * Under reduced motion there is no live drag; a clear swipe switches the panel
- * once, when the run ends.
+ * once, when the run ends. Nothing listens while Settings → Chat → Side panel
+ * turns the swipe off (`useSidePanelSwipe`).
  */
 export function useMembersPageTrackpadSwipe({
   layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef,
@@ -527,7 +529,8 @@ export function useMembersPageTrackpadSwipe({
     syncDeskSpacer,
   } = drawers
   const onDashboard = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
-  const enabled = !isMobile && !!active && !createOpen
+  const swipeAllowed = useSidePanelSwipe()
+  const enabled = swipeAllowed && !isMobile && !!active && !createOpen
   /** Everything the gesture's callbacks read, current at call time. */
   const now = useRef({ panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab })
   now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }

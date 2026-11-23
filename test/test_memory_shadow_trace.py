@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from kiro_crew import memory_kind_routing as mkr
 from kiro_crew import memory_origin_gate as mog
 from kiro_crew import memory_shadow_report as msr
 from kiro_crew import memory_shadow_trace as trace
+from kiro_crew.config.loader import update_config_locked
 from kiro_crew.memory_stores import owned_store_path
 from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -40,7 +42,17 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _config(home: Path, **flags: str) -> None:
-    (home / "config.json").write_text(json.dumps({"memory": flags}), encoding="utf-8")
+    # Under the config lock, like every product writer: a config load on another
+    # thread (the telemetry consent recheck) may be migrating this file, and a plain
+    # write landing inside its read-modify-write is overwritten. Taken on a worker
+    # thread, because on an event loop's thread the lock refuses instead of waiting.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(
+            update_config_locked,
+            home / "config.json",
+            mutate=lambda _doc: {"memory": flags},
+            stamp_meta=False,
+        ).result()
 
 
 def _shards(home: Path) -> list[dict]:

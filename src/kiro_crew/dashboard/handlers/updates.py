@@ -81,6 +81,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _do_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _fetch_feed_bytes  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _invalidate_update_check  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _judge_install  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _last_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _read_feed_manifest  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401
@@ -220,6 +221,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import UpdateCapability  # noqa: F401
     from kiro_crew.platform.update_capability import auto_update_effect  # noqa: F401
     from kiro_crew.platform.update_capability import bundled_by_desktop_app  # noqa: F401
+    from kiro_crew.platform.update_capability import default_install_root  # noqa: F401
     from kiro_crew.platform.update_capability import derive_capability  # noqa: F401
     from kiro_crew.platform.update_fetch import fetch_and_pin_upstream  # noqa: F401
     from kiro_crew.platform.update_governance import git_command_env  # noqa: F401

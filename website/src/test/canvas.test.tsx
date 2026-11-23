@@ -180,6 +180,33 @@ describe('canvas model', () => {
     }
   })
 
+  it('an elbow corner beside a small touching shape eases instead of curving into it', () => {
+    // The last leg runs along tiny's bottom edge, so the corner before it is eased.
+    const tiny: Shape = { ...sticky('a', 0, 0), kind: 'rect', w: 24, h: 24 }
+    const touching: Shape = { ...tiny, id: 't', x: -24, y: 12 }
+    const { d } = connectorRoute(tiny, touching, { fromSide: 'top', toSide: 'right' })
+    const num = '(-?[\\d.]+)'
+    const bends = [...d.matchAll(new RegExp(`L${num},${num} Q${num},${num} ${num},${num}`, 'g'))].map(m => m.slice(1).map(Number))
+    expect(bends.length).toBeGreaterThan(0)
+    const inside = (p: { x: number; y: number }, s: Shape) => p.x > s.x && p.x < s.x + s.w && p.y > s.y && p.y < s.y + s.h
+    for (const [sx, sy, px, py, ex, ey] of bends) {
+      for (const t of [0.25, 0.5, 0.75]) {
+        const u = 1 - t
+        const m = { x: u * u * sx + 2 * u * t * px + t * t * ex, y: u * u * sy + 2 * u * t * py + t * t * ey }
+        expect(inside(m, tiny) || inside(m, touching)).toBe(false)
+      }
+    }
+    // Moved clear of tiny's edge, the same route keeps every corner rounded as before.
+    expect(connectorRoute(tiny, { ...touching, y: 40 }, { fromSide: 'top', toSide: 'right' }).d).toBe(
+      'M12,-12 L12,-18 Q12,-24 18,-24 L18,-24 Q24,-24 24,-18 L24,46 Q24,52 18,52 L12,52',
+    )
+    // A corner already inside an overlapping shape keeps its rounding too.
+    const over: Shape = { ...tiny, id: 'o', x: -58, y: -26, w: 60, h: 40 }
+    expect(connectorRoute(tiny, over, { fromSide: 'left', toSide: 'top' }).d).toBe(
+      'M-12,12 L-18,12 Q-24,12 -24,6 L-24,-48 Q-24,-50 -26,-50 L-26,-50 Q-28,-50 -28,-48 L-28,-38',
+    )
+  })
+
   it('dragging an elbow segment reshapes it; an end segment keeps a stub on its shape and adds a jog', () => {
     const a: Shape = { ...sticky('a', 0, 0), w: 200, h: 100 }
     const b: Shape = { ...sticky('b', 400, 200), w: 200, h: 100 }

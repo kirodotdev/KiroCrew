@@ -25,6 +25,8 @@ const BACKEND = "http://127.0.0.1:5476";
 function fakeElectron() {
   let nextId = 1;
   const created = [];
+  /** URLs each window's session fetched to sign in, in order. */
+  const exchanges = [];
   const ipc = {};
   const registered = new Map();
   const screenEvents = {};
@@ -53,6 +55,14 @@ function fakeElectron() {
         events: {},
         zoom: 1,
         mainFrame: { main: true },
+        session: {
+          fetch: async (url) => {
+            exchanges.push(url);
+            return { arrayBuffer: async () => new ArrayBuffer(0) };
+          },
+        },
+        isDestroyed: () => win.destroyed,
+        loadURL: (url) => win.loadURL(url),
         on(ev, cb) { this.events[ev] = cb; },
         send(channel, ...args) { this.sent.push([channel, ...args]); },
         getURL() { return this.url; },
@@ -109,6 +119,7 @@ function fakeElectron() {
   return {
     electron,
     created,
+    exchanges,
     ipc,
     registered,
     setCursor(p) { cursor = p; },
@@ -153,6 +164,9 @@ function fromWindow(win, frame) {
   return { sender: win.webContents, senderFrame: frame || win.webContents.mainFrame };
 }
 
+/** Let a load started outside a tick sign in; the fake session answers at once. */
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
 async function started(rows, overrides) {
   const ctx = makeHost(rows, overrides);
   await ctx.host.start();
@@ -165,7 +179,8 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.match(state.fetches[0].url, /\/api\/apps\?token=tok$/);
   assert.strictEqual(fake.created.length, 1);
   const [win] = fake.created;
-  assert.deepStrictEqual(win.loaded, [`${BACKEND}/popout/desktop/pets/pet?token=tok`]);
+  assert.deepStrictEqual(fake.exchanges, [`${BACKEND}/popout/desktop/pets/pet?token=tok`]);
+  assert.deepStrictEqual(win.loaded, [`${BACKEND}/popout/desktop/pets/pet`], "the address carries no token");
   assert.strictEqual(win.opts.show, false);
   assert.strictEqual(win.opts.transparent, true);
   assert.strictEqual(win.opts.alwaysOnTop, true);
@@ -200,6 +215,7 @@ test("a shortcut opens its window and is delivered once the page is ready", asyn
   const { host, fake } = await started([appRow("pets", OVERLAY_APP)]);
   t.after(() => host.stop());
   fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
   const panel = fake.created.find((w) => w.loaded[0].includes("/panel"));
   assert.ok(panel, "the shortcut's window was opened");
   assert.deepStrictEqual(panel.webContents.sent, []);
@@ -288,6 +304,7 @@ test("a cookie credential loads the page bare and probes with the cookie", async
   assert.strictEqual(state.fetches[0].url, `${BACKEND}/api/apps`);
   assert.deepStrictEqual(state.fetches[0].init.headers, { Cookie: "mc_token_5476=sess" });
   assert.deepStrictEqual(fake.created[0].loaded, [`${BACKEND}/popout/desktop/pets/pet`]);
+  assert.deepStrictEqual(fake.exchanges, [], "the borrowed session needs no sign-in request");
 });
 
 // ── The boundary ──────────────────────────────────────────────────────────────
@@ -305,7 +322,8 @@ test("NEGATIVE: a page cannot open another app's window, or one its app does not
   assert.strictEqual(fake.created.length, before);
   fake.ipc[CHANNELS.open](fromWindow(pet), "panel");
   assert.strictEqual(fake.created.length, before + 1);
-  assert.match(fake.created.at(-1).loaded[0], /\/popout\/desktop\/pets\/panel\?/);
+  await settle();
+  assert.strictEqual(fake.created.at(-1).loaded[0], `${BACKEND}/popout/desktop/pets/panel`);
 });
 
 test("NEGATIVE: a sender the host did not create is ignored on every channel", async (t) => {
@@ -412,6 +430,7 @@ test("NEGATIVE: one app cannot take a chord another app already holds", async (t
   t.after(() => host.stop());
   assert.deepStrictEqual([...fake.registered.keys()], ["CommandOrControl+Alt+P"]);
   fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
   assert.ok(fake.created.some((w) => w.loaded[0].includes("/pets/panel")));
   assert.ok(!fake.created.some((w) => w.loaded[0].includes("/twin/")));
 });
@@ -428,6 +447,7 @@ test("NEGATIVE: an app enabled later never takes a chord an earlier app holds", 
   await host.reconcileOnce();
   assert.deepStrictEqual([...fake.registered.keys()], ["CommandOrControl+Alt+P"]);
   fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
   assert.ok(fake.created.some((w) => w.loaded[0].includes("/zeta/panel")));
   assert.ok(!fake.created.some((w) => w.loaded[0].includes("/alpha/")));
   // Once the holder lets the chord go, the other declaration gets it.
@@ -435,6 +455,7 @@ test("NEGATIVE: an app enabled later never takes a chord an earlier app holds", 
   await host.reconcileOnce();
   assert.deepStrictEqual([...fake.registered.keys()], ["Alt+CmdOrCtrl+p"]);
   fake.registered.get("Alt+CmdOrCtrl+p")();
+  await settle();
   assert.ok(fake.created.some((w) => w.loaded[0].includes("/alpha/w")));
 });
 
@@ -456,7 +477,9 @@ test("NEGATIVE: hit regions shape an overlay only, and a malformed list clicks t
   assert.deepStrictEqual(pet.ignore.at(-1), [true, { forward: true }]);
 
   fake.ipc[CHANNELS.open](fromWindow(pet), "panel");
+  await settle();
   const panel = fake.created.at(-1);
+  assert.strictEqual(panel.loaded[0], `${BACKEND}/popout/desktop/pets/panel`, "the panel holds its own document");
   fake.ipc[CHANNELS.ready](fromWindow(panel));
   fake.ipc[CHANNELS.hitRegions](fromWindow(panel), [{ x: 0, y: 0, width: 50, height: 50 }]);
   fake.ipc[CHANNELS.focusable](fromWindow(panel), true);
@@ -511,7 +534,9 @@ test("NEGATIVE: an error document is never revealed, and a later tick reloads it
   fake.ipc[CHANNELS.ready](fromWindow(pet));
   assert.strictEqual(pet.isVisible(), false);
   await host.reconcileOnce();
-  assert.strictEqual(pet.loaded.length, 2);
+  const page = `${BACKEND}/popout/desktop/pets/pet`;
+  assert.deepStrictEqual(pet.loaded, [page, page], "the reload signs in again without a token in the address");
+  assert.deepStrictEqual(fake.exchanges, [`${page}?token=tok`, `${page}?token=tok`]);
   pet.webContents.events["did-navigate"]({}, pet.loaded[1], 200);
   fake.ipc[CHANNELS.ready](fromWindow(pet));
   assert.strictEqual(pet.isVisible(), true);
@@ -739,7 +764,7 @@ test("gatewayChoice: a chosen crew where the app is on gets the app's windows, a
   await host.start();
   t.after(() => host.stop());
   const [local] = fake.created;
-  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel`]);
 
   const listed = await fake.ipc[CHANNELS.listGateways](fromWindow(local));
   assert.deepStrictEqual(listed, {
@@ -754,7 +779,7 @@ test("gatewayChoice: a chosen crew where the app is on gets the app's windows, a
   assert.deepStrictEqual(moved, { ok: true, chosen: "crew", showing: "crew" });
   assert.strictEqual(local.isDestroyed(), true);
   const remote = fake.created[1];
-  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel"]);
   // The remote window speaks for itself only while it holds the remote's own document.
   remote.webContents.url = remote.loaded[0];
   fake.ipc[CHANNELS.ready](fromWindow(remote));
@@ -762,7 +787,12 @@ test("gatewayChoice: a chosen crew where the app is on gets the app's windows, a
 
   const back = await fake.ipc[CHANNELS.chooseGateway](fromWindow(remote), "self");
   assert.deepStrictEqual(back, { ok: true, chosen: "self", showing: "self" });
-  assert.deepStrictEqual(fake.created[2].loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+  assert.deepStrictEqual(fake.created[2].loaded, [`${BACKEND}/popout/desktop/pets/panel`]);
+  assert.deepStrictEqual(fake.exchanges, [
+    `${BACKEND}/popout/desktop/pets/panel?token=tok`,
+    "http://localhost:7778/popout/desktop/pets/panel?token=remote-tok",
+    `${BACKEND}/popout/desktop/pets/panel?token=tok`,
+  ], "each gateway signs its own window in with its own token");
 });
 
 test("gatewayChoice: a crew's window is served only what the app holds on BOTH gateways", async (t) => {
@@ -833,7 +863,7 @@ test("gatewayChoice: a crew that has not approved gatewayChoice never takes the 
   t.after(() => host.stop());
   const fake = ctx.fake;
   const [local] = fake.created;
-  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`], "the stored crew is refused");
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel`], "the stored crew is refused");
   const listed = await fake.ipc[CHANNELS.listGateways](fromWindow(local));
   assert.strictEqual(listed.gateways[0].appEnabled, false, "the page is told it cannot move there");
   assert.deepStrictEqual(listed.showing, "self");
@@ -930,11 +960,12 @@ async function onCrew(t) {
   await host.start();
   t.after(() => host.stop());
   const [remote] = ctx.fake.created;
-  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel"]);
+  assert.deepStrictEqual(ctx.fake.exchanges, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
   remote.webContents.url = remote.loaded[0];
   // The crew disconnects, freeing its port, and another crew is given it.
   crew.instances = [{ ...CONNECTED, status: { state: "disconnected" } }, { ...CONNECTED, id: "other", name: "Other" }];
-  return { host, fake: ctx.fake, remote };
+  return { host, fake: ctx.fake, remote, crew };
 }
 
 /** Every page URL a window after the first loaded. */
@@ -946,12 +977,31 @@ test("gatewayChoice: a window opened on a reused crew target loads only if that 
   const notes = fake.created[1];
   await Promise.all([...host._pendingLoads]);
   assert.deepStrictEqual(notes.loaded, [], "the crew's token never goes to the port's new owner");
+  assert.ok(!fake.exchanges.some((url) => url.includes("/notes")), fake.exchanges.join(" "));
   assert.strictEqual(notes.isDestroyed(), true);
   assert.strictEqual(host._targets.get("pets")?.instanceId ?? "self", "self", "the target is dropped");
   await host.reconcileOnce();
   assert.strictEqual(remote.isDestroyed(), true);
   assert.ok(laterLoads(fake).every((url) => url.startsWith(`${BACKEND}/`)), laterLoads(fake).join(" "));
-  assert.ok(laterLoads(fake).includes(`${BACKEND}/popout/desktop/pets/panel?token=tok`), "the app is back on this computer");
+  assert.ok(laterLoads(fake).includes(`${BACKEND}/popout/desktop/pets/panel`), "the app is back on this computer");
+});
+
+test("gatewayChoice: a crew that gives up its port while a window signs in never gets that window's load", async (t) => {
+  const { host, fake, remote, crew } = await onCrew(t);
+  const gaveUp = crew.instances;
+  crew.instances = [CONNECTED];
+  fake.ipc[CHANNELS.open](fromWindow(remote), "notes");
+  const notes = fake.created[1];
+  const signIn = notes.webContents.session.fetch;
+  notes.webContents.session.fetch = async (url, init) => {
+    crew.instances = gaveUp;
+    return signIn(url, init);
+  };
+  await Promise.all([...host._pendingLoads]);
+  assert.ok(fake.exchanges.some((url) => url.includes("/notes")), "it was still the crew's port when it signed in");
+  assert.deepStrictEqual(notes.loaded, [], "the signed-in load never goes to the port's new owner");
+  assert.strictEqual(notes.isDestroyed(), true);
+  assert.strictEqual(host._targets.get("pets")?.instanceId ?? "self", "self", "the target is dropped");
 });
 
 test("gatewayChoice: a reused crew target is re-checked every tick, so its windows leave a port it gave up", async (t) => {
@@ -959,7 +1009,7 @@ test("gatewayChoice: a reused crew target is re-checked every tick, so its windo
   // Inside the reuse window: nothing re-resolves the target unless the tick re-checks it.
   await host.reconcileOnce();
   assert.strictEqual(remote.isDestroyed(), true);
-  assert.deepStrictEqual(laterLoads(fake), [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+  assert.deepStrictEqual(laterLoads(fake), [`${BACKEND}/popout/desktop/pets/panel`]);
 });
 
 test("gatewayChoice: a window added here is checked against the crew inside the reuse window", async (t) => {
@@ -1009,7 +1059,7 @@ test("gatewayChoice: a stored crew that does not answer at start opens the windo
   await host.start();
   t.after(() => host.stop());
   const [local] = ctx.fake.created;
-  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel`]);
   // The crew answers on a later tick: the windows move there.
   delete crew.remote;
   await host.reconcileOnce();
@@ -1049,7 +1099,7 @@ test("off here: the crew chosen for the app serves its windows while the app is 
   const { host, fake } = await choseCrew(t, [offHere()], crew);
   assert.strictEqual(fake.created.length, 1);
   const [remote] = fake.created;
-  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel"]);
   // The crew switches it off too: a definite no, so nothing stays and nothing opens here.
   crew.enabled = false;
   host._targets.get("pets").at = 0;
@@ -1096,7 +1146,7 @@ test("off here: a non-answer keeps only the windows still open; none is created 
   fake.ipc[CHANNELS.open](fromWindow(a), "bg");
   await Promise.all([...host._pendingLoads]);
   const bg = fake.created[2];
-  assert.match(bg.loaded[0], /^http:\/\/localhost:7778\/popout\/desktop\/pets\/bg\?/);
+  assert.strictEqual(bg.loaded[0], "http://localhost:7778/popout/desktop/pets/bg");
 
   // The crew stops answering while one of the windows is closed.
   b.destroy();
@@ -1137,7 +1187,7 @@ test("off here: a background page that dies while the crew is silent comes back 
     ],
   };
   const reopenedBackground = (fake, from) => fake.created.slice(from)
-    .filter((w) => w.loaded[0].startsWith("http://localhost:7778/popout/desktop/pets/bg?"));
+    .filter((w) => w.loaded[0] === "http://localhost:7778/popout/desktop/pets/bg");
   for (const answer of ["yes", "no"]) {
     const clock = { now: 1_000_000 };
     const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: DECLARED };

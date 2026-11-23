@@ -1076,6 +1076,13 @@ over budget.
   (`test_updates_handlers_facade.py`), or a doc that must be reachable from its
   directory's index (`scripts/docs_lint.py`): when two changes leave the merged tree
   inconsistent, the tree is wrong. Fix the tree; do not loosen the check.
+- **A check that arrives with a snapshot of the live tree regenerates it on current
+  `main` right before it merges.** A baseline generated from what is registered or
+  present today (`.github/route-access-baseline.txt`) is stale the moment another
+  change adds a member, and git sees no conflict. Rebase onto current `main`,
+  regenerate the snapshot and let CI run again before merging. When that window was
+  missed, the late members get the real fix (a label, a rule), not a baseline row
+  ([route access § The baseline](../modules/route-access.md#the-baseline)).
 - **Prove it with a two-branch merge.** In a scratch clone, cut two branches from one
   base, make one change of the counted class on each (different files) and update the
   record exactly as the failure message says, then merge both and run the test. It is

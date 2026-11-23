@@ -1,7 +1,7 @@
 ---
 name: artifacts
 description: Persist, version, and iterate on LLM-generated UI (widgets, HTML, markdown). Load for Dynamic Dashboards on long workflows and conductor runs, or when saving, finding or updating a previously-rendered widget.
-triggers: artifact, save widget, save this, iterate, iterate on, update the widget, change the widget, version, library, find widget, what have we built, iterate again, redo the
+triggers: artifact, save widget, save this, iterate, iterate on, update the widget, change the widget, widget version, library, find widget, what have we built, iterate again, redo the
 ---
 
 # Artifacts (`@kirocrew-core/artifact_*`)

@@ -2093,6 +2093,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.swipe-to-open-and-close-side-panel",
+    "label": "Swipe to Open and Close Side Panel",
+    "labelKey": "pages.settings.chatPanel.side_panel_swipe",
+    "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    }
+  },
+  {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
     "labelKey": "pages.settings.chatPanel.tail_only_fork",
@@ -3446,6 +3458,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
+    "id": "notifications.play-sounds-only-during-set-hours",
+    "label": "Play sounds only during set hours",
+    "labelKey": "pages.settings.notificationsPanel.sound_hours",
+    "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound.",
     "tab": "notifications",
     "type": "toggle",
     "occurrence": 1,

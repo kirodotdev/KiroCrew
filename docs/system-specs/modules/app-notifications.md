@@ -386,7 +386,7 @@ gated on catch-up, only the frame's live banner is (see Trigger below).
 ### Settings and resolution
 
 Settings persist in `localStorage` under `mc-notification-sound`
-(`{ enabled, volume, perCategory, customTones?, customFiles?, mutedUntil? }`). `presetForKind(kind, settings)` resolves
+(`{ enabled, volume, perCategory, customTones?, customFiles?, mutedUntil?, schedule? }`). `presetForKind(kind, settings)` resolves
 the preset for a kind, in order:
 
 1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
@@ -411,7 +411,9 @@ The Sound card's **Mute sounds** select silences sound for 1 hour, 2 hours or
 until the next 8:00 local time, and turns it back on by itself. It stores only
 `mutedUntil` (epoch ms), and `isSoundMuted(settings)` compares it with the clock
 at play time, so expiry needs no timer and no write; the panel re-renders when it
-runs out so the select reads Off again. While it runs, three places play
+runs out so the select reads Off again. The select reads `isTimedMuteRunning`,
+the timed half alone, so being outside the sound hours below never shows as a
+mute. While `isSoundMuted` holds, three places play
 nothing: the `MC_NOTIFICATION_EVENT` listener in `useNotificationSound`
 (approvals and the dictation cue included, as with `enabled === false`), the
 theme pack's two app-event listeners in `ThemeExperienceLayer` (its notification
@@ -422,6 +424,30 @@ and dashboard OS toasts (already `silent`) are untouched, and a Test button
 still plays: it is the user asking for a sound. A web push banner shown while
 the dashboard is closed comes from the service worker, which cannot read this
 browser setting, so its sound stays the OS's.
+
+### Sound hours
+
+The Sound card's **Play sounds only during set hours** switch adds a weekly
+schedule, off until the user turns it on: per weekday, Monday first, a switch and
+the half-hour times sound may play from and until (end not included; the end
+list offers only times after the start and ends at "Midnight", and a later start
+pushes the end past it). A schedule starts as 8:00 to 18:00 on weekdays and no sound at the weekend,
+and a day switched on gets 8:00 to 18:00. It is stored as `schedule` (`{ on,
+days }`, seven entries of `{ from, to }` minutes after local midnight or `null`
+for a day without sound); switching it off keeps the days. `isSoundMuted` is
+also true while the schedule is on and the local time falls outside that day's
+hours, so the same three places stay silent, and so does the OS sound of the
+opt-in finished-chat toast (`turnCompletion.ts` posts it `silent` while
+`isSoundMuted` holds, during a timed mute too; the toast itself still shows).
+The same exceptions hold: the feed, badges and banners are untouched, a Test
+button still plays, and a web push banner shown while the dashboard is closed
+keeps the OS's sound. The check reads the clock when a sound would play, so a computer that slept
+plays nothing while asleep and nothing on a wake outside the hours.
+`loadSoundSettings` keeps a stored schedule only when it is seven days of `null`
+or whole minutes with `0 <= from < to <= 1440`; anything else is dropped whole,
+so sound plays as with no schedule. `useNotificationSound.test.ts`,
+`NotificationsPanel.test.tsx` and `chatCompleteNotify.test.ts` pin the silence,
+the loader, the panel and the silent toast.
 
 ### Custom sounds
 

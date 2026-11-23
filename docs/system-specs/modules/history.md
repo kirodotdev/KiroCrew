@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
@@ -2020,7 +2024,12 @@ no longer destroy older turns.
   when the turn produced a reply, through one rewrite pinned to the transcript
   and slot the Regenerate was authorized against that names the rows it removes
   (`retired_rows`). The variants stashed at the press keep the endpoint's
-  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  existing cap (`_MAX_VARIANTS`, the newest kept). Each keeps the `mid` of the
+  row it was written as (`variant_from_row`), so that id names the same version
+  after the swap moves it into the new reply's list; the discussion card keys
+  its sends on it (`grillKey`). A stash of a row that already has versions
+  takes no id: that row's `mid` names its newest version, not always the one it
+  shows. They stay stashed while
   the turn runs: the segment flush attaches none to a reply of a turn that owns
   the target, and the reply gets them only from the committed rewrite, so a
   declined swap (refused or failed write, a reply trimmed into the frozen
@@ -2631,6 +2640,22 @@ archived instead of being permanently deleted:
   where the separator is `ARCHIVE_SEGMENT_DELIMITER`. It is `__` rather than a dot
   because session keys legitimately contain dots (a Slack `thread_ts`), which a
   right-most-dot parse would attribute to the wrong session.
+- **A segment belongs to the whole stem before its LAST delimiter**
+  (`history_files.archive_segment_stem`). `_safe_key` keeps underscores, so a
+  chat whose stem is `<stem>__more` also has segments starting with `<stem>__`.
+  Readers that list the archive with `scandir`/`iterdir` (the session digest,
+  for every stem it is handed, canonical and legacy; the person-message check
+  in `transcript_person_rows.py`; the crewmate prune pass) compare the parsed
+  stem to their own exactly, with the name's case kept. Readers that
+  glob (the rotated read `read_rotated_messages`, `chain_mid_rotation`, the
+  transient-session delete `delete_memory_consolidation_session` and
+  `GET /api/session/archive?key=`) go through
+  `history_files.archive_segments_of(adir, stem)`: it keeps the glob's own case
+  and suffix rule and refuses a file whose last delimiter is not right after
+  the stem. The milestone chat count and the unkeyed `GET /api/session/archive`
+  group by the parsed stem; the list reports it as `key` and the rest as
+  `stamp`, and a file with no delimiter keeps `key` = its stem and
+  `stamp` = "". A live transcript's stem is its whole file name.
 - **Triggers**: `_maybe_rotate()` (>10MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default
@@ -2853,7 +2878,13 @@ writer:
   `read_session_execution` names the two refusals apart: a CORRUPT line answers
   "session record is unreadable (its first line is damaged); start a new chat
   (memory is intact) or archive this one", because no retry reads it, and a
-  TRANSIENT one keeps the plain "session record is unreadable".
+  TRANSIENT one keeps the plain "session record is unreadable". History resume's
+  last metadata read before it builds the slot runs on the event loop, where the
+  bounded retries cannot pause: a TRANSIENT answer there refuses the resume with a
+  retryable `resume_conflict` (409; an app gets its uniform 404) instead of
+  building the slot from an empty line, and a CORRUPT line resumes as an empty
+  one, because no retry would ever open it and the resumed slot's next save
+  rewrites it.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
@@ -3621,9 +3652,11 @@ sidecar whose bytes are not a thread map raises `ThreadStoreUnreadable` and is
 NEVER overwritten (the three routes answer 503 `threads_unavailable`; a turn
 publishes a plain failure frame); rows of the wrong shape drop one by one, and
 a retained row is reduced to the reply schema (`id`, `role`, `content`, `ts`,
-strings) -- the file sits beside the transcript under the data home, so a field
-an agent put there never reaches the dashboard through the detail response,
-whose `_redacted_reply` likewise emits only those four fields. One
+strings, and on a Bot's row the `redactions` credential records that
+`credential_sources.bounded_credential_records` accepts) -- the file sits beside
+the transcript under the data home, so a field an agent put there never reaches
+the dashboard through the detail response, whose `_redacted_reply` likewise
+emits only those fields, the records bounded again. One
 thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
 5 000 across every thread (`threads_full` -- the whole-file bound, since the
 panel reads the file whole), and the Bot's stored reply is clipped at
@@ -3686,7 +3719,8 @@ slot that is not a Bot's chat.
   `GET /api/chat/slots/{slot}`: the transcript read path stays unchanged and the
   payload is small enough to fetch beside it.
 - `GET /api/chat/threads/{mid}?slot=<key>` -- `{"parent": {mid, role, content,
-  ts}, "replies": [...], "in_flight": bool}`. 404 `parent_not_found` when the
+  ts}, "replies": [...], "in_flight": bool}`; the Bot's text, parent or reply,
+  also carries its `link_blocks` and `redactions` records when it has any. 404 `parent_not_found` when the
   mid is no longer in the chat (the frozen disk prefix plus the memory window,
   after `chat_handlers._reconcile_slot_window` -- the same reconciliation the
   detail and resume handlers run, not a copy of it). Reading finds a parent the
@@ -3756,7 +3790,32 @@ served by a session bound to the old ones. The parent lookup reads the
 transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
 then disk prefix plus window -- so a parent only disk holds is found. The Bot's memory is not injected into a thread turn (not done;
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
-an `assistant` reply and broadcast; an empty answer becomes the same visible
+an `assistant` reply and broadcast; it goes through the main chat's credential
+pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
+text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+its placeholders need, and the removed values are kept for the owner's reveal
+(`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
+interrupted partial answer below is stored the same way. The thread read
+(`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
+its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
+`reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`
+with the thread's slot as `redactionSlot` (a thread is always this gateway's own
+slot, as the Bot's main chat passes `revealSlot`), so a removed credential draws as
+its lock tag with the owner's reveal and the Blocked link card offers Allow; an
+Allow or Undo on that slot (`mc:redaction-hosts-changed`) reads the thread again.
+Records whose text holds no placeholder (a clip cut it off, or the "not answered"
+line) are dropped by the main chat's rule (`drop_records_without_placeholders`)
+before the row is stored, so no value is kept for them. The commit marks a value
+the reveal store refuses on a copy of the records, so the final frame names the
+same handle the sidecar holds and both answer 410 for it. The panel passes no
+`messageTs`, so a card's allow hold in a thread is its own bubble's and is not
+shared with the main chat row; it does not keep the card open once the re-read
+drops that host's `link_blocks`, so its Undo is reached from Settings -> Security ->
+Redaction (no test pins this). Pinned by
+`test/test_thread_redaction_records.py`,
+`website/src/pages/members/ThreadPanel.redactionRecords.test.tsx` and
+`website/src/pages/members/ThreadPanel.blockedLink.test.tsx`.
+An empty answer becomes the same visible
 read-only boundary line the side chat shows. A refused read-only spec is audited as a
 denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
 like the app-isolation refusal. A turn cancelled mid-stream (a gateway

@@ -1,10 +1,10 @@
 ---
 title: Conductors and Bots keep one line of work on one worker by default and re-split each round
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-22
-last-audited: 2026-11-22
-audited-at: 4ed7bae83
+last-audited: 2026-11-23
+audited-at: d597493a9b5
 doc-pr: null
 implementation-prs: [40682]
 tracking-issues: []
@@ -14,7 +14,7 @@ superseded-by: [rfc-bot-workers-conduct.md]
 
 # RFC: No split by default for conductors and Bots
 
-Status: accepted. The repository owner made this decision on 2026-11-22 in the conductor chat that dispatched the guidance rewrite; the ruling is summarised in section 4. Nothing is built yet: the implementation is [#40682](https://github.com/kirodotdev/KiroCrew/pull/40682), which changes prompt and skill text only.
+Status: implemented. The repository owner made this decision on 2026-11-22 in the conductor chat that dispatched the guidance rewrite; the ruling is summarised in section 4. The implementation, [#40682](https://github.com/kirodotdev/KiroCrew/pull/40682), merged 2026-11-22 and changes prompt and skill text only: the `split_items` rule in `src/kiro_crew/agent_parts/spec_prompts.py`, the goal-conductor skill and its `references/code-work.md`. Re-audited 2026-11-23 at `d597493a9b5`.
 
 It lands on its own because it changes how every conductor and Bot decomposes a goal by default, and the First Principles lane reads that decision from the base branch.
 

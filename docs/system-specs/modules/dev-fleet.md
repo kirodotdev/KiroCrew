@@ -932,6 +932,15 @@ while a unit under that name is active. A matching pin proceeds, and so does no
 pin with no live unit. Every refusal is about identity: acting on a basename
 collision would stop another repository's pod or delete its HOME.
 
+A pod name becomes the pod's home directory, its env file and the branch
+`feat/<name>`. The verbs that create a pod's state, `pod up` and `pod provision`,
+check it with `validate_new_name`: on every host it also refuses a name whose
+lower-cased part before the first dot is a Windows device stem
+(`constants.WINDOWS_DEVICE_STEMS`: `nul`, `con`, `com1`, ...), with the same
+`invalid pod name` error, before the user-bus check or the worktree lookup. The
+verbs on an existing pod keep `validate_name`, so a pod made under such a name
+earlier can still be stopped, restarted and pruned.
+
 A missing checkout is attributed only by git's retained worktree record for this
 repository. `repository._find_retained_worktree_path` includes a `prunable`
 record that normal discovery omits. When no record names the worktree, the agent

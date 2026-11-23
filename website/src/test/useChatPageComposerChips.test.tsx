@@ -149,6 +149,31 @@ describe('the inherited model a slot shows', () => {
     await waitFor(() => expect(provider.resolveModel).toHaveBeenCalledWith('default', 'demo-app'))
   })
 
+  it('names the model the engine promoted, and keeps the agent\'s model for the pin row', async () => {
+    const slot = { key: 'slot-d', agent: 'builder', model: '' } as ChatSlot
+    const { opts, hook } = harness({
+      availableModels: [{ name: 'm-1' }, { name: 'm-3' }] as never,
+      currentSlot: { ...slot, served_model: 'm-3', engine_promoted_model: 'm-3' } as ChatSlot,
+    })
+    await waitFor(() => expect(hook.result.current._modelPinActive).toBe('m-1'))
+    expect(hook.result.current.shownModel).toBe('m-3')
+    hook.rerender({ ...opts, currentSlot: { ...slot, served_model: '' } as ChatSlot })
+    expect(hook.result.current.shownModel).toBe('m-1')
+  })
+
+  it('names the inherited model over a served model no engine promotion left', async () => {
+    const slot = { key: 'slot-e', agent: 'builder', model: '', served_model: 'm-3' } as ChatSlot
+    const { opts, hook } = harness({
+      availableModels: [{ name: 'm-1' }, { name: 'm-3' }] as never,
+      currentSlot: slot,
+    })
+    await waitFor(() => expect(hook.result.current._modelPinActive).toBe('m-1'))
+    expect(hook.result.current.shownModel).toBe('m-1')
+    // An earlier promotion's model, while the session serves another one.
+    hook.rerender({ ...opts, currentSlot: { ...slot, engine_promoted_model: 'm-2' } as ChatSlot })
+    expect(hook.result.current.shownModel).toBe('m-1')
+  })
+
   it('asks for no app on a slot no app owns', async () => {
     const { opts, hook } = harness()
     const provider = opts.provider as unknown as { resolveModel: ReturnType<typeof vi.fn> }

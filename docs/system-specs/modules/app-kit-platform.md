@@ -6044,7 +6044,17 @@ It is host code. `sessions` projects `selectSlotsWithLiveLastTs` newest first by
 `recencyEpoch`, with the title `sessionDisplayTitle` gives, the agent label
 `agentOrDefaultLabel` gives against the dashboard's own shared `['default-agent']` entry
 (read with the dashboard's query client, which its socket keeps current, not the app's),
-the live state, the message count and the newest message. `send` is chat-core's `sendTurn`
+the live state, the message count and the newest message. `needsFullChat` is the slot
+list's `needs_full_chat`, read as a literal `true`: the session waits on a change card the
+person can still act on (not dismissed, and `pending`, `failed` or `applying` in a state
+the store's own expiry pass, `CardStore._refresh`, would leave as it is), a live
+guide offer (`offered`, `active` or `target_missing` before its expiry) or a browser `ask`
+parked on the live card before its deadline. `ChatEmbed` draws none of these, so a host
+sends the person to the session. `dashboard/full_chat_waits.py` reads each from the store
+that owns it (`CardStore.holds_open_card`, `GuideStore.holds_live_guide`, the live hub's
+quick-ask binding), never from transcript rows, and the card and guide broadcasts and the
+hub's ask listener push the slot list when one moves. An MCP elicitation is not in it:
+it already sets `pending_approval`. `send` is chat-core's `sendTurn`
 over the dashboard wire, `decide` is `api.decideApproval` and `create` is
 `api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row
 does. The scoped transport alone could not: its `POST /api/chat/slots` names the app
@@ -9099,7 +9109,9 @@ it opens does not take focus and takes no anchor (its page is never on screen).
 **The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
 no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
 navigation and redirects pinned to its own document: the host's
-`/popout/desktop/<app>/<id>` route on the gateway origin. `main.tsx` renders that path
+`/popout/desktop/<app>/<id>` route on the gateway origin, loaded with no credential in its
+address: when the host holds a link token, it signs the window's session in first, as the
+dashboard window's load does (`loadDashboardWithToken`). `main.tsx` renders that path
 with `website/src/desktopWindow/DesktopWindowRoot.tsx` instead of the dashboard: it
 requires the shell bridge naming that app and window, reads the app row, and mounts the
 declared `entry` through `AppHost` (§18) with `onFailure`, so a bundle that fails or
@@ -9170,8 +9182,9 @@ set changes is closed, so a withdrawn capability leaves no window opened with it
   non-answer changes nothing, so the app keeps the target it has (this computer's
   gateway until a crew answers). A resolved crew is reused for 60 seconds, only while the app
   declares the same windows here (a window added here is checked against the crew first), and a listing for 10,
-  but a reused crew is re-read from core's registry on every tick and before any window
-  loads or reloads from it: a disconnect frees its local port for the next crew to connect,
+  but a reused crew is re-read from core's registry on every tick, and before any window
+  signs in to it and again before that window's page loads or reloads from it: a
+  disconnect frees its local port for the next crew to connect,
   so a crew no longer connected on that port is dropped (its windows close and re-resolve)
   and is never sent the token minted for it. The shell
   never opens a tunnel and the page never sees a host name, port or credential.

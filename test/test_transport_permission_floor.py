@@ -395,7 +395,7 @@ async def test_client_auto_approve_preserves_reject_option_for_floor(tmp_path):
     )
     await client._handle_permission(allowed)
     assert _answers(client._send_response) == [
-        {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}
+        {"outcome": OUTCOME_SELECTED, "optionId": "advertised-allow"}
     ]
 
 

@@ -142,11 +142,12 @@ def _assert_record_applied_once(spy, slot) -> None:
     assert directive_queue.depth(effective_session_key(slot)) == 0
 
 
-async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None):
+async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None, outcome=None):
     """Stream *events* through ``_run_chat``; return the apply spy.
 
     *park* publishes the record the tool would have parked, under the digest of
     *park_input* (default: the raw call args), for THIS slot's session key.
+    *outcome* is what the spied applier returns (default: an applied ``[applied]``).
     """
     from kiro_crew.dashboard import chat_runner
 
@@ -174,7 +175,7 @@ async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None
     client.context_usage_pct = MagicMock(return_value=1.0)
     client.client = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-    spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+    spy = AsyncMock(return_value=outcome or DirectiveOutcome("[applied]", applied=True))
     monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
     await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
     task = getattr(slot, "task", None)
@@ -280,6 +281,39 @@ class TestEveryKasResultShapeArms:
         spy = await _drive(state, slot, _kas_events(_kas_duplicated(_tool_text())), monkeypatch)
         assert spy.call_args.args[4]["gate"] is True
         assert "gate" not in CALL_ARGS
+
+
+class TestTheResultCarriesTheAppliersOutcome:
+    """A refusal appended after the tool's "requested" text reads as a success, so
+    the result carries the applier's outcome alone and the log names it."""
+
+    async def _claim(self, tmp_path, monkeypatch, caplog, outcome) -> str:
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("oob-outcome")
+        slot._titled = True
+        events = _kas_events(SHAPES["absent"](_tool_text()))
+        with caplog.at_level("INFO", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(state, slot, events, monkeypatch, outcome=outcome)
+        spy.assert_called_once()
+        assert _tool_result_outputs(state)[-1] == outcome.text
+        return caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_replaces_the_tool_text_and_is_logged_not_applied(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Built as the applier builds a refusal: the text alone.
+        text = "Conversation NOT reset: only a conductor's patrol wake may drop it."
+        log = await self._claim(tmp_path, monkeypatch, caplog, DirectiveOutcome(text))
+        assert "session-directive applied OUT OF BAND" not in log
+        assert f"was not applied: {text!r}" in log
+
+    @pytest.mark.asyncio
+    async def test_an_applied_outcome_is_logged_applied(self, tmp_path, monkeypatch, caplog):
+        outcome = DirectiveOutcome("Monitor loop armed.", applied=True)
+        log = await self._claim(tmp_path, monkeypatch, caplog, outcome)
+        assert "session-directive applied OUT OF BAND" in log
+        assert "was not applied" not in log
 
 
 class TestRawInputArrivesLate:

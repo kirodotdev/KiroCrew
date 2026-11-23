@@ -1152,8 +1152,19 @@ export function useReadingPositionRestore<T>(ctx: {
       if (el && el.scrollTop !== 0) writeScrollTop(el, 0, 'auto', 'pin', 'top')
       return
     }
+    if (itemCount === 0) {
+      // Wait for content; the effect re-runs when items arrive. The pin of the
+      // empty list runs on the next frame, still before paint: pinning reads
+      // `scrollHeight`, and in the commit that opens a session that forces a
+      // layout of the whole page. Following is armed now, as `forcePin` would.
+      stickRef.current = followOutput
+      const id = requestAnimationFrame(() => {
+        const el = scrollerRef.current
+        if (el && el.isConnected) forcePin()
+      })
+      return () => cancelAnimationFrame(id)
+    }
     forcePin()
-    if (itemCount === 0) return  // wait for content; effect re-runs when items arrive
     slotPinDoneRef.current = sessionId
     noteEntryBox(null)
     const id = requestAnimationFrame(() => {

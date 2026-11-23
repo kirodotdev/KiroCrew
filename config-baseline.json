@@ -139,6 +139,7 @@
         "subagent_spawn_stagger_secs": 0.25,
         "windows_background_qos": false,
         "subagent_light_tier": false,
+        "subagent_light_lean_context": false,
         "subagent_max_turns": 1000,
         "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
@@ -2216,6 +2217,20 @@
       "tags": [],
       "label": "Light Sub-agent Tier",
       "help": "Let a spawn mark a helper sub-agent (search, lookup, run-and-report, summarize) as light. A light spawn runs on the model in agent.role_models.subagent_light and the effort in agent.role_efforts.subagent_light for whichever of the two its call left unset; a model or effort the call names always wins. A spawn that names an agent, a crew or a backend is not changed. A pinned model or effort starts the sub-agent in its own process, as any per-spawn pin does. Off by default: with it off every spawn picks the model and effort it always has.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.subagent_light_lean_context",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Light Sub-agent Lean Context",
+      "help": "While agent.subagent_light_tier is on, start a spawn marked light without the lessons and memory blocks, since a search, lookup or summarize helper rarely needs them. A spawn that sets include_lessons or include_memory to true keeps that block, and a spawn that names an agent, a crew or a backend is not changed. Off by default: with it off every spawn starts with the context it always has.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

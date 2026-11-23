@@ -128,7 +128,8 @@ Four cases, and the difference between them is the whole answer:
   session-start notice: a name no spec declares; Kiro Crew's own agents
   (`kirocrew-worker` included); an agent with a `denyByDefault` or
   `fallbackAction: "deny"` allowlist, a granted tool beside `deniedCommands` or
-  write `deniedPaths`, or its own `preToolUse` hooks, which Crew's gate applies
+  write `deniedPaths`, a `web_fetch.blocked` entry KAS cannot carry as a host
+  deny, or its own `preToolUse` hooks, which Crew's gate applies
   only to the agent a chat runs; an agent that declares a Kiro Crew server (such
   as `kirocrew-core`) the chat's own agent does not load; an agent that sets up a
   pooled MCP server (one the MCP gateway shares) differently from the chat's own

@@ -894,6 +894,9 @@ def _flush_segment(
     # attaches them only once the replace write commits.
     if slot._pending_variants and owned_regenerate_target(slot) is None:
         newest: dict = {"content": redacted, "ts": last_msg.get("ts", "")}
+        # Its row's id, as ``variant_from_row`` keeps it for every other version.
+        if mid := row_mid(last_msg):
+            newest["mid"] = mid
         if redactions:
             newest["redactions"] = redactions
         pending_list = _adopt_pending_variants(slot, newest)

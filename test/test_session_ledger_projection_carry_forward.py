@@ -594,8 +594,10 @@ def test_a_channel_key_read_without_a_session_finds_the_units_its_writer_used():
     assert sl.read_state(key)["goal"] == "current goal"
     assert "current goal" in sl.render_snapshot(key)
     assert sl.canonical_slot(key, "") == "slack_1785370133.085469"
-    # A key that is not a channel session keeps its own spelling.
-    assert sl.canonical_slot("cron:42", "") == "cron:42"
+    # A cron key folds to its tab's name, which its writers record; any other key
+    # that is not a channel session keeps its own spelling.
+    assert sl.canonical_slot("cron:42", "") == "cron-42"
+    assert sl.canonical_slot("hook:42", "") == "hook:42"
 
     # A delete excludes each unit under the slot its header names; the alias unit's
     # exclusion must still hold once the read is keyed by the folded spelling.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -394,3 +395,219 @@ async def test_turn_admission_appends_the_notice_naming_the_agent_the_record_run
         "recorded": "kirocrew",
     }
     assert read_session_execution(key).template_id == "kirocrew"
+
+
+# A chat running a Bot on another harness than the Bot's own chat says so once.
+
+_SELECTABLE = frozenset({"", "kas", "claude", "codex", "opencode"})
+_BOT_ID = "atlas-0123456789ab"
+
+
+@pytest.fixture
+def harnesses(monkeypatch):
+    """KAS, Kiro CLI, Claude Code, Codex and OpenCode selectable; a Kiro CLI pin runs on KAS."""
+    from kiro_crew.agent_sdk import backends
+
+    monkeypatch.setattr(backends, "selectable_backends", lambda: _SELECTABLE)
+    monkeypatch.setattr(backends, "kiro_cli_pick_backend", lambda: "kas")
+    monkeypatch.setattr(members_mod, "_CREWMATE_WORKER_SLOTS", set())
+    monkeypatch.setattr(members_mod, "_CREWMATE_WORKER_MEMBERS", {})
+    monkeypatch.setattr(members_mod, "_SESSION_BACKEND_PICKS", {})
+
+
+def _harness_notice():
+    from kiro_crew.dashboard import member_harness_notice
+
+    return member_harness_notice
+
+
+def _harness_config(pin: str = "", *, member_backend: str = "kas") -> KiroCrewConfig:
+    cfg = KiroCrewConfig()
+    cfg.agent.acp_backend = "kas"
+    cfg.agent.member_acp_backend = member_backend
+    cfg.agents = {
+        "atlas": KiroCrewAgentConfig(member_id=_BOT_ID, kiro_agent="atlas", acp_backend=pin)
+    }
+    return cfg
+
+
+def _bot_record(member_id: str = _BOT_ID, kind: str = "member") -> ExecutionContext:
+    return _record(member_id, MATE_CONDUCTOR_AGENT, kind)
+
+
+def test_a_chat_running_a_bot_pinned_elsewhere_is_owed_both_harnesses(home, harnesses):
+    apart = _harness_notice().harnesses_apart(
+        _harness_config("claude"), "dashboard:chat-1", _bot_record()
+    )
+    assert apart == ("claude", "kas")
+
+
+def test_an_unpinned_bot_whose_own_chat_runs_the_bot_harness_is_owed_it(home, harnesses):
+    cfg = _harness_config(member_backend="codex")
+    assert _harness_notice().harnesses_apart(cfg, "dashboard:chat-1", _bot_record()) == (
+        "codex",
+        "kas",
+    )
+
+
+def test_a_bot_whose_own_chat_lands_on_the_chats_harness_is_owed_nothing(home, harnesses):
+    notice = _harness_notice()
+    # A pin Bots cannot run on lands on KAS; a stored Kiro CLI pin runs on KAS here.
+    for pin in ("opencode", "kiro", "kas"):
+        assert (
+            notice.harnesses_apart(_harness_config(pin), "dashboard:chat-1", _bot_record()) is None
+        )
+
+
+def test_the_bots_own_thread_a_worker_and_an_unstartable_pin_are_owed_nothing(home, harnesses):
+    notice = _harness_notice()
+    cfg = _harness_config("claude")
+    assert notice.harnesses_apart(cfg, f"dashboard:member-{_BOT_ID}", _bot_record()) is None
+    members_mod._CREWMATE_WORKER_SLOTS.add("chat-7")
+    members_mod._CREWMATE_WORKER_MEMBERS["chat-7"] = _BOT_ID
+    assert notice.harnesses_apart(cfg, "dashboard:chat-7", _bot_record()) is None
+    # The Bot's own chat refuses a pin this gateway cannot start, with its own message.
+    unstartable = _harness_config("deepseek")
+    assert notice.harnesses_apart(unstartable, "dashboard:chat-1", _bot_record()) is None
+
+
+def test_a_template_record_or_a_bot_the_config_lost_is_owed_nothing(home, harnesses):
+    notice = _harness_notice()
+    cfg = _harness_config("claude")
+    no_id = SimpleNamespace(selection_kind="member", member_id="")
+    for record in (_bot_record(kind="template"), _bot_record("gone"), no_id):
+        assert notice.harnesses_apart(cfg, "dashboard:chat-1", record) is None
+
+
+def test_the_notice_names_each_harness_by_its_label(home, harnesses):
+    notice = _harness_notice()
+    assert (notice.harness_name("claude"), notice.harness_name("kas")) == (
+        "Claude Code",
+        "Kiro Agent",
+    )
+    assert notice.harness_notice_text("atlas", "Claude Code", "Kiro Agent") == (
+        "ℹ atlas runs on Claude Code in its own chat, and this chat stays on Kiro Agent. "
+        "Open atlas's own chat to use Claude Code."
+    )
+    meta = notice.harness_notice_meta("atlas", "Claude Code", "Kiro Agent")
+    assert meta["kind"] == notice.MEMBER_HARNESS_NOTICE_KIND
+    assert meta["notice"] == gn.GATEWAY_NOTICE_MEMBER_HARNESS_ELSEWHERE
+    assert meta["notice_args"] == {
+        "bot": "atlas",
+        "bot_harness": "Claude Code",
+        "chat_harness": "Kiro Agent",
+    }
+
+
+def _save_bot(pin: str) -> None:
+    cfg = KiroCrewConfig.load()
+    cfg.agent.acp_backend = "kas"
+    cfg.agent.member_acp_backend = "kas"
+    if "atlas" in cfg.agents:
+        cfg.agents["atlas"].acp_backend = pin
+    else:
+        cfg.agents["atlas"] = KiroCrewAgentConfig(kiro_agent="kirocrew", acp_backend=pin)
+    cfg.save()
+
+
+async def _harness_chat(tmp_path, monkeypatch, slot_key: str, *, pick: bool = True):
+    """A chat on a KAS default; *pick* switches it to atlas with the agent picker."""
+    from unittest.mock import MagicMock
+
+    _save_bot("claude")
+    cfg = KiroCrewConfig.load()
+    provision_member_memory(cfg, "atlas")
+    cfg.save()
+    state = _turn_state(tmp_path, monkeypatch)
+    state.conversation_log = ConversationLog()
+    state.notify = MagicMock()
+    slot = state.get_or_create_slot(slot_key, agent="atlas" if not pick else "default")
+    state.sessions.reset = AsyncMock(return_value=True)
+    if pick:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await _finished(
+                client.post(f"/api/chat/slots/{slot_key}/agent", json={"agent": "atlas"}),
+                "the agent pick",
+            )
+            assert response.status == 200, await response.text()
+
+    async def turn(text: str) -> None:
+        slot.append("user", text)
+        await _finished(chat_runner._run_chat(state, slot, text), "the chat turn")
+        await _finished(drain_background_tasks(state), "the background tasks draining")
+
+    return state, slot, turn
+
+
+def _harness_rows(slot) -> list[dict]:
+    return [m for m in slot.messages if (m.get("meta") or {}).get("kind") == "member_harness"]
+
+
+@pytest.mark.asyncio
+async def test_a_chat_switched_to_a_bot_pinned_elsewhere_says_so_once(
+    tmp_path, monkeypatch, harnesses
+):
+    state, slot, turn = await _harness_chat(tmp_path, monkeypatch, "switched")
+    await turn("first")
+    told = _harness_rows(slot)
+    assert len(told) == 1, [(m["role"], m["content"]) for m in slot.messages]
+    row = told[0]
+    assert row["role"] == "notice"
+    assert row["meta"]["notice"] == "member_harness_elsewhere"
+    assert row["meta"]["notice_args"] == {
+        "bot": "atlas",
+        "bot_harness": "Claude Code",
+        "chat_harness": "Kiro Agent",
+    }
+    assert row["content"].startswith("ℹ atlas runs on Claude Code in its own chat")
+    await turn("second")
+    # A restart reads the claim back from the session's metadata line.
+    state.conversation_log = ConversationLog()
+    await turn("after a restart")
+    assert len(_harness_rows(slot)) == 1
+    state.notify.assert_not_called()
+    state.sessions.record_failure.assert_not_awaited()
+    # Nothing follows the pin: the chat still runs as atlas on its own record.
+    record = read_session_execution("dashboard:switched")
+    assert record.selection_kind == "member"
+    assert record.member_id == KiroCrewConfig.load().agents["atlas"].member_id
+    assert members_mod.session_backend_pick("dashboard:switched") is None
+
+
+@pytest.mark.asyncio
+async def test_a_later_change_of_the_bots_harness_is_told_again(tmp_path, monkeypatch, harnesses):
+    _state, slot, turn = await _harness_chat(tmp_path, monkeypatch, "repinned")
+    await turn("first")
+    _save_bot("codex")
+    await turn("after the pin moved")
+    _save_bot("opencode")
+    await turn("after the pin landed on this chat's harness")
+    told = [row["meta"]["notice_args"]["bot_harness"] for row in _harness_rows(slot)]
+    assert told == ["Claude Code", "OpenAI Codex"]
+
+
+@pytest.mark.asyncio
+async def test_a_chat_a_non_owner_created_on_a_bot_is_told_on_its_second_turn(
+    tmp_path, monkeypatch, harnesses
+):
+    """A chat made on the Bot writes no record until its first turn, which writes it."""
+    _state, slot, turn = await _harness_chat(tmp_path, monkeypatch, "created", pick=False)
+    await turn("first")
+    assert read_session_execution("dashboard:created").selection_kind == "member"
+    assert _harness_rows(slot) == []
+    await turn("second")
+    await turn("third")
+    assert len(_harness_rows(slot)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_regular_template_chat_gets_no_harness_notice(tmp_path, monkeypatch, harnesses):
+    _save_bot("claude")
+    state = _turn_state(tmp_path, monkeypatch)
+    state.conversation_log = ConversationLog()
+    slot = state.get_or_create_slot("plain", agent="default")
+    for text in ("first", "second"):
+        slot.append("user", text)
+        await _finished(chat_runner._run_chat(state, slot, text), "the chat turn")
+        await _finished(drain_background_tasks(state), "the background tasks draining")
+    assert _harness_rows(slot) == []

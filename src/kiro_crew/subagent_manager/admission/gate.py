@@ -569,11 +569,12 @@ class _GateMixin(ManagerComponent):
 
         # --- isolate: the two checks that need no git (the rest run at run start) ---
         if isolate and _gate:
-            isolate_err = (
-                "isolate must be 'worktree'"
-                if isolate != "worktree"
-                else "" if cwd else "isolate needs a cwd: the repository the worktree is made from"
-            )
+            if isolate != "worktree":
+                isolate_err = "isolate must be 'worktree'"
+            elif not cwd:
+                isolate_err = "isolate needs a cwd: the repository the worktree is made from"
+            else:
+                isolate_err = ""
             if isolate_err:
                 logger.warning("Subagent %s refused: %s", agent_id, isolate_err)
                 sel().log_tool_invocation(

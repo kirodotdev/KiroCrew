@@ -73,6 +73,7 @@ const { boundShortcuts, createMachinePrefs } = require("./app-window-prefs");
 const { WORK_AREA_MARGIN, placeBesideAnchor } = require("./app-window-placement");
 const { SPAN_CHANNELS, createDisplayMemory, createSpans, spanKey } = require("./app-window-span");
 const { shellShortcutReservations } = require("./shell-shortcut-reservations");
+const { loadDashboardWithToken } = require("./token-retry");
 
 /** Document-path prefix of a hosted window. Keep in sync with website/src/desktopWindow/. */
 const DESKTOP_WINDOW_PREFIX = "/popout/desktop";
@@ -384,14 +385,15 @@ function createAppWindowHost(deps) {
     return local.filter((cap) => there.includes(cap));
   }
 
-  function pageUrl(rec) {
+  /** Load *rec*'s page signed in; its link token never enters the page's address. */
+  function showPage(rec, mayLoad) {
     const url = `${baseOf(rec.target)}${desktopWindowPath(rec.app, rec.id)}`;
     // A remote's first load carries the link token core minted for it; self the shell's own.
     // A refreshed token for the SAME crew is used; never another gateway's.
     const current = targetOf(rec.app);
     const token = !rec.target.baseUrl ? pageToken
       : sameTarget(current, rec.target) ? current.token : rec.target.token;
-    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    return loadDashboardWithToken(rec.win.webContents, url, token, mayLoad);
   }
 
   function sameTarget(a, b) {
@@ -399,31 +401,28 @@ function createAppWindowHost(deps) {
   }
 
   /**
-   * Load (or reload) *rec*'s page. A window on a crew loads only once core's
-   * registry still shows that crew connected on the port it was resolved to: a
-   * disconnect frees the port for the next crew to connect, which must never be
-   * sent this crew's credential. Otherwise the window closes; on a definite no its
-   * app's target is dropped and re-resolved at once, and a non-answer leaves the
+   * Load (or reload) *rec*'s page. A window on a crew signs in, and then loads, only once
+   * core's registry, re-read before each, still shows that crew connected on the port it
+   * was resolved to: a disconnect frees the port for the next crew to connect, which must
+   * never be sent this crew's credential. Otherwise the window closes; on a definite no
+   * its app's target is dropped and re-resolved at once, and a non-answer leaves the
    * target for the next tick to try again. A tick waits for the loads it started.
    */
   function loadPage(rec) {
-    if (!rec.target.baseUrl) {
-      rec.win.loadURL(pageUrl(rec));
-      return;
-    }
-    const loading = gateways.confirm(rec.target).catch(() => ({ known: false })).then((check) => {
-      if (records.get(rec.key) !== rec || !isLive(rec) || rec.closing) return;
-      if (check.known && check.ok) {
-        rec.win.loadURL(pageUrl(rec));
-        return;
-      }
+    const onItsCrew = async () => {
+      if (!rec.target.baseUrl) return true;
+      const check = await gateways.confirm(rec.target).catch(() => ({ known: false }));
+      if (records.get(rec.key) !== rec || !isLive(rec) || rec.closing) return false;
+      if (check.known && check.ok) return true;
       log(`app-window-host: ${rec.key}: its crew is no longer on that port; not loaded`);
       closeRecord(rec);
       if (check.known && sameTarget(targets.get(rec.app), rec.target)) {
         targets.delete(rec.app);
         void reconcileOnce();
       }
-    }).finally(() => pendingLoads.delete(loading));
+      return false;
+    };
+    const loading = onItsCrew().then((ok) => ok && showPage(rec, onItsCrew)).finally(() => pendingLoads.delete(loading));
     pendingLoads.add(loading);
   }
 

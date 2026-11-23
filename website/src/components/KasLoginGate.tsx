@@ -18,7 +18,7 @@ import {
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { ApiError, apiErrorCode } from '../api/apiError'
+import { ApiError, apiErrorCode, isPermissionRefusal } from '../api/apiError'
 import { isUnansweredRead } from '../api/queryClient'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import {
@@ -1130,6 +1130,16 @@ function KasLoginFlow({
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
   if (statusQuery.isPending) return <>{renderPending ? renderPending() : children}</>
+
+  // Not the owner: the read is refused, and so is every sign-in control, so the
+  // card and the dialog say whose sign-in it is instead of an error to retry.
+  if (!status && chrome.card && isPermissionRefusal(statusQuery.error)) {
+    return (
+      <p className="m-0 text-[13px] leading-relaxed text-muted" data-testid="kas-login-owner-only">
+        {i18nT('components.kasLogin.owner_only')}
+      </p>
+    )
+  }
 
   if (!status) {
     return (
