@@ -358,6 +358,22 @@ and the like) and the other `/code` subcommands keep the notice
 (`kas_local_commands.answers_locally`). Only names are shown: a server's `env`,
 `headers`, `command` and `args` are never read, and the reply is redacted.
 
+`/mcp add` and `/mcp remove` that the person typed are taken before any harness is
+looked up, so every backend answers them the same way
+(`dashboard/mcp_typed_command.py`, called from `_turn_slash_gate` ahead of
+the backend lookup). The command is read in kiro-cli's own flag spelling (`--name`,
+`--command`, `--args`, `--env`, `--url`, `--scope default|global`) and becomes the
+`mcp.server` card `request_server` raises (`--scope global` is its `target`
+`kiro-cli`), proposed through `handlers.change_cards_propose.propose_in_slot`, the
+body the card routes share. Nothing is written until the person applies the card.
+Anything else (no name, `--agent`, `--scope workspace`, `--disabled`, `--timeout`,
+an unknown flag, a `/mcp remove` with any `--scope`, since the card's remove clears
+every file), a messaging-channel turn, or a card the engine refuses gets one
+reply pointing at the MCP Servers page. A channel turn ends before the reply
+mirror, so the gate also posts that reply into the linked Slack thread, as the other
+notices that end a channel turn early do. A wake, a synthetic prompt or a turn with an
+actor keeps the existing path; so does every other `/mcp`.
+
 A **route** is not a harness, and is not expressed as one. KAS runs either
 through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`,
 or chosen automatically when the relay cannot run: `acp/kas_route.py`, which
