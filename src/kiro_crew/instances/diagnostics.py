@@ -40,6 +40,7 @@ from kiro_crew.instances.token_mint import (
     _build_ssh_argv,
     custom_remote_bin,
     refused_plugin_message,
+    spawn_one_shot_ssh,
     ssh_spawn_argv_env,
 )
 from kiro_crew.instances.validation import (
@@ -272,18 +273,17 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
     "ssh ran and failed".
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
-        env=env,
     )
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return False
     except asyncio.CancelledError:
         # A cancelled diagnosis (an instance edit, a gateway shutdown) must not
@@ -300,18 +300,17 @@ async def _run_stdout(argv: list[str], timeout: float) -> str | None:
     ``OSError`` rather than returning None.
     """
     argv, env = await asyncio.to_thread(ssh_spawn_argv_env, argv)
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
+    proc = await spawn_one_shot_ssh(
+        argv,
+        env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
-        env=env,
     )
     try:
         stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return None
     except asyncio.CancelledError:
         await kill_and_reap(proc)
