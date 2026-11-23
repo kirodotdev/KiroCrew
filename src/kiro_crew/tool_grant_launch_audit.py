@@ -1,8 +1,8 @@
 """Which launch a standing MCP tool grant approves: bound grants (stage 2), observed ones (stage 1).
 
 A grant in ``hooks.auto_approve_tool_identities`` or an ``auto_approve_tools``
-pattern names a server by NAME (``@server/tool``). Any server mounted under that
-name used to get the grant.
+pattern names a server by NAME (``@server/tool``), so the name alone would give
+the grant to any server mounted under it.
 
 Stage 2 (bound grants). The approval card's "Always allow this tool" and the MCP
 tool list's toggle record, in the same locked write as the grant, the launch ids
@@ -13,8 +13,16 @@ the server are all in it (:func:`bound_launch_holds`); otherwise the gate gives
 no verdict and the call asks. The record lives in ``config.json``, whose
 security keys an agent cannot change without the owner applying it
 (``config.loosening_provenance``). That check runs on the gate's path, for a
-bound grant only: the reads are the bounded, non-blocking, stat-cached settings
-reads below and the agent-spec reader's own directory-revision memo.
+bound grant only: the reads are the bounded, non-blocking settings reads below,
+re-read on every check and cached by content digest only (a rewrite that keeps
+the size and restores the mtime is still seen), and the agent-spec reader's own
+directory-revision memo.
+
+Both sides read the definitions of ONE agent, :func:`grant_agent`: the agent
+that actually serves the session (``read_effective_agent``), or the configured
+default template where there is none (the MCP tool list's toggle, a surface that
+does not stamp it). The slot's alias is never used, because it can name a
+different spec than the one the session runs.
 
 Stage 1 (unbound grants, observe only). A grant with no record -- every grant
 written before stage 2, and every ``auto_approve_tools`` pattern -- approves as
@@ -55,13 +63,13 @@ _MAX_SERVERS = 512
 _MAX_REPORTED = _MAX_SERVERS * 4
 #: Observations waiting for the worker; past this, new ones are dropped.
 _MAX_PENDING = 64
-#: Settings files whose parsed servers are kept, keyed by stat.
+#: Settings files whose parsed servers are kept, keyed by content digest.
 _MAX_CACHED_FILES = 64
 
 _LOCK = threading.Lock()
 _FIRST_SEEN: dict[str, frozenset[str]] = {}
 _REPORTED: set[tuple[str, str]] = set()
-_FILE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_FILE_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
 #: Observations each cap dropped, reported once per process (``_note_overflow``).
 _DROPPED: dict[str, int] = {"names": 0, "reports": 0, "queued": 0}
 _OVERFLOW_NOTED = False
@@ -155,27 +163,32 @@ def _read_settings(path: Path, *, follow_links: bool) -> bytes | None:
 
 
 def _servers_in(path: Path, *, follow_links: bool) -> dict[str, Any]:
-    """``mcpServers`` of one settings file, cached by stat; ``{}`` when unreadable."""
-    try:
-        st = path.stat()
-    except OSError:
-        return {}
-    key = str(path)
-    sig = (st.st_mtime_ns, st.st_size)
-    cached = _FILE_CACHE.get(key)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-    servers: dict[str, Any] = {}
+    """``mcpServers`` of one settings file; ``{}`` when missing or unreadable.
+
+    The bytes are read on every call and only the parse is cached, keyed by
+    their digest: this read decides whether a bound grant approves, and mtime
+    and size can both be put back after a rewrite.
+    """
     try:
         raw = _read_settings(path, follow_links=follow_links)
-        data = json.loads(raw) if raw is not None else None
+    except OSError:
+        return {}
+    if raw is None:
+        return {}
+    key = str(path)
+    digest = hashlib.sha256(raw).hexdigest()
+    cached = _FILE_CACHE.get(key)
+    if cached is not None and cached[0] == digest:
+        return cached[1]
+    try:
+        data = json.loads(raw)
         found = data.get("mcpServers") if isinstance(data, dict) else None
         servers = found if isinstance(found, dict) else {}
-    except (OSError, ValueError):
+    except ValueError:
         servers = {}
     if len(_FILE_CACHE) >= _MAX_CACHED_FILES:
         _FILE_CACHE.clear()
-    _FILE_CACHE[key] = (sig, servers)
+    _FILE_CACHE[key] = (digest, servers)
     return servers
 
 
@@ -229,13 +242,51 @@ def session_launch_ids(server: str, *, agent: str, work_dir: str) -> frozenset[s
     return frozenset(ids)
 
 
+def grant_agent(resolved_agent: str) -> str:
+    """The agent whose definitions a bound grant's launches are read from.
+
+    The one answer both the grant writers and the gate use, so a grant is
+    checked against the same spec it was written from. *resolved_agent* is the
+    agent that actually serves the session (``read_effective_agent``); with none,
+    the configured default template as a session with no crewmate dispatches it
+    (``dispatch_kiro_agent(default_template(...))``), read from the published
+    in-memory alias snapshot. ``""`` when that snapshot is not published yet and
+    cannot be loaded here (on the event loop): the gate then refuses the bound
+    grant and a writer writes the grant unbound. Never raises.
+    """
+    if isinstance(resolved_agent, str) and resolved_agent:
+        return resolved_agent
+    try:
+        from kiro_crew.config import loader
+
+        _aliases, template, ready = loader.agent_alias_snapshot()
+        if not ready:
+            import asyncio
+
+            try:
+                asyncio.get_running_loop()
+                return ""
+            except RuntimeError:
+                pass
+            # Publishes the snapshot (``KiroCrewConfig.load``).
+            loader.KiroCrewConfig.load()
+            _aliases, template, ready = loader.agent_alias_snapshot()
+        return loader.dispatch_kiro_agent(template) if ready and template else ""
+    except Exception:
+        logger.debug("could not resolve the default template for a tool grant", exc_info=True)
+        return ""
+
+
 def bound_launch_holds(server: str, bound: frozenset[str], *, agent: str, work_dir: str) -> bool:
     """Whether a grant bound to *bound* may approve a call to *server* (stage 2).
 
     True only when the session can see at least one definition of *server* and
-    every launch id it sees is in *bound*. No definition, an unreadable one, or a
-    failed read answers False, so the call asks. Never raises.
+    every launch id it sees is in *bound*. No definition, an unreadable one, a
+    failed read, or no *agent* to read the spec of answers False, so the call
+    asks. Never raises.
     """
+    if not agent:
+        return False
     try:
         wanted = server.lower()
         seen = False
@@ -265,13 +316,18 @@ def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: st
     case-insensitive equality, observed off the gate's path. While any spelling
     of the identity is bound, no unbound spelling approves it, so a hand-written
     case variant cannot step around a binding.
+
+    The bound check reads the spec of :func:`grant_agent` for the call's
+    ``resolved_agent``, the agent the writers bound it from; *agent* (the
+    surface's slot alias) only labels the stage-1 observation.
     """
     bindings = config.auto_approve_tool_identity_launches
     grants = config.auto_approve_tool_identities
     bound = bindings.get(identity_ref)
     if bound is not None and identity_ref in grants:
         work_dir = str(getattr(call, "spec_write_cwd", "") or "")
-        if bound_launch_holds(call.mcp_server, bound, agent=agent, work_dir=work_dir):
+        spec_agent = grant_agent(str(getattr(call, "resolved_agent", "") or ""))
+        if bound_launch_holds(call.mcp_server, bound, agent=spec_agent, work_dir=work_dir):
             return True
         logger.info(
             "a bound tool grant did not approve a call: the server's launch is not one "

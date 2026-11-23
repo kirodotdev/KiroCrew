@@ -73,14 +73,18 @@ def _manager(bindings, grants=(REF,), **extra) -> HookManager:
     )
 
 
-def _call(server: str = "ops", tool: str = "list") -> ToolCall:
+def _call(server: str = "ops", tool: str = "list", resolved_agent: str = "a") -> ToolCall:
     return ToolCall(
-        title="Look up the fleet", mcp_server=server, mcp_tool=tool, identity_trusted=True
+        title="Look up the fleet",
+        mcp_server=server,
+        mcp_tool=tool,
+        identity_trusted=True,
+        resolved_agent=resolved_agent,
     )
 
 
-def _approved(manager: HookManager, call: ToolCall | None = None) -> bool:
-    verdict = manager.judge(call or _call(), agent="a")
+def _approved(manager: HookManager, call: ToolCall | None = None, alias: str = "a") -> bool:
+    verdict = manager.judge(call or _call(), agent=alias)
     audit._wait_for_tests()
     return verdict.action == TOOL_AUTO_APPROVE
 
@@ -109,7 +113,7 @@ def test_a_bound_grant_asks_when_no_definition_is_seen(agents):
     assert not _approved(_manager({REF: [_id(NPX)]}))
 
 
-@pytest.mark.parametrize("bindings", [{REF: "not-a-list"}, {REF: [1]}, "not-a-map"])
+@pytest.mark.parametrize("bindings", [{REF: "not-a-list"}, {REF: [1]}, "not-a-map", None])
 def test_a_malformed_binding_never_approves(agents, bindings):
     _spec(agents, NPX)
     assert not _approved(_manager(bindings))
@@ -198,7 +202,76 @@ def test_the_card_carries_the_launches_its_session_sees(agents, monkeypatch):
         child_mcp_identity_trusted=False,
         spec_write_cwd="",
     )
-    fields = always_allow_tool.card_fields(event, agent="a")
+    fields = always_allow_tool.card_fields(event, resolved_agent="a")
     assert fields[always_allow_tool.FIELD_LAUNCHES] == _id(NPX)
     assert always_allow_tool._card_launches(fields[always_allow_tool.FIELD_LAUNCHES]) == (_id(NPX),)
     assert always_allow_tool._card_launches("not-an-id") == ()
+
+
+# -- one agent for writing and checking --------------------------------------
+
+
+@pytest.fixture
+def default_template(monkeypatch: pytest.MonkeyPatch):
+    """Publish ``a`` as the configured default template, as a config load would."""
+    import kiro_crew.config.loader as loader
+
+    monkeypatch.setattr(loader, "agent_alias_snapshot", lambda: (frozenset(), "a", True))
+    monkeypatch.setattr(loader, "dispatch_kiro_agent", lambda name: name)
+
+
+def test_the_gate_reads_the_agent_that_serves_the_session_not_the_alias(agents):
+    _spec(agents, NPX)
+    manager = _manager({REF: [_id(NPX)]})
+    # The slot's alias names no spec; the resolved agent is the one that runs.
+    assert _approved(manager, _call(resolved_agent="a"), alias="my-alias")
+
+
+def test_a_call_with_no_resolved_agent_is_checked_against_the_default_template(
+    agents, default_template
+):
+    _spec(agents, NPX)
+    assert _approved(_manager({REF: [_id(NPX)]}), _call(resolved_agent=""), alias="")
+
+
+def test_the_tool_list_toggle_binds_the_default_templates_launches(agents, default_template):
+    _spec(agents, NPX)
+    launches = always_allow_tool.grant_launches("ops", resolved_agent="")
+    assert launches == (_id(NPX),)
+    # The gate approves the grant the toggle wrote for a call with no resolved agent.
+    assert _approved(_manager({REF: list(launches)}), _call(resolved_agent=""), alias="")
+
+
+def test_with_no_known_agent_a_bound_grant_asks(agents, monkeypatch):
+    import asyncio
+
+    import kiro_crew.config.loader as loader
+
+    monkeypatch.setattr(loader, "agent_alias_snapshot", lambda: (frozenset(), "", False))
+
+    async def _on_loop() -> str:
+        return audit.grant_agent("")
+
+    # A cold snapshot on the event loop is not loaded there: no agent is known.
+    assert asyncio.run(_on_loop()) == ""
+    assert not audit.bound_launch_holds("ops", frozenset({_id(NPX)}), agent="", work_dir="")
+
+
+# -- the settings cache never outlives a rewrite -----------------------------
+
+
+def test_a_same_size_rewrite_with_the_mtime_restored_is_seen(agents):
+    import os
+
+    same_size = {"command": "npx", "args": ["-y", "evl-mcp"]}
+    assert len(json.dumps(same_size)) == len(json.dumps(NPX))
+    _user_mcp(agents, NPX)
+    path = agents.parent / "settings" / "mcp.json"
+    manager = _manager({REF: [_id(NPX)]})
+    assert _approved(manager)
+    before = path.stat()
+    _user_mcp(agents, same_size)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert not _approved(manager)

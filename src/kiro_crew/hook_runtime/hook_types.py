@@ -325,15 +325,18 @@ class HooksConfig:
                 return []
             return [s for s in value if isinstance(s, str)]
 
-        def _launch_bindings(value) -> dict[str, frozenset[str]]:
+        def _launch_bindings() -> dict[str, frozenset[str]]:
             """``{ref: launch ids}``; a value that is not a list of strings binds nothing.
 
-            A map that is present but not an object binds every identity grant to
-            nothing: which grants it bound cannot be read, so none falls back to
-            the unbound match.
+            A map that is present but not an object, an explicit ``null``
+            included, binds every identity grant to nothing: which grants it
+            bound cannot be read, so none falls back to the unbound match. Only
+            an absent key means no grant is bound.
             """
-            if value is None:
+            key = "auto_approve_tool_identity_launches"
+            if key not in data:
                 return {}
+            value = data[key]
             if not isinstance(value, dict):
                 refs = _str_list(data.get("auto_approve_tool_identities", []))
                 return {ref: frozenset() for ref in refs}
@@ -431,9 +434,7 @@ class HooksConfig:
         return cls(
             auto_approve_tools=merged_approve,
             auto_approve_tool_identities=_str_list(data.get("auto_approve_tool_identities", [])),
-            auto_approve_tool_identity_launches=_launch_bindings(
-                data.get("auto_approve_tool_identity_launches")
-            ),
+            auto_approve_tool_identity_launches=_launch_bindings(),
             auto_approve_sources=_str_list(data.get("auto_approve_sources", [])),
             # Fail safe: malformed auto-approve flags must NOT silently widen
             # approval (a string "false" is truthy under plain bool()) — default

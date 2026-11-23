@@ -168,23 +168,31 @@ def refusal_for(ref: str) -> str:
     return ""
 
 
-def grant_launches(server: str, *, agent: str, work_dir: str = "") -> tuple[str, ...]:
-    """The launch ids a grant for *server* binds: every definition the session sees (blocking I/O)."""
-    from kiro_crew.tool_grant_launch_audit import session_launch_ids
+def grant_launches(server: str, *, resolved_agent: str, work_dir: str = "") -> tuple[str, ...]:
+    """The launch ids a grant for *server* binds: every definition the session sees (blocking I/O).
+
+    The definitions are those of ``grant_agent(resolved_agent)``, the agent the
+    gate checks the grant against. No agent to read binds nothing (an unbound grant).
+    """
+    from kiro_crew.tool_grant_launch_audit import grant_agent, session_launch_ids
 
     try:
+        agent = grant_agent(resolved_agent)
+        if not agent:
+            return ()
         return tuple(sorted(session_launch_ids(server, agent=agent, work_dir=work_dir)))
     except Exception:
         logger.debug("could not read the launches of %s for a grant", server, exc_info=True)
         return ()
 
 
-def card_fields(event: Any, *, agent: str = "") -> dict[str, str]:
+def card_fields(event: Any, *, resolved_agent: str = "") -> dict[str, str]:
     """The pending card's grant fields for *event* (blocking I/O: run off the loop).
 
     Empty when the call has no grantable identity, so the option is not shown.
-    The launches the grant would bind are read now, for the session *agent* runs
-    in, and stamped on the card, so the grant binds what that session mounted.
+    The launches the grant would bind are read now, for the agent that serves
+    the session (*resolved_agent*, ``read_effective_agent``), and stamped on the
+    card, so the grant binds what that session mounted.
     """
     ref = event_tool_ref(event)
     if not ref:
@@ -195,7 +203,7 @@ def card_fields(event: Any, *, agent: str = "") -> dict[str, str]:
     fields = {FIELD_GRANTABLE: "1", FIELD_REF: ref}
     launches = grant_launches(
         str(getattr(event, "mcp_server_name", "") or ""),
-        agent=agent,
+        resolved_agent=resolved_agent,
         work_dir=str(getattr(event, "spec_write_cwd", "") or ""),
     )
     if launches:
