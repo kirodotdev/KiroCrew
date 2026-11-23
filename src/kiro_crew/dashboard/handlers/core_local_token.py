@@ -76,7 +76,7 @@ async def api_token_local(request: web.Request) -> web.Response:
     Each refusal carries a machine-readable ``code`` beside its ``error`` —
     ``loopback_only``, ``invalid_secret``, ``member_owner_token_refused``, and
     ``session_kind_refused_for_app`` for an app backend asking for ``kind=session``
-    — mirroring the distinction already in the SEL record, so a caller reports the
+    (``delegated_session_refused`` when it asks with its derived value) — mirroring the distinction already in the SEL record, so a caller reports the
     gate that refused rather than listing the ones that might have. The codes
     restate what the ``error`` text already says and widen no gate.
     """
@@ -212,6 +212,25 @@ async def api_token_local(request: web.Request) -> web.Response:
     # is for the owner's own client, not for code an app runs.
     subject, claims = owner_id or "local-app", owner_mint_extra(extra)
     if request.query.get("kind", "") == "session":
+        if via_app:
+            # A delegated grant is a link the owner's browser exchanges, never a bearer
+            # session: refused here so no bearer path has to remember to refuse it.
+            _sel().log_api_access(
+                caller="local-process",
+                operation="token.local",
+                outcome="denied",
+                source="local-bootstrap",
+                resources=f"denied delegated-session app={app_name} "
+                f"basis={provenance.basis or 'unknown'} via=delegated",
+            )
+            return web.json_response(
+                {
+                    "error": "A delegated grant cannot mint a session token. "
+                    "Request the link without kind=session.",
+                    "code": "delegated_session_refused",
+                },
+                status=403,
+            )
         if app_name:
             _sel().log_api_access(
                 caller="local-process",

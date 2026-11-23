@@ -209,3 +209,48 @@ async def test_the_real_secret_from_a_spawned_app_still_mints_with_no_sandbox(
 ):
     monkeypatch.setattr(dashboard_proxy, "sandboxed_backend", lambda: False)
     assert (await _mint(_REAL)).status == 200
+
+
+async def _mint_session(value: str):
+    return await core_mod.api_token_local(
+        _req(
+            app={"local_secret": _REAL, "state": SimpleNamespace(owner_id="owner-1")},
+            headers={"X-Local-Secret": value},
+            query={"kind": "session"},
+        )
+    )
+
+
+@_LEG_TWO_HOST
+@pytest.mark.asyncio
+async def test_a_session_mint_with_a_delegated_value_is_refused_before_a_token(
+    world, minted, fake_sel
+):
+    """A bearer session that carries a delegated grant is never minted: not by leg 2 asking
+    ``kind=session``. The refusal has its own code and a denied row; no token is generated."""
+    resp = await _mint_session(dashboard_proxy.stand_in_value(_APP))
+    assert resp.status == 403
+    assert json.loads(resp.body)["code"] == "delegated_session_refused"
+    assert minted == {}, "no token was generated"
+    row = fake_sel.log_api_access.call_args.kwargs
+    assert row["operation"] == "token.local"
+    assert row["outcome"] == "denied"
+    assert row["resources"] == f"denied delegated-session app={_APP} basis=spawned-app via=delegated"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_session_mint_with_the_real_secret_still_mints(
+    world, minted, fake_sel, monkeypatch
+):
+    world.update(owner_app=None, host=True)
+    seen: dict = {}
+
+    def _generate(owner, ttl_seconds=0, extra=None, **kw):
+        seen.update({"extra": extra, "kw": kw})
+        return "issued-value"
+
+    monkeypatch.setattr(core_mod, "generate_token", _generate)
+    resp = await _mint_session(_REAL)
+    assert resp.status == 200
+    assert seen["kw"].get("session") is True
+    assert "via_app" not in (seen["extra"] or {})
