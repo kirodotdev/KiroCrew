@@ -7451,6 +7451,11 @@ warning on `kiro_crew.hooks` rather than dropped silently. Pinned by
 `TestHookToolInput` (`test_fire_tool_hooks.py`) and `TestHookToolInputFromRawParams`
 (`test_dashboard_approval.py`).
 
+**`tool_response` on PostToolUse.** Every site that fires `PostToolUse` (the ACP
+client, a dashboard turn, a channel turn, a subagent run) builds `tool_response` with
+`hook_output.bounded_hook_output` from the redacted full output: `output` cut to its
+first 2,000 characters, `truncated`, and `output_length`, the length it was cut from.
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
