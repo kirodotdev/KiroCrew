@@ -800,7 +800,10 @@ def note_turn_end(
     pending for it.
     """
     try:
-        quiet = quiet_end and not (reply_text or "").strip()
+        from kiro_crew.messaging.driver import strip_steering_markers
+
+        # A steer ack is protocol, so a quiet end that folded a steer is still quiet.
+        quiet = quiet_end and not strip_steering_markers(reply_text or "").strip()
         creator = reporting_creator(state, slot) if reply_text is not None and not quiet else None
         if creator is not None:
             _record_report(

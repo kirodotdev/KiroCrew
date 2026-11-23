@@ -2058,7 +2058,7 @@
       "yolo_label": "YOLO",
       "yolo_desc": "In every chat, {{productName}} works without asking you first",
       "configure_duration": "Configure duration",
-      "yolo_expiration_until_shutdown": "Stays on until {{productName}} restarts — no timed expiry.",
+      "yolo_expiration_until_shutdown": "Stays on until you stop {{productName}} — no timed expiry. A restart keeps it.",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again."
     },
     "appstore": {
@@ -2478,7 +2478,6 @@
       "send_selection_to_chat": "Send selection to chat",
       "send_to_chat": "Send to chat",
       "sending": "Sending…",
-      "touch_select_anchor": "First point set — tap the other end",
       "touch_select_done": "Range selected — tap Copy",
       "use_here": "Use terminal here",
       "use_starting_directory": "Use terminal starting directory",
@@ -2983,6 +2982,7 @@
       "profile_lookup_failed_body": "We couldn't look up your Kiro profile. Start over to try again.",
       "connection_lost_body": "We lost the connection to {{productName}}, which may have restarted. Start over to sign in again.",
       "sign_in_status_unavailable": "We could not check sign-in status",
+      "owner_only": "Only the dashboard owner can manage Kiro sign-in.",
       "sign_in_to_kiro": "Sign in to Kiro",
       "skip_for_now": "Skip for now",
       "signing_in_with": "Signing in with {{provider}}",
@@ -6590,7 +6590,9 @@
         "repair_images_failed": "Images can't be repaired twice in one chat. Start a fresh session to keep going — this chat is kept, and the assistant continues from a summary.",
         "repair_images_not_persistent": "Images can't be repaired in an Incognito or Temporary chat, because reloading it erases its history. Start a fresh session to keep going.",
         "repair_images_retry_hint": "Something went wrong this time, so your one repair wasn't used — press “Repair images and resume” to try again.",
-        "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder."
+        "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder.",
+        "repeated_in_a_row_one": "Happened {{count}} time in a row, most recently {{time}}",
+        "repeated_in_a_row_other": "Happened {{count}} times in a row, most recently {{time}}"
       },
       "crewLog": {
         "tab_load_failed": "The crew log couldn't load. Check the connection to the gateway, then try again.",
@@ -7351,7 +7353,12 @@
       "kind_section_mate": "From bots",
       "filter_crew_description": "Show only conductor mode chats",
       "reclick_toggles_side_panel": "Click again to show or hide the side panel",
-      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})",
+      "show_linked_items_one": "Show {{count}} linked item",
+      "show_linked_items_other": "Show {{count}} linked items",
+      "hide_linked_items": "Hide linked items",
+      "show_linked_items_failed_one": "Show {{count}} linked item, a check failed",
+      "show_linked_items_failed_other": "Show {{count}} linked items, a check failed"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
@@ -10039,7 +10046,19 @@
         "auto_connect": "Auto-connect crews",
         "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
         "launch_status_unavailable": "Could not refresh the setup progress. The card below shows the last state received.",
-        "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site."
+        "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site.",
+        "warm_cap": "Crews kept loaded",
+        "warm_cap_desc": "Remote Crews kept loaded at once, the most recently opened first. Automatic keeps {{auto}}.",
+        "warm_cap_auto": "Automatic ({{n}}) · more is faster to switch, uses more memory",
+        "warm_cap_set": "Set to {{n}} · more is faster to switch, uses more memory",
+        "warm_cap_use_auto": "Use automatic",
+        "warm_cap_save_failed": "Couldn't save how many Crews stay loaded.",
+        "usage_label": "Remote Crew usage",
+        "usage_value": "Loaded {{panes}} · Memory {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "No remote Crew is loaded.",
+        "usage_shared": "Sharing the main window's process: {{n}}. Their cost is not counted.",
+        "warm_cap_load_failed": "Couldn't read how many Crews stay loaded.",
+        "usage_failed": "Couldn't read the remote Crew usage."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Record metrics",
@@ -10354,7 +10373,7 @@
         "yolo_duration_6h": "6 hours",
         "yolo_duration_12h": "12 hours",
         "yolo_duration_24h": "24 hours",
-        "yolo_duration_until_shutdown": "Until {{productName}} restarts",
+        "yolo_duration_until_shutdown": "Until you stop {{productName}}",
         "yolo_duration_locked": "Disabled by your organization's policy",
         "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
         "failed_to_save_yolo_duration": "Could not save the duration.",
@@ -10380,7 +10399,7 @@
         "state_blocked": "Blocked",
         "rail_active": "Active now",
         "rail_until_time": "Until {{time}}",
-        "rail_until_restart": "Until restart",
+        "rail_until_restart": "Until you stop {{productName}}",
         "tailnet_chip_allowlist": "Allow-list",
         "tailnet_chip_allowlist_absent": "Nothing added",
         "tailnet_chip_allowlist_added": "Name added",

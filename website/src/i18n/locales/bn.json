@@ -461,6 +461,15 @@
       "tab_gone": "Bot-এর ট্যাব বন্ধ, তাই দেখানোর মতো কোনো লাইভ পেজ নেই।",
       "app_off": "এই অ্যাপ বন্ধ, তাই ব্রাউজার দেখাতে পারে না। পেজটি আবার দেখতে অ্যাপস-এ এটি চালু করো।",
       "actions": "Bot কী করেছে"
+    },
+    "browserSites": {
+      "add_title": "নতুন সাইটের অনুমতি দেবে?",
+      "add_asked_by": "{{app}} নিচের সাইটটি সেই পেজগুলোর তালিকায় যোগ করতে চায় যেগুলো তার নিজের এজেন্ট ব্রাউজ করতে পারে।",
+      "add_app_details": "{{author}}-এর তৈরি · অ্যাপ আইডি {{id}}",
+      "add_app_id": "অ্যাপ আইডি {{id}}",
+      "add_star": "এতে প্রতিটি * যেকোনো লেখার সঙ্গে মেলে, তাই ঠিকানা মিলে যায় এমন সব পেজ এর মধ্যে পড়ে।",
+      "add_risk": "অনুমতি দিলে, অ্যাপের নিজের এজেন্ট প্রতিবার জিজ্ঞেস না করে তোমার ব্রাউজারে, তোমার সাইন-ইন দিয়ে, এই পেজগুলো খুলতে, পড়তে, টাইপ করতে ও ক্লিক করতে পারবে। শুধু বিশ্বাসযোগ্য সাইটের অনুমতি দাও। পরে এটি সরিয়ে দিতে পারো।",
+      "add_allow": "সাইটের অনুমতি দাও"
     }
   },
   "apps": {
@@ -6512,7 +6521,7 @@
       "trust_scope_tooltip": "এই চ্যাটে একটি অ্যাপ অনুমতির মাধ্যমে বিশ্বস্ত; এটি নিজে থেকেই শেষ হয়। এখনই শেষ করতে এই মেনুতে সাধারণ বেছে নাও; যতক্ষণ না তুমি সেই অ্যাপে এটি বন্ধ করো, অ্যাপটি আবার অনুমতি দিতে পারে।",
       "yolo_desc": "প্রতিটি চ্যাটে, {{productName}} আগে জিজ্ঞাসা না করেই কাজ করে",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "{{productName}} রিস্টার্ট না হওয়া পর্যন্ত এটি চালু থাকে — সময়ের সাথে মেয়াদ শেষ হয় না।",
+      "yolo_expiration_until_shutdown": "তুমি {{productName}} বন্ধ না করা পর্যন্ত এটি চালু থাকে — সময়ের সাথে মেয়াদ শেষ হয় না। রিস্টার্ট হলেও চালু থাকে।",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "আপনার প্রতিষ্ঠানের সুরক্ষা নীতি দ্বারা নিষ্ক্রিয় করা হয়েছে",
       "yolo_mode_is_an_app_wide_setting": "YOLO মোড একটি অ্যাপ-ব্যাপী সেটিং"
@@ -7182,7 +7191,6 @@
       "send_selection_to_chat": "নির্বাচিত অংশ চ্যাটে পাঠাও",
       "send_to_chat": "চ্যাটে পাঠাও",
       "sending": "পাঠানো হচ্ছে…",
-      "touch_select_anchor": "প্রথম বিন্দু সেট — অন্য প্রান্তে ট্যাপ করুন",
       "touch_select_done": "পরিসর নির্বাচিত — কপি ট্যাপ করুন",
       "use_here": "টার্মিনাল এখানে ব্যবহার করুন",
       "use_starting_directory": "টার্মিনালের শুরুর ডিরেক্টরি ব্যবহার করো",
@@ -8112,6 +8120,7 @@
       "profile_lookup_failed_body": "তোমার Kiro প্রোফাইল খোঁজা গেল না। আবার চেষ্টা করতে আবার শুরু করো।",
       "connection_lost_body": "{{productName}}-এর সঙ্গে সংযোগ বিচ্ছিন্ন হয়েছে, হয়তো এটি রিস্টার্ট হয়েছে। আবার সাইন ইন করতে আবার শুরু করো।",
       "sign_in_status_unavailable": "সাইন-ইন অবস্থা পরীক্ষা করা গেল না",
+      "owner_only": "শুধু ড্যাশবোর্ডের মালিক Kiro সাইন-ইন পরিচালনা করতে পারেন।",
       "sign_in_to_kiro": "Kiro-তে সাইন ইন করুন",
       "skip_for_now": "এখন বাদ দিন",
       "signing_in_with": "{{provider}} দিয়ে সাইন ইন হচ্ছে",
@@ -12131,6 +12140,10 @@
     "account_and_settings": "অ্যাকাউন্ট ও সেটিংস"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "এই ক্রু সংযুক্ত নয়। মূল উইন্ডোতে এটি সংযুক্ত করো, তারপর আবার পপ আউট করো।",
+      "this_pop_out_cannot_be_opened": "এই পপ-আউট এখানে খোলা যাবে না।"
+    },
     "mcpPage": {
       "bot_workers_note": "এখানে যোগ করা সার্ভার Bot-এর কর্মীদের কাছে পৌঁছায় না। কোনো Bot-এর কর্মীরা সার্ভারটি পায় কেবল যখন সেটি সেই Bot-এ যোগ করা হয়।",
       "title": "MCP সার্ভার",
@@ -12393,7 +12406,23 @@
         "installed_needs_newer_host": "{{name}}-এর ইনস্টল করা সংস্করণের জন্য নতুন {{productName}} দরকার। {{productName}} আপডেট করো; তোমার ডেটা বদলায়নি।"
       },
       "grants_reconsent_composer_actions": "কম্পোজার বোতাম: অ্যাপকে কম্পোজারের + মেনুতে এই বোতামগুলো যোগ করতে দেয়। ক্লিক করলে অ্যাপের লেখা তোমার খসড়ায় যোগ হয়; অ্যাপ খসড়া দেখতে বা পাঠাতে পারে না।",
-      "grants_reconsent_selection_actions": "নির্বাচিত লেখার কাজ: চ্যাটের উত্তরে তোমার নির্বাচিত লেখা অ্যাপের আইটেমগুলো পায়, এবং কপি বা খোলার জন্য ফল দিতে পারে।"
+      "grants_reconsent_selection_actions": "নির্বাচিত লেখার কাজ: চ্যাটের উত্তরে তোমার নির্বাচিত লেখা অ্যাপের আইটেমগুলো পায়, এবং কপি বা খোলার জন্য ফল দিতে পারে।",
+      "browser_sites_list_title": "ব্রাউজ করার সাইট",
+      "browser_sites_list_hint": "যেসব পেজ এই অ্যাপের নিজের এজেন্ট ব্রাউজ করতে পারে। সরানো সাইট এজেন্টের পরের ধাপে বন্ধ হয়ে যায়।",
+      "browser_sites_source_app": "অ্যাপ থেকে",
+      "browser_sites_source_owner": "তুমি যোগ করেছ",
+      "browser_sites_status_approved": "অনুমতি আছে",
+      "browser_sites_status_pending": "অনুমোদনের অপেক্ষায়",
+      "browser_sites_status_disabled": "বন্ধ",
+      "browser_sites_status_removed": "সরানো হয়েছে",
+      "browser_sites_remove": "সরাও",
+      "browser_sites_turn_on": "চালু করো",
+      "browser_sites_add_back": "আবার যোগ করো",
+      "browser_sites_remove_failed": "সাইটটি সরানো গেল না: {{error}}",
+      "browser_sites_add_failed": "সাইটটি আবার যোগ করা গেল না: {{error}}",
+      "browser_sites_turn_on_title": "এই সাইটটি আবার চালু করবে?",
+      "browser_sites_add_back_title": "এই সাইটটি আবার যোগ করবে?",
+      "browser_sites_restore_risk": "তারপর অ্যাপের নিজের এজেন্ট প্রতিবার জিজ্ঞেস না করে তোমার ব্রাউজারে, তোমার সাইন-ইন দিয়ে, এই পেজগুলো খুলতে, পড়তে, টাইপ করতে ও ক্লিক করতে পারবে। শুধু বিশ্বাসযোগ্য সাইটের অনুমতি দাও।"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",
@@ -13385,7 +13414,9 @@
         "host_sandbox_teammate_unnamed": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিককে এটা দেখতে বলো।",
         "copy_details": "বিস্তারিত কপি করো",
         "copy_details_hint": "শুধু এরর কোড আর সময় কপি করে",
-        "host_sandbox_teammate_named": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিক {{owner}}-কে এটা দেখতে বলো।"
+        "host_sandbox_teammate_named": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিক {{owner}}-কে এটা দেখতে বলো।",
+        "repeated_in_a_row_one": "পরপর {{count}} বার ঘটেছে, সবশেষে {{time}}-এ",
+        "repeated_in_a_row_other": "পরপর {{count}} বার ঘটেছে, সবশেষে {{time}}-এ"
       },
       "folderPanel": {
         "back": "পেছনে",
@@ -13972,6 +14003,7 @@
         "agent_switch_blocked_channel": "{{agent}}-এ বদল আটকানো হয়েছে — এই চ্যাটটি এমন একটি Slack চ্যানেলের সাথে যুক্ত যা {{channel_agent}} পরিচালনা করে। পরের টার্নটি সেই এজেন্টে আবার শুরু হবে।",
         "channel_message_not_run": "একটি Slack চ্যানেলের বার্তা চালানো হয়নি: এই সেশনের এজেন্ট সেই চ্যানেলের ব্যবহৃত এজেন্ট নয়।",
         "member_rebind_kept_agent": "{{bot}} এখন {{agent}}-এ সেট করা আছে, কিন্তু এই চ্যাটটি এখনও {{recorded}} চালাচ্ছে, যে এজেন্ট দিয়ে এটি শুরু হয়েছিল। {{agent}} ব্যবহার করতে {{bot}}-এর সাথে একটি নতুন চ্যাট শুরু করো।",
+        "member_harness_elsewhere": "{{bot}} নিজের চ্যাটে {{bot_harness}}-এ চলে, আর এই চ্যাটটি {{chat_harness}}-এ থেকে যায়। {{bot_harness}} ব্যবহার করতে {{bot}}-এর নিজের চ্যাট খোলো।",
         "agent_no_tools": "{{agent}}-এ কোনো টুল দেওয়া নেই, তাই এই চ্যাটে এটি কমান্ড চালাতে, ফাইল নিয়ে কাজ করতে বা MCP সার্ভার ব্যবহার করতে পারে না।",
         "agent_no_tools_open": "এর টুল বেছে নাও",
         "harness_mode_changed": "এই সেশন {{mode}} মোডে বদলেছে।",
@@ -15540,7 +15572,12 @@
       "hide_sessions_count_one": "{{n}}টি সেশন লুকাও",
       "hide_sessions_count_other": "{{n}}টি সেশন লুকাও",
       "reclick_toggles_side_panel": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো",
-      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})",
+      "show_linked_items_one": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "show_linked_items_other": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "hide_linked_items": "সংযুক্ত আইটেম লুকাও",
+      "show_linked_items_failed_one": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে",
+      "show_linked_items_failed_other": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -21083,7 +21120,7 @@
         "profile_2": "প্রোফাইল",
         "profiles_json": "profiles/*.json",
         "rail_active": "এখন সক্রিয়",
-        "rail_until_restart": "রিস্টার্ট পর্যন্ত",
+        "rail_until_restart": "তুমি {{productName}} বন্ধ না করা পর্যন্ত",
         "rail_until_time": "{{time}} পর্যন্ত",
         "search_rules_placeholder": "নিয়ম, প্যাটার্ন, বিভাগ খুঁজুন…",
         "section_group_enforced": "বলবৎ",
@@ -21145,7 +21182,7 @@
         "yolo_duration_locked": "তোমার প্রতিষ্ঠানের নীতি অনুযায়ী নিষ্ক্রিয় করা হয়েছে",
         "yolo_duration_next_activation_note": "পরেরবার যখন তুমি স্বয়ংক্রিয় অনুমোদন চালু করবে, তখন প্রযোজ্য হবে।",
         "yolo_duration_title": "স্বয়ংক্রিয় অনুমোদন কত সময় চালু থাকবে",
-        "yolo_duration_until_shutdown": "{{productName}} রিস্টার্ট হওয়া পর্যন্ত",
+        "yolo_duration_until_shutdown": "তুমি {{productName}} বন্ধ না করা পর্যন্ত",
         "your_custom_denies": "আপনার কাস্টম নিষেধাজ্ঞা",
         "trustedApps": {
           "description": "যেসব অ্যাপকে আপনি এই কম্পিউটারে নিজের কোড চালানোর অনুমতি দিয়েছেন। বিশ্বাস একবারে একটি অ্যাপের জন্য প্রযোজ্য; অন্য সব তৃতীয় পক্ষের অ্যাপ ব্লক থাকবে।",
@@ -22394,6 +22431,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB ডিস্ক",
         "tier_price": "~{{hourly}}/ঘণ্টা · চালু রেখে দিলে ~{{monthly}}/মাস (আনুমানিক)",
         "price_region_note": "দামগুলো {{priceRegion}}-এর অন-ডিমান্ড রেট; অন্য রিজিয়নে দাম আলাদা হতে পারে।",
+        "stopped_billing_note": "থামানো ক্রুর ডিস্ক এবং S3-এ রাখা যেকোনো সেটআপ ফাইলের বিল আসতে থাকে, যতক্ষণ না তুমি ক্রুটি মুছে ফেলো।",
         "transport_hint_fargate": "Session Manager-এর মাধ্যমে AWS Fargate টাস্কে পৌঁছায়। এটি চ্যাট API দেয়, ড্যাশবোর্ড নয়।",
         "transport_hint_ssh": "SSH-এর মাধ্যমে সংযোগ করে।",
         "transport_hint_ssm": "AWS Systems Manager Session Manager-এর মাধ্যমে সংযোগ করে।",
@@ -22442,7 +22480,19 @@
         "setting_up_progress": "সেট আপ হচ্ছে · {{total}}-এর মধ্যে {{current}}",
         "launching_crew": "{{name}} চালু হচ্ছে",
         "ssm_start_session_denied": "এই AWS রোলের এই ইনস্ট্যান্সে SSM সেশন শুরু করার অনুমতি নেই। একে ssm:StartSession দাও, অথবা এমন একটি AWS প্রোফাইল বেছে নাও যার এটি আছে।",
-        "show_aws_error": "AWS ত্রুটি দেখাও"
+        "show_aws_error": "AWS ত্রুটি দেখাও",
+        "warm_cap": "লোড রাখা ক্রু",
+        "warm_cap_desc": "একসাথে লোড রাখা রিমোট ক্রু, সবচেয়ে সম্প্রতি খোলাগুলো আগে। স্বয়ংক্রিয় মোডে {{auto}}টি থাকে।",
+        "warm_cap_auto": "স্বয়ংক্রিয় ({{n}}) · বেশি রাখলে বদলানো দ্রুত হয়, মেমোরি বেশি লাগে",
+        "warm_cap_set": "{{n}}-এ সেট করা · বেশি রাখলে বদলানো দ্রুত হয়, মেমোরি বেশি লাগে",
+        "warm_cap_use_auto": "স্বয়ংক্রিয় ব্যবহার করো",
+        "warm_cap_save_failed": "কতগুলো ক্রু লোড থাকবে তা সেভ করা যায়নি।",
+        "usage_label": "রিমোট ক্রুর ব্যবহার",
+        "usage_value": "লোড {{panes}} · মেমোরি {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "কোনো রিমোট ক্রু লোড নেই।",
+        "usage_shared": "মূল উইন্ডোর প্রসেস ভাগ করছে: {{n}}। এদের খরচ গোনা হয়নি।",
+        "warm_cap_load_failed": "কতগুলো ক্রু লোড থাকবে তা পড়া যায়নি।",
+        "usage_failed": "রিমোট ক্রুর ব্যবহার পড়া যায়নি।"
       },
       "webhooksPanel": {
         "inbound_webhooks": "ইনবাউন্ড webhook",

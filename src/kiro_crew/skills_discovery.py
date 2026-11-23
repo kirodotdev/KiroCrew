@@ -919,7 +919,14 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
             continue
         if is_sensitive_path(str(resolved)):
             logger.warning("Skipping sensitive skills.extra_paths[%d]", index)
-        elif resolved.is_dir():
+            continue
+        try:
+            reachable = resolved.is_dir()
+        except OSError:
+            # ``is_dir()`` returns False only for ENOENT-like errors; EACCES,
+            # ESTALE or EIO from stat re-raise and would stop the loader.
+            reachable = False
+        if reachable:
             resolved_paths.append(resolved)
         else:
             logger.warning("skills.extra_paths[%d] is not a reachable directory; skipped", index)

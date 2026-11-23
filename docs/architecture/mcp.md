@@ -2285,6 +2285,16 @@ zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, 
 its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
 
+A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
+not a checkout for this rule. The home folder is exactly that when the user-level
+agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
+finds the user-level spec itself there. `session_servers._is_overlay_source`
+compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+spec is not a shadow: the overlay stays in effect and every shared server stays
+brokered. Counted as a shadow, it would run those servers raw inside the session;
+on the Claude Code backend that is inside the chat's sandbox, where a stdio server
+that keeps its sign-in outside its own process finds none.
+
 ### Bot overlays
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
@@ -2365,7 +2375,9 @@ folder has.
 A worker session finds its stubs by its own execution record, never by the shared
 name: KAS (`_pooled_session_servers_and_ref_spec`, on a positive `backend == kas`
 check) and the mirrored hosts (`AcpRuntime._mirrored_session_mcp`,
-`AcpClient._resolve_session_mcp_servers`) pass the session key, and
+`AcpClient._resolve_session_mcp_servers`) pass the session key, as pi
+(`AcpClient._pooled_broker_stubs`) does only when the session is a pi worker
+whose slot this process has noted (`members.is_crewmate_worker_session`), and
 `session_servers` answers `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. A lookup with no
 key gets no stub for `kirocrew-mate-worker`: the stock worker spec is
@@ -2408,6 +2420,16 @@ That read also re-checks them as KAS does (`withdrawn_worker_stubs`): a stub who
 server it drops, mutes or marks registry-governed leaves the array, and its name
 stays withheld, so neither half mounts it. So a Codex worker reaches
 `kirocrew-work` through a stub bound to its own session token.
+On pi, `AcpClient._resolve_session_mcp_servers` withholds from the
+worker's spec mounts the names of the stubs that keyed lookup returned, so the
+gateway, not pi, starts a Bot-added server and resolves its `secret://` values;
+the worker base's own routed servers (`kirocrew-core` and the rest) are stubs in
+place of their spec entries too.
+The stubs that reach pi come from a second keyed lookup made after that spec read,
+so the merged-spec check above drops a stub whose server was removed, muted or
+marked registry-governed in between, and they pass the worker spec's `tools`
+allowlist (`_member_stub_allowlist`), which a worker records whether or not the
+session is marked a member.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile
@@ -3637,7 +3659,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. An id the official registry cannot resolve (absent, as on an
+  install plan. The server name follows the additions record's own rule, which
+  the card applies too (`template_mcp_additions._check_server`: letters, digits,
+  `.`, `_`, `-` and a `:` inside the name, up to 64 characters), so a name with
+  `/` or `@` is refused with a reason that says it cannot be added to an agent
+  template. A name with `:` must be one the user's own MCP config declares and
+  no installed app mints (`template_server_request._users_own_server`), else
+  `400 app_server`: an app's `<app>:<server>` key lives in the rendered spec,
+  and a template's copy would not follow the app's own install. An id the
+  official registry cannot resolve (absent, as on an
   edition that withholds it, or lacking the id) but the edition package
   registry holds (`mcp_discover.edition_package_detail`, the `capability`
   provider) is refused `edition_package`: that registry installs through the

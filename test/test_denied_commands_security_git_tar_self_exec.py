@@ -476,8 +476,11 @@ class TestGitTarSelfExec:
 
     # A frame's glob words are read once, however many git or tar commands the
     # frame holds.  Reading them again for each command re-reads the whole frame
-    # per command, so the work grows with the square of the frame.  The count is
-    # exact, with no wall clock.
+    # per command, so the work grows with the square of the frame.  The floor
+    # reads the whole command twice (main's unsplit boundaries, then the
+    # glued-split boundaries), each an independent pass, so the healthy count is
+    # one per pass: two, a constant that does not grow with the 200 commands.
+    # A quadratic re-read drives it far past two.  The count is exact, no wall clock.
     def test_frame_glob_words_are_read_once_per_frame(self, monkeypatch):
         calls = {"n": 0}
         real = _argv_floor._glob_word_spellings
@@ -488,7 +491,7 @@ class TestGitTarSelfExec:
 
         monkeypatch.setattr(_argv_floor, "_glob_word_spellings", counted)
         assert is_denied("tar -cf o d; " * 200 + "git fetch o") is None
-        assert calls["n"] == 1, calls["n"]
+        assert calls["n"] == 2, calls["n"]
 
     # Each of n pure ``ext::`` operands bounds its payload to the NEXT ext
     # operand, so no operand re-reads the tail: the ext-payload words read stay

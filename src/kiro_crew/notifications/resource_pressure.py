@@ -98,6 +98,8 @@ FAST_SAMPLE_INTERVAL_SECS = 5.0
 
 # PSI ``full avg10`` at or above this, on a TIGHT reading, counts as critical for
 # the memory guard only: not for the notes, the spawn gate or the create refusal.
+# While the memory cgroup is out of view, the same percentage is the bar for the
+# share of time between two samples in which the topmost visible cgroup stalled.
 GUARD_PSI_FULL_AVG10 = 10.0
 
 # How long posture must stay tight (without recovering to ample) before the
@@ -294,6 +296,33 @@ def _read_disk_posture() -> tuple[str, str, float | None]:
     return (*disk_posture(readings), worst)
 
 
+def _out_of_view_memory_stall_us() -> int | None:
+    """The topmost visible cgroup's total ``full`` memory stall, while out of view.
+
+    In microseconds; None while memory accounting is in view or the file is
+    unreadable. Blocking; runs in the probe's worker thread. ``subagent`` is imported
+    lazily, as ``resource_status`` does, because it is heavy.
+    """
+    from kiro_crew.subagent import out_of_view_memory_stall_us
+
+    return out_of_view_memory_stall_us()
+
+
+def stall_share(before: tuple[float, int] | None, after: tuple[float, int] | None) -> float | None:
+    """The percentage of the time between two ``(clock, total stall)`` readings spent stalled.
+
+    The totals are in microseconds and the clock in seconds. None without both
+    readings, when no time passed, or when the total went back (a new cgroup).
+    """
+    if before is None or after is None:
+        return None
+    elapsed = after[0] - before[0]
+    stalled = after[1] - before[1]
+    if elapsed <= 0 or stalled < 0:
+        return None
+    return min(100.0, stalled / (elapsed * 1e4))
+
+
 def combined_posture(status: ResourceStatus, disk: tuple[str, str]) -> tuple[str, str] | None:
     """The worse of memory and disk, with its reading; ``None`` while memory is unknown."""
     memory = status.posture
@@ -359,6 +388,7 @@ class ResourcePressureNotifier:
         disk_fn: Callable[[], tuple] = _read_disk_posture,
         on_posture_change: Callable[[], None] = _pull_watching_conductors,
         psi_fn: Callable[[], float | None] = linux_memory_psi_full_avg10,
+        view_stall_fn: Callable[[], int | None] = _out_of_view_memory_stall_us,
     ) -> None:
         self._bus = bus
         self._probe = probe_fn
@@ -374,10 +404,25 @@ class ResourcePressureNotifier:
         # The newest PSI reading, written by the worker thread with the probe and
         # read on the loop after the probe returned in time.
         self._psi: float | None = None
+        self._view_stall_fn = view_stall_fn
+        # ``(clock, total full stall)`` of the topmost visible cgroup while the memory
+        # cgroup is out of view (the free figure is then the host's), read beside a
+        # probe that is not critical while the guard is armed. Written and read like
+        # ``_psi``.
+        self._view_reading: tuple[float, int] | None = None
+        # On the loop: the reading the next stall share is measured from, and the
+        # share this sample measured. No reading taken at a hand-off to the guard, or
+        # while the pass it returned still runs, becomes the baseline, so the stall
+        # behind one stop cannot cause a second.
+        self._view_base: tuple[float, int] | None = None
+        self._view_share: float | None = None
+        self._guard_pass: object = None
         # The memory guard (``session_memory_guard.request``): called on the loop
-        # with ``(status, psi, trigger)`` when the guard trigger holds. It
-        # schedules its own pass and returns at once. None until the gateway wires it.
-        self.memory_guard: Callable[[ResourceStatus, float | None, str], None] | None = None
+        # with ``(status, psi, trigger)`` when the guard trigger holds, where ``psi``
+        # is the host's ``full avg10``, or the stall share for ``psi-cgroup``. It
+        # schedules its own pass and returns at once, with that pass's task. None
+        # until the gateway wires it.
+        self.memory_guard: Callable[[ResourceStatus, float | None, str], object] | None = None
         # Free memory (GB) and worst disk free space (%) the next step is measured
         # from: the reading at the last posture wake, raised by a recovery.
         self._worsen_ref: tuple[float, float | None] = (0.0, None)
@@ -441,6 +486,9 @@ class ResourcePressureNotifier:
             self._next_sample = now + SAMPLE_INTERVAL_SECS
             self._inflight = True
             self._probe_started = False
+            # A reading the worker takes while a stop runs is never a baseline. A stop
+            # starts only in ``_maybe_guard``, after the probe, so this check covers it.
+            stopping = self._guard_running()
             try:
                 status = await asyncio.wait_for(
                     asyncio.to_thread(self._run_probe), PROBE_TIMEOUT_SECS
@@ -462,11 +510,20 @@ class ResourcePressureNotifier:
                     self._deliver_slice_oom()
                 except Exception:
                     logger.debug("agents-slice OOM push failed", exc_info=True)
+            reading = None if stopping else self._view_reading
+            self._view_share = stall_share(self._view_base, reading)
+            self._view_base = reading
             self.observe(status, now)
             self.observe_posture(status)
-            if status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL):
+            # While the memory cgroup is out of view the free figure does not show the
+            # limit, so the stall is sampled at the heartbeat's cadence too: at 30 s a
+            # stall can reach livelock between two samples.
+            if (
+                status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
+                or self._view_reading is not None
+            ):
                 self._next_sample = now + FAST_SAMPLE_INTERVAL_SECS
-            self._maybe_guard(status)
+            self._maybe_guard(status, self.guard_trigger(status))
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
 
@@ -520,37 +577,66 @@ class ResourcePressureNotifier:
             except Exception:
                 self._psi = None
                 logger.debug("memory PSI read failed", exc_info=True)
+            self._view_reading = None
+            # A critical reading hands off without it and drops the baseline anyway.
+            if (
+                self.memory_guard is not None
+                and status.critical_gb > 0
+                and status.posture != POSTURE_CRITICAL
+            ):
+                try:
+                    total = self._view_stall_fn()
+                    if total is not None:
+                        self._view_reading = (self._clock(), total)
+                except Exception:
+                    logger.debug("out-of-view memory stall read failed", exc_info=True)
             return status
         finally:
             self._inflight = False
 
     def guard_trigger(self, status: ResourceStatus) -> str | None:
-        """``"critical"``, ``"psi"`` or None: whether the memory guard should run now.
+        """``"critical"``, ``"psi"``, ``"psi-cgroup"`` or None: whether the guard should run now.
 
-        Off with ``agent.resource_critical_gb = 0`` on both arms: the critical
+        Off with ``agent.resource_critical_gb = 0`` on every arm: the critical
         posture never occurs then, and PSI only stands in for critical, so it is
-        armed only while that threshold is on. PSI counts only on a tight
-        reading, so an IO-only stall on an ample host stops nothing.
+        armed only while that threshold is on. ``psi`` is the host's PSI on a tight
+        reading; where the limit is in view an IO-only stall on an ample host stops
+        nothing. ``psi-cgroup`` is the share of time since the last sample in which
+        the topmost visible cgroup stalled, on a tight or ample reading, while the
+        memory cgroup is out of view: the free figure is then the host's, not the
+        limit the kernel reclaims at, so that stall is the only evidence of it, and
+        it counts no task outside this view. A share, not ``avg10``, because
+        ``avg10`` takes about 13 s to fall below the bar after a stall ends, and
+        each sample in between would stop another tree.
         """
         if not status.critical_gb or status.critical_gb <= 0:
             return None
         if status.posture == POSTURE_CRITICAL:
             return "critical"
+        if status.posture not in (POSTURE_TIGHT, POSTURE_AMPLE):
+            return None
         psi = self._psi
         if status.posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
             return "psi"
+        share = self._view_share
+        if share is not None and share >= GUARD_PSI_FULL_AVG10:
+            return "psi-cgroup"
         return None
 
-    def _maybe_guard(self, status: ResourceStatus) -> None:
-        """Hand the sample to the memory guard when its trigger holds. Never raises."""
+    def _guard_running(self) -> bool:
+        """Whether the pass the guard returned for the last hand-off is still running."""
+        task = self._guard_pass
+        return isinstance(task, asyncio.Future) and not task.done()
+
+    def _maybe_guard(self, status: ResourceStatus, trigger: str | None) -> None:
+        """Hand the sample to the memory guard when *trigger* holds. Never raises."""
         guard = self.memory_guard
-        if guard is None:
+        if guard is None or trigger is None:
             return
-        trigger = self.guard_trigger(status)
-        if trigger is None:
-            return
+        self._view_base = None
+        psi = self._view_share if trigger == "psi-cgroup" else self._psi
         try:
-            guard(status, self._psi, trigger)
+            self._guard_pass = guard(status, psi, trigger)
         except Exception:
             logger.warning("memory guard request failed", exc_info=True)
 

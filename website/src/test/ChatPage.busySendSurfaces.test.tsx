@@ -246,12 +246,40 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     expect(sendTurn.mock.calls[0][0].stopHold).toBeInstanceOf(AbortController)
   })
 
+  it('a Stop during the revision wait sends nothing and tells Submit it was not delivered', async () => {
+    let release: (v: number | undefined) => void = () => {}
+    vi.spyOn(revisionSeed, 'baseRevisionForPress').mockReturnValue(new Promise((resolve) => { release = resolve }))
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    let verdict: unknown
+    await act(async () => {
+      const pending = panel.submit?.('Review notes')
+      // The first thing requestStop does, while the send waits for the revision.
+      transport.abortPendingSends('slot-a')
+      release(undefined)
+      verdict = await pending
+    })
+    expect(verdict).toBe(false)
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
   it('holds the idle send for Stop before it waits for the session revision', async () => {
     const hold = vi.spyOn(transport, 'holdForStop')
     const revision = vi.spyOn(revisionSeed, 'baseRevisionForPress')
     await renderChat({ subagentsRunning: false, turnRunning: false })
     expect(await submitComments()).toBe(true)
     expect(hold.mock.invocationCallOrder[0]).toBeLessThan(revision.mock.invocationCallOrder[0])
+  })
+
+  it('keeps the comments pending when Stop cancelled the send before its POST left', async () => {
+    vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'response-late', body: {}, unsent: true })
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(false)
+  })
+
+  it('still counts a late answer to a POST that left as maybe-delivered', async () => {
+    vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'response-late', body: {} })
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(true)
   })
 
   it('keeps a send queued behind a running turn out of Stop\'s reach', async () => {

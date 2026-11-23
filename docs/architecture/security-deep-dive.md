@@ -435,12 +435,12 @@ The memory recovery, record editor, and member recall/copy APIs each register
 their own output boundary. Their response fields pass through the shared
 credential redaction, inside URLs too, before reaching the dashboard or MCP caller.
 
-- `redact_credentials()` masks what the rule table decides is a credential, then
-  the few classes no table row reads yet (Telegram and Discord bot tokens, npm and
-  PyPI tokens, OpenAI `sk-proj-` keys, the `Authorization: Bearer` token) by fixed
-  pattern, then the value of a `token` URL parameter, keyed on the name. The table
+- `redact_credentials()` masks what the rule table decides is a credential; a value
+  no table row reads stays as written. The table
   (`security/redaction_structured/`) reads vendor tokens by published format
-  (checksums where published), private-key blocks, signed JWTs, a cloud secret key
+  (checksums where published; Telegram and Discord bot tokens, npm and PyPI tokens
+  and OpenAI `sk-proj-` keys among them), `Authorization: Bearer` values, the
+  value of a `token` URL parameter, private-key blocks, signed JWTs, a cloud secret key
   beside its key ID or after its label, session tokens after their label,
   passwords in URL userinfo, Basic-auth and API-key header values, session cookies,
   labelled values such as `password=`, credential-type URL parameters, webhook URL
@@ -666,8 +666,11 @@ trust and auto-approve paths.
 
 Auto-approve is time-bounded by a **single** duration shared by every ad-hoc
 surface (`agent.yolo_duration`, default `6h`, hard ceiling 24 h, or
-`until_shutdown` for an in-memory grant with no timed expiry that a restart
-clears). There are deliberately no per-surface TTLs: giving the same grant a
+`until_shutdown` for a grant with no timed expiry that lasts until the user
+stops Kiro Crew). Any other exit keeps an ad-hoc grant with its original expiry,
+from a signed record in a sandbox-masked directory, bounded by the ceiling in
+force at the restore ([security](../system-specs/modules/security.md), "Grants
+kept across an exit the user did not choose"). There are deliberately no per-surface TTLs: giving the same grant a
 different lifetime depending on which surface enabled it is unpredictable for the
 operator without buying any security.
 

@@ -482,7 +482,11 @@ class TestHistorySaveOnClose:
         assert meta.get("mode") == "design-critique"
 
     def test_close_does_not_persist_trust(self, tmp_path, monkeypatch):
-        """Trust flags are ephemeral — not written to session metadata."""
+        """Trust flags are not written to session metadata, which the agent can write.
+
+        A kept mode lives only in the signed record under the masked ``kept-grants``
+        directory (``chat_trust_restart``).
+        """
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -918,6 +922,56 @@ class TestResumeExpectedIdentity:
 
         assert probe_answers, "_resume_slot_from_history_noted no longer probes for a live slot"
         assert unpinned_returns == []
+
+
+class TestResumeLastMetadataRead:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("line", ["transient", "corrupt"])
+    async def test_an_unreadable_last_read_refuses_unless_the_line_is_damaged(
+        self, tmp_path, monkeypatch, line
+    ):
+        """The read after the transcript runs on the loop, where its retries cannot pause.
+
+        A transient failure there (a Windows sharing violation, modelled as every
+        attempt failing) must not read as an empty line: the tab would come back
+        without the line's fields. A damaged first line no retry will read still
+        resumes, so its next save can rewrite it.
+        """
+        from kiro_crew.history import METADATA_LINE_TRANSIENT
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:held", "user", "hello")
+        await asyncio.to_thread(log.update_metadata, "dashboard:held", {"channel_origin": True})
+        if line == "corrupt":
+            path = log._path("dashboard:held")
+            path.write_bytes(b"{damaged\n" + path.read_bytes().split(b"\n", 1)[1])
+        else:
+            real_read = log.read_messages_chained
+
+            def read_then_hold(key):
+                messages = real_read(key)
+                monkeypatch.setattr(
+                    log, "_read_metadata_state", lambda _key: ({}, METADATA_LINE_TRANSIENT)
+                )
+                return messages
+
+            monkeypatch.setattr(log, "read_messages_chained", read_then_hold)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/held/resume", json={"key": "dashboard:held"}
+            )
+            body = await response.json()
+
+        if line == "corrupt":
+            assert response.status == 200, body
+        else:
+            slot = state.get_slot("held")
+            assert slot is None, f"built from an empty line: channel_origin={slot.channel_origin}"
+            assert (response.status, body["code"]) == (409, "resume_conflict")
+            assert "held" not in state._slots_under_construction
 
 
 class TestPinnedResumeOfALiveSlotBoundToAnOlderTranscript:

@@ -1090,9 +1090,9 @@ function createGatewaySupervisor({
     resolve(true);
   }
 
-  function stopGatewayOnQuit() {
+  function stopGatewayOnQuit({ userStop = false } = {}) { // true only for a Quit the user chose
     tunnelKeeper.stop();
-    stopGatewayGracefully()
+    stopGatewayGracefully({ userStop })
       .catch((error) => console.error("Gateway stop failed:", error?.message));
   }
 

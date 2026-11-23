@@ -441,6 +441,15 @@
       "tab_gone": "Bot의 탭이 닫혀 있어 보여 줄 실시간 페이지가 없습니다.",
       "app_off": "이 앱이 꺼져 있어 브라우저를 표시할 수 없습니다. 앱 목록에서 켜면 페이지를 다시 볼 수 있습니다.",
       "actions": "Bot이 한 일"
+    },
+    "browserSites": {
+      "add_title": "새 탐색 사이트를 허용할까요?",
+      "add_asked_by": "{{app}}에서 자체 에이전트가 탐색할 수 있는 페이지에 아래 사이트를 추가하려고 합니다.",
+      "add_app_details": "만든 사람 {{author}} · 앱 ID {{id}}",
+      "add_app_id": "앱 ID {{id}}",
+      "add_star": "여기의 * 는 어떤 텍스트와도 일치하므로 주소가 맞는 모든 페이지가 포함됩니다.",
+      "add_risk": "허용하면 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다. 신뢰하는 사이트만 허용하세요. 나중에 삭제할 수 있습니다.",
+      "add_allow": "사이트 허용"
     }
   },
   "apps": {
@@ -6295,7 +6304,7 @@
       "trust_scope_tooltip": "이 채팅은 앱 권한으로 신뢰됩니다. 권한은 스스로 만료됩니다. 지금 끝내려면 이 메뉴에서 표준을 선택하세요. 앱에서 끄기 전까지 앱이 다시 권한을 줄 수 있습니다.",
       "yolo_desc": "모든 채팅에서 {{productName}}은(는) 먼저 묻지 않고 작업합니다",
       "yolo_expiration_timed": "{{duration}} 후 자동으로 꺼지고 다시 물어봅니다.",
-      "yolo_expiration_until_shutdown": "{{productName}}이(가) 재시작될 때까지 켜져 있습니다 — 시간 만료가 없습니다.",
+      "yolo_expiration_until_shutdown": "{{productName}}을(를) 중지할 때까지 켜져 있습니다 — 시간 만료가 없습니다. 재시작해도 유지됩니다.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "조직의 보안 정책에 의해 비활성화되었습니다",
       "yolo_mode_is_an_app_wide_setting": "YOLO 모드는 앱 전체 설정입니다"
@@ -6993,7 +7002,6 @@
       "send_selection_to_chat": "선택 항목을 채팅으로 전송",
       "send_to_chat": "채팅으로 전송",
       "sending": "전송 중…",
-      "touch_select_anchor": "첫 지점 설정됨 — 반대쪽 끝을 탭하세요",
       "touch_select_done": "범위 선택됨 — 복사를 탭하세요",
       "use_here": "여기에서 터미널 사용",
       "use_starting_directory": "터미널 시작 디렉터리 사용",
@@ -7900,6 +7908,7 @@
       "profile_lookup_failed_body": "Kiro 프로필을 조회하지 못했습니다. 처음부터 다시 시작해 다시 시도하세요.",
       "connection_lost_body": "{{productName}}와(과)의 연결이 끊어졌습니다. 재시작되었을 수 있습니다. 처음부터 다시 시작해 다시 로그인하세요.",
       "sign_in_status_unavailable": "로그인 상태를 확인하지 못했습니다",
+      "owner_only": "대시보드 소유자만 Kiro 로그인을 관리할 수 있습니다.",
       "sign_in_to_kiro": "Kiro에 로그인",
       "skip_for_now": "지금은 건너뛰기",
       "signing_in_with": "{{provider}}(으)로 로그인 중",
@@ -11854,6 +11863,10 @@
     "account_and_settings": "계정 및 설정"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "이 크루는 연결되어 있지 않습니다. 메인 창에서 연결한 다음 다시 팝아웃하세요.",
+      "this_pop_out_cannot_be_opened": "이 팝아웃은 여기서 열 수 없습니다."
+    },
     "mcpPage": {
       "bot_workers_note": "여기서 추가한 서버는 Bot의 워커에 전달되지 않습니다. Bot의 워커는 서버를 해당 Bot에 추가했을 때만 받습니다.",
       "title": "MCP 서버",
@@ -12115,7 +12128,23 @@
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
       "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
-      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다.",
+      "browser_sites_list_title": "탐색 사이트",
+      "browser_sites_list_hint": "이 앱 자체 에이전트가 탐색할 수 있는 페이지입니다. 삭제한 사이트는 에이전트의 다음 단계부터 적용되지 않습니다.",
+      "browser_sites_source_app": "앱에서",
+      "browser_sites_source_owner": "내가 추가함",
+      "browser_sites_status_approved": "허용됨",
+      "browser_sites_status_pending": "승인 대기",
+      "browser_sites_status_disabled": "꺼짐",
+      "browser_sites_status_removed": "삭제됨",
+      "browser_sites_remove": "삭제",
+      "browser_sites_turn_on": "켜기",
+      "browser_sites_add_back": "다시 추가",
+      "browser_sites_remove_failed": "사이트를 삭제할 수 없습니다: {{error}}",
+      "browser_sites_add_failed": "사이트를 다시 추가하지 못했습니다: {{error}}",
+      "browser_sites_turn_on_title": "이 탐색 사이트를 다시 켤까요?",
+      "browser_sites_add_back_title": "이 탐색 사이트를 다시 추가할까요?",
+      "browser_sites_restore_risk": "그러면 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다. 신뢰하는 사이트만 허용하세요."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -13086,7 +13115,8 @@
         "host_sandbox_teammate_unnamed": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. Crew 소유자에게 확인을 요청하세요.",
         "copy_details": "세부 정보 복사",
         "copy_details_hint": "오류 코드와 시간만 복사합니다",
-        "host_sandbox_teammate_named": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. {{owner}}(Crew 소유자)에게 확인을 요청하세요."
+        "host_sandbox_teammate_named": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. {{owner}}(Crew 소유자)에게 확인을 요청하세요.",
+        "repeated_in_a_row_other": "연속 {{count}}번 발생했습니다. 마지막: {{time}}"
       },
       "folderPanel": {
         "back": "뒤로",
@@ -13633,6 +13663,7 @@
         "agent_switch_blocked_channel": "{{agent}}(으)로의 전환이 차단되었습니다 — 이 채팅은 {{channel_agent}}이(가) 담당하는 Slack 채널에 연결되어 있습니다. 다음 턴은 그 에이전트로 다시 시작합니다.",
         "channel_message_not_run": "Slack 채널의 메시지가 실행되지 않았습니다: 이 세션의 에이전트는 그 채널이 사용하는 에이전트가 아닙니다.",
         "member_rebind_kept_agent": "{{bot}}은(는) 이제 {{agent}}(으)로 설정되어 있지만, 이 채팅은 시작할 때의 에이전트인 {{recorded}}(으)로 계속 실행됩니다. {{agent}}을(를) 사용하려면 {{bot}}와(과) 새 채팅을 시작하세요.",
+        "member_harness_elsewhere": "{{bot}}은(는) 자신의 채팅에서는 {{bot_harness}}에서 실행되지만, 이 채팅은 계속 {{chat_harness}}에서 실행됩니다. {{bot_harness}}을(를) 사용하려면 {{bot}} 자신의 채팅을 여세요.",
         "agent_no_tools": "{{agent}}에는 지정된 도구가 없어서 이 채팅에서 명령 실행, 파일 작업, MCP 서버 사용을 할 수 없습니다.",
         "agent_no_tools_open": "도구 선택",
         "harness_mode_changed": "이 세션이 {{mode}} 모드로 전환되었습니다.",
@@ -15134,7 +15165,10 @@
       "show_sessions_count_other": "세션 {{n}}개 표시",
       "hide_sessions_count_other": "세션 {{n}}개 숨기기",
       "reclick_toggles_side_panel": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다",
-      "reclick_toggles_side_panel_shortcut": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다 ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다 ({{shortcut}})",
+      "show_linked_items_other": "연결된 항목 {{count}}개 보기",
+      "hide_linked_items": "연결된 항목 숨기기",
+      "show_linked_items_failed_other": "연결된 항목 {{count}}개 보기, 실패한 검사 있음"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -20534,7 +20568,7 @@
         "profile_2": "프로필",
         "profiles_json": "profiles/*.json",
         "rail_active": "현재 활성",
-        "rail_until_restart": "재시작할 때까지",
+        "rail_until_restart": "{{productName}}을(를) 중지할 때까지",
         "rail_until_time": "{{time}}까지",
         "search_rules_placeholder": "규칙·패턴·카테고리 검색…",
         "section_group_enforced": "적용 중",
@@ -20639,7 +20673,7 @@
         "yolo_duration_locked": "조직 정책으로 비활성화됨",
         "yolo_duration_next_activation_note": "다음에 자동 승인을 켤 때 적용됩니다.",
         "yolo_duration_title": "자동 승인 유지 시간",
-        "yolo_duration_until_shutdown": "{{productName}}이(가) 재시작될 때까지",
+        "yolo_duration_until_shutdown": "{{productName}}을(를) 중지할 때까지",
         "your_custom_denies": "사용자 지정 차단",
         "yolo_duration_load_failed": "저장된 기간을 불러올 수 없습니다. 강조된 옵션은 저장된 값이 아닌 기본값입니다.",
         "tailnet_copy_failed": "복사하지 못했습니다. 주소를 선택하여 직접 복사하세요.",
@@ -21839,6 +21873,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · RAM {{ramGb}}GB · 디스크 {{diskGb}}GB",
         "tier_price": "약 {{hourly}}/시간 · 계속 실행하면 약 {{monthly}}/월 (추정)",
         "price_region_note": "요금은 {{priceRegion}} 온디맨드 요금이며 다른 리전에서는 다를 수 있습니다.",
+        "stopped_billing_note": "중지된 크루도 크루를 삭제할 때까지 디스크와 S3에 남아 있는 설정 파일 요금이 계속 청구됩니다.",
         "transport_hint_fargate": "Session Manager를 통해 AWS Fargate 태스크에 도달합니다. 대시보드가 아닌 채팅 API를 제공합니다.",
         "transport_hint_ssh": "SSH를 통해 연결합니다.",
         "transport_hint_ssm": "AWS Systems Manager Session Manager를 통해 연결합니다.",
@@ -21887,7 +21922,19 @@
         "setting_up_progress": "설정 중 · {{total}}단계 중 {{current}}단계",
         "launching_crew": "{{name}} 시작 중",
         "ssm_start_session_denied": "이 AWS 역할은 이 인스턴스에서 SSM 세션을 시작할 수 없어요. ssm:StartSession 권한을 주거나, 이 권한이 있는 AWS 프로필을 고르세요.",
-        "show_aws_error": "AWS 오류 보기"
+        "show_aws_error": "AWS 오류 보기",
+        "warm_cap": "로드 상태로 둘 크루",
+        "warm_cap_desc": "한 번에 로드 상태로 두는 원격 크루입니다. 최근에 연 것이 먼저입니다. 자동은 {{auto}}개입니다.",
+        "warm_cap_auto": "자동({{n}}) · 많을수록 전환이 빨라지고 메모리를 더 씁니다",
+        "warm_cap_set": "{{n}}(으)로 설정됨 · 많을수록 전환이 빨라지고 메모리를 더 씁니다",
+        "warm_cap_use_auto": "자동 사용",
+        "warm_cap_save_failed": "로드 상태로 둘 크루 수를 저장하지 못했습니다.",
+        "usage_label": "원격 크루 사용량",
+        "usage_value": "로드됨 {{panes}} · 메모리 {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "로드된 원격 크루가 없습니다.",
+        "usage_shared": "기본 창과 프로세스 공유: {{n}}. 이 사용량은 포함되지 않습니다.",
+        "warm_cap_load_failed": "로드 상태로 둘 크루 수를 읽지 못했습니다.",
+        "usage_failed": "원격 크루 사용량을 읽지 못했습니다."
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

@@ -96,6 +96,90 @@ test("postShutdown sends the listener entry for the dialed address", async () =>
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test("postShutdown says user_stop only for a stop the user chose", async () => {
+  // A Quit the user chose ends the gateway's kept YOLO and chat trust; the stop
+  // before an update must keep them, so it sends no body at all.
+  const home = tmpHomeWithSecret("home-wide");
+  const bodies = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => { body += d; });
+    req.on("end", () => { bodies.push(body); res.writeHead(200); res.end('{"ok":true}'); });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  writeListenerSecret(home, port, "127.0.0.1", "listener");
+  try {
+    const backendUrl = `http://127.0.0.1:${port}`;
+    assert.strictEqual(await postShutdown({ backendUrl, kirocrewHome: home, userStop: true }), true);
+    assert.strictEqual(await postShutdown({ backendUrl, kirocrewHome: home }), true);
+    assert.deepStrictEqual(bodies, ['{"user_stop":true}', ""]);
+  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a Quit leaves the user-stop mark even when the gateway is only signalled", async () => {
+  // The signal fallback is not read as a user stop by the gateway, so the Quit's
+  // own mark is what ends the kept grants; the stop before an update leaves none.
+  for (const userStop of [true, false]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "kc-userstop-"));
+    const proc = spawnDummy();
+    await waitReady(proc);
+    try {
+      await stopGatewayGracefully(proc, {
+        backendUrl: "http://127.0.0.1:1",
+        kirocrewHome: home,
+        timeoutMs: 5000,
+        userStop,
+        postShutdownFn: async () => false,
+      });
+      const mark = path.join(home, "kept-grants", "user-stop");
+      assert.strictEqual(fs.existsSync(mark), userStop);
+      if (userStop) {
+        assert.strictEqual(JSON.parse(fs.readFileSync(mark, "utf8")).via, "desktop");
+        if (process.platform !== "win32") {
+          assert.strictEqual(fs.statSync(mark).mode & 0o777, 0o600);
+        }
+      }
+    } finally {
+      if (proc.exitCode === null) proc.kill("SIGKILL");
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a Quit after the gateway child already exited still leaves the user-stop mark", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kc-userstop-gone-"));
+  try {
+    const gone = { exitCode: 137, once: () => {} };
+    await stopGatewayGracefully(gone, { kirocrewHome: home, userStop: true });
+    assert.strictEqual(fs.existsSync(path.join(home, "kept-grants", "user-stop")), true);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "kc-userstop-gone-"));
+    await stopGatewayGracefully(gone, { kirocrewHome: other, userStop: false });
+    assert.strictEqual(fs.existsSync(path.join(other, "kept-grants", "user-stop")), false);
+    fs.rmSync(other, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("stopGatewayGracefully passes userStop through to postShutdown", async () => {
+  for (const userStop of [true, false]) {
+    const proc = spawnDummy();
+    await waitReady(proc);
+    const calls = [];
+    try {
+      await stopGatewayGracefully(proc, {
+        backendUrl: "http://127.0.0.1:1",
+        kirocrewHome: "/unused",
+        timeoutMs: 5000,
+        userStop,
+        postShutdownFn: async (opts) => { calls.push(opts); return false; },
+      });
+      assert.strictEqual(calls[0].userStop, userStop);
+    } finally { if (proc.exitCode === null) proc.kill("SIGKILL"); }
+  }
+});
+
 test("postShutdown never sends .local_secret when no listener entry is published", async () => {
   // An older gateway publishes no entry. Nothing the app can observe proves the
   // port reaches only its own child (an unprivileged lsof hides another user's

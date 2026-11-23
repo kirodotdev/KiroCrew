@@ -97,6 +97,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_forget_store_document": ("function", False, "b60c5fea256e", "store_sync"),
     "_guard_off_event_loop": ("staticmethod", False, "6d7a93dbe237", "cron"),
     "_handles_of": ("staticmethod", False, "22fc29ddcddf", "run_kill"),
+    # The breaker's filing of a run a hard exit cut short, when no dump explains it.
+    "_file_cut_run": ("function", False, "648a677d2f09", "stall_breaker"),
     "_hold_run_record": ("function", False, "205f7c442654", "run_merge"),
     "_is_due": ("staticmethod", False, "7f648885cd59", "cron_service.schedule"),
     "_keep_store_document": ("function", False, "b474d2621c43", "store_sync"),

@@ -193,11 +193,22 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #: * ``released-sessions`` -- created on demand by the GATEWAY and read by nothing
 #:   else, with the same link hazard: a sandboxed process unlinks it, drops its own
 #:   directory, and forges entries that have the gateway delete the records they name.
+#: * ``kept-grants`` -- created on demand by the GATEWAY and the operator's own
+#:   ``kirocrew stop``, with the same link hazard: a sandboxed process unlinks it and
+#:   drops a directory of its own, where the user-stop mark a stop writes is lost and
+#:   the grants it should end are kept.
 #:
 #: So for these, a link is refused: the disposition must attach to the same name the
 #: reader uses, and following a link is exactly the gap that voids it.
 _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
-    {"crew-panels", "member-records", "panel-dismissals", "panel-templates", "released-sessions"}
+    {
+        "crew-panels",
+        "kept-grants",
+        "member-records",
+        "panel-dismissals",
+        "panel-templates",
+        "released-sessions",
+    }
 )
 
 

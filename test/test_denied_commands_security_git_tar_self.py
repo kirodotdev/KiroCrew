@@ -1816,3 +1816,38 @@ class TestSandboxEscapeGitTarSelf:
     )
     def test_literal_self_dials_keep_their_hard_row(self, cmd, rule):
         assert _denied_by(cmd) == rule, cmd
+
+    # A git/tar transport to this host that shares a line with a ``<<`` stays
+    # refused, whether the ``<<`` opens a real here-document body or none at all --
+    # a here-string ``<<<``, an arithmetic left shift ``$(( ))``, or a real body the
+    # transport follows or nests after.  An option written in upper case is read in
+    # that case, so the frame the reset reading builds must keep that case too;
+    # otherwise the floor's original-case and lowered passes would count different
+    # frames and drop the row.  A remote host stays allowed.
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            ("sudo -H git clone ssh://localhost/r <<< hi", _RULE),
+            ("cat <<< hi; sudo -H git clone ssh://localhost/r", _RULE),
+            ("x=$((1<<2)); sudo -H tar -xf localhost:/x", _RULE),
+            ('cat <<EOF\nx\nEOF\nbash -c "sudo -H git clone ssh://localhost/r"', _RULE),
+            ('cat <<EOF\nx\nEOF\nbash -c "sudo -H tar -xf localhost:/x"', _RULE),
+            ("sudo -H git clone ssh://localhost/r", _RULE),
+            ("sudo -H git clone ssh://github.com/r <<< hi", None),
+            ("x=$((1<<2)); sudo -H tar -xf github.com:/x", None),
+            ('cat <<EOF\nx\nEOF\nbash -c "sudo -H git clone ssh://github.com/r"', None),
+        ],
+        ids=[
+            "herestring-before-transport",
+            "herestring-then-transport",
+            "arith-shift-then-transport",
+            "real-body-then-nested-transport",
+            "real-body-then-nested-tar",
+            "plain-transport-control",
+            "herestring-remote-allowed",
+            "arith-shift-remote-allowed",
+            "real-body-remote-allowed",
+        ],
+    )
+    def test_a_transport_sharing_a_line_with_a_heredoc_stays_refused(self, cmd, rule):
+        assert _denied_by(cmd) == rule, cmd

@@ -250,6 +250,16 @@ async def start_api_server(
     # back-fill / seed) which fsyncs on the event loop; a large tags.json —
     # including preserved-but-malformed rows — must not stall startup.
     await asyncio.to_thread(state.load_tags)
+    # A gateway with no dashboard keeps YOLO across an exit the user did not choose
+    # too, and records its own grant transitions, so a grant it ends is not restored
+    # by a later boot (``kept_yolo``). Fire-and-forget, off the boot path: an owner's
+    # pick made while it runs wins at its commit, and the recorder it arms syncs the
+    # live grant first.
+    from kiro_crew import kept_yolo
+
+    app["kept_yolo_restore"] = asyncio.get_running_loop().create_task(
+        asyncio.to_thread(kept_yolo.restore_at_boot)
+    )
     app["port"] = port
 
     _precompute_telemetry(state)

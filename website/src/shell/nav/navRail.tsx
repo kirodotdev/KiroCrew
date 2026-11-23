@@ -17,7 +17,7 @@ import { isChatRoute } from './routeActive'
 import { RailBrandToggle, RailCommunityLinks } from './railChrome'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
-import { NavItem, NavBadge } from './navRow'
+import { NavItem, NavBadge, NavRowLayoutKey } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
 import { DockMatesSection, useDockMates } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
@@ -111,8 +111,10 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     ) : renderNavRow(n)
   )
 
+  const rowLayoutKey = `${effectiveCollapsed}|${advertisedNavItems.map(n => n.id).join(',')}|${sortedAppGroup.map(n => n.id).join(',')}`
+
   return (
-    <>
+    <NavRowLayoutKey.Provider value={rowLayoutKey}>
       {/* Mobile backdrop — opacity is animated by animateDrawer in lockstep
           with the panel (compositor), so there is no framer fade here; it
           mounts at 0 and the slide carries it. Mounted for the whole phase so
@@ -479,6 +481,6 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           </nav>
         )
       })()}
-    </>
+    </NavRowLayoutKey.Provider>
   )
 }

@@ -285,6 +285,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The idle sweep never picks or pops a slot holding a reservation.
                 ("slot_retention.py", "_still_idle_check"),
                 ("slot_retention.py", "select_idle_slot_keys"),
+                # The idle window release leaves a slot a send has reserved alone:
+                # the turn it admits reads the window it would shorten.
+                ("slot_window_release.py", "release_idle_windows"),
                 ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.

@@ -441,6 +441,15 @@
       "tab_gone": "Bot 的标签页已关闭，没有可显示的实时页面。",
       "app_off": "这个应用已关闭，所以无法显示浏览器。在“应用”里打开它，就能再看到页面。",
       "actions": "Bot 做了什么"
+    },
+    "browserSites": {
+      "add_title": "允许新的浏览网站吗？",
+      "add_asked_by": "{{app}} 请求把下面这个网站加入它自己的智能体可以浏览的页面。",
+      "add_app_details": "作者 {{author}} · 应用 ID {{id}}",
+      "add_app_id": "应用 ID {{id}}",
+      "add_star": "其中每个 * 可以匹配任意文字，所以所有地址相符的页面都包括在内。",
+      "add_risk": "允许后，应用自带智能体会用你的登录身份，在你浏览器里打开、阅读这些页面，并在上面输入和点击，不再每次询问。只允许可信网站，之后可以随时移除。",
+      "add_allow": "允许网站"
     }
   },
   "apps": {
@@ -6335,7 +6344,7 @@
       "trust_scope_tooltip": "此对话由应用授权信任；授权会自行过期。在此菜单中选择“常规”可立即结束；在该应用中关闭之前，应用可能会再次授权。",
       "yolo_desc": "在每个对话中，{{productName}} 无需先询问即可工作",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "在 {{productName}} 重启前保持开启 — 不会按时间过期。",
+      "yolo_expiration_until_shutdown": "在你停止 {{productName}} 之前保持开启 — 不会按时间过期。重启后仍保持开启。",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "已被组织的安全策略禁用",
       "yolo_mode_is_an_app_wide_setting": "YOLO 模式是全应用级设置"
@@ -6993,7 +7002,6 @@
       "send_selection_to_chat": "发送所选内容到聊天",
       "send_to_chat": "发送到聊天",
       "sending": "发送中…",
-      "touch_select_anchor": "已设第一点 — 点按另一端",
       "touch_select_done": "已选择范围 — 点按复制",
       "use_here": "在此窗口使用终端",
       "use_starting_directory": "使用终端起始目录",
@@ -7900,6 +7908,7 @@
       "profile_lookup_failed_body": "无法查询你的 Kiro 配置文件。请重新开始以再试一次。",
       "connection_lost_body": "与 {{productName}} 的连接已断开，它可能已重启。请重新开始以再次登录。",
       "sign_in_status_unavailable": "无法检查登录状态",
+      "owner_only": "只有仪表板所有者可以管理 Kiro 登录。",
       "sign_in_to_kiro": "登录 Kiro",
       "skip_for_now": "暂时跳过",
       "signing_in_with": "正在通过 {{provider}} 登录",
@@ -11854,6 +11863,10 @@
     "account_and_settings": "账号与设置"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "此 Crew 未连接。请在主窗口中连接它，然后重新弹出。",
+      "this_pop_out_cannot_be_opened": "无法在此打开这个弹出窗口。"
+    },
     "mcpPage": {
       "bot_workers_note": "在这里添加的服务器不会进入 Bot 的工作者。只有把服务器添加到某个 Bot，该 Bot 的工作者才能使用它。",
       "title": "MCP 服务器",
@@ -12115,7 +12128,23 @@
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
       "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
-      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。"
+      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。",
+      "browser_sites_list_title": "浏览网站",
+      "browser_sites_list_hint": "这个应用自带的智能体可以浏览的页面。移除的网站在智能体下一步时失效。",
+      "browser_sites_source_app": "应用自带",
+      "browser_sites_source_owner": "你添加的",
+      "browser_sites_status_approved": "已允许",
+      "browser_sites_status_pending": "待批准",
+      "browser_sites_status_disabled": "已停用",
+      "browser_sites_status_removed": "已移除",
+      "browser_sites_remove": "移除",
+      "browser_sites_turn_on": "启用",
+      "browser_sites_add_back": "重新添加",
+      "browser_sites_remove_failed": "无法移除网站：{{error}}",
+      "browser_sites_add_failed": "无法重新添加该网站：{{error}}",
+      "browser_sites_turn_on_title": "重新启用这个浏览网站吗？",
+      "browser_sites_add_back_title": "把这个浏览网站加回来吗？",
+      "browser_sites_restore_risk": "之后应用自带智能体会用你的登录身份，在你浏览器里打开、阅读这些页面，并在上面输入和点击，不再每次询问。只允许可信网站。"
     },
     "appPage": {
       "loading_app": "加载应用…",
@@ -13086,7 +13115,8 @@
         "host_sandbox_teammate_unnamed": "这个 Crew 的电脑现在无法开始聊天。请让 Crew 所有者检查一下。",
         "copy_details": "复制详情",
         "copy_details_hint": "只复制错误代码和时间",
-        "host_sandbox_teammate_named": "这个 Crew 的电脑现在无法开始聊天。请让 {{owner}}（Crew 所有者）检查一下。"
+        "host_sandbox_teammate_named": "这个 Crew 的电脑现在无法开始聊天。请让 {{owner}}（Crew 所有者）检查一下。",
+        "repeated_in_a_row_other": "连续发生 {{count}} 次，最近一次在 {{time}}"
       },
       "folderPanel": {
         "back": "后退",
@@ -13633,6 +13663,7 @@
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "member_rebind_kept_agent": "{{bot}} 现已设为使用 {{agent}}，但此聊天仍在运行它开始时使用的智能体 {{recorded}}。要使用 {{agent}}，请与 {{bot}} 开始一个新聊天。",
+        "member_harness_elsewhere": "{{bot}} 在自己的聊天中运行在 {{bot_harness}} 上，而此聊天仍运行在 {{chat_harness}} 上。要使用 {{bot_harness}}，请打开 {{bot}} 自己的聊天。",
         "agent_no_tools": "{{agent}} 没有列出任何工具，所以在此聊天中无法运行命令、处理文件或使用 MCP 服务器。",
         "agent_no_tools_open": "选择它的工具",
         "harness_mode_changed": "此会话已切换到 {{mode}} 模式。",
@@ -15134,7 +15165,10 @@
       "show_sessions_count_other": "显示 {{n}} 个会话",
       "hide_sessions_count_other": "隐藏 {{n}} 个会话",
       "reclick_toggles_side_panel": "再次点击可显示或隐藏侧边面板",
-      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）",
+      "show_linked_items_other": "显示 {{count}} 个关联项",
+      "hide_linked_items": "隐藏关联项",
+      "show_linked_items_failed_other": "显示 {{count}} 个关联项，有检查失败"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -20534,7 +20568,7 @@
         "profile_2": "配置文件",
         "profiles_json": "profiles/*.json",
         "rail_active": "当前生效",
-        "rail_until_restart": "至重启",
+        "rail_until_restart": "直到你停止 {{productName}}",
         "rail_until_time": "至 {{time}}",
         "search_rules_placeholder": "搜索规则、模式或分类…",
         "section_group_enforced": "强制生效",
@@ -20596,7 +20630,7 @@
         "yolo_duration_locked": "已由组织策略禁用",
         "yolo_duration_next_activation_note": "下次开启自动批准时生效。",
         "yolo_duration_title": "自动批准保持开启的时长",
-        "yolo_duration_until_shutdown": "直到 {{productName}} 重启",
+        "yolo_duration_until_shutdown": "直到你停止 {{productName}}",
         "your_custom_denies": "你的自定义拒绝规则",
         "trustedApps": {
           "description": "你已允许在这台电脑上运行自身代码的应用。信任每次只覆盖一个应用，其他第三方应用仍然会被拦截。",
@@ -21839,6 +21873,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB disk",
         "tier_price": "约 {{hourly}}/小时 · 持续运行约 {{monthly}}/月（估算）",
         "price_region_note": "价格为 {{priceRegion}} 按需费率；其他区域的价格可能不同。",
+        "stopped_billing_note": "已停止的 Crew 仍会按其磁盘以及保留在 S3 中的任何设置文件计费，直到你删除这个 Crew。",
         "transport_hint_fargate": "通过 Session Manager 到达 AWS Fargate 任务。它提供的是聊天 API，而不是仪表板。",
         "transport_hint_ssh": "通过 SSH 连接。",
         "transport_hint_ssm": "通过 AWS Systems Manager Session Manager 连接。",
@@ -21887,7 +21922,19 @@
         "setting_up_progress": "正在设置 · 第 {{current}}/{{total}} 步",
         "launching_crew": "正在启动 {{name}}",
         "ssm_start_session_denied": "这个 AWS 角色无权在这台实例上启动 SSM 会话。给它 ssm:StartSession 权限，或选一个有这个权限的 AWS 配置文件。",
-        "show_aws_error": "显示 AWS 原始报错"
+        "show_aws_error": "显示 AWS 原始报错",
+        "warm_cap": "保持加载的 Crew",
+        "warm_cap_desc": "同时保持加载的远程 Crew，最近打开的优先。自动模式保留 {{auto}} 个。",
+        "warm_cap_auto": "自动（{{n}}）· 越多切换越快，占用内存也越多",
+        "warm_cap_set": "已设为 {{n}} · 越多切换越快，占用内存也越多",
+        "warm_cap_use_auto": "使用自动",
+        "warm_cap_save_failed": "无法保存保持加载的 Crew 数量。",
+        "usage_label": "远程 Crew 占用",
+        "usage_value": "已加载 {{panes}} · 内存 {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "没有已加载的远程 Crew。",
+        "usage_shared": "与主窗口共用进程：{{n}}。它们的占用未计入。",
+        "warm_cap_load_failed": "无法读取保持加载的 Crew 数量。",
+        "usage_failed": "无法读取远程 Crew 占用。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

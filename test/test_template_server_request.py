@@ -20,7 +20,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import SK, SLOT, FakeState, _card_headers, _fake_auth
 
+from kiro_crew import agent as agent_mod
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew import mcp_discovery
 from kiro_crew import template_mcp_additions as additions
 from kiro_crew.dashboard.change_cards import CardStore
 from kiro_crew.dashboard.handlers import change_cards as routes
@@ -203,6 +205,78 @@ def test_request_raises_a_card_the_owner_applies_and_undoes(env, tmp_path):
     assert undone == 200 and final["status"] == "undone"
     assert additions.read_additions("kirocrew-conductor") == {}
     assert env["applied"] == 2
+
+
+async def _resolve_any(name, source, registry_id, *, settings_hint):
+    return name, dict(GATEWAY_ENTRY), {"source": "gateway"}
+
+
+def _own_config(monkeypatch, declared, app_owned=()):
+    """The user's MCP config files declare *declared*; installed apps mint *app_owned*."""
+    monkeypatch.setattr(
+        mcp_discovery,
+        "_load_mcp_json_by_source",
+        lambda: {"kirocrew": {name: dict(GATEWAY_ENTRY) for name in declared}},
+    )
+    monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: dict.fromkeys(app_owned, True))
+
+
+def test_a_gateway_server_named_with_a_colon_is_applied_and_undone(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, ["docs:search"])
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        status, card = await _request(c, {"server": "docs:search", "source": "gateway"})
+        assert status == 200, card
+        step = card["plan"]["apply"][0]
+        applied = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        assert applied.status == 200, await applied.text()
+        recorded = set(additions.read_additions("kirocrew-conductor"))
+        after = store.public(store.get(card["id"]))
+        undo = after["plan"]["undo"][0]
+        undone = await c.delete(undo["path"], headers=_card_headers(after, op="undo"))
+        return card, recorded, undo, undone.status
+
+    card, recorded, undo, undone = _run(store, go)
+    assert card["params"]["server"] == "docs:search"
+    assert recorded == {"docs:search"}
+    assert "/mcp-additions/docs%3Asearch?" in undo["path"]
+    assert undone == 200
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
+@pytest.mark.parametrize("server", ["docs/search", "@docs", ":docs", "docs:"])
+def test_a_template_server_name_outside_one_plain_segment_is_refused(
+    env, tmp_path, monkeypatch, server
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, [server])
+    status, body = _run(
+        CardStore(tmp_path / "c.json"),
+        lambda c: _request(c, {"server": server, "source": "gateway"}),
+    )
+    assert (status, body["code"]) == (400, "invalid_param"), body
+    assert "can't be added to an agent template" in body["error"]
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
+@pytest.mark.parametrize(
+    "declared, app_owned",
+    [([], ["music:player"]), (["music:player"], ["music:player"]), ([], [])],
+)
+def test_a_colon_server_an_app_mints_or_no_own_config_declares_is_refused(
+    env, tmp_path, monkeypatch, declared, app_owned
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, declared, app_owned)
+    status, body = _run(
+        CardStore(tmp_path / "c.json"),
+        lambda c: _request(c, {"server": "music:player", "source": "gateway"}),
+    )
+    assert (status, body["code"]) == (400, "app_server"), body
+    assert "can't be added to an agent template" in body["error"]
+    assert additions.read_additions("kirocrew-conductor") == {}
 
 
 def test_the_request_never_takes_a_launch_line_from_the_agent(env, tmp_path):

@@ -441,6 +441,15 @@
       "tab_gone": "Bot のタブが閉じられているため、表示できるライブのページがありません。",
       "app_off": "このアプリはオフになっているため、ブラウザーを表示できません。アプリ一覧でオンにすると、ページがまた表示されます。",
       "actions": "Bot がしたこと"
+    },
+    "browserSites": {
+      "add_title": "新しい閲覧サイトを許可しますか？",
+      "add_asked_by": "{{app}} が、自身のエージェントが閲覧できるページに下のサイトを追加するよう求めています。",
+      "add_app_details": "作成者 {{author}} · アプリ ID {{id}}",
+      "add_app_id": "アプリ ID {{id}}",
+      "add_star": "中の * はどんな文字列にも一致するため、アドレスが当てはまるすべてのページが対象になります。",
+      "add_risk": "許可すると、アプリ自身のエージェントが毎回確認せずに、あなたのブラウザーであなたのログインのまま、これらのページを開き、読み、入力し、クリックできます。信頼できるサイトだけを許可してください。後で削除できます。",
+      "add_allow": "サイトを許可"
     }
   },
   "apps": {
@@ -6295,7 +6304,7 @@
       "trust_scope_tooltip": "このチャットはアプリの許可で信頼されています。許可は自動で期限切れになります。今すぐ終了するにはこのメニューで標準を選んでください。アプリ側でオフにするまで、アプリが再び許可することがあります。",
       "yolo_desc": "すべてのチャットで、{{productName}} は最初に確認せずに機能します",
       "yolo_expiration_timed": "{{duration}} 後に自動的にオフになり、その後再び確認します。",
-      "yolo_expiration_until_shutdown": "{{productName}} が再起動されるまでオンのままです—タイムアウト有効期限はありません。",
+      "yolo_expiration_until_shutdown": "{{productName}} を停止するまでオンのままです—タイムアウト有効期限はありません。再起動しても維持されます。",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "組織のセキュリティポリシーにより無効化されています",
       "yolo_mode_is_an_app_wide_setting": "YOLO モードはアプリ全体の設定です"
@@ -6993,7 +7002,6 @@
       "send_selection_to_chat": "選択部分をチャットに送信",
       "send_to_chat": "チャットに送信",
       "sending": "送信中…",
-      "touch_select_anchor": "始点を設定 — もう一方の端をタップ",
       "touch_select_done": "範囲を選択 — コピーをタップ",
       "use_here": "ここでターミナルを使う",
       "use_starting_directory": "ターミナルの開始ディレクトリを使用",
@@ -7900,6 +7908,7 @@
       "profile_lookup_failed_body": "Kiro プロファイルを検索できませんでした。最初からやり直して、もう一度お試しください。",
       "connection_lost_body": "{{productName}} との接続が切れました。再起動した可能性があります。最初からやり直して、もう一度サインインしてください。",
       "sign_in_status_unavailable": "サインイン状態を確認できませんでした",
+      "owner_only": "Kiro のサインインを管理できるのはダッシュボードのオーナーだけです。",
       "sign_in_to_kiro": "Kiro にサインイン",
       "skip_for_now": "今はスキップ",
       "signing_in_with": "{{provider}} でサインイン中",
@@ -11854,6 +11863,10 @@
     "account_and_settings": "アカウントと設定"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "このクルーは接続されていません。メインウィンドウで接続してから、もう一度ポップアウトしてください。",
+      "this_pop_out_cannot_be_opened": "このポップアウトはここでは開けません。"
+    },
     "mcpPage": {
       "bot_workers_note": "ここで追加したサーバーは Bot のワーカーには届きません。Bot のワーカーがサーバーを使えるのは、その Bot に追加したときだけです。",
       "title": "MCP サーバー",
@@ -12115,7 +12128,23 @@
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
       "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
-      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。"
+      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。",
+      "browser_sites_list_title": "閲覧サイト",
+      "browser_sites_list_hint": "このアプリ自身のエージェントが閲覧できるページです。削除したサイトはエージェントの次の操作から無効になります。",
+      "browser_sites_source_app": "アプリから",
+      "browser_sites_source_owner": "あなたが追加",
+      "browser_sites_status_approved": "許可済み",
+      "browser_sites_status_pending": "承認待ち",
+      "browser_sites_status_disabled": "停止中",
+      "browser_sites_status_removed": "削除済み",
+      "browser_sites_remove": "削除",
+      "browser_sites_turn_on": "オンにする",
+      "browser_sites_add_back": "再追加",
+      "browser_sites_remove_failed": "サイトを削除できませんでした：{{error}}",
+      "browser_sites_add_failed": "サイトを再追加できませんでした: {{error}}",
+      "browser_sites_turn_on_title": "この閲覧サイトを再び有効にしますか？",
+      "browser_sites_add_back_title": "この閲覧サイトを戻しますか？",
+      "browser_sites_restore_risk": "その後、アプリ自身のエージェントが毎回確認せずに、あなたのブラウザーであなたのログインのまま、これらのページを開き、読み、入力し、クリックできます。信頼できるサイトだけを許可してください。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -13086,7 +13115,8 @@
         "host_sandbox_teammate_unnamed": "この Crew のコンピューターは今チャットを開始できません。Crew のオーナーに確認を頼んでください。",
         "copy_details": "詳細をコピー",
         "copy_details_hint": "エラーコードと時刻だけをコピーします",
-        "host_sandbox_teammate_named": "この Crew のコンピューターは今チャットを開始できません。{{owner}}（Crew のオーナー）に確認を頼んでください。"
+        "host_sandbox_teammate_named": "この Crew のコンピューターは今チャットを開始できません。{{owner}}（Crew のオーナー）に確認を頼んでください。",
+        "repeated_in_a_row_other": "{{count}} 回連続で発生しました。最後は {{time}}"
       },
       "folderPanel": {
         "back": "戻る",
@@ -13633,6 +13663,7 @@
         "agent_switch_blocked_channel": "{{agent}} への切り替えはブロックされました — このチャットは {{channel_agent}} が担当する Slack チャンネルにリンクされています。次のターンはそのエージェントで再開します。",
         "channel_message_not_run": "Slack チャンネルからのメッセージは実行されませんでした: このセッションのエージェントは、そのチャンネルが使うエージェントではありません。",
         "member_rebind_kept_agent": "{{bot}} は現在 {{agent}} に設定されていますが、このチャットは開始時のエージェントである {{recorded}} で動作し続けます。{{agent}} を使うには、{{bot}} との新しいチャットを開始してください。",
+        "member_harness_elsewhere": "{{bot}} は自分のチャットでは {{bot_harness}} で動きますが、このチャットは {{chat_harness}} のままです。{{bot_harness}} を使うには、{{bot}} 自身のチャットを開いてください。",
         "agent_no_tools": "{{agent}} にはツールが指定されていないため、このチャットではコマンドの実行、ファイルの操作、MCP サーバーの利用ができません。",
         "agent_no_tools_open": "ツールを選ぶ",
         "harness_mode_changed": "このセッションは {{mode}} モードに切り替わりました。",
@@ -15134,7 +15165,10 @@
       "show_sessions_count_other": "{{n}} 件のセッションを表示",
       "hide_sessions_count_other": "{{n}} 件のセッションを非表示",
       "reclick_toggles_side_panel": "もう一度クリックするとサイドパネルの表示を切り替えます",
-      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）",
+      "show_linked_items_other": "関連項目を {{count}} 件表示",
+      "hide_linked_items": "関連項目を隠す",
+      "show_linked_items_failed_other": "関連項目を {{count}} 件表示（失敗したチェックあり）"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -20593,11 +20627,11 @@
         "tailnet_title": "このマシンの tailnet 名を信頼する",
         "tailnet_unavailable": "tailnet の設定を読み取れなかったため、ここでは表示も変更もできません。すでにオンだった場合、tailnet 名は引き続き許可されます。ページを再読み込みしてやり直してください。",
         "tailnet_unresolved_note": "これはオンですが、{{productName}} の起動時に tailnet 名が解決されなかったため、許可オリジンには何も追加されていません。tailscale serve 経由で開いたダッシュボードは、引き続きオリジンチェックで拒否されます。名前が利用できるようになったら {{productName}} を再起動してください。",
-        "yolo_duration_until_shutdown": "{{productName}} が再起動されるまで",
+        "yolo_duration_until_shutdown": "{{productName}} を停止するまで",
         "your_custom_denies": "カスタム拒否",
         "rail_active": "現在有効",
         "rail_until_time": "{{time}} まで",
-        "rail_until_restart": "再起動まで",
+        "rail_until_restart": "{{productName}} を停止するまで",
         "trustedApps": {
           "description": "このコンピューターで独自のコードを実行することを許可したアプリです。信頼は一度に1つのアプリにのみ適用され、その他のサードパーティアプリはブロックされたままです。",
           "empty": "まだ信頼したアプリはありません。",
@@ -21839,6 +21873,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · RAM {{ramGb}} GB · ディスク {{diskGb}} GB",
         "tier_price": "約 {{hourly}}/時間 · 起動したままなら約 {{monthly}}/月（概算）",
         "price_region_note": "料金は {{priceRegion}} のオンデマンド料金です。他のリージョンでは異なる場合があります。",
+        "stopped_billing_note": "停止したクルーでも、クルーを削除するまでは、ディスクと S3 に残っているセットアップ用ファイルの料金がかかり続けます。",
         "transport_hint_fargate": "Session Manager 経由で AWS Fargate タスクに到達します。ダッシュボードではなくチャット API を提供します。",
         "transport_hint_ssh": "SSH で接続します。",
         "transport_hint_ssm": "AWS Systems Manager Session Manager 経由で接続します。",
@@ -21887,7 +21922,19 @@
         "setting_up_progress": "セットアップ中 · {{current}}/{{total}}",
         "launching_crew": "{{name}} を起動中",
         "ssm_start_session_denied": "この AWS ロールには、このインスタンスで SSM セッションを開始する権限がありません。ssm:StartSession を付与するか、その権限を持つ AWS プロファイルを選んでください。",
-        "show_aws_error": "AWS のエラーを表示"
+        "show_aws_error": "AWS のエラーを表示",
+        "warm_cap": "読み込んだままにするクルー",
+        "warm_cap_desc": "同時に読み込んだままにするリモートクルーです。最近開いたものが優先されます。自動では {{auto}} 個です。",
+        "warm_cap_auto": "自動（{{n}}）・多いほど切り替えが速く、メモリを多く使います",
+        "warm_cap_set": "{{n}} に設定済み・多いほど切り替えが速く、メモリを多く使います",
+        "warm_cap_use_auto": "自動にする",
+        "warm_cap_save_failed": "読み込んだままにするクルーの数を保存できませんでした。",
+        "usage_label": "リモートクルーの使用量",
+        "usage_value": "読み込み済み {{panes}} · メモリ {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "読み込まれているリモートクルーはありません。",
+        "usage_shared": "メインウィンドウとプロセスを共有中: {{n}}。その分の使用量は含まれません。",
+        "warm_cap_load_failed": "読み込んだままにするクルーの数を読み取れませんでした。",
+        "usage_failed": "リモートクルーの使用量を読み取れませんでした。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",

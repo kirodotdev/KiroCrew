@@ -192,6 +192,23 @@ reports at the end. The job and run ids let the agent read more history itself.
 chat with no per-job "debug agent" setting: the agent that opens is the one the
 user would otherwise paste the log into, and a history row holds no draft.
 
+## Repeated failure cards
+
+A chat whose agent fails the same way again and again writes one red row per
+attempt. The dashboard's transcript rows (`createTranscriptRenderers`: the chat
+page, a split pane, the crew window) draw a run of rows that carry the same
+gateway notice, token and values (`errorNoticeRunKey` in `gatewayNotice.ts`), as
+ONE card on the run's first row (`website/src/pages/chat/errorRuns.ts`), so the
+card keeps its place while later attempts land. It says how many times it
+happened and when the newest did; expanded, it lists every attempt's time. Two
+attempts are consecutive when nothing but the Resume press that re-ran the first
+(its `[Continue — requested by the user]` inject) lies between them; that press
+folds into the run, and any other row ends it. The card offers Resume only when
+the run's newest row is the chat's newest error, as that row would. A row whose
+`kind` or `code` marks it as a card of its own (a sign-in, a usage limit, a turn
+limit, a failed session start, a capability refusal) is never folded, and the
+app-sdk default rows an embedded app draws are unchanged.
+
 ## Backend Error Classification
 
 `acp/transport_errors.py` (re-exported by `acp/client.py`) rewrites raw JSON-RPC

@@ -1,0 +1,8 @@
++113
+The git/tar self-dial floor reads each command twice -- once on the unsplit
+boundaries (so no refusal the unsplit reading reaches can be lost) and once on
+the glued-split boundaries (which only add refusals) -- and refuses if either
+does. The added lines are that two-pass entry plus ``argv_rules._expand_glued_boundaries``
+and its one rule: split a glued separator only in a word that carries no other
+shell metacharacter (a substitution, a ``)``, a ``#`` comment or a ``>|``
+redirection leaves the word whole), enabled on the floor's glued-split pass.

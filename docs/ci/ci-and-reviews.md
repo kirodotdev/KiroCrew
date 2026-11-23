@@ -941,6 +941,19 @@ the entry point, and re-exports every name of its two owners beside it. New work
 fact check or on the baseline goes to `scripts/docs_lint_fact_checks.py`, and a new
 self-test probe goes to `scripts/docs_lint_selftest.py`.
 
+### The route label baseline is read by a backend test
+
+[`.github/route-access-baseline.txt`](../../.github/route-access-baseline.txt) lists
+the gateway routes that have no entry in `kiro_crew.dashboard.route_access.ROUTES`.
+No script reads it: `test/test_route_access_labels.py` does, in the Backend Tests
+shards, and fails on a registered route that has neither an entry nor a line. It is
+shrink-only like the baselines above, with one difference: there is no refresh
+command. A line is deleted by hand in the change that labels or removes its route,
+and the same test fails on a line whose route has an entry. A line ADDED to it is
+caught in review, by `a-ratchet-may-only-tighten` and
+`a-route-declares-its-action-and-tier` in `AUTOSDE.yaml`. What a route declares:
+[route-access](../system-specs/modules/route-access.md).
+
 ## `ci.yml`: correctness
 
 Every job here is blocking. Every job that costs real runner time also `needs:`

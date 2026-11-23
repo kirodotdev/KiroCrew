@@ -10,7 +10,8 @@ This module is the bundle route's answer, dispatched BEFORE the kiro-cli path on
 spawns here. It also answers KAS's relay when that spawn starts on Crew's sign-in
 alone and kiro-cli's gate refuses (:func:`api_models_kas_crew_relay`): the same
 recording, with no cold probe, so nothing is spawned there either. A cold read
-there keeps the gate's 503 when its kiro-cli check only timed out.
+there is marked ``"cold": true``, and keeps the gate's 503 when its kiro-cli
+check only timed out.
 
 * **Readiness is the bundle's**: the installed engine
   (``kas_bundle.installed_bundle``) and Crew's own sign-in vault
@@ -30,7 +31,8 @@ there keeps the gate's 503 when its kiro-cli check only timed out.
 * **A cold process serves ``auto`` alone with 200**, not a degraded 503: nothing
   has failed, no session has advertised yet. The dashboard refetches the list
   when a session spawns (``useWebSocket``'s ``spawned`` invalidation), so the
-  first chat fills the picker without a poll. Cold again whenever the vault
+  first chat fills the picker, and a route that starts no probe marks its cold
+  row, which the page reads again every 8 s. Cold again whenever the vault
   names a different account than the one the rows were recorded for: every
   request reads the vault's identity fingerprint and
   ``recorded_catalog_snapshot`` yields the rows only to that account, so a
@@ -154,7 +156,7 @@ async def api_models_kas_workload(request: web.Request) -> web.Response:
     kiro-cli is never signed in there, so its ``--list-models`` cannot answer.
     The engine signs in with the Crew's JWT-SVID and records its own list, served
     as :func:`api_models_kas_crew_relay` serves it: nothing is spawned, and a cold
-    read answers ``auto``.
+    read answers ``auto`` marked ``"cold": true``.
     """
     return await _serve_recording(request, start_probe=False)
 
@@ -175,12 +177,11 @@ async def api_models_kas_crew_relay(
     hands over that *refusal*. That relay enters through ``kiro-cli-chat`` and
     draws its credential from Crew's vault, so kiro-cli's refusal does not decide
     its list: this serves the recording instead. Nothing is spawned: a cold read
-    answers ``auto``, and the dashboard refetches the list when the first chat
-    spawns. One cold read keeps the gate's 503: the one whose kiro-cli check only
-    timed out. A timeout passes on a later read, and on a 503 the dashboard keeps
-    the list it holds and reads again, where it would save a cold ``auto`` over
-    that list and stop reading. The launcher relay and every other harness keep
-    the gate's refusal (``None``).
+    answers ``auto`` marked ``"cold": true``, since no probe runs here to send
+    ``models_changed``. One cold read keeps the gate's 503: the one whose kiro-cli
+    check only timed out, a failed read the page reports, not a cold list; it
+    passes on a later read. The launcher relay and every other harness keep the
+    gate's refusal (``None``).
     """
     if backend == ACP_BACKEND_KAS and await asyncio.to_thread(_crew_sign_in_starts_spawn):
         cold = refusal if is_probe_timeout_refusal(refusal) else None
@@ -193,8 +194,9 @@ async def _serve_recording(
 ) -> web.Response:
     """The recorded select for the account the vault names, or ``auto`` while cold.
 
-    *start_probe* starts a background session to record a cold account's list.
-    *cold* is the answer a cold read gives in place of ``auto``.
+    *start_probe* starts a background session to record a cold account's list;
+    without one, nothing sends ``models_changed``, so the cold ``auto`` is marked
+    ``"cold": true``. *cold* is the answer a cold read gives in place of it.
     """
     # Which account the vault names NOW, whichever process wrote it last: the
     # recording is served only to the account it was recorded for.
@@ -206,7 +208,7 @@ async def _serve_recording(
             from kiro_crew.dashboard.handlers.models_cold_probe import start_cold_model_probe
 
             start_cold_model_probe(request.app.get("state"), ACP_BACKEND_KAS)
-        return cold if cold is not None else _cold_response()
+        return cold if cold is not None else _cold_response(marked=not start_probe)
     # The same admission the kiro-cli catalog goes through, into the same ``acp``
     # bucket (kiro and KAS share it): ids for the pin verdicts, prices for the
     # badge. ``windows_changed`` is dropped on purpose -- the rows carry no
@@ -224,22 +226,22 @@ async def _serve_recording(
         # sign-in and sign-out; serving them now would hand it that list to
         # cache again. Cold is the answer the recording gives.
         if await asyncio.to_thread(kas_model_catalog.vault_identity) != identity:
-            return cold if cold is not None else _cold_response()
+            return cold if cold is not None else _cold_response(marked=not start_probe)
     return web.json_response([_picker_row(row) for row in rows])
 
 
-def _cold_response() -> web.Response:
+def _cold_response(*, marked: bool) -> web.Response:
     """``auto`` alone with 200: no KAS session has advertised its select for the
     signed-in account yet. ``auto`` is the one id every partition's engine
-    resolves, so it is the one safe offering."""
-    return web.json_response(
-        [
-            {
-                "model_name": "auto",
-                "display_name": "Auto",
-                "description": "Backend default",
-                "context_window": model_registry.model_window("auto")
-                or model_registry.REFERENCE_WINDOW_TOKENS,
-            }
-        ]
-    )
+    resolves, so it is the one safe offering. *marked* adds ``"cold": true``,
+    for a route that never starts a probe."""
+    row: dict[str, Any] = {
+        "model_name": "auto",
+        "display_name": "Auto",
+        "description": "Backend default",
+        "context_window": model_registry.model_window("auto")
+        or model_registry.REFERENCE_WINDOW_TOKENS,
+    }
+    if marked:
+        row["cold"] = True
+    return web.json_response([row])

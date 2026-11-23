@@ -119,5 +119,6 @@ per-agent MCP configuration.
 ## Tips from the Community
 
 - **Unattended overnight runs**: For `kirocrew run`, allowlist the tools the spec needs in `hooks.auto_approve_tools`; for a gateway started with `--approval yolo`, use an isolated `KIROCREW_HOME`. Review the pull requests in the morning.
+- **Trust and auto-approve outlast a restart**: A chat's Trust or Trust reads, and auto-approve (YOLO) turned on from the dashboard, Slack or the API, stay on when the gateway restarts, updates, crashes or the machine reboots; a timed auto-approve keeps the time it had left. They end only when you stop Kiro Crew yourself (`kirocrew stop`, Quit in the desktop app, or Ctrl+C on a gateway running in your terminal), or pick another mode. A policy that now forbids a mode still turns it off at the next start.
 - **Workspace isolation**: Use `KIROCREW_HOME` and `KIROCREW_PORT` env vars to run multiple Kiro Crew instances with separate data.
 - **Background gateway**: Use a macOS Launch Agent or systemd service to keep the gateway running across reboots (see [Getting Started](getting-started.md)).

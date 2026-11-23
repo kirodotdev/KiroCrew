@@ -481,6 +481,15 @@
       "tab_gone": "La scheda del Bot è chiusa, quindi non c'è una pagina dal vivo da mostrare.",
       "app_off": "Questa app è disattivata, quindi non può mostrare il browser. Attivala in App per rivedere la pagina.",
       "actions": "Cosa ha fatto il Bot"
+    },
+    "browserSites": {
+      "add_title": "Permettere un nuovo sito?",
+      "add_asked_by": "{{app}} chiede di aggiungere il sito qui sotto alle pagine su cui il suo agente può navigare.",
+      "add_app_details": "Di {{author}} · ID dell'app {{id}}",
+      "add_app_id": "ID dell'app {{id}}",
+      "add_star": "Ogni * corrisponde a qualsiasi testo, quindi copre ogni pagina il cui indirizzo corrisponde.",
+      "add_risk": "Una volta permesso, l'agente dell'app può aprire, leggere, digitare e fare clic su queste pagine nel tuo browser, con il tuo accesso, senza chiedere ogni volta. Permetti solo un sito di cui ti fidi. Puoi rimuoverlo in seguito.",
+      "add_allow": "Permetti il sito"
     }
   },
   "apps": {
@@ -6689,7 +6698,7 @@
       "trust_scope_tooltip": "Attendibile grazie a un'autorizzazione dell'app per questa chat; scade da sola. Scegli Normale in questo menu per terminarla ora; l'app può concederla di nuovo finché non la disattivi nell'app.",
       "yolo_desc": "In ogni chat, {{productName}} lavora senza chiederti prima",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "Resta attivo finché {{productName}} non si riavvia — nessuna scadenza a tempo.",
+      "yolo_expiration_until_shutdown": "Resta attivo finché non arresti {{productName}} — nessuna scadenza a tempo. Un riavvio lo mantiene.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Disattivato dalla policy di sicurezza della tua organizzazione",
       "yolo_mode_is_an_app_wide_setting": "La modalità YOLO è un'impostazione valida per tutta l'app"
@@ -7371,7 +7380,6 @@
       "send_selection_to_chat": "Invia la selezione alla chat",
       "send_to_chat": "Invia alla chat",
       "sending": "Invio in corso…",
-      "touch_select_anchor": "Primo punto impostato — tocca l'altra estremità",
       "touch_select_done": "Intervallo selezionato — tocca Copia",
       "use_here": "Usa il terminale qui",
       "use_starting_directory": "Usa la directory iniziale del terminale",
@@ -8324,6 +8332,7 @@
       "profile_lookup_failed_body": "Non siamo riusciti a recuperare il tuo profilo Kiro. Ricomincia per riprovare.",
       "connection_lost_body": "Abbiamo perso la connessione con {{productName}}, che potrebbe essere stato riavviato. Ricomincia per accedere di nuovo.",
       "sign_in_status_unavailable": "Impossibile verificare lo stato dell'accesso",
+      "owner_only": "Solo il proprietario della dashboard può gestire l'accesso a Kiro.",
       "sign_in_to_kiro": "Accedi a Kiro",
       "skip_for_now": "Salta per ora",
       "signing_in_with": "Accesso con {{provider}}",
@@ -12408,6 +12417,10 @@
     "account_and_settings": "Account e impostazioni"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "Questa crew non è connessa. Connettila nella finestra principale, poi riapri il pop-out.",
+      "this_pop_out_cannot_be_opened": "Questo pop-out non può essere aperto qui."
+    },
     "mcpPage": {
       "bot_workers_note": "Un server aggiunto qui non raggiunge i worker dei Bot. I worker di un Bot lo ricevono solo se viene aggiunto a quel Bot.",
       "title": "Server MCP",
@@ -12671,7 +12684,23 @@
         "installed_needs_newer_host": "La versione installata di {{name}} richiede un {{productName}} più recente. Aggiorna {{productName}}; i tuoi dati restano invariati."
       },
       "grants_reconsent_composer_actions": "Pulsanti dell'editor: consente all'app di aggiungere questi pulsanti al menu + dell'editor. Un clic inserisce il testo dell'app nella tua bozza; l'app non può vedere la bozza né inviarla.",
-      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire."
+      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire.",
+      "browser_sites_list_title": "Siti di navigazione",
+      "browser_sites_list_hint": "Le pagine su cui l'agente di questa app può navigare. Un sito rimosso smette di valere al passo successivo dell'agente.",
+      "browser_sites_source_app": "Dall'app",
+      "browser_sites_source_owner": "Aggiunto da te",
+      "browser_sites_status_approved": "Permesso",
+      "browser_sites_status_pending": "In attesa di approvazione",
+      "browser_sites_status_disabled": "Disattivato",
+      "browser_sites_status_removed": "Rimosso",
+      "browser_sites_remove": "Rimuovi",
+      "browser_sites_turn_on": "Attiva",
+      "browser_sites_add_back": "Aggiungi di nuovo",
+      "browser_sites_remove_failed": "Impossibile rimuovere il sito: {{error}}",
+      "browser_sites_add_failed": "Impossibile aggiungere di nuovo il sito: {{error}}",
+      "browser_sites_turn_on_title": "Riattivare questo sito?",
+      "browser_sites_add_back_title": "Aggiungere di nuovo questo sito?",
+      "browser_sites_restore_risk": "Poi l'agente dell'app potrà aprire, leggere, digitare e fare clic su queste pagine nel tuo browser, con il tuo accesso, senza chiedere ogni volta. Permetti solo un sito di cui ti fidi."
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",
@@ -13684,7 +13713,10 @@
         "host_sandbox_teammate_unnamed": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi al proprietario della Crew di controllare.",
         "copy_details": "Copia dettagli",
         "copy_details_hint": "Copia solo il codice di errore e l’ora",
-        "host_sandbox_teammate_named": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi a {{owner}} (proprietario della Crew) di controllare."
+        "host_sandbox_teammate_named": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi a {{owner}} (proprietario della Crew) di controllare.",
+        "repeated_in_a_row_many": "È successo {{count}} volte di seguito, l'ultima il {{time}}",
+        "repeated_in_a_row_one": "È successo {{count}} volta di seguito, l'ultima il {{time}}",
+        "repeated_in_a_row_other": "È successo {{count}} volte di seguito, l'ultima il {{time}}"
       },
       "folderPanel": {
         "back": "Indietro",
@@ -14311,6 +14343,7 @@
         "agent_switch_blocked_channel": "Il passaggio a {{agent}} è stato bloccato — questa chat è collegata a un canale Slack servito da {{channel_agent}}. Il prossimo turno riparte su quell'agente.",
         "channel_message_not_run": "Un messaggio da un canale Slack non è stato eseguito: l'agente di questa sessione non è quello usato da quel canale.",
         "member_rebind_kept_agent": "{{bot}} ora è impostato su {{agent}}, ma questa chat continua a eseguire {{recorded}}, l'agente con cui è iniziata. Avvia una nuova chat con {{bot}} per usare {{agent}}.",
+        "member_harness_elsewhere": "{{bot}} gira su {{bot_harness}} nella propria chat, mentre questa chat resta su {{chat_harness}}. Apri la chat di {{bot}} per usare {{bot_harness}}.",
         "agent_no_tools": "{{agent}} non elenca alcuno strumento, quindi in questa chat non può eseguire comandi, lavorare con i file né usare server MCP.",
         "agent_no_tools_open": "Scegli i suoi strumenti",
         "harness_mode_changed": "Questa sessione è passata alla modalità {{mode}}.",
@@ -15946,7 +15979,14 @@
       "hide_sessions_count_many": "Nascondi {{n}} sessioni",
       "hide_sessions_count_other": "Nascondi {{n}} sessioni",
       "reclick_toggles_side_panel": "Fai di nuovo clic per mostrare o nascondere il pannello laterale",
-      "reclick_toggles_side_panel_shortcut": "Fai di nuovo clic per mostrare o nascondere il pannello laterale ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Fai di nuovo clic per mostrare o nascondere il pannello laterale ({{shortcut}})",
+      "show_linked_items_one": "Mostra {{count}} elemento collegato",
+      "show_linked_items_many": "Mostra {{count}} elementi collegati",
+      "show_linked_items_other": "Mostra {{count}} elementi collegati",
+      "hide_linked_items": "Nascondi elementi collegati",
+      "show_linked_items_failed_one": "Mostra {{count}} elemento collegato, un controllo non è riuscito",
+      "show_linked_items_failed_many": "Mostra {{count}} elementi collegati, un controllo non è riuscito",
+      "show_linked_items_failed_other": "Mostra {{count}} elementi collegati, un controllo non è riuscito"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -21632,7 +21672,7 @@
         "profile_2": "profilo",
         "profiles_json": "profiles/*.json",
         "rail_active": "Attivo ora",
-        "rail_until_restart": "Fino al riavvio",
+        "rail_until_restart": "Finché non arresti {{productName}}",
         "rail_until_time": "Fino a {{time}}",
         "search_rules_placeholder": "Cerca regole, pattern, categorie…",
         "section_group_enforced": "Imposto",
@@ -21694,7 +21734,7 @@
         "yolo_duration_locked": "Disattivato dai criteri della tua organizzazione",
         "yolo_duration_next_activation_note": "Si applica la prossima volta che attivi l’approvazione automatica.",
         "yolo_duration_title": "Durata dell’approvazione automatica",
-        "yolo_duration_until_shutdown": "Fino al riavvio di {{productName}}",
+        "yolo_duration_until_shutdown": "Finché non arresti {{productName}}",
         "your_custom_denies": "I tuoi blocchi personalizzati",
         "trustedApps": {
           "description": "App a cui hai permesso di eseguire codice proprio su questo computer. L'autorizzazione vale per una app alla volta; tutte le altre app di terze parti restano bloccate.",
@@ -22949,6 +22989,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB di RAM · {{diskGb}} GB di disco",
         "tier_price": "~{{hourly}}/h · ~{{monthly}}/mese se resta acceso (circa)",
         "price_region_note": "I prezzi sono tariffe on demand di {{priceRegion}}; nelle altre regioni possono essere diversi.",
+        "stopped_billing_note": "Una crew fermata continua a essere addebitata per il suo disco, e per qualsiasi file di configurazione conservato in S3, finché non elimini la crew.",
         "transport_hint_fargate": "Raggiunge un task AWS Fargate tramite Session Manager. Espone un'API di chat, non una dashboard.",
         "transport_hint_ssh": "Si connette tramite SSH.",
         "transport_hint_ssm": "Si connette tramite AWS Systems Manager Session Manager.",
@@ -22997,7 +23038,19 @@
         "setting_up_progress": "Configurazione · {{current}} di {{total}}",
         "launching_crew": "Avvio di {{name}}",
         "ssm_start_session_denied": "Questo ruolo AWS non può avviare una sessione SSM su questa istanza. Dagli ssm:StartSession oppure scegli un profilo AWS che lo abbia.",
-        "show_aws_error": "Mostra l'errore AWS"
+        "show_aws_error": "Mostra l'errore AWS",
+        "warm_cap": "Crew tenute caricate",
+        "warm_cap_desc": "Crew remote tenute caricate insieme, prima quelle aperte più di recente. In automatico ne tiene {{auto}}.",
+        "warm_cap_auto": "Automatico ({{n}}) · di più rende il cambio più rapido, usa più memoria",
+        "warm_cap_set": "Impostato su {{n}} · di più rende il cambio più rapido, usa più memoria",
+        "warm_cap_use_auto": "Usa automatico",
+        "warm_cap_save_failed": "Impossibile salvare quante crew restano caricate.",
+        "usage_label": "Consumo delle crew remote",
+        "usage_value": "Caricate {{panes}} · Memoria {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "Nessuna crew remota è caricata.",
+        "usage_shared": "Condividono il processo della finestra principale: {{n}}. Il loro costo non è contato.",
+        "warm_cap_load_failed": "Impossibile leggere quante crew restano caricate.",
+        "usage_failed": "Impossibile leggere il consumo delle crew remote."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

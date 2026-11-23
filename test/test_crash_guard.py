@@ -14,11 +14,14 @@ import asyncio
 import atexit
 import builtins
 import faulthandler
+import gc
+import logging
 import sys
 
 import pytest
 
 from kiro_crew import crash_guard
+from kiro_crew.testing.wait import finished
 
 
 @pytest.fixture(autouse=True)
@@ -197,6 +200,115 @@ class TestWindowsProactorShutdownDowngrade:
         assert any(record.levelno == logging.ERROR for record in caplog.records)
         crash_log = tmp_path / "home" / "logs" / "crash.log"
         assert "Task exception was never retrieved" in crash_log.read_text()
+
+
+class TestUnretrievedTaskAttribution:
+    """A record for an unretrieved task names the task and its async generator."""
+
+    @staticmethod
+    def _handled_loop(tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        loop = asyncio.new_event_loop()
+        crash_guard.install_loop_handler(loop)
+        crash_guard._CRASH_LOG = tmp_path / "crash.log"
+        return loop
+
+    @pytest.mark.parametrize(
+        ("start", "error"),
+        [
+            pytest.param(
+                lambda agen: agen.aclose(),
+                "aclose(): asynchronous generator is already running",
+                id="aclose",
+            ),
+            pytest.param(
+                lambda agen: agen.asend(None),
+                "anext(): asynchronous generator is already running",
+                id="asend",
+            ),
+        ],
+    )
+    def test_bare_generator_task_names_the_suspended_generator(
+        self, tmp_path, monkeypatch, caplog, start, error
+    ):
+        """The loop's async-generator finalizer runs ``create_task(agen.aclose())``.
+
+        On a generator suspended in an ``await`` that task raises frameless from C.
+        """
+
+        suspended = asyncio.Event()
+        crash_log = tmp_path / "crash.log"
+
+        async def suspended_ticker():
+            while True:
+                suspended.set()
+                await asyncio.get_running_loop().create_future()  # never resolved
+                yield 1
+
+        async def consume(agen):
+            async for _ in agen:
+                pass
+
+        async def drop_bare_generator_task():
+            loop = asyncio.get_running_loop()
+            agen = suspended_ticker()
+            holder = loop.create_task(consume(agen))
+            await suspended.wait()  # the generator is suspended in its await
+            task = loop.create_task(start(agen))
+            await asyncio.wait({task})  # raises at once: the generator is running
+            del task  # dropped unretrieved: the handler writes the record
+            holder.cancel()
+            await asyncio.wait({holder})
+
+        loop = self._handled_loop(tmp_path, monkeypatch)
+        try:
+            with caplog.at_level(logging.ERROR, logger="kiro_crew.crash_guard"):
+                loop.run_until_complete(
+                    finished(drop_bare_generator_task(), "the bare generator task")
+                )
+        finally:
+            loop.close()
+
+        code = suspended_ticker.__code__
+        generator_line = (
+            f"Async generator: {suspended_ticker.__qualname__} "
+            f"({code.co_filename}:{code.co_firstlineno})"
+        )
+        text = crash_log.read_text(encoding="utf-8")
+        (record,) = [r for r in text.split("=" * 72) if error in r]
+        assert generator_line in record
+        assert "(no traceback: the exception carries no Python frames)" in record
+        (message,) = [r.getMessage() for r in caplog.records if error in r.getMessage()]
+        assert "\nTask: <Task finished" in message
+        assert generator_line in message
+
+    def test_named_task_keeps_its_traceback_and_names_the_task(self, tmp_path, monkeypatch):
+        async def failing_step():
+            raise ValueError("step failed")
+
+        async def leave_unretrieved():
+            task = asyncio.get_running_loop().create_task(
+                failing_step(), name="crash-guard-named-task"
+            )
+            await asyncio.wait({task})  # finishes without retrieving it
+            del task
+            gc.collect()
+
+        loop = self._handled_loop(tmp_path, monkeypatch)
+        try:
+            loop.run_until_complete(finished(leave_unretrieved(), "the named task"))
+        finally:
+            loop.close()
+
+        text = (tmp_path / "crash.log").read_text(encoding="utf-8")
+        # Only this task's record: a neighbour's task collected meanwhile may add its own.
+        (record,) = [r for r in text.split("=" * 72) if "name='crash-guard-named-task'" in r]
+        task_line = next(line for line in record.splitlines() if line.startswith("Task: "))
+        assert failing_step.__qualname__ in task_line
+        assert "Traceback (most recent call last)" in record
+        assert 'raise ValueError("step failed")' in record
+        assert "Async generator:" not in record
+        assert "no traceback" not in record
 
 
 class TestInstallIdempotent:

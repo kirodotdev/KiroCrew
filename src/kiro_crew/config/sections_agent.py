@@ -849,8 +849,8 @@ class AgentConfig:
             "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
             "the dashboard picker, Slack, or the API. Every one of those surfaces "
             "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
-            "until_shutdown to keep it on with no timed expiry until Kiro Crew "
-            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
+            "until_shutdown to keep it on until you stop Kiro Crew (a restart keeps "
+            "any grant). Timed values are capped at 24h. Does NOT apply to a grant "
             "declared via 'dangerously_skip_permissions' above, which persists.",
             enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
         ),
@@ -1035,10 +1035,11 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, "
-            "which on Linux stops the largest Crew tool or test tree at critical memory, or "
-            "at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and "
-            "turns the memory guard off. When the container's memory limit is at or under "
+            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which "
+            "on Linux stops the largest Crew tool or test tree at critical memory, or at tight "
+            "memory with PSI full avg10 >= 10, or, with no memory controller in view, when the "
+            "cgroup in view stalls 10% of the time between samples. 0 disables the critical tier "
+            "and turns the memory guard off. When the container's memory limit is at or under "
             "it, the gateway logs one start-up warning naming the settings to lower.",
         ),
     )

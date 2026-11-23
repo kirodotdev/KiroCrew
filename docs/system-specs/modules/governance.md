@@ -4281,6 +4281,16 @@ matcher — data-only shape, no evaluator change, mirroring `agent_backend`
 above) lets a managed fleet forbid an auto-approve mode and force interactive
 approval.
 
+On a KAS chat a person drives from the dashboard, the picker can also offer
+**Approve for me** (`approve_for_me`, set through
+`POST /api/chat/slots/{slot}/approve-for-me`), where the engine judges each call
+(see [security.md](security.md), "KAS approve-for-me"). It is no rung of the
+trust ladder and not in `KNOWN_APPROVAL_MODES`; it has a verdict of its own
+(`approval_mode_policy.APPROVE_FOR_ME_MODE`) that is denied by default. Only an
+installed `approval_modes` rule whose `allow` list names `approve_for_me`, in
+either tier of a composed rule, permits it; allowing `trust`, or a deny-mode
+rule that leaves it out, does not, and a rule that cannot be read denies it.
+
 **The scope governs `trust_reads`, `trust` and `yolo`; `normal` is the floor**
 ([RFC D9](../../request-for-change/rfc-crew-lts-edition.md)). The KGL term is
 `permission_mode`; the translator adds `normal` back to a rule's allow-list and nothing

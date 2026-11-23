@@ -1218,9 +1218,27 @@ def main() -> None:
             except OSError:
                 pass  # the notice stays; the update itself succeeded
     elif args.command == "stop":
+        from kiro_crew import kept_grants
         from kiro_crew.cli_server import _stop
 
-        _stop(args.port, expect_pid=args.expect_pid)
+        if args.expect_pid is not None or getattr(args, "keeps_grants", False):
+            # The desktop app's pid-pinned stop, which it runs before an update and to
+            # restart a stuck gateway, and its "Stop and restart" of an older gateway
+            # (``--keeps-grants``): not a stop the user chose, so grants are kept.
+            _stop(args.port, expect_pid=args.expect_pid)
+        else:
+            # The mark always lands in this data home: a spurious one ends only this
+            # home's kept grants, the safe direction. A --port gateway this home
+            # cannot prove is its own may use another home, so the user is told.
+            if args.port is not None and not kept_grants.port_in_this_home(args.port):
+                print(
+                    f"Note: could not confirm the gateway on port {args.port} uses this "
+                    "data home. If it uses another one, its kept YOLO and chat trust stay "
+                    "on: run kirocrew stop with its KIROCREW_HOME set to end them."
+                )
+            kept_grants.run_user_stop(
+                lambda: _stop(args.port, expect_pid=args.expect_pid), via="cli"
+            )
     elif args.command == "restart":
         if args.max_wait is not None and not args.when_idle:
             print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)

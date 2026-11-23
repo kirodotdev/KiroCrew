@@ -493,6 +493,41 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    is how the dashboard's own page calls `/v1/crew/owner/bots`. A header of another
    scheme (`Basic`, which a proxy in front of the dashboard may add) is no
    credential here and is not read.
+4. A bearer that is not a session is then asked whether it is an **app credential**:
+   the access token local authorization issued for a grant the owner approved
+   (`crew_api_auth.refuse_app_credential`, which calls `LocalAuthorization.verify`:
+   signature, expiry, and a grant that is still active and names the same
+   `client_id`). The order of the checks is the credential's kind, its validity, where
+   the request came from, then the tier:
+   - One that does not verify is not an app credential and gets the 401 of step 2.
+   - A verified one that did not come straight from this machine (a forwarding header,
+     a peer that is not loopback, or a request the relay delivered) gets that same
+     401, byte for byte: only the audit row says why. Local authorization issues the
+     credential to a program on this machine, and its four routes answer only such a
+     request.
+   - A verified one from this machine is a known caller that no Crew API route serves
+     yet, so it gets `403 owner_only` on every Crew API path, a path with no route
+     included, and the request never reaches a handler. This refusal is the default
+     for an app credential. When a route serves apps, it is admitted at this point,
+     from that route's tier and scopes, and nowhere else.
+
+   Before the 403, token auth publishes the caller on the request: `request["user"]`
+   is `app:<grant id>`, `request["app"]` is `local-grant:<grant id>` and
+   `request["is_dashboard_user"]` is `False`. Both values are built from the grant id
+   the gateway made. An installed app's name holds no `:`, so neither can be one, and
+   any non-empty `request["app"]` fails every owner gate. The `client_id` is the calling
+   program's own choice: it is written to the audit row only, as printable ASCII of at
+   most 64 characters, and never becomes part of an identity. Each refusal writes one
+   `crew_api.app_credential` row (`denied`, with `owner_only` or `not-direct-local`);
+   the credential itself is never logged. This is the only place an app credential is
+   recognised, and it sits inside the bearer branch, which only a Crew API path
+   enters: on `/api/*`, the WebSocket and the frozen `POST /v1/chat/completions`
+   the header is not read, so the credential opens nothing there.
+
+Every 401 on a Crew API path ends its message with one fixed sentence,
+`crew_api_errors.CREDENTIAL_HINT`: on this machine, `kirocrew token --bearer`
+prints a credential for the owner. It names no port and no value and is the same
+for every caller.
 
 A bearer request then runs the same checks as a cookie request: forwarded-peer
 resolution with its allowlist denials (`tailnet login not allowed` for a login outside

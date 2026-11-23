@@ -14,6 +14,7 @@ import errno
 import json
 import logging
 import os
+import sys
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -471,10 +472,19 @@ class TestSegmentEnumerationIsBounded:
                 examined += 1
                 return entry
 
-        with patch("kiro_crew.sel.os.scandir", _CountingScandir):
+        # The worker's stdlib os: count only the walk's own scan. (The sel owners
+        # share os, so test_facade_mirror_guards refuses swapping one's.)
+        walk = SecurityEventLog._segments_oldest_first.__code__
+
+        def counting_scandir(path="."):
+            if sys._getframe(1).f_code is not walk:
+                return real_scandir(path)
+            return _CountingScandir(path)
+
+        with patch.object(os, "scandir", counting_scandir):
             log._segments_oldest_first()
 
-        assert examined <= sel_mod._SEGMENT_SCAN_CAP + 1, (
+        assert 0 < examined <= sel_mod._SEGMENT_SCAN_CAP + 1, (
             f"walked {examined} entries with a cap of {sel_mod._SEGMENT_SCAN_CAP}; "
             "enumeration scales with a directory an agent could have filled"
         )

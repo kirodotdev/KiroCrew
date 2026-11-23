@@ -13,6 +13,7 @@ const {
   withinFreshnessBound,
   createFreshnessGate,
 } = require("./freshness-gate");
+const { noteRelaunch } = require("../../relaunch-intent");
 
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
 // darwin: how long after `before-quit-for-update` Squirrel's own quit may take
@@ -710,6 +711,8 @@ function createFeedLane({
   function relaunch() {
     if (updateReady && stagedArmed) {
       relaunchAfterInstall = true;
+      // The installer relaunches the app, so this quit is a restart, not a Quit.
+      noteRelaunch();
       app.quit();
       return;
     }

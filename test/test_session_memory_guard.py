@@ -22,7 +22,12 @@ import pytest
 import spawn_test_helpers
 
 from kiro_crew import _process_group_supervisor, platform_compat, session_memory_guard
-from kiro_crew.resource_status import POSTURE_CRITICAL, ResourceStatus
+from kiro_crew.resource_status import (
+    POSTURE_AMPLE,
+    POSTURE_CRITICAL,
+    POSTURE_TIGHT,
+    ResourceStatus,
+)
 from kiro_crew.session_memory_guard import (
     COOLDOWN_SECS,
     TIER_TEST,
@@ -490,6 +495,82 @@ class TestPass:
         assert notice.startswith("Host memory was under heavy pressure (~3.1 GB free)")
         assert "critically" not in notice
 
+    @pytest.mark.parametrize("posture", [POSTURE_AMPLE, POSTURE_TIGHT])
+    def test_a_cgroup_stall_stop_says_crew_cannot_read_its_memory_use(
+        self, two_sessions: Any, monkeypatch: pytest.MonkeyPatch, caplog: Any, posture: str
+    ) -> None:
+        # ``psi-cgroup`` fires only while the memory cgroup is out of view, so the free
+        # figure is the host's and must not read as the shortage.
+        manager, _ = two_sessions
+        monkeypatch.setattr(session_memory_guard, "can_stop_trees", lambda: True)
+        caplog.set_level(logging.WARNING, logger="kiro_crew.session_memory_guard")
+        status = dataclasses.replace(_status(gb=11.3), posture=posture)
+        asyncio.run(session_memory_guard.pressure_reclaim(manager, status, 37.5, "psi-cgroup"))
+        _, notice, summary = manager.told[0]
+        assert notice.startswith(
+            "Memory was under heavy pressure (stalled in Crew's cgroup, whose memory use Crew "
+            "cannot read; ~11.3 GB free on the host), so Crew stopped `pytest` (3.0 GB, 3 "
+            "processes)"
+        )
+        assert "Host memory" not in notice
+        assert summary == (
+            "memory guard: stopped pytest (3.0 GB); memory stalled in Crew's cgroup, whose "
+            "memory use Crew cannot read (~11.3 GB free on the host); the worker keeps running"
+        )
+        # The figure handed over is a share of time stalled, so it is not named avg10.
+        lines = [r.getMessage() for r in caplog.records if "Memory guard" in r.getMessage()]
+        assert len(lines) == 1
+        assert "psi_full_pct=37.50 trigger=psi-cgroup" in lines[0]
+        assert "avg10" not in lines[0]
+
+    def test_a_host_psi_stop_on_an_ample_reading_names_the_host(
+        self, two_sessions: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only the trigger says the memory cgroup is out of view; the posture alone does not.
+        manager, _ = two_sessions
+        monkeypatch.setattr(session_memory_guard, "can_stop_trees", lambda: True)
+        status = dataclasses.replace(_status(gb=11.3), posture=POSTURE_AMPLE)
+        asyncio.run(session_memory_guard.pressure_reclaim(manager, status, 37.5, "psi"))
+        _, notice, summary = manager.told[0]
+        assert notice.startswith("Host memory was under heavy pressure (~11.3 GB free)")
+        assert summary is not None and "host memory ~11.3 GB free" in summary
+        assert "cannot read" not in notice + summary
+
+    @pytest.mark.parametrize(
+        ("shared", "can_stop", "opening"),
+        [
+            (False, False, "Memory is under heavy pressure (stalled in Crew's cgroup,"),
+            (True, True, "Memory was under heavy pressure (stalled in Crew's cgroup,"),
+            (True, False, "Memory is under heavy pressure (stalled in Crew's cgroup,"),
+        ],
+    )
+    def test_every_cgroup_stall_notice_says_crew_cannot_read_its_memory_use(
+        self, shared: bool, can_stop: bool, opening: str
+    ) -> None:
+        tree = Candidate(
+            session_key="chat-a",
+            runtime_pid=100,
+            tier=TIER_TEST,
+            root_pid=110,
+            root_start="s110",
+            label="pytest",
+            rss_mb=3100,
+            procs=3,
+            targets=((110, "s110"),),
+        )
+        status = dataclasses.replace(_status(gb=11.3), posture=POSTURE_AMPLE)
+        if shared:
+            notice = session_memory_guard.shared_notice(
+                tree, status, 2, stopped=can_stop, can_stop=can_stop, trigger="psi-cgroup"
+            )
+        else:
+            notice = session_memory_guard.chat_notice(
+                tree, status, stopped=False, can_stop=can_stop, trigger="psi-cgroup"
+            )
+        assert notice.startswith(opening)
+        assert "whose memory use Crew cannot read; ~11.3 GB free on the host" in notice
+        assert "Host memory" not in notice
+
     def test_an_agent_ceiling_reading_is_named_as_such(
         self, two_sessions: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -611,12 +692,14 @@ class TestPass:
                 await release.wait()
 
             monkeypatch.setattr(session_memory_guard, "pressure_reclaim", slow)
-            session_memory_guard.request(manager, _status(), None, "critical")
+            first = session_memory_guard.request(manager, _status(), None, "critical")
             await asyncio.sleep(0)
-            session_memory_guard.request(manager, _status(), None, "critical")
+            # The caller is handed the pass that runs, so it can tell when it ends.
+            assert session_memory_guard.request(manager, _status(), None, "critical") is first
             await asyncio.sleep(0)
             release.set()
             await manager._memory_guard.task
+            assert first.done()
 
         asyncio.run(scenario())
         assert started == [1]

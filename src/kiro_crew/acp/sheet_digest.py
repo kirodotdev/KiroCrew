@@ -43,6 +43,10 @@ _DELIMITERS = {".csv": ",", ".tsv": "\t"}
 _WORKBOOKS = (".xlsx", ".xlsm", ".xltx", ".xltm")
 #: Characters that may wrap a path in prose: one may precede it or trail it.
 _WRAPPERS = "\"'`<>()[]{},;"
+#: What may follow a path at the end of a sentence, after the wrappers above.
+_TRAILERS = _WRAPPERS + ".:!?"
+#: Shown instead of cells when redaction moves a row or cell break (a CSV or a workbook).
+_SPANS_NOTE = "column names, types and samples left out: a redacted value spans rows or cells"
 _BOOLEANS = ("true", "false")
 
 
@@ -80,7 +84,7 @@ def uploaded_sheet_paths(scan: str, spans: list[tuple[int, int]]) -> list[Path]:
             at = text.find(folder, at + 1)
             if not (lead.isspace() or lead in _WRAPPERS) or tail[:1] not in ("/", "\\"):
                 continue
-            raw = folder + tail.split(maxsplit=1)[0].rstrip(_WRAPPERS)
+            raw = folder + tail.split(maxsplit=1)[0].rstrip(_TRAILERS)
             sheet = Path(raw).suffix.lower() in (*_DELIMITERS, *_WORKBOOKS)
             real = validate_file_path(raw) if sheet else None
             if real and Path(real).parent == Path(uploads) and Path(real) not in found:
@@ -138,16 +142,33 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
 
     *partial* is True when *text* is only the start of the file, so the row count
     is a floor. Returns None for an empty file or a field the reader refuses.
+
+    Every number comes from the rows of *text* as written. The cells shown come from
+    the same rows read after redaction; if that moves a row or cell break (a key
+    spread over lines), the block gives only the counts and a note.
     """
-    rows = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+
+    def read(source: str) -> list[list[str]]:
+        return list(csv.reader(io.StringIO(source, newline=""), delimiter=delimiter))
+
     try:
-        header = next(rows, None)
-        if not header:
+        counted = read(text)
+        if not counted or not counted[0]:
             return None
-        read = f"first {MAX_READ_BYTES // 1024} KiB read"
-        return _shape(name, header, rows, partial=partial, read=read)
+        rows = read(_redacted(text))
+        read_note = f"first {MAX_READ_BYTES // 1024} KiB read"
+        if [len(row) for row in rows] != [len(row) for row in counted]:
+            data = sum(1 for row in counted[1:] if row)
+            return _counts_only(name, data, len(counted[0]), partial=partial, read=read_note)
+        return _shape(name, rows[0], iter(rows[1:]), partial=partial, read=read_note)
     except csv.Error:
         return None
+
+
+def _counts_only(name: str, count: int, width: int, *, partial: bool, read: str) -> str:
+    """A block with the row count (a floor when *partial*), the column count and a note."""
+    floor = f"+ data rows ({read})" if partial else " data rows"
+    return f"[sheet digest: {name}]\n{count}{floor}; {width} columns\n{_SPANS_NOTE}"
 
 
 def _shape(
@@ -209,8 +230,9 @@ def digest_file(path: Path) -> str | None:
         # The read stopped mid-line: drop the unfinished last row (LF, CRLF or CR).
         data = data[: max(data.rfind(b"\n"), data.rfind(b"\r")) + 1]
     try:
-        # Redacted in the attachment path's order, so a secret in a cell never reaches the prompt.
-        text = _redacted(data.decode("utf-8-sig", errors="replace"))
+        # digest_text redacts what it shows, in the attachment path's order, so a secret in a
+        # cell never reaches the prompt.
+        text = data.decode("utf-8-sig", errors="replace")
         return digest_text(path.name, text, delimiter, partial=partial)
     except Exception:
         logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)
@@ -295,9 +317,7 @@ def _sheet_block(name: str, texts: list[str], *, partial: bool) -> str:
     width = max(text.count("\t") for text in texts) + 1
     read = f"first {MAX_READ_BYTES} characters read"
     if [line.count("\t") for line in kept] != [text.count("\t") for text in window]:
-        note = "column names, types and samples left out: a redacted value spans rows or cells"
-        floor = f"+ data rows ({read})" if partial else " data rows"
-        return f"[sheet digest: {name}]\n{len(texts) - 1}{floor}; {width} columns\n{note}"
+        return _counts_only(name, len(texts) - 1, width, partial=partial, read=read)
     rows = [line.split("\t") for line in kept]
     header = rows[0] + [""] * (width - len(rows[0]))
     counted = itertools.repeat([""], len(texts) - len(window))

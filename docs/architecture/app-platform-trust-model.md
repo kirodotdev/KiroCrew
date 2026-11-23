@@ -358,6 +358,35 @@ warning above stands), but an app's own HTTP token cannot reach arbitrary
 gateway or sibling-app endpoints. Dashboard-user tokens (empty app claim) are never
 subject to this gate.
 
+### Owner dialogs an app page raises are guardrails, not boundaries
+
+Some SDK members ask the owner in the dashboard's own dialog before they send a
+change that widens what an app may do. `useBrowserSites().requestAdd` is one: it names
+the site and what the app's agent may then do there, and posts
+`/api/apps/<name>/browser-sites` only when the owner presses Allow. The gateway route
+accepts the change only from an owner dashboard session. It refuses a request that
+carries the app's own token, an internal caller (an agent's MCP tools and kiro-cli,
+including the app's own agent) and any other dashboard session: those callers are held
+off for real.
+
+An app's backend process is not held off. It can mint an owner token through the local
+owner mint (`/api/token/local`, admitted as a gateway-spawned backend, see
+`member_memory_auth.local_owner_bootstrap_provenance`), and that token carries no app
+claim, so the route accepts its `add` and no dialog is shown. That is the same reach a
+backend has over `/api/apps/<name>/enable` today. A real boundary against a hostile
+backend needs backends sandboxed away from the owner mint; that is separate work.
+
+An app page is not held off either. It runs in the same document as the dialog, with the owner's
+session, so its code could press the button or call the route directly. This is the
+same reach it already has over `/api/apps/<name>/enable`, which approves the app's own
+staged permissions, so the dialog gives an app page no power it lacked. It keeps an
+honest app from widening the owner's grants by accident, and it shows the owner every
+widening that goes through the SDK. A real boundary against a hostile page needs app
+pages isolated from the dashboard document (for example, a sandboxed frame with no
+access to the owner's session); that is separate future work. App Python loaded into
+the gateway process is not held off either: it runs with the gateway's privileges, as
+the first section says.
+
 ## Future work
 
 True isolation (running app code in a separate sandboxed subprocess rather than in-process) is intentionally **out of scope** for now. Process isolation is tracked as a separate design to be revisited if/when a public app store lands. Until then, third-party executable surfaces require a per-app trust grant or `agent.apps_allow_third_party=true`; the default configuration denies them. (Corresponds to CSE finding SEC-012.)

@@ -32,7 +32,10 @@ describe('Stop aborts a pending send', () => {
     const stopped = sendTurn({ message: 'hi', slot: 'slot-a', stopHold: holdForStop('slot-a') })
     const other = sendTurn({ message: 'hi', slot: 'slot-b', stopHold: holdForStop('slot-b') })
     abortPendingSends('slot-a')
-    await expect(stopped).resolves.toMatchObject({ status: 'response-late' })
+    const late = await stopped
+    expect(late.status).toBe('response-late')
+    // This POST had left the browser, so it may still arrive.
+    expect(late.unsent).toBeUndefined()
     expect(signals[0].aborted).toBe(true)
     expect(signals[1].aborted).toBe(false)
     abortPendingSends('slot-b')
@@ -50,7 +53,7 @@ describe('Stop aborts a pending send', () => {
     const stopHold = holdForStop('slot-l')
     await store.dispatch(requestStop({ slotId: 'slot-l', force: false }))
     expect(store.getState().chat.pendingTurnSlot).toBeNull()
-    await expect(sendTurn({ message: 'hi', slot: 'slot-l', stopHold })).resolves.toMatchObject({ status: 'response-late' })
+    await expect(sendTurn({ message: 'hi', slot: 'slot-l', stopHold })).resolves.toMatchObject({ status: 'response-late', unsent: true })
     expect(sendChat).not.toHaveBeenCalled()
   })
 

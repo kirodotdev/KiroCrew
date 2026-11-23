@@ -397,6 +397,14 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # could forge deletes or drop them. Created on the first release, so it is in
     # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in ``_CREW_NO_ALIAS_LEAVES``.
     "released-sessions",
+    # Grants kept across a gateway exit the user did not choose (``kept_grants``): the
+    # signed YOLO and chat-trust records the next boot restores, and the user-stop mark
+    # that ends them. A sandboxed writer could plant a record of its own or delete the
+    # mark a user's stop left, keeping auto-approval past that stop. Only the gateway
+    # and the operator's own ``kirocrew stop`` open it. Created before the first spawn,
+    # so it is in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in
+    # ``_CREW_NO_ALIAS_LEAVES``.
+    "kept-grants",
     # Crewmate teams (``crew_teams.py``): which crewmates are on which team. The
     # same shape as ``crew-panels`` and for the same reason it is not under
     # ``trust/``: a team is the OWNER's grouping, so the crewmates it groups must

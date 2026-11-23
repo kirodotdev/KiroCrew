@@ -20,6 +20,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
+from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.token_auth import (
     _api_pattern_matches,
     _app_owns_path,
@@ -374,7 +375,7 @@ async def test_a_v1_route_without_a_credential_is_refused_with_the_crew_api_erro
         "error": {
             "type": "authentication_error",
             "code": "invalid_token",
-            "message": "Token required",
+            "message": f"Token required {CREDENTIAL_HINT}",
             "param": None,
             "request_id": "req_noauth1",
         }

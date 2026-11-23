@@ -327,6 +327,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "permission_row: 'dict') -> 'None'",
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
+    "release_saved_head": ("function", False, False, "(self, keep: 'int') -> 'int'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
     "set_rejection_reason": (
         "function",
@@ -490,6 +491,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
     "_effort_pick_gen": ("value", "0"),
+    "_engine_promoted_model": ("value", "''"),
     "_embed_question_polled_at": ("value", "None"),
     "_empty_episode_productive": ("value", "False"),
     "_empty_response_retries": ("value", "0"),

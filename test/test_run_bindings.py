@@ -107,6 +107,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, info: 'SubagentInfo', text: 'str') -> 'bool'",
         "run_records",
     ),
+    "_append_result_chunk_impl": (
+        "coroutine",
+        "(self, info: 'SubagentInfo', text: 'str') -> 'bool'",
+        "run_records",
+    ),
     "_drain_state_writer_impl": (
         "coroutine",
         "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\", *, bound: 'float | None' = None) -> 'bool'",

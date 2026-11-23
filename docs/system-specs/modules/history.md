@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
@@ -1466,7 +1470,16 @@ no longer destroy older turns.
   committed save `slot._frozen_prefix_cache` holds where the prefix sits in the
   file it wrote (`transcript_merge.prefix_range`: byte offset and size), not its
   text, and the fast path reads that range back (`read_prefix_range`); a range
-  that does not read back as whole UTF-8 lines takes the full read instead. The
+  that does not read back as whole UTF-8 lines takes the full read instead.
+  Where text writes add no `\r` (`streaming_supported`), a save that cannot
+  append copies the prefix bytes from the file into the staged replacement
+  (`PrefixSource`, `StreamedPayload`, `write_payload`) instead of holding them
+  as text, and builds only the rows after them. After another writer rewrote the
+  metadata line or appended rows, the prefix this slot wrote is found again by
+  the CRC-32 recorded with it, and only the rows after it are read and scanned.
+  The copy refuses a prefix whose CRC or file identity changed under it. A
+  prefix that changed, a file with a `\r`, Windows, and rewind, regenerate and
+  fork saves keep the whole-file path. The
   cache written before the write keeps the text, so a failed write retries on
   the same bytes. A row
   older than the chat's newest `session.file_changes_keep_turns` rows carrying
@@ -1500,9 +1513,31 @@ no longer destroy older turns.
   what is on disk, so it archives nothing and skips the O(file) diff read.
 - **`slot._disk_window_len`**: count of window messages the last save wrote to
   disk. Memory trimming (`_MAX_SLOT_MESSAGES`) may fold a leading window message
-  into the frozen prefix (`_disk_older_count += …`) only for messages actually
-  persisted (`min(excess, _disk_window_len)`); an unpersisted overflow is logged
-  rather than silently counted as on-disk.
+  into the frozen prefix only for messages actually persisted
+  (`min(excess, _disk_window_len)`); an unpersisted overflow is logged rather
+  than silently counted as on-disk. `_disk_older_count` advances by the DURABLE
+  rows of that persisted part only: it counts transcript lines, and a transient
+  row is never written as one, so counting it would pull the first window row
+  into the prefix and the next rewrite would write that row twice. A fold that
+  lands while a save writes (`slot_transcript._fold_head`) is subtracted when
+  the save commits (`write_guards.saved_rows_still_held`, rows matched by
+  identity), so the folded rows are not counted as the window's on-disk part.
+- **Idle window release** (`dashboard/slot_window_release.py`): the flush loop,
+  at most once a minute and after its flush, folds every saved row older than
+  the newest `_WINDOW_ROWS` of a slot idle for ten minutes into the frozen
+  prefix (`_ChatSlot.release_saved_head`), so a long-lived slot holds what a
+  restart would load for it. Nothing is written. It runs only when the whole
+  window is on disk (`_disk_window_len == len(messages)`, not dirty), alone in
+  its region of the file (the last save left an `_append_basis` for this
+  window and this prefix, which a save that kept another writer's rows never
+  does, so the line count from the front is the real boundary), and no
+  Regenerate swap, owed truncating rewrite or guarded metadata write is in
+  flight, and skips a slot that is closing, under construction, pending or
+  running a turn. Like a restore, it re-bases the title refresh mark against
+  the user turns the window still holds (`_rebase_rehydrated_refresh_mark`);
+  the cap trim does not, because its window length stays at the cap. Older
+  pages are read from disk as for any restored slot; the
+  freed heap goes back to the OS through the heartbeat's heap trim.
 - **`slot._disk_older_durable_count`**: the durable-only position base — how
   many non-transient rows (`state._TRANSIENT_ROLES`) have left the window off
   the front. Maintained at every site that sets or advances
@@ -1865,6 +1900,35 @@ no longer destroy older turns.
   not a drift, and its delete is still witnessed on the target. The rule is gated
   on a recorded `_disk_meta_key`, so slots hydrated before the field existed keep
   the prior target-only behavior.
+- **A drifted cron chat's copy is folded back at startup.** A cron chat reopened
+  from History could drift to the `dashboard:cron_<id>` fallback, and its save
+  wrote the rows its window held from `cron_<id>.jsonl` (A) into
+  `dashboard_cron_<id>.jsonl` (B), followed by the turns typed after them, so
+  History listed the conversation twice. The startup channel transcript migration
+  (`channel_transcript_migration.migrate_channel_transcripts`) merges such a B
+  into A the way it merges a channel orphan: in time order, each copied row kept
+  once, A's metadata kept with B's title, folder and pin carried where A has
+  none, then B retired through `delete_session`. A name is no proof, so the
+  session-map claim on `cron_<id>` does not stop it; the files and rows decide
+  instead, read under both locks (`_cron_copy_may_merge`, then
+  `_leads_with_cron_row`). A's line must name its own `cron:` key, the key a
+  History reopen binds. A run file still tagged `cron_run: "ephemeral"` carries
+  no link, so it is never A: the cron prune deletes such a file with whatever was
+  merged into it. A run that opens its own tab is re-tagged `tab` before it is
+  linked, and the prune keeps that file. B's tab must be `closed`: every reopen
+  clears that marker under B's lock before it publishes a tab, so no reopened
+  slot is saving into the file being deleted. A restore that adopts a closed tab
+  (`adopt_closed`: an AutoNudge fire, an app's restore) is the exception, so a
+  loop or app still pointed at B's tab loses its target with the file. B's rows
+  are in A, but a turn that restore runs while the later removal pass deletes B
+  is lost: its save then finds B deleted and writes nothing.
+  B must not be private (History does not list it, and A would), must own no
+  attachments directory or reply-threads sidecar (the delete would take them),
+  and its first row must be one of A's own rows (role, content and `ts`). Anything
+  else leaves both files as they are. A missing A leaves B alone, so a cron
+  transcript the user deleted is never recreated. The rows cannot tell a copied
+  row the user later rewound or edited away in A from a turn typed in B, so such a
+  row comes back with the merge.
 - **Turn persistence is offloaded through ONE choke point**
   (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
@@ -2793,7 +2857,13 @@ writer:
   `read_session_execution` names the two refusals apart: a CORRUPT line answers
   "session record is unreadable (its first line is damaged); start a new chat
   (memory is intact) or archive this one", because no retry reads it, and a
-  TRANSIENT one keeps the plain "session record is unreadable".
+  TRANSIENT one keeps the plain "session record is unreadable". History resume's
+  last metadata read before it builds the slot runs on the event loop, where the
+  bounded retries cannot pause: a TRANSIENT answer there refuses the resume with a
+  retryable `resume_conflict` (409; an app gets its uniform 404) instead of
+  building the slot from an empty line, and a CORRUPT line resumes as an empty
+  one, because no retry would ever open it and the resumed slot's next save
+  rewrites it.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and

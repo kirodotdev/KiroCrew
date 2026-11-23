@@ -25,8 +25,8 @@ Tiers, first match wins
        folder)
     G  no signal
 
-The bundle is a schema-1 test map (`ci_test_map.py`); `tests`, `files` and
-`cochange` are the tables read. A missing table never makes a file skippable:
+The bundle is a schema-1 test map (`ci_test_map.py`), plain or gzip, as `build`
+or `bundle` writes it; `tests`, `files` and `cochange` are the tables read. A missing table never makes a file skippable:
 the files that would be G are held in F instead. An optional `guard` table
 (`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
 spares the live guard scan, which costs seconds; without it the scan runs. A
@@ -85,7 +85,7 @@ def load_rates(path: Path) -> tuple[set[str], int]:
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc = ctm.read_json(path)
     if not isinstance(doc, dict) or doc.get("schema") != ctm.SCHEMA:
         raise ValueError(f"{path}: not a schema-{ctm.SCHEMA} bundle")
     check_tables(doc)

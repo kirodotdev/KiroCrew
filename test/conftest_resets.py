@@ -33,6 +33,24 @@ def _ledger_create_ignores_live_memory(_floor_monkeypatch):
 
 
 @per_test_guard
+def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
+    """The autonudge boot pacer never waits on this runner's memory.
+
+    ``AutoNudgeService.start()`` releases the loops due at boot through
+    ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
+    while it is critical. A runner short of memory would then stall every test that
+    starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
+    pacing passes its own reader to ``BootPacer``.
+    """
+    from kiro_crew.autonudge_service import boot_pacer
+
+    async def _ample() -> str:
+        return "ample"
+
+    _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+
+
+@per_test_guard
 def _no_host_posture_published(_floor_monkeypatch):
     """No test inherits a host posture an earlier notifier test published.
 
@@ -467,6 +485,7 @@ def _reset_safety_override_between_tests():
 
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
     yield
     # Drained BEFORE the reset below, and (by pytest's fixture teardown order --
     # finalizers run in reverse of setup order, so a fixture set up AFTER this
@@ -482,6 +501,26 @@ def _reset_safety_override_between_tests():
     drain_breadcrumb_writes()
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
+
+
+def _reset_kept_grants() -> None:
+    """Forget the boot verdict and stop recording kept grants, as a new process would.
+
+    The verdict is decided once per process image and the recorders arm once per
+    boot, so without this the first test that boots a dashboard decides both for
+    every later test in the worker. Imported lazily: only a test that loaded the
+    modules can have armed them.
+    """
+    kept_grants = sys.modules.get("kiro_crew.kept_grants")
+    if kept_grants is not None:
+        kept_grants._reset_for_tests()
+    kept_yolo = sys.modules.get("kiro_crew.kept_yolo")
+    if kept_yolo is not None:
+        kept_yolo._reset_for_tests()
+    chat_trust_restart = sys.modules.get("kiro_crew.dashboard.chat_trust_restart")
+    if chat_trust_restart is not None:
+        chat_trust_restart._reset_for_tests()
 
 
 @per_test_guard

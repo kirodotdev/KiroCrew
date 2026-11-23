@@ -475,6 +475,8 @@ def test_after_a_restart_the_item_pair_still_fences_the_slot(env, monkeypatch):
     monkeypatch.setattr(remote_ingest, "holds_peer_slot", never)
     status, body = _call(env, "send", crew="lab", target=target, message="again")
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
+    # The refusal names the restart and the path that survives one.
+    assert "restarts" in body["error"] and "work_item=" in body["error"]
 
     async def only_target(board, inst, slot):
         return (inst, slot) == (INSTANCE, target)

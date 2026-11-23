@@ -89,6 +89,10 @@ export interface SendReceipt {
    *  is readable, or the caller's own when it refuses before sending (Side Chat
    *  holding a question until its restore read lands). */
   reason?: string
+  /** Set on a `response-late` that Stop caused before the POST went out:
+   *  nothing left the browser, so a caller that persists on delivery (a
+   *  comment batch marking itself sent) must treat the send as undelivered. */
+  unsent?: true
 }
 
 /** What a send puts on the wire. Surface-neutral: the endpoint, the auth
@@ -302,8 +306,9 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
   }
   try {
     // A Stop pressed before this call cancelled the send: nothing leaves the
-    // browser, and the receipt is the one an in-flight cancel gets.
-    if (controller.signal.aborted) return { status: 'response-late', body: {} }
+    // browser, and the receipt is the one an in-flight cancel gets, marked
+    // `unsent` so a caller can tell that nothing was delivered.
+    if (controller.signal.aborted) return { status: 'response-late', body: {}, unsent: true }
     const r = await wire(
       {
         message: opts.message,

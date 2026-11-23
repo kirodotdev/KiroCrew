@@ -14,6 +14,9 @@ Level 12 adds ``permissions.kiroOperations``: ``POST /api/apps/<name>/kiro/<oper
 and ``ctx.kiro_call`` call the Kiro operations the owner approved for the app, with
 the person's Kiro sign-in, which never reaches the app; and the SDK's
 ``SessionChanges`` and ``DiffView``.
+Level 13 adds ``/api/apps/<name>/browser-sites``: the app's browsing list with the
+sites the owner added, which the app and its backend read, and the owner's edits to
+it; and the SDK's ``useBrowserSites``, whose add asks the owner in the dashboard.
 """
 
-APP_SDK_LEVEL = 12
+APP_SDK_LEVEL = 13

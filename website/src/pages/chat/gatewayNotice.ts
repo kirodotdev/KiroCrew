@@ -109,6 +109,7 @@ const NOTICE_FAMILIES = {
   agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
   channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   member_rebind_kept_agent: { role: 'notice', card: 'notice', tone: 'info' },
+  member_harness_elsewhere: { role: 'notice', card: 'notice', tone: 'info' },
   agent_no_tools: { role: 'notice', card: 'notice', tone: 'info' },
   harness_mode_changed: { role: 'notice', card: 'notice', tone: 'info' },
   harness_task_completed: { role: 'notice', card: 'notice', tone: 'info' },
@@ -209,6 +210,7 @@ const COPY_KEY = {
   agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
   channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   member_rebind_kept_agent: 'pages.chat.gatewayNotice.member_rebind_kept_agent',
+  member_harness_elsewhere: 'pages.chat.gatewayNotice.member_harness_elsewhere',
   agent_no_tools: 'pages.chat.gatewayNotice.agent_no_tools',
   harness_mode_changed: 'pages.chat.gatewayNotice.harness_mode_changed',
   harness_task_completed: 'pages.chat.gatewayNotice.harness_task_completed',
@@ -848,6 +850,20 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
  */
 export function isKasSignedOut(m: ChatMessage): boolean {
   return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
+ * What makes two red notice rows the SAME failure, so a run of them draws as
+ * one card (`errorRuns.ts`): the token and the values its copy reads. `null`
+ * for any other row, and for one whose `kind` or `code` gives it a card of its
+ * own (a sign-in, a usage limit, a turn limit), whose actions belong to it.
+ */
+export function errorNoticeRunKey(m: ChatMessage): string | null {
+  const meta = m.meta as { kind?: unknown; code?: unknown } | undefined
+  if (m.role !== 'error' || m.kind || meta?.kind || meta?.code) return null
+  const shape = shapeOf(m)
+  if (!shape || NOTICE_FAMILIES[shape.token].card !== 'error') return null
+  return `${shape.token} ${JSON.stringify(shape.args)}`
 }
 
 /**

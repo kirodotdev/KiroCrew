@@ -20,6 +20,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
 )
 
 from kiro_crew.dashboard import crew_api_auth, tailnet
+from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.tailnet import TailnetTrust
 from kiro_crew.dashboard.token_auth import (
     generate_token,
@@ -257,7 +258,14 @@ async def _served_over_a_socket(trust, *, forwarded_for="", bearer="", cookie=""
 
 def _refusal(status: int, body: str) -> tuple[int, str]:
     """The status and message of a Crew API refusal, without its per-request id."""
-    return status, (json.loads(body)["error"]["message"] if status != 200 else body)
+    return status, (_reason(body) if status != 200 else body)
+
+
+def _reason(body) -> str:
+    """The reason a 401 gives, without the credential hint that ends every 401's message."""
+    message = json.loads(body)["error"]["message"]
+    assert message.endswith(" " + CREDENTIAL_HINT), message
+    return message.removesuffix(" " + CREDENTIAL_HINT)
 
 
 @pytest.mark.asyncio
@@ -336,8 +344,8 @@ async def test_bearer_peer_refusal_matches_an_exchanged_cookie() -> None:
     by_cookie, _ = await _send(path=MODELS, cookies={COOKIE: cookie}, remote="127.0.0.2")
     by_bearer, _ = await _send(path=MODELS, headers=_bearer(bearer), remote="127.0.0.2")
     assert by_cookie.status == by_bearer.status == 401
-    assert json.loads(by_cookie.body)["error"]["message"] == "IP mismatch"
-    assert json.loads(by_bearer.body)["error"]["message"] == "IP mismatch"
+    assert _reason(by_cookie.body) == "IP mismatch"
+    assert _reason(by_bearer.body) == "IP mismatch"
     assert (await _send(path=MODELS, cookies={COOKIE: cookie}))[0].status == 200
 
 

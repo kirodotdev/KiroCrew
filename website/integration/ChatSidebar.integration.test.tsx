@@ -123,6 +123,8 @@ describe('ChatSidebar Folder Grouping', () => {
       },
     ]
     renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
+    // The chips sit behind the row's linked-items count (#38200); open them first.
+    fireEvent.click(await screen.findByTestId('session-links-count'))
 
     // Multi-project strip: qualifier prepended, so search by href via title
     const githubChip = (await screen.findByTitle(/\/pull\/113/)).closest('a')
@@ -144,6 +146,7 @@ describe('ChatSidebar Folder Grouping', () => {
       },
     ]
     renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
+    fireEvent.click(await screen.findByTestId('session-links-count'))
 
     const mergedChip = (await screen.findByText('#284')).closest('a')
     const openChip = screen.getByText('#285').closest('a')

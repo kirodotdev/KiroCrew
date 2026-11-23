@@ -682,6 +682,8 @@ class AcpSessionProvider(LLMProvider):
             # and the transcript unlink is the only thing that removes
             # `~/.kiro/sessions/cli/{sid}.json(+.jsonl)`, as the comment below
             # says. Nothing retries: every caller drops the provider afterwards.
+            # Before the first await, so a sharing decision made meanwhile sees it.
+            self._runtime.subagent_departed = True
             try:
                 if self._handle.is_turn_active and not self.turn_survives_disconnect:
                     try:

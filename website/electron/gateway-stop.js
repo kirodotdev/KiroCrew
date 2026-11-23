@@ -359,6 +359,9 @@ async function postShutdown({
   fsMod = fs,
   pathMod = path,
   timeoutMs = 5000,
+  // True for a stop the user chose (Quit). The body then says so, and the gateway
+  // ends the YOLO and chat trust it would keep across any other exit.
+  userStop = false,
 }) {
   const target = dialTarget(backendUrl);
   if (!target || !kirocrewHome) return false;
@@ -376,21 +379,27 @@ async function postShutdown({
   let u;
   try { u = new URL(`${target.origin}/api/shutdown`); } catch { return false; }
 
+  const body = userStop ? JSON.stringify({ user_stop: true }) : "";
   const attempt = (secret) => new Promise((resolve) => {
+    const headers = { "X-Local-Secret": secret };
+    if (body) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(body);
+    }
     const req = httpMod.request(
       {
         hostname: u.hostname,
         port: u.port,
         path: u.pathname,
         method: "POST",
-        headers: { "X-Local-Secret": secret },
+        headers,
         timeout: timeoutMs,
       },
       (res) => { res.resume(); resolve(res.statusCode === 200); }
     );
     req.on("error", () => resolve(false));
     req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.end();
+    req.end(body || undefined);
   });
 
   return (async () => {
@@ -458,6 +467,36 @@ async function stopForkedGatewaySurvivors(pids, { deadline, graceMs, getCommandF
   }
   for (const pid of survivors) {
     if (await stillGateway(pid)) { try { signalPidFn(pid, "SIGKILL"); } catch {} }
+  }
+}
+
+/**
+ * Write the user-stop mark a Quit leaves for the gateway's next boot
+ * (`kept_grants.mark_user_stop` on the Python side writes the same file), so the
+ * YOLO and chat trust kept across other exits end even when the gateway never
+ * reads the Quit's `user_stop` body and is signalled instead. Owner-only, never
+ * through a link, written to a temporary name and renamed. Returns whether the
+ * mark is on disk; never throws, because a Quit must go ahead without it.
+ */
+function markUserStop({ kirocrewHome, fsMod = fs, pathMod = path } = {}) {
+  if (!kirocrewHome) return false;
+  try {
+    const dir = pathMod.join(kirocrewHome, "kept-grants");
+    try {
+      fsMod.mkdirSync(dir, { mode: 0o700 });
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") return false;
+    }
+    if (!fsMod.lstatSync(dir).isDirectory()) return false;
+    const file = pathMod.join(dir, "user-stop");
+    const tmp = `${file}.${process.pid}.tmp`;
+    const payload = JSON.stringify({ version: 1, via: "desktop", at: Date.now() / 1000 });
+    try { fsMod.unlinkSync(tmp); } catch {}
+    fsMod.writeFileSync(tmp, payload, { mode: 0o600, flag: "wx" });
+    fsMod.renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -544,8 +583,15 @@ async function stopGatewayGracefully(
     survivorPollMs = 200,
     survivorGraceMs = 10000,
     termGraceMs = survivorGraceMs,
+    // A stop the user chose (Quit): passed to postShutdown, see there.
+    userStop = false,
   } = {}
 ) {
+  // A Quit marks its stop first, before anything is sent, and also when the child
+  // is already gone (a crash the app has not relaunched yet): the gateway's next
+  // boot must still end the kept grants. The signal fallback below is not read as
+  // a user stop by the gateway, so the mark is what ends them there too.
+  if (userStop) markUserStop({ kirocrewHome, fsMod, pathMod });
   if (!proc || proc.exitCode !== null) return;
   const useTreeKill = platform === "win32" && typeof killTreeFn === "function";
   const listsTree = platform !== "win32"
@@ -629,7 +675,7 @@ async function stopGatewayGracefully(
     armEscalation(deadline);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
     // Prefer the clean endpoint; kill only if it didn't take.
-    postShutdownFn({ backendUrl, kirocrewHome, httpMod, fsMod, pathMod }).then((ok) => {
+    postShutdownFn({ backendUrl, kirocrewHome, httpMod, fsMod, pathMod, userStop }).then((ok) => {
       if (ok || proc.exitCode !== null) return;
       killWith("SIGTERM");
     });
@@ -1098,6 +1144,7 @@ async function isServiceManaged(pid, getPpid, isLaunchdJob = null) {
 
 module.exports = {
   confirmedFree,
+  markUserStop,
   postShutdown,
   stopGatewayGracefully,
   forceStopPort,

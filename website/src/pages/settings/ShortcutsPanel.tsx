@@ -5,6 +5,7 @@ import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
 import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
+import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
@@ -135,6 +136,7 @@ function PanelToggleConfig() {
  * discoverable, permanent home in Settings.
  */
 export function ShortcutsPanel() {
+  useKeyboardLayout()
   const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const globalHotkey = useGlobalHotkey()
 

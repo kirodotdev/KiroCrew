@@ -3207,11 +3207,18 @@ unless its `_meta.kiro` names a `timeout` on an engine that reads it (below),
 and only Crew's own elements carry one, so a user server hoisted there would lose the default
 `kas_settings_mcp.finish_settings_mcp` gives the block (120 s, 300 s for a remote one). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
-entry stays authoritative and a name appears once), and only a stdio entry whose
-keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
-`disabledTools` or `timeout` customization, a registry marker, a remote URL or a
-command-less entry keeps the agent-block path where that field is honoured.
-A managed stdio entry kept there (a `timeout`, a registry marker) still
+entry stays authoritative and a name appears once), and only a stdio entry with a
+command moves — a registry marker, a remote URL or a command-less entry keeps
+the agent-block path where that field is honoured. A managed stdio entry with a
+key outside `command`, `args`, `env`, `type` (a `timeout`, a `cwd`) moves anyway
+when the session has a token:
+those keys are dropped and named in one info log line, since the hoisted
+element does not reproduce them (a user `timeout` gives way to the 120 s
+`_meta.kiro.timeout` below). Left
+in the block it would carry no session token and refuse every call as
+`identity_unattested`. An app server entry with such a key, or any entry with
+one on a session without a token, still keeps the block.
+A managed stdio entry kept there (a registry marker, an extra key with no token) still
 launches the managed invocation: its `command` and `args` are replaced from
 `SessionExtras.managed_entries` (`agent.with_managed_launch`), every other key
 stays as projected, and it carries no session token. KAS starts a block entry
@@ -3223,7 +3230,7 @@ untouched: refs resolve wherever the server was declared, and on 2.18.0 an
 allowlist-only or `excludedTools` restriction on the hoisted server still
 yields readiness with only the permitted tag advertised. Exact legacy
 limitation: on a release that stamps no provenance, a managed entry left in the
-block by one of those extra fields is still refused as
+block by a registry marker is still refused as
 `connected without provenance`; it works on a release that stamps `origin:
 client`.
 
@@ -3383,8 +3390,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   session's own snapshot; the pattern matches past the cap; an agent whose limits
   Crew applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
   `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
-  its own `preToolUse` hooks), because the gate reads those only on the session's
-  own agent's requests and a native sub-agent's request carries none of them
+  its own `preToolUse` hooks), because a native sub-agent's request carries the
+  session's own agent's gate limits, never the target's
   (`session_handle_permissions._build_permission_event`); an agent that
   declares a Crew server the session's own entry does not, whose copy would
   refuse every call as `identity_unattested`; and an agent that declares a pooled
@@ -3410,6 +3417,21 @@ spec the same way kiro-cli v2 does where the wire allows it:
   naming the parent and the denied targets. The session-start notice names
   the targets past either limit and points to `spawn_run`, which runs an agent with
   its own limits. A target past either limit is not denied.
+  With no `availableAgents` nothing is registered and the engine's own roster
+  answers. When the session's own entry leaves out a built-in tool
+  (`_narrows_tools`: its `tools` is neither `"*"` nor a list holding `@builtin`,
+  or an `excludedTools` entry names a built-in), the engine's bundled agents
+  whose own tool list reaches further (`ENGINE_WIDE_AGENTS`:
+  `general-task-execution`, `custom-agent-creator`) are denied the same way and
+  named in the notice: KAS runs a sub-agent inside its parent's permission rules
+  but with its own tool list. A parent that sets `availableAgents`, or mounts
+  every built-in, keeps them.
+  A native KAS sub-agent's request carries the session's own agent's gate limits
+  (`_build_permission_event`: the shell and write allowlists, the deny record with
+  its grants emptied, the unjudged denies), as a native claude sub-agent's does,
+  so `spec-shell-allowlist`, `spec-write-allowlist`, `spec-denies` and
+  `spec-unjudged-denies` refuse its calls on every approval policy; it carries
+  none of that agent's grants.
   Everything that reads the batch for the session's own agent matches it by id.
   A sub-agent's call the session cannot tell from its own is answered with the
   session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write
@@ -3604,7 +3626,7 @@ KAS can also report a remote OAuth server it holds no grant for with the error o
 
 Needing a sign-in never starts one. An unsigned KAS server's tools are invisible to the model (exposure needs the catalog of a `connected` entry, above), so the agent can never call one, and a tool call cannot be the trigger. The trigger is the user's own message: before each user turn, the dashboard runner hands what the person asked (`user_typed_message`: captured before `@prompt`/`$skill` expansion, with no cancelled-turn preamble, sub-agent failure text or app context, any of which could name a server the message did not; only a turn with `_directive_user_origin` from a person's dashboard/channel send or human app-chat hands text over; a generated app dispatch, an OpenAI-compatible request (its prompt is the flattened conversation), a Spec Builder decision answer (composed from the agent's title and options), or a Regenerate replay of a stored row, all `_message_is_typed=False`, a turn restored from the on-disk queue (`_turn_provenance_restored`), synthetic turn, self-wake, slash command, `/prompts get` re-entry, or turn with a `_turn_actor` hands nothing) to the provider's declared `LLMProvider.note_user_message` (a no-op by default; the direct kiro-cli client has no trigger). `AcpProvider.note_user_message` holds the text only until that provider's next `stream()` or `stream_command()`, which takes and clears it at entry before anything can fail; `stream_command()` discards it. For `stream()`, the text then travels as an argument into that one attempt's handle `prompt`/`_run_turn`, after any pending MCP re-injection, so it never outlives the attempt or reaches a later automated turn. After the pre-turn drain, `_run_turn` calls `want_mcp_sign_in_named` with that attempt's text to mark each tracked server it names as wanted. The handle holds the text for that one turn and matches it on each mid-turn status snapshot, each server at most once, so a server whose `failedAuthorization` status was still queued or arrives mid-turn is found; the turn's end clears it, so a later cron or sub-agent turn never matches an old message. A server is named by its configured name or an obvious alias (`mcp_server_aliases`: the words split at separators, the part after a `namespace:` prefix (a one-word part only when it repeats the namespace), a Kiro Power's name without its `power-` prefix with repeated words collapsed (`power-figma-figma` gives `figma`, but a multi-word name's last word alone, such as `search` from `power-aws-docs-search`, never counts), each without a trailing `mcp` or `server` word, repeated words collapsed, derived aliases under three characters or only `mcp`/`server` dropped, while the configured name itself always counts, so a server named `gh` or `mcp` can still be named), or by a registry provider's `sign_in_words` when its slug is the server name (`atlassian`: `jira`, `confluence`), case-insensitive and as whole words only. So a chat that never names an unsigned server shows no Authorize card for it, at session start or later. An accepted start removes the server from the wanted set, so one ask starts at most one sign-in. A message that names a server whose sign-in this session already holds in the runtime asks for nothing, which keeps one live card per server. Once an attempt ends (signed in, timed out, or left by the user), only a later message naming the server offers it again; unrelated messages and status snapshots never do.
 
-A task that needs an unsigned server without naming it ("check my design files") gets no card: the user names the server to be offered its sign-in. The chat still says so once: when the session MCP report is published with a server under `awaiting_auth` that has no open sign-in card in the chat, the dashboard adds one `notice` row (`meta.kind` `mcp_sign_in_needed`, `chat_turn/mcp_session._notice_mcp_sign_in_needed`) naming up to five such servers (`meta.servers`, the rest counted in `meta.more`), and an example message that signs in from the chat; the chat page draws that sentence in the reader's language from the meta. A card counts as open only while it has its link, none of `completed`, `failed`, `superseded` or `expired` is set (a finished card keeps its `oauth_url`), and the read gate `_expire_dead_child_oauth_meta` still judges it live against `_live_child_instance`: a card whose child is gone (a gateway restart, an exited child) is expired only at read time and never saved so. A server with a rejected-link banner (`meta.rejected_url`) counts as covered too: that banner already says why its sign-in did not start. The row starts no sign-in. It is shown once per chat per gateway run (`_ChatSlot._mcp_sign_in_notice_shown`, in memory), and only on a backend where naming a server starts its sign-in: the chat provider's backend is in `ACP_BACKENDS_OPEN_EXTERNAL_URL`, the same set `begin_mcp_sign_in` checks first. kiro-cli is not in it, so a kiro-cli chat never gets this row. A start the runtime refuses (its one slot is held) leaves the server wanted for the next offer point, in name order. The wanted set holds at most `BUCKET_CAP` names, and a refused name is logged. With `agent.kas_persist_mcp_sign_in` on, a sign-in from Settings > MCP or a Connections card made while chats run on KAS runs on a KAS engine process of its own (`connections/mint_kas.py`): the same `resetServer` and `openExternalUrl` exchange, with the engine's tokens kept in the `kas/mcp-grants` vault below, so every later KAS chat finds them at its first `_kiro/secret/get` without naming the server ([connections](connections.md#while-chats-run-on-kas-the-sign-in-runs-on-the-kas-engine)). With persistence off that sign-in runs on kiro-cli and lands in its own OAuth cache, which no KAS engine reads; the chat card is then the only sign-in path on KAS, and its grant lasts as long as that chat's KAS process. On kiro-cli, `begin_mcp_sign_in` refuses every start (the host opens no external URLs) and the engine sends its own `_kiro.dev/mcp/oauth_request` frames, so none of this changes it.
+A task that needs an unsigned server without naming it ("check my design files") gets no card: the user names the server to be offered its sign-in. The chat still says so once: when the session MCP report is published with a server under `awaiting_auth` that has no open sign-in card in the chat, the dashboard adds one `notice` row (`meta.kind` `mcp_sign_in_needed`, `chat_turn/mcp_session._notice_mcp_sign_in_needed`) naming up to five such servers (`meta.servers`, the rest counted in `meta.more`), and an example message that signs in from the chat; the chat page draws that sentence in the reader's language from the meta. A card counts as open only while it has its link, none of `completed`, `failed`, `superseded` or `expired` is set (a finished card keeps its `oauth_url`), and the read gate `_expire_dead_child_oauth_meta` still judges it live against `_live_child_instance`: a card whose child is gone (a gateway restart, an exited child) is expired only at read time and never saved so. A server with a rejected-link banner (`meta.rejected_url`) counts as covered too: that banner already says why its sign-in did not start. The row starts no sign-in. A chat shows at most one such row per gateway run (`_ChatSlot._mcp_sign_in_notice_shown`, in memory). A server is named once per gateway run across chats: when a person's own plain dashboard chat (origin `user`, no `_app`, no `mode`, no `_created_by`) shows the row, `DashboardState._mcp_sign_in_notice_servers` keeps the names it named and no later chat names them again; a cron's, an app's, a channel's or a mode chat (an app page's worker slot, a Bot's thread), or a session an agent opened (`session_create`) or forked (`session_fork`), which carries origin `user` and a `_created_by`, still gets its row but uses up nothing: such a chat may go unread, so a later chat may name the server again, and none hides it. A server an earlier `notice` row of kind `mcp_sign_in_needed` in the chat's rows in memory names (a chat reopened after a restart; a restored chat holds its newest 500 rows, so a row older than those is not seen) is not named again, and a server that starts waiting in a chat that already showed its row is named in the next chat that reports it. Nothing is saved, so after a restart a server still waiting is named once more, in one new chat, and a server seen ready is not dropped from that set: a sign-in lost again in the same run is named after the next restart. It is shown only on a backend where naming a server starts its sign-in: the chat provider's backend is in `ACP_BACKENDS_OPEN_EXTERNAL_URL`, the same set `begin_mcp_sign_in` checks first. kiro-cli is not in it, so a kiro-cli chat never gets this row. A start the runtime refuses (its one slot is held) leaves the server wanted for the next offer point, in name order. The wanted set holds at most `BUCKET_CAP` names, and a refused name is logged. With `agent.kas_persist_mcp_sign_in` on, a sign-in from Settings > MCP or a Connections card made while chats run on KAS runs on a KAS engine process of its own (`connections/mint_kas.py`): the same `resetServer` and `openExternalUrl` exchange, with the engine's tokens kept in the `kas/mcp-grants` vault below, so every later KAS chat finds them at its first `_kiro/secret/get` without naming the server ([connections](connections.md#while-chats-run-on-kas-the-sign-in-runs-on-the-kas-engine)). With persistence off that sign-in runs on kiro-cli and lands in its own OAuth cache, which no KAS engine reads; the chat card is then the only sign-in path on KAS, and its grant lasts as long as that chat's KAS process. On kiro-cli, `begin_mcp_sign_in` refuses every start (the host opens no external URLs) and the engine sends its own `_kiro.dev/mcp/oauth_request` frames, so none of this changes it.
 
 opencode is on neither the Crew OAuth bridge nor `ACP_BACKENDS_REMOTE_MCP_OAUTH`, and it sends no ACP frame when a remote server answers `401`, so its session report would never list such a server as waiting. When an opencode session opens, `AcpClient._start_mount_check` also starts `acp/mcp_sign_in_probe.schedule_sign_in_probe` in the background over the array the session consumed: each `http` or `sse` element that sends no header of its own (at most `MAX_PROBED_SERVERS`; any header may be its credential) gets one MCP `initialize`, SSRF-vetted with `link_unfurl.vet_unfurl_url` (any port, private hosts allowed), pinned to the vetted address, no redirects, bounded by `PROBE_TIMEOUT_SECS`. A `401` whose `WWW-Authenticate` is a Bearer challenge (`mcp_discovery_remote._is_bearer_challenge`, the remote MCP row probe's reader), or a bare `401` from a server whose well-known protected-resource metadata names it (`mcp_discovery_remote.advertises_protected_resource`, that probe's fallback), notes the server in the payload's advisory `sign_in_suspected` (`McpSessionReport.record_sign_in_asked`, skipped for a server that already reported and dropped once the host reports it), never in a bucket or `not_ready()`: opencode may hold its sign-in already, so no reader (the `[MCP SERVERS]` block, `problem_summary`, a sub-agent's MCP line, a crewmate's capability state) may call it unusable; any other answer, an error or a timeout records nothing, and an answer for a replaced or closed session is dropped. The server stays in the array, since opencode may already hold a sign-in of its own. When the report is published the chat gets one `notice` row (`chat_turn/mcp_session._notice_mcp_may_need_sign_in`, opencode only, once per chat) saying the server may need a sign-in that this harness cannot do through Kiro Crew yet, and that nothing is wrong if its tools work.
 
@@ -3960,6 +3982,16 @@ stream. Its chunks are held only while their whitespace-stripped text is still a
 prefix of the token and their text is at most 64 characters long; once either
 fails, they go out unchanged, in order and with their message ids. A segment
 that equals the token when it ends is dropped.
+A quiet turn that also folded a mid-turn steer writes the token and then
+kiro-cli's `[STEERING steer-…]` ack in the same segment. Once the token is
+complete the segment stays held while what follows it can still be only steer
+acks and whitespace (judged by `messaging.driver._SteeringMarkerFilter`, at most
+16,384 more characters). A segment that ends that way goes out as one chunk
+holding only the text after the token, so the steer is still recorded and the
+chat draws what it draws for an ack-only reply (a Bot chat hides that row).
+Anything else after the token releases the whole segment unchanged. The turn's
+`quiet_end` and the worker-report check (`mate_thread_wakes.note_turn_end`)
+ignore steer acks, so such a turn still counts as quiet.
 There is no tool-name check and no per-backend branch: a model or injected text
 that writes the token can only turn that one reply into the empty reply a turn
 has today, never end a turn, apply a directive or hide other text. A native
@@ -4593,7 +4625,7 @@ message, and shows a failed fetch's own error text under its lead
   (`--no-interactive` does not suppress it; there is no opt-out env var). Every
   dashboard endpoint that shells out to `kiro-cli` on a timer therefore calls
   `reject_if_kiro_unverified()` BEFORE resolving or spawning the binary:
-  `/api/models` (polled every 8s while the model list is degraded) and
+  `/api/models` (polled every 8s while the model list is degraded or cold) and
   `/api/sessions/usage` (polled by the credit pill: fast, ~2.5s, while the
   reading is unsettled — an empty warming cache or a pre-readiness 503 — then a
   30s steady cadence once a reading or a terminal state lands, or once 12 reads
@@ -4609,8 +4641,8 @@ message, and shows a failed fetch's own error text under its lead
   On KAS's relay started on Crew's sign-in alone, `/api/models` answers the
   gate's refusal with the engine's recorded list instead
   (`models_kas_bundle.api_models_kas_crew_relay`), and spawns nothing. With
-  nothing recorded it answers `auto`, except that a `kiro_probe_timed_out`
-  refusal stands. On
+  nothing recorded it answers `auto` marked `"cold": true`, except that a
+  `kiro_probe_timed_out` refusal stands. On
   `/api/models` the gate is not the only
   source of that code: when the gate passes but the spawned `--list-models` read
   itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
@@ -4625,7 +4657,7 @@ message, and shows a failed fetch's own error text under its lead
   (`verified_ready`), never the bare latch — a stale `ready=True` would
   green-light exactly the signed-out spawn the gate exists to prevent. The
   freshness bound differs by site: `/api/models` keeps the tight 30s ceiling
-  (`_VERIFY_MAX_AGE_SECS`) because it is polled while degraded and has no cooldown
+  (`_VERIFY_MAX_AGE_SECS`) because it is polled while degraded or cold and has no cooldown
   on its spawn while no catalog is cached, so a wide window would re-open the
   browser-login storm; `/api/sessions/usage` reads on a 5-minute
   `_POLL_GATE_MAX_AGE_SECS` because its spawn is already throttled to one fetch
@@ -5233,7 +5265,7 @@ message of spaced fragments from every start before the tail guard refused it.
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
 
-**Attached sheets** (`acp/sheet_digest.py`, off by default). With `dashboard.attachment_sheet_digest` on, `build_prompt_blocks` follows the user's text with a short digest of each CSV, TSV or workbook (`.xlsx`, `.xlsm`, `.xltx`, `.xltm`) it names that sits directly in the data home's `uploads/` folder (a file attached in dashboard chat): column names, an inferred type per column, a row count and the first `SAMPLE_ROWS` (3) rows. Each step is bounded: `MAX_READ_BYTES` (256 KiB) read per file, `MAX_COLUMNS` (20), `MAX_CELL_CHARS` (40), `MAX_FILES` (3) per prompt and `MAX_DIGEST_CHARS` (4000) per digest. A workbook larger than `MAX_WORKBOOK_BYTES` (8 MiB) is skipped; a smaller one is read through `workbook_rows.read_workbook_rows`, which refuses an archive past `WORKBOOK_MAX_MEMBERS` (1024) members or `WORKBOOK_MAX_EXPANDED_BYTES` (64 MiB) expanded, keeps at most `MAX_READ_BYTES` characters and stops at `WORKBOOK_WALL_SECS` (5 s). It gives one block per sheet, split where each sheet begins, for the first `MAX_SHEETS` (5) sheets, then a line counting the sheets not shown; when the walk stops early only the sheet it stopped in shows a floor, and the count of sheets not shown is a floor too. The file text passes `redact_exfiltration_urls` and `redact_credentials` before the digest is built, and the digest's typed markers are escaped like the rest of the text. The setting is read per prompt (`digest_enabled`, false on any failure), so a change takes effect on the next message. Off, the agent gets the path alone.
+**Attached sheets** (`acp/sheet_digest.py`, off by default). With `dashboard.attachment_sheet_digest` on, `build_prompt_blocks` follows the user's text with a short digest of each CSV, TSV or workbook (`.xlsx`, `.xlsm`, `.xltx`, `.xltm`) it names that sits directly in the data home's `uploads/` folder (a file attached in dashboard chat): column names, an inferred type per column, a row count and the first `SAMPLE_ROWS` (3) rows. Each step is bounded: `MAX_READ_BYTES` (256 KiB) read per file, `MAX_COLUMNS` (20), `MAX_CELL_CHARS` (40), `MAX_FILES` (3) per prompt and `MAX_DIGEST_CHARS` (4000) per digest. A workbook larger than `MAX_WORKBOOK_BYTES` (8 MiB) is skipped; a smaller one is read through `workbook_rows.read_workbook_rows`, which refuses an archive past `WORKBOOK_MAX_MEMBERS` (1024) members or `WORKBOOK_MAX_EXPANDED_BYTES` (64 MiB) expanded, keeps at most `MAX_READ_BYTES` characters and stops at `WORKBOOK_WALL_SECS` (5 s). It gives one block per sheet, split where each sheet begins, for the first `MAX_SHEETS` (5) sheets, then a line counting the sheets not shown; when the walk stops early only the sheet it stopped in shows a floor, and the count of sheets not shown is a floor too. A path may end a sentence: a trailing `.`, `:`, `!` or `?` is dropped with the wrapping quotes and brackets. Every count comes from the file text as written; the column names, types and sample cells come from the same text after `redact_exfiltration_urls` and `redact_credentials`, so a secret in a cell never reaches the prompt. When redaction moves a row or cell break (a key spread over lines), in a CSV, TSV or workbook sheet, the block gives only the row and column counts and a note that the names, types and samples are left out. The digest's typed markers are escaped like the rest of the text. The setting is read per prompt (`digest_enabled`, false on any failure), so a change takes effect on the next message. Off, the agent gets the path alone.
 
 **Text-only turns.** Every prompt entry point (`LLMProvider.stream`, the handle's `prompt`, the direct client's `stream_events`) takes a keyword-only `allow_image` (default `True`) and forwards it down to `build_prompt_blocks`. `False` builds the blocks with `allow_image=False`, whatever the agent advertises: no path in the message is read or inlined, and it stays in the text. `llm_helpers.stream_and_collect` (and `stream_and_collect_json`) forward the same keyword to every attempt. `run_bg_oneliner` sends every background one-liner this way, and the history consolidator every turn it sends, because its prompt is text about a session and any path in it is quoted history (see the history-scrub section of [session](session.md)). The default call shape is unchanged for every other caller.
 
@@ -5696,6 +5728,16 @@ From engine 3.4 that failure is `-32000` "Sign in to Kiro to send a prompt." wit
 `data.errorType` `SignInRequiredError` and no expiry wording; `_RE_SESSION_EXPIRED`
 matches that type name, so the row is tagged `auth_required` and its card offers
 Sign in rather than Resume.
+The one exception is machine mode (`agent_sdk/kas_machine.py`): with the
+`crew_client` preview on and `agent.kas_auth` `machine`, `with_engine_args`
+replaces `--auth=acp-callback` with `--auth=machine --token-path=<file>
+--endpoint=<url> --control-plane-endpoint=<url> --region=<region>`, the plan
+carries `host_auth=False` and `machine_auth`, and the engine reads the token file
+itself; Crew only checks the path with `access(2)` and `stat(2)`. The engine's
+environment loses Crew's API key and every name in `agent.kas_machine_env_drop`.
+A missing cell or token file refuses the spawn before any install
+(`machine_cell_missing`, `machine_token_missing`), and machine mode runs on
+`agent.kas_bundle` only (`machine_route_not_bundle`).
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the

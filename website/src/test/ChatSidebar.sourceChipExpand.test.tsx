@@ -58,6 +58,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 const PR = (n: number) => `https://github.com/kirodotdev/KiroCrew/pull/${n}`
 const ISSUE = (n: number) => `https://github.com/kirodotdev/KiroCrew/issues/${n}`
@@ -141,6 +142,7 @@ function renderSidebar(initial: ChatSlot[] = slots) {
     </QueryClientProvider>
   )
   const { rerender } = render(tree(initial))
+  expandSessionLinks()
   /** Simulate a slots push: the same mounted row, a newer payload. */
   return { push: (next: ChatSlot[]) => rerender(tree(next)) }
 }

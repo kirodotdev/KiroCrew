@@ -481,6 +481,15 @@
       "tab_gone": "La pestaña del Bot está cerrada, así que no hay una página en vivo que mostrar.",
       "app_off": "Esta app está desactivada, así que no puede mostrar el navegador. Actívala en Apps para volver a ver la página.",
       "actions": "Lo que hizo el Bot"
+    },
+    "browserSites": {
+      "add_title": "¿Permitir un sitio nuevo?",
+      "add_asked_by": "{{app}} pide añadir el sitio de abajo a las páginas por las que puede navegar su propio agente.",
+      "add_app_details": "De {{author}} · ID de la aplicación {{id}}",
+      "add_app_id": "ID de la aplicación {{id}}",
+      "add_star": "Cada * coincide con cualquier texto, así que cubre todas las páginas cuya dirección encaje.",
+      "add_risk": "Si lo permites, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes. Puedes quitarlo más tarde.",
+      "add_allow": "Permitir sitio"
     }
   },
   "apps": {
@@ -6689,7 +6698,7 @@
       "trust_scope_tooltip": "De confianza por un permiso de app para este chat; caduca por sí solo. Elige Normal en este menú para terminarlo ahora; la app puede volver a darlo hasta que lo desactives en esa app.",
       "yolo_desc": "En cada chat, {{productName}} trabaja sin preguntarte primero",
       "yolo_expiration_timed": "Se desactiva solo tras {{duration}} y vuelve a preguntar.",
-      "yolo_expiration_until_shutdown": "Sigue activado hasta que {{productName}} se reinicie — no caduca por tiempo.",
+      "yolo_expiration_until_shutdown": "Sigue activado hasta que detengas {{productName}} — no caduca por tiempo. Un reinicio lo mantiene.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Desactivado por la política de seguridad de tu organización",
       "yolo_mode_is_an_app_wide_setting": "El modo YOLO es un ajuste de toda la app"
@@ -7371,7 +7380,6 @@
       "send_selection_to_chat": "Enviar la selección al chat",
       "send_to_chat": "Enviar al chat",
       "sending": "Enviando…",
-      "touch_select_anchor": "Primer punto fijado: toca el otro extremo",
       "touch_select_done": "Rango seleccionado: toca Copiar",
       "use_here": "Usar la terminal aquí",
       "use_starting_directory": "Usar el directorio inicial del terminal",
@@ -8324,6 +8332,7 @@
       "profile_lookup_failed_body": "No pudimos consultar tu perfil de Kiro. Empieza de nuevo para volver a intentarlo.",
       "connection_lost_body": "Perdimos la conexión con {{productName}}, que puede haberse reiniciado. Empieza de nuevo para volver a iniciar sesión.",
       "sign_in_status_unavailable": "No se pudo comprobar el estado del inicio de sesión",
+      "owner_only": "Solo el propietario del panel puede gestionar el inicio de sesión de Kiro.",
       "sign_in_to_kiro": "Inicia sesión en Kiro",
       "skip_for_now": "Omitir por ahora",
       "signing_in_with": "Iniciando sesión con {{provider}}",
@@ -12408,6 +12417,10 @@
     "account_and_settings": "Cuenta y ajustes"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "Este crew no está conectado. Conéctalo en la ventana principal y vuelve a desacoplarlo.",
+      "this_pop_out_cannot_be_opened": "Esta ventana desacoplada no se puede abrir aquí."
+    },
     "mcpPage": {
       "bot_workers_note": "Un servidor añadido aquí no llega a los workers de los Bots. Los workers de un Bot solo lo reciben si se añade a ese Bot.",
       "title": "Servidores MCP",
@@ -12671,7 +12684,23 @@
         "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
       },
       "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo.",
-      "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir."
+      "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir.",
+      "browser_sites_list_title": "Sitios de navegación",
+      "browser_sites_list_hint": "Las páginas por las que puede navegar el agente propio de esta aplicación. Un sitio quitado deja de valer en el siguiente paso del agente.",
+      "browser_sites_source_app": "De la aplicación",
+      "browser_sites_source_owner": "Añadido por ti",
+      "browser_sites_status_approved": "Permitido",
+      "browser_sites_status_pending": "Pendiente de aprobación",
+      "browser_sites_status_disabled": "Desactivado",
+      "browser_sites_status_removed": "Quitado",
+      "browser_sites_remove": "Quitar",
+      "browser_sites_turn_on": "Activar",
+      "browser_sites_add_back": "Volver a añadir",
+      "browser_sites_remove_failed": "No se pudo quitar el sitio: {{error}}",
+      "browser_sites_add_failed": "No se pudo volver a añadir el sitio: {{error}}",
+      "browser_sites_turn_on_title": "¿Volver a activar este sitio?",
+      "browser_sites_add_back_title": "¿Volver a añadir este sitio?",
+      "browser_sites_restore_risk": "Después, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes."
     },
     "appPage": {
       "loading_app": "Cargando la app…",
@@ -13684,7 +13713,10 @@
         "host_sandbox_teammate_unnamed": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide al propietario de la Crew que lo revise.",
         "copy_details": "Copiar detalles",
         "copy_details_hint": "Copia solo el código de error y la hora",
-        "host_sandbox_teammate_named": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide a {{owner}} (propietario de la Crew) que lo revise."
+        "host_sandbox_teammate_named": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide a {{owner}} (propietario de la Crew) que lo revise.",
+        "repeated_in_a_row_many": "Ocurrió {{count}} veces seguidas, la última el {{time}}",
+        "repeated_in_a_row_one": "Ocurrió {{count}} vez seguida, la última el {{time}}",
+        "repeated_in_a_row_other": "Ocurrió {{count}} veces seguidas, la última el {{time}}"
       },
       "folderPanel": {
         "back": "Atrás",
@@ -14311,6 +14343,7 @@
         "agent_switch_blocked_channel": "Se bloqueó el cambio a {{agent}}: este chat está vinculado a un canal de Slack que atiende {{channel_agent}}. El próximo turno se reinicia con ese agente.",
         "channel_message_not_run": "No se ejecutó un mensaje de un canal de Slack: el agente de esta sesión no es el agente que usa ese canal.",
         "member_rebind_kept_agent": "{{bot}} ahora está configurado con {{agent}}, pero este chat sigue ejecutando {{recorded}}, el agente con el que empezó. Inicia un chat nuevo con {{bot}} para usar {{agent}}.",
+        "member_harness_elsewhere": "{{bot}} se ejecuta en {{bot_harness}} en su propio chat, y este chat sigue en {{chat_harness}}. Abre el chat propio de {{bot}} para usar {{bot_harness}}.",
         "agent_no_tools": "{{agent}} no tiene ninguna herramienta, así que en este chat no puede ejecutar comandos, trabajar con archivos ni usar servidores MCP.",
         "agent_no_tools_open": "Elegir sus herramientas",
         "harness_mode_changed": "Esta sesión cambió al modo {{mode}}.",
@@ -15946,7 +15979,14 @@
       "hide_sessions_count_many": "Ocultar {{n}} sesiones",
       "hide_sessions_count_other": "Ocultar {{n}} sesiones",
       "reclick_toggles_side_panel": "Haz clic de nuevo para mostrar u ocultar el panel lateral",
-      "reclick_toggles_side_panel_shortcut": "Haz clic de nuevo para mostrar u ocultar el panel lateral ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Haz clic de nuevo para mostrar u ocultar el panel lateral ({{shortcut}})",
+      "show_linked_items_one": "Mostrar {{count}} elemento vinculado",
+      "show_linked_items_many": "Mostrar {{count}} elementos vinculados",
+      "show_linked_items_other": "Mostrar {{count}} elementos vinculados",
+      "hide_linked_items": "Ocultar elementos vinculados",
+      "show_linked_items_failed_one": "Mostrar {{count}} elemento vinculado, una comprobación falló",
+      "show_linked_items_failed_many": "Mostrar {{count}} elementos vinculados, una comprobación falló",
+      "show_linked_items_failed_other": "Mostrar {{count}} elementos vinculados, una comprobación falló"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
@@ -21632,7 +21672,7 @@
         "profile_2": "perfil",
         "profiles_json": "profiles/*.json",
         "rail_active": "Activo ahora",
-        "rail_until_restart": "Hasta reiniciar",
+        "rail_until_restart": "Hasta que detengas {{productName}}",
         "rail_until_time": "Hasta {{time}}",
         "search_rules_placeholder": "Buscar reglas, patrones, categorías…",
         "section_group_enforced": "Impuesto",
@@ -21694,7 +21734,7 @@
         "yolo_duration_locked": "Desactivado por la política de tu organización",
         "yolo_duration_next_activation_note": "Se aplica la próxima vez que actives la aprobación automática.",
         "yolo_duration_title": "Duración de la aprobación automática",
-        "yolo_duration_until_shutdown": "Hasta que {{productName}} se reinicie",
+        "yolo_duration_until_shutdown": "Hasta que detengas {{productName}}",
         "your_custom_denies": "Tus denegaciones personalizadas",
         "trustedApps": {
           "description": "Aplicaciones a las que has permitido ejecutar su propio código en este ordenador. La confianza cubre una aplicación cada vez; todas las demás aplicaciones de terceros siguen bloqueadas.",
@@ -22949,6 +22989,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB de RAM · {{diskGb}} GB de disco",
         "tier_price": "~{{hourly}}/h · ~{{monthly}}/mes si se deja en marcha (aprox.)",
         "price_region_note": "Los precios son tarifas bajo demanda de {{priceRegion}}; en otras regiones pueden ser distintos.",
+        "stopped_billing_note": "Un crew detenido sigue facturando su disco, y cualquier archivo de configuración guardado en S3, hasta que elimines el crew.",
         "transport_hint_fargate": "Llega a una tarea de AWS Fargate a través de Session Manager. Sirve una API de chat, no un panel.",
         "transport_hint_ssh": "Se conecta mediante SSH.",
         "transport_hint_ssm": "Se conecta a través de AWS Systems Manager Session Manager.",
@@ -22997,7 +23038,19 @@
         "setting_up_progress": "Configurando · {{current}} de {{total}}",
         "launching_crew": "Lanzando {{name}}",
         "ssm_start_session_denied": "Este rol de AWS no puede iniciar una sesión de SSM en esta instancia. Dale ssm:StartSession o elige un perfil de AWS que lo tenga.",
-        "show_aws_error": "Mostrar el error de AWS"
+        "show_aws_error": "Mostrar el error de AWS",
+        "warm_cap": "Crews que siguen cargados",
+        "warm_cap_desc": "Crews remotos que siguen cargados a la vez, primero los abiertos más recientemente. El modo automático mantiene {{auto}}.",
+        "warm_cap_auto": "Automático ({{n}}) · más hace que cambiar sea más rápido, usa más memoria",
+        "warm_cap_set": "Fijado en {{n}} · más hace que cambiar sea más rápido, usa más memoria",
+        "warm_cap_use_auto": "Usar automático",
+        "warm_cap_save_failed": "No se pudo guardar cuántos Crews siguen cargados.",
+        "usage_label": "Uso de los Crews remotos",
+        "usage_value": "Cargados {{panes}} · Memoria {{mb}} MB · CPU {{cpu}} %",
+        "usage_none": "No hay ningún Crew remoto cargado.",
+        "usage_shared": "Comparten el proceso de la ventana principal: {{n}}. Su coste no se cuenta.",
+        "warm_cap_load_failed": "No se pudo leer cuántos Crews siguen cargados.",
+        "usage_failed": "No se pudo leer el uso de los Crews remotos."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

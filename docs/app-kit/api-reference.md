@@ -1098,6 +1098,52 @@ session's messages, the cron list or the subagent list through `useAppApi()`
 A built-in page gets every member as the dashboard has it; outside an app every member
 refuses.
 
+## Browser Sites
+
+`useBrowserSites()` reads the pages your app's own agent may browse and lets your page
+ask the owner to change that list. It needs `APP_SDK_LEVEL >= 13` and no
+`permissions.api` entry: it reads and writes your app's own
+`/api/apps/<name>/browser-sites`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const { sites, active, loading, error, refresh, requestAdd, requestRemove, requestDisable } = sdk.useBrowserSites()
+// sites:  [{ site: 'https://music.example.net/song/*', source: 'owner', status: 'approved' }, ...]
+// active: the sites the agent may open right now
+const result = await requestAdd('https://music.example.net/song/*')
+if (!result.ok && result.code === 'declined') { /* the owner pressed Cancel */ }
+```
+
+Each row has `site`, `source` (`app`: your manifest's `permissions.browserSites`
+declares it; `owner`: the owner added it) and `status` (`approved`, `pending`: declared
+and not yet approved, `disabled`: the owner turned it off, or `removed`: a declared site
+the owner removed, listed so it can be added back and never in force).
+
+- `requestAdd(site)` widens the list: a new site, a turned-off or removed one back on, or a
+  declared one still waiting. The dashboard shows its own dialog with the site and what the agent
+  may then do, and sends the change only when the owner presses **Allow site**. A new
+  site follows the `permissions.browserSites` entry rules: an `https://` origin with a
+  path pattern; no bare `*`, wildcard host, IP, `localhost`, port or public suffix.
+- `requestRemove(site)` and `requestDisable(site)` only shrink the list, so they apply at
+  once. The agent's next browser step is refused on that site, and a tab on it is blanked.
+  Neither acts on a `removed` row (`not_listed`).
+
+Each resolves `{ ok: true, sites, active }`, or `{ ok: false, code, error }` with `code`
+one of `declined`, `bad_site`, `too_many`, `not_listed`, `bad_action`, `not_found`,
+`app_token_forbidden`, `dashboard_session_required`, `owner_only` or `request_failed`.
+
+Your backend and your agent read the same list with
+`GET /api/apps/<name>/browser-sites` (the app token reaches it), which answers
+`{ sites, active }`. Only the owner's dashboard may change it: the `POST` refuses your
+app token, an agent's tools and every other session. A browser step your agent takes off
+the list is refused with `site_not_allowed`, and the message names the sites in force.
+
+The dialog is a guardrail, not a security boundary: your page runs in the dashboard's
+document with the owner's session, and a backend that mints an owner token through the
+local owner mint reaches the `POST` too, as it reaches `/enable` (see the
+[trust model](../architecture/app-platform-trust-model.md)).
+
 ## Browser Media
 
 `useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
@@ -2458,7 +2504,8 @@ shared embedder's batch members (`ctx.embed.embed_batch`, see
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
-[`SessionChanges` and `DiffView`](#session-changes-and-diff-view); each level
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

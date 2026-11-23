@@ -168,7 +168,7 @@ below, and every function the family defines runs on that module's globals.
 | `subagent_parts/agent_policy.py` | Which agent a spawn may name: the refusal codes, app ownership, governance vetting, parent spawn policy, `validate_cwd` |
 | `subagent_parts/spawn_allowlists.py` | The reserved names, `visible_agent_names` (the one filter every roster passes through), and the parent spec's `availableAgents` allowlists at each scope: reading, memo, glob match, the unreadable-spec wording. Also runs before the facade is loaded (below) |
 | `subagent_parts/model_choice.py` | Which model and reasoning effort a run uses, and the effort notes |
-| `subagent_parts/host_memory.py` | Host and cgroup memory readings, process-subtree sampling, the count ceiling and `resolve_max_subagents`. Also runs before the facade is loaded (below) |
+| `subagent_parts/host_memory.py` | Host and cgroup memory readings, the memory guard's out-of-view stall reading (`out_of_view_memory_stall_us`), process-subtree sampling, the count ceiling and `resolve_max_subagents`. Also runs before the facade is loaded (below) |
 | `subagent_parts/start_pricing.py` | What a start costs in memory, the admitted-start reserve, the one off-loop host reading |
 | `subagent_parts/run_record.py` | The run record, `SubagentInfo`, and the scope fields it carries |
 | `subagent_parts/delivery.py` | How a run's outcome reaches its parent: the callback contracts, the delivery-routing field table and `delivery_is_parked`, the teardown gate's run ids |
@@ -359,7 +359,21 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   sibling of the gateway's cgroup, not an ancestor, and the walk never reads
   `memory.high`, so the slice term is what lets the posture go `critical` on
   a bare host whose `MemAvailable` is still large while agent process memory
-  has filled that ceiling.
+  has filled that ceiling. When the memory controller is out of view
+  altogether (the topmost visible cgroup is a child cgroup whose
+  `cgroup.controllers` has no `memory`, no v1 memory hierarchy is in view, and
+  neither `cgroup_disable=memory` nor a `memory` row in `/proc/cgroups` with
+  `enabled` 0 shows the controller off; a missing row is no evidence, as Linux
+  6.12 kernels built without `CONFIG_MEMCG_V1` list none), the figure is the
+  host's `MemAvailable`, so a container's limit goes unread.
+  `out_of_view_memory_pressure_file()` then names that cgroup's
+  `memory.pressure` and `out_of_view_memory_stall_us()` reads its `full`
+  `total=`, which the memory guard turns into the share of time stalled
+  between two samples (`rfc-host-memory-guard.md` §4.1). Both are None
+  whenever any memory accounting is in view or the view's
+  `cgroup.controllers` or `cgroup.events` is unreadable; the stall reading
+  is also None when `memory.pressure` is unreadable or its `full` `total=`
+  is missing or malformed.
 - **macOS** — the kernel's own available figure (free + active + inactive
   pages: everything not wired and not in the compressor) via the Mach
   `host_statistics64` syscall through `ctypes`/`libSystem`
@@ -3110,7 +3124,8 @@ gone approval found on reconnect was never pressed, so no surface reports an err
 it. The activity card of an unresolved gone approval reads "Checking whether it
 started…"; a retired card reads "No record". An absent inventory row proves only that
 the gateway holds no record of the id: the run never launched, or it is no longer
-retained (`evict_completed_agents` past `MAX_RETAINED_AGENTS` finished runs, a panel
+retained (`evict_completed_agents` past `MAX_RETAINED_AGENTS` finished runs, or past
+`MAX_RETAINED_FAILED` for failed runs no retry or continuation took, a panel
 dismissal, a gateway restart). A retired card is not tallied as stopped, shows no run
 usage, and "Dismiss done" clears it locally without a DELETE.
 
@@ -4782,8 +4797,10 @@ has streamed so far, not with that chunk alone, so a refused first write leaves
 no hole at the head of the fragment a restart finds. That write grows with the
 answer, so it runs off the loop in a worker drained like a state write
 (`_start_result_file`), and the live partial takes the chunk before it, so a
-Stop landing in that wait still delivers the chunk. Later chunks append on the
-loop, and an append the disk refuses sends the next chunk back to that start
+Stop landing in that wait still delivers the chunk. Later chunks append in the
+same kind of worker (`_append_result_chunk`), each awaited before the next, so
+they land in order and the loop never resolves the run folder or opens the
+file. An append the disk refuses sends the next chunk back to that start
 write, so a lost chunk leaves no hole mid-file either. While the disk keeps
 refusing, each chunk retries the start write in that worker; a refusing disk
 fails at the open (a removed folder) or the first block (a full disk), so a
@@ -5388,6 +5405,18 @@ Decision + lifecycle:
   tear down only the session — it never kills the shared runtime, which other
   subagents may still use. The runtime is killed when the parent session ends
   (`SessionManager.release_subagent_runtime`).
+- **A codex process takes no new subagent once one has left it.** codex starts a
+  fleet of MCP server processes for each session from the operator's
+  `config.toml`, and `session/close` ends the session but not that fleet
+  (`acp/harness/codex.py`). So the subagent teardown marks the runtime it leaves
+  (`AcpRuntime.subagent_departed`, set by `AcpSessionProvider.shutdown` before its
+  first await), and `_should_use_session_sharing` answers False while the host
+  `_create_shared_session` would use -- the parent's own runtime, or its companion
+  -- is a codex runtime so marked. The parent's later subagents take the dedicated
+  path, whose process and fleet end with the run. The fleets left on the shared
+  process are bounded by the subagents that joined it before the first one left,
+  and end with it when the parent session ends. kiro-cli's teardown reaps the
+  session's MCP children, so a kiro process keeps taking subagents.
 
 Backends outside `ACP_BACKENDS_SESSION_SHARING` are not eligible and use the
 per-process path regardless of the flag.

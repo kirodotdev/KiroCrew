@@ -62,6 +62,17 @@ class SessionConfig:
         default=DEFAULT_SESSION_TIMEOUT,
         metadata=_meta("Session Timeout", "Idle session timeout in seconds."),
     )
+    automated_idle_timeout_secs: int = field(
+        default=0,
+        metadata=_meta(
+            "Idle Timeout After an Automated Turn",
+            "Idle timeout in seconds for a session whose last turn no person sent, such as "
+            "a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. "
+            "Your next message puts the session back on the Session Timeout. Used only when "
+            "shorter than the Session Timeout, and not while that is 0. 0 (the default) "
+            "turns it off. Read at every idle sweep, so a change needs no restart.",
+        ),
+    )
     idle_exempt_keys: list[str] = field(
         default_factory=list,
         metadata=_meta(

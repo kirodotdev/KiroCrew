@@ -189,6 +189,9 @@ def register_stop_parser(sub: _Commands) -> None:
             "that already identified the gateway they mean to stop."
         ),
     )
+    # The desktop's "Stop and restart" of an older gateway: a restart, not a stop the
+    # user chose, so the grants kept across other exits are kept (``kept_grants``).
+    stop_parser.add_argument("--keeps-grants", action="store_true", help=argparse.SUPPRESS)
 
 
 def register_restart_parser(sub: _Commands) -> None:

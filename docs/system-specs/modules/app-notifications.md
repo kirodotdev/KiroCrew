@@ -95,7 +95,7 @@ System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `sys
 
 An approval prompt in a dashboard chat that expires unanswered also posts one `system.agent` bell note (`kind` `agent`, title `turn_dispatch.APPROVAL_EXPIRED_NOTE_TITLE`, body `format_approval_expired_note`) from the runner's timeout branch, so someone who is not looking at the session learns the turn went on without the tool. The body names the tool and the session's display title, never the prompt's agent-authored text, and `meta.slot` gives the detail panel its open-session action. It is not `kind` `approval`, which the feed renders with live Approve and Reject buttons. It carries no `publisher_session`, so a muted session's expiry still notifies. A no-budget decline, where nothing was asked, posts none. `test_dashboard_approval_window.py` pins all three.
 
-A chat that held Trust or Read when the gateway stopped and came back without it gets one `system.agent` note at boot (`kind` `agent`, title `chat_trust_restart.note_title`, body `note_body`, `meta.slot` and `meta.approval_mode`), so the owner learns a restart is why its tools ask again. See [session](session.md), "A restart ends a chat's Trust or Read mode". `test_chat_trust_restart_notice.py` pins it.
+A chat whose Trust or Read a restart kept gets one `system.agent` note at boot (title `chat_trust_restart.kept_note_title`, body `kept_note_body`, `meta.slot` and `meta.approval_mode`). A chat that held one and came back without it gets one `system.agent` note at boot (`kind` `agent`, title `chat_trust_restart.note_title`, body `note_body`, `meta.slot` and `meta.approval_mode`), so the owner learns why its tools ask again. A YOLO grant a restart kept posts one `safety` note ("Auto-approve was kept after a restart", `kept_yolo.describe`). See [session](session.md), "A chat's Trust or Read mode is kept across an exit the user did not choose". `test_chat_trust_restart_notice.py` and `test_kept_grants.py` pin them.
 
 ## Per-channel settings
 
@@ -605,10 +605,19 @@ else the approval, job or task id, else the note timestamp, hashed when its
 JSON-serialized form is over 128 bytes), runs local delivery, then calls the
 `web_push_fanout` hook (`DashboardState._fan_out_web_push`) for every note that
 is not silenced, passive, a quiet replacement or owner-only (`owner_only_note`, a `system.relay` note); a keyed note reaches it only
-after its write commits (see "Keyed notes"). The fan-out schedules
-`_send_web_push_all` on the running loop; it is
-best effort and logs any failure, so a failed push never affects the note that
-already landed.
+after its write commits (see "Keyed notes"). The fan-out queues the note on
+the serving loop, and a drain (`_send_web_push_all`, at most one at a time)
+sends the queue in arrival order, one note at a time, through one HTTP session
+with one read of the VAPID keys (a note queued while that session closes gets a
+second one). The session's connector looks a push host up at most once at a
+time and reuses the answer while it is cached, so within a session each push
+host holds one default-executor thread, not one per note. A slow push
+host delays the notes behind it, up to the 15 s request timeout per note. The
+queue holds 20 notes; a longer burst drops the oldest and logs one warning with
+the count. It is best effort and logs any failure, so a failed push never
+affects the note that already landed. A failure inside one note's push ends
+only that note; a failure outside it drops the queued pushes rather than sending
+them late.
 
 - **Payload.** `_web_push_payload` builds one declarative payload
   (`web_push: 8030` plus `notification`) that iOS and Safari 18.4+ render with no

@@ -8,6 +8,7 @@ bundle, a corrupt one, the time-out) giving verdict `full` with exit 0.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import subprocess
@@ -142,6 +143,51 @@ def test_a_held_file_is_never_skipped_even_when_f_is_skippable() -> None:
 def test_a_missing_map_table_falls_back() -> None:
     bundle = {k: v for k, v in BUNDLE.items() if k != "files"}
     assert _score(bundle=bundle)["verdict"] == "full"
+
+
+@pytest.mark.parametrize("left_out", [(), ("cochange",), ("guard",), ("cochange", "guard")])
+def test_the_scorer_reads_what_bundle_writes_and_holds_files_for_a_table_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, left_out: tuple[str, ...]
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    tree = {"src/kiro_crew/testing/wait.py": "", "test/metrics/test_schema.py": ""}
+    _repo(repo, {**tree, "test/test_gate.py": "", "test/test_other.py": ""})
+    scans: list[Path] = []
+
+    def scan(root: Path) -> list[str]:
+        scans.append(root)
+        return ["test/test_gate.py"]
+
+    def no_history(*args: object) -> dict[str, list[str]]:
+        raise ValueError("shallow clone")
+
+    # `bundle` leaves out a table it cannot build: no history, no guard test found.
+    ctm_ = cts.ctm
+    links = {"src/kiro_crew/elsewhere.py": ["test/test_other.py"]}
+    monkeypatch.setattr(
+        ctm_, "co_change_window", no_history if "cochange" in left_out else lambda *a: links
+    )
+    monkeypatch.setattr(ctm_, "guard_tier", (lambda root: []) if "guard" in left_out else scan)
+    test_map = ctm_.merge_parts(
+        [{"test/metrics/test_schema.py": {"nodes": 3, "files": ["src/kiro_crew/testing/wait.py"]}}],
+        commit="c0ffee",
+    )
+    doc, absent = ctm_.bundle(test_map, repo)
+    assert sorted(absent) == sorted(left_out)
+    scans.clear()
+    monkeypatch.setattr(ctm_, "guard_tier", scan)
+    (tmp_path / "bundle.json").write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
+    code, verdict = _main(tmp_path, None, root=repo)
+    assert code == 0 and verdict["verdict"] == "select" and verdict["bundle_commit"] == "c0ffee"
+    assert verdict["tiers"]["A"] == ["test/test_gate.py"]
+    assert verdict["tiers"]["B"] == ["test/metrics/test_schema.py"]
+    # The stored guard tier spares the live scan; without it the scan runs.
+    assert scans == ([repo] if "guard" in left_out else [])
+    # With no co-change table the file no signal ties to the diff is held, not skipped.
+    held = "cochange" in left_out
+    assert verdict["tiers"]["F" if held else "G"] == ["test/test_other.py"]
+    assert verdict["would_skip"] == ([] if held else ["test/test_other.py"])
 
 
 def test_bounded_returns_the_value_or_reraises_the_error() -> None:

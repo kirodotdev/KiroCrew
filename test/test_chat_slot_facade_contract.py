@@ -33,6 +33,7 @@ _TO_DICT_KEYS = (
     "jev_route",
     "model_withheld",
     "served_model",
+    "engine_promoted_model",
     "reasoning_effort",
     "mode",
     "surface",

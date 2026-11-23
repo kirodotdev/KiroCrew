@@ -1203,7 +1203,7 @@ async def run_browser_op(
                     SITES_REVOKED_TEXT
                     if sites == browser_sites.NO_PAGES
                     else f"{off_site} is not one of the pages this app may browse; "
-                    "open one of its approved sites instead"
+                    f"open one of its approved sites instead: {', '.join(sites)}"
                 ),
             ),
             200,

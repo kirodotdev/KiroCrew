@@ -21,6 +21,8 @@ import pytest
 
 from kiro_crew import credential_patterns as _cred
 from kiro_crew import decisions as core
+from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+from kiro_crew.decisions import local_models
 from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.types import Answer
@@ -916,7 +918,8 @@ async def test_the_whole_menu_is_one_question(monkeypatch):
 async def test_the_largest_menu_is_a_choice_laya_accepts(monkeypatch):
     """Laya's server refuses a Choice of more than 100 options, so the fullest menu
     plus "none" must stay at 100 or every turn on a large skill tree is a provider
-    error there."""
+    error there. The fullest menu goes to an endpoint not counted as on this
+    machine, which includes a Laya server reached by a name such as ``localhost``."""
     spy = AsyncMock(return_value=_answers("s0"))
     monkeypatch.setattr(core, "decide", spy)
     await sel.select_skills(
@@ -924,6 +927,34 @@ async def test_the_largest_menu_is_a_choice_laya_accepts(monkeypatch):
     )
     (question,) = spy.await_args.args[2]
     assert len(question.options) == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "offered"),
+    [
+        (local_models.endpoint_for(8102), 10),
+        (DECISION_PROVIDER_ENDPOINT_DEFAULT, sel.MAX_CANDIDATES),
+    ],
+    ids=["on-this-machine", "hosted"],
+)
+async def test_an_endpoint_on_this_machine_is_offered_the_ten_best_skills(
+    monkeypatch, endpoint, offered
+):
+    """A 4B model on the owner's CPU takes longer for every option it reads, so a
+    full menu outlasts the wait on every turn there. The menu is sorted best-scoring
+    first, so the cut keeps its head; a hosted endpoint keeps the whole menu."""
+    from kiro_crew.decisions import gate
+
+    spy = AsyncMock(return_value=_answers("s0"))
+    monkeypatch.setattr(core, "decide", spy)
+    monkeypatch.setattr(gate, "configured_endpoint", lambda config=None: endpoint)
+    await sel.select_skills(
+        "review this", _menu(sel.MAX_CANDIDATES * 3), session_key="s", history_budget_chars=0
+    )
+    (question,) = spy.await_args.args[2]
+    assert question.options == [f"s{index}" for index in range(offered)] + [sel.NONE_OPTION]
+    assert spy.await_args.kwargs["extra"]["candidates"] == offered
 
 
 def test_the_menu_ceiling_is_a_bound_in_its_own_right():

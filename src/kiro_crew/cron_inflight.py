@@ -155,8 +155,23 @@ class RunningMarker:
     pid_start: str | None = None
     #: There is no run-token field: the token that keys a marker to its run is
     #: carried by the file NAME alone (see :func:`marker_path`), which is where
-    #: :func:`clear_marker` needs it. The payload is what the breaker and the
-    #: doctor read, and neither asks which run of the job wrote it.
+    #: :func:`clear_marker` needs it and :attr:`run_token` reads it.
+
+    @property
+    def run_token(self) -> str | None:
+        """The token of the run that wrote this marker, from its file name.
+
+        Every history row of the run carries it as ``run_id``, so the breaker
+        finds a run already filed by identity.
+        ``None`` for a token-less ``<job id>.json`` and any name this module
+        never writes.
+        """
+        prefix = f"{self.job_id}."
+        name = self.path.name
+        if not name.startswith(prefix) or not name.endswith(_MARKER_SUFFIX):
+            return None
+        run = name[len(prefix) : -len(_MARKER_SUFFIX)]
+        return run if _is_run_token(run) else None
 
     def owner_alive(self) -> bool | None:
         """``True`` when the writing process is confirmed live here, ``False``
@@ -200,6 +215,10 @@ def _readable_running_dir(base_dir: Path) -> Path | None:
     return d
 
 
+def _is_run_token(run: str) -> bool:
+    return bool(run) and run.isalnum() and len(run) <= _RUN_TOKEN_MAX_CHARS
+
+
 def marker_path(base_dir: Path, job_id: str, run: str) -> Path:
     # Job ids are hex tokens minted by the service; a stray separator is
     # rejected rather than resolved into a path outside the marker directory.
@@ -212,7 +231,7 @@ def marker_path(base_dir: Path, job_id: str, run: str) -> Path:
     # confused. Minted by the run task (a hex nonce); anything else is refused
     # the same way a stray job id is. There is no token-less name: a
     # ``<job id>.json`` on disk predates the token and is only ever read.
-    if not run or not run.isalnum() or len(run) > _RUN_TOKEN_MAX_CHARS:
+    if not _is_run_token(run):
         raise ValueError(f"not a cron run token: {run!r}")
     return running_dir(base_dir) / f"{job_id}.{run}{_MARKER_SUFFIX}"
 
@@ -229,8 +248,8 @@ def write_marker(
 
     ``run`` is the run's own token (see :func:`marker_path`): the run task
     mints one per run, so its ``clear_marker`` removes this file and no other
-    run's. It lives in the file name only -- the payload below is what the
-    breaker reads, and it never asks which run wrote the marker. A refusal (a
+    run's. It lives in the file name only, where the breaker reads it back
+    (:attr:`RunningMarker.run_token`). A refusal (a
     redirecting parent link, a filesystem that cannot lock the file to its
     owner) leaves no marker, which is the safe direction: the breaker then
     names no job and pauses nothing.
@@ -380,7 +399,7 @@ def record_attribution(
 ) -> bool:
     """Keep what the abandoned markers said about *dump_name* before they go.
 
-    Written by the breaker just before :func:`sweep_abandoned_markers`, so a
+    Written by the breaker before it removes the markers, so a
     later reader of the same dump -- ``kirocrew doctor``, the restart
     notification -- sees the candidates the breaker saw instead of an empty
     directory. One record, for the newest dump only: a newer dump replaces it.
@@ -449,15 +468,3 @@ def remove_markers(markers: "list[RunningMarker] | tuple[RunningMarker, ...]") -
         except OSError:
             logger.debug("abandoned cron marker not removed: %s", marker.path, exc_info=True)
     return removed
-
-
-def sweep_abandoned_markers(base_dir: Path) -> int:
-    """Delete the abandoned markers once they have been read. Returns the count.
-
-    Called by the cron service after its boot-time attribution has consumed them
-    -- and after :func:`record_attribution` has kept what they said -- so a run
-    interrupted long ago is not re-attributed on every boot while the verdict
-    still reaches the doctor. A marker owned by a live PID (another gateway on
-    the same data home, or this one) is never touched.
-    """
-    return remove_markers(abandoned_markers(base_dir))

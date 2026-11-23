@@ -100,6 +100,7 @@ if TYPE_CHECKING:
         _deliver_cross_surface_reply,
         _local_file_name,
         _retire_mirror_thinking,
+        _speak_linked_reply,
         cross_surface_withheld,
         slack_publication_withheld,
     )
@@ -1524,6 +1525,8 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                         # moved on. Narrowed to OUR ts so a control the new
                         # owner recorded meanwhile survives.
                         await expire_slack_options(state, _owner, ts=_mirror_ts)
+            # A turn answering a message routed from this thread speaks there too.
+            await _speak_linked_reply(turn, _mirror_body)
         except Exception:
             # WARNING, not DEBUG: a swallowed failure here loses the turn's
             # reply on the linked thread with no other trace, and the lost
