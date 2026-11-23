@@ -370,6 +370,18 @@ async def holding(state: "DashboardState", instance_id: str) -> AsyncIterator[No
         _release(state, instance_id)
 
 
+@contextlib.asynccontextmanager
+async def creates_held(state: "DashboardState") -> AsyncIterator[bool]:
+    """Keep any work-item create from starting while the body runs; yields whether
+    none is in flight now.
+
+    Every create counts itself in flight under this lock (:func:`_reserve_best`,
+    :func:`holding`), so while it is held the answer cannot go stale.
+    """
+    async with _LOCKS.setdefault(state, asyncio.Lock()):
+        yield not any(_INFLIGHT.get(state, {}).values())
+
+
 async def place(
     state: "DashboardState", mgr: Any, caller: str, body: dict[str, Any], *, board: str
 ) -> tuple[dict[str, Any], str]:
@@ -431,7 +443,8 @@ async def place(
         except DuplicateItemError:
             # The crew already holds a worker for this item (a create whose reply
             # was lost). It refused before making anything, so the next crew is
-            # tried; the orphan there is left alone.
+            # tried; the next pull that reaches that crew reclaims the orphan
+            # (``remote_reclaim``).
             duplicate.append(pick)
             pool = [c for c in pool if c.instance_id != pick.instance_id]
             continue

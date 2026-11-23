@@ -45,6 +45,7 @@ from kiro_crew import _facade_mirror, platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.handlers import remote_batch_pull
 from kiro_crew.dashboard.handlers import remote_ingest_peer as peer_ingest
+from kiro_crew.dashboard.handlers import remote_reclaim
 from kiro_crew.dashboard.handlers.remote_ingest_report import (
     _ingest_report_locked,
     _is_remote_open,
@@ -617,30 +618,38 @@ async def _pull_all(
     slot_lists: dict[str, dict[str, dict[str, bool]] | None] = {}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + READ_DEADLINE_SECS
-    rows = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline)
-    # Rows a crew already answered need no peer call: filed first, so a stalled
-    # crew's per-item fallback never spends the deadline they were fetched within.
-    for item in sorted(remote, key=lambda i: i.item_id not in rows):
-        left = deadline - loop.time()
-        if left <= 0:
-            # Out of time for this read: these items keep their last state.
-            break
-        row = rows.get(item.item_id)
-        try:
-            await asyncio.wait_for(
-                (
-                    _ingest_item(state, mgr, board, item, slot_lists)
-                    if row is None
-                    else remote_batch_pull.ingest_batched(state, mgr, board, item, row)
-                ),
-                min(PULL_TIMEOUT_SECS, left),
-            )
-        except asyncio.TimeoutError:
-            # Slow, not shown down: the crew's state stays what it was.
-            await _mark_error(board, item.item_id, "crew_pull_timeout")
-        except Exception:  # noqa: BLE001 - a pull must never fail the read
-            logger.warning("remote ingest failed for %s", item.item_id, exc_info=True)
-            await _mark_error(board, item.item_id, "crew_pull_failed")
+    rows, held = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline)
+
+    async def ingest(items: list[work_ledger.WorkItem]) -> None:
+        for item in items:
+            left = deadline - loop.time()
+            if left <= 0:
+                # Out of time for this read: these items keep their last state.
+                break
+            row = rows.get(item.item_id)
+            try:
+                await asyncio.wait_for(
+                    (
+                        _ingest_item(state, mgr, board, item, slot_lists)
+                        if row is None
+                        else remote_batch_pull.ingest_batched(state, mgr, board, item, row)
+                    ),
+                    min(PULL_TIMEOUT_SECS, left),
+                )
+            except asyncio.TimeoutError:
+                # Slow, not shown down: the crew's state stays what it was.
+                await _mark_error(board, item.item_id, "crew_pull_timeout")
+            except Exception:  # noqa: BLE001 - a pull must never fail the read
+                logger.warning("remote ingest failed for %s", item.item_id, exc_info=True)
+                await _mark_error(board, item.item_id, "crew_pull_failed")
+
+    # Rows a crew already answered need no peer call: filed first, and the workers
+    # those crews hold settled next, so a stalled crew's per-item fallback never
+    # spends the deadline they were fetched within.
+    await ingest([i for i in remote if i.item_id in rows])
+    # A worker a lost create left on a crew this pull reached: bound or closed.
+    await remote_reclaim.reclaim(state, mgr, board, held, deadline, reached=rows.keys())
+    await ingest([i for i in remote if i.item_id not in rows])
 
 
 async def _slot_list(
@@ -1232,6 +1241,7 @@ async def _close_retired_slot(
     slot: str,
     *,
     only_if_done: bool = False,
+    record: bool = True,
 ) -> None:
     """End one retired peer slot's Trust, close it, then mark it ``destroyed``. Never raises.
 
@@ -1245,10 +1255,12 @@ async def _close_retired_slot(
     any reason not in :data:`_CLOSE_AT_ONCE_REASONS`):
     the DELETE is sent only when :func:`_slot_idle_and_done` says so; otherwise
     the entry stays ``retired`` and backs off like a failed close.
+    *record* False (a reclaimed worker no item holds): the peer's word is the close.
     """
     routes = _routes()
     key = (crew, slot)
     closed = False
+    remote_batch_pull.CLOSE_BOARD[key] = board
     try:
         try:
             await asyncio.wait_for(routes.check_version(mgr, crew), PULL_TIMEOUT_SECS)
@@ -1269,10 +1281,11 @@ async def _close_retired_slot(
             logger.info("retired slot %s on %s not closed", slot, crew, exc_info=True)
             return
         if 200 <= status < 300 or slot_gone(status, payload):
-            closed = await mark_destroyed(state, board, crew, slot)
+            closed = await mark_destroyed(state, board, crew, slot) if record else True
     finally:
         if closed:
             _CLOSE_RETRY.pop(key, None)
+            remote_batch_pull.CLOSE_BOARD.pop(key, None)
         else:
             failures = _CLOSE_RETRY.get(key, (0, 0.0))[0] + 1
             delay = min(CLOSE_RETRY_SECS * 2 ** min(failures - 1, 16), CLOSE_RETRY_MAX_SECS)
@@ -1467,10 +1480,12 @@ async def _forward_decide_held(
             _FORWARD_LOCKS.pop(key, None)
 
 
-async def _forward_one(state: "DashboardState", item: work_ledger.WorkItem) -> dict[str, Any]:
+async def _forward_one(
+    state: "DashboardState", item: work_ledger.WorkItem, *, to: tuple[str, str] | None = None
+) -> dict[str, Any]:
+    """PATCH *item*'s decision to its bound worker, or to *to* (``(crew, slot)``)."""
     routes = _routes()
-    crew = str(item.worker_instance_id or "")
-    slot = str(item.worker_session_key or "")
+    crew, slot = to or (str(item.worker_instance_id or ""), str(item.worker_session_key or ""))
     mgr = getattr(state, "instances_manager", None)
     if mgr is None or not crew or not slot:
         return {"ok": False, "code": "instances_manager_unavailable"}

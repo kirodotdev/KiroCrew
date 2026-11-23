@@ -5,7 +5,10 @@ every item *board* has bound there (``remote_work_items_pull``). Per item it sen
 the cursor the crew log already holds: the peer event ids filed on that binding
 (``remote_ingest_peer.read_folded_peer``) and the binding's newest filed peer stamp.
 Nothing new is stored for it. The reply says, per item, the slot's booleans and,
-only when there is news, the copy and its events from the hub's cursor on.
+only when there is news, the copy and its events from the hub's cursor on. Under
+``held`` it names each live worker it holds for the board that the pull did not
+name, which ``remote_reclaim`` binds or closes; the pull lists the slots it is
+already closing as ``held_skip``, so successive pulls reach every such worker.
 
 A crew that does not serve the route (an older version, a plain 404) or answers
 anything this module cannot read gives ``None``, and the pull reads that crew's
@@ -43,6 +46,78 @@ class CrewBatch:
     #: item id -> ``{live, running, pending_approval, trust_active, found, more}``
     #: plus ``change`` (``{work_item, events}``) when there is news.
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: item id -> ``{slot, closed}`` for each live worker the crew holds for this
+    #: board that the pull did not name (``remote_reclaim``); ``closed`` when the
+    #: crew's copy of the item is closed.
+    held: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Held workers past :data:`MAX_HELD_ITEMS` this reply did not carry or this
+    #: hub did not keep: a later pull reclaims them.
+    held_omitted: int = 0
+
+
+#: Most held rows kept from one reply: the peer route's own cap.
+MAX_HELD_ITEMS = remote_work_items_pull.MAX_HELD_ITEMS
+
+
+def _parse_held(raw: Any, omitted: Any) -> tuple[dict[str, dict[str, Any]], int]:
+    """``(held rows, omitted)``: the reply's ``held`` rows that name a usable item id
+    and slot, at most :data:`MAX_HELD_ITEMS`, and how many workers beyond them the
+    crew holds (its ``held_omitted`` plus the rows over the cap). ``({}, 0)`` from a
+    crew that predates them."""
+    # circular import: remote_ingest imports this module at load
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    held: dict[str, dict[str, Any]] = {}
+    over = omitted if type(omitted) is int and 0 < omitted <= 2**31 else 0
+    if not isinstance(raw, dict):
+        return held, over
+    for item_id, row in raw.items():
+        if len(held) >= MAX_HELD_ITEMS:
+            over += 1
+            continue
+        try:
+            work_ledger._require_item_id(item_id)
+        except work_ledger.WorkLedgerError:
+            continue
+        slot = row.get("slot") if isinstance(row, dict) else None
+        if remote_ingest._routes()._slot_ok(slot):
+            # ``closed``: the crew's copy is closed, so the worker is only ever closed.
+            held[item_id] = {"slot": slot, "closed": row.get("closed") is True}
+    return held, over
+
+
+#: Most slots sent as ``held_skip``: the peer route's own cap.
+MAX_HELD_SKIP = remote_work_items_pull.MAX_HELD_SKIP
+
+#: ``(crew, slot) -> board`` whose close last ran for a key of the close backoff
+#: (``remote_ingest._CLOSE_RETRY``), so a pull's ``held_skip`` names only its own
+#: board's closes. In memory, like that backoff; a close that ends drops its key.
+CLOSE_BOARD: dict[tuple[str, str], str] = {}
+
+#: ``(crew, board) -> item id`` the crew's last ``held`` page ended on when it
+#: left rows out, sent back as ``held_after`` so the next page starts past it. In
+#: memory: a hub restart starts the pages over.
+HELD_AFTER: dict[tuple[str, str], str] = {}
+
+
+def held_skip(crew: str, board: str) -> list[str]:
+    """The slots on *crew* whose close for *board* is in flight or backing off on
+    this hub, which the crew leaves out of ``held`` so its cap reaches the others.
+
+    Read from the close backoff this process already keeps, so nothing is stored
+    for it; a hub restart sends none and the first pull starts over. A close that
+    ends drops its key, so each slot named is one the crew may still hold live,
+    and :data:`MAX_HELD_SKIP` is the crew's live-slot ceiling: none is cut off.
+    """
+    # circular import: remote_ingest imports this module at load
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    slots = sorted(
+        key[1]
+        for key in list(remote_ingest._CLOSE_RETRY)
+        if key[0] == crew and CLOSE_BOARD.get(key) == board and not remote_ingest._close_due(key)
+    )
+    return slots[:MAX_HELD_SKIP]
 
 
 async def _hint(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
@@ -93,7 +168,8 @@ def _parse(payload: Any, named: set[str]) -> CrewBatch | None:
                 continue
             row["change"] = {"work_item": change["work_item"], "events": change["events"]}
         rows[item_id] = row
-    return CrewBatch(rows)
+    held, omitted = _parse_held(payload.get("held"), payload.get("held_omitted"))
+    return CrewBatch(rows, held, omitted)
 
 
 async def pull_crew(
@@ -108,12 +184,24 @@ async def pull_crew(
 
     routes = remote_ingest._routes()
     hints = {item.item_id: await _hint(board, item) for item in items}
-    status, payload = await routes.peer_call(
-        mgr, crew, "POST", BATCH_PATH, body={"conductor_key": board, "items": hints}
-    )
+    body: dict[str, Any] = {"conductor_key": board, "items": hints}
+    skip = held_skip(crew, board)
+    if skip:
+        # Sent only when set; a crew that predates it reads no other key either.
+        body["held_skip"] = skip
+    if (crew, board) in HELD_AFTER:
+        body["held_after"] = HELD_AFTER[(crew, board)]
+    status, payload = await routes.peer_call(mgr, crew, "POST", BATCH_PATH, body=body)
     if not 200 <= status < 300:
         return None
-    return _parse(payload, set(hints))
+    batch = _parse(payload, set(hints))
+    raw = payload.get("held") if batch is not None else None
+    last = list(raw)[-1] if isinstance(raw, dict) and raw else None
+    if batch is not None and batch.held_omitted and isinstance(last, str) and len(last) <= 64:
+        HELD_AFTER[(crew, board)] = last
+    else:
+        HELD_AFTER.pop((crew, board), None)
+    return batch
 
 
 def payload_of(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -164,8 +252,8 @@ async def pull_batches(
     board: str,
     remote: list[work_ledger.WorkItem],
     deadline: float,
-) -> dict[str, dict[str, Any]]:
-    """One batch read per crew; ``{item id: row}`` for each item it answered.
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, dict[str, Any]]]]:
+    """One batch read per crew: ``({item id: row}, {crew: held rows})``.
 
     An item a crew did not answer, or one flagged ``more``, is read on its own.
     """
@@ -189,11 +277,21 @@ async def pull_batches(
     crews = list(by_crew)
     batches = await asyncio.gather(*(one(crew, by_crew[crew]) for crew in crews))
     rows: dict[str, dict[str, Any]] = {}
+    held: dict[str, dict[str, dict[str, Any]]] = {}
     for crew, batch in zip(crews, batches):
         if batch is None:
             continue
         rows.update({k: v for k, v in batch.rows.items() if not v["more"]})
-    return rows
+        if batch.held:
+            held[crew] = batch.held
+        if batch.held_omitted:
+            logger.info(
+                "crew %s holds %d more unbound workers for %s than one pull reclaims",
+                crew,
+                batch.held_omitted,
+                board,
+            )
+    return rows, held
 
 
 async def _ready_then_pull(

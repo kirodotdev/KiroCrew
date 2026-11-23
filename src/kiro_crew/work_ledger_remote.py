@@ -142,6 +142,9 @@ class RemoteState:
     #: another pair than the item's is stale: nothing is ingested on it and no
     #: replacement may bind until a fresh one is stored.
     binding: str | None = None
+    #: The item's decision may not have reached the worker a reclaim bound
+    #: (``remote_reclaim``): each pull that reaches its crew sends it again.
+    decision_unsent: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -159,6 +162,7 @@ class RemoteState:
             "report_floor": self.report_floor,
             "report_floor_known": self.report_floor_known,
             "binding": self.binding,
+            "decision_unsent": self.decision_unsent,
         }
 
     @classmethod
@@ -190,6 +194,7 @@ class RemoteState:
             report_floor=_text("report_floor"),
             report_floor_known=_flag("report_floor_known"),
             binding=_binding(raw.get("binding")),
+            decision_unsent=_flag("decision_unsent"),
         )
 
 

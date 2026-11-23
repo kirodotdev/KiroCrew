@@ -282,6 +282,13 @@ How (a) works:
   `pending_approval` / `trust_active`, and the copy with its events from the
   cursor on only when something changed. A crew that does not serve the route
   is read per item, with the slot list and `GET .../work-item`, as before.
+- **A lost create reply is reclaimed.** The batch reply also names, under
+  `held`, each live worker the crew holds for that conductor that the pull did
+  not name, as a create whose reply was lost leaves; the slots the hub is
+  already closing ride as `held_skip`, so successive pulls reach them all. The
+  pull binds it when its item is open and unbound on both sides, and otherwise closes it as a wake-turn close does:
+  Trust off now, and a DELETE only once the slot is idle and its copy reported
+  `done` (`dashboard/handlers/remote_reclaim.py`).
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
