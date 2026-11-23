@@ -3389,8 +3389,10 @@ spec the same way kiro-cli v2 does where the wire allows it:
   (`runtime_mode_activation._activate_mode_bracketed`) re-checks only the
   session's own snapshot; the pattern matches past the cap; an agent whose limits
   Crew applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
-  `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
-  its own `preToolUse` hooks), because a native sub-agent's request carries the
+  `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list
+  or a `webFetchBlocked` entry KAS cannot carry as a host deny
+  (`kas_spec_denies.gate_refused_blocked`; an entry KAS carries itself binds the
+  target and leaves it registered), its own `preToolUse` hooks), because a native sub-agent's request carries the
   session's own agent's gate limits, never the target's
   (`session_handle_permissions._build_permission_event`); an agent that
   declares a Crew server the session's own entry does not, whose copy would
