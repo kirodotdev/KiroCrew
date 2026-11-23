@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -200,15 +201,19 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     map_path.write_text(json.dumps(MAP), encoding="utf-8")
     out = tmp_path / "bundle.json.gz"
     argv = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
+    before = datetime.now(timezone.utc).replace(microsecond=0)
     assert ctm.main(argv) == 0
     doc = json.loads(gzip.decompress(out.read_bytes()))
+    # The command stamps the file with the time it wrote it, in UTC.
+    assert before <= datetime.fromisoformat(doc.pop("built_at")) <= datetime.now(timezone.utc)
+    assert "built_at" not in ctm.bundle(MAP, repo, timeout=FALLBACK_TIMEOUT_SECS)[0]
     # The map as it was, with the two tables beside it.
     assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
     assert doc["guard"] == TIER
     assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
     assert doc["os_sensitive"] == {"src/kiro_crew/lock.py": "W2"}
     assert doc["windows_targeting"] == ["test/test_windows_x.py"]
-    assert ctm.load_map(out) == doc
+    assert {k: v for k, v in ctm.load_map(out).items() if k != "built_at"} == doc
     # select reads the bundle as it reads a schema-1 map.
     diff = tmp_path / "diff.txt"
     diff.write_text("M\tsrc/kiro_crew/b.py\n", encoding="utf-8")
@@ -273,7 +278,7 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert "bundle: tables os_sensitive, windows_targeting," in printed
     assert all(f"::warning::{table} left out" in printed for table in ("cochange", "guard"))
     left = {k: v for k, v in ctm.load_map(out).items() if k not in ctm.BUNDLE_TABLES}
-    assert left == MAP
+    assert {k: v for k, v in left.items() if k != "built_at"} == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
