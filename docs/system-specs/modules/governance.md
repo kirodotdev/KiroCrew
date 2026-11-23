@@ -114,8 +114,12 @@ can reorder strictness or redefine matching):
   `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
   so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
   stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
-  at all there. A pattern rooted without a drive (`/data/**`) still never
-  meets an item, which `abspath` gives a drive. POSIX is unchanged.
+  at all there. A pattern rooted without a drive (`/data/**`) meets no local
+  drive path, which `abspath` always gives a drive, while a remote-workspace
+  target still meets it (below): on Windows such a rule binds guest files only.
+  A pattern whose first segment is a wildcard (`/**`, `/*`) can also meet a
+  local UNC path (`\\host\share\...`), since either separator matches. POSIX is
+  unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
@@ -623,7 +627,10 @@ in an oss build). One fetch is the Kiro control plane's
   (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
   segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
   (`enterprise_policy_translate._non_canonical`, plain string checks); any other
-  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
+  shape refuses a deny and is dropped from an allow. A `/`-rooted path is
+  canonical on every gateway OS, so a Windows gateway neither refuses nor drops
+  it: there it binds remote-workspace targets and no local drive path ("Path
+  matcher" above). The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
