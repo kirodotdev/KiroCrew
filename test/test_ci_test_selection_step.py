@@ -229,7 +229,7 @@ def _cases(repo: Path) -> dict[str, tuple[Any, str, int]]:
             "no trusted",
             1,
         ),
-        "runs not a listing": (runs((200, {}, [])), "no trusted", 1),
+        "runs not a listing": (runs((200, {}, [])), "did not return a list", 1),
         "rate limit": (runs(limited), "primary rate limit", 1),
         "server error": (runs((500, {}, b"")), "HTTP 500", 1),
         "not JSON": (runs((200, {}, b"<html>")), "JSONDecodeError", 1),

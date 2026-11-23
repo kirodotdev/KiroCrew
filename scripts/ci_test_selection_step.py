@@ -91,6 +91,10 @@ class NoBundle(Exception):
     """No trusted bundle could be read; the message is the verdict's reason."""
 
 
+class NothingPublished(NoBundle):
+    """GitHub answered, and no trusted run holds a live artifact: not a failed read."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Hands a redirect back as the answer, so its target is fetched without the token."""
 
@@ -99,9 +103,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def http_get(
-    url: str, token: str, schemes: tuple[str, ...] = ("https",)
+    url: str, token: str, schemes: tuple[str, ...] = ("https",), most: int = MAX_ARCHIVE_BYTES
 ) -> tuple[int, dict[str, str], bytes]:
-    """`Get` over HTTPS. A body past `MAX_ARCHIVE_BYTES` is cut there, which no reader accepts."""
+    """`Get` over HTTPS. A body past `most` bytes is cut there, which no reader accepts."""
     if url.split("://", 1)[0] not in schemes:
         raise NoBundle("a request was not for an https URL")
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -112,7 +116,7 @@ def http_get(
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme checked above
         with opener.open(request, timeout=REQUEST_TIMEOUT) as response:  # noqa: S310
-            return response.status, _lowered(response.headers), response.read(MAX_ARCHIVE_BYTES + 1)
+            return response.status, _lowered(response.headers), response.read(most + 1)
     except urllib.error.HTTPError as exc:
         return exc.code, _lowered(exc.headers), b""
 
@@ -121,8 +125,9 @@ def _lowered(headers: Any) -> dict[str, str]:
     return {str(key).lower(): str(value) for key, value in (headers.items() if headers else [])}
 
 
-def trusted_run(run: object, repo: str) -> bool:
-    """Whether GitHub reports `run` as a successful nightly `test-map.yml` run on `repo`'s main."""
+def trusted_run(run: object, repo: str, workflow: str = WORKFLOW, branch: str = BRANCH) -> bool:
+    """Whether GitHub reports `run` as a successful scheduled or dispatched run of `workflow`
+    on `branch` of `repo` (by default the nightly `test-map.yml` on main)."""
     if not isinstance(run, dict):
         return False
     names = [
@@ -131,8 +136,8 @@ def trusted_run(run: object, repo: str) -> bool:
     ]
     return (
         isinstance(run.get("id"), int)
-        and run.get("path") == f".github/workflows/{WORKFLOW}"
-        and run.get("head_branch") == BRANCH
+        and run.get("path") == f".github/workflows/{workflow}"
+        and run.get("head_branch") == branch
         and run.get("status") == "completed"
         and run.get("conclusion") == "success"
         and run.get("event") in EVENTS
@@ -149,34 +154,62 @@ def _json(get: Get, url: str, token: str) -> Any:
     return json.loads(body.decode("utf-8"))
 
 
-def find_artifact(get: Get, repo: str, token: str) -> tuple[dict[str, Any], int]:
-    """The newest trusted run and the id of its live `ARTIFACT`."""
+def find_artifact(
+    get: Get,
+    repo: str,
+    token: str,
+    workflow: str = WORKFLOW,
+    branch: str = BRANCH,
+    artifact_name: str = ARTIFACT,
+) -> tuple[dict[str, Any], int]:
+    """The newest trusted run of `workflow` and the id of its live `artifact_name`."""
     runs = _json(
         get,
-        f"{API_URL}/repos/{repo}/actions/workflows/{WORKFLOW}/runs"
-        f"?branch={BRANCH}&status=success&per_page={RUNS_READ}",
+        f"{API_URL}/repos/{repo}/actions/workflows/{workflow}/runs"
+        f"?branch={branch}&status=success&per_page={RUNS_READ}",
         token,
     )
     listed = runs.get("workflow_runs") if isinstance(runs, dict) else None
-    run = next((r for r in listed or [] if trusted_run(r, repo)), None)
+    if not isinstance(listed, list):
+        raise NoBundle("the workflow runs API did not return a list")
+    run = next((r for r in listed if trusted_run(r, repo, workflow, branch)), None)
     if run is None:
-        raise NoBundle(f"no trusted {WORKFLOW} run among the newest {RUNS_READ}")
+        raise NothingPublished(f"no trusted {workflow} run among the newest {RUNS_READ}")
+    live, _expired = run_artifact(get, repo, token, run["id"], artifact_name)
+    if live is None:
+        raise NothingPublished(f"run {run['id']} has no live {artifact_name} artifact")
+    return run, live
+
+
+def run_artifact(
+    get: Get, repo: str, token: str, run_id: int, artifact_name: str
+) -> tuple[int | None, bool]:
+    """The id of run `run_id`'s live `artifact_name`, None without one, and whether the run
+    lists an expired one."""
     found = _json(
-        get, f"{API_URL}/repos/{repo}/actions/runs/{run['id']}/artifacts?name={ARTIFACT}", token
+        get, f"{API_URL}/repos/{repo}/actions/runs/{run_id}/artifacts?name={artifact_name}", token
     )
-    for artifact in found.get("artifacts") or [] if isinstance(found, dict) else []:
+    if not isinstance(found, dict) or not isinstance(found.get("artifacts"), list):
+        raise NoBundle("the artifacts API did not return a list")
+    live, expired = None, False
+    for artifact in found["artifacts"]:
         if (
-            isinstance(artifact, dict)
-            and artifact.get("name") == ARTIFACT
-            and artifact.get("expired") is False
-            and isinstance(artifact.get("id"), int)
-            and (artifact.get("workflow_run") or {}).get("id") == run["id"]
+            not isinstance(artifact, dict)
+            or artifact.get("name") != artifact_name
+            or not isinstance(artifact.get("id"), int)
+            or (artifact.get("workflow_run") or {}).get("id") != run_id
         ):
-            return run, artifact["id"]
-    raise NoBundle(f"run {run['id']} has no live {ARTIFACT} artifact")
+            continue
+        if artifact.get("expired") is False:
+            live = artifact["id"] if live is None else live
+        else:
+            expired = True
+    return live, expired
 
 
-def download(get: Get, repo: str, artifact: int, token: str) -> bytes:
+def download(
+    get: Get, repo: str, artifact: int, token: str, most: int = MAX_ARCHIVE_BYTES
+) -> bytes:
     """The artifact's archive. The API answers with a redirect, followed without the token."""
     status, headers, body = get(f"{API_URL}/repos/{repo}/actions/artifacts/{artifact}/zip", token)
     if status in (301, 302, 303, 307, 308) and headers.get("location"):
@@ -184,20 +217,25 @@ def download(get: Get, repo: str, artifact: int, token: str) -> bytes:
     if status != 200:
         limit = red.rate_limit((status, headers, body), time.time())
         raise NoBundle(f"{limit[0]} rate limit" if limit else f"HTTP {status} for the archive")
-    if len(body) > MAX_ARCHIVE_BYTES:
-        raise NoBundle(f"the archive is over {MAX_ARCHIVE_BYTES} bytes")
+    if len(body) > most:
+        raise NoBundle(f"the archive is over {most} bytes")
     return body
 
 
-def member(archive: bytes) -> bytes:
-    """The one file the publisher uploads, read out of the artifact's zip."""
+def member(
+    archive: bytes, name: str = MEMBER, alone: bool = True, most: int = MAX_ARCHIVE_BYTES
+) -> bytes:
+    """The file `name` read out of an artifact's zip, at most `most` bytes of it.
+
+    With `alone`, the archive must hold nothing else: the bundle's publisher uploads one file.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
-            infos = zipped.infolist()
-            if [info.filename for info in infos] != [MEMBER]:
-                raise NoBundle(f"the archive does not hold exactly {MEMBER}")
-            if infos[0].file_size > MAX_ARCHIVE_BYTES:
-                raise NoBundle(f"{MEMBER} is over {MAX_ARCHIVE_BYTES} bytes")
+            infos = [info for info in zipped.infolist() if info.filename == name]
+            if len(infos) != 1 or (alone and len(zipped.infolist()) != 1):
+                raise NoBundle(f"the archive does not hold exactly {name}")
+            if infos[0].file_size > most:
+                raise NoBundle(f"{name} is over {most} bytes")
             return zipped.read(infos[0])
     except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError) as exc:
         raise NoBundle(f"unreadable archive: {type(exc).__name__}") from exc
