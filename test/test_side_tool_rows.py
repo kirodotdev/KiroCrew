@@ -233,16 +233,18 @@ async def test_side_turn_marks_a_refused_tool_and_redacts_its_fields(tmp_path, m
 
     state.sessions.get_or_create = _fake_get_or_create
     state.sessions.release = MagicMock()
-    raw_cred = "AKIAIOSFODNN7EXAMPLE"
+    # A URL password: the pass masks the value and keeps the URL around it.
+    raw_cred = "s3cr3t-pw"
+    raw_url = f"postgres://app:{raw_cred}@db.internal/x"
 
     async def _fake_stream(provider, message, *, on_chunk=None, on_tool_call=None, **kwargs):
         on_tool_call(
             _tool_event(
                 kind="permission_request",
-                title=f"Running: echo {raw_cred} > creds",
+                title=f"Running: echo {raw_url} > creds",
                 tool_call_id="call-9",
-                tool_input=f"echo {raw_cred} > creds",
-                tool_purpose=f"write {raw_cred}",
+                tool_input=f"echo {raw_url} > creds",
+                tool_purpose=f"write {raw_url}",
             ),
             False,
         )
@@ -478,7 +480,7 @@ async def test_side_turn_keeps_a_uri_password_split_around_a_tool_call_out_of_ev
     assert _client_rows(frames) == [
         ("assistant", "Use the DSN "),
         ("tool", "🔧 Read db.env\ndb.env"),
-        ("assistant", "[REDACTED: credential]db.example.com and retry."),
+        ("assistant", "postgres://app:[REDACTED: credential]@db.example.com and retry."),
     ]
     stored = [m for m in parent._side.messages if m["role"] == "assistant"]
     assert password not in stored[-1]["content"]
@@ -533,10 +535,11 @@ async def test_side_turn_settles_the_row_above_a_tool_call_with_a_whole_text_pas
     assert all("MORELINES" not in d["content"] for d in frames)
     tool_at = next(i for i, d in enumerate(frames) if d["role"] == "tool")
     above = [d["content"] for d in frames[:tool_at]]
-    assert "".join(above) == "key: [REDACTED: credential]\nthen "
+    # The pass masks the key's value and keeps its header and footer.
+    assert "".join(above) == f"key: {begin}\n[REDACTED: credential]\n{end}\nthen "
     assert not any(d.get("settle") for d in frames[:tool_at])
     assert _client_rows(frames) == [
-        ("assistant", "key: [REDACTED: credential]\nthen "),
+        ("assistant", f"key: {begin}\n[REDACTED: credential]\n{end}\nthen "),
         ("tool", "🔧 Running: cat /etc/hosts\ncat /etc/hosts"),
         ("assistant", "ok."),
     ]
@@ -606,17 +609,18 @@ async def test_side_turn_redacts_a_key_body_written_under_its_header_after_a_too
         for frame in frames:
             assert body[:12] not in frame["content"], (shape, frame)
             assert body[12:] not in frame["content"], (shape, frame)
-            assert begin not in frame["content"], (shape, frame)
         rows = _client_rows(frames)
+        # The header is held with the block it opens, so the row above the tool
+        # ends before it; the pass keeps the header and footer and masks the body.
         assert rows[0] == ("assistant", "key: "), shape
         assert rows[1][0] == "tool", shape
         tail = [r for r in rows[2:]]
         if shape == "body ends the reply":
             # No footer ever comes: the pass over the whole reply judges the
             # open block by its header and body line (the truncated-block form).
-            assert tail == [("assistant", "[REDACTED: credential]")], shape
+            assert tail == [("assistant", f"{begin}\n[REDACTED: credential]")], shape
         else:
-            assert tail == [("assistant", "[REDACTED: credential]\nthen")], shape
+            assert tail == [("assistant", f"{begin}\n[REDACTED: credential]\n{end}\nthen")], shape
         stored = [m for m in parent._side.messages if m["role"] == "assistant"]
         assert body not in stored[-1]["content"], shape
 
@@ -664,7 +668,10 @@ async def test_side_turn_redacts_a_tool_preview_before_cutting_it(tmp_path, monk
     tool = next(d for d in frames if d["role"] == "tool")
     assert password not in tool["content"]
     assert all(password not in v for v in tool["meta"].values())
-    assert tool["meta"]["purpose"] == "connect with [REDACTED: credential]db.internal/x"
+    assert (
+        tool["meta"]["purpose"]
+        == "connect with postgres://app:[REDACTED: credential]@db.internal/x"
+    )
     # The long input is cut AFTER redaction: the password is gone and the cut
     # falls inside the tag that replaced it, never inside the password.
     preview = tool["meta"]["input_preview"]
@@ -713,10 +720,11 @@ async def test_side_turn_live_view_follows_the_whole_text_pass_without_a_tool_ro
     assert all(body not in d["content"] for d in frames)
     deltas = "".join(d["content"] for d in frames if not d.get("final"))
     final = [d for d in frames if d.get("final")][-1]
-    # ``done`` is held (a trailing run) until the terminal frame; the body and
-    # the footer never appear, only the tag the pass over the whole put there.
-    assert deltas == "key: [REDACTED: credential]\nthen "
-    assert final["content"] == "key: [REDACTED: credential]\nthen done"
+    # ``done`` is held (a trailing run) until the terminal frame; the body never
+    # appears, only the tag the pass over the whole put there between the
+    # header and the footer it keeps.
+    assert deltas == f"key: {begin}\n[REDACTED: credential]\n{end}\nthen "
+    assert final["content"] == f"key: {begin}\n[REDACTED: credential]\n{end}\nthen done"
     assert final["content"].startswith(deltas)
 
 
@@ -841,13 +849,21 @@ async def test_side_turn_holds_a_key_block_the_pattern_cannot_judge_before_its_f
             "yaml",
             f"key: |\n    {begin}\n    {body}\n",
             f"    {end}\ndone",
-            [("assistant", "key: |\n    "), ("assistant", "[REDACTED: credential]\ndone")],
+            [
+                ("assistant", "key: |\n    "),
+                ("assistant", f"{begin}\n    [REDACTED: credential]\n    {end}\ndone"),
+            ],
         ),
         (
             "json",
             '{"key": "' + begin + "\\n" + body + "\\n",
             end + '"}',
-            [("assistant", '{"key": "'), ("assistant", '[REDACTED: credential]"}')],
+            # The stream redactor holds the quote that opens the value with the
+            # header, so the quote is drawn under the tool row with the block.
+            [
+                ("assistant", '{"key": '),
+                ("assistant", '"' + begin + "\\n[REDACTED: credential]\\n" + end + '"}'),
+            ],
         ),
     ]:
         events.clear()
@@ -871,7 +887,10 @@ async def test_side_turn_holds_a_key_block_the_pattern_cannot_judge_before_its_f
         frames = [d for t, d in events if t == "chat.side_result"]
         for frame in frames:
             assert body not in frame["content"], (shape, frame)
-            assert begin not in frame["content"], (shape, frame)
+        # The header is held with the block it opens: it reaches no frame above
+        # the tool row, and the pass keeps it beside the masked body below.
+        tool_at = next(i for i, d in enumerate(frames) if d["role"] == "tool")
+        assert all(begin not in d["content"] for d in frames[:tool_at]), shape
         got = _client_rows(frames)
         assert got[1][0] == "tool", shape
         assert [got[0], got[2]] == rows and len(got) == 3, (shape, got)
@@ -915,12 +934,16 @@ async def test_side_turn_holds_a_uri_password_the_stream_redactor_would_commit(
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
     frames = [d for t, d in events if t == "chat.side_result"]
+    tool_at = next(i for i, d in enumerate(frames) if d["role"] == "tool")
     for frame in frames:
-        assert password not in frame["content"] and "postgres" not in frame["content"], frame
+        assert password not in frame["content"], frame
+    # The open URL is held whole until the whitespace that ends it, so nothing
+    # of it is above the tool row; the pass then keeps the URL around the mask.
+    assert all("postgres" not in d["content"] for d in frames[:tool_at])
     assert _client_rows(frames) == [
         ("assistant", "Use the DSN "),
         ("tool", "🔧 Read db.env\ndb.env"),
-        ("assistant", "[REDACTED: credential]db/x now."),
+        ("assistant", "postgres://app:[REDACTED: credential]@db/x now."),
     ]
 
 
@@ -943,6 +966,12 @@ async def test_side_turn_settles_a_row_whose_drawn_text_a_later_pass_rewrote(tmp
         return out.replace("alpha", "[REDACTED: credential]") if "omega" in text else out
 
     monkeypatch.setattr(side_module, "redact", _late_judgment)
+    # The stored reply is the same pass with the record each placeholder needs
+    # (``_redact_answer``), so the stub has to stand in for that seam too.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._redact_segment_text",
+        lambda slot, text, *, _reveal_pending=None: (_late_judgment(text), []),
+    )
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")

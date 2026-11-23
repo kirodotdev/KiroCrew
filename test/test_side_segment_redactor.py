@@ -19,6 +19,7 @@ sweep share one contract.
 
 from __future__ import annotations
 
+import base64
 import re
 
 import pytest
@@ -542,8 +543,9 @@ def test_an_open_key_block_url_or_label_is_held_until_the_text_that_decides_it()
     assert r.finish() == "see https://example.com:8080/health now"
 
     r = _SegmentRedactor()
-    assert r.feed("the aws_secret_access_key ") == "the "  # the label waits
-    assert r.feed("field ") == "aws_secret_access_key field "  # no separator: prose
+    # The label waits, with the word before it the stream redactor carries.
+    assert r.feed("the aws_secret_access_key ") == ""
+    assert r.feed("field ") == "the aws_secret_access_key field "  # no separator: prose
     assert r.finish() == "the aws_secret_access_key field "
 
     text = f"look for {_BEGIN} in id_rsa and delete that line."
@@ -764,10 +766,24 @@ def test_the_view_is_rebuilt_from_the_stream_redactors_own_commits():
     where the previous one ended breaks the contract this rests on and fails
     the turn instead of splicing text that is not the reply."""
     r = _SegmentRedactor()
-    r.feed(f"key: {_BEGIN}\n")  # the stream redactor commits and tags the header alone
-    assert "".join(r._view) == f"key: {_BEGIN}\n"  # the view keeps it as written
+    # A signed token with JSON claims, built here so the source holds no token;
+    # the stream redactor commits and tags it on its own at the space.
+    part = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    jwt = ".".join(
+        (
+            part(b'{"alg":"HS256","typ":"JWT"}'),
+            part(b'{"sub":"1234567890","name":"Test User"}'),
+            part(bytes(range(32))),
+        )
+    )
+    assert r.feed(f"token {jwt} ") == "token [REDACTED: credential] "
+    assert "".join(r._view) == f"token {jwt} "  # the view keeps it as written
+
+    r = _SegmentRedactor()
+    assert r.feed(f"key: {_BEGIN}\n") == "key: "  # the stream redactor holds the header
     r.feed("x " * 3)
     assert r.feed("end ") == ""  # the open block holds everything from the header
+    assert "".join(r._view) + r._wsred.held == f"key: {_BEGIN}\nx x x end "
 
     class _OutOfOrder:
         """A stream redactor whose output does not carry its commit."""
@@ -792,7 +808,8 @@ def test_the_first_unclosed_key_block_is_held_even_when_a_later_one_closes():
     """Two key blocks, the first never closed: the hold starts at the FIRST
     header without a footer after it, not at the last header, so nothing of the
     first block is settled above a tool row that lands in the prose between
-    them (the batch pass spans both into one tag)."""
+    them (the batch pass masks both bodies between the first header and the
+    footer)."""
     text = f"a {_BEGIN}\n{_KEY_BODY}\nprose here\n\n{_BEGIN}\n{_KEY_BODY[::-1]}\n{_END}\ndone"
     assert _open_credential_start(text[: text.index("prose") + 5]) == 2
     for cut in (text.index("prose") + 2, text.index(_END)):
@@ -804,5 +821,5 @@ def test_the_first_unclosed_key_block_is_held_even_when_a_later_one_closes():
         assert _client_rows(frames) == [
             ("assistant", "a "),
             ("tool", "🔧 tool"),
-            ("assistant", "[REDACTED: credential]\ndone"),
+            ("assistant", redact(text)[len("a ") :]),
         ]

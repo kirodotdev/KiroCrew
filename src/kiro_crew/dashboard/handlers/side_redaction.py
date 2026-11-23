@@ -13,7 +13,7 @@ import re
 from kiro_crew.security import StreamRedactor
 from kiro_crew.security import redact
 from kiro_crew.security import redact as _batch_redact
-from kiro_crew.security.redaction import _AWS_LABEL_RULES
+from kiro_crew.security.stream_aws_anchor import KEY_NAME_ALTERNATIONS
 
 # The stream redactor holds back one trailing credential-class run, plus the
 # shapes its own anchors know (a Bearer header, a ``token=`` parameter, a JWT).
@@ -33,13 +33,11 @@ from kiro_crew.security.redaction import _AWS_LABEL_RULES
 _KEY_BLOCK_HEADER_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _KEY_BLOCK_FOOTER_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 _OPEN_URL_RE = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://\S*\Z")
-# The AWS field names are the batch pass's own (``redaction._AWS_LABEL_RULES``,
-# each rule led by its ``(?:name|alias)`` group), so a name it learns is held here
-# too; only the separator after the name is optional, since the label is open.
-_AWS_LABEL_NAMES = "|".join(
-    re.match(r"\(\?:([^)]*)\)", pattern.pattern).group(1)  # type: ignore[union-attr]
-    for pattern, _rule in _AWS_LABEL_RULES
-)
+# The AWS field names are the rule table's own AWS label rows, as the stream
+# redactor's anchor spells them (``stream_aws_anchor.KEY_NAME_ALTERNATIONS``),
+# so a name it learns is held here too; only the separator after the name is
+# optional, since the label is open.
+_AWS_LABEL_NAMES = "|".join(name for names in KEY_NAME_ALTERNATIONS for name in names)
 _OPEN_LABEL_RE = re.compile(
     rf"(?:(?:{_AWS_LABEL_NAMES})[\"']?\s*(?:[:=]\s*[\"']?)?"
     r"|(?i:Authorization)[\"']?\s*(?:[:=]\s*[\"']?(?:(?i:Bearer)\s*)?)?)\Z"
