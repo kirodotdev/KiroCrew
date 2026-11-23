@@ -69,6 +69,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTS_DIR_RACY_MAX_DIGEST_BYTES,
         _AGENTS_DIR_RACY_MAX_DIGESTS,
         _AGENTS_DIR_RACY_WINDOW_NS,
+        _AGENTS_DIR_UNHASHABLE_LOGGED,
         _DIGEST_CHUNK_BYTES,
         _NO_DIGEST,
         _PIN_EVERY_ENTRY_ON_BYTES,

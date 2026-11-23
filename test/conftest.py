@@ -319,6 +319,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fresh_hardlink_spec_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
+    _fresh_unhashable_agents_dir_warnings,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,

@@ -819,6 +819,30 @@ def _fresh_hardlink_spec_warnings():
 
 
 @per_test_guard
+def _fresh_unhashable_agents_dir_warnings():
+    """Start each test with no agents folder already warned about for an unhashable entry.
+
+    ``agent_discovery_parts.dir_revision._AGENTS_DIR_UNHASHABLE_LOGGED`` holds the
+    folders whose WARNING this process wrote; one an earlier test on the same worker
+    left there would silence this test's record. Cleared in place before and after,
+    only when already imported, and read with ``getattr`` so a tree without the set
+    (``prove.py``'s revert of the fix) still runs its tests.
+    """
+
+    def clear():
+        dir_revision = sys.modules.get("kiro_crew.agent_discovery_parts.dir_revision")
+        warned = getattr(dir_revision, "_AGENTS_DIR_UNHASHABLE_LOGGED", None)
+        if warned is not None:
+            warned.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 
