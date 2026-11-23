@@ -102,6 +102,10 @@ class FakeGh:
         self.log_error = ""
         # Artifacts whose download arrives cut short.
         self.torn: set[int] = set()
+        # Further members of an artifact's archive, as `(name, bytes)`.
+        self.padding: dict[int, list[tuple[str, bytes]]] = {}
+        # The size GitHub lists for an artifact, where it is not the archive's own.
+        self.listed_size: dict[int, int] = {}
         # URL fragments whose next read fails once, then answers.
         self.fail_once: set[str] = set()
         # Called before a page of the repository's artifact listing is answered,
@@ -150,6 +154,7 @@ class FakeGh:
                 "id": run_id,
                 "name": "test-selection-verdict",
                 "expired": run_id in self.expired,
+                "size_in_bytes": self.listed_size.get(run_id, len(self.archive(run_id))),
                 "created_at": dated[run_id],
                 "workflow_run": {"id": run_id},
             }
@@ -225,30 +230,39 @@ class FakeGh:
             return self.issues
         raise AssertionError(f"unexpected gh call: {url}")
 
-    def raw(self, argv: list[str], root: Path) -> bytes:
+    def archive(self, artifact: int) -> bytes:
         """An artifact's archive: one JSON file for each text the run's artifact holds."""
-        self.calls.append(" ".join(argv[1:4]))
-        artifact = int(argv[-1].rsplit("/", 2)[1])
         if artifact in self.torn:
             return b"PK not an archive"
         held = io.BytesIO()
-        with zipfile.ZipFile(held, "w") as archive:
+        with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
             for number, text in enumerate(self.artifacts[artifact]):
                 archive.writestr(f"verdict-{number}.json", text)
+            for name, padding in self.padding.get(artifact, []):
+                archive.writestr(name, padding)
         return held.getvalue()
 
-    def run(self, argv: list[str], root: Path) -> str:
+    def raw(self, argv: list[str], root: Path, most: int) -> bytes | None:
+        """What `gh` prints for an archive or a job log, None when it is more than `most` bytes."""
         self.calls.append(" ".join(argv[1:4]))
-        job_id = int(argv[-1].rsplit("/", 2)[1])
-        if self.log_error:
-            raise subprocess.CalledProcessError(1, argv, stderr=self.log_error)
-        if job_id not in self.logs:
-            raise subprocess.CalledProcessError(1, argv)
-        return "".join(
-            f"2026-11-18T00:00:00.0Z FAILED {name}::test_one - "
-            f"{self.messages.get(name, 'assert 1 == 2')}\n"
-            for name in self.logs[job_id]
-        )
+        subject = int(argv[-1].rsplit("/", 2)[1])
+        if argv[-1].endswith("/zip"):
+            printed = self.archive(subject)
+        else:
+            if self.log_error:
+                raise subprocess.CalledProcessError(1, argv, stderr=self.log_error)
+            if subject not in self.logs:
+                raise subprocess.CalledProcessError(1, argv)
+            printed = "".join(
+                f"2026-11-18T00:00:00.0Z FAILED {name}::test_one - "
+                f"{self.messages.get(name, 'assert 1 == 2')}\n"
+                for name in self.logs[subject]
+            ).encode("utf-8")
+        # As the real reader does: never more than the limit is handed over.
+        return shadow.capped(io.BytesIO(printed), most)
+
+    def run(self, argv: list[str], root: Path) -> str:
+        raise AssertionError(f"unexpected gh call: {argv}")
 
 
 def install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeGh:
@@ -258,7 +272,7 @@ def install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeGh:
     fake = FakeGh(verdicts)
     monkeypatch.setattr(shadow, "_gh_json", fake.gh_json)
     monkeypatch.setattr(shadow, "_run", fake.run)
-    monkeypatch.setattr(ledger, "_gh_bytes", fake.raw)
+    monkeypatch.setattr(shadow, "_gh_bytes", fake.raw)
     return fake
 
 

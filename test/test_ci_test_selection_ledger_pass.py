@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import random
 import re
 import shutil
 import subprocess
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -534,6 +537,77 @@ def test_a_run_whose_conclusion_is_not_final_is_neither_read_nor_recorded(
     run["conclusion"] = "success"
     assert run_main(tmp_path) == 0
     assert [r["run"] for r in rows(tmp_path, "run")] == [1]
+
+
+@pytest.mark.parametrize(
+    "over", ["the listed size", "the download", "the member", "the member count"]
+)
+def test_an_artifact_over_a_limit_is_an_invalid_verdict_for_good_and_is_never_held_whole(
+    gh: FakeGh, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over: str
+) -> None:
+    text = json.dumps(VERDICT)
+    gh.add(1, 7, [[job(11, 1)]], verdict=None)
+    gh.artifacts[1] = [text]
+    monkeypatch.setattr(ledger, "MAX_ARCHIVE_BYTES", 4096)
+    monkeypatch.setattr(ledger, "MAX_VERDICT_BYTES", 2048)
+    assert len(gh.archive(1)) <= 4096 and len(text) <= 2048
+    if over == "the listed size":
+        gh.listed_size[1] = 4097
+    elif over == "the download":
+        # GitHub lists it small; what arrives is not (bytes that do not compress).
+        gh.listed_size[1] = 10
+        gh.padding[1] = [("padding.json", random.Random(0).randbytes(8192))]
+    elif over == "the member":
+        monkeypatch.setattr(ledger, "MAX_VERDICT_BYTES", len(text) - 1)
+    else:
+        gh.padding[1] = [("beside.txt", b"x")]
+
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+
+    assert [(r["run"], r["reason"]) for r in rows(tmp_path, "skip")] == [(1, ledger.BAD_VERDICT)]
+    downloads = [call for call in gh.calls if call.endswith("/zip")]
+    # One GitHub itself lists as too large is not asked for at all.
+    assert len(downloads) == (0 if over == "the listed size" else 1)
+    assert not [call for call in gh.calls if "/attempts/" in call]
+    # It will not shrink: no later pass asks again.
+    before = len(gh.calls)
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+    assert not [call for call in gh.calls[before:] if call.endswith("/zip") or "/attempts/" in call]
+
+
+def test_a_member_is_read_to_the_limit_whatever_size_the_archive_declares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = io.BytesIO()
+    with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("verdict.json", "x" * 5000)
+    asked: list[int] = []
+    real = shadow.capped
+
+    def watched(stream: Any, most: int) -> bytes | None:
+        asked.append(most)
+        return real(stream, most)
+
+    monkeypatch.setattr(shadow, "capped", watched)
+    monkeypatch.setattr(ledger, "MAX_VERDICT_BYTES", 5000)
+    assert ledger._only_json(held.getvalue()) == "x" * 5000 and asked == [5000]
+    # A declared size over the limit is refused before a byte is unpacked.
+    monkeypatch.setattr(ledger, "MAX_VERDICT_BYTES", 4999)
+    assert ledger._only_json(held.getvalue()) == "" and asked == [5000]
+
+
+def test_a_log_larger_than_is_ever_held_leaves_the_failing_tests_unknown_for_good(
+    gh: FakeGh, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _annotated_run(gh, [], ["test/test_a.py"])
+    monkeypatch.setattr(shadow, "MAX_LOG_BYTES", 16)
+
+    assert run_main(tmp_path, "--no-windows") == 0
+
+    assert [(r["kind"], r["reason"]) for r in rows(tmp_path)] == [("skip", ledger.UNREAD_FAILURES)]
+    before = len(gh.calls)
+    assert run_main(tmp_path, "--no-windows") == 0
+    assert not [call for call in gh.calls[before:] if "logs" in call or "check-runs" in call]
 
 
 def test_the_artifact_listing_is_read_only_as_far_back_as_the_runs_asked_for(

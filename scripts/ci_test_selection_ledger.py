@@ -162,6 +162,8 @@ import ci_test_map_shadow as shadow  # noqa: E402
 FULL_SUITE_STEP = "Prewarm assertion rewrites"
 VERDICT_SCHEMA = 1
 MAX_VERDICT_BYTES = 8 * 1024 * 1024
+# A verdict's archive is its one JSON file, compressed, and a zip's own headers.
+MAX_ARCHIVE_BYTES = MAX_VERDICT_BYTES + 64 * 1024
 # GitHub lists at most 1,000 runs for one query: a window that holds more is
 # read as two halves, each listed for itself, down to `MIN_LISTING_SECS`.
 MAX_RUN_PAGES = 10
@@ -304,23 +306,20 @@ def _capped_text(path: Path) -> str:
         return ""
 
 
-def _gh_bytes(argv: list[str], root: Path) -> bytes:
-    """What one `gh` call prints, undecoded: an artifact's archive."""
-    return subprocess.run(  # noqa: S603  (fixed argv, no shell)
-        argv, cwd=root, check=True, capture_output=True, timeout=shadow.TIMEOUT
-    ).stdout
+def _unexpired(listed: object, name: str, run_id: int | None = None) -> dict[int, dict[int, int]]:
+    """`{run id: {its unexpired artifact named `name`: the size GitHub lists for it}}`.
 
-
-def _unexpired(listed: object, name: str, run_id: int | None = None) -> dict[int, set[int]]:
-    """`{run id: its unexpired artifacts named `name`}` from one page of artifacts."""
-    found: dict[int, set[int]] = {}
+    A size that is not listed as a whole number is 0: the download is then held
+    to the limit by the stream alone.
+    """
+    found: dict[int, dict[int, int]] = {}
     for item in listed if isinstance(listed, list) else []:
         item = _dict(item)
         of_run = _int(_dict(item.get("workflow_run")).get("id")) if run_id is None else run_id
         held = _int(item.get("id"))
         if item.get("name") == name and of_run is not None and held is not None:
             if not item.get("expired"):
-                found.setdefault(of_run, set()).add(held)
+                found.setdefault(of_run, {})[held] = _int(item.get("size_in_bytes")) or 0
     return found
 
 
@@ -340,7 +339,7 @@ class Verdicts:
 
     def __init__(self, root: Path, name: str) -> None:
         self.root, self.name = root, name
-        self.found: dict[int, set[int]] = {}
+        self.found: dict[int, dict[int, int]] = {}
         self.read = 0  # pages read whole
         self.oldest = "9"  # later than any date read
         self.ended = False
@@ -352,13 +351,13 @@ class Verdicts:
         if not isinstance(listed, list):
             raise ValueError("the artifact listing is not a page of artifacts")
         for run_id, held in _unexpired(listed, self.name).items():
-            self.found.setdefault(run_id, set()).update(held)
+            self.found.setdefault(run_id, {}).update(held)
         for item in listed:
             self.oldest = min(self.oldest, str(_dict(item).get("created_at")))
         self.read, self.ended = page, not listed
 
-    def of(self, run: Row) -> list[int]:
-        """The ids of the run's unexpired verdict artifacts. Raises when `gh` fails."""
+    def of(self, run: Row) -> dict[int, int]:
+        """The run's unexpired verdict artifacts, each with its listed size. Raises when `gh` fails."""
         run_id = run["id"]
         while (
             run_id not in self.found
@@ -366,7 +365,7 @@ class Verdicts:
             and self.oldest >= str(run.get("created_at"))
         ):
             self._more()
-        held = self.found.get(run_id, set())
+        held = self.found.get(run_id, {})
         if len(held) != 1:
             url = (
                 f"repos/{shadow.REPO}/actions/runs/{run_id}/artifacts?name={self.name}&per_page=100"
@@ -374,19 +373,27 @@ class Verdicts:
             own = _dict(shadow._gh_json(["api", url], self.root)).get("artifacts")
             if not isinstance(own, list):
                 raise ValueError("a run's artifact listing is not a page of artifacts")
-            held = _unexpired(own, self.name, run_id).get(run_id, set())
-        return sorted(held)
+            held = _unexpired(own, self.name, run_id).get(run_id, {})
+        return held
 
 
 def _only_json(archive: bytes) -> str | None:
-    """The text of an archive's one JSON file, "" for an archive that holds no
-    one such file (never a valid verdict), None for bytes that are no archive."""
+    """The text of the JSON file an archive holds and nothing else; "" for any other
+    archive (never a valid verdict), None for bytes that are no archive.
+
+    Nothing is unpacked on the archive's word for its size: the one member is
+    read through to `MAX_VERDICT_BYTES` and no further.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as held:
-            members = [m for m in held.infolist() if m.filename.endswith(".json")]
-            if len(members) != 1 or members[0].file_size > MAX_VERDICT_BYTES:
+            members = held.infolist()
+            if len(members) != 1 or not members[0].filename.endswith(".json"):
                 return ""
-            return held.read(members[0]).decode("utf-8", errors="replace")
+            if members[0].file_size > MAX_VERDICT_BYTES:
+                return ""
+            with held.open(members[0]) as member:
+                text = shadow.capped(member, MAX_VERDICT_BYTES)
+            return "" if text is None else text.decode("utf-8", errors="replace")
     except zipfile.BadZipFile:
         return None
     except (OSError, ValueError, RuntimeError):
@@ -396,8 +403,11 @@ def _only_json(archive: bytes) -> str | None:
 def verdict_text(run: Row, args: argparse.Namespace, root: Path, verdicts: Verdicts) -> str | None:
     """The run's verdict JSON text, None when the run has none. Raises when `gh` fails.
 
-    A download that is not an archive at all is a failed read, not a bad
-    verdict: it raises too, so the run is asked for again.
+    An artifact is whatever the pull request's run uploaded, so it is held to
+    `MAX_ARCHIVE_BYTES` before a byte of it is kept: one GitHub lists as larger
+    is not downloaded, and a download is cut off at the limit. Either is an
+    invalid verdict, for good: the artifact will not shrink. A download that is
+    not an archive at all is a failed read: it raises, so the run is asked for again.
     """
     if args.verdict_dir:
         path = Path(args.verdict_dir) / f"{run['id']}.json"
@@ -407,8 +417,14 @@ def verdict_text(run: Row, args: argparse.Namespace, root: Path, verdicts: Verdi
         return None
     if len(held) != 1:
         return ""
-    argv = ["gh", "api", f"repos/{shadow.REPO}/actions/artifacts/{held[0]}/zip"]
-    text = _only_json(_gh_bytes(argv, root))
+    ((artifact, listed),) = held.items()
+    if listed > MAX_ARCHIVE_BYTES:
+        return ""
+    argv = ["gh", "api", f"repos/{shadow.REPO}/actions/artifacts/{artifact}/zip"]
+    archive = shadow._gh_bytes(argv, root, MAX_ARCHIVE_BYTES)
+    if archive is None:
+        return ""
+    text = _only_json(archive)
     if text is None:
         raise subprocess.CalledProcessError(1, argv)
     return text
@@ -516,19 +532,14 @@ def job_failing(
     if 0 < written < ANNOTATED_FAILURES_MAX and len(listed) < ANNOTATION_PAGE:
         return named
     try:
-        log = shadow._run(
-            [
-                "gh",
-                "api",
-                "--allow-escape-sequences",
-                f"repos/{shadow.REPO}/actions/jobs/{job['id']}/logs",
-            ],
-            root,
-        )
+        log = shadow.job_log(job, root)
     except subprocess.CalledProcessError as error:
         # Refused or gone is an answer that will not change; anything else
         # (a rate limit, a server error, a time-out) is a read to make again.
         return UNREAD_FAILURES if _refused(error) else None
+    if log is None:
+        # Larger than is ever held: it will not shrink, so this is an answer too.
+        return UNREAD_FAILURES
     return {**parse(log), **named}
 
 
@@ -848,7 +859,7 @@ class Budget:
     @contextlib.contextmanager
     def counting(self) -> Iterator[None]:
         """Count every `gh` call the pass makes, through whichever reader makes it."""
-        readers = {"_gh_json": shadow, "_run": shadow, "_gh_bytes": sys.modules[__name__]}
+        readers = {name: shadow for name in ("_gh_json", "_run", "_gh_bytes")}
         originals = {name: getattr(owner, name) for name, owner in readers.items()}
 
         inside = [False]
