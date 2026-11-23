@@ -64,6 +64,7 @@ def _pin_own_host_cache(request, _floor_monkeypatch):
         "ssh ssh://${env:COMPUTERNAME}.corp.example.com id",
         "scp f.txt scp://%COMPUTERNAME%/tmp/f.txt",
         "sftp sftp://user@%COMPUTERNAME%",
+        "scp f.txt $env:USERNAME@$env:COMPUTERNAME:job@x.txt",
         # The bash spellings stay refused.
         "ssh $hostname id",
         "scp -r $HOSTNAME backup:/archives/",
@@ -112,6 +113,16 @@ def test_other_hosts_and_variables_stay_allowed(cmd):
         "scp -r %COMPUTERNAME% backup:/archives/",
         "rsync -av backup:/srv/snapshots/ %COMPUTERNAME%",
         "rsync -av backup:/srv/snapshots/ $env:COMPUTERNAME",
+        # A file operand's host ends at its first colon: the host here is backup.
+        "scp f.txt backup:job@%COMPUTERNAME%",
+        # Git and tar read a word with no host colon as a name or a local file;
+        # the colon in ``$env:`` is not a host colon.
+        "git fetch origin $env:COMPUTERNAME",
+        "git remote add $env:COMPUTERNAME https://git.example.com/team/repo.git",
+        'git clone "$env:COMPUTERNAME.bundle" restored',
+        'tar -cf "$env:COMPUTERNAME.tar" logs',
+        'tar -czf "${env:COMPUTERNAME}.tar.gz" logs',
+        'tar -xf "$env:COMPUTERNAME.tar" -C restore',
     ],
 )
 def test_a_machine_named_file_or_remote_path_is_not_this_host(cmd):
@@ -134,3 +145,16 @@ def test_a_dotted_name_before_a_path_colon_is_this_host():
 )
 def test_a_windows_name_in_an_ssh_option_value_stays_refused(cmd):
     assert _denied_by(cmd) == _RULE, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git clone $env:COMPUTERNAME:team/repo.git",
+        "git ls-remote %COMPUTERNAME%:/srv/repo.git",
+        "git clone ssh://%COMPUTERNAME%/srv/repo.git",
+        "tar -cf %COMPUTERNAME%:/backup/logs.tar logs",
+    ],
+)
+def test_a_windows_name_as_a_git_or_tar_remote_host_is_refused(cmd):
+    assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd

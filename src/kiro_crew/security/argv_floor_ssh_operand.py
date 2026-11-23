@@ -154,8 +154,9 @@ def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) ->
     authority (``ssh://[user@]host[:port]``), before a path colon, or dotted in
     host position (``$env:computername.corp``).  A dotted word elsewhere is a
     local file (``%computername%.log``); an ``@`` after a ``:`` or ``/`` is
-    remote-path data (``backup:/logs/a@%computername%.log``); and an scp/rsync
-    *file_operand* with no colon is a local path (``scp -r %computername% far:``).
+    remote-path data (``backup:/logs/a@%computername%.log``); and a
+    *file_operand* (an scp/rsync file, a git or tar remote word) with no host
+    colon is a local path or a name (``scp -r %computername% far:``).
     """
     # PowerShell's ``$env:`` colon is part of the variable, never a host colon.
     if file_operand and ":" not in t.replace("env:", ""):
@@ -164,7 +165,9 @@ def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) ->
     user, at, rest = t.partition("@")
     if at and not {":", "/"} & set(user.replace("env:", "")):
         spellings.append(rest)
-    if at and "/" not in t:
+    if at and "/" not in t and not file_operand:
+        # Only an ssh/sftp destination reads its host after the LAST ``@``; a
+        # file operand's host ends at its first colon (``far:job@x`` is far).
         spellings.append(t.rsplit("@", 1)[1])
     authority = ""
     for scheme in _URI_SCHEMES:
@@ -196,9 +199,9 @@ def _operand_targets_self(
 ) -> bool:
     """True if *operand* names THIS machine as a connection target.
 
-    ``file_operand=True`` marks an scp/rsync file operand, which is a local
-    path unless it carries a ``host:`` colon (applied to the Windows own-name
-    spellings only, see ``_windows_name_is_host``).
+    ``file_operand=True`` marks an scp/rsync file operand or a git/tar remote
+    word, which names no host unless it carries a ``host:`` colon (applied to
+    the Windows own-name spellings only, see ``_windows_name_is_host``).
 
     ``dns=False`` passes ``dns_fallback=False`` to every host check (no
     hosts-file or DNS alias verdict, no unread-address-table window), for a

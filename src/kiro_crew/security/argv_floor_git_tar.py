@@ -345,7 +345,9 @@ def _git_remote_targets_self(operand: str) -> bool:
                 host = before_port
             if _operand_targets_self(host, host_position=True, dns=False, match_globs=False):
                 return True
-    return _operand_targets_self(t, host_position=True, dns=False, match_globs=False)
+    return _operand_targets_self(
+        t, host_position=True, dns=False, match_globs=False, file_operand=True
+    )
 
 
 # A value word longer than this is not split into every glued-option suffix:

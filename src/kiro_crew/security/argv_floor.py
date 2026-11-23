@@ -389,10 +389,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HOSTNAME_SUBSTITUTION_HINTS,
         _HOSTNAME_VARIABLE_FORMS,
         _LITERAL_HOSTS,
+        _URI_SCHEMES,
         _arith_int_literal_repl,
         _brace_alternatives,
         _brace_expansions,
         _operand_targets_self,
+        _windows_name_is_host,
     )
     from kiro_crew.security.argv_floor_tar import (  # noqa: F401
         _GLOB_WORDS,
