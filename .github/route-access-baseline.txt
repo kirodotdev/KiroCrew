@@ -488,6 +488,8 @@ GET /api/apps/{name}
 POST /api/apps/{name}/_sel
 GET /api/apps/{name}/bot-grants
 PUT /api/apps/{name}/bot-grants
+GET /api/apps/{name}/browser-sites
+POST /api/apps/{name}/browser-sites
 GET /api/apps/{name}/config
 PUT /api/apps/{name}/config
 POST /api/apps/{name}/dev
@@ -669,6 +671,7 @@ DELETE /api/chat/slots/{slot}
 GET /api/chat/slots/{slot}
 POST /api/chat/slots/{slot}/agent
 POST /api/chat/slots/{slot}/approve
+POST /api/chat/slots/{slot}/approve-for-me
 GET /api/chat/slots/{slot}/autocompact
 POST /api/chat/slots/{slot}/autocompact
 PATCH /api/chat/slots/{slot}/color
@@ -1679,6 +1682,7 @@ GET /v1/crew/owner/grant-requests
 GET /v1/crew/owner/grant-requests/{request_id}
 POST /v1/crew/owner/grant-requests/{request_id}/decision
 DELETE /v1/crew/owner/grants/{grant_id}
+GET /v1/models
 GET /vendor/{tail}
 OPTIONS /vendor/{tail}
 GET /{name}
