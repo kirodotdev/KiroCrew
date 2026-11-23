@@ -341,6 +341,35 @@ describe('side reducer: tool rows', () => {
     expect(side.messages.map(m => m.role)).toEqual(['user', 'tool', 'tool', 'assistant'])
     expect(side.messages[2].meta?.tool_call_id).toBe('call-9')
   })
+
+  it('the terminal frame marks the run\'s tool calls done, a refused one excepted', () => {
+    // The side wire carries no tool results, so the rows are open until the turn ends.
+    let state = turnUpToTool()
+    expect(state.slotSide[SLOT].messages[2].meta?.output).toBeUndefined()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Two hosts. ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: rm -rf build', meta: { tool_call_id: 'call-9', kind: 'execute', purpose: '', input_preview: 'rm -rf build' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🚫 Running: rm -rf build', meta: { tool_call_id: 'call-9' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: "I can't change files here.", final: true }))
+    const rows = state.slotSide[SLOT].messages
+    expect(rows.map(m => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant', 'tool', 'tool', 'assistant'])
+    // The finished call: the empty output a main chat row with nothing to show carries.
+    expect(rows[2].meta).toEqual({ ...TOOL_META, output: '' })
+    // The refused call and its hidden sibling: blocked is their terminal state.
+    expect(rows[4].meta?.output).toBeUndefined()
+    expect(rows[5].meta?.output).toBeUndefined()
+    // A later turn's frames leave the earlier run's rows as they are.
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r2', role: 'user', content: 'again' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r2', role: 'tool', content: '🔧 Running: ls', meta: { tool_call_id: 'call-2', kind: 'execute', purpose: '', input_preview: 'ls' } }))
+    const later = state.slotSide[SLOT].messages
+    expect(later[2].meta?.output).toBe('')
+    expect(later[later.length - 1].meta?.output).toBeUndefined()
+  })
+
+  it('an error notice ending the turn marks its tool calls done too', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '(side conversation interrupted — please retry)', is_error: true, final: true }))
+    expect(state.slotSide[SLOT].messages[2].meta?.output).toBe('')
+  })
 })
 
 describe('SideChat draws tool rows', () => {
@@ -400,6 +429,30 @@ describe('SideChat draws tool rows', () => {
     expect(screen.getByText('Let me check.').compareDocumentPosition(pill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(pill)
     expect(screen.getByText(/cat \/etc\/hosts/)).toBeInTheDocument()
+  })
+
+  it('a finished call stays done while a later turn runs, from the output its terminal frame left', async () => {
+    // The panel is busy again (`streaming`), which alone would put every pill
+    // without an output back on the spinner.
+    const store = storeWith([
+      { role: 'user', content: 'what is in hosts?', ts: '2026-05-19T10:00:00Z', run_id: 'r1' },
+      { role: 'assistant', content: 'Let me check.', ts: '2026-05-19T10:00:01Z', run_id: 'r1' },
+      { role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', ts: '2026-05-19T10:00:02Z', run_id: 'r1', meta: { ...TOOL_META, output: '' } },
+      { role: 'assistant', content: 'Two hosts.', ts: '2026-05-19T10:00:03Z', run_id: 'r1', id: 'm1' },
+      { role: 'user', content: 'and the ports?', ts: '2026-05-19T10:00:04Z', run_id: 'r2' },
+      { role: 'tool', content: '🔧 Running: ss -ltn\nss -ltn', ts: '2026-05-19T10:00:05Z', run_id: 'r2', meta: { tool_call_id: 'call-2', kind: 'execute', purpose: 'list the ports', input_preview: 'ss -ltn' } },
+    ], true)
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await screen.findByRole('note')
+    // The finished turn's call folds under its header, as a done call does.
+    fireEvent.click(await screen.findByRole('button', { name: '1 tool call' }))
+    const done = await screen.findByRole('button', { name: 'read the hosts file' })
+    expect(done.className).toContain('text-ok-text')
+    expect(done.querySelector('.animate-spin')).toBeNull()
+    // The running turn's own call, with no output yet, spins.
+    const running = await screen.findByRole('button', { name: 'list the ports' })
+    expect(running.className).not.toContain('text-ok-text')
+    expect(running.querySelector('.animate-spin')).not.toBeNull()
   })
 
   it('a refused tool call is drawn blocked, from its hidden 🚫 sibling', async () => {

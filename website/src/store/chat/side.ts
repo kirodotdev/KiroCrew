@@ -7,6 +7,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import { current, isDraft } from '@reduxjs/toolkit'
 import type { SideSnapshot } from '../../types'
 import { mergeIntoDraft } from '../../utils/chatDrafts'
+import { isToolCallRow, isToolRefusedRow } from '../../lib/toolRowContract'
 import type { ChatState, SideMessage, SideQueueEntry, SideSendStatus, SideStandingNotice, SideState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 
@@ -353,6 +354,27 @@ function newerKeptText(edit: { content: string; rev?: number } | undefined, entr
   return edit.rev > entry.rev ? edit.content : undefined
 }
 
+/** Mark the run's tool calls over, on its terminal frame.
+ *
+ *  The side wire carries no tool results, and the shared pill reads a call done
+ *  from its row's `meta.output` or from the panel being idle. The panel is busy
+ *  again as soon as the next question is sent, so without a mark every earlier
+ *  tool row went back to spinning. Each `🔧` row of the run takes the empty
+ *  `output` a finished main chat call with nothing to show carries; a refused
+ *  call keeps its hidden `🚫` sibling as its terminal state and takes none. */
+function settleToolRows(messages: SideMessage[], runId: string): void {
+  const refused = new Set<string>()
+  for (const m of messages) {
+    if (m.role === 'tool' && m.run_id === runId && isToolRefusedRow(m.content) && m.meta?.tool_call_id) refused.add(m.meta.tool_call_id)
+  }
+  for (const m of messages) {
+    if (m.role !== 'tool' || m.run_id !== runId || !isToolCallRow(m.content)) continue
+    const id = m.meta?.tool_call_id
+    if ((id && refused.has(id)) || m.meta?.output !== undefined) continue
+    m.meta = { ...(m.meta ?? {}), output: '' }
+  }
+}
+
 /** The records a stored answer's bubble draws from, as the frame or read sent them. */
 function answerRecords(src: { link_blocks?: unknown; redactions?: unknown }): Pick<SideMessage, 'link_blocks' | 'redactions'> {
   return {
@@ -669,6 +691,9 @@ export const sideReducers = {
       }
       return
     }
+    // The terminal frame, an error notice's included, is the only word that the
+    // run's tool calls are over.
+    if (final) settleToolRows(side.messages, run_id)
     if (!earlierRun) {
       side.pending = false
       side.streaming = !final
