@@ -25,6 +25,14 @@ import pytest
 
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+#: Every probe here cold-starts a fresh interpreter, so the module runs on one xdist
+#: worker rather than spreading concurrent cold starts across the pool.
+pytestmark = pytest.mark.xdist_group(name="stub_import_budget_probes")
+
+#: Below the suite's 120 s per-test timeout, so a stalled child fails as a
+#: subprocess timeout that names the probe rather than as a pytest timeout.
+PROBE_TIMEOUT_SECS = 90
+
 #: Modules a stub must not hold once it is bridging. Each has a large
 #: transitive graph and is reached, if at all, on a path a stub takes rarely:
 #: ``pool`` and ``manager`` are the daemon's side of the socket, ``metrics``
@@ -108,7 +116,7 @@ def _run_probe(
         cwd=tmp_path,
         env=env,
         capture_output=True,
-        timeout=120,
+        timeout=PROBE_TIMEOUT_SECS,
         **UTF8_TEXT,
     )
 
@@ -389,7 +397,7 @@ def test_execution_context_does_not_load_validation():
         ],
         env=env,
         capture_output=True,
-        timeout=120,
+        timeout=PROBE_TIMEOUT_SECS,
         **UTF8_TEXT,
     )
     assert result.returncode == 0, result.stderr
