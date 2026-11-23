@@ -825,7 +825,8 @@ the host run was registered. `admit` resolves the parent run, refuses a depth pa
 children still in flight, and otherwise reserves the run under its parent. The
 check and the reservation run without a yield, so two starts cannot both take
 the last slot. A child counts as in flight while it is reserved and not yet
-registered, or while its registry status is in `ACTIVE_STATUSES`. `settle`
+registered, or while its registry status is in `ACTIVE_STATUSES`; a finished
+child stays under its parent, so a retry that reopens it counts again. `settle`
 drops the reservation once `run_background` returns; a start that produced no
 run is also removed from its parent. A refusal is a returned error, never a
 queued start, so the HTTP handlers answer 400 and the `workflow_run` tool

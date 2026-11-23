@@ -182,6 +182,21 @@ def test_fanout_counts_children_still_in_flight() -> None:
     assert ledger.admit("wf:wf_1:0", "wf_6", is_active=active.__contains__) is None
 
 
+def test_a_finished_child_that_a_retry_reopens_counts_again() -> None:
+    """A retry reopens a run without a new admit, so a finished child stays a member."""
+    active: set[str] = set()
+    ledger = NestingLedger(max_nested_runs=2)
+    ledger.admit("dashboard:main", "wf_1", is_active=_never_active)
+    ledger.admit("wf:wf_1:0", "wf_a", is_active=active.__contains__)
+    ledger.settle("wf_a", started=True)
+    # wf_a has finished; a sibling start passes and must not drop it.
+    assert ledger.admit("wf:wf_1:0", "wf_b", is_active=active.__contains__) is None
+    ledger.settle("wf_b", started=True)
+    active.update({"wf_a", "wf_b"})  # the retry put wf_a back in flight
+    refusal = ledger.admit("wf:wf_1:0", "wf_c", is_active=active.__contains__)
+    assert refusal is not None and refusal["error_code"] == ERROR_CODE_FANOUT
+
+
 def test_an_unregistered_reservation_holds_its_fanout_slot() -> None:
     ledger = NestingLedger(max_nested_runs=1)
     ledger.admit("dashboard:main", "wf_1", is_active=_never_active)

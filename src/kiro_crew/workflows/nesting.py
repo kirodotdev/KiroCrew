@@ -177,18 +177,18 @@ class NestingLedger:
             }
         if parent:
             siblings = self._children.setdefault(parent, set())
-            siblings.intersection_update(
-                {c for c in siblings if c in self._pending or is_active(c)}
-            )
-            if len(siblings) >= self.max_nested_runs:
+            # Finished children stay members: a retry reopens a run without a
+            # new admit, and it must count again once it is back in flight.
+            in_flight = sum(1 for c in siblings if c in self._pending or is_active(c))
+            if in_flight >= self.max_nested_runs:
                 logger.warning(
                     "workflow start refused: run %s already has %d nested runs in flight",
                     parent,
-                    len(siblings),
+                    in_flight,
                 )
                 return {
                     "error": (
-                        f"workflow_run refused: run {parent} already has {len(siblings)} "
+                        f"workflow_run refused: run {parent} already has {in_flight} "
                         "nested runs in flight, the cap set by "
                         "agent.workflow_max_nested_runs; wait for one to finish or do "
                         "this work in the current run"
