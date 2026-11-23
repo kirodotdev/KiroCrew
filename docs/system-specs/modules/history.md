@@ -1270,9 +1270,13 @@ the import moves saved folder paths from either archive home to this home. This
 covers each chat header's `project`, `workspace_dir`, `project_dir`, and
 `dashboard.default_project` in `config.json` and `config.local.json`. A path
 outside both archive homes stays only if that folder exists here. Otherwise the
-import drops it, so the chat opens in the default workspace. Older archives
-without `home` infer it from saved paths and the manifest's `user` only when the
-inferred home is absent here; extraction uses the gateway-only, sandbox-masked
+import drops it, so the chat opens in the default workspace. The manifest's
+`user` is the exporting account: `USER`, then `USERNAME` (which Windows sets),
+then the login the OS reports, else `unknown` (`snapshot_build._caller_name`).
+An archive whose manifest has a `home` or `home_real` key but no POSIX home in
+it (an export from Windows) is left as it is. Only an older archive whose
+manifest has neither key infers its home from saved paths and the manifest's
+`user`, and only when the inferred home is absent here; extraction uses the gateway-only, sandbox-masked
 `import-staging` leaf on the data home's filesystem. Same-home
 imports change nothing. Home relocation supports POSIX homes only. The summary
 may also carry `home_paths_moved` and `sessions_project_cleared`. The latter counts
