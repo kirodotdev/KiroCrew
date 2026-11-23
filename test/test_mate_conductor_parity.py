@@ -483,6 +483,44 @@ def test_every_shared_rule_renders_on_both_installed_conductors(specs) -> None:
     assert missing == [], f"shared rules missing from a conductor: {missing}. {_WHERE}"
 
 
+def test_both_conductors_leave_the_finished_patrol_to_the_gateway(specs) -> None:
+    """The final report goes out in the turn that closes the last item and the
+    gateway ends the patrol; neither side is told to stop it as its own step."""
+    root_spec, _mate = specs
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["patrol_final_report"])
+    assert "the gateway ends your patrol itself" in rule
+    assert "create its next item in that same turn" in rule
+    assert "end the patrol in two steps" not in rule
+    # autonudge_stop is left only for a user's stop while items are open.
+    assert rule.count("autonudge_stop") == 1
+    assert "when the user says stop while items are open" in rule
+    for side, text in (
+        (_ROOT, _words(root_spec["prompt"])),
+        ("kirocrew-mate-conductor", _words(_mate_ledger_text())),
+    ):
+        assert rule in text, side
+        assert "end the patrol in two steps" not in text, side
+    # A Bot's patrol-wake rule names no separate stop step.
+    assert "before you close its item or call autonudge_stop" not in _words(_mate_ledger_text())
+    assert "before you close its item." in _words(_mate_ledger_text())
+
+
+def test_both_conductors_give_a_one_item_goal_no_review_item(specs) -> None:
+    root_spec, _mate = specs
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["plan_reviewer"])
+    assert "for a goal of more than one item" in rule
+    assert "a goal of one item gets no reviewer and no separate review or test item" in rule
+    assert "unless the person asks for one" in rule
+    for side, text in (
+        (_ROOT, _words(root_spec["prompt"])),
+        ("kirocrew-mate-conductor", _words(_mate_ledger_text())),
+    ):
+        assert rule in text, side
+    assert "a one-item goal gets no reviewer or review item" in _words(
+        (_SKILLS_DIR / "goal-conductor" / "references" / "verify-done.md").read_text("utf-8")
+    )
+
+
 #: Rules this change made shared, from the team lead and the long-task conductor.
 _NEW_SHARED = (
     "item_budget",

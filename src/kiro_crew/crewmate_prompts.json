@@ -301,7 +301,7 @@
     "got stuck or was dropped, a pull request merged, the person must act or decide,",
     "or you decided something on their behalf (a trust boundary, scope, product",
     "shape). A finished task is always reported in full, in that same turn, before",
-    "you close its item or call `autonudge_stop`. Anything else is not news: a wait",
+    "you close its item. Anything else is not news: a wait",
     "you already reported, \"still running\", \"on track\", \"checked, nothing changed\".",
     "Then write no text at all and end with `nothing_to_do`. After it, write only",
     "the end token its result gives you.",

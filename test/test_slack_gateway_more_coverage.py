@@ -1488,6 +1488,45 @@ class TestNotifyNudgeExpired:
         # The merge lands in the feed only; closed-unmerged still rings.
         assert priority == ("passive" if (pending or delivered) == "success" else None)
 
+    @pytest.mark.parametrize(
+        ("outcome", "expected_title", "priority"),
+        [
+            ("success", "Patrol finished — every task was accepted", "passive"),
+            ("blocked", "Patrol finished — some tasks were not accepted", None),
+        ],
+    )
+    def test_a_finished_work_ledger_patrol_names_tasks_not_a_pull_request(
+        self, outcome, expected_title, priority
+    ):
+        from kiro_crew.autonudge import MONITOR_TERMINAL_REASON
+        from kiro_crew.monitoring.models import MonitorOutcome
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id=f"loop-ledger-{outcome}",
+            slot_key="chat-ledger",
+            message="patrol the work ledger",
+            cycle_count=3,
+            stopped_reason=MONITOR_TERMINAL_REASON,
+            gate=True,
+            monitor=MonitorState(
+                kind="work-ledger",
+                target="chat-ledger",
+                objective="patrol the work ledger",
+                created_ts=0.0,
+                outcome=MonitorOutcome(outcome),
+            ),
+        )
+
+        assert orch._notify_nudge_expired(loop) is True
+
+        title, body, _meta, got_priority = _monitor_notice(ds)
+        assert title == expected_title
+        assert "pull request" not in body.lower()
+        assert got_priority == priority
+
     def test_a_legacy_cap_with_no_owed_turn_still_reports_the_cap(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()

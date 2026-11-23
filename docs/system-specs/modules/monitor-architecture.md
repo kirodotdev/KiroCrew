@@ -439,10 +439,21 @@ ledger answers no), it raises the spent bound server-side instead of
 deactivating -- `max_cycles` to the count plus a quarter of the cap (at least
 10), `max_runtime_secs` to the loop's age plus a quarter of the budget (at least
 one hour), clamped to the ceiling -- logs it at WARNING and re-arms. The loop
-then ends only through a user or agent stop. Every item closed is not terminal:
-the probe raises one wake saying so (deduped by a digest of the closed board, so
-a later item that closes wakes once more) and the watch stays armed for the next
-item; with no open item a spent bound ends the loop as usual. The runaway backstop is the same
+then ends only through a user or agent stop, or when every item is closed: once
+the conductor's session owns no current or queued work
+(`session_activity.session_work_pending`), the probe raises a `TERMINAL` keyed
+`all-accepted` or `all-closed`, and a dashboard loop settles with no turn, since
+the conductor sent its final report in the turn that closed the last item. A
+channel conductor (Slack, Discord) keeps the earlier shape: one wake saying every
+item is closed (deduped by a digest of the closed board), the watch stays armed,
+and the conductor stops it with `autonudge_stop`, because the liveness resolver
+reads dashboard slots only and a channel terminal settles through an owed turn. While that turn runs the tick is quiet, so a next item opened in it
+keeps the watch. A next round dispatched later is re-armed by its bind
+(`conductor_patrol.ensure_patrol`) or the conductor's own `monitor_start`. Only a
+`watch="work-ledger"` loop has this probe, and only `monitor_start`,
+`monitor_update` and the default patrol set that watch (`POST /api/autonudge`
+takes no `watch`), so a loop a person armed and no agent re-aimed at the
+ledger is never ended this way. The runaway backstop is the same
 `monitoring.max_runtime_secs` ceiling, measured as the loop's age from
 `created_ts`: past it nothing is extended, the bound stops the loop as before,
 and the refusal is logged at WARNING. The age is read from `created_ts` once per
@@ -1379,8 +1390,8 @@ probe exposes no observation; its only terminal is the kernel's own, for a subje
 it cannot name), both in the tick and in `_terminal_still_holds`. And success reads
 `observation.merged` first: a pull request's terminal verdict keys are empty, so
 `gh-pr` success still comes from the observation, while `probes.terminal_succeeded`
-decides keyed kinds. The work ledger contributes no success key: every item closed
-is a wake that leaves the watch armed, not a terminal.
+decides keyed kinds. The work ledger contributes `all-accepted`: a board whose every
+item is closed ends the watch terminal, and only that key is a success.
 
 Two lessons for the consolidation target. A terminal key is part of a kind's
 vocabulary and belongs in the registry row beside its objective, not in a shared
@@ -1389,8 +1400,7 @@ in `probes/__init__.py`, holding only the pull-request probe's `merged`). And
 membership is per OUTCOME, not per kind: this kind's every-item-closed wake is
 keyed `all-accepted` when every work item's bar was met and `all-closed` when at
 least one was rejected or abandoned, and only the first means finishing well --
-so a kind may own several end keys that do not agree with each other. Both are
-`WAKE` keys today, not terminal ones, because the watch stays armed.
+so a kind may own several end keys that do not agree with each other.
 
 ### The acceptance test
 
