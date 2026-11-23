@@ -2775,7 +2775,14 @@ writer:
   by bytes, so an undecodable first line reaches this rewrite like one that is
   not JSON while the rows after it still decode strictly, and it stages the
   result through `atomic_write`, which writes every byte, so a short write never
-  publishes a prefix of the transcript. The full save's frozen-prefix and
+  publishes a prefix of the transcript. That whole-file path is the fallback:
+  `_update_metadata_locked` first tries `history_rewrite.rewrite_head_streaming`,
+  which reads only line 0, stages the new line 0 through `atomic_write` and copies
+  the rows after it in 1 MiB chunks, so the transcript is never held in memory.
+  It writes the same bytes, and the stored message count carries over because no
+  row changed. A file it cannot reproduce exactly (no row after line 0, a line 0
+  that is not UTF-8 or holds another line boundary, rows with a `\r` or with bytes
+  that are not UTF-8) writes nothing there and takes the whole-file path. The full save's frozen-prefix and
   rewrite-archive reads split the file the same way, and its frozen prefix takes
   the rows after an undecodable first line by position, so the rows older than
   the in-memory window survive the heal. The first `append` likewise creates a

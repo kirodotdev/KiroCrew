@@ -34,16 +34,20 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
    * work is running the gateway answers 409 `work_in_flight` and restarts nothing.
    * The connection drops as the process image is replaced, so callers must treat
    * a network failure after a 200 as the expected path rather than an error.
+   * `keepTab`: the caller waits through the restart in this tab, so its
+   * `restarting` step arms no reload latch (a changed bundle still reloads).
    */
-  const restartGateway = async () => {
+  const restartGateway = async ({ keepTab = false }: { keepTab?: boolean } = {}) => {
     // Noted before asking: the socket can drop before this call answers.
-    noteGatewayRestart()
+    noteGatewayRestart(Date.now(), { keepTab })
     try {
       let res = await post('/api/restart', { force: false })
       if (res.status === 409) {
         const work = asWorkInFlight(await res.clone().json().catch(() => null))
         if (work) {
           await confirmRestartUnderWork(work)
+          // Renewed: a reconnect or the TTL can drop the note while the dialog is open.
+          noteGatewayRestart(Date.now(), { keepTab })
           res = await post('/api/restart', { force: true })
         }
       }
