@@ -224,10 +224,16 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs). A callback carrying
-  `error` fails the sign-in at once, and the tab names the reason in fixed words for
-  each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
-  `error_description` included, reaches the page.
+  (path + login_option query, exactly as rebuilt in portal.rs). The tab's reply to a
+  valid callback waits for that exchange (`wait_for_callback` runs it as its own task,
+  so a tab closed early does not stop it): it says "Login complete" only once the
+  exchange has succeeded, and a failed or timed-out exchange, or a sign-in cancelled
+  mid-exchange, gets a fixed failure page sending the user back to the dashboard's
+  code. A callback carrying
+  `error` (with this sign-in's `state`, or none) fails the sign-in at once, and the
+  tab names the reason in fixed words for each RFC 6749 §4.1.2.1 code
+  (`_PORTAL_ERROR_REASONS`); nothing the request carries, `error_description`
+  included, reaches the page.
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
@@ -571,6 +577,14 @@ engine instead ([aws-control.md](aws-control.md)).
   shape does not support loopback, or every allowlisted port is busy) sends the client
   to the device flow. `POST /api/kas-login/cancel` abandons a pending sign-in and
   releases the loopback callback port at once instead of at its deadline.
+  Start over re-binds that same port, so a tab of the replaced sign-in can
+  come back to the new listener: a callback carrying another sign-in's `state` gets a
+  "replaced by a newer one" page and changes nothing (one with no `state` still fails
+  the sign-in). After a successful sign-in the listener keeps answering until the
+  attempt's deadline, so a second tab gets an "already finished" page rather than the
+  browser's error for a closed port. A new sign-in inside that window retires it first,
+  as it does an older pending one, so it can take the same port; a sign-out does not
+  cut that window short: the listener only answers pages and changes nothing.
 - Wiring `KasAuthProvider` to the running engine is done through the kiro-cli relay
   (`acp/kas_host_auth.py` + the `_kiro/auth/getAccessToken` handler on
   `AcpRuntime`'s reader loop). Verified end-to-end against a real kiro-cli release
