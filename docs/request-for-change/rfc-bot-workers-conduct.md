@@ -1,11 +1,11 @@
 ---
 title: Bot workers that conduct — an owner-set, default-off switch per Bot
-status: draft
+status: accepted
 author: kmurtaza-dev
 created: 2026-11-21
-last-audited: 2026-11-21
-audited-at: fe326b45c8
-doc-pr:
+last-audited: 2026-11-22
+audited-at: fc2c76715b
+doc-pr: 40538
 implementation-prs: []
 tracking-issues: []
 supersedes: [rfc-conductor-split-default.md]
@@ -14,9 +14,12 @@ superseded-by: []
 
 # RFC: Bot workers that conduct — an owner-set, default-off switch per Bot
 
-- Status: draft — proposed for a maintainer's decision. Nothing is built. Every
-  "exists today" claim below names a symbol verified against the working tree at
-  `fe326b45c8`; re-verify at implementation time.
+- Status: accepted — by maintainer bolichen97 on
+  [#40538](https://github.com/kirodotdev/KiroCrew/pull/40538)
+  ([comment 7085631323](https://github.com/kirodotdev/KiroCrew/pull/40538#issuecomment-7085631323),
+  2026-11-22). Nothing is built yet: Phase 1 is `Part of #40535` and Phase 2 is
+  `Closes #40535`. Every "exists today" claim below names a symbol verified
+  against the working tree at `fe326b45c8`; re-verify at implementation time.
 - Author: kmurtaza-dev
 - Related: [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md)
   (the two roles a Bot runs as, §5.0, and the worker-extension file, §5.1/§5.4),
