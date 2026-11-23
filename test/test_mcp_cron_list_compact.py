@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from kiro_crew import cron_inflight
 from kiro_crew.cron import CronService
 from kiro_crew.mcp_cron import _call_tool_inner, _validate_args
 from kiro_crew.validation import ValidationError
@@ -196,6 +197,15 @@ class TestCronListCompact:
             assert secret[:prefix_len] not in out, (
                 f"credential prefix of length {prefix_len} leaked into output"
             )
+
+    def test_a_job_with_a_live_run_marker_is_listed_as_running(self, home):
+        svc = CronService(base_dir=home)
+        busy = svc.add_job(name="busy", message="slow turn", every_secs=3600)
+        svc.add_job(name="idle", message="quiet", every_secs=3600)
+        cron_inflight.write_marker(home, busy.id, "busy", 1_700_000_000.0, run="r1")
+        lines = _call_tool_inner("cron_list", {}).splitlines()
+        assert "• busy active [agent] [running since 22:13 UTC]" in lines
+        assert "• idle active [agent]" in lines
 
 
 # ── Verbose (legacy regression guard) ──

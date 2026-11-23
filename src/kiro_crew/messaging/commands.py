@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
 )
+from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import CONTEXT_WARN_MARGIN_PCT
 from kiro_crew.cron import (
     CronStoreBusy,
@@ -63,6 +64,7 @@ from kiro_crew.cron import (
     get_local_tz,
     job_zone_name,
 )
+from kiro_crew.cron_inflight import running_note, running_since_by_job
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.messaging.turn_bracket import arm_cancelled_turn
@@ -922,7 +924,7 @@ def _relative(delta: float) -> str:
     return "now"
 
 
-def _cron_list(cron_service: "CronService | Any") -> str:
+def _cron_list(cron_service: "CronService | Any", running: dict[str, float]) -> str:
     jobs = cron_service.list_jobs(include_disabled=True)
     if not jobs:
         return "No cron jobs scheduled."
@@ -937,6 +939,9 @@ def _cron_list(cron_service: "CronService | Any") -> str:
             last = " ✓"
         elif job.last_status == "error":
             last = " ❌"
+        started = running.get(job.id)
+        if started:
+            last += f" {running_note(started)}"
         nxt = compute_next_run_ts(job, now=now)
         next_part = f" | ⏭ {_relative(nxt - now)}" if nxt is not None else ""
         message = _redact(job.message)[:_CRON_MESSAGE_PREVIEW_CHARS]
@@ -1013,7 +1018,9 @@ async def cron_command_reply(
         return None
     action = parts[1]
     if action == "list":
-        return _cron_list(cron_service)
+        # The run markers are files on disk: read them off the gateway loop.
+        running = await asyncio.to_thread(running_since_by_job, data_home())
+        return _cron_list(cron_service, running)
     if len(parts) < 3:
         return None
     job_id = parts[2]

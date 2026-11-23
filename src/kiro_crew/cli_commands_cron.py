@@ -653,15 +653,7 @@ def _running_since() -> dict[str, float]:
     """Start time of each job whose run is in flight, keyed by job id."""
     from kiro_crew import cron_inflight
 
-    since: dict[str, float] = {}
-    try:
-        markers = cron_inflight.read_markers(config_dir())
-    except Exception:  # noqa: BLE001 - an unreadable marker dir marks nothing
-        return since
-    for m in markers:
-        if m.owner_alive() is True:
-            since[m.job_id] = max(m.started_at, since.get(m.job_id, 0.0))
-    return since
+    return cron_inflight.running_since_by_job(config_dir())
 
 
 def _cron_dispatch(args: argparse.Namespace) -> None:
@@ -712,6 +704,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if not jobs:
             print("No cron jobs." if want_folder is None else "No cron jobs in that folder.")
             return
+        from kiro_crew.cron_inflight import running_note
+
         running = _running_since()
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
@@ -721,9 +715,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             name = safe_terminal_line(j.name)
             message = safe_terminal_line(j.message)[:60]
             started = running.get(j.id)
-            run_note = ""
-            if started:
-                run_note = f"  [running since {_time.strftime('%H:%M UTC', _time.gmtime(started))}]"
+            run_note = f"  {running_note(started)}" if started else ""
             print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]{run_note}  {message}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
