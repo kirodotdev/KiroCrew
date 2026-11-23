@@ -27,6 +27,7 @@ from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.display_battery import display_battery
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     oauth_url_contains_credential,
@@ -1316,6 +1317,9 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
                     row["meta"] = shown
                 out.append(row)
             continue
+        # Sent as the say-nothing reply, in its place, so row indexes still match.
+        if is_stored_echo_row(m):
+            m = {**m, "content": "\u200b"}
         text = m.get("content", "")
         # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
         # display-time redaction boundary for everything the slot detail

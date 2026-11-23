@@ -28,6 +28,12 @@ from kiro_crew.history import ConversationLog
 
 KEY = "dashboard:member-radar"
 
+PLACEHOLDER = (
+    "(No assistant response was recorded for the preceding turn. This placeholder "
+    "was inserted automatically to preserve message alternation \u2014 it is not a "
+    "reply the assistant produced.)"
+)
+
 
 def _patrol_log(tmp_path: Path) -> ConversationLog:
     log = ConversationLog(base_dir=tmp_path)
@@ -105,6 +111,28 @@ class TestRosterPreviewIsSpeechOnly:
         preview, epoch, _ = fresh.last_speech_info(KEY)[:3]
         assert preview == ""
         assert epoch > 0
+
+    def test_a_stored_alternation_placeholder_is_not_speech(self, tmp_path: Path) -> None:
+        assert is_speech_row("assistant", PLACEHOLDER, {}) is False
+        log = ConversationLog(base_dir=tmp_path)
+        log.append(KEY, "user", "Anything new?")
+        log.append(KEY, "assistant", "Triaged 7 new issues.")
+        log.append(KEY, "assistant", PLACEHOLDER)
+        preview = ConversationLog(base_dir=tmp_path).last_speech_info(KEY)[0]
+        assert preview == "Triaged 7 new issues."
+
+    def test_a_placeholder_kept_with_variants_is_speech(self, tmp_path: Path) -> None:
+        """An older Regenerate kept the placeholder as a variant; the chat draws
+        the selected one with its switcher, so the roster quotes it too."""
+        variants = [{"content": PLACEHOLDER}, {"content": "A real answer."}]
+        assert is_speech_row("assistant", PLACEHOLDER, {}, variants=variants) is True
+        log = ConversationLog(base_dir=tmp_path)
+        log.append(KEY, "user", "Anything new?")
+        log.append(KEY, "assistant", "Triaged 7 new issues.")
+        row = {"role": "assistant", "content": PLACEHOLDER, "variants": variants}
+        log.append(KEY, "assistant", PLACEHOLDER, entry=row)
+        preview = ConversationLog(base_dir=tmp_path).last_speech_info(KEY)[0]
+        assert preview.startswith("(No assistant response was recorded")
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "crewmate_speech_rows.json"

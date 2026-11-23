@@ -963,6 +963,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.memory_stores import (  # noqa: F401
         UnknownMemoryStore,
     )
+    from kiro_crew.messaging.alternation_echo import (  # noqa: F401
+        is_stored_echo_row,
+    )
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,
         is_channel_session_key,

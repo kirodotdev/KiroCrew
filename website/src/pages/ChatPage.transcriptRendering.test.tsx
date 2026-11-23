@@ -42,7 +42,7 @@ function props(over: Partial<Props> = {}): Props {
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
     handleFork: vi.fn(async () => false), highlightTs: null, landedTs: null, jumpMid: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
-    revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
+    revealAppInPanel: fn(), lastTextIdx: -1, regenerateIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
     openKiroSignIn: fn(), openMemberCapabilities: fn(), openModelPickerFromError: fn(), openTurnLimitSetting: fn(), quoteWholeMessage: fn(),
     handleAsk: undefined, handleQuote: fn(), handleEditResend: fn(), editLast: null, farmPassRef: { current: false }, handleEditConsumed: fn(),
@@ -132,7 +132,7 @@ describe('message row handlers', () => {
   function mount() {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    const first = props({ lastTextIdx: 1, messages: [user, reply], messagesRef: { current: [user, reply] } })
+    const first = props({ lastTextIdx: 1, regenerateIdx: 1, messages: [user, reply], messagesRef: { current: [user, reply] } })
     const hook = renderHook((p: Props) => useTranscriptRendering(p), { wrapper, initialProps: first })
     const rows = () => ({
       user: findByType(hook.result.current.renderMessage(0, user), UserMessage)!,
