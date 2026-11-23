@@ -3659,7 +3659,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. An id the official registry cannot resolve (absent, as on an
+  install plan. The server name follows the additions record's own rule, which
+  the card applies too (`template_mcp_additions._check_server`: letters, digits,
+  `.`, `_`, `-` and a `:` inside the name, up to 64 characters), so a name with
+  `/` or `@` is refused with a reason that says it cannot be added to an agent
+  template. A name with `:` must be one the user's own MCP config declares and
+  no installed app mints (`template_server_request._users_own_server`), else
+  `400 app_server`: an app's `<app>:<server>` key lives in the rendered spec,
+  and a template's copy would not follow the app's own install. An id the
+  official registry cannot resolve (absent, as on an
   edition that withholds it, or lacking the id) but the edition package
   registry holds (`mcp_discover.edition_package_detail`, the `capability`
   provider) is refused `edition_package`: that registry installs through the
