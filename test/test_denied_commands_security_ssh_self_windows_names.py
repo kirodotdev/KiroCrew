@@ -20,17 +20,19 @@ pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
 _RULE = "sandbox-escape-ssh-self"
 
+_FAKE_OWN_HOST = "kc-test-host"
+
 
 @pytest.fixture(autouse=True)
 def _pin_own_host_cache(request, _floor_monkeypatch):
-    # Same pin as ``TestSandboxEscapeSshSelf``: a fixed own-host set with the
-    # resolved-once latch set (no resolver thread) and a "not self" DNS
-    # verdict, so remote allow cases never resolve a real name.
+    # A fixed fake own-host name (never the real machine's, which could equal
+    # a remote allow case such as ``buildbox``), the resolved-once latch set
+    # (no resolver thread) and a "not self" DNS verdict, so remote allow cases
+    # never resolve a real name.
     own_mp = pytest.MonkeyPatch()
     request.addfinalizer(own_mp.undo)
-    own = security.socket.gethostname().strip().lower()
-    pinned = frozenset(name for name in {own, own.split(".", 1)[0]} if name)
-    _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+    own_mp.setattr(security.socket, "gethostname", lambda: _FAKE_OWN_HOST)
+    _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({_FAKE_OWN_HOST}))
     _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
     _floor_monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
     own_mp.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
@@ -51,8 +53,20 @@ def _pin_own_host_cache(request, _floor_monkeypatch):
         "scp f.txt $env:COMPUTERNAME:/tmp/f.txt",
         "sftp $env:computername",
         "rsync -av src/ %COMPUTERNAME%:/dst/",
+        # OpenSSH reads the host after the LAST ``@`` of userinfo.
+        "ssh $env:USERNAME@$env:COMPUTERNAME id",
+        "ssh %USERNAME%@%COMPUTERNAME% id",
+        "ssh user:pw@%COMPUTERNAME% id",
+        "scp f.txt $env:USERNAME@$env:COMPUTERNAME:/tmp/f.txt",
+        # A URI authority is a host: ssh://[user@]HOST[:port].
+        "ssh ssh://%COMPUTERNAME% id",
+        "ssh ssh://user@$env:COMPUTERNAME:22 id",
+        "ssh ssh://${env:COMPUTERNAME}.corp.example.com id",
+        "scp f.txt scp://%COMPUTERNAME%/tmp/f.txt",
+        "sftp sftp://user@%COMPUTERNAME%",
         # The bash spellings stay refused.
         "ssh $hostname id",
+        "scp -r $HOSTNAME backup:/archives/",
         "ssh user@$hostname id",
         "ssh $(hostname) id",
     ],
@@ -92,6 +106,12 @@ def test_other_hosts_and_variables_stay_allowed(cmd):
         "scp build.zip deploy@backup:/drops/ci@%COMPUTERNAME%.zip",
         "scp app.log backup:/logs/app@$HOSTNAME.log",
         "rsync -av backup:/srv/snapshots/ ./snap@$HOSTNAME.d/",
+        # For scp and rsync an operand with no ``host:`` colon is a local path.
+        "scp -r $env:COMPUTERNAME backup:/archives/",
+        "scp -r ${env:COMPUTERNAME} backup:/archives/",
+        "scp -r %COMPUTERNAME% backup:/archives/",
+        "rsync -av backup:/srv/snapshots/ %COMPUTERNAME%",
+        "rsync -av backup:/srv/snapshots/ $env:COMPUTERNAME",
     ],
 )
 def test_a_machine_named_file_or_remote_path_is_not_this_host(cmd):
@@ -100,3 +120,17 @@ def test_a_machine_named_file_or_remote_path_is_not_this_host(cmd):
 
 def test_a_dotted_name_before_a_path_colon_is_this_host():
     assert _denied_by("scp f.txt %COMPUTERNAME%.corp.example.com:/tmp/f.txt") == _RULE
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The scp/rsync local-path reading does not reach command values: these
+        # match main's refusal of the same lines spelled with $HOSTNAME.
+        'ssh -o "ProxyCommand=nc %COMPUTERNAME% 22" buildbox',
+        'ssh -o "LocalCommand=echo connected from %COMPUTERNAME%" buildbox',
+        "ssh -F %COMPUTERNAME%.ssh_config buildbox",
+    ],
+)
+def test_a_windows_name_in_an_ssh_option_value_stays_refused(cmd):
+    assert _denied_by(cmd) == _RULE, cmd

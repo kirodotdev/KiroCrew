@@ -143,10 +143,62 @@ def _brace_expansions(token: str) -> "list[str] | None":
 _LITERAL_HOSTS = contextvars.ContextVar("ssh_floor_literal_hosts", default=False)
 
 
+_URI_SCHEMES: tuple[str, ...] = ("ssh://", "scp://", "sftp://", "rsync://")
+
+
+def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) -> bool:
+    """True if a Windows own-name spelling sits where *t* names a host.
+
+    It counts whole (``$env:computername``), after userinfo (``user@``, and
+    after the LAST ``@`` when userinfo holds a colon: ``user:pw@``), as a URI
+    authority (``ssh://[user@]host[:port]``), before a path colon, or dotted in
+    host position (``$env:computername.corp``).  A dotted word elsewhere is a
+    local file (``%computername%.log``); an ``@`` after a ``:`` or ``/`` is
+    remote-path data (``backup:/logs/a@%computername%.log``); and an scp/rsync
+    *file_operand* with no colon is a local path (``scp -r %computername% far:``).
+    """
+    # PowerShell's ``$env:`` colon is part of the variable, never a host colon.
+    if file_operand and ":" not in t.replace("env:", ""):
+        return False
+    spellings = [t]
+    user, at, rest = t.partition("@")
+    if at and not {":", "/"} & set(user.replace("env:", "")):
+        spellings.append(rest)
+    if at and "/" not in t:
+        spellings.append(t.rsplit("@", 1)[1])
+    authority = ""
+    for scheme in _URI_SCHEMES:
+        if t.startswith(scheme):
+            authority = t[len(scheme) :].split("/", 1)[0].rsplit("@", 1)[-1]
+    for var in _HOSTNAME_VARIABLE_FORMS:
+        if "hostname" in var:
+            continue
+        if authority.startswith(var) and authority[len(var) : len(var) + 1] in ("", ":", "."):
+            return True
+        for spelling in spellings:
+            if not spelling.startswith(var):
+                continue
+            tail = spelling[len(var) :]
+            if tail == "" or tail.startswith(":"):
+                return True
+            if tail.startswith(".") and (host_position or ":" in tail):
+                return True
+    return False
+
+
 def _operand_targets_self(
-    operand: str, *, host_position: bool = True, dns: bool = True, match_globs: bool = True
+    operand: str,
+    *,
+    host_position: bool = True,
+    dns: bool = True,
+    match_globs: bool = True,
+    file_operand: bool = False,
 ) -> bool:
     """True if *operand* names THIS machine as a connection target.
+
+    ``file_operand=True`` marks an scp/rsync file operand, which is a local
+    path unless it carries a ``host:`` colon (applied to the Windows own-name
+    spellings only, see ``_windows_name_is_host``).
 
     ``dns=False`` passes ``dns_fallback=False`` to every host check (no
     hosts-file or DNS alias verdict, no unread-address-table window), for a
@@ -191,29 +243,21 @@ def _operand_targets_self(
     # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
     cut = _cut_at_operator(t)
     if cut != t and _operand_targets_self(
-        cut, host_position=host_position, dns=dns, match_globs=match_globs
+        cut,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
             return True
-    # The Windows spellings are read as a host where an operand can be one: whole
-    # (``$env:computername``), after userinfo (``user@%computername%``), before a
-    # path colon, or dotted in host position (``$env:computername.corp``). A dotted
-    # operand elsewhere is a local file (``%computername%.log``) and a ``@`` after a
-    # ``:`` or ``/`` is remote-path data (``backup:/logs/a@%computername%.log``).
-    user, at, rest = t.partition("@")
-    spellings = (t, rest) if at and not {":", "/"} & set(user) else (t,)
     for var in _HOSTNAME_VARIABLE_FORMS:
-        bash_form = "hostname" in var
-        for spelling in spellings[:1] if bash_form else spellings:
-            tail = spelling[len(var) :] if spelling.startswith(var) else None
-            if tail is None:
-                continue
-            if tail == "" or tail.startswith(":"):
-                return True
-            if tail.startswith(".") and (bash_form or host_position or ":" in tail):
-                return True
+        if "hostname" in var and (t == var or t.startswith(var + ".") or t.startswith(var + ":")):
+            return True
+    if _windows_name_is_host(t, host_position=host_position, file_operand=file_operand):
+        return True
     # An expansion's embedded default is the destination when the variable is
     # unset — check every ``${…:-word}``-style word (recursion terminates:
     # the word is strictly shorter than the operand).  Kept alongside the
@@ -222,7 +266,11 @@ def _operand_targets_self(
     # the resolved whole is not.
     for match in _EXPANSION_DEFAULT_RE.finditer(t):
         if _operand_targets_self(
-            match.group(1), host_position=host_position, dns=dns, match_globs=match_globs
+            match.group(1),
+            host_position=host_position,
+            dns=dns,
+            match_globs=match_globs,
+            file_operand=file_operand,
         ):
             return True
     # Bash substitutes a parameter default INTO the surrounding
@@ -234,7 +282,11 @@ def _operand_targets_self(
     # string with no such form left, so it does not recurse here again.
     resolved = _resolve_param_defaults(t)
     if resolved != t and _operand_targets_self(
-        resolved, host_position=host_position, dns=dns, match_globs=match_globs
+        resolved,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     # A single integer literal inside arithmetic expansion is
@@ -245,7 +297,11 @@ def _operand_targets_self(
     # so the recursion is a single level.
     normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
     if normalized != t and _operand_targets_self(
-        normalized, host_position=host_position, dns=dns, match_globs=match_globs
+        normalized,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     # An arithmetic expansion that SURVIVED normalization is an
@@ -270,11 +326,15 @@ def _operand_targets_self(
         return True
     for choice in choices:
         if choice != t and _operand_targets_self(
-            choice, host_position=host_position, dns=dns, match_globs=match_globs
+            choice,
+            host_position=host_position,
+            dns=dns,
+            match_globs=match_globs,
+            file_operand=file_operand,
         ):
             return True
     scheme_seen = False
-    for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
+    for scheme in _URI_SCHEMES:
         if t.startswith(scheme):
             # Isolate the URI authority before any path, so an ``@`` or ``:``
             # in the remote path cannot masquerade as userinfo or a port.
