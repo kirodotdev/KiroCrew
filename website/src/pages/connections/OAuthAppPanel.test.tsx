@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* ── api client mock ───────────────────────────────────────────────────────
@@ -225,6 +225,35 @@ describe('OAuthAppPanel — saving a client', () => {
     fireEvent.click(save)
     await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1))
     expect(saveMock).toHaveBeenCalledWith('github', { client_secret: 's3cret' })
+  })
+
+  it('keeps a secret typed while the save was in flight', async () => {
+    let release: (v: unknown) => void = () => {}
+    saveMock.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    await mount([github({ client_id: 'abc', client_id_source: 'config' })])
+    const gh = cardFor('github')
+    fireEvent.change(within(gh).getByLabelText('Client secret'), { target: { value: 'first-secret' } })
+    fireEvent.click(within(gh).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('github', { client_id: 'abc', client_secret: 'first-secret' }))
+    fireEvent.change(within(gh).getByLabelText('Client secret'), { target: { value: 'second-secret' } })
+    // The refetch after the save reports the first secret as stored.
+    listMock.mockResolvedValue(listResponse([github({ client_id: 'abc', client_id_source: 'config', client_secret_set: true, client_secret_source: 'vault', configured: true })]))
+    await act(async () => { release({ ok: true, client: null }) })
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    await within(gh).findByText('Configured')
+    expect(within(gh).getByLabelText('Client secret')).toHaveValue('second-secret')
+    expect(within(gh).getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it('clears the sent secret back to its stored state when the save lands', async () => {
+    await mount([github({ client_id: 'abc', client_id_source: 'config' })])
+    const gh = cardFor('github')
+    fireEvent.change(within(gh).getByLabelText('Client secret'), { target: { value: 's3cret' } })
+    listMock.mockResolvedValue(listResponse([github({ client_id: 'abc', client_id_source: 'config', client_secret_set: true, client_secret_source: 'vault', configured: true })]))
+    fireEvent.click(within(gh).getByRole('button', { name: 'Save' }))
+    await within(gh).findByText('Configured')
+    expect(within(gh).queryByLabelText('Client secret')).not.toBeInTheDocument()
+    expect(within(gh).getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('sends id and secret together when both changed', async () => {
