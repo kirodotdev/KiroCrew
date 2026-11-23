@@ -175,6 +175,26 @@ class TestUntrackedCollisionReplacements:
 
         assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
 
+    def test_an_untracked_symlink_to_a_directory_inside_it_is_still_named(self, tmp_path):
+        # Both symlink tests are listed in test/requires-real-symlinks.txt: git tracks
+        # a real link as a blob, and a junction is not one.
+        repo, target = self._repo(tmp_path, self._make_dir, self._dir_to_file)
+        (tmp_path / "elsewhere").mkdir()
+        (tmp_path / "d" / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
+
+    def test_a_tracked_symlink_to_a_directory_the_target_deletes_is_not_named(self, tmp_path):
+        def make_dir_with_link(root):
+            self._make_dir(root)
+            (root / "elsewhere").mkdir()
+            (root / "elsewhere" / "kept.txt").write_text("tracked")
+            (root / "d" / "link").symlink_to(root / "elsewhere", target_is_directory=True)
+
+        repo, target = self._repo(tmp_path, make_dir_with_link, self._dir_to_file)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == []
+
     @staticmethod
     def _case_rename(root):
         (root / "foo.md").rename(root / "Foo.md")
@@ -190,7 +210,7 @@ class TestUntrackedCollisionReplacements:
         repo, target = self._repo(tmp_path, self._make_foo, self._case_rename)
         # What a case-insensitive filesystem answers: the added spelling is the file
         # the reset deletes.
-        monkeypatch.setattr(os.path, "samefile", lambda a, b: True)
+        monkeypatch.setattr(os.path, "samestat", lambda a, b: True)
         (tmp_path / "Foo.md").write_text("same file under the other spelling")
 
         assert _untracked_collisions(repo, target, dict(os.environ)) == []
@@ -201,6 +221,21 @@ class TestUntrackedCollisionReplacements:
         (tmp_path / "Foo.md").write_text("mine, a different file on a case-sensitive disk")
 
         assert _untracked_collisions(repo, target, dict(os.environ)) == ["Foo.md"]
+
+    def test_an_untracked_case_twin_of_a_tracked_directory_link_is_still_named(self, tmp_path):
+        _require_case_sensitive_disk(tmp_path)
+
+        def make_dir_with_link(root):
+            self._make_dir(root)
+            (root / "elsewhere").mkdir()
+            (root / "elsewhere" / "kept.txt").write_text("tracked")
+            (root / "d" / "link").symlink_to(root / "elsewhere", target_is_directory=True)
+
+        repo, target = self._repo(tmp_path, make_dir_with_link, self._dir_to_file)
+        # Same target as the tracked link, so only the two entries themselves tell them apart.
+        (tmp_path / "d" / "Link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
 
 
 class TestApplyingRecord:
