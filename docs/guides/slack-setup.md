@@ -36,10 +36,10 @@ Both paths require a Slack workspace where you can install apps (see [Prerequisi
 Open the dashboard → **Settings → Messaging Channels → Slack**. Click **Setup wizard** at the top of the panel to open the setup wizard; it never opens by itself, and **Close** hides it on any step. The panel's own **Copy manifest YAML** and setup-guide link stay available below it. It runs Path A one screen at a time, each with a picture of where to click in Slack:
 
 1. **Workspace**: confirm you have a workspace you may install apps in.
-2. **Create**: type a short name (usually your username), click **Create Slack app**, pick the workspace in Slack and click **Create**, then **I created the app**. The app is named `KiroCrew-<name>` and its slash command `/kirocrew-<name>`, so it does not clash with anyone else's; the wizard saves that command as `slack.command`.
+2. **Create**: type a short name (usually your username; the field keeps it lowercase and at most 22 characters, the room Slack leaves in the slash command), click **Create Slack app**, pick the workspace in Slack and click **Create**, then **I created the app**. The app is named `KiroCrew-<name>` and its slash command `/kirocrew-<name>`, so it does not clash with anyone else's; the wizard saves that command as `slack.command`.
 3. **Bot token**: install the app (**OAuth & Permissions → Install to Workspace**) and paste the `xoxb-` token. In a company workspace the button may read **Request to Install**: an admin approves the app first.
 4. **App-level token**: the wizard links the app's **Basic Information** page; generate a token with `connections:write` and paste the `xapp-` token.
-5. **Owner**: paste your Slack member ID. The wizard saves it and runs **Reconnect**; no gateway restart.
+5. **Owner**: click **Claim in Slack**, send the bot any direct message within 10 minutes, and click **This is me** on your message; the wizard moves on once the bot is connected. Pasting your Slack member ID is the fallback: the wizard saves it and runs **Reconnect**, no gateway restart, unless the gateway already runs with a different owner. Reconnect cannot change the owner, so the step then says to restart the gateway. If Slack rejects the saved tokens, the step says to go Back to step 3 and paste them again.
 6. **Test**: open the bot's DM from the wizard, send any message, and confirm you got a reply.
 
 The settings are written only from the machine running the gateway; a remote dashboard sees the steps as text.
