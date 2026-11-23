@@ -761,6 +761,9 @@ class AcpRuntime:
         # (``RuntimeOwnership.release``): set by a shared codex placement, whose
         # departed sessions leave their MCP fleet running; False everywhere else.
         self.chat_closes_on_departure = False
+        # Whether a subagent session has left this process (``AcpSessionProvider``'s
+        # subagent teardown); the subagent sharing decision reads it.
+        self.subagent_departed = False
         # The server path from kiro-cli's ``failed to canonicalize KAS server path``
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.
