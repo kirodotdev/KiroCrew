@@ -34,6 +34,7 @@ from kiro_crew.cli_server_peer import (
 )
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.gateway_lock import LockHolder, LockProbeError, lock_holder
+from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.port_resolution import _basename_stem, _is_kirocrew_process, resolve_client_port
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
@@ -103,6 +104,39 @@ def _request_gateway_shutdown(port: int) -> bool:
     ):
         return False
     return bool(isinstance(payload, dict) and payload.get("ok") and payload.get("shutting_down"))
+
+
+def _wait_for_pids_exit(pids: list[int], timeout: float) -> list[int]:
+    """Block until every pid in *pids* is gone. Return the ones still alive.
+
+    An empty return means they all exited. :func:`_restart` uses this to keep a
+    replacement gateway from starting while the incumbent is still shutting down.
+
+    The incumbent holds an exclusive ``flock`` on ``<KIROCREW_HOME>/gateway.lock``
+    (see :mod:`kiro_crew.gateway_lock`) for its whole lifetime, and the release
+    happens only after ``asyncio.run(_gateway(...))`` returns — so the lock
+    outlives dashboard teardown, cron-scheduler stop, conversation-log flushes,
+    and MCP child reaping. The replacement's acquire is a single non-blocking
+    attempt that prints a refusal and exits 1, so spawning it too early leaves NO
+    gateway running at all. ``_stop`` reports nothing back, which is why restart
+    does its own bounded wait; ``_stop`` itself uses this on Windows to give a
+    gateway that accepted the authenticated shutdown time to finish it.
+
+    Pid reuse is possible but fails SAFE: the caller classifies the pids as
+    Kiro Crew gateways once, before the stop, and a pid recycled onto an unrelated
+    process only makes this wait time out. That produces a loud refusal, never a
+    premature "the incumbent is gone" all-clear. Re-classifying inside the loop
+    would invert that -- a recycled pid would read as "not a gateway" and let the
+    replacement spawn while the real incumbent still holds the lock.
+    """
+    if not pids:
+        return []
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = [p for p in pids if not _pid_exited(p)]
+        if not alive or time.monotonic() >= deadline:
+            return alive
+        time.sleep(0.1)
 
 
 def _report_authenticated_shutdown(port: int, reason: str = "listener_lookup_empty") -> bool:
@@ -742,12 +776,35 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         )
         sys.exit(1)
 
+    graceful: list[int] = []
+    if platform_compat.IS_WINDOWS and _request_gateway_shutdown(port):
+        # Windows has no SIGTERM, and `taskkill /T /F` ends the gateway before
+        # its own shutdown sequence (state flush, child reaping) can run. So ask
+        # it to stop itself first, the order the desktop app's stop also uses,
+        # and wait as long as a service manager would before its hard kill.
+        # Only the pids still alive after that fall through to the tree kill.
+        alive = _wait_for_pids_exit(pids, TOTAL_SHUTDOWN_BUDGET_SECS)
+        graceful = [p for p in pids if p not in alive]
+        pids = alive
+        if graceful:
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_stop",
+                outcome="allowed",
+                source="cli",
+                resources=f"pids={sorted(graceful)} port={port} via=api reason=windows_found_listener",
+            )
+            print(
+                f"✅ Requested graceful shutdown from gateway on port {port} "
+                f"(pid {', '.join(str(p) for p in sorted(graceful))})."
+            )
+
     sent: set[int] = set()
     denied: list[int] = []
     for pid in pids:
         if platform_compat.IS_WINDOWS:
-            # No POSIX signals or graceful shutdown for a detached console-less
-            # gateway: kill_process_tree uses `taskkill /T /F` so the gateway's
+            # A gateway that refused or outlived the authenticated shutdown
+            # above: kill_process_tree uses `taskkill /T /F` so the gateway's
             # detached kiro-cli / MCP-server children are reaped too (a single-PID
             # kill_pid would orphan them). kill_process_tree raises
             # ProcessLookupError / PermissionError / OSError on non-zero
@@ -781,15 +838,17 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
                 break
 
     if sent:
+        _via = "tree_kill" if platform_compat.IS_WINDOWS else "signal"
         sel().log_api_access(
             caller="cli",
             operation="gateway_stop",
             outcome="allowed",
             source="cli",
-            resources=f"pids={sorted(sent)} port={port}",
+            resources=f"pids={sorted(sent)} port={port} via={_via}",
         )
         _verb = "Terminated" if platform_compat.IS_WINDOWS else "Sent SIGTERM to"
         print(f"✅ {_verb} gateway (pid {', '.join(str(p) for p in sorted(sent))}).")
+    if sent or graceful:
         _stop_mcp_gateway_daemon()
     if denied:
         sel().log_api_access(
@@ -808,7 +867,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         )
         print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
         sys.exit(1)
-    if not sent:
+    if not sent and not graceful:
         sel().log_api_access(
             caller="cli",
             operation="gateway_stop",

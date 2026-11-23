@@ -35,7 +35,6 @@ from kiro_crew.cli_server_peer import (
 from kiro_crew.cli_server_stop import (
     _config_dir_owner,
     _force_stop_command,
-    _pid_exited,
     _refuse_desktop_supervised,
     _refuse_if_lock_held,
     _refuse_lock_holder,
@@ -44,6 +43,7 @@ from kiro_crew.cli_server_stop import (
     _stop,
     _terminal_safe_name,
     _verified_loopback_gateway_pids,
+    _wait_for_pids_exit,
 )
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir, read_local_secret
@@ -63,38 +63,6 @@ from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
-
-
-def _wait_for_pids_exit(pids: list[int], timeout: float) -> list[int]:
-    """Block until every pid in *pids* is gone. Return the ones still alive.
-
-    An empty return means they all exited. :func:`_restart` uses this to keep a
-    replacement gateway from starting while the incumbent is still shutting down.
-
-    The incumbent holds an exclusive ``flock`` on ``<KIROCREW_HOME>/gateway.lock``
-    (see :mod:`kiro_crew.gateway_lock`) for its whole lifetime, and the release
-    happens only after ``asyncio.run(_gateway(...))`` returns — so the lock
-    outlives dashboard teardown, cron-scheduler stop, conversation-log flushes,
-    and MCP child reaping. The replacement's acquire is a single non-blocking
-    attempt that prints a refusal and exits 1, so spawning it too early leaves NO
-    gateway running at all. ``_stop`` waits at most 1s and reports nothing back,
-    which is why restart does its own bounded wait.
-
-    Pid reuse is possible but fails SAFE: the caller classifies the pids as
-    Kiro Crew gateways once, before the stop, and a pid recycled onto an unrelated
-    process only makes this wait time out. That produces a loud refusal, never a
-    premature "the incumbent is gone" all-clear. Re-classifying inside the loop
-    would invert that -- a recycled pid would read as "not a gateway" and let the
-    replacement spawn while the real incumbent still holds the lock.
-    """
-    if not pids:
-        return []
-    deadline = time.monotonic() + timeout
-    while True:
-        alive = [p for p in pids if not _pid_exited(p)]
-        if not alive or time.monotonic() >= deadline:
-            return alive
-        time.sleep(0.1)
 
 
 def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> list[int]:

@@ -2594,12 +2594,21 @@ Without `--expect-pid` the command is unchanged:
    filter named no incumbent, it resolves the answering pid BEFORE the stop
    (afterwards the identity is gone) and waits for it, since who must release the
    port before a replacement can bind is answered by who answered, not by argv.
-4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX; `taskkill /T /F`
-   (via `platform_compat.kill_process_tree`) on Windows so the gateway's detached
-   children are reaped too. Liveness is probed with `platform_compat.pid_exists`
-   (a raw `os.kill(pid, 0)` would *terminate* the process on Windows).
-5. Waits up to 1s for exit.
-6. SEL audit event logged.
+4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX. Windows has no
+   SIGTERM, and `taskkill /T /F` skips the gateway's own shutdown sequence, so
+   there `_stop` first sends the authenticated `POST /api/shutdown` (the same
+   `_request_gateway_shutdown` as the empty-lookup arm) and waits up to
+   `gateway_shutdown_budget.TOTAL_SHUTDOWN_BUDGET_SECS` for the verified pids to
+   exit (`_wait_for_pids_exit`). Pids that exited are reported as
+   `Requested graceful shutdown ... (pid N)` with SEL
+   `via=api reason=windows_found_listener`. A refused request or a pid still
+   alive after the wait gets `taskkill /T /F` (via
+   `platform_compat.kill_process_tree`) so the gateway's detached children are
+   reaped too. Liveness is probed with `platform_compat.pid_exists` (a raw
+   `os.kill(pid, 0)` would *terminate* the process on Windows).
+5. Waits up to 1s for a signalled or tree-killed pid to exit.
+6. SEL audit event logged; a signal or tree kill records `via=signal` or
+   `via=tree_kill`.
 
 ## Restart Command
 

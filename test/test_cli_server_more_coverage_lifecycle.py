@@ -375,6 +375,73 @@ class TestStopOnWindows:
         # flake-ok: pre-existing time.sleep stub moved verbatim; the stop path's exit poll returns at once and no test waits on real time
         # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing time.sleep stub moved verbatim so the stop path's exit poll returns at once
         monkeypatch.setattr("time.sleep", lambda s: None)
+        monkeypatch.setattr(cli_server, "_request_gateway_shutdown", lambda port: False)
+
+    def _record_order(self, monkeypatch, *, accepted: bool, alive_after: list[int]) -> list:
+        calls: list = []
+
+        def request(port):
+            calls.append(("graceful", port))
+            return accepted
+
+        def wait(pids, timeout):
+            calls.append(("wait", list(pids), timeout))
+            return list(alive_after)
+
+        monkeypatch.setattr(cli_server, "_request_gateway_shutdown", request)
+        monkeypatch.setattr(cli_server, "_wait_for_pids_exit", wait)
+        monkeypatch.setattr(
+            platform_compat, "kill_process_tree", lambda pid, sig: calls.append(("kill", pid))
+        )
+        monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", lambda: calls.append("daemon"))
+        return calls
+
+    def test_an_accepted_shutdown_that_exits_in_time_is_never_tree_killed(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+
+        calls = self._record_order(monkeypatch, accepted=True, alive_after=[])
+        cli_server._stop(None)
+        assert calls == [
+            ("graceful", 5476),
+            ("wait", [4242], TOTAL_SHUTDOWN_BUDGET_SECS),
+            "daemon",
+        ]
+        out = capsys.readouterr().out
+        assert "Requested graceful shutdown from gateway on port 5476 (pid 4242)" in out
+        assert "Terminated" not in out
+        assert sel_rec.calls[-1]["outcome"] == "allowed"
+        assert "via=api reason=windows_found_listener" in sel_rec.calls[-1]["resources"]
+
+    def test_a_gateway_that_outlives_the_bound_is_tree_killed_after_the_wait(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        calls = self._record_order(monkeypatch, accepted=True, alive_after=[4242])
+        cli_server._stop(None)
+        assert [c[0] if isinstance(c, tuple) else c for c in calls] == [
+            "graceful",
+            "wait",
+            "kill",
+            "daemon",
+        ]
+        assert "Terminated gateway (pid 4242)" in capsys.readouterr().out
+        assert "via=tree_kill" in sel_rec.calls[-1]["resources"]
+
+    def test_a_refused_shutdown_goes_straight_to_the_tree_kill(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        calls = self._record_order(monkeypatch, accepted=False, alive_after=[4242])
+        cli_server._stop(None)
+        assert calls == [("graceful", 5476), ("kill", 4242), "daemon"]
+
+    def test_posix_signals_without_asking_the_api_first(self, monkeypatch, sel_rec) -> None:
+        calls = self._record_order(monkeypatch, accepted=True, alive_after=[])
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("signal", pid)))
+        cli_server._stop(None)
+        assert calls == [("signal", 4242), "daemon"]
+        assert "via=signal" in sel_rec.calls[-1]["resources"]
 
     def test_tree_kill_reports_terminated(self, monkeypatch, sel_rec, capsys) -> None:
         seen: list[int] = []
