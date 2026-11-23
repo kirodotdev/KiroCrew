@@ -3089,7 +3089,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream (owner only) |
 | GET | `/api/apps/{name}` | Get app details, including cached `update` state |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
-| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only) |
+| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only). A GET carries the file's `ETag`, and a PUT with `If-Match` is written only while the file still has that tag, else 412 `config_changed` |
 | POST | `/api/apps/{name}/update` | Update installed app (owner only) |
 | POST | `/api/apps/{name}/uninstall` | Uninstall app (owner only) |
 | POST | `/api/apps/{name}/enable` | Enable app (owner only) |
