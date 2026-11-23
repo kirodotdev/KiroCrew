@@ -302,9 +302,16 @@ or fix what their row says, first.
   that."
 - **Changes apply to the next event.** Removing someone, or turning the switch
   off, stops their next message, including one already waiting in the Slack
-  queue (one already queued on a linked dashboard chat still runs). A
-  `kirocrew config` edit applies once the gateway reads it, within a couple of
-  seconds. If another `slack.*` setting in `config.json` is broken the gateway
+  queue (one already queued on a linked dashboard chat still runs). No restart
+  is needed. Edit the list with `kirocrew config set` or `kirocrew config edit`,
+  and the gateway applies it within a couple of seconds. On Linux, a hand edit of
+  `config.json` (any other editor) is held for review and is **not** in effect
+  until you apply it. When the edit changes Slack settings, the gateway logs a
+  warning and the bell shows a note listing the changed keys. Run
+  `kirocrew config pending` to review every change; it prints the
+  `kirocrew config pending apply config.json <signature>` command that applies
+  them. A restart does not apply a held edit.
+  If another `slack.*` setting in `config.json` is broken the gateway
   cannot apply the change, and the settings page says so instead of reporting it
   done.
 - **Audit.** Every admission and refusal is written to the security event log
