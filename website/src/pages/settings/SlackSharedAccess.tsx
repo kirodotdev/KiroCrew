@@ -79,8 +79,11 @@ function unreadNames(e: unknown): string[] {
   }
 }
 
+/** The config key that turns Slack's check of each listed ID on. */
+const VERIFY_KEY = 'slack.shared_access.verify_with_slack'
+
 /** What the owner must read before sharing, shown on the page and in the confirm. */
-function SharedAccessWarning({ id }: { id?: string }) {
+function SharedAccessWarning({ id, unchecked }: { id?: string, unchecked: boolean }) {
   return (
     <div id={id} role="note" className="flex items-start gap-2 px-3 py-2 my-2 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
       <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
@@ -101,6 +104,9 @@ function SharedAccessWarning({ id }: { id?: string }) {
               ),
             )}
           </li>
+          {unchecked && (
+            <li>{i18nT('pages.settings.slackSharedAccess.warning_not_checked', { key: VERIFY_KEY })}</li>
+          )}
           <li>{i18nT('pages.settings.slackSharedAccess.warning_trust')}</li>
         </ul>
       </div>
@@ -127,6 +133,9 @@ function SharedUserRow({ user, readOnly, sharing, onRemove, removing }: {
       <span className="min-w-0 flex-1">
         {user.name && <span className="font-semibold text-text">{user.name}</span>}
         <span className="ml-2 font-mono text-[12px] text-muted break-all">{user.user_id}</span>
+        {user.confirmed && user.reason === 'listed' && (
+          <span className="block text-[12px] text-muted">{i18nT('pages.settings.slackSharedAccess.reason_listed')}</span>
+        )}
         {!user.confirmed && checkFailed(user.reason) && (
           /* No hand-off: the member-ID draft and the Slack settings form around it
              are unsaved; a hand-off to the chat unmounts this panel and loses them. */
@@ -256,6 +265,8 @@ export function SlackSharedAccess() {
   const granted = users.filter(u => u.confirmed)
   const refused = others.filter(u => !u.confirmed)
   const ro = data.read_only !== false
+  // An older gateway sends no flag and always checks with Slack.
+  const unchecked = data.verify_with_slack === false
   const busy = rechecking || switchMut.isPending || addMut.isPending || removeMut.isPending
   const switchHintText = {
     '': '',
@@ -293,7 +304,7 @@ export function SlackSharedAccess() {
             <ul className="list-disc pl-4 text-[13px]" aria-label={i18nT('pages.settings.slackSharedAccess.people_label')}>
               {granted.map(u => <li key={u.user_id}>{u.name || u.user_id}</li>)}
             </ul>
-            <SharedAccessWarning />
+            <SharedAccessWarning unchecked={unchecked} />
           </>
         ),
         confirmLabel: i18nT('pages.settings.slackSharedAccess.confirm_label', { count: granted.length }),
@@ -347,16 +358,18 @@ export function SlackSharedAccess() {
         describedBy="slack-shared-access-warning"
       />
       {/* Said at the switch in both states, so a list under the always-on warning never reads as a live grant. */}
-      <div className="text-[12px] text-text">{i18nT(data.enabled
-        ? 'pages.settings.slackSharedAccess.on_note'
-        : 'pages.settings.slackSharedAccess.off_note')}</div>
+      <div className="text-[12px] text-text">{i18nT(!data.enabled
+        ? 'pages.settings.slackSharedAccess.off_note'
+        : unchecked
+          ? 'pages.settings.slackSharedAccess.on_note_listed'
+          : 'pages.settings.slackSharedAccess.on_note')}</div>
       {switchHintText && <div role="status" className="text-[12px] text-warn-text">{switchHintText}</div>}
       {notApplied && (
         /* No hand-off: the member-ID draft and the Slack settings form around it
            are unsaved; a hand-off to the chat unmounts this panel and loses them. */
         <ErrorNotice variant="inline" messagePlacement="below" title={notApplied.stateNow} message={notApplied.detail} />
       )}
-      <SharedAccessWarning id="slack-shared-access-warning" />
+      <SharedAccessWarning id="slack-shared-access-warning" unchecked={unchecked} />
       {/* A remote session changes nothing here, so the owner-only line has nothing to say. */}
       {!ro && <div className="text-[12px] text-muted mb-2">{i18nT('pages.settings.slackSharedAccess.owner_only')}</div>}
       {/* The label changes with the switch; a `key:` highlight link finds this list by its config key. */}

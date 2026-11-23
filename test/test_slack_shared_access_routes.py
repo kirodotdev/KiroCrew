@@ -113,7 +113,12 @@ def _stored(env: dict[str, Any]) -> dict:
 def test_it_reads_off_and_empty(env: dict) -> None:
     status, body = _call(env, "GET", "/api/slack/shared-access")
     assert status == 200
-    assert body == {"enabled": False, "users": [], "read_only": False}
+    assert body == {
+        "enabled": False,
+        "verify_with_slack": False,
+        "users": [],
+        "read_only": False,
+    }
 
 
 def test_turning_it_on_needs_the_confirm(env: dict) -> None:
@@ -149,7 +154,14 @@ def test_a_remote_session_reads_but_cannot_write(env: dict) -> None:
     assert status == 403 and _stored(env) == {}
 
 
-def test_an_add_is_kept_only_once_slack_confirms_it(env: dict) -> None:
+def _verify_with_slack(env: dict) -> None:
+    """Turn ``slack.shared_access.verify_with_slack`` on in config.json."""
+    section = {"shared_access": {"verify_with_slack": True}}
+    env["cfg"].write_text(json.dumps({"slack": section}), encoding="utf-8")
+
+
+def test_with_verify_an_add_is_kept_only_once_slack_confirms_it(env: dict) -> None:
+    _verify_with_slack(env)
     status, body = _call(env, "POST", "/api/slack/shared-access/users", {"user_id": FRIEND})
     assert status == 200 and body["user"]["name"] == "Friend Person"
     assert _stored(env)["user_ids"] == [FRIEND]
@@ -242,7 +254,7 @@ def test_the_page_shows_the_live_grant_after_an_unapplied_removal(
     from types import SimpleNamespace
 
     _call(env, "POST", "/api/slack/shared-access/users", {"user_id": FRIEND})
-    live = SimpleNamespace(enabled=True, user_ids=[FRIEND])
+    live = SimpleNamespace(enabled=True, user_ids=[FRIEND], verify_with_slack=False)
     monkeypatch.setattr(mod, "_live_shared", lambda: live)
     status, _ = _call(env, "DELETE", f"/api/slack/shared-access/users/{FRIEND}")
     assert status == 409 and _stored(env)["user_ids"] == []  # saved, not applied
@@ -258,3 +270,38 @@ def test_a_check_with_other_credentials_never_admits_anyone(env: dict) -> None:
     status, body = _call(env, "POST", "/api/slack/shared-access/users", {"user_id": FRIEND})
     assert status == 200 and body["user"]["confirmed"] is True
     assert shared_access._verdicts.get(FRIEND) is None
+
+
+def test_without_verify_an_add_is_kept_on_the_list_alone(env: dict) -> None:
+    asked: list[str] = []
+
+    async def _never(user: str) -> dict[str, Any]:
+        asked.append(user)
+        raise AssertionError("users.info must not be called")
+
+    env["web"].users_info = _never
+    for user_id in (FRIEND, "UBOT000001", "UNOBODY001"):
+        status, body = _call(env, "POST", "/api/slack/shared-access/users", {"user_id": user_id})
+        assert status == 200 and body["user"]["reason"] == shared_access.REASON_LISTED, user_id
+    for user_id, code in (
+        (OWNER, shared_access.REASON_OWNER),
+        ("B123", shared_access.REASON_MALFORMED),
+    ):
+        status, body = _call(env, "POST", "/api/slack/shared-access/users", {"user_id": user_id})
+        assert status == 400 and body["code"] == code, user_id
+    assert asked == []
+    status, body = _call(env, "GET", "/api/slack/shared-access")
+    assert body["verify_with_slack"] is False
+    assert body["users"][0] == {
+        "user_id": FRIEND,
+        "name": "",
+        "confirmed": True,
+        "reason": shared_access.REASON_LISTED,
+    }
+
+
+def test_a_write_keeps_verify_with_slack_as_the_owner_set_it(env: dict) -> None:
+    _verify_with_slack(env)
+    status, _ = _call(env, "DELETE", f"/api/slack/shared-access/users/{FRIEND}")
+    assert status == 200
+    assert _stored(env)["verify_with_slack"] is True

@@ -563,7 +563,8 @@ key-based route: see the `agent.strands_provider`, `agent.strands_model` and
 |-----|-------------|---------|
 | `slack.allowed_users` | Ignored for access; a name is only a display-name fallback. Never read by shared access | `[]` |
 | `slack.shared_access.enabled` | Let the Slack users in `slack.shared_access.user_ids` drive this Crew **as you**, with your files, Git and cloud credentials and connected tools. Only a literal `true` turns it on. See [Sharing Slack access](slack-integration.md#sharing-slack-access) | `false` |
-| `slack.shared_access.user_ids` | Slack member IDs (`U…` or `W…`) allowed while shared access is on. Each is checked with Slack before it counts: same workspace as the bot, a person, not deactivated, not the owner. Malformed entries are ignored | `[]` |
+| `slack.shared_access.user_ids` | Slack member IDs (`U…` or `W…`) allowed while shared access is on. The owner's own ID never counts and malformed entries are ignored. By default an ID counts as written: Slack is not asked whether it is a bot, deactivated or in another workspace | `[]` |
+| `slack.shared_access.verify_with_slack` | Check each listed ID with Slack before it counts: same workspace as the bot, a person, not deactivated. Needs the `users:read` bot scope. Only a literal `true` turns it on | `false` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |

@@ -172,21 +172,24 @@ export interface SlackManifestStatus {
   app_dm_url?: string | null
 }
 
-/** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
+/** One person on `slack.shared_access.user_ids`, and whether they are admitted. */
 export interface SlackSharedUser {
   user_id: string
-  /** Slack display or real name; "" when Slack gave none. */
+  /** Slack display or real name; "" when Slack gave none or was not asked. */
   name: string
-  /** Slack confirmed the id: same workspace, a person, not deactivated, not the owner. */
+  /** Admitted: on the list ("listed"), or confirmed by Slack ("ok") when
+   *  `verify_with_slack` is on. */
   confirmed: boolean
-  /** "ok" | "user_not_found" | "bot_user" | "deactivated" | "other_workspace" |
-   *  "owner" | "unverifiable" | "malformed_id" */
+  /** "listed" | "ok" | "user_not_found" | "bot_user" | "deactivated" |
+   *  "other_workspace" | "owner" | "unverifiable" | "malformed_id" */
   reason: string
 }
 
 /** GET /api/slack/shared-access. */
 export interface SlackSharedAccessData {
   enabled: boolean
+  /** Slack checks each listed id (`slack.shared_access.verify_with_slack`); absent on an older gateway. */
+  verify_with_slack?: boolean
   users: SlackSharedUser[]
   /** True on a remote session: writes are accepted from this machine only. */
   read_only: boolean

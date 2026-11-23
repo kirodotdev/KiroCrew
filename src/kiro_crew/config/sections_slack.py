@@ -168,8 +168,19 @@ class SlackSharedAccessConfig:
         metadata=_meta(
             "Shared Slack Users",
             "Slack member IDs (U... or W...) allowed to use the bot while shared access "
-            "is on. Each is checked with Slack before it is used: same workspace as the "
-            "bot, a person, not deactivated, not the owner.",
+            "is on. The owner's own ID is never shared. By default a listed ID is used "
+            "as written: Slack is not asked whether it is a bot, deactivated or in "
+            "another workspace (see verify_with_slack).",
+            tags=["slack"],
+        ),
+    )
+    verify_with_slack: bool = field(
+        default=False,
+        metadata=_meta(
+            "Verify Shared Users With Slack",
+            "Check each listed ID with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated. Needs the users:read bot scope. Off by "
+            "default: you keep the list right yourself.",
             tags=["slack"],
         ),
     )

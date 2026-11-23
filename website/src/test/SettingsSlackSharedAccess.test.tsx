@@ -47,6 +47,26 @@ describe('Share Slack access', () => {
     expect(toggle()).toHaveAttribute('aria-checked', 'false')
   })
 
+  it('says Slack does not check listed IDs when verify_with_slack is off', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({
+      enabled: true,
+      verify_with_slack: false,
+      users: [{ user_id: 'U0FRIEND01', name: '', confirmed: true, reason: 'listed' }],
+    }))
+    renderWithProviders(<SlackSharedAccess />)
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent('Slack does not check the IDs you add.')
+    expect(note).toHaveTextContent('slack.shared_access.verify_with_slack')
+    expect(screen.getByText('On: everyone on the list below can use this Crew from Slack.')).toBeInTheDocument()
+    expect(screen.getByText('On your list. Slack was not asked to check this ID.')).toBeInTheDocument()
+  })
+
+  it('drops the not-checked line when Slack checks each ID', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true, verify_with_slack: true }))
+    renderWithProviders(<SlackSharedAccess />)
+    expect(await screen.findByRole('note')).not.toHaveTextContent('Slack does not check the IDs you add.')
+  })
+
   it('keeps the warning on the page while on', async () => {
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
     renderWithProviders(<SlackSharedAccess />)

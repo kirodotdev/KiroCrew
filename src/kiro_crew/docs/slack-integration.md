@@ -271,18 +271,26 @@ own cron, task and spawn tools also still run as the owner in their turns, even
 though the `run` and cron keywords are refused to them, and a schedule they set
 up that way keeps running as the owner after they are removed: to stop one, open
 **Schedule** in the dashboard and delete it. Only add people you trust. The page
-shows this warning, and turning the switch on needs an explicit confirm. The page
-doesn't turn it on while anyone on the list isn't confirmed by Slack: remove them,
-or fix what their row says, first.
+shows this warning, and turning the switch on needs an explicit confirm. With
+`verify_with_slack` on, the page doesn't turn it on while anyone on the list isn't
+confirmed by Slack: remove them, or fix what their row says, first.
 
-- **Who counts.** Each Slack member ID on the list is checked with Slack
-  (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
-  person rather than a bot or app, not deactivated, and not the owner. The page
-  refuses an ID that fails, and shows each person's name next to their ID. An ID
-  added with `kirocrew config` gets the same check from the gateway before its
-  first message counts. A confirmation is re-checked every 10 minutes, and a
-  refusal after a minute: an ID that stays on the list gets access as soon as
-  Slack confirms it, so remove an ID to keep that person out.
+- **Who counts.** By default (`slack.shared_access.verify_with_slack` is
+  `false`) every well-formed member ID on the list counts, except the owner's own.
+  Slack is not asked, so the bot needs no `users:read` scope, and a bot, a
+  deactivated account or someone in another workspace (Slack Connect included) on
+  the list can act as the owner too: keep the list right yourself. The page marks
+  each such row "On your list" and shows no name.
+- **Checking with Slack.** Set `slack.shared_access.verify_with_slack` to `true`
+  to have each ID checked with Slack (`users.info`, which needs `users:read`)
+  before it is used: same workspace as the bot (`auth.test`), a person rather than
+  a bot or app, not deactivated, and not the owner. The page then refuses an ID
+  that fails, and shows each person's name next to their ID. An ID added with
+  `kirocrew config` gets the same check from the gateway before its first message
+  counts. A confirmation is re-checked every 10 minutes, and a refusal after a
+  minute: an ID that stays on the list gets access as soon as Slack confirms it,
+  so remove an ID to keep that person out. A failed check logs Slack's error code
+  (for example `missing_scope`).
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
   prompts their own turns post, and send or edit the review-mode draft of their

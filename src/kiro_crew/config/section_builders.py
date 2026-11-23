@@ -872,11 +872,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
 
 
 def _build_shared_access(raw: object) -> SlackSharedAccessConfig:
-    """``slack.shared_access``: on only for a literal ``true``, ids well-formed."""
+    """``slack.shared_access``: switches on only for a literal ``true``, ids well-formed."""
     data = _safe_dict(raw)
     return SlackSharedAccessConfig(
         enabled=data.get("enabled") is True,
         user_ids=shared_user_ids(data.get("user_ids")),
+        verify_with_slack=data.get("verify_with_slack") is True,
     )
 
 
