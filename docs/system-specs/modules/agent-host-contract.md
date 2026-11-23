@@ -157,7 +157,8 @@ worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable
 as on KAS, rather than run on the control plane alone. pi, the one host in the set
 with no mirror, reads the same projection by the worker's key in Crew's own resolver
 (`AcpClient._mirrorless_member_mounts`): the worker's servers ride the per-session
-handoff to the gate extension, its pooled stubs pass the worker spec's `tools`
+handoff to the gate extension, its gateway stubs are looked up by its key and
+replace the spec entries of the same name, those stubs pass the worker spec's `tools`
 allowlist, and an unreadable kit or a single-tool limit raises there instead of
 running the worker as plain chat. On codex the worker's
 servers are not the only ones: codex also starts the servers in the operator's

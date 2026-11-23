@@ -344,8 +344,8 @@ def _load_overlay_for_agent(
 ) -> dict[str, Any] | None:
     """Locate the rewritten overlay spec for *agent*, or ``None``.
 
-    *worker_session_key* is the session's own key, passed by KAS and by the
-    mirrored hosts (codex, claude). With it, a crewmate's worker
+    *worker_session_key* is the session's own key, passed by KAS, by the
+    mirrored hosts (codex, claude) and by pi. With it, a crewmate's worker
     (``kirocrew-mate-worker``) is not looked up by that shared name: its overlay
     is the session's own crewmate's
     (:func:`kiro_crew.mcp_gateway.mate_overlays.worker_overlay_spec`). Without it
@@ -533,7 +533,8 @@ def pooled_session_servers(
     is the session's rather than the agent's: a crewmate's worker
     (:func:`_load_overlay_for_agent`). Every other agent ignores it. The caller
     withholds the names of exactly the entries this returns (KAS in
-    ``acp/harness/kas.py``, a mirrored host from its spec projection), so the
+    ``acp/harness/kas.py``, a mirrored host from its spec projection, pi from its
+    spec mounts), so the
     two sets come from this one lookup.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
