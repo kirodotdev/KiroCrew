@@ -167,8 +167,7 @@ def test_a_workspace_folder_under_the_workspace_root_or_relative_is_kept(tmp_pat
 
 
 def test_a_relative_workspace_folder_that_is_the_data_home_is_refused(tmp_path):
-    # "workspace/.." was kept here before; it is the data home itself, so it is refused
-    # (review of #38462, 2026-11-23T00:43:15Z).
+    # A relative folder that resolves to the data home itself is refused.
     snap = _stage(tmp_path, {"workspaces": {"dotdot-root": {"dir": "workspace/.."}}})
     vetted, summary = _vet(snap)
     assert "config.json" not in vetted
