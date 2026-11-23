@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import zipfile
+import zlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -289,12 +290,51 @@ def test_a_pass_stops_at_its_calls_keeps_what_it_read_and_a_later_pass_reads_the
         before = len(gh.calls)
         assert run_main(tmp_path, "--max-calls", "4", "--no-windows") == 0
         passes += 1
-        # The limit is checked between runs: a pass ends within one run's calls of it.
-        assert len(_calls(gh, before)) <= 4 + 2
+        # The limit is checked before each call: a pass never makes one past it.
+        assert len(_calls(gh, before)) <= 4
         assert passes <= 6
 
     assert passes > 1 and "stopped early: this pass has made its 4 calls" in capsys.readouterr().err
     assert [r["run"] for r in rows(tmp_path, "run")] == [6, 5, 4, 3, 2, 1]
+
+
+def test_a_pass_makes_no_call_past_its_limit_and_records_no_part_of_a_run(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    # Three runs of different cost: annotations answer for the first, the second
+    # is green, the third needs its log too.
+    held = {**VERDICT, "tiers": {"G": ["test/test_a.py", "test/test_b.py"]}, "would_skip": []}
+    gh.add(1, 7, [[job(11, 1), job(12, 2, "failure")]], verdict=held)
+    gh.logs[12] = ["test/test_b.py"]
+    gh.add(2, 8, [[job(21, 1)]], verdict=held)
+    gh.add(3, 9, [[job(31, 1), job(32, 2, "failure")]], verdict=held)
+    gh.annotations[32] = ["test/test_a.py"]
+
+    whole = tmp_path / "whole"
+    whole.mkdir()
+    shutil.copytree(tmp_path / "verdicts", whole / "verdicts")
+    assert run_main(whole, "--no-windows") == 0
+    every = rows(whole)
+    total = len(_calls(gh))
+    by_run = {run: [row for row in every if row["run"] == run] for run in (3, 2, 1)}
+    assert all(by_run.values()) and total > 6
+
+    recorded = 0
+    for most in range(1, total + 1):
+        folder = tmp_path / f"most-{most}"
+        folder.mkdir()
+        shutil.copytree(tmp_path / "verdicts", folder / "verdicts")
+        before = len(gh.calls)
+        assert run_main(folder, "--no-windows", "--max-calls", str(most)) == 0
+        assert len(_calls(gh, before)) == most
+        # Whole runs, newest first, and nothing of the run the limit fell in.
+        kept = rows(folder)
+        prefixes = [[], by_run[3], by_run[3] + by_run[2], every]
+        assert kept in prefixes
+        # More calls never record less; none record nothing; all of them record all.
+        assert len(kept) >= recorded
+        recorded = len(kept)
+    assert rows(tmp_path / "most-1") == [] and rows(tmp_path / f"most-{total}") == every
 
 
 def test_a_call_one_reader_makes_through_another_is_counted_once(
@@ -417,6 +457,70 @@ def test_the_verdicts_of_a_pass_come_from_one_listing_and_one_download_each(
     assert reasons == {2: ledger.NO_VERDICT, 4: ledger.NO_VERDICT, 5: ledger.BAD_VERDICT}
     assert len([call for call in gh.calls if "/actions/artifacts?name=" in call]) == 1
     assert len([call for call in gh.calls if call.endswith("/zip")]) == 2
+
+
+def _archive(text: str) -> bytes:
+    held = io.BytesIO()
+    with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("verdict.json", text)
+    return held.getvalue()
+
+
+def test_an_archive_damaged_anywhere_is_never_read_as_another_verdict() -> None:
+    text = json.dumps(VERDICT)
+    sound = _archive(text)
+    assert ledger._only_json(sound) == text
+    answers = set()
+    for at in range(len(sound)):
+        damaged = sound[:at] + bytes([sound[at] ^ 0xFF]) + sound[at + 1 :]
+        # Whatever one changed byte does, the answer is the verdict as uploaded,
+        # "not an archive" or "not a verdict"; it never raises and never differs.
+        answers.add(ledger._only_json(damaged))
+    for size in range(len(sound)):
+        answers.add(ledger._only_json(sound[:size]))
+    assert answers == {text, None, ""}
+
+
+def _does_not_unpack(text: str) -> bytes:
+    """`text`'s archive with one byte of its compressed member changed so that it will not unpack."""
+    sound = _archive(text)
+    for at in range(len(sound)):
+        damaged = sound[:at] + bytes([sound[at] ^ 0xFF]) + sound[at + 1 :]
+        try:
+            with zipfile.ZipFile(io.BytesIO(damaged)) as held:
+                held.read(held.infolist()[0])
+        except zlib.error:
+            return damaged
+        except (
+            zipfile.BadZipFile,
+            OSError,
+            ValueError,
+            RuntimeError,
+            EOFError,
+            KeyError,
+            IndexError,
+        ):
+            continue
+    raise AssertionError("no changed byte made the member fail to unpack")
+
+
+def test_a_member_that_does_not_unpack_is_a_failed_read_not_a_bad_verdict(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    _five_runs_with_verdicts(gh)
+    gh.damaged[3] = _does_not_unpack(json.dumps(VERDICT))
+    gh.listed_size[3] = len(gh.damaged[3])
+
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+
+    # The run is left for a later pass: nothing is recorded for it, least of all
+    # a run with no failures.
+    assert sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 4, 5]
+    assert [r for r in rows(tmp_path) if r["run"] == 3] == []
+    gh.damaged.clear()
+    del gh.listed_size[3]
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+    assert sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 3, 4, 5]
 
 
 def _five_runs_with_verdicts(gh: FakeGh) -> None:

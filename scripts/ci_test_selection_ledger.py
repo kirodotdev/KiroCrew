@@ -146,6 +146,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -379,7 +380,8 @@ class Verdicts:
 
 def _only_json(archive: bytes) -> str | None:
     """The text of the JSON file an archive holds and nothing else; "" for any other
-    archive (never a valid verdict), None for bytes that are no archive.
+    archive (never a valid verdict), None for bytes that are no archive or whose
+    member does not unpack.
 
     Nothing is unpacked on the archive's word for its size: the one member is
     read through to `MAX_VERDICT_BYTES` and no further.
@@ -394,7 +396,8 @@ def _only_json(archive: bytes) -> str | None:
             with held.open(members[0]) as member:
                 text = shadow.capped(member, MAX_VERDICT_BYTES)
             return "" if text is None else text.decode("utf-8", errors="replace")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, zlib.error, EOFError):
+        # Damaged on the way or in the making: what it held cannot be known.
         return None
     except (OSError, ValueError, RuntimeError):
         return ""
@@ -811,12 +814,18 @@ def recorded_lanes(rows: list[Row]) -> tuple[dict[int, int], dict[int, int]]:
     return linux, windows
 
 
+class BudgetSpent(Exception):
+    """A pass is at a limit of its budget: the call it was about to make is not made."""
+
+
 class Budget:
     """What one pass may spend of the REST requests every job of the repository shares.
 
     `most` is the calls this pass makes at most (0: no limit) and `reserve` what
     the pool must keep (0: not checked). The pool is read from `/rate_limit`,
     which costs nothing, before the pass and again every `RECHECK_CALLS` calls.
+    Both are checked before each call, so a pass never makes a call past either;
+    the run it was reading is then left whole for a later pass.
     """
 
     def __init__(self, most: int, reserve: int, root: Path) -> None:
@@ -846,7 +855,7 @@ class Budget:
         return None
 
     def ended(self) -> str | None:
-        """Why the pass takes no further run, None while it may."""
+        """Why the pass makes no further call, None while it may."""
         if self.most and self.spent >= self.most:
             return f"this pass has made its {self.most} calls ({self.spent})"
         if self.reserve and self.spent - self._checked >= RECHECK_CALLS:
@@ -869,6 +878,9 @@ class Budget:
                 # One reader may go through another: the outermost is the call.
                 if inside[0]:
                     return call(*args, **kwargs)
+                ended = self.ended()
+                if ended:
+                    raise BudgetSpent(ended)
                 self.spent += 1
                 inside[0] = True
                 try:
@@ -899,8 +911,22 @@ def collect(
     the lanes the ledger lacks are written: a Windows half is collected for an
     attempt whose Linux half an earlier pass recorded, without repeating it.
     Every row passes `valid_row`, so the ledger never holds a line a later pass
-    refuses. A run the ledger holds costs no call beyond the listing.
+    refuses. A run the ledger holds costs no call beyond the listing. A run the
+    budget ends in the middle of yields nothing: no part of it is recorded.
     """
+    try:
+        yield from _each_run(args, recorded, root, budget)
+    except BudgetSpent as spent:
+        print(f"stopped early: {spent}; a later pass reads the rest", file=sys.stderr)
+
+
+def _each_run(
+    args: argparse.Namespace,
+    recorded: tuple[dict[int, int], dict[int, int]],
+    root: Path,
+    budget: Budget,
+) -> Iterator[list[Row]]:
+    """`collect`, without the end a spent budget puts to it."""
     parse = shadow._nodeid_parser()
     red_since, red_files = main_red_files(root)
     verdicts = Verdicts(root, args.artifact)
