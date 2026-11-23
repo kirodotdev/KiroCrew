@@ -206,6 +206,38 @@ def _recent(ctx: ProbeContext, *types: str) -> list[tuple[dict[str, Any], dict[s
 # --------------------------------------------------------------------------- #
 
 
+def probe_config_unreadable(ctx: ProbeContext) -> dict[str, Any]:
+    pid = "config_unreadable"
+    # The loader skips a file it cannot open, decode as UTF-8 or parse as one JSON
+    # object, and does not raise, so every other probe answers without that file's
+    # settings. One flag covers every cause, so the steps name each. This load's own
+    # flags, not ``degraded_sections``, whose file markers last the process past a
+    # repair.
+    files = [
+        name
+        for name, flag in (
+            ("config.json", ctx.cfg._base_unreadable),
+            ("config.local.json", ctx.cfg._overlay_unreadable),
+        )
+        if flag
+    ]
+    if not files:
+        return finding(pid, OK, "Every config file was read.")
+    named = ", ".join(files)
+    return finding(
+        pid,
+        PROBLEM,
+        f"{named} could not be opened, decoded as UTF-8 or parsed as one JSON object, "
+        "so the settings in it are not in effect.",
+        {"files": files},
+        _steps(
+            f"Check that the gateway's user can read {named} and that it is a file.",
+            f"Check that {named} is saved as UTF-8.",
+            f"Repair the JSON in {named} so it is one valid JSON object.",
+        ),
+    )
+
+
 def probe_hidden_models(ctx: ProbeContext) -> dict[str, Any]:
     pid = "hidden_models"
     hidden = [str(m) for m in (ctx.cfg.dashboard.model_picker_hidden_models or [])]
@@ -852,6 +884,7 @@ def probe_usage_limit(ctx: ProbeContext) -> dict[str, Any]:
 
 #: ``(id, probe)`` in the order findings are reported.
 PROBES: tuple[tuple[str, Callable[[ProbeContext], dict[str, Any]]], ...] = (
+    ("config_unreadable", probe_config_unreadable),
     ("hidden_models", probe_hidden_models),
     ("agent_picker_stale", probe_agent_picker_stale),
     ("model_pin_unavailable", probe_model_pin_unavailable),

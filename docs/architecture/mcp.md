@@ -3111,13 +3111,18 @@ session, the same `_shared._blocks_reads_session` test the recall route
 refuses on): then history is never read, `recent_changes`
 is `[]` and `recent_changes_withheld: "memory_reads_disabled"` says why, while the
 findings and settings, which are not memory, are still answered; output is capped at 48,000 characters. Its `findings` come
-from `diagnose_probes.run_probes(app, topic)`: twelve symptom probes run on a
+from `diagnose_probes.run_probes(app, topic)`: thirteen symptom probes run on a
 bounded worker pool (4 s each, 8 s in all; a probe that raises or overruns
 reports `unknown`), each strictly read-only -- no `_doctor_*` call, no repair
 path, `memory.db` opened `mode=ro` while its `-wal` exists (so committed but
 uncheckpointed rows count) and `mode=ro&immutable=1` otherwise, the crew log through
 `crew_log.read` -- with strings redacted and lists capped, and never a secret
-value, token or whole MCP spec. The read-only `kirocrew-crew-log` server stays an
+value, token or whole MCP spec. The `config_unreadable` probe names each config
+file the load skipped because it could not be opened, decoded as UTF-8 or parsed as
+one JSON object, with a fix step for each cause (`cfg._base_unreadable`,
+`cfg._overlay_unreadable`, this load's own flags: the file markers in
+`degraded_sections` last the process past a repair), since that load does not
+raise and every other probe then answers without that file's settings. The read-only `kirocrew-crew-log` server stays an
 opt-in set no template mounts by default; an agent granted it in its own spec reads
 under the routes' own scope. The owner's browser renders it, re-reads a stale one through `POST /api/cards/{id}/preview` (a new `revision`), and applies it
 by sending each plan step to the real route with `X-Card-Id`/`X-Card-Revision`/
