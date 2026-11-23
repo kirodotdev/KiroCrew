@@ -342,6 +342,14 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     excludes_local, inline_settings = self._local_settings_exclusion()
     self._session_mcp_excludes_local = excludes_local
     self._session_mcp_inline_settings = inline_settings
+    from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
+
+    # A crewmate's worker withholds exactly the entries its stubs replace, from
+    # that one lookup: the by-name ``injection_server_names`` answers nothing for it.
+    stubs = self._pooled_broker_stubs()
+    worker_stubbed: frozenset[str] | None = None
+    if self._agent == MATE_WORKER_AGENT:
+        stubbed = worker_stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
     # The STRUCTURED face rather than the wire one, for every mirror alike: two
     # things can come out of the one spec parse and only one of them is wire
     # data -- the array, and a per-tool deny set this client enforces at the
@@ -354,7 +362,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # The broker stubs as ELEMENTS, for a mirror that must place them itself
         # so one withhold rule covers both halves of the array (codex). A mirror
         # that leaves them to the shared append ignores them.
-        stub_elements=self._pooled_broker_stubs(),
+        stub_elements=stubs,
         permission_surface_owned=self._permission_surface_governed,
         work_dir=self._work_dir,
         # A codex stdio child starts from env_clear() plus an allowlist, so
@@ -398,6 +406,15 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_agent_spec = projection.agent_spec
     servers = projection.params.get("mcpServers") or []
     out = list(servers) if isinstance(servers, list) else []
+    if worker_stubbed is not None:
+        # The projection read the worker spec after its stubs were picked, so a
+        # server dropped, muted or retyped in between loses its stub, as on KAS.
+        from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
+        from kiro_crew.acp.runtime_session_setup import _drop_withdrawn_stubs
+
+        out = _drop_withdrawn_stubs(
+            out, withdrawn_worker_stubs(projection.agent_spec or {}, worker_stubbed)
+        )
     if self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         from kiro_crew.acp import kas_env_launch
 
@@ -731,6 +748,9 @@ def _broker_only_spec_mounts(
 def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
     """The raw broker stubs for this session, with no per-backend narrowing.
 
+    On a mirrored backend a crewmate's worker resolves its stubs by its own
+    session key (``session_servers.pooled_session_servers``), never by name.
+
     Split from :meth:`_pooled_mcp_servers` so codex can take them through its
     own withholding rules while that method keeps returning ``[]`` for codex at
     the shared call site. Blocking; both callers are already off the loop.
@@ -746,6 +766,7 @@ def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
             self._agent,
             self._channel_id,
             **overlay_project_scope(self.backend, self._work_dir),
+            worker_session_key=self._session_key if self.backend in MIRRORS else None,
         ),
         self._stub_session_token,
     )

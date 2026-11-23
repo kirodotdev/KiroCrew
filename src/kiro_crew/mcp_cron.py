@@ -1012,6 +1012,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # A member-named ``agent`` must record a member selection, not a bare
             # template id the reply path cannot resolve.
             from kiro_crew.cron_service.identity import split_cron_agent_member
+            from kiro_crew.cron_service.owner_grant import creator_grant as _creator_grant
 
             _agent_id, _member_id = split_cron_agent_member(agent or "", args.get("member_id", ""))
             chat_folder_id, chat_folder_err = resolve_chat_folder(
@@ -1057,6 +1058,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     auto_pause_after_failures=auto_pause_val,
                     alert_after_failures=alert_after_val,
                     person_owner=getattr(current_caller(), "person_tab", False),
+                    # A Bot's job keeps the Profile mode the Bot holds now, across a
+                    # restart; each fire re-checks it against the live Profile.
+                    owner_grant=_creator_grant(session_key),
                 ),
             )
         except CronStoreBusy:

@@ -44,6 +44,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _parse_skill_description,
     _resolve_loaded_by_agents,
     _resolve_skill_root,
+    agent_skill_keys,
     annotate_skills_with_agents,
     collect_skills_blocking,
     enumerate_skill_catalog,
@@ -51,6 +52,7 @@ from kiro_crew.dashboard.handlers._shared import (
     list_skill_tree,
     read_skill_file,
     skill_rows_for_globs,
+    skill_uri_for_key,
 )
 
 # ── _parse_skill_description ──
@@ -548,6 +550,63 @@ class TestOneRowPerSkillFile:
         assert rows[0]["key"] == "kiro-user/tracker"
         assert rows[0]["description"] == "top level"
         assert rows[0]["aliases"] == ["tracker"]
+
+    @staticmethod
+    def _tiny_url_row(fake_home, skills_dir):
+        """The listed row of ``utils/tiny-url`` written under *skills_dir*, with
+        ``skills.extra_paths`` naming ``~/.kiro/skills`` (real loader, real config)."""
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.skills import SkillsLoader
+
+        _write_skill(skills_dir / "utils", "tiny-url")
+        crew_home = fake_home / ".kiro" / "crew"
+        crew_home.mkdir(parents=True)
+        (crew_home / "config.json").write_text(
+            json.dumps({"skills": {"extra_paths": [str(fake_home / ".kiro" / "skills")]}})
+        )
+        loader = SkillsLoader(
+            skills_path=crew_home / "skills",
+            install_builtins=False,
+            config=KiroCrewConfig.load(),
+        )
+        [row] = [r for r in collect_skills_blocking(loader, [], project_dir=None)
+                 if r["name"] == "tiny-url"]
+        return row
+
+    def test_category_folder_skill_answers_to_its_read_back_key(
+        self, fake_home, close_skills_loaders
+    ):
+        """With ``skills.extra_paths`` naming ``~/.kiro/skills``, a skill in a
+        category folder is listed under its bare key only, and a mapping made from
+        that key reads back under ``kiro-user/``; the row must answer to both."""
+        row = self._tiny_url_row(fake_home, fake_home / ".kiro" / "skills")
+        state = MagicMock(_slots={})
+        catalog = enumerate_skill_catalog(state)
+        uri = skill_uri_for_key(row["key"], state, catalog)
+        assert uri is not None  # the bare key stays a key the catalog accepts
+        agent = fake_home / ".kiro" / "agents" / "a.json"
+        [back] = agent_skill_keys({"resources": [uri]}, agent, state, catalog=catalog)
+        assert back == "kiro-user/utils/tiny-url"
+        assert back in [row["key"], *row.get("aliases", [])]
+
+    def test_linked_user_skills_folder_answers_to_the_kiro_user_key(
+        self, fake_home, close_skills_loaders
+    ):
+        """The loader spells each skill file resolved, so with ``~/.kiro/skills``
+        a link the row's path is the link's target; a ``~/`` mapping of the skill still
+        reads back under ``kiro-user/``, and the row must answer to that key."""
+        real = fake_home / "dotfiles" / "skills"
+        real.mkdir(parents=True)
+        (fake_home / ".kiro").mkdir()
+        make_dir_link(fake_home / ".kiro" / "skills", real)
+        row = self._tiny_url_row(fake_home, real)
+        state = MagicMock(_slots={})
+        catalog = enumerate_skill_catalog(state)
+        agent = fake_home / ".kiro" / "agents" / "a.json"
+        uri = "skill://~/.kiro/skills/utils/tiny-url/SKILL.md"
+        [back] = agent_skill_keys({"resources": [uri]}, agent, state, catalog=catalog)
+        assert back == "kiro-user/utils/tiny-url"
+        assert back in [row["key"], *row.get("aliases", [])]
 
     def test_editable_row_wins_and_agents_merge(self, tmp_path):
         md = tmp_path / "s" / "SKILL.md"

@@ -20,6 +20,7 @@ import re
 from .argv_floor_self import _quoted_assignment_scripts
 from .argv_floor_ssh import (
     _EMPTY_EXPANSION_RE,
+    _HEREDOC_RESET,
     _MAIN_READING,
     _is_ssh_to_self,
     _may_name_ssh_verb,
@@ -159,6 +160,20 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
         return True
     if _substitution_reaches_self(text_lower) or any(map(_substitution_reaches_self, scripts)):
         return True
+    # Extra pass, ADDED to the readings above: escape the quote an own-line body
+    # leaves open so the text after the closing line reads unquoted, catching a
+    # self-ssh a pairing quote would otherwise bury. Run only when a here-document
+    # is present; the readings above and the main reading below keep a body's
+    # quotes as origin/main read them, so this pass only adds a denial.
+    if "<<" in text_lower:
+        token = _HEREDOC_RESET.set(True)
+        try:
+            if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+                map(_is_ssh_to_self, scripts)
+            ):
+                return True
+        finally:
+            _HEREDOC_RESET.reset(token)
     token = _MAIN_READING.set(True)
     try:
         return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(

@@ -172,14 +172,13 @@ def _pooled_session_servers_and_ref_spec(
     check), the one non-mirrored host a crewmate's worker runs on: its stubs are
     the session's crewmate's (``mcp_gateway.mate_overlays``). KAS subtracts the
     names of the entries returned here (:func:`_kas_worker_stub_names`), so the
-    subtraction and the injection come from this one lookup. Every other host
-    passes no key, and its lookup is unchanged.
+    subtraction and the injection come from this one lookup. The mirrored hosts
+    pass theirs in :func:`_mirrored_session_mcp`; every other host passes no key,
+    and its lookup is unchanged.
     """
     scope_dir = None if ref_spec is not None else work_dir
     worker: dict[str, Any] = (
-        {"kas_worker_session_key": session_key}
-        if session_key and backend == ACP_BACKEND_KAS
-        else {}
+        {"worker_session_key": session_key} if session_key and backend == ACP_BACKEND_KAS else {}
     )
     servers = pooled_session_servers(
         overlay, agent, **overlay_project_scope(backend, scope_dir), **worker
@@ -214,11 +213,12 @@ def _kas_worker_stub_names(
 def _drop_withdrawn_stubs(
     mcp_servers: list[dict[str, Any]], withdrawn: frozenset[str]
 ) -> list[dict[str, Any]]:
-    """*mcp_servers* without the stubs the payload withdrew (``withdrawn_stub_names``).
+    """*mcp_servers* without the stubs the later spec read withdrew.
 
-    A KAS crewmate worker's stubs are picked before its payload reads the worker
-    spec again, so a server muted in between is dropped here, by the later
-    reading. With nothing withdrawn the list is returned as it is.
+    A crewmate worker's stubs are picked before its KAS payload, or a mirrored
+    host's projection, reads the worker spec again, so a server muted in between
+    is dropped here, by the later reading. With nothing withdrawn the list is
+    returned as it is.
     """
     if not withdrawn:
         return mcp_servers
@@ -754,10 +754,16 @@ async def _mirrored_session_mcp(
         active_agent,
         channel_id or None,
         **overlay_project_scope(self.acp_backend, work_dir),
+        # A crewmate's worker gets its stubs by its own session, never by name.
+        worker_session_key=session_key or None,
     )
+    if active_agent == MATE_WORKER_AGENT:
+        # Its by-name lookup above answers nothing; the projection withholds
+        # exactly the entries these stubs replace, from this one lookup.
+        stubbed = frozenset(str(s["name"]) for s in stubs if s.get("name"))
     stubs, stub_token = await self._own_stub_session(stubs, session_key)
 
-    def _project_and_snapshot() -> tuple[Any, Any]:
+    def _project_and_snapshot() -> tuple[Any, Any, frozenset[str]]:
         # One hop, two reads of the same file: the projection the array is
         # built from and the snapshot the unresolved-ref guard judges against.
         # Both go through session_mcp's own resolution order, so they resolve
@@ -789,11 +795,18 @@ async def _mirrored_session_mcp(
             # republished, so it stays right in both cases.
             session_token=stub_token,
         )
-        return projection, _ref_spec_snapshot(active_agent, work_dir)
+        withdrawn: frozenset[str] = frozenset()
+        if active_agent == MATE_WORKER_AGENT:
+            # The projection read the worker spec after its stubs were picked, so
+            # a server dropped, muted or retyped in between loses its stub, as on KAS.
+            from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
 
-    projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
+            withdrawn = withdrawn_worker_stubs(projection.agent_spec or {}, stubbed)
+        return projection, _ref_spec_snapshot(active_agent, work_dir), withdrawn
+
+    projection, ref_spec, withdrawn = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
-    servers = list(servers) if isinstance(servers, list) else []
+    servers = _drop_withdrawn_stubs(list(servers) if isinstance(servers, list) else [], withdrawn)
     crew_bridged: list[str] = []
     if self.acp_backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         # The AcpClient twin is in ``client_mcp_array``. Before the pickups the

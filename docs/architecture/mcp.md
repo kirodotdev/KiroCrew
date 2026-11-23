@@ -581,6 +581,18 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+The writers that share `agents_spec_lock` — the agent-detail PATCH, fork and
+publish, the background fork refresh — are serialized from the other end, because
+the rebuild reads its merge base long before it takes that lock. Under the lock,
+just before the write, it reads the file again: identical bytes change nothing,
+and otherwise every top-level key the rebuild left as its base had it takes the
+file's current value (`_carry_concurrent_spec_edits`), so a save committed mid
+rebuild is kept instead of reverted. A key the rebuild derived itself stays as
+derived, the `includeMcpJson: false` pin included, a carried `allowedTools`
+runs through the final auto-approve pass again, and a carried `toolsSettings`
+loses the retired `deniedCommands`/`autoAllowReadonly` again, so carrying can
+never widen a grant.
+
 ### Servers a connected computer exposes (`connected-computer-<name>`)
 
 A chat bound to a connected computer (feature preview; providers.md § Connected computers
@@ -2335,11 +2347,12 @@ swap landing in between is not caught, the same race the top-level overlay
 folder has.
 
 A worker session finds its stubs by its own execution record, never by the shared
-name, and only on KAS: `_pooled_session_servers_and_ref_spec` passes the session
-key on a positive `backend == kas` check, and `session_servers` answers
-`kirocrew-mate-worker` with that key only through
-`mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. Every other host
-passes no key and gets no stub for `kirocrew-mate-worker`: the stock worker spec is
+name: KAS (`_pooled_session_servers_and_ref_spec`, on a positive `backend == kas`
+check) and the mirrored hosts (`AcpRuntime._mirrored_session_mcp`,
+`AcpClient._resolve_session_mcp_servers`) pass the session key, and
+`session_servers` answers `kirocrew-mate-worker` with that key only through
+`mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. A lookup with no
+key gets no stub for `kirocrew-mate-worker`: the stock worker spec is
 rewritten like the conductor's (`with_conductor_source`), so
 `<overlay_dir>/kirocrew-mate-worker.json` exists, and a lookup by that name would
 hand its base stubs to a session without that session's merged limits. The record
@@ -2370,8 +2383,15 @@ mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_nam
 and both session start paths remove it from the session-level array before the
 hoist: a mute or a `type: registry` saved while a worker starts still takes effect. The
 same captured names reach the KAS projection for the background helper
-`kirocrew-lite`, which withdraws every stub its spec does not mount. claude's mirrored worker path is
-unchanged.
+`kirocrew-lite`, which withdraws every stub its spec does not mount. A
+mirrored host (codex, claude) withholds from its projection the names of exactly the
+stubs that lookup returned, and its mirror holds them to the projection's own read
+of the worker spec, as it does any agent's stubs: the `tools` allowlist with its
+mutes, codex's withhold rules and session-bound stub shape, claude's deny rules.
+That read also re-checks them as KAS does (`withdrawn_worker_stubs`): a stub whose
+server it drops, mutes or marks registry-governed leaves the array, and its name
+stays withheld, so neither half mounts it. So a Codex worker reaches
+`kirocrew-work` through a stub bound to its own session token.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile

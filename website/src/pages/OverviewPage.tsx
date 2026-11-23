@@ -7,9 +7,12 @@ import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { Uptime } from '../components/Uptime'
 import { api } from '../api/client'
-import type { WakaTimeStats } from '../api/client'
-import { reportsDollars } from '../api/acpBackend'
+import type { KasBundleStatus, KasLoginStatus, WakaTimeStats } from '../api/client'
+import { ACP_BACKEND_KAS, configuredAcpBackend, reportsDollars } from '../api/acpBackend'
 import type { AcpBackendConfig } from '../api/acpBackend'
+import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { signInLapsed } from './developer/kiroSignInState'
+import type { RootState } from '../store'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
@@ -251,6 +254,71 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
   lessons: 'pages.overviewPage.stat_lessons',
 }
 
+/**
+ * Whether KAS agents cannot reply for want of a working Kiro sign-in. A stored
+ * sign-in `signInLapsed` calls lapsed (not `usable`, or Kiro refused its
+ * renewal, expired or not) stops every KAS spawn on either engine. An empty
+ * store counts only where the gateway says a new chat needs Kiro Crew's own
+ * sign-in (`chat_needs_sign_in` on `GET /api/kas-bundle`): a relay spawn with
+ * an empty vault runs on kiro-cli's own login.
+ */
+export function kasAgentsSignedOut(login: KasLoginStatus, chatNeedsSignIn: boolean | undefined): boolean {
+  if (login.authenticated) return signInLapsed(login)
+  return chatNeedsSignIn === true
+}
+
+/** `kasAgentsSignedOut` for the main agent, false off KAS. Reads the cache
+ *  entries the app-level sign-in and engine notices poll, fresh on each visit. */
+function useKasAgentsSignedOut(): boolean {
+  const cfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  const kas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === ACP_BACKEND_KAS
+  const login = useQuery<KasLoginStatus>({
+    queryKey: ['kas-login'],
+    queryFn: () => api.kasLoginStatus(),
+    enabled: kas,
+    refetchOnMount: 'always',
+  }).data
+  const chatNeedsSignIn = useQuery<KasBundleStatus>({
+    queryKey: ['kas-bundle'],
+    queryFn: () => api.kasBundleStatus(),
+    enabled: kas && login?.authenticated === false,
+    retry: false,
+    refetchOnMount: 'always',
+  }).data?.chat_needs_sign_in
+  return kas && login !== undefined && kasAgentsSignedOut(login, chatNeedsSignIn)
+}
+
+/** The health hero: the gateway connection first, then whether the agents can sign in. */
+function HealthHero({ connected, status }: { connected: boolean; status: RootState['dashboard']['status'] }) {
+  const signedOut = useKasAgentsSignedOut()
+  const up = connected && !!status
+  return (
+    <div className="flex items-center gap-4 mb-5">
+      <div>
+        <div className="text-lg font-bold text-text-strong flex items-center gap-2">
+          <span data-testid="overview-health-dot" className={`w-2 h-2 rounded-full shrink-0 ${up && !signedOut ? 'bg-ok' : 'bg-warn'}`} />
+          {!up
+            ? (status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting'))
+            : signedOut ? i18nT('pages.overviewPage.kiro_sign_in_needed') : i18nT('pages.overviewPage.all_systems_running')}
+        </div>
+        {up && signedOut && (
+          <Link to={KIRO_SIGN_IN_PATH} className="text-[12.5px] text-accent hover:underline" data-testid="overview-kiro-sign-in">
+            {i18nT('pages.overviewPage.open_kiro_sign_in')} <ArrowRight size={12} className="lucide-inline" />
+          </Link>
+        )}
+        <div className="text-[12.5px] text-muted mt-0.5">
+          {status?.version
+            ? <Trans i18nKey="pages.overviewPage.uptime_line_version" values={{ version: status.version }} components={{ uptime: <Uptime /> }} />
+            : <Trans i18nKey="pages.overviewPage.uptime_line" components={{ uptime: <Uptime /> }} />}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
@@ -297,19 +365,7 @@ export default function OverviewPage() {
       {/* Health hero. Status only — Overview edits no config, so it hosts no
           apply/restart action. Restarting sessions to pick up config changes
           lives with the surfaces that edit it (Capabilities header). */}
-      <div className="flex items-center gap-4 mb-5">
-        <div>
-          <div className="text-lg font-bold text-text-strong flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${connected && status ? 'bg-ok' : 'bg-warn'}`} />
-            {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
-          </div>
-          <div className="text-[12.5px] text-muted mt-0.5">
-            {status?.version
-              ? <Trans i18nKey="pages.overviewPage.uptime_line_version" values={{ version: status.version }} components={{ uptime: <Uptime /> }} />
-              : <Trans i18nKey="pages.overviewPage.uptime_line" components={{ uptime: <Uptime /> }} />}
-          </div>
-        </div>
-      </div>
+      <HealthHero connected={connected} status={status} />
 
       {/* Stat tiles */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">

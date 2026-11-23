@@ -26,6 +26,7 @@ from test_slack_code_channel_api_gaps import (
 from kiro_crew.slack.code_channels import comments, tabs, tools, wrapup
 from kiro_crew.slack.code_channels.board import render
 from kiro_crew.slack.code_channels.surface_store import store as surface_store
+from kiro_crew.testing.synthetic_credentials import synth
 
 pytestmark = pytest.mark.asyncio
 env = _gaps.env  # the shared Slack code-channel environment, by fixture name
@@ -104,6 +105,55 @@ async def test_plan_title_and_comments_are_redacted(env: Any) -> None:
     env.api.responses[GET] = answer
     out = await _read(env)
     assert out.ok and _FAKE_KEY not in out.text and "<!channel>" not in out.text
+
+
+def _straddling(limit: int) -> str:
+    """Text whose cut at *limit* keeps only the first ~20 characters of the token."""
+    return "x " * ((limit - 1 - 20) // 2) + _FAKE_KEY + " tail"
+
+
+def test_a_secret_the_cut_falls_inside_is_redacted_not_shown_in_part() -> None:
+    quoted = _straddling(comments.MAX_QUOTE_CHARS)
+    text = _straddling(comments.MAX_COMMENT_CHARS)
+    comment = comments.Comment(token="A1", user=OWNER, text=text, quoted=quoted)
+    delivered = comments.feedback_text(OWNER, [comment])
+    read = comments.plan_canvas_text(
+        {
+            "title": _straddling(200),
+            "content": "# Plan",
+            "comments": [{"id": "A1", "user_id": OWNER, "text": text, "quoted_text": quoted}],
+        }
+    )
+    assert "Comment by" in read  # the comment is listed, so its fields are checked
+    for out in (delivered, read):
+        assert _FAKE_KEY[:8] not in out
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        # More than eight spaces after the key: caught only once folded.
+        "password:" + " " * 16 + "{}",
+        # A line-start pair after other text: caught only before folding.
+        "notes\npassword: {}",
+    ],
+    ids=["aligned", "line-start"],
+)
+def test_a_secret_whose_layout_hides_it_from_one_pass_is_redacted(layout: str) -> None:
+    secret = synth(16, seed=7)
+    text = layout.format(secret)
+    comment = comments.Comment(token="A1", user=OWNER, text=text, quoted=text)
+    delivered = comments.feedback_text(OWNER, [comment])
+    read = comments.plan_canvas_text(
+        {
+            "title": text,
+            "content": "# Plan",
+            "comments": [{"id": "A1", "user_id": OWNER, "text": text, "quoted_text": text}],
+        }
+    )
+    assert "Comment by" in read
+    for out in (delivered, read):
+        assert secret not in out
 
 
 async def test_a_full_listing_with_older_items_dropped_carries_a_note(env: Any) -> None:

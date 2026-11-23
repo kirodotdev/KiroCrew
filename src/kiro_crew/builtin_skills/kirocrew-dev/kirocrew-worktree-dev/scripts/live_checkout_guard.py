@@ -28,12 +28,22 @@ Stdlib only, and it never imports kiro_crew.
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 EXIT_SAFE = 0
 EXIT_REFUSED = 30
 EXIT_ENV = 2
+_WINDOWS = os.name == "nt"
+
+
+def _shell_quoted(path: Path) -> str:
+    """*path* as one argument of the operator's shell: POSIX quoting, else Windows'."""
+    if _WINDOWS:
+        return subprocess.list2cmdline([str(path)])
+    return shlex.quote(str(path))
 
 
 def _home() -> Path:
@@ -108,12 +118,13 @@ def check(target: Path, run_dir: Path) -> tuple[int, str]:
         return EXIT_SAFE, f"OK: {target} is not inside a git work tree"
     for pid, source in sources:
         if work_tree_root(source) == root:
+            quoted = _shell_quoted(root)
             return EXIT_REFUSED, (
                 f"REFUSED: {root} is the checkout the running gateway (pid {pid}) "
                 f"runs from ({source}). Do not rebase, checkout, switch, merge, pull "
                 f"or reset here. Make a worktree instead:\n"
-                f"  git -C {root} fetch origin main\n"
-                f"  git -C {root} worktree add ../<name> -b <branch> origin/main"
+                f"  git -C {quoted} fetch origin main\n"
+                f"  git -C {quoted} worktree add ../<name> -b <branch> origin/main"
             )
     return EXIT_SAFE, f"OK: no running gateway runs from {root}"
 
