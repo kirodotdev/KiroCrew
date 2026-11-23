@@ -98,7 +98,7 @@ _PLAIN_SEPARATORS = frozenset({"", ";", "&", "&&", "|", "||", "\n"})
 _TITLE_PREFIX = "Running:"
 _RM_WORDS = frozenset({"rm", "rm.exe", "rm.cmd", "rm.bat"})  # Windows spellings of rm
 #: Windows only. PowerShell's Remove-Item and its built-in aliases, read for ``-Recurse``.
-#: Its ``rm`` alias is left to the rm reading, so a partial ``rm -r ~`` stays allowed.
+#: Its ``rm`` alias is read only with both ``-Recurse`` and ``-Force`` (see below).
 _PS_REMOVE_WORDS = frozenset({"remove-item", "ri", "del", "erase", "rd", "rmdir"})
 #: Windows only. Remove-Item's parameters and the common ones, by how their word binds: a
 #: ``path`` value is a delete target, a ``value`` one (``-Exclude ~``) is not, a switch
@@ -305,8 +305,11 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
     """The targets a PowerShell ``Remove-Item -Recurse`` (or an alias) or a cmd
     ``rd``/``rmdir``/``del``/``erase /s`` wipes. Both readings are tried; each only adds."""
     kinds: set[str] = set()
-    if name in _PS_REMOVE_WORDS:
-        flags = {"recurse": False, "whatif": False}
+    # PowerShell's ``rm`` alias shares its name with GNU rm: it is read here only when
+    # both ``-Recurse`` and ``-Force`` bind, so a partial ``rm -r ~`` stays allowed
+    ps_rm = name == "rm"
+    if name in _PS_REMOVE_WORDS or ps_rm:
+        flags = {"recurse": False, "whatif": False, "force": False}
         operands: list[str] = []
         waiting = ""  # the role of a parameter whose value is the next word
         for arg in args:
@@ -326,7 +329,7 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
                 operands.extend(value.split(","))
             elif role != "switch" and not glued:
                 waiting = role
-        if flags["recurse"] and not flags["whatif"]:  # ``-WhatIf`` only previews
+        if flags["recurse"] and not flags["whatif"] and (flags["force"] or not ps_rm):
             kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
     if name in _CMD_REMOVE_WORDS:
         switches = [arg for arg in args if _CMD_SWITCH_RE.fullmatch(arg)]

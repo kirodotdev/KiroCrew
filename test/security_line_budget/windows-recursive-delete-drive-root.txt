@@ -1,5 +1,6 @@
-+104
-On Windows the rm floor reads PowerShell Remove-Item and its aliases (not rm) with
++107
+On Windows the rm floor reads PowerShell Remove-Item and its aliases (rm only when
+-Recurse and -Force both bind) with
 -Recurse, binding its parameters the way PowerShell does (-WhatIf and -Recurse:$false
 refuse nothing, an -Exclude value is not a target, a quoted ~ is home, a word that binds
 no parameter but holds a comma is a path array), and cmd rd/rmdir/del/erase with /s

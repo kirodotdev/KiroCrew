@@ -1384,6 +1384,9 @@ class TestWindowsRespellings:
         r"Remove-Item -Recurse -Force ~\*",
         r"Remove-Item -Recurse -Force $HOME\*",
         r"Remove-Item -Recurse ~\ -Force",
+        r"rm -Recurse -Force C:\ ",  # PowerShell's rm alias with both switches bound
+        r"rm -Recurse -Force ~",
+        r"RM -rec -FO D:/",
         r"rmdir /s /q C:\ ",
         r"rd /S/Q C:\ ",
         r"del /s /q C:\* ",
@@ -1411,6 +1414,8 @@ class TestWindowsRespellings:
         r'rd /s /q "~"',
         r"rm -r ~",  # PowerShell's rm alias is left to the rm reading: partial flags pass
         r"rm -r C:\ ",
+        r"rm -Recurse ~",  # rm with only one of the two switches stays allowed
+        r"rm -Force C:\ ",
         "bash -c 'rm -fr \\\n/tmp/x'",  # a line continuation is not a path separator
         "cat <<EOF\n\\$(x=$((1<<2))\nrm -r -f ~\n)\nEOF",  # an escape in heredoc body data
     )
