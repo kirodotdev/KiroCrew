@@ -235,7 +235,9 @@ async def test_a_session_mint_with_a_delegated_value_is_refused_before_a_token(
     row = fake_sel.log_api_access.call_args.kwargs
     assert row["operation"] == "token.local"
     assert row["outcome"] == "denied"
-    assert row["resources"] == f"denied delegated-session app={_APP} basis=spawned-app via=delegated"
+    assert (
+        row["resources"] == f"denied delegated-session app={_APP} basis=spawned-app via=delegated"
+    )
 
 
 @pytest.mark.asyncio
