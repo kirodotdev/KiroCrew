@@ -33,6 +33,7 @@ import { AGENT_PAGE_SANDBOX, buildSrcdoc, resolveWidgetTheme } from '../../lib/w
 import { sanitizeCssValue } from '../../lib/cssSanitize'
 import { TAILWIND_RUNTIME_PATH } from '../../lib/vendorPaths'
 import { withBase } from '../../lib/basePath'
+import { fetchRuntimeText } from '../../lib/tailwindRuntimeInline'
 
 /** The grant set of the tab's frame for a page it shows without script: empty, every
  *  sandbox restriction applied (`CREW_DASHBOARD_SANDBOX_STATIC` in
@@ -172,7 +173,7 @@ export interface DashboardDownloadInput {
 /** The saved document as a Blob. *fetchText* reads the runtime; tests pass their own. */
 export async function buildDashboardDownload(
   input: DashboardDownloadInput,
-  fetchText: (url: string) => Promise<string> = defaultFetchText,
+  fetchText: (url: string) => Promise<string> = fetchRuntimeText,
 ): Promise<Blob> {
   const runtimeUrl = window.location.origin + withBase(TAILWIND_RUNTIME_PATH)
   const runtimeJs = await fetchText(runtimeUrl)
@@ -250,10 +251,4 @@ function sandboxedWrapper(page: string, input: DashboardDownloadInput): string {
   // document made by `createHTMLDocument`; without it the wrapper opens in quirks mode.
   const doctype = new XMLSerializer().serializeToString(document.implementation.createDocumentType('html', '', ''))
   return doctype + doc.documentElement.outerHTML
-}
-
-async function defaultFetchText(url: string): Promise<string> {
-  const res = await fetch(url, { credentials: 'same-origin' })
-  if (!res.ok) return ''
-  return res.text()
 }
