@@ -140,9 +140,7 @@ def test_co_change_counts_the_first_parent_commits_that_changed_both(tmp_path: P
         "src/kiro_crew/café.py": {"test/test_café.py": 1},
     }
     # The root commit lists no paths, so it pairs nothing; nor does a commit with no test.
-    pairs, window = ctm.co_change_window(repo, "HEAD", 10, FALLBACK_TIMEOUT_SECS)
-    assert pairs == whole and window == {"asked": 10, "read": 4, "shallow": False}
-    assert ctm.window_is_whole(window)
+    assert ctm.co_change_window(repo, "HEAD", 10, FALLBACK_TIMEOUT_SECS) == whole
     assert ctm.co_change([["src/kiro_crew/a.py", "docs/x.md"]]) == {}
     # A shallow clone answers as the full one does for a window whose every commit
     # has its parent, and for no wider one: its boundary commit lists no paths, so
@@ -150,36 +148,10 @@ def test_co_change_counts_the_first_parent_commits_that_changed_both(tmp_path: P
     for depth in (1, 2, 3):
         clone = _shallow_clone(repo, depth)
         for commits in range(depth):
-            full, _ = ctm.co_change_window(repo, "HEAD", commits, FALLBACK_TIMEOUT_SECS)
-            held, window = ctm.co_change_window(clone, "HEAD", commits, FALLBACK_TIMEOUT_SECS)
-            assert held == full and window == {"asked": commits, "read": commits, "shallow": True}
-            assert ctm.window_is_whole(window)
+            full = ctm.co_change_window(repo, "HEAD", commits, FALLBACK_TIMEOUT_SECS)
+            assert ctm.co_change_window(clone, "HEAD", commits, FALLBACK_TIMEOUT_SECS) == full
         with pytest.raises(ValueError, match=f"holds {depth} of the {depth + 1} commits"):
             ctm.co_change_window(clone, "HEAD", depth, FALLBACK_TIMEOUT_SECS)
-
-
-@pytest.mark.parametrize(
-    "window",
-    [
-        None,
-        {},
-        [3, 3, False],
-        {"asked": 3, "read": 2, "shallow": True},
-        {"asked": 3, "read": 2},
-        {"asked": 3, "read": 2, "shallow": "false"},
-        {"asked": 3, "read": 4, "shallow": False},
-        {"asked": 3, "shallow": False},
-        {"asked": "3", "read": "3", "shallow": False},
-        {"asked": True, "read": True, "shallow": False},
-        {"asked": -1, "read": -1, "shallow": False},
-    ],
-)
-def test_a_window_that_does_not_say_it_is_whole_is_not_whole(window: object) -> None:
-    assert not ctm.window_is_whole(window)
-    # The same window with every commit asked for read is whole, shallow or not.
-    for shallow in (True, False):
-        assert ctm.window_is_whole({"asked": 3, "read": 3, "shallow": shallow})
-    assert ctm.window_is_whole({"asked": 3, "read": 2, "shallow": False})
 
 
 def test_bundle_cli_writes_one_gzip_file_select_reads(
@@ -198,9 +170,7 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     assert doc["schema"] == 2 and doc["commit"] == "abc" and doc["built_at"]
     assert doc["map"] == MAP and doc["guard"] == TIER
     assert doc["co_change"]["src/kiro_crew/a.py"]["test/test_a.py"] == 2
-    assert doc["co_change_window"] == {"asked": 2000, "read": 4, "shallow": False}
-    keys = {"schema", "commit", "built_at", "map", "co_change_window", *ctm.BUNDLE_TABLES}
-    assert set(doc) == keys
+    assert set(doc) == {"schema", "commit", "built_at", "map", *ctm.BUNDLE_TABLES}
     assert ctm.load_bundle(out) == doc and ctm.load_map(out) == MAP
     with pytest.raises(ValueError):
         ctm.load_bundle(map_path)
@@ -248,9 +218,6 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
         # Every table is in the file with rows, or named as left out: never both, never empty.
         assert {t for t in ctm.BUNDLE_TABLES if t in doc} == set(ctm.BUNDLE_TABLES) - set(absent)
         assert all(doc[t] for t in ctm.BUNDLE_TABLES if t in doc)
-        # The window is written with its table and says it is whole, or not at all.
-        assert ("co_change_window" in doc) == ("co_change" in doc)
-        assert "co_change" not in doc or ctm.window_is_whole(doc["co_change_window"])
         assert doc["map"] == MAP
     # The CLI names each table it left out, and still writes the map.
     map_path = tmp_path / "map.json"
@@ -263,15 +230,6 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert "bundle: tables none" in printed
     assert all(f"::warning::{table} left out" in printed for table in ctm.BUNDLE_TABLES)
     assert ctm.load_map(out) == MAP and not set(ctm.load_bundle(out)) & set(ctm.BUNDLE_TABLES)
-    # `--require` turns a table left out into exit 1 with nothing written.
-    out.unlink()
-    for table in ctm.BUNDLE_TABLES:
-        assert ctm.main([*argv, "--out", str(out), "--require", table]) == 1
-        assert f"::error::{table} is required" in capsys.readouterr().out and not out.exists()
-    monkeypatch.setattr(ctm, "guard_tier", lambda root: TIER)
-    whole = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
-    assert ctm.main([*whole, *(a for t in ctm.BUNDLE_TABLES for a in ("--require", t))]) == 0
-    assert set(ctm.BUNDLE_TABLES) <= set(ctm.load_bundle(out))
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
