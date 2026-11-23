@@ -3529,8 +3529,13 @@ with `reason: "api_failure"` arms a checkpoint `GOVERNED_SETTLE_SECS` (6s)
 later. The host sends it when its governance read failed and it fail-closed
 MCP: it then lists no servers for the session. If by the checkpoint the host
 has named none of the required servers for this session in any status entry or
-MCP tag, startup terminates with `AcpRuntimeError` naming the transient
-governance read failure, instead of waiting out the budget. If the host names a
+MCP tag, startup terminates with `KasGovernanceOffError` instead of waiting
+out the budget. Its message is what the chat shows, so it is in plain words
+with no internal names (the wire reason goes to the log): this machine's
+sign-in could not read the organization's MCP settings, and if sending again
+fails the same way, to check the sign-in or the organization's MCP settings.
+It does not only advise a resend: the error is transient, so the chat's retry
+layer has already re-sent it before a person reads it. If the host names a
 required server before then (a re-read turned MCP back on), the ordinary wait
 continues and a server that connects still starts the session. The failed start
 evicts the session, and the next start re-reads governance. With registry mode

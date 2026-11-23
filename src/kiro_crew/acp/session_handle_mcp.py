@@ -425,8 +425,8 @@ async def wait_mcp_ready(
     :data:`GOVERNANCE_API_FAILURE_REASON` says the host turned MCP off after
     its governance read failed. Undeclared, it arms a checkpoint
     :data:`GOVERNED_SETTLE_SECS` later: if by then the host has named none of
-    the required servers for this session, the start fails naming the transient
-    read. Any status entry or tag for a required server before then (the host re-read
+    the required servers for this session, the start fails with
+    :func:`_governance_off_message`. Any status entry or tag for a required server before then (the host re-read
     and mounted them) keeps the ordinary wait, so a start that would have
     succeeded still does. Governed, the registry checkpoint decides as before.
     """
@@ -556,11 +556,26 @@ class KasGovernanceOffError(AcpRuntimeError):
 
 
 def _governance_off_message() -> str:
+    """The user-facing start failure, in plain words.
+
+    The wire reason and timings go to the log, not to the person in the chat:
+    "the host" reads as a teammate's machine in Shared Crew, and the internal
+    names say nothing to them. The chat's retry layer has already re-sent a
+    transient start failure before a person reads this, so the text names what
+    to check rather than only advising a resend.
+    """
+    logger.info(
+        "KAS turned MCP off after a failed governance read (%s); no managed server "
+        "named within %gs",
+        GOVERNANCE_API_FAILURE_REASON,
+        GOVERNED_SETTLE_SECS,
+    )
     return (
-        "KAS managed MCP initialization failed: the host turned MCP off for this "
-        f"session after its governance read failed ({GOVERNANCE_API_FAILURE_REASON}) "
-        f"and reported none of the managed servers within {GOVERNED_SETTLE_SECS:g}s. "
-        "The read is transient: send the message again to start a new session."
+        "This chat could not start on this machine: your Kiro sign-in could not "
+        "read your organization's MCP settings, so Kiro Crew's tools were turned off. "
+        "If sending again fails the same way, check that you are still signed in "
+        "(`kirocrew doctor` checks it), or ask your organization's admin to check "
+        "its MCP settings."
     )
 
 
