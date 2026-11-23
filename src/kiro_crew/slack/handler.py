@@ -252,6 +252,7 @@ from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
     bots_text,
     context_template,
     crew_bots,
+    memory_binding_refusal,
     resolve_bot_name,
     resolve_channel_crew,
 )
