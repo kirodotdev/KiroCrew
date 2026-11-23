@@ -49,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
 )
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_CLAUDE_CODE
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -1161,10 +1162,16 @@ async def _get_or_create_impl(
                             _namespace,
                             advertised,
                         )
-                    if self._deps.is_claude_backend(provider):
-                        switch_model = self._deps.to_provider_id(model, "claude_code")
+                    # The id the switch sends is spelled in the harness's model-id
+                    # namespace (``SessionCapabilities.model_id_namespace``). Only
+                    # ``claude_code`` has ids of its own in the registry; every
+                    # other namespace, an unknown backend's ``acp`` included, takes
+                    # kiro's ids.
+                    wire_namespace = self._deps.provider_model_namespace(provider)
+                    if wire_namespace == MODEL_NAMESPACE_CLAUDE_CODE:
+                        switch_model = self._deps.to_provider_id(model, wire_namespace)
                         comparable_pool = (
-                            self._deps.to_provider_id(pool_model, "claude_code")
+                            self._deps.to_provider_id(pool_model, wire_namespace)
                             if pool_model
                             else pool_model
                         )
