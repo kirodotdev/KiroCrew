@@ -21687,7 +21687,7 @@
       "remoteControlCard": {
         "title": "远程控制",
         "on": "远程控制已开启。你的 Kiro 账户可以从其他设备访问 {{productName}}。",
-        "restart_to_connect": "远程控制已设置为开启，但未连接。请重启 {{productName}} 以连接。",
+        "not_connected": "远程控制已开启，但未连接。如果远程控制是在 {{productName}} 上次启动后才开启或设置的，请重启 {{productName}}。如果“概览”页的“隧道”卡片显示错误，错误信息会说明原因。如果远程控制使用这个 Crew 的 Kiro 登录，而它不是有效的公司 SSO 登录，请在“设置 → Kiro 账户”中用公司 SSO 登录。",
         "connecting": "远程控制已开启，正在连接。它会自己连上，不需要重启。",
         "locked": "远程控制由此版本统一管理，无法在此处开启。",
         "turn_off": "关闭",

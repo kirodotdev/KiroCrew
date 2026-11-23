@@ -22807,7 +22807,7 @@
       "remoteControlCard": {
         "title": "Control remoto",
         "on": "El control remoto está activado. Tu cuenta de Kiro puede acceder a {{productName}} desde tus otros dispositivos.",
-        "restart_to_connect": "El control remoto está configurado como activado, pero no está conectado. Reinicia {{productName}} para conectarlo.",
+        "not_connected": "El control remoto está activado, pero no está conectado. Si el control remoto se activó o se configuró después del último inicio de {{productName}}, reinicia {{productName}}. Si el panel Túnel de Resumen muestra un error, ese error indica el motivo. Si el control remoto usa el inicio de sesión de Kiro de esta Crew y no es un inicio de sesión vigente con el SSO de tu empresa, inicia sesión con el SSO de tu empresa en Ajustes → Cuenta de Kiro.",
         "connecting": "El control remoto está activado y conectándose. Se conecta solo, así que no hace falta reiniciar.",
         "locked": "Esta compilación gestiona el control remoto y no se puede activar aquí.",
         "turn_off": "Desactivar",

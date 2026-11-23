@@ -310,6 +310,9 @@ async def test_a_401_refreshes_the_sign_in_once_then_stops(
         finally:
             await source.aclose()
         assert len(lease.requests) == 2 and stuck.asked[:2] == [None, STALE]
+    # It sends the owner to sign in, never to the tunnel.relay_lease_* settings.
+    assert "sign in to Kiro again" in str(caught.value)
+    assert "tunnel.relay_lease" not in str(caught.value)
     for secret in (STALE, FRESH, ARN):
         assert secret not in caplog.text and secret not in str(caught.value)
 
