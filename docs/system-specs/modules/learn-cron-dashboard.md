@@ -3574,6 +3574,32 @@ condition: a boundary where no successor dispatches (empty queue, dropped
 entry, synthesis not eligible) emits nothing here -- `_finish_queue_cycle`'s
 `chat_done` stays that path's sole finalizer, so no path double-finalizes.
 
+### A stream keeps its own turn's end
+
+An HTTP stream (the `POST /api/chat` SSE reply and both OpenAI-compatible
+shapes) reads `slot._pending` until it sees `done`. A send that starts a turn
+directly first clears what earlier turns left pending
+(`slot_buffers.drain_stale_pending`). The previous turn can have ended, so
+the slot is idle, while its stream has not yet read its `done`. When a stream
+is still attached and the clear finds a `done`, the frames up to the last one
+are kept in `slot._stream_handoffs` under the epoch that stream reads with.
+Every such send then moves `slot._stream_epoch` on, so no two streams share an
+epoch. Each stream reads with
+the epoch its own send returned (`stream_frames`): while that epoch is current
+it drains `_pending`, and once a newer send has moved it on it reads its own
+kept frames, which end on its `done`. Kept frames are per epoch, so a later
+send never replaces an earlier stream's unread end. So the old stream ends on
+its own turn's end instead of waiting for as long as the slot stays busy, and
+the new stream never ends on the old turn's `done`. Every reader attaches
+through `slot_buffers.stream_reader(slot, epoch)`: the SSE reply and both
+OpenAI-compatible replies. It counts the reader as a consumer
+(`pending_consumer`), gives its epoch an entry only while it is attached, and
+runs `release_stream` however the block ends, response preparation included.
+Frames are kept only for an epoch that has an entry, so a `?ws=1` turn or a
+reader that never opened leaves nothing kept. `release_stream` drops the
+reader's own entry; when it is the last reader attached it drops every entry,
+and it clears `_pending` only while its epoch is current.
+
 ### Every turn exit runs the turn's tail
 
 `chat_turn.queue_cycle._end_turn_tail` is the one ordered list of what every

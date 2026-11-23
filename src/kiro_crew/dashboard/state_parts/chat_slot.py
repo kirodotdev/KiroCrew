@@ -119,6 +119,8 @@ class _ChatSlot:
         "_pending",
         "_pending_consumers",
         "_pending_release_deferred",
+        "_stream_epoch",
+        "_stream_handoffs",
         "_queue",
         "_queue_persisted_sig",
         "_queue_persist_inflight",
@@ -610,6 +612,8 @@ class _ChatSlot:
     _pending: list[dict[str, str]]
     _pending_consumers: int
     _pending_release_deferred: bool
+    _stream_epoch: int
+    _stream_handoffs: dict[int, list[dict[str, str]]]
     _queue: list[dict[str, Any]]
     _queue_persisted_sig: str
     _queue_persist_inflight: bool
