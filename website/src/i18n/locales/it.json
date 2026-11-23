@@ -14355,7 +14355,18 @@
         "save_title": "Salva questo workflow",
         "save_workflow": "Salva workflow",
         "saved_as": "Salvato come {{command}}",
-        "source_unavailable": "Impossibile caricare il sorgente del workflow completato."
+        "source_unavailable": "Impossibile caricare il sorgente del workflow completato.",
+        "update_apply": "Applica",
+        "update_done": "{{command}} aggiornato alla revisione {{revision}}",
+        "update_existing": "Aggiorna esistente…",
+        "update_format_mismatch": "Questa esecuzione e il workflow salvato usano formati diversi, quindi non può diventarne una revisione.",
+        "update_help": "Aggiungi il workflow esatto di questa esecuzione completata come prossima revisione di un workflow salvato. Le revisioni precedenti restano.",
+        "update_pick": "Scegli un workflow salvato",
+        "update_revision": "Revisione {{from}} → {{to}}",
+        "update_stale": "Il workflow salvato o questa esecuzione è cambiato mentre la finestra era aperta. Controlla il nuovo diff, poi applica di nuovo.",
+        "update_target": "Workflow salvato",
+        "update_title": "Aggiorna un workflow salvato",
+        "update_unchanged": "Il workflow di questa esecuzione è già la revisione attuale del workflow salvato."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossibile caricare lo snapshot:",

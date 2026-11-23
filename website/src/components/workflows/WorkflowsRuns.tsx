@@ -26,6 +26,7 @@ import {
   ListTree,
   PauseCircle,
   Save,
+  GitCommitHorizontal,
 } from 'lucide-react'
 import { api } from '../../api/client'
 import Modal from '../../components/Modal'
@@ -38,6 +39,7 @@ import type { RunPlan } from './planModel'
 import WorkflowRunTree from './WorkflowRunTree'
 import WorkflowRunGraph from './WorkflowRunGraph'
 import WorkflowSourceCode from './WorkflowSourceCode'
+import UpdateFromRunModal from './UpdateFromRunModal'
 
 import { i18nT } from '../../i18n/t'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -245,7 +247,8 @@ function withoutKey(record: Readonly<Record<string, string>>, key: string): Read
   return rest
 }
 
-export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean }) {
+// `askAgent` false: the host holds unsaved work the hand-off's navigation would discard.
+export default function WorkflowsRuns({ embedded = false, askAgent = true }: { embedded?: boolean; askAgent?: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // The run the Save dialog is open for (null: closed). Bound when the dialog
   // opens, so a selection change while it is open cannot retarget the save.
@@ -263,6 +266,11 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
   const [cancelErrors, setCancelErrors] = useState<Readonly<Record<string, string>>>({})
   const [savedSlugs, setSavedSlugs] = useState<Readonly<Record<string, string>>>({})
   const [saveFailed, setSaveFailed] = useState<ReadonlySet<string>>(() => new Set())
+  // The run the Update dialog is open for, and the revision each update wrote.
+  const [updateFor, setUpdateFor] = useState<string | null>(null)
+  const [updatedRevisions, setUpdatedRevisions] = useState<
+    Readonly<Record<string, { command: string; revision: number }>>
+  >({})
   // Tree or graph for the SAME snapshot — a mode on this panel rather than a second
   // tab, so the graph reads one data source and costs nothing when unused. Local, not
   // persisted: which question a reader is asking changes run to run.
@@ -338,6 +346,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
     cancelMutationError ?? (detailErrorObj instanceof Error ? detailErrorObj.message : detailErrorObj ? String(detailErrorObj) : null)
   const savedSlug = selectedId ? savedSlugs[selectedId] ?? '' : ''
   const saveFailedHere = !!selectedId && saveFailed.has(selectedId)
+  const updatedHere = selectedId ? updatedRevisions[selectedId] : undefined
 
   const select = useCallback((id: string) => {
     setSelectedId(id)
@@ -373,7 +382,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
         {listError && (
           <ErrorNotice
             message={`${i18nT('apps.workflows.workflowsRuns.could_not_load_runs')} ${listError}`}
-            askAgent
+            askAgent={askAgent}
           />
         )}
 
@@ -475,19 +484,33 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
           {savedSlug ? (
             <code className="text-[11px] text-ok">/workflow {savedSlug}</code>
           ) : null}
+          {updatedHere ? (
+            <code className="text-[11px] text-ok">
+              {i18nT('pages.chat.workflowRunCard.update_done', {
+                command: updatedHere.command,
+                revision: updatedHere.revision,
+              })}
+            </code>
+          ) : null}
           {canSaveRun(detail) ? (
-            <Btn onClick={beginSave} className="ml-auto">
-              <Save className="lucide-inline" />
-              {i18nT('pages.chat.workflowRunCard.save_workflow')}
-            </Btn>
+            <span className="ml-auto flex items-center gap-2">
+              <Btn onClick={() => { if (detail) setUpdateFor(detail.run_id) }}>
+                <GitCommitHorizontal className="lucide-inline" />
+                {i18nT('pages.chat.workflowRunCard.update_existing')}
+              </Btn>
+              <Btn onClick={beginSave}>
+                <Save className="lucide-inline" />
+                {i18nT('pages.chat.workflowRunCard.save_workflow')}
+              </Btn>
+            </span>
           ) : null}
         </div>
 
-        {detailError && <ErrorNotice message={detailError} askAgent />}
+        {detailError && <ErrorNotice message={detailError} askAgent={askAgent} />}
         {/* The dialog holds its own notice; this one covers a save whose dialog
             was closed before it failed. */}
         {saveFailedHere && !saveOpen ? (
-          <ErrorNotice message={i18nT('pages.overview.workflowLibrary.request_failed')} askAgent />
+          <ErrorNotice message={i18nT('pages.overview.workflowLibrary.request_failed')} askAgent={askAgent} />
         ) : null}
 
         {!selectedId && !detailError && (
@@ -542,6 +565,18 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
           />
         )}
       </div>
+      {updateFor ? (
+        <UpdateFromRunModal
+          runId={updateFor}
+          askAgent={askAgent}
+          onClose={() => setUpdateFor(null)}
+          onUpdated={next => {
+            const runId = updateFor
+            setUpdatedRevisions(prev => ({ ...prev, [runId]: next }))
+            setUpdateFor(null)
+          }}
+        />
+      ) : null}
       <Modal
         open={saveOpen}
         onClose={() => setSaveFor(null)}
@@ -629,7 +664,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
           {saveMutation.error ? (
             <ErrorNotice
               message={i18nT('pages.overview.workflowLibrary.request_failed')}
-              askAgent={!saveName && !saveDescription}
+              askAgent={askAgent && !saveName && !saveDescription}
             />
           ) : null}
         </div>

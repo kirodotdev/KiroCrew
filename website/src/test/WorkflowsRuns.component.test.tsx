@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
   promoteWorkflowRun: vi.fn(),
+  workflowDefinitions: vi.fn(),
+  previewWorkflowRunUpdate: vi.fn(),
+  updateWorkflowRunDefinition: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({ api: mockApi }));
@@ -141,6 +144,53 @@ describe("WorkflowsRuns", () => {
       }),
     );
     expect(await screen.findByText("/workflow debug-plan")).toBeInTheDocument();
+  });
+
+  it("appends a finished run to a saved workflow and shows the revision", async () => {
+    const target = { id: "wfd_plan", slug: "debug-plan", name: "Debug plan", revision: 1, format: "task-plan" };
+    mockApi.workflowDefinitions.mockResolvedValue({ definitions: [target] });
+    mockApi.previewWorkflowRunUpdate.mockResolvedValue({
+      target,
+      diff: "+  lint:",
+      unchanged: false,
+      format_mismatch: false,
+      run_source_sha256: "sha",
+    });
+    mockApi.updateWorkflowRunDefinition.mockResolvedValue({
+      ok: true,
+      definition: { ...target, revision: 2 },
+    });
+    renderRuns();
+
+    fireEvent.click(await screen.findByText("Debug plan"));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: i18nT("pages.chat.workflowRunCard.update_existing"),
+      }),
+    );
+    expect(
+      await screen.findByRole("dialog", {
+        name: i18nT("pages.chat.workflowRunCard.update_title"),
+      }),
+    ).toBeInTheDocument();
+    await screen.findByText("Revision 1 → 2");
+    // Apply also waits on the definitions list, which the preview does not.
+    const apply = screen.getByRole("button", {
+      name: i18nT("pages.chat.workflowRunCard.update_apply"),
+    });
+    await waitFor(() => expect(apply).toBeEnabled());
+    fireEvent.click(apply);
+
+    expect(
+      await screen.findByText("Updated /workflow debug-plan to revision 2"),
+    ).toBeInTheDocument();
+    expect(mockApi.updateWorkflowRunDefinition).toHaveBeenCalledWith("wf_task_plan", {
+      workflow: "wfd_plan",
+      expected_revision: 1,
+      expected_source_sha256: "sha",
+      expected_id: "wfd_plan",
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("cancels a running workflow without selecting its row", async () => {

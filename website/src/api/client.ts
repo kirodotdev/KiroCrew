@@ -259,6 +259,7 @@ export type {
   WorkflowDefinitionRevision,
   WorkflowDefinition,
   WorkflowDefinitionWrite,
+  WorkflowRunUpdatePreview,
 } from './client/workflows'
 export type {
   InstallStreamResult,

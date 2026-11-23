@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
       name: string
       status: string
       source: string
+      workflow_id?: string
       events: never[]
     },
     loading: false,
@@ -28,6 +29,23 @@ vi.mock('../components/workflows/WorkflowSourceCode', () => ({
     <pre aria-label={ariaLabel} data-language="python" data-line-numbers="true">
       {source}
     </pre>
+  ),
+}))
+// The dialog has its own suite (UpdateFromRunModal.test); here only its wiring.
+vi.mock('../components/workflows/UpdateFromRunModal', () => ({
+  default: ({
+    runId,
+    onUpdated,
+  }: {
+    runId: string
+    onUpdated: (d: { command: string; revision: number }) => void
+  }) => (
+    <div data-testid="update-modal">
+      {runId}
+      <button type="button" onClick={() => onUpdated({ command: '/workflow deep-dive-bug-hunt', revision: 4 })}>
+        mock-updated
+      </button>
+    </div>
   ),
 }))
 import { renderWithProviders, createTestStore } from './helpers'
@@ -156,6 +174,13 @@ describe('WorkflowRunCard rendering', () => {
         },
       } as unknown as ChatState,
     })
+    mocks.snapshot.snapshot = {
+      run_id: RUN_ID,
+      name: 'Deep Dive Bug Hunt',
+      status: 'finished',
+      source: SOURCE,
+      events: [],
+    }
     const { container, unmount } = renderWithProviders(
       <WorkflowRunCard runId={RUN_ID} message={wfToolMsg()} />,
       { store: finishedStore },
@@ -166,6 +191,7 @@ describe('WorkflowRunCard rendering', () => {
     ).toBeInTheDocument()
     expect(container.querySelector('svg.text-ok')).not.toBeNull()
     unmount()
+    mocks.snapshot.snapshot = null
 
     const runningStore = createTestStore({
       chat: {
@@ -259,6 +285,97 @@ describe('WorkflowRunCard rendering', () => {
     expect(
       await screen.findByText('Saved as /workflow deep-dive-bug-hunt'),
     ).toBeInTheDocument()
+  })
+
+  it('offers neither save nor update on a run of a saved workflow', () => {
+    const store = createTestStore({
+      chat: {
+        workflowRuns: {
+          [RUN_ID]: { run_id: RUN_ID, name: 'Deep Dive Bug Hunt', status: 'finished' },
+        },
+      } as unknown as ChatState,
+    })
+    mocks.snapshot.snapshot = {
+      run_id: RUN_ID,
+      name: 'Deep Dive Bug Hunt',
+      status: 'finished',
+      source: SOURCE,
+      workflow_id: 'wfd_saved',
+      events: [],
+    }
+    renderWithProviders(
+      <WorkflowRunCard runId={RUN_ID} message={wfToolMsg()} />,
+      { store },
+    )
+    expect(screen.queryByRole('button', { name: 'Save workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update existing…' })).not.toBeInTheDocument()
+  })
+
+  it('waits for the run snapshot before offering save or update', () => {
+    const store = createTestStore({
+      chat: {
+        workflowRuns: {
+          [RUN_ID]: { run_id: RUN_ID, name: 'Deep Dive Bug Hunt', status: 'finished' },
+        },
+      } as unknown as ChatState,
+    })
+    mocks.snapshot.snapshot = null
+    mocks.snapshot.loading = true
+    renderWithProviders(
+      <WorkflowRunCard runId={RUN_ID} message={wfToolMsg()} />,
+      { store },
+    )
+    expect(screen.queryByRole('button', { name: 'Save workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update existing…' })).not.toBeInTheDocument()
+  })
+
+  it('says why save and update are missing when the snapshot fails to load', () => {
+    const store = createTestStore({
+      chat: {
+        workflowRuns: {
+          [RUN_ID]: { run_id: RUN_ID, name: 'Deep Dive Bug Hunt', status: 'finished' },
+        },
+      } as unknown as ChatState,
+    })
+    mocks.snapshot.error = 'boom'
+    renderWithProviders(
+      <WorkflowRunCard runId={RUN_ID} message={wfToolMsg()} />,
+      { store },
+    )
+    expect(screen.getByTestId('workflow-run-card-source-error')).toHaveTextContent(
+      'The completed workflow source could not be loaded.',
+    )
+    expect(screen.queryByRole('button', { name: 'Save workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update existing…' })).not.toBeInTheDocument()
+  })
+
+  it('opens the update dialog and shows the revision it wrote', async () => {
+    const store = createTestStore({
+      chat: {
+        workflowRuns: {
+          [RUN_ID]: { run_id: RUN_ID, name: 'Deep Dive Bug Hunt', status: 'finished' },
+        },
+      } as unknown as ChatState,
+    })
+    mocks.snapshot.snapshot = {
+      run_id: RUN_ID,
+      name: 'Deep Dive Bug Hunt',
+      status: 'finished',
+      source: SOURCE,
+      events: [],
+    }
+    renderWithProviders(
+      <WorkflowRunCard runId={RUN_ID} message={wfToolMsg()} />,
+      { store },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Update existing…' }))
+    expect(screen.getByTestId('update-modal')).toHaveTextContent(RUN_ID)
+    fireEvent.click(screen.getByRole('button', { name: 'mock-updated' }))
+    expect(
+      await screen.findByText('Updated /workflow deep-dive-bug-hunt to revision 4'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('update-modal')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save workflow' })).not.toBeInTheDocument()
   })
 
   it('locks the save fields while promotion is pending', async () => {

@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Save,
+  GitCommitHorizontal,
 } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { api } from '../../api/client'
@@ -30,6 +31,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
 import { useRunSnapshot } from '../../components/workflows/useRunSnapshot'
 import WorkflowSourceCode from '../../components/workflows/WorkflowSourceCode'
+import UpdateFromRunModal from '../../components/workflows/UpdateFromRunModal'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, switchSlot } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -127,6 +129,12 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
   const [saveSlug, setSaveSlug] = useState('')
   const [saveDescription, setSaveDescription] = useState('')
   const [savedSlug, setSavedSlug] = useState('')
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [updated, setUpdated] = useState<{ command: string; revision: number } | null>(null)
+  // A run of a saved workflow is already in the library: the server refuses
+  // both a save and an update of it (`already_saved`). Only a loaded snapshot
+  // says which kind of run this is.
+  const reusable = !!snapshot && !snapshot.workflow_id
 
   const name = sanitizeLlmOutput(
     (snapshot?.name || run?.name || parseLaunchLabel(message) || runId).slice(
@@ -236,9 +244,36 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
         {(status === 'failed' || status === 'cancelled') && errMsg && (
           <ErrorNotice variant="inline" message={errMsg} askAgent className="mt-1" testId="workflow-run-card-error" />
         )}
-        {status === 'finished' && (
-          <div className="mt-2 pt-2 border-t border-accent/15 flex justify-end">
-            {savedSlug ? (
+        {/* Save and Update wait on the snapshot, so a failed load says why
+            they are missing here rather than only inside the Save dialog. */}
+        {status === 'finished' && !snapshot && sourceError && (
+          <ErrorNotice
+            variant="inline"
+            message={i18nT('pages.chat.workflowRunCard.source_unavailable')}
+            askAgent
+            className="mt-1"
+            testId="workflow-run-card-source-error"
+          />
+        )}
+        {status === 'finished' && reusable && (
+          <div className="mt-2 pt-2 border-t border-accent/15 flex flex-wrap justify-end gap-2">
+            {updated ? (
+              <Btn
+                onClick={() => navigate('/capabilities?tab=workflows')}
+                className="font-mono"
+              >
+                {i18nT('pages.chat.workflowRunCard.update_done', {
+                  command: updated.command,
+                  revision: updated.revision,
+                })}
+              </Btn>
+            ) : savedSlug ? null : (
+              <Btn onClick={() => setUpdateOpen(true)} disabled={sourceLoading}>
+                <GitCommitHorizontal className="lucide-inline" />
+                {i18nT('pages.chat.workflowRunCard.update_existing')}
+              </Btn>
+            )}
+            {updated ? null : savedSlug ? (
               <Btn
                 onClick={() => navigate('/capabilities?tab=workflows')}
                 className="font-mono"
@@ -260,6 +295,16 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
           </div>
         )}
       </div>
+      {updateOpen ? (
+        <UpdateFromRunModal
+          runId={runId}
+          onClose={() => setUpdateOpen(false)}
+          onUpdated={(next) => {
+            setUpdated(next)
+            setUpdateOpen(false)
+          }}
+        />
+      ) : null}
       <Modal
         open={saveOpen}
         onClose={() => setSaveOpen(false)}

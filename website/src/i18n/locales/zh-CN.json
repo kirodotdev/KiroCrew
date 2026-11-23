@@ -13683,7 +13683,18 @@
         "save_title": "保存此工作流",
         "save_workflow": "保存工作流",
         "saved_as": "已保存为 {{command}}",
-        "source_unavailable": "无法加载已完成工作流的源代码。"
+        "source_unavailable": "无法加载已完成工作流的源代码。",
+        "update_apply": "应用",
+        "update_done": "已将 {{command}} 更新到修订 {{revision}}",
+        "update_existing": "更新已有工作流…",
+        "update_format_mismatch": "此运行与已保存的工作流格式不同，无法成为它的修订。",
+        "update_help": "将此已完成运行的工作流原样添加为某个已保存工作流的下一个修订。之前的修订会保留。",
+        "update_pick": "选择一个已保存的工作流",
+        "update_revision": "修订 {{from}} → {{to}}",
+        "update_stale": "对话框打开期间，已保存的工作流或此运行发生了变化。请查看新的差异，然后再次应用。",
+        "update_target": "已保存的工作流",
+        "update_title": "更新已保存的工作流",
+        "update_unchanged": "此运行的工作流已经是该已保存工作流的当前修订。"
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "无法加载快照：",

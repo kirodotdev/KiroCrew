@@ -577,21 +577,25 @@ async def test_run_update_requires_a_workflow_a_revision_and_the_previewed_diges
             ("workflow", None),
             ("expected_revision", True),
             ("expected_source_sha256", ""),
+            ("expected_id", 7),
         ):
             response = await client.post(url, json={**_UPDATE_BODY, missing: bad})
             refused.append((response.status, (await response.json())["code"]))
-        updated = await client.post(url, json={**_UPDATE_BODY, "workflow": " demo "})
+        updated = await client.post(
+            url, json={**_UPDATE_BODY, "workflow": " demo ", "expected_id": "wfd_1"}
+        )
 
     assert refused == [
         (400, "workflow_ref_required"),
         (400, "workflow_revision_required"),
         (400, "workflow_source_sha256_required"),
+        (400, "workflow_expected_id_invalid"),
     ]
     assert updated.status == 200
     assert service.run_updated == (
         "wf_1",
         "demo",
-        {"expected_revision": 2, "expected_source_sha256": "sha-new"},
+        {"expected_revision": 2, "expected_source_sha256": "sha-new", "expected_id": "wfd_1"},
     )
 
 

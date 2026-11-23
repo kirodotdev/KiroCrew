@@ -583,7 +583,8 @@ export default function WorkflowLibraryTab() {
       </div>
 
       {view === 'runs' ? (
-        <WorkflowsRuns embedded />
+        // The library's unsaved work stays mounted behind Runs: withhold the hand-off there too.
+        <WorkflowsRuns embedded askAgent={!creating && !editorDirty && runInput.trim() === ''} />
       ) : (
         <>
           <p className="text-[13px] text-muted mb-4">
