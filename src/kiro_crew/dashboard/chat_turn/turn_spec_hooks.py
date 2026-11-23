@@ -52,7 +52,7 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
     project_hook_files_notice_meta,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
-from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
+from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new, notice_row_shown
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -872,6 +872,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     session whose spec declares ``"tools": []``, which Crew enforces only at the
     permission request. One more on a session whose adapter release has a known
     problem a newer release fixes (``KNOWN_LIMITATIONS``)."""
+    folder = getattr(client, "cwd", "")
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -887,9 +888,13 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         notice = getattr(client, name, "")
         if not (isinstance(notice, str) and notice):
             continue
-        if name == "telemetry_unconfirmed_notice" and not notice_gets_row(slot, notice):
+        text = _redact_display_text(notice)
+        if name == "telemetry_unconfirmed_notice":
+            if not notice_gets_row(slot, notice):
+                continue
+        elif not _session_notice_is_new(slot, text, folder) and notice_row_shown(slot, text):
             continue
-        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
