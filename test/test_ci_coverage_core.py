@@ -34,6 +34,7 @@ import pytest
 import yaml
 from coverage.exceptions import ConfigError, CoverageWarning
 
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts.ci import coverage_core
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -368,7 +369,7 @@ def _run_lane(job: dict, tmp_path: Path, event: str, out: str, status: int = 0):
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=60,
+        timeout=FALLBACK_TIMEOUT_SECS,
     )
     seen = (tmp_path / "seen-by-pytest").read_text(encoding="utf-8").splitlines()
     return result, seen
