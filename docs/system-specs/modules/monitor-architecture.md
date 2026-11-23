@@ -1032,14 +1032,31 @@ can run sooner: a head that newly needs a re-sync ends its sleep early (see
 *A monitor is a field, not a system*).
 
 When the gateway starts, every loop whose deadline passed while the gateway was
-down is held `_BOOT_WAKE_STAGGER_SECS` (30 s) longer than the one before it, so
-the sessions they wake cold-start one at a time instead of together. The hold is
-a plain nap ahead of the loop's own countdown (`AutoNudgeService._boot_holds`,
-read once by `_timer`), because the countdown can end early on a subject read.
-Each loop still ticks once; only its start moves. A work-ledger loop's boot
-replay is not held: a user turn cancels a held timer and the re-arm goes to the
-hours-long deadline, which would lose the replay, while an overdue loop re-armed
-that way is overdue again and fires on the overdue beat. A host short of memory
+down, and every work-ledger loop's boot replay (a tick at delay zero), is queued
+in boot order on one `BootPacer` (`autonudge_service/boot_pacer.py`), so the
+sessions they wake cold-start one at a time instead of together. Each loop's
+timer waits its turn there ahead of its own countdown, because the countdown can
+end early on a subject read. The gap after each release follows the memory
+posture a fresh `resource_status.probe` reports (memory, not disk: a woken
+session costs memory, and waiting frees no disk): `BOOT_WAKE_GAP_SECS` (2 s)
+while the host is `ample`, so two dozen loops are all released within about a
+minute; up to `BOOT_WAKE_TIGHT_GAP_SECS` (30 s) while it is `tight` or
+unreadable, released sooner once it recovers; and no release from a `critical`
+reading until the host reads `ample` again. Whatever the posture, the loop at the
+head is released once it has waited `BOOT_WAKE_MAX_HOLD_SECS` (300 s), so a host
+that stays critical slows the boot wakes down but never stops them. Each loop
+still ticks once; only its start moves, and a held loop only waits. A conductor's
+replay is paced because each one can wake a conductor that dispatches workers: a
+restart that replayed every conductor at once started some 30 sessions and their
+MCP servers together and stalled an 8-core host. A timer cancelled while it waits
+(a user turn, a stop, a replacing arm) leaves the queue, so the loops behind it
+move up. Its re-arm does not come back through the pacer, and an ordinary re-arm
+would go to the hours-long deadline and lose a conductor's replay, so a loop
+whose replay has not ticked yet is listed in `AutoNudgeService._boot_replays` and
+`_arm_from_deadline` re-arms it at delay zero instead, whichever path re-arms it
+(a turn's end, a settings update, a reconciler rescue); the first tick that
+starts drops it. An overdue loop re-armed after a
+turn is overdue again and fires on the overdue beat. A host short of memory
 otherwise starts every woken session and its MCP servers in the same few seconds
 and crash-loops (#33355).
 
