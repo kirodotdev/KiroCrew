@@ -239,6 +239,13 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     expect(sendTurn.mock.calls[0][0].stopHold).toBeInstanceOf(AbortController)
   })
 
+  it('lets Stop cancel a send while only sub-agents run, since that send starts a turn', async () => {
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    await renderChat({ subagentsRunning: true, turnRunning: false })
+    expect(await submitComments()).toBe(true)
+    expect(sendTurn.mock.calls[0][0].stopHold).toBeInstanceOf(AbortController)
+  })
+
   it('holds the idle send for Stop before it waits for the session revision', async () => {
     const hold = vi.spyOn(transport, 'holdForStop')
     const revision = vi.spyOn(revisionSeed, 'baseRevisionForPress')

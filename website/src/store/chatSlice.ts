@@ -1407,7 +1407,7 @@ export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWork
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectSlotTurnRunning, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectResumeInterrupted, selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,

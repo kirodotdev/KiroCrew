@@ -12,7 +12,7 @@ import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type Pa
 import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
 import type { PickedFileTokens } from './composerFileMentions'
 import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
-import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectPendingTurn, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
+import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, selectSlotTurnRunning, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectPendingTurn, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
@@ -801,6 +801,9 @@ export function useComposerSend({
     // A busy snapshot may be stale. The server's user event supplies the
     // bubble for an immediate dispatch; a real queue has its own card.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
+    // Read before startLocalTurn marks the slot running. Sub-agents alone do
+    // not hold a composer send, so it starts a turn that Stop must reach.
+    const turnRunning = slot ? selectSlotTurnRunning(store.getState(), slot) : true
     // Whether THIS send drew its own bubble. A plain send on a busy slot does
     // not: the server's `queue_push` card represents it. The receipt arms
     // below read this so none of them describes a row that was never rendered.
@@ -829,9 +832,9 @@ export function useComposerSend({
     if (loadChatConfig().scrollOnSend) setTimeout(() => { if (!slot || store.getState().chat.activeSlot === slot) scrollBottom() }, SCROLL_AFTER_RENDER_MS)
     if (slot) dispatch(startLocalTurn(slot))
     // Stop shows from here on, so a turn-starting send is cancellable from here
-    // too, through the revision wait below. On a busy slot the gateway queues
-    // this send, and Stop keeps the queue.
-    const stopHold = slot && !_busy ? holdForStop(slot) : undefined
+    // too, through the revision wait below. Behind a running turn the gateway
+    // queues this send, and Stop keeps the queue.
+    const stopHold = slot && !turnRunning ? holdForStop(slot) : undefined
     const sendEpoch = slot ? selectSlotRunEpoch(store.getState(), slot) : 0
     // Only this unconfirmed send owns the optimistic running flag. Once a live
     // frame or a slots broadcast has taken the turn over (the epoch moved or
