@@ -57,13 +57,9 @@ class RouteAccess:
 # records it.
 ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # App token, owner dashboard or internal caller may read (apps/browser_sites_routes.py).
-    ("GET", "/api/apps/{name}/browser-sites"): RouteAccess(
-        "apps.browser_sites.read", UNSTABLE
-    ),
+    ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.
-    ("POST", "/api/apps/{name}/browser-sites"): RouteAccess(
-        "apps.browser_sites.change", UNSTABLE
-    ),
+    ("POST", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.change", UNSTABLE),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
