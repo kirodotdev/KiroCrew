@@ -2724,6 +2724,13 @@ tests; the classes below are what the rest was made of.
   one layer up: the caller resolves the home on ITS thread and hands it in
   (`SessionManager._cleanup_deps` → `cleanup_stale_sandbox_profiles(data_home=...)`).
   When a job goes onto a pool, ask what it resolves lazily; the answer must be "nothing".
+  When the job reaches the home through code too deep to thread a parameter through (a
+  sandbox wrap, a crew-log fold), the worker runs it through
+  `config.paths.run_with_data_home(home, target, ...)` with the home its dispatcher
+  resolved: the node compile-cache prewarm thread starts on it, the crew-log eager fold
+  worker reads the home off each wake and folds each home's share through it, and the
+  crew-log cold-cell prime (`crew_log.slot_prime`) resolves it in `schedule` on the
+  caller's thread and submits `_run` through it (#41332).
   The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
   the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
   is the fix there. The loop's executor is covered: a cache write-through in
