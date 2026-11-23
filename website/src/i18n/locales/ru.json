@@ -13604,8 +13604,7 @@
       "content_copied_from_version": "содержимое скопировано из v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}",
-      "details": "Подробности"
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "Артефакт",

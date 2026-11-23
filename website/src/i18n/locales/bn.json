@@ -13012,8 +13012,7 @@
       "content_copied_from_version": "v{{version}} থেকে কনটেন্ট কপি করা হয়েছে",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}",
-      "details": "বিস্তারিত"
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "আর্টিফ্যাক্ট",

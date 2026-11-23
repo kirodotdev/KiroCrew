@@ -160,8 +160,6 @@ export function useArtifactDetailPageState() {
   )
   const [sendToSessionError, setSendToSessionError] = useState<string | null>(null)
   const [showPublish, setShowPublish] = useState(false)
-  // A canvas page's Details bar (folder, tags, Compare, activity), closed until asked for.
-  const [detailsOpen, setDetailsOpen] = useState(false)
   // Tag editing: tags shown in the header are editable inline. Adding a tag
   // posts metadata-only (no version bump). Removing a tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
@@ -181,8 +179,8 @@ export function useArtifactDetailPageState() {
     toggleReadingWidth, mdPreviewStyle, editedContent, setEditedContent, saving, setSaving, saveError,
     setSaveError, editGenerationRef, editBaseTokenRef, overwriteTokenRef, tokenWriteInFlightRef, saveConflict,
     setSaveConflict, contextError, setContextError, contextErrorIsRefresh, setContextErrorIsRefresh,
-    contextFailureMessage, sendToSessionError, setSendToSessionError, showPublish, setShowPublish, detailsOpen,
-    setDetailsOpen, addingTag, setAddingTag, newTag, setNewTag, refocusAddTagRef, addTagButtonRef, ime,
+    contextFailureMessage, sendToSessionError, setSendToSessionError, showPublish, setShowPublish, addingTag,
+    setAddingTag, newTag, setNewTag, refocusAddTagRef, addTagButtonRef, ime,
   }
 }
 

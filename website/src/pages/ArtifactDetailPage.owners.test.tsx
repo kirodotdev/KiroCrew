@@ -65,9 +65,9 @@ describe('ArtifactDetailPage facade', () => {
 })
 
 describe('ArtifactDetailPage owners', () => {
-  it('are the six files beside the facade', () => {
+  it('are the seven files beside the facade', () => {
     expect(owners).toEqual([
-      'ArtifactDetailPageBody.tsx', 'ArtifactDetailPageHeader.tsx', 'useArtifactDetailPageComments.ts',
+      'ArtifactDetailPageBody.tsx', 'ArtifactDetailPageCanvas.tsx', 'ArtifactDetailPageHeader.tsx', 'useArtifactDetailPageComments.ts',
       'useArtifactDetailPageCompanion.ts', 'useArtifactDetailPageDocument.ts', 'useArtifactDetailPageEditor.ts',
     ])
   })

@@ -17,13 +17,3 @@ import type { Artifact } from '../types'
  * "heading" or a literal hash — that is intent, and intent has to be stated.
  */
 export const USER_SELECTABLE_KINDS: Array<Artifact['kind']> = ['markdown', 'text', 'json', 'svg']
-
-/**
- * Whether a kind opens on a full-height page of its own: the body takes all the
- * height under a compact header and the page itself never scrolls, so the body
- * is the only thing that scrolls, pans or zooms. A canvas is one; every other
- * kind reads as a document on a scrolling page.
- */
-export function hasFullHeightPage(kind: Artifact['kind']): boolean {
-  return kind === 'canvas'
-}

@@ -16,11 +16,9 @@ import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from '../components/ArtifactBody'
-import { CanvasArtifactBody } from '../components/canvas/lazyCanvas'
 import { PublishHub } from '../components/PublishHub'
 import ArtifactVersionCompare from '../components/ArtifactVersionCompare'
 import { COMPARE_NONE } from '../lib/artifactCompare'
-import { hasFullHeightPage } from '../lib/artifactKinds'
 import { publishNoticeKey } from '../lib/publishHelpers'
 import type { Artifact, ArtifactEvent, ArtifactComment } from '../types'
 
@@ -277,6 +275,94 @@ export const ActivityTimeline = memo(function ActivityTimeline({
   )
 })
 
+export type UpstreamSyncBannerComponent = ComponentType<{ artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void> }>
+
+/** Where a fork or a publication stands against its remote copy, on both detail pages.
+ *  `onBeforeMutate` saves what the page holds unsaved before a pull, overwrite or
+ *  snapshot replaces the live content. */
+export function ArtifactUpstreamSync({ artifact, stateRead, UpstreamSyncBanner, onBeforeMutate }: {
+  artifact: Artifact
+  stateRead: ArtifactDetailPageStateRead
+  UpstreamSyncBanner: UpstreamSyncBannerComponent
+  onBeforeMutate: () => Promise<void>
+}) {
+  const { slug, queryClient, saving } = stateRead
+  if (!artifact.fork_metadata && !artifact.publication) return null
+  return (
+    <UpstreamSyncBanner artifact={artifact} busy={saving} onBeforeMutate={onBeforeMutate} onPulled={() => {
+      queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      queryClient.invalidateQueries({ queryKey: ['upstream-status', slug] })
+    }} />
+  )
+}
+
+/** A publication's failed sync and the notice its publish left, on both detail pages.
+ *  Neither offers the hand-off: both pages hold unsaved work beside these notices (the
+ *  generic page an editor buffer and a comment draft, the canvas page the board's
+ *  waiting autosave and a comment draft), and the hand-off navigates away from it. */
+export function ArtifactPublicationNotices({ artifact, editorRead, className = '' }: {
+  artifact: Artifact
+  editorRead: ArtifactDetailPageEditorRead
+  className?: string
+}) {
+  const { reprobing, reprobeError, reprobeNotice } = editorRead
+  return (
+    <>
+      {/* Read-only publication sync-error surface: keeps a persisted sync
+          error visible (no controls) if a publishing provider is ever
+          registered. Inert in the public edition, where the registry is empty
+          and `artifact.publication` is always null. */}
+      {/* No hand-off: see the doc comment above. */}
+      <ErrorNotice
+        title={i18nT('pages.artifactDetailPage.publication_sync_issue')}
+        message={artifact.publication?.last_error}
+        className={className}
+      />
+
+      {/* Notice-only publication: the publish SUCCEEDED and the link is valid,
+          it just is not reachable yet (e.g. CloudFront still rolling out). That
+          is not a failure, so it renders as a neutral/warn line -- never the
+          danger surface `last_error` drives. Suppressed when a real error is
+          present, since that is the more important thing to show. */}
+      {artifact.publication?.notice && !artifact.publication.last_error && (
+        <div className={`${className} flex items-start gap-2 px-3 py-2 rounded-md border border-warn/30 bg-warn-subtle text-[13px] text-warn-text`}>
+          <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
+          <span className="min-w-0 flex-1">{i18nT(publishNoticeKey({
+            rolling_out: 'pages.artifactDetailPage.publication_still_rolling_out',
+            distribution_disabled: 'pages.artifactDetailPage.publication_distribution_disabled',
+            origin_mismatch: 'pages.artifactDetailPage.publication_origin_mismatch',
+            notice_generic: 'pages.artifactDetailPage.publication_notice_generic',
+          }, artifact.publication.notice_code))}</span>
+          {/* A notice is recorded once, at publish time, and the ordinary happy path
+              never revisits it -- so a link that HAS since finished rolling out kept
+              this banner forever. This asks the destination again and clears the notice
+              only when the condition really cleared. User-triggered rather than polled:
+              the answer costs a call to the destination, and a timer would either clear
+              it without checking or hammer the destination on every visit. */}
+          <Btn
+            onClick={reprobeNotice}
+            disabled={reprobing}
+            aria-label={i18nT('pages.artifactDetailPage.recheck_publication_notice')}
+          >
+            {reprobing
+              ? i18nT('pages.artifactDetailPage.rechecking')
+              : i18nT('pages.artifactDetailPage.check_again')}
+          </Btn>
+          {/* Rendered here, beside the button that triggered it: a re-check failure used
+              to be written to the editor's save-error channel, which both mislabelled it
+              and put it far from the control the user just pressed.
+              No hand-off: see the doc comment above. A failed re-check is retryable in
+              place by pressing the button again, so the hand-off would cost more than it
+              could recover. */}
+          {reprobeError && (
+            <ErrorNotice message={reprobeError} className="mt-2" />
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 /** Everything below the header. */
 export function ArtifactDetailPageBody({
   stateRead, documentRead, editorRead, commentsRead, composerRead, companionRead, threadsRead, menuRead,
@@ -305,10 +391,10 @@ export function ArtifactDetailPageBody({
   sidebarUserToggledRef: MutableRefObject<boolean>
   toggleSidebar: () => void
   openCompanionChat: (opts?: { address?: boolean }) => Promise<void>
-  UpstreamSyncBanner: ComponentType<{ artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void> }>
+  UpstreamSyncBanner: UpstreamSyncBannerComponent
 }) {
   const {
-    slug, queryClient, selectedVersion, setCompareWith, editing, previewDuringEdit, editedContent, setEditedContent, saving,
+    slug, selectedVersion, setCompareWith, editing, previewDuringEdit, editedContent, setEditedContent,
     saveError, saveConflict, contextError, setContextError, contextErrorIsRefresh, sendToSessionError,
     setSendToSessionError, showPublish, setShowPublish,
   } = stateRead
@@ -316,7 +402,7 @@ export function ArtifactDetailPageBody({
     iframeScrollTarget, previewRef, bodyRef, iframeBodyRef, detailQuery, eventsQuery, effectiveVersion,
     isCurrent, dirty, usesIframe, contentWidthStyle, compareKey, compareArtifact, compareVersionQuery, shownKey,
   } = documentRead
-  const { reprobing, reprobeError, reprobeNotice, flushLiveEdits, editorRef } = editorRead
+  const { flushLiveEdits, editorRef } = editorRead
   const {
     commentable, invalidateComments, commentActionError, setCommentActionError, addDocComment, replyComment,
     resolveComment, markReviewComment, reopenComment, removeComment, editComment,
@@ -355,22 +441,13 @@ export function ArtifactDetailPageBody({
   // (next cron run will create a newer version) without noisy chrome on
   // read-only views.
   const showCronWarning = editing && artifact.source === 'cron'
-  // A canvas gets a page that never scrolls: the canvas takes the height left under the header
-  // and is the only thing that pans, zooms or scrolls. What a scrolling page puts below the
-  // body (description, created/updated line, activity) lives in the header's Details bar.
-  const fullHeight = hasFullHeightPage(artifact.kind)
   return (
-    <div className={fullHeight ? 'px-2 md:px-4 pb-2 flex flex-col flex-1 min-h-0' : 'px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0'}>
-      {!fullHeight && artifact.description && (
+    <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      {artifact.description && (
         <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
       )}
 
-      {(artifact.fork_metadata || artifact.publication) && (
-        <UpstreamSyncBanner artifact={artifact} busy={saving} onBeforeMutate={flushLiveEdits} onPulled={() => {
-          queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
-          queryClient.invalidateQueries({ queryKey: ['upstream-status', slug] })
-        }} />
-      )}
+      <ArtifactUpstreamSync artifact={artifact} stateRead={stateRead} UpstreamSyncBanner={UpstreamSyncBanner} onBeforeMutate={flushLiveEdits} />
 
       {showCronWarning && (
         <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-warn/40 bg-warn-subtle text-[13px] text-warn-text">
@@ -428,17 +505,6 @@ export function ArtifactDetailPageBody({
         className="mb-3"
       />
 
-      {/* Read-only publication sync-error surface: keeps a persisted sync
-          error visible (no controls) if a publishing provider is ever
-          registered. Inert in the public edition, where the registry is empty
-          and `artifact.publication` is always null. */}
-      {/* No hand-off: editor buffer editedContent may be dirty */}
-      <ErrorNotice
-        title={i18nT('pages.artifactDetailPage.publication_sync_issue')}
-        message={artifact.publication?.last_error}
-        className="mb-3"
-      />
-
       {/* Comments that failed to LOAD would otherwise read as "no comments"
           (the sidebar and the toolbar count both fall back to an empty list). */}
       {/* No hand-off: editor buffer editedContent may be dirty */}
@@ -455,51 +521,11 @@ export function ArtifactDetailPageBody({
         className="mb-3"
       />
 
-      {/* Notice-only publication: the publish SUCCEEDED and the link is valid,
-          it just is not reachable yet (e.g. CloudFront still rolling out). That
-          is not a failure, so it renders as a neutral/warn line -- never the
-          danger surface `last_error` drives. Suppressed when a real error is
-          present, since that is the more important thing to show. */}
-      {artifact.publication?.notice && !artifact.publication.last_error && (
-        <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-warn/30 bg-warn-subtle text-[13px] text-warn-text">
-          <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
-          <span className="min-w-0 flex-1">{i18nT(publishNoticeKey({
-            rolling_out: 'pages.artifactDetailPage.publication_still_rolling_out',
-            distribution_disabled: 'pages.artifactDetailPage.publication_distribution_disabled',
-            origin_mismatch: 'pages.artifactDetailPage.publication_origin_mismatch',
-            notice_generic: 'pages.artifactDetailPage.publication_notice_generic',
-          }, artifact.publication.notice_code))}</span>
-          {/* A notice is recorded once, at publish time, and the ordinary happy path
-              never revisits it -- so a link that HAS since finished rolling out kept
-              this banner forever. This asks the destination again and clears the notice
-              only when the condition really cleared. User-triggered rather than polled:
-              the answer costs a call to the destination, and a timer would either clear
-              it without checking or hammer the destination on every visit. */}
-          <Btn
-            onClick={reprobeNotice}
-            disabled={reprobing}
-            aria-label={i18nT('pages.artifactDetailPage.recheck_publication_notice')}
-          >
-            {reprobing
-              ? i18nT('pages.artifactDetailPage.rechecking')
-              : i18nT('pages.artifactDetailPage.check_again')}
-          </Btn>
-          {/* Rendered here, beside the button that triggered it: a re-check failure used
-              to be written to the editor's save-error channel, which both mislabelled it
-              and put it far from the control the user just pressed.
-              No hand-off: this panel sits on the artifact detail page alongside an
-              editable buffer, and `askAgent` navigates away and destroys unsaved edits.
-              A failed re-check is retryable in place by pressing the button again, so the
-              hand-off would cost more than it could recover. */}
-          {reprobeError && (
-            <ErrorNotice message={reprobeError} className="mt-2" />
-          )}
-        </div>
-      )}
+      <ArtifactPublicationNotices artifact={artifact} editorRead={editorRead} className="mb-3" />
 
       {/* Publish panel — toggled by the Publish toolbar button */}
       {showPublish && artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
-        <div className={fullHeight ? 'mb-3 shrink-0 max-h-[50dvh] overflow-y-auto' : 'mb-3'}>
+        <div className="mb-3">
           <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
         </div>
       )}
@@ -509,13 +535,13 @@ export function ArtifactDetailPageBody({
           render unconditionally, so scoping the row to the non-webapp branch
           would let a click on a webapp artifact create/activate a session with
           nowhere to display. */}
-      <div className={fullHeight ? 'flex gap-4 flex-1 min-h-0' : 'flex gap-4 items-start'}>
+      <div className="flex gap-4 items-start">
         {/* An open panel owns the width while narrow, so the artifact body
             steps aside -- giving the panel `w-full` alone would still leave the
             two of them splitting 390px. Hidden rather than unmounted: the body
             holds scroll position and, for markdown, an in-progress anchored
             comment selection, and rotating a phone crosses the breakpoint. */}
-        <div className={`flex-1 min-w-0 ${fullHeight ? 'min-h-0 flex flex-col' : ''} ${compareKey !== null && fullHeight ? 'overflow-y-auto' : ''} ${narrowPanelOpen ? 'hidden' : ''}`}>
+        <div className={`flex-1 min-w-0 ${narrowPanelOpen ? 'hidden' : ''}`}>
           {compareKey !== null ? (
             <ArtifactVersionCompare
               shown={artifact}
@@ -530,10 +556,6 @@ export function ArtifactDetailPageBody({
             <WebAppArtifactCard artifact={artifact} />
           ) : artifact.kind === 'image' ? (
             <ArtifactBodyImage artifact={artifact} slug={slug} />
-          ) : artifact.kind === 'canvas' ? (
-            // Keyed per artifact: the route is reused across a param-only
-            // navigation, and the editor's undo history belongs to one canvas.
-            <CanvasArtifactBody key={slug} artifact={artifact} isCurrent={isCurrent} />
           ) : usesIframe ? (
             <div ref={iframeBodyRef}>
               <ArtifactBodyIframe
@@ -647,7 +669,7 @@ export function ArtifactDetailPageBody({
         {/* EVERY breakpoint, not just desktop: mobile HIDES the body while a panel is open, so a
             !isMobile gate here left a mobile chat with neither body nor panel -- a blank page. */}
         {panel === 'chat' && (
-          <div className={`flex flex-col min-h-0 ${fullHeight ? '' : 'h-[calc(100vh-240px)]'} ${isMobile ? 'flex-1 min-w-0' : 'w-[480px] shrink-0'}`}>
+          <div className={`flex flex-col min-h-0 h-[calc(100vh-240px)] ${isMobile ? 'flex-1 min-w-0' : 'w-[480px] shrink-0'}`}>
             {/* IN THIS COLUMN, its only mount: the remedy names the composer below it, and a
                 page-top banner puts that instruction a column away from the control it means. */}
             {contextNotice}
@@ -664,7 +686,7 @@ export function ArtifactDetailPageBody({
         )}
       </div>
 
-      {!fullHeight && <div className="mt-3 text-[12px] text-muted">
+      <div className="mt-3 text-[12px] text-muted">
         {i18nT('pages.artifactDetailPage.created_at_value', { date: fmtDateTime(artifact.created_at) })} {"\u00b7"}{' '}
         {i18nT('pages.artifactDetailPage.updated_at_value', { date: fmtDateTime(artifact.updated_at) })} {"\u00b7"}{' '}
         {/* "Live" reflects the always-current state. Numbered versions
@@ -683,7 +705,7 @@ export function ArtifactDetailPageBody({
             {i18nT('pages.artifactDetailPage.or')} <strong>{i18nT('pages.artifactDetailPage.agent_chat')}</strong> {i18nT('pages.artifactDetailPage.to_chat_with_the_agent')}.
           </span>
         )}
-      </div>}
+      </div>
 
       {openThread && (
         <CommentThreadPopover
@@ -702,7 +724,7 @@ export function ArtifactDetailPageBody({
       )}
 
       {/* Lifecycle event log + activity timeline. */}
-      {!fullHeight && <div className="mt-6">
+      <div className="mt-6">
         <h3 className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.artifactDetailPage.activity')}</h3>
         {/* No hand-off: editor buffer editedContent may be dirty */}
         <ErrorNotice
@@ -714,7 +736,7 @@ export function ArtifactDetailPageBody({
           events={eventsQuery.data?.events ?? []}
           navigateToSlot={(slotKey) => sendNav({ path: '/chat', slotKey })}
         />
-      </div>}
+      </div>
     </div>
   )
 }

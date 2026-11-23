@@ -13308,8 +13308,7 @@
       "content_copied_from_version": "conteúdo copiado da v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}",
-      "details": "Detalhes"
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "Artefato",

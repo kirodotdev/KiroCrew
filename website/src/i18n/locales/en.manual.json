@@ -5899,8 +5899,7 @@
       "comments_failed_to_load": "Comments failed to load",
       "comment_action_failed": "Comment action failed",
       "activity_failed_to_load": "Activity failed to load",
-      "sync_status_unavailable": "Sync status unavailable",
-      "details": "Details"
+      "sync_status_unavailable": "Sync status unavailable"
     },
     "artifactPopoutFrame": {
       "artifact": "Artifact",

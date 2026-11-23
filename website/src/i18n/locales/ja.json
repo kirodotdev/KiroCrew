@@ -12716,8 +12716,7 @@
       "content_copied_from_version": "コンテンツは v{{version}} からコピー",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}",
-      "details": "詳細"
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",
