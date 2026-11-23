@@ -5388,6 +5388,18 @@ Decision + lifecycle:
   tear down only the session — it never kills the shared runtime, which other
   subagents may still use. The runtime is killed when the parent session ends
   (`SessionManager.release_subagent_runtime`).
+- **A codex process takes no new subagent once one has left it.** codex starts a
+  fleet of MCP server processes for each session from the operator's
+  `config.toml`, and `session/close` ends the session but not that fleet
+  (`acp/harness/codex.py`). So the subagent teardown marks the runtime it leaves
+  (`AcpRuntime.subagent_departed`, set by `AcpSessionProvider.shutdown` before its
+  first await), and `_should_use_session_sharing` answers False while the host
+  `_create_shared_session` would use -- the parent's own runtime, or its companion
+  -- is a codex runtime so marked. The parent's later subagents take the dedicated
+  path, whose process and fleet end with the run. The fleets left on the shared
+  process are bounded by the subagents that joined it before the first one left,
+  and end with it when the parent session ends. kiro-cli's teardown reaps the
+  session's MCP children, so a kiro process keeps taking subagents.
 
 Backends outside `ACP_BACKENDS_SESSION_SHARING` are not eligible and use the
 per-process path regardless of the flag.
