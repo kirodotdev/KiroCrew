@@ -54,7 +54,7 @@ The second fact is that a body is not re-sent per turn so much as permanent. ACP
 | | Before [#9073](https://github.com/kirodotdev/KiroCrew/pull/9073) | Now |
 |---|---|---|
 | What names the directive | a marker inside the tool's result text, repaired across backend reshaping | `sha256(tool + canonical_json(args))`, computed by the gateway in `session_directive.call_input_digest` |
-| Where it waits | recovered from the result body | a turn-scoped bounded queue, `dashboard/directive_queue.py`, 300s age, 8 per session, 256 sessions |
+| Where it waits | recovered from the result body | a turn-scoped bounded queue, `directive_queue.py`, 300s age, 8 per session, 256 sessions |
 | Who claims it | `_repair_escaped_marker` then apply | `directive_queue.claim(session_key, input_digest, not_before=turn_start)` |
 | `_repair_escaped_marker` | load-bearing | deleted, zero hits in `src/` |
 

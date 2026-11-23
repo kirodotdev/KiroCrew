@@ -6357,13 +6357,21 @@ A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
 raw arguments, never the payload) to `POST /api/session-directive`; the gateway
 re-runs the tool on those arguments (`mcp_core.derive_directive`) and parks the
-record in `dashboard/directive_queue.py`, keyed by the digest of the raw call
+record in `directive_queue.py`, keyed by the digest of the raw call
 input. The runner applies it only when `directive_queue.claim` finds a record
 whose digest equals the one the turn's own `tool_call` frame carried, parked
 during that turn; on such a backend the marker in the result text is display
 only. Records are in memory, expire after `MAX_AGE_SECS` (300 s), and are capped
 per session (`MAX_PER_SESSION`) and in total (`MAX_SESSIONS`). The messaging
-`TurnDriver` applies directives from the verified marker alone.
+`TurnDriver` (and the Slack thread's plain wake) claims the same way through
+`messaging/directive_tracker.py`: a call with no trusted tool name records the
+digest of its `tool_call` frame's raw input, and the final result frame claims the
+record parked under it during this turn, through the `claim_parked` that
+`messaging.dispatch.build_directive_consumer` binds to the channel session. A
+native sub-agent's call is refused and its record retired, and a parent call that
+shares a sub-agent call's digest is refused, as in the dashboard runner. The input
+is read from the `tool_call` frame only; a backend that sends it on a later
+`tool_call_update` (opencode, Claude) is not claimed on a channel turn.
 
 The route's reply also carries `turn_wrote_text`: whether the caller's running
 turn has already streamed reply text, read from the session's dashboard tab

@@ -620,7 +620,7 @@ def call_input_digest(tool: str, raw_args: Any) -> str:
     """Digest of a tool CALL's raw arguments -- the out-of-band SELECTOR.
 
     A directive tool's validated payload is parked on the gateway
-    (``dashboard.directive_queue``) and the turn's consumer claims it. The
+    (``kiro_crew.directive_queue``) and the turn's consumer claims it. The
     consumer cannot learn WHICH record to claim from the tool RESULT text, because
     that text is whatever the backend chose to put on
     the wire: KAS re-serialises the envelope (quotes escaped), copies the result
