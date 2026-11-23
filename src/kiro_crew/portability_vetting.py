@@ -22,6 +22,7 @@ from kiro_crew.portability_archive import (
     _MAX_SETTINGS_DOCUMENT_BYTES,
     MEMORY_EXPORT_MANIFEST_VERSION,
     _is_link_entry,
+    _skipped_on_import,
     _unsafe_member_name,
     import_size_problem,
     manifest_is_memory_only,
@@ -55,15 +56,17 @@ def _top_manifest(infos: list[zipfile.ZipInfo], *, required: bool = True) -> zip
 
     Only that placement is the manifest: a ``MANIFEST.json`` deeper in the tree is
     ordinary content (a workspace or skill file can carry that name), so it never
-    decides what an import applies. Two at the top, under one prefix or two, are
-    refused, since then no single manifest describes the archive. With none,
-    ``required`` decides between refusing and returning ``None``.
+    decides what an import applies. Neither does one the import skips
+    (`_skipped_on_import`, such as ``__MACOSX/MANIFEST.json``). Two at the top, under
+    one prefix or two, are refused, since then no single manifest describes the
+    archive. With none, ``required`` decides between refusing and returning ``None``.
     """
     tops = [
         info
         for info in infos
         if len(PurePosixPath(info.filename).parts) == 2
         and PurePosixPath(info.filename).name == "MANIFEST.json"
+        and not _skipped_on_import(PurePosixPath(info.filename).parts)
     ]
     if len(tops) > 1:
         raise ValueError("More than one top-level MANIFEST.json in archive")

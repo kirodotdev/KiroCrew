@@ -1700,7 +1700,8 @@ merges only the memory members of any archive; an archive whose manifest declare
 memory only is imported that way without the parameter. The manifest is the one
 member at `<prefix>/MANIFEST.json` (`portability._top_manifest`); both the
 validator and the import read only that one, so a deeper file with that name is
-ordinary content. No top-level manifest, or more than one, is refused. Memory is
+ordinary content. No top-level manifest, or more than one, is refused; one under
+`__MACOSX/`, which the import skips (below), is not counted. Memory is
 not redacted: the dashboard shows a confirm step listing what the file holds
 before it builds the export.
 
@@ -1725,7 +1726,12 @@ the total plus `_IMPORT_DISK_RESERVE` (1 GiB) free. A refusal names the biggest
 folders and how to make a smaller export. Files inside a `REBUILDABLE_DIRS`
 folder (`node_modules`, `.venv`, `venv`, tool caches) under `workspace/` are
 left out of the export and skipped by the import, and not counted against these
-limits (`portability._in_rebuildable_dir`, read by both sides).
+limits (`portability._in_rebuildable_dir`, read by both sides). Everything under a
+top-level `__MACOSX/` folder, where macOS Finder's Compress stores each file's
+extended attributes, is skipped and not counted the same way, so a backup someone
+unzipped and compressed again with Finder imports like the original. Both rules
+are `portability._skipped_on_import`, which the size check, the manifest lookup
+and the extraction share.
 
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,

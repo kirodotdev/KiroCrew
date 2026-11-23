@@ -369,6 +369,50 @@ async def test_preview_failure_is_coded(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_backup_finder_zipped_again_imports_after_its_preview(
+    tmp_path, monkeypatch
+) -> None:
+    """What the preview accepts the import applies, macOS Finder's ``__MACOSX/`` included.
+
+    Finder's Compress adds ``__MACOSX/<top>/._<file>`` for each file's extended
+    attributes, beside the archive's own top directory.
+    """
+    from kiro_crew import portability
+
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    target = tmp_path / "target_mc"
+    target.mkdir()
+    monkeypatch.setattr(portability, "config_dir", lambda: target)
+    monkeypatch.setenv("KIROCREW_HOME", str(target))
+    top = "kirocrew-export-20261123T120000Z"
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{top}/MANIFEST.json", json.dumps({"version": 2}))
+        zf.writestr("__MACOSX/", b"")
+        zf.writestr(f"__MACOSX/{top}/", b"")
+        zf.writestr(f"__MACOSX/{top}/._MANIFEST.json", b"\x00\x05\x16\x07\x00\x02\x00\x00")
+
+    def upload() -> FormData:
+        data = FormData()
+        data.add_field("file", archive.getvalue(), filename="Archive.zip")
+        return data
+
+    owner = {"X-Test-User": "owner"}
+    async with TestClient(TestServer(_make_app(module))) as client:
+        preview = await client.post("/api/portability/preview", data=upload(), headers=owner)
+        preview_body = await preview.json()
+        imported = await client.post(
+            "/api/portability/import?mode=merge", data=upload(), headers=owner
+        )
+        import_body = await imported.json()
+
+    assert (preview.status, preview_body["ok"]) == (200, True)
+    assert (imported.status, import_body["ok"], import_body.get("code")) == (200, True, None)
+    assert not (target / "__MACOSX").exists()
+
+
+@pytest.mark.asyncio
 async def test_every_refusal_carries_a_code(monkeypatch) -> None:
     """Per-file ratchet: no refusal path may regress to prose-only."""
     module = _handler_module()
