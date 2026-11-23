@@ -398,6 +398,47 @@ async def test_an_app_bearer_on_the_crew_api_keeps_its_app_scope():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["query", "cookie", "bearer"])
+async def test_a_delegated_credential_on_a_direct_peer_meets_its_scope(
+    where: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A live ``via_app`` token from the owner's device runs the token flow, never the owner.
+
+    The grant is current, so only ``enforce_delegated`` refuses: ``/api/whoami`` is no
+    ``READ_ALLOW`` row. The direct owner path would drop the token and answer 200.
+    """
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.delegated_scope import REFUSED_CODE
+    from kiro_crew.dashboard.token_auth import generate_token
+    from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
+    monkeypatch.setattr(dashboard_proxy, "grant_current", lambda app, claim: claim == "g1")
+    # A cookie or bearer carries a session token (the link's exchange); a query, the link.
+    session = where != "query"
+    token = generate_token(
+        "local-app",
+        extra=owner_mint_extra({"via_app": "notes", "via_grant": "g1"}),
+        session=session,
+        register_nonce=not session,
+    )
+    client = await _client(_gate())
+    try:
+        headers = _direct("100.64.0.3")
+        path = "/v1/whoami" if where == "bearer" else "/api/whoami"
+        if where == "query":
+            path = f"{path}?token={token}"
+        elif where == "cookie":
+            headers["Cookie"] = f"mc_token_{client.port}={token}"
+        else:
+            headers["Authorization"] = f"Bearer {token}"
+        status, body = await _get(client, headers, path=path)
+    finally:
+        await client.close()
+    assert not (isinstance(body, dict) and body.get("provenance") == "tailscale_listener")
+    assert (status, body.get("code") if isinstance(body, dict) else body) == (403, REFUSED_CODE)
+
+
+@pytest.mark.asyncio
 async def test_empty_allowlist_refuses_a_teammate():
     client = await _client(_gate())
     try:

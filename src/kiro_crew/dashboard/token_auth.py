@@ -310,9 +310,10 @@ def token_auth_middleware(
             mark_audit_claimed(request)
             _log_auth(request, direct_peer.login, "denied", "tailnet direct: internal path")
             return _deny(request, "Forbidden"), wrapped
-        # An app credential, in the query, in the port's access cookie (an app
-        # UI's cookie session) or in a Crew API bearer, runs the token flow so the
-        # app keeps its scope.
+        # An app or delegated (``via_app``) credential, in the query, in the port's
+        # access cookie (an app UI's cookie session) or in a Crew API bearer, runs
+        # the token flow so the app keeps its scope and a delegated token meets
+        # ``enforce_delegated``.
         query_token = request.query.get("token") or ""
         cookie_token = request.cookies.get(f"mc_token_{_cookie_port_from_host(request, port)}", "")
         from kiro_crew.dashboard.crew_api_auth import crew_api_bearer

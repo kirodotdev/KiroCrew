@@ -48,6 +48,7 @@ from kiro_crew.dashboard.token_auth import (
     validate_token,
     validate_token_with_app,
 )
+from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 
 URL_SAFE_B64_CHARS = set(string.ascii_letters + string.digits + "-_.")
 
@@ -540,6 +541,62 @@ async def test_internal_path_expired_app_token_does_not_fall_back_to_cookie() ->
     assert resp.status in (401, 403)
 
 
+_LINK_TTL_SECS = 300
+_SESSION_TTL_SECS = 3600
+
+
+def _dead_link(kind: str, *, delegated: bool) -> str:
+    """A link token that fails validation (expired or forged), with or without ``via_app``."""
+    claims = owner_mint_extra({"via_app": "someapp", "via_grant": "g1"} if delegated else None)
+    if kind == "expired":
+        with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            return generate_token(
+                "local-app", ttl_seconds=_LINK_TTL_SECS, extra=claims
+            )  # flake-ok: token life
+    live = generate_token(
+        "local-app", ttl_seconds=_LINK_TTL_SECS, extra=claims
+    )  # flake-ok: token life
+    payload, _, sig = live.partition(".")
+    return f"{payload}.{'A' if sig[0] != 'A' else 'B'}{sig[1:]}"
+
+
+async def _dead_link_beside_owner_cookie(kind: str, *, delegated: bool, internal: bool) -> int:
+    cookie = _session_token("local-app", ttl_seconds=_SESSION_TTL_SECS)  # flake-ok: token life
+    bind_token_ip(cookie, "127.0.0.1")
+    mark_consumed(cookie)
+    if internal:
+        mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+        path = "/api/spawn"
+    else:
+        mw, path = token_auth_middleware(), "/api/config/kirocrew"
+    req = _make_request(
+        path=path,
+        query={"token": _dead_link(kind, delegated=delegated)},
+        cookies={"mc_token_5476": cookie},
+    )
+    return (await mw(req, _ok_handler)).status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("internal", [False, True], ids=["main", "internal"])
+@pytest.mark.parametrize("kind", ["expired", "forged"])
+async def test_dead_delegated_token_does_not_fall_back_to_owner_cookie(
+    kind: str, internal: bool
+) -> None:
+    """A dead ``via_app`` ``?token=`` beside a live owner cookie is refused, never the owner.
+
+    A delegated token is scoped by ``enforce_delegated``; adopting the cookie would run
+    the request as the owner with that scope gone. The same dead link without ``via_app``
+    falls back to the cookie, so the refusal is the claim's and not the fixture's.
+    """
+    assert await _dead_link_beside_owner_cookie(kind, delegated=False, internal=internal) == 200
+    assert await _dead_link_beside_owner_cookie(kind, delegated=True, internal=internal) in (
+        401,
+        403,
+    )
+
+
 def test_claims_an_app_unverified_only_ever_refuses() -> None:
     """The unverified reader answers True only for a payload that names an app.
 
@@ -547,6 +604,11 @@ def test_claims_an_app_unverified_only_ever_refuses() -> None:
     fallback — it can only withhold it.
     """
     assert claims_an_app_unverified(generate_token("u", ttl_seconds=60, app="a")) is True
+    claims = owner_mint_extra({"via_app": "a", "via_grant": "g"})
+    delegated = generate_token(
+        "u", ttl_seconds=_LINK_TTL_SECS, extra=claims
+    )  # flake-ok: token life
+    assert claims_an_app_unverified(delegated) is True
     assert claims_an_app_unverified(generate_token("u", ttl_seconds=60)) is False
     assert claims_an_app_unverified("not-a-token") is False
     assert claims_an_app_unverified("") is False

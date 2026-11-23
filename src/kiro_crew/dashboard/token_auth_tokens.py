@@ -838,7 +838,11 @@ def _signed_app_claim(token: str) -> str:
 
 
 def claims_an_app_unverified(token: str) -> bool:
-    """Whether *token* CLAIMS an ``app`` identity, without verifying its signature.
+    """Whether *token* CLAIMS an ``app`` or ``via_app`` identity, unverified.
+
+    A delegated (``via_app``) token answers ``True`` as well: it is scoped by
+    ``delegated_scope.enforce_delegated``, which only the token flow runs, so it
+    must never adopt the owner's cookie nor take the tailnet owner path either.
 
     Used only to REFUSE — never to grant. The cookie fallback in the middleware
     treats an invalid ``?token=`` as absent so a dead link token cannot veto a
@@ -860,7 +864,7 @@ def claims_an_app_unverified(token: str) -> bool:
         data = json.loads(_b64url_decode(token.split(".")[0]))
     except Exception:
         return False
-    return bool(isinstance(data, dict) and data.get("app"))
+    return bool(isinstance(data, dict) and (data.get("app") or data.get("via_app")))
 
 
 def requires_verified_peer_unverified(token: str) -> bool:
