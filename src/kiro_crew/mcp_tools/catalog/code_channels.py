@@ -39,7 +39,11 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Publish or update a view tab in your Slack code channel: an html "
                 "page (a full, self-contained document; no external resources load) "
-                "or a display-only block_kit surface. Calls with the same view_key "
+                "or a display-only block_kit surface. Use html when asked for a preview "
+                "of a page or site: send the page itself with its CSS inline in a "
+                "<style> block, not a file upload or a screenshot. Slack shows it as a "
+                "sandboxed static preview where scripts may not run, so put the visible "
+                "result in the markup and CSS. Calls with the same view_key "
                 "update the same tab; a channel holds at most five tabs. The Code "
                 "tab's diff comes from your worktree and the Plan tab from "
                 "code_channel_publish_plan_canvas, so neither is a type here." + _PIN

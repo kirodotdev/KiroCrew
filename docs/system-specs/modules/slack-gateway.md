@@ -2779,7 +2779,9 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
 - **Content rules.** Agent-authored text passes every redaction pass
   (credentials, inside URLs too), a context-bar link redaction would change
   is refused, and broadcast and user-group mentions are neutralized. HTML views are sent with no
-  `csp` resource domains (self-contained only); Block Kit views are display-only (there is no canvas `set_view`)
+  `csp` resource domains (self-contained only); their CSS may hold a non-empty quoted string only in
+  a selector, `url()` (https: only), `@charset` or a font / grid-template-areas property, never where it can show as text
+  (`content`, `quotes`, list markers, custom properties), and every string still passes the credential screen; Block Kit views are display-only (there is no canvas `set_view`)
   (an allowlist of section / header / divider / context / rich_text / markdown
   blocks, no accessories or `action_id` elements, no remote media); the diff tab stays the workspace's. `conversations.canvases.create`
   answered `channel_canvas_already_exists` is never retried and never adopted (a
