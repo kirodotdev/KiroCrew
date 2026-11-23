@@ -116,9 +116,49 @@ def shipped_builtin_app_name_at(path: Path) -> str | None:
     return None
 
 
+#: The last scan: ``(stamp of the sources it read, the pairs it found)``.
+_shipped_cache: tuple[tuple[tuple[Path, int, int], ...], tuple[tuple[Path, str], ...]] | None = None
+
+
+def _sources_stamp(sources: tuple[Path, ...]) -> tuple[tuple[Path, int, int], ...]:
+    """Each source with its directory's inode and mtime, so an added or removed app shows."""
+    stamp = []
+    for source in sources:
+        try:
+            st = source.stat()
+        except OSError:
+            continue
+        stamp.append((source, st.st_ino, st.st_mtime_ns))
+    return tuple(stamp)
+
+
+def invalidate_shipped_builtin_apps() -> None:
+    """Forget the last scan of the shipped builtins; the next ask scans again."""
+    global _shipped_cache
+    _shipped_cache = None
+
+
 def _shipped_builtin_apps() -> Iterator[tuple[Path, str]]:
-    """Yield ``(resolved root, manifest name)`` for every shipped builtin."""
-    for source in _builtin_manifest_sources():
+    """Yield ``(resolved root, manifest name)`` for every shipped builtin.
+
+    Asked once per installed app on every agent-owner lookup, so the scan (a
+    resolve and a manifest read per builtin) is kept. It is scanned again when a
+    source directory's inode or mtime moves, when the sources themselves change,
+    and after :func:`invalidate_shipped_builtin_apps` (app install, update,
+    uninstall and builtin registration call it).
+    """
+    global _shipped_cache
+    stamp = _sources_stamp(_builtin_manifest_sources())
+    cached = _shipped_cache
+    if cached is None or cached[0] != stamp:
+        cached = (stamp, tuple(_scan_shipped_builtin_apps(tuple(s for s, _, _ in stamp))))
+        _shipped_cache = cached
+    return iter(cached[1])
+
+
+def _scan_shipped_builtin_apps(sources: tuple[Path, ...]) -> Iterator[tuple[Path, str]]:
+    """Read every shipped builtin under *sources* from disk."""
+    for source in sources:
         try:
             entries = sorted(source.iterdir())
         except OSError:
