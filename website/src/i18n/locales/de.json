@@ -23786,7 +23786,7 @@
       "wakatime_api_key_description": "Authentifiziert die Synchronisierung der Programmieraktivität, wenn WakaTime aktiviert ist.",
       "custom_title": "Benutzerdefinierte Geheimnisse",
       "managed_config_error": "Einige automatisch verwendeten Anmeldedaten sind ausgeblendet, weil $KIROCREW_HOME/config.json (Standard: ~/.kiro/crew/config.json) nicht gelesen werden konnte.",
-      "managed_name_hint": "Beim Speichern hier wird {{name}} im Bereich für automatische Anmeldedaten aktualisiert. — {{productName}}",
+      "managed_name_hint": "Beim Speichern hier wird {{name}} im Bereich „Automatisch von {{productName}} verwendet“ aktualisiert.",
       "delete_managed_confirm": "„{{name}}“ dauerhaft löschen? Der aktuelle Wert kann nicht wiederhergestellt werden.",
       "delete_managed_name": "{{name}} löschen",
       "save_managed_name": "{{name}} speichern",

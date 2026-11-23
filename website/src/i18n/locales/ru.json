@@ -24962,7 +24962,7 @@
       "wakatime_api_key_description": "Проверяет подлинность синхронизации активности программирования, когда WakaTime включён.",
       "custom_title": "Пользовательские секреты",
       "managed_config_error": "Некоторые автоматические учётные данные скрыты, поскольку не удалось прочитать $KIROCREW_HOME/config.json (по умолчанию ~/.kiro/crew/config.json).",
-      "managed_name_hint": "Сохранение здесь обновит {{name}} в разделе автоматических учётных данных. — {{productName}}",
+      "managed_name_hint": "Сохранение здесь обновит {{name}} в разделе «Автоматически используются {{productName}}».",
       "delete_managed_confirm": "Удалить «{{name}}» навсегда? Текущее значение нельзя восстановить.",
       "delete_managed_name": "Удалить {{name}}",
       "save_managed_name": "Сохранить {{name}}",

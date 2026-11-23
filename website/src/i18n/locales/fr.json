@@ -24374,7 +24374,7 @@
       "wakatime_api_key_description": "Authentifie la synchronisation de l’activité de programmation lorsque WakaTime est activé.",
       "custom_title": "Secrets personnalisés",
       "managed_config_error": "Certains identifiants automatiques sont masqués, car $KIROCREW_HOME/config.json (par défaut : ~/.kiro/crew/config.json) n’a pas pu être lu.",
-      "managed_name_hint": "Enregistrer ici met à jour {{name}} dans la section des identifiants automatiques. — {{productName}}",
+      "managed_name_hint": "Enregistrer ici met à jour {{name}} dans la section « Utilisés automatiquement par {{productName}} ».",
       "delete_managed_confirm": "Supprimer définitivement « {{name}} » ? La valeur actuelle ne peut pas être récupérée.",
       "delete_managed_name": "Supprimer {{name}}",
       "save_managed_name": "Enregistrer {{name}}",
