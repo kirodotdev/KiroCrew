@@ -1356,3 +1356,43 @@ class TestWindowsKillByNamePrograms:
     )
     def test_other_targets_pid_forms_and_reads_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The tokenizer splits on blanks only: a separator glued to a word.
+            "Get-Process {n}| Stop-Process -Force",
+            "gps {n}|spps",
+            "wmic process where \"name='{n}.exe'\" delete; Write-Output done",
+            # A ``;`` inside a script block does not end the pipeline.
+            "Get-Process {n} | Where-Object {{ 1; 1 }} | Stop-Process",
+            "Stop-Process -Name:{n}",
+            "Get-Process {n} | Stop-Process -WhatIf:$false",
+        ],
+    )
+    def test_a_glued_separator_or_flag_value_does_not_hide_the_target(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The name in a filter that spares it, not in the target.
+            'taskkill /f /fi "imagename eq node.exe" /fi "windowtitle ne {n}*"',
+            "wmic process where \"name='node.exe' and not commandline like '%{n}%'\" delete",
+            # The name in a later pipeline stage, not in the Get-Process source.
+            "Get-Process | Where-Object {{ $_.Name -eq 'node' -and $_.Name -notlike '*{n}*' }}"
+            " | Stop-Process",
+            "Get-Process -Name node -ErrorAction SilentlyContinue"
+            " | Where-Object {{ $_.Path -like '*\\{n}\\node_modules\\*' }} | Stop-Process -Force",
+            # The name in the next command.
+            "Get-Process chrome | Stop-Process; Remove-Item -Recurse $env:TEMP\\{n}-playwright-*",
+            # A printed message and a dry run.
+            "Write-Host To stop the dashboard run taskkill /im {n}.exe",
+            "Get-Process {n} | Stop-Process -WhatIf",
+            # Mentions outside the target place.
+            "git log --grep spps -- src/{n}",
+            "taskkill /pid 1234 /s {n}-host",
+        ],
+    )
+    def test_the_name_outside_the_target_place_stays_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) is None

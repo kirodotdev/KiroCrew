@@ -436,6 +436,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.self_kill_windows import _windows_self_kill  # noqa: F401
     from kiro_crew.security.shell_commands import (  # noqa: F401
         _double_quoted_substitution_bodies,
         _heredoc_body_substitutions,
@@ -489,5 +490,4 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,
         _SELF_NAME_RE,
-        _WINDOWS_KILL_BY_NAME_PROGRAMS,
     )

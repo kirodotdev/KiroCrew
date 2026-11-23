@@ -15,8 +15,8 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
+shared name vocabulary below it, and imports no other part of the argv floor.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .self_kill_windows import _windows_self_kill
 from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
@@ -60,7 +61,7 @@ from .shell_normalizer import (
     _substitution_bodies,
     _substitution_depth_delta,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE, _WINDOWS_KILL_BY_NAME_PROGRAMS
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -178,12 +179,6 @@ def _is_kill_by_name_program(token: str) -> bool:
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
-
-
-def _windows_kill_by_name_program(token: str) -> str:
-    """The Windows by-name kill program *token* invokes (``.exe`` optional), or ``""``."""
-    base = _shell_normalizer._program_basename(token).removesuffix(".exe")
-    return base if base in _WINDOWS_KILL_BY_NAME_PROGRAMS else ""
 
 
 # ``env -S`` splits its argument into a command and execs it.
@@ -864,32 +859,13 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
-            windows = _windows_kill_by_name_program(token)
-            if not windows and not _is_kill_by_name_program(token):
+            if not _is_kill_by_name_program(token):
                 continue
             # ``echo pkill kirocrew`` prints two words; it does not kill anything.
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
-            if windows == "wmic":
-                # ``wmic process where name='<name>' get processid`` only reads.
-                own = []
-                for arg in tokens[i + 1 :]:
-                    if _ends_argv(arg):
-                        break
-                    own.append(arg)
-                if not {"delete", "terminate"}.intersection(own):
-                    continue
-            if windows in ("stop-process", "spps") and i and tokens[i - 1] == "|":
-                # ``Get-Process <name> | Stop-Process``: the name sits in an earlier
-                # stage of the same pipeline, not in this argv.  Walk back to the
-                # first separator that is not a pipe.
-                for prev in reversed(tokens[: i - 1]):
-                    if prev in ("&", "&&", "||", ";", ";;", "\n") or ";" in prev:
-                        break
-                    if _SELF_NAME_RE.search(_debracket(prev)):
-                        return whole
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
             # named) reads like a closed argv, and the skip would be the kill.  A glob
@@ -916,6 +892,9 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 if depth <= 0 and _ends_argv(arg):
                     break
                 depth = max(depth, 0)
+        # ``taskkill``, ``Stop-Process`` and ``wmic`` name their target in one place.
+        if _windows_self_kill(tokens):
+            return whole
     # Bare ``kill`` whose PID comes out of a substitution naming the product.
     # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
     # quoted spelling all count -- a raw-text pattern anchored on separators sees
