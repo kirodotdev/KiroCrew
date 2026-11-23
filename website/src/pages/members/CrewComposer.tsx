@@ -1,12 +1,12 @@
 import ChatInput from '../../components/ChatInput'
 import type { ChatInputProps } from '../../components/chat-input/props'
 
-/** The session chrome the ordinary chat composer draws: the agent, model and
- *  effort chips, the context-window meter, and the approval-mode picker. A
- *  crewmate sets its permission, model and effort on its profile card instead,
- *  so none of these reach the Crewmates page's composer. */
+/** The session chrome the ordinary chat composer draws: the agent, project,
+ *  model and effort chips, the context-window meter, and the approval-mode
+ *  picker. A crewmate sets its permission, model, effort and workspace on its
+ *  profile card instead, so none of these reach the Crewmates page's composer. */
 export const SESSION_CHROME_PROPS = [
-  'onAgentClick', 'agentLabel', 'agentIsInheritedDefault', 'agentSource',
+  'onAgentClick', 'agentLabel', 'agentIsInheritedDefault', 'agentSource', 'onProjectClick',
   'onModelClick', 'modelName', 'modelIsInheritedDefault', 'modelIsAutoChosen', 'modelIsJevRouted',
   'reasoningEffort', 'effortIsDefault', 'hasEffort',
   'contextPct', 'contextUsedTokens', 'contextWindowTokens',

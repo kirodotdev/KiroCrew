@@ -4,7 +4,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { modelHealthKey, useModelsAuthRequired, useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
-import { setAgentSwitchNotice } from '../store/chatSlice'
+import { selectProjectChipLocked, setAgentSwitchNotice } from '../store/chatSlice'
 import { clearSlotWriteFailure, reportSlotWriteFailure } from './slotWriteFailure'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
@@ -33,14 +33,15 @@ import { BOARD_VIEWS, conductorDefaultPicker } from '../lib/crewMode'
 import { dropPanelViews } from '../hooks/usePanelTabs'
 
 /**
- * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
- * the same hooks and data sources ChatPage uses. `useChatPanePickerModels` is
+ * `ChatPane`'s agent, model and project pickers, bound to the pane's own slot
+ * through the same hooks and data sources ChatPage uses. `useChatPanePickerModels` is
  * what the pickers and the composer chips show: the agent roster and default,
  * the model list (hidden models, the `Auto (decision model)` row, codex pair models), the
- * model that will actually run, effort support and level, and the chip
- * markers. `useChatPanePickerActions` is what a pick does: the agent and model
- * switch protocols, their in-pane failure notice, and the menus' roving-focus
- * keys. `ChatPanePickerMenus` draws the two menus from both results.
+ * model that will actually run, effort support and level, the chip
+ * markers, and the project chip's lock. `useChatPanePickerActions` is
+ * what a pick does: the agent, model and project switch protocols, their in-pane
+ * failure notice, and the menus' roving-focus keys. `ChatPanePickerMenus` draws
+ * the menus from both results.
  */
 
 type PaneSlot = RootState['dashboard']['slots'][number] | undefined
@@ -146,6 +147,11 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // opened it while the menu is open (#10616, same class as #10580).
   const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDD.open)
   const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDD.open)
+  // The project chip, as ComposerDockView draws it: the folder, locked while
+  // attached sub-agents run, and the picker it opens.
+  const projectLocked = useAppSelector(s => selectProjectChipLocked(s, slotKey))
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const { rect: projectBtnRect, anchorTo: anchorProjectBtn } = useAnchoredTriggerRect(projectPickerOpen)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
   // backend has one; the degraded flag gates only the list-membership fallback —
@@ -221,6 +227,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
     effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
+    projectLocked, projectPickerOpen, setProjectPickerOpen, projectBtnRect, anchorProjectBtn,
   }
 }
 
@@ -237,7 +244,7 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   /** The pane's chat is a conductor mode root while a conductor is the default agent (`conductorDefaultPicker`); ChatPane gates the opener. */
   templatesOnly: boolean
 }) {
-  // In-pane report of a per-slot setting write (agent / model switch) that did
+  // In-pane report of a per-slot setting write (agent / model / project switch) that did
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
   // Leaving a conductor that is the default agent: a template pick (a bare name
@@ -256,6 +263,33 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
       reportSlotWriteFailure(agentSwitchFailureNotice(e, name), dispatch, setSwitchError)
     }
   }, [dispatch, queryClient, slotKey, templatesOnly])
+  // Counted per slot, as the main chat's are, so overlapping picks clear the
+  // spinner only when the last one ends, and a host that rebinds the pane to
+  // another slot does not carry it along.
+  const [projectSwitches, setProjectSwitches] = useState<Record<string, number>>({})
+  const switchProject = useCallback(async (path: string) => {
+    const slot = slotKey
+    clearSlotWriteFailure(dispatch, setSwitchError)
+    setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
+    try {
+      // The server realpath-normalizes the directory, so the response's
+      // spelling is what gets written.
+      await performSlotSwitch('project', slot, path,
+        async () => {
+          const r = await api.chatSlotProject(slot, path)
+          return r?.project ?? path
+        },
+        (value) => dispatch(updateSlot({ key: slot, project: value })))
+    } catch (e) {
+      reportSlotWriteFailure(agentSwitchErrorNotice(e), dispatch, setSwitchError)
+    } finally {
+      setProjectSwitches(prev => {
+        const { [slot]: n = 1, ...rest } = prev
+        return n > 1 ? { ...rest, [slot]: n - 1 } : rest
+      })
+    }
+  }, [dispatch, slotKey])
+  const projectSwitching = (projectSwitches[slotKey] ?? 0) > 0
   const switchModel = useCallback(async (name: string) => {
     clearSlotWriteFailure(dispatch, setSwitchError)
     try {
@@ -350,5 +384,5 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   // claims a Tab before the helper re-aims it into the embedded controls.
   const modelDialogIme = useImeGuard()
 
-  return { switchError, setSwitchError, switchAgent, switchModel, onAgentListKeyDown, onModelListKeyDown, modelDialogIme }
+  return { switchError, setSwitchError, switchAgent, switchModel, switchProject, projectSwitching, onAgentListKeyDown, onModelListKeyDown, modelDialogIme }
 }

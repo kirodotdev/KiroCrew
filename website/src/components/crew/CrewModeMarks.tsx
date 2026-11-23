@@ -163,8 +163,9 @@ export function ConductorModeTitleMark() {
  *  accessible name and tip state the chat's mode and offer no action. On a
  *  worker (a crew member that is not itself a conductor) they also name its
  *  role, `Conductor mode · Worker`, so the bolt does not read as a conductor of
- *  its own. Before the first message the composer shows the labelled, pressed
- *  `CrewModeChip` instead, which is the control that turns the mode off. */
+ *  its own. Before the first message the main chat's composer shows the labelled,
+ *  pressed `CrewModeChip` instead, which is the control that turns the mode off;
+ *  a Split View pane has no chip row and keeps the bolt. */
 export function CrewModeComposerChip({ worker = false }: { worker?: boolean } = {}) {
   const reduceMotion = useReducedMotion()
   const fade = { initial: reduceMotion ? { opacity: 0 } : false, animate: { opacity: 1 }, transition: { duration: 0.2 } } as const

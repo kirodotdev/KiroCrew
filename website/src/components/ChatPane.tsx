@@ -3,6 +3,7 @@ import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRo
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
+import { CrewModeComposerChip } from './crew/CrewModeMarks'
 import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
@@ -93,7 +94,7 @@ import { useChatPaneDraft } from './useChatPaneDraft'
 import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
-import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
+import { ChatPaneAgentMenu, ChatPaneModelMenu, ChatPaneProjectMenu } from './ChatPanePickerMenus'
 import { useChatPaneSend } from './useChatPaneSend'
 import { useChatPaneStop, useChatPaneRunSync } from './useChatPaneTurnControl'
 import { useChatPaneContinue } from './useChatPaneContinue'
@@ -1417,6 +1418,10 @@ export default function ChatPane({
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
+          // The conductor mode bolt in the agent spot, as ComposerDockView draws it, and
+          // before the first message too: a pane has no chip row to hold the pressed chip.
+          // On a crew member it names the role.
+          agentBadge={showsAsCrewMode(paneSlot) ? <CrewModeComposerChip /> : paneCrewRoot ? <CrewModeComposerChip worker /> : undefined}
           // A Crew Mode root with a message offers no switch, preview on or off: the raw
           // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
           onAgentClick={!agentLocked && (panePickerKept || !showsAsCrewMode(paneSlot))
@@ -1470,6 +1475,11 @@ export default function ChatPane({
           project={paneSlot?.project ?? ''}
           turnProject={paneSlot?.turn_project}
           turnProjectFallback={paneSlot?.turn_project_fallback}
+          // No `projectBranch`: its copy button would make the agent/project
+          // chip group three buttons, over `max-two-buttons-per-row`.
+          projectLocked={pickerModels.projectLocked}
+          projectSwitching={pickerActions.projectSwitching}
+          onProjectClick={(rect, trigger) => { pickerModels.anchorProjectBtn(rect, trigger); pickerModels.setProjectPickerOpen(o => !o) }}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list
@@ -1502,6 +1512,8 @@ export default function ChatPane({
         <ChatPaneAgentMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
 
         <ChatPaneModelMenu slotKey={slotKey} paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
+
+        <ChatPaneProjectMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} />
 
       </div>
     </SlotProvider>

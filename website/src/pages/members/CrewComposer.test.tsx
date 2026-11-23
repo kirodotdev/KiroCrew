@@ -5,7 +5,7 @@ import type { ChatInputProps } from '../../components/chat-input/props'
 /* The Crewmates page's composer is the shared ChatInput minus the session
  * toolbar line. ChatInput is stubbed to record what reaches it: every core
  * piece (text, send, attachments, steer/queue) arrives as given, and none of
- * the agent / model / effort / context / approval chrome does. */
+ * the agent / project / model / effort / context / approval chrome does. */
 
 const seen = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }))
 vi.mock('../../components/ChatInput', () => ({
@@ -19,7 +19,7 @@ import CrewComposer, { SESSION_CHROME_PROPS } from './CrewComposer'
 
 const noop = () => {}
 const CHROME: Partial<ChatInputProps> = {
-  onAgentClick: noop, agentLabel: 'oncall', agentIsInheritedDefault: false, agentSource: 'kirocrew',
+  onAgentClick: noop, agentLabel: 'oncall', agentIsInheritedDefault: false, agentSource: 'kirocrew', onProjectClick: noop,
   onModelClick: noop, modelName: 'claude-opus-5', modelIsInheritedDefault: true, modelIsAutoChosen: false, modelIsJevRouted: false,
   reasoningEffort: 'high', effortIsDefault: false, hasEffort: true,
   contextPct: 42, contextUsedTokens: 4200, contextWindowTokens: 10000,

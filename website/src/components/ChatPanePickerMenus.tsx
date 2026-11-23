@@ -4,6 +4,8 @@ import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
+import ProjectPicker from './ProjectPicker'
+import { ProjectAwsProfileSection } from './ProjectAwsProfile'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
 import SessionSwitchToggle from './SessionSwitchToggle'
@@ -21,11 +23,11 @@ import type { RootState } from '../store'
 import type { useChatPanePickerActions, useChatPanePickerModels } from './useChatPanePickers'
 
 /**
- * `ChatPane`'s two portaled picker menus, each anchored to the composer chip
+ * `ChatPane`'s portaled picker menus, each anchored to the composer chip
  * that opened it: the agent list (with the default-agent row and the manage
- * footer) and the model list with the reasoning-effort control inside it. Both
- * read `useChatPanePickerModels` / `useChatPanePickerActions`; the pane renders
- * them after its composer dock.
+ * footer), the model list with the reasoning-effort control inside it, and the
+ * project picker. All read `useChatPanePickerModels` / `useChatPanePickerActions`;
+ * the pane renders them after its composer dock.
  */
 
 // One instance covers both dropdown filter inputs (never open at once).
@@ -204,5 +206,21 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
         </div>
       }</OverlayPortal>}
     </>
+  )
+}
+
+export function ChatPaneProjectMenu({ paneSlot, models, actions }: Pick<MenuProps, 'paneSlot' | 'models' | 'actions'>) {
+  const { projectPickerOpen, setProjectPickerOpen, projectBtnRect } = models
+  const project = paneSlot?.project || ''
+  // No `errorHandoff`: the hand-off navigates away from a pane that may hold an unsent draft.
+  return (
+    <ProjectPicker
+      open={projectPickerOpen}
+      onOpenChange={setProjectPickerOpen}
+      anchorRect={projectBtnRect}
+      onSelect={path => { void actions.switchProject(path); setProjectPickerOpen(false) }}
+      startPath={project}
+      footer={project ? <ProjectAwsProfileSection project={project} /> : undefined}
+    />
   )
 }
