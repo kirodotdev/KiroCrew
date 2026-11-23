@@ -27,8 +27,9 @@ Tiers, first match wins
 
 The bundle is a schema-1 test map, or the schema-2 gzip file `ci_test_map.py
 bundle` writes, read as its map plus `co_change` (as `cochange`) and `guard`;
-`tests`, `files` and `cochange` are the tables read. A missing table never makes a file skippable:
-the files that would be G are held in F instead. An optional `guard` table
+`tests`, `files` and `cochange` are the tables read. A missing table never makes
+a file skippable: the files that would be G are held in F instead, and a table
+the schema-2 file holds empty counts as missing. An optional `guard` table
 (`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
 spares the live guard scan, which costs seconds; without it the scan runs. A
 test the diff adds or edits is tier A or a fall-back either way.
@@ -97,19 +98,23 @@ def load_bundle(path: Path) -> dict[str, Any]:
 
 
 def _flatten_bundle(packed: Mapping[str, Any]) -> Any:
-    """The schema-2 bundle's map, with its `co_change` and `guard` tables beside it."""
+    """The schema-2 bundle's map, with its `co_change` and `guard` tables beside it.
+
+    The writer leaves out a table it could not build, so one that is missing,
+    null or empty is no data: it is not carried over as a table with no links.
+    """
     doc = packed.get("map")
     if not isinstance(doc, dict):
         return doc
     doc = dict(doc)
     co_change = packed.get("co_change")
-    if co_change is not None:
+    if co_change not in (None, {}):
         if not isinstance(co_change, dict) or not all(
             isinstance(r, dict) for r in co_change.values()
         ):
             raise ValueError("bundle table `co_change` is not {file: {test file: count}}")
         doc["cochange"] = {src: sorted(row) for src, row in co_change.items()}
-    if "guard" in packed:
+    if packed.get("guard") not in (None, []):
         doc["guard"] = packed["guard"]
     return doc
 

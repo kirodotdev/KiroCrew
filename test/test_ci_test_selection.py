@@ -152,18 +152,81 @@ def test_a_schema_2_bundle_loads_as_its_map_cochange_and_guard(tmp_path: Path) -
         "map": flat,
         "co_change": {"src/kiro_crew/acp/mod.py": {"test/test_cochanged.py": 3}},
         "guard": GUARD,
-        "reach": {},
     }
     path = tmp_path / "bundle.json.gz"
     path.write_bytes(gzip.compress(json.dumps(packed).encode("utf-8")))
     assert cts.load_bundle(path) == {**BUNDLE, "guard": GUARD}
-    # Without its co_change table the map has no `cochange`: no data, not no links.
-    path.write_bytes(gzip.compress(json.dumps({**packed, "co_change": None}).encode("utf-8")))
-    assert "cochange" not in cts.load_bundle(path)
     for bad in ({**packed, "co_change": {"a": ["t"]}}, {**packed, "map": None}):
         path.write_bytes(gzip.compress(json.dumps(bad).encode("utf-8")))
         with pytest.raises(ValueError):
             cts.load_bundle(path)
+
+
+NO_DATA = pytest.mark.parametrize("without", ["left out", None, {}, []])
+
+
+def _packed(tmp_path: Path, table: str, without: object, flat: dict) -> Path:
+    """A schema-2 file whose `table` is left out, or written as `without`."""
+    packed = {
+        "schema": ctm.BUNDLE_SCHEMA,
+        "map": {k: v for k, v in flat.items() if k != "cochange"},
+        "co_change": {"src/kiro_crew/acp/mod.py": {"test/test_cochanged.py": 3}},
+        "guard": GUARD,
+    }
+    del packed[table]
+    if without != "left out":
+        packed[table] = without
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(packed), encoding="utf-8")
+    return path
+
+
+@NO_DATA
+def test_a_schema_2_bundle_with_no_co_change_data_skips_nothing(
+    tmp_path: Path, without: object
+) -> None:
+    whole = _score(bundle=BUNDLE)
+    assert whole["would_skip"] == whole["tiers"]["G"] != []
+    try:
+        bundle = cts.load_bundle(_packed(tmp_path, "co_change", without, BUNDLE))
+    except ValueError:
+        # A table of another shape is corrupt: the CLI answers `full` for it.
+        assert without == []
+        return
+    assert "cochange" not in bundle
+    verdict = _score(bundle=bundle)
+    # Every file the full bundle would skip is held, with whatever co-change tied in.
+    assert verdict["verdict"] == "select" and verdict["would_skip"] == verdict["tiers"]["G"] == []
+    assert set(whole["tiers"]["F"] + whole["tiers"]["G"]) == set(verdict["tiers"]["F"])
+    # A held file stays out of the skip list even when its tier is skippable.
+    every = _score(bundle=bundle, skippable=set(cts.TIERS))
+    assert set(whole["tiers"]["G"]).isdisjoint(every["would_skip"])
+
+
+@NO_DATA
+def test_a_schema_2_bundle_with_no_guard_data_runs_the_live_guard_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, without: object
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    _repo(repo, {"src/kiro_crew/testing/wait.py": "", "test/test_x.py": "", "test/test_g.py": ""})
+    scans: list[Path] = []
+
+    def live_scan(root: Path) -> list[str]:
+        scans.append(root)
+        return ["test/test_g.py"]
+
+    monkeypatch.setattr(cts.ctm, "guard_tier", live_scan)
+    flat = {**BUNDLE, "files": {"src/kiro_crew/testing/wait.py": [0]}}
+    path = _packed(tmp_path, "guard", without, flat)
+    code, verdict = _main(tmp_path, path.read_text(encoding="utf-8"), root=repo)
+    assert code == 0
+    if without == {}:
+        # A table of another shape is corrupt, never a quietly lost signal.
+        assert verdict["verdict"] == "full" and not scans
+    else:
+        assert verdict["reason"] is None, verdict["reason"]
+        assert scans == [repo] and verdict["tiers"]["A"] == ["test/test_g.py"]
 
 
 def test_bounded_returns_the_value_or_reraises_the_error() -> None:

@@ -14,8 +14,8 @@ which files it really executed (`scripts/ci_test_file_map.py`) links a change
 to the test files that touched it.
 
     build   merge the plugin's `part-*.json` files into the map
-    bundle  wrap a map and the cheap static signals into one gzip selection
-            artifact (schema 2, below)
+    bundle  wrap a map, the co-change history and the guard tier into one
+            gzip selection artifact (schema 2, below)
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -38,13 +38,13 @@ The bundle (gzip JSON)
 ----------------------
     {"schema": 2, "commit": SHA, "built_at": ISO,
      "map": <the schema-1 map, unchanged>,
-     "static_imports": {test file: [src file, ...]},  # direct + one hop, from ast
-     "co_change": {src file: {test file: count}},      # last N first-parent commits
-     "reach": {src file: n test files the map links to it},
-     "guard": [test file, ...]}                        # leaf_test_scope.corpus_gates
+     "co_change": {src file: {test file: count}},  # last N first-parent commits
+     "guard": [test file, ...]}                    # leaf_test_scope.corpus_gates
 
-A table that cannot be built is left out of the file, never written empty, so
-a reader can tell "no data" from "no links".
+A table that cannot be built, or that comes out empty, is left out of the file,
+never written empty, so a reader can tell "no data" from "no links". A shallow
+clone cannot build `co_change` unless it holds `--commits` commits and the one
+before them: a part of the window would read as the whole of it.
 
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
@@ -69,12 +69,12 @@ Exit codes: 0 selection printed, 3 full suite (reason on stderr), 2 usage.
 from __future__ import annotations
 
 import argparse
-import ast
 import gzip
 import json
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping
+import zlib
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -85,6 +85,8 @@ BUNDLE_SCHEMA = 2
 FULL = 3
 CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
+BUNDLE_TABLES = ("co_change", "guard")
+NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
 # these is not a test pytest would run, so it falls back like any other file.
@@ -128,7 +130,10 @@ def read_parts(directory: Path) -> list[dict[str, Any]]:
 def _read_json(path: Path) -> Any:
     raw = path.read_bytes()
     if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
+        try:
+            raw = gzip.decompress(raw)
+        except (EOFError, zlib.error) as exc:
+            raise ValueError(f"{path}: damaged gzip data: {exc}") from exc
     return json.loads(raw.decode("utf-8"))
 
 
@@ -258,73 +263,6 @@ def share(selection: Selection, test_map: Mapping[str, Any]) -> float:
     return sum(counts.get(t, 0) for t in selection.tests) / total
 
 
-def _module_file(module: str, root: Path) -> str | None:
-    """`kiro_crew.a.b` -> `src/kiro_crew/a/b.py` (or its package `__init__.py`), if it exists."""
-    if not module:
-        return None
-    base = root / "src" / Path(*module.split("."))
-    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
-        if candidate.is_file():
-            return candidate.relative_to(root).as_posix()
-    return None
-
-
-def _src_package(path: str) -> list[str] | None:
-    """The package a file under `src/` sits in, for its relative imports; None elsewhere."""
-    parts = path.split("/")
-    return parts[1:-1] if parts[0] == "src" else None
-
-
-def direct_src_imports(path: str, root: Path) -> set[str]:
-    """`src/` files one file imports by statement, at any depth of its body.
-
-    A file that cannot be read or parsed raises rather than reading as "imports
-    nothing": its links are unknown, not absent.
-    """
-    tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
-    package = _src_package(path)
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                if package is None or node.level - 1 > len(package):
-                    continue
-                stem = package[: len(package) - (node.level - 1)]
-                module = ".".join([*stem, *([node.module] if node.module else [])])
-            else:
-                module = node.module or ""
-            modules.add(module)
-            # `from pkg import name` may name a submodule rather than an attribute.
-            modules.update(f"{module}.{alias.name}" for alias in node.names if alias.name != "*")
-    found = {_module_file(m, root) for m in modules}
-    return {f for f in found if f and f != path}
-
-
-def static_imports(test_files: Iterable[str], root: Path) -> dict[str, list[str]]:
-    """Test file -> the `src/` files it imports directly, plus what those import (one hop).
-
-    Raises when the source tree is missing or a file on the way cannot be parsed.
-    """
-    if not (root / "src").is_dir():
-        raise FileNotFoundError(f"{root / 'src'}: no source tree")
-    cache: dict[str, set[str]] = {}
-
-    def direct(path: str) -> set[str]:
-        if path not in cache:
-            cache[path] = direct_src_imports(path, root)
-        return cache[path]
-
-    table: dict[str, list[str]] = {}
-    for test in sorted(test_files):
-        if not (root / test).is_file():
-            continue
-        first = direct(test)
-        table[test] = sorted(first.union(*(direct(f) for f in first)))
-    return table
-
-
 def git_first_parent_files(
     root: Path, ref: str, commits: int, timeout: float | None = None
 ) -> list[list[str]]:
@@ -372,11 +310,32 @@ def co_change(commits: Iterable[list[str]]) -> dict[str, dict[str, int]]:
     return {src: row for src, row in sorted(counts.items()) if row}
 
 
-def reach(test_map: Mapping[str, Any]) -> dict[str, int]:
-    """`src/` file -> how many test files the map links to it."""
-    return {
-        path: len(linked) for path, linked in test_map["files"].items() if path.startswith("src/")
-    }
+def is_shallow(root: Path, timeout: float | None = None) -> bool:
+    """Whether the clone at `root` lacks the older part of its history."""
+    out = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=GIT_LOG_TIMEOUT_SECS if timeout is None else timeout,
+    ).stdout
+    return out.strip() == "true"
+
+
+def co_change_window(
+    root: Path, ref: str, commits: int, timeout: float | None = None
+) -> dict[str, dict[str, int]]:
+    """`co_change` over the last `commits` first-parent commits of `ref`.
+
+    Raises when a shallow clone does not also hold the commit before the window:
+    the window's oldest commit would then have no parent to be compared with.
+    """
+    held = git_first_parent_files(root, ref, commits + 1, timeout)
+    if len(held) <= commits and is_shallow(root, timeout):
+        raise ValueError(f"shallow clone holds {len(held)} of the {commits + 1} commits needed")
+    return co_change(held[:commits])
 
 
 def bundle(
@@ -392,26 +351,27 @@ def bundle(
         "commit": test_map.get("commit", ""),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "map": test_map,
-        "reach": reach(test_map),
     }
     absent: dict[str, str] = {}
-    try:
-        doc["static_imports"] = static_imports(test_map["tests"], root)
-    except (OSError, SyntaxError, ValueError) as exc:
-        absent["static_imports"] = f"import scan failed: {exc}"
-    try:
-        doc["co_change"] = co_change(git_first_parent_files(root, ref, commits, timeout))
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        absent["co_change"] = f"git log failed: {exc}"
-    try:
-        gates = guard_tier(root)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        absent["guard"] = f"corpus_gates failed: {exc}"
-    else:
-        if gates:
-            doc["guard"] = gates
+    tables: tuple[tuple[str, Callable[[], Any], str, str], ...] = (
+        (
+            "co_change",
+            lambda: co_change_window(root, ref, commits, timeout),
+            "history read failed",
+            "no commit in the window changed a src file and a test file together",
+        ),
+        ("guard", lambda: guard_tier(root), "corpus_gates failed", NO_GUARD),
+    )
+    for name, build, failed, empty in tables:
+        try:
+            table = build()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            absent[name] = f"{failed}: {exc}"
+            continue
+        if table:
+            doc[name] = table
         else:
-            absent["guard"] = "corpus_gates found no guard test"
+            absent[name] = empty
     return doc, absent
 
 
@@ -421,8 +381,8 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     data = gzip.compress(text.encode("utf-8"), mtime=0)
     Path(args.out).write_bytes(data)
-    tables = [t for t in ("static_imports", "co_change", "reach", "guard") if t in doc]
-    print(f"bundle: tables {', '.join(tables)}, {len(data) / 1e6:.2f} MB gzip")
+    tables = [t for t in BUNDLE_TABLES if t in doc]
+    print(f"bundle: tables {', '.join(tables) or 'none'}, {len(data) / 1e6:.2f} MB gzip")
     for table, why in sorted(absent.items()):
         print(f"::warning::{table} left out: {why}")
     return 0
