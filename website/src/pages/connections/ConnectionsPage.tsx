@@ -386,6 +386,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
             case 'mint_process_gone':
               error = t('pages.connectionsPage.mint_failure_process_gone')
               break
+            case 'mint_kiro_cli_signed_out':
             case 'mint_kiro_cli_missing':
               error = t('pages.connectionsPage.mint_failure_kiro_cli_missing')
               break
