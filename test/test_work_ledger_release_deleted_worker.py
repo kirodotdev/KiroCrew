@@ -279,3 +279,19 @@ async def test_a_bulk_clear_reports_a_row_it_could_not_release_and_keeps_it(tmp_
 
 def test_the_delete_routes_spell_the_refusal_code_the_release_answers():
     assert delete_routes.WORKER_RELEASE_UNRECORDED_CODE == CODE_WORKER_RELEASE_UNRECORDED
+
+
+@pytest.mark.asyncio
+async def test_a_board_with_no_conductor_unit_releases_locally_instead_of_refusing(monkeypatch):
+    _real_units(monkeypatch)
+    item_id = await _board()
+    from kiro_crew.dashboard.handlers import work_ledger_conductor as conductor
+
+    monkeypatch.setattr(conductor, "_conductor_unit", lambda state, board: "")
+
+    resp = await release_deleted_worker(_state(), HISTORY_KEY)
+
+    assert resp is None
+    assert wl.read_binding(WORKER) is None
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.state == "open" and item.worker_session_key is None

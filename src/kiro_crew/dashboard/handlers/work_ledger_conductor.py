@@ -1432,7 +1432,16 @@ async def release_deleted_worker(state: DashboardState, history_key: str) -> web
         return _refuse_release(worker, "the crew log is off")
     unit = await asyncio.to_thread(_conductor_unit, state, board)
     if not unit:
-        return _refuse_release(worker, "the board's crew log unit is not known")
+        # No conductor unit (its chat was deleted first) means no record the fold
+        # could rebuild the binding from, so the local release is the whole job.
+        try:
+            await asyncio.to_thread(
+                work_ledger.apply_local_release, board, item_id, worker_session_key=worker
+            )
+        except (OSError, WorkLedgerError):
+            return _refuse_release(worker, "the local release could not be written")
+        logger.info("History delete: released item %s of board %s locally", item_id, board)
+        return None
     resp = await _record_conductor_write(
         state,
         board,

@@ -119,8 +119,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_work_ledger_record,
         holds_ledger,
         nests_too_deep,
-        release_on_handoff,
         release_deleted_worker,
+        release_on_handoff,
     )
     from kiro_crew.dashboard.handlers.work_ledger_handback import (  # noqa: F401
         _HANDBACK_OPERATION,
