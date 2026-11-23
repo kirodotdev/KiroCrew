@@ -22,7 +22,6 @@ The two RFCs this file implements:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -107,11 +106,12 @@ def _es256_jwt(claims: dict[str, Any], private_key: ec.EllipticCurvePrivateKey) 
     return ".".join(segments)
 
 
-def _load_vapid_keys() -> tuple[ec.EllipticCurvePrivateKey, str]:
+def load_vapid_keys() -> tuple[ec.EllipticCurvePrivateKey, str]:
     """The signing key and its public half, read in one call.
 
     A cold cache reads, or generates and persists, the keypair file, so the
-    sender runs this through ``asyncio.to_thread`` rather than on the loop.
+    caller runs this through ``asyncio.to_thread`` rather than on the loop, once
+    for a whole batch of sends.
     """
     return vapid_keys.get_private_key(), vapid_keys.public_key_b64url()
 
@@ -231,20 +231,24 @@ def public_push_session(total_timeout: float = 15) -> aiohttp.ClientSession:
 
 
 async def send_web_push(
-    session: Any, subscription: dict[str, Any], payload: dict[str, Any]
+    session: Any,
+    subscription: dict[str, Any],
+    payload: dict[str, Any],
+    vapid: tuple[ec.EllipticCurvePrivateKey, str],
 ) -> PushResult:
     """Encrypt and POST one notification to one subscription.
 
     ``session`` is an ``aiohttp.ClientSession``. ``payload`` is the JSON the
-    service worker / declarative renderer receives. Returns a :class:`PushResult`;
+    service worker / declarative renderer receives. ``vapid`` is what
+    :func:`load_vapid_keys` returns. Returns a :class:`PushResult`;
     the caller deletes the subscription when ``gone`` is set (404/410). Network
     and encryption errors are caught and reported as a non-ok, non-gone result
     so one dead endpoint never blocks fan-out to the others.
     """
     endpoint = subscription["endpoint"]
     keys = subscription["keys"]
+    private_key, public_key = vapid
     try:
-        private_key, public_key = await asyncio.to_thread(_load_vapid_keys)
         # "replace": a lone surrogate in a note's text becomes "?" rather than
         # failing this device's push; the payload budget counts it as 3 bytes.
         body = _encrypt(
