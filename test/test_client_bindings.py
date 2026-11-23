@@ -68,7 +68,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_agent_turn_pending": ("function", False, "a6632a57e602", "client_transport"),
     "_agent_turn_start": ("data", False, "", ""),
     "_antigravity_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
-    "_append_member_dispatch_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
+    "_append_member_dispatch_server": ("function", False, "e22253e379eb", "client_mcp_array"),
     "_append_member_panel_server": ("function", False, "94c1c94e7642", "client_mcp_array"),
     "_apply_session_identity_env": ("function", False, "1b5cd29daa82", "client_spawn_env"),
     "_apply_session_permission_routing": ("function", True, "b60c5fea256e", "client_permissions"),

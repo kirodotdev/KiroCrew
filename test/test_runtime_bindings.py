@@ -143,7 +143,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "ead9c31b8aca",
         "runtime_session_setup",
     ),
-    "_mirrored_session_mcp": ("function", True, "1a8f8533ecff", "runtime_session_setup"),
+    "_mirrored_session_mcp": ("function", True, "4efc21c27ebf", "runtime_session_setup"),
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),

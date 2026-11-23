@@ -34,9 +34,11 @@ What a running worker does per call (its children forced onto the Bot's worker, 
 own-child exemption, the bound for its own creates) follows the kit its session
 started with, read by :func:`holds_conducting_kit`, never the live switch: a switch
 change reaches it at its next start, which the owner's save brings by reloading the
-Bot's workers (``agent_admin.crew_update``, ``crewmate_worker_reload``). On KAS the
-spec's kit follows the same mount (``mate_worker.worker_session_spec``'s *mounted*),
-so a re-inject of a worker that started plain projects none of this module's kit.
+Bot's workers (``agent_admin.crew_update``, ``crewmate_worker_reload``). The spec's
+kit follows the same mount wherever a start is composed (``mate_worker.worker_session_spec``'s
+*mounted*, decided by :func:`start_mounts_session_control` before the spec is read), so
+a start that mounts nothing, a re-inject of a worker that started plain included,
+projects none of this module's kit.
 
 A fork the Bot's thread makes of its worker while the switch is on conducts too
 (:func:`thread_fork_conducts`), so ``session_fork`` seeds it from the Bot's Profile
@@ -113,6 +115,45 @@ def holds_conducting_kit(state: Any, slot: Any) -> bool:
     get_provider = getattr(getattr(state, "sessions", None), "get_provider", None)
     provider = get_provider(effective_session_key(slot)) if get_provider is not None else None
     return getattr(provider, "member_dispatch_mounted", None) is True
+
+
+def start_mounts_session_control(
+    session_key: str | None,
+    backend: str,
+    agent: str | None,
+    work_dir: Any = None,
+    config: Any = None,
+) -> bool:
+    """Whether a session start on *backend* for *session_key* mounts session control.
+
+    The read the runtime's create and load paths make for that start, as one
+    predicate: a backend that can carry the mount (``ACP_BACKENDS_MEMBER_DISPATCH``),
+    a key that takes it (``members.mounts_session_control``: a member DM, or a worker
+    the Bot's thread opened while the Bot's switch is on, read from *config* when
+    given), and ``kirocrew-dashboard`` not switched off for *agent*
+    (``session_mcp.session_mcp_server_is_disabled``, scoped to *work_dir* as those
+    paths scope it, and for a worker read from the spec built for *session_key*, its
+    Bot's file included, as its composition reads it). A worker's conducting kit
+    follows this answer wherever its start is composed before the mount
+    (``mate_worker.worker_session_spec``'s *mounted*), and the per-chat client mounts
+    on it. Blocking (the switch and the spec reads): callers on the event loop run it
+    off it.
+    """
+    from kiro_crew import members
+    from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
+    from kiro_crew.agent_sdk.agent_specs import session_mcp_server_is_disabled
+    from kiro_crew.agent_sdk.backends_mcp import overlay_project_scope
+
+    if backend not in ACP_BACKENDS_MEMBER_DISPATCH:
+        return False
+    if not members.mounts_session_control(session_key, config):
+        return False
+    # The checkout the runtime's check reads the spec from (``_disable_check_scope``),
+    # from the one decider it reads too.
+    scope = overlay_project_scope(backend, work_dir).get("work_dir")
+    return not session_mcp_server_is_disabled(
+        members.MEMBER_DISPATCH_SERVER, agent, work_dir=scope, session_key=session_key or ""
+    )
 
 
 def effective_worker_cap_refusal(

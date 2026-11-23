@@ -166,7 +166,7 @@ class TestTheRuntimePaths:
         from kiro_crew.acp import runtime as runtime_mod
         from kiro_crew.acp.harness.base import SessionExtras
 
-        def _disabled(name, _agent, *, work_dir=None):
+        def _disabled(name, _agent, *, work_dir=None, session_key=""):
             asked.append(name)
             return False
 
@@ -236,6 +236,64 @@ class TestTheRuntimePaths:
         source = inspect.getsource(AcpRuntime.load_session)
         assert "member_dispatch=bool(member_session_key) and not member_withheld" in source
         assert "crew_panel=panel_mounted" in source
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["create", "load"])
+    @pytest.mark.parametrize("withheld", [False, True])
+    async def test_a_mirrored_hosts_projection_gets_the_starts_mount(
+        self, bot, monkeypatch, path, withheld
+    ):
+        """A mirrored host (codex) builds the worker's spec in its projection, before
+        the member entry is appended, so both paths ask the dashboard server's
+        switch-off first, keyed by the session so its Bot's file counts, and hand the
+        projection what this start mounts."""
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX
+
+        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX)
+        rt._initialized = True
+        rt._can_load_session = True
+        sent, asked, _kas = self._wire(monkeypatch, rt)
+        keys: list[str] = []
+
+        def _disabled(name, _agent, *, work_dir=None, session_key=""):
+            asked.append(name)
+            keys.append(session_key)
+            return withheld
+
+        monkeypatch.setattr(runtime_mod, "session_mcp_server_is_disabled", _disabled)
+        handed: list = []
+
+        class _Projected(Exception):
+            """Stops the start once the projection has its answer."""
+
+        async def _mirrored(_agent, **kwargs):
+            handed.append((list(asked), kwargs.get("session_control_mounted")))
+            raise _Projected
+
+        monkeypatch.setattr(rt, "_mirrored_session_mcp", _mirrored)
+        with pytest.raises(_Projected):
+            if path == "create":
+                await rt.create_session(
+                    cwd="/work",
+                    agent="kirocrew-mate-worker",
+                    member_session_key=WORKER,
+                    session_key=WORKER,
+                )
+            else:
+                await rt.load_session(
+                    "/home/u/.kiro/sessions/cli/sid-123.json",
+                    "sid-123",
+                    cwd="/work",
+                    agent="kirocrew-mate-worker",
+                    member_session_key=WORKER,
+                    session_key=WORKER,
+                )
+        # Asked once, before the projection ran, for this session, and the projection
+        # got its answer.
+        assert handed == [([MEMBER_DISPATCH_SERVER], not withheld)]
+        assert keys == [WORKER]
 
     @pytest.mark.asyncio
     async def test_the_thread_still_gets_both(self, bot, monkeypatch):

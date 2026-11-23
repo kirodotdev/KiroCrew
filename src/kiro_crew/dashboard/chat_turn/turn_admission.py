@@ -834,12 +834,6 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         from kiro_crew.dashboard.crewmate_approval import seed_for_turn
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
-        # A worker whose session this turn starts, or runs for the first time, on
-        # the conducting kit holds no posture looser than its Profile's (never
-        # raised); checked again after the claim, once the start is known.
-        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
-
-        tighten_for_conducting(state, slot, loaded_cfg, execution_context)
         # A crewmate's worker runs in the crewmate's own git worktree of the
         # repository this turn is about, unless the edition works it in place.
         from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
@@ -849,6 +843,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # runs on the worktree, under the dispatch lock it still holds.
             selected_binding = _current_binding(turn)
             turn.selected_binding = selected_binding
+        # A worker whose session this turn starts, or runs for the first time, on
+        # the conducting kit holds no posture looser than its Profile's (never
+        # raised); checked again after the claim, once the start is known. Before the
+        # claim, only a start predicted to mount session control is held, read once
+        # the folder the start runs in is chosen.
+        from kiro_crew.dashboard.crewmate_approval import (
+            predicted_start_mounts,
+            tighten_for_conducting,
+        )
+
+        start_mounts = await predicted_start_mounts(state, slot, loaded_cfg)
+        tighten_for_conducting(
+            state, slot, loaded_cfg, execution_context, start_mounts=start_mounts
+        )
 
     # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
     # self-heal must NOT run the default agent — that generic-substitution is

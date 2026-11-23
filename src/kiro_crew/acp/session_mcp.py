@@ -89,7 +89,10 @@ from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
-from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_crewmate import (
+    _crewmate_worker_spec,
+    crewmate_worker_switch_off_spec,
+)
 from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
@@ -924,9 +927,12 @@ def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
 
 
 def session_mcp_server_is_disabled(
-    name: str, agent: str | None, *, work_dir: str | Path | None = None
+    name: str, agent: str | None, *, work_dir: str | Path | None = None, session_key: str = ""
 ) -> bool:
     """Whether *name* is switched off WHOLE for a session running as *agent*.
+
+    *session_key* names the session, so a crewmate's worker is answered from the spec
+    built for it, its Bot's file included (``crewmate_worker_switch_off_spec``).
 
     The reading form of :func:`session_mcp_disabled_servers`, for a caller that holds
     no parse of its own to pass in. ``AcpRuntime`` is that caller: it composes the
@@ -947,6 +953,7 @@ def session_mcp_server_is_disabled(
     contract :func:`session_mcp_disabled_tools` keeps.
     """
     spec = _agent_spec_for(agent, work_dir) if agent else None
+    spec = crewmate_worker_switch_off_spec(agent, spec, session_key)
     return name in session_mcp_disabled_servers(spec, _global_settings())
 
 
@@ -1020,6 +1027,7 @@ def session_mcp_projection(
     spec_policy_honoured: bool = False,
     worker_mcp_tool_limits_honoured: bool = False,
     worker_native_tool_limits_honoured: bool = False,
+    session_control_mounted: bool | None = None,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1039,6 +1047,10 @@ def session_mcp_projection(
     a spec that appears between this read and a helper's cannot be translated by
     one helper and ignored by another.
 
+    *session_control_mounted* is whether the start this projection is for mounts
+    session control, for a crewmate's worker whose conducting kit must follow that
+    mount (``mate_worker.worker_session_spec``'s *mounted*); ``None`` reads the switch.
+
     Blocking (parses the spec and the global settings file once each), so callers
     run it off the event loop.
     """
@@ -1051,6 +1063,7 @@ def session_mcp_projection(
         spec_policy_honoured=spec_policy_honoured,
         mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
         native_tool_limits_honoured=worker_native_tool_limits_honoured,
+        mounted=session_control_mounted,
     )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(

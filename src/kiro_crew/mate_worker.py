@@ -1076,10 +1076,12 @@ def worker_session_spec(
     session). Blocking.
 
     *mounted* is what a caller that builds the spec for one session start knows of
-    that start: whether it took the session-control mount (KAS's projection). The
-    conducting kit then follows the mount, so a start that mounted nothing carries
-    no conductor verbs, and one that did is not judged again against the switch.
-    ``None``, every other reader's call, reads the switch as the mount did.
+    that start: whether it takes the session-control mount (KAS's projection, the
+    session MCP projection the client and the runtime compose, and the context block
+    from the live session). The conducting kit then follows the mount, so a start that
+    mounted nothing carries no conductor verbs, and one that did is not judged again
+    against the switch. ``None``, every other reader's call, reads the switch as the
+    mount did.
     """
     from kiro_crew.execution_context import read_session_execution
 

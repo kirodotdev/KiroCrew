@@ -21,6 +21,9 @@ from member_memory_helpers import forget_declared_stores, write_member_home
 
 from kiro_crew import mate_worker
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_COPILOT,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MATE_WORKER_KIT,
@@ -564,6 +567,32 @@ def _hold(slot, posture: str) -> None:
     slot._trust, slot._trust_reads = posture == "trust", posture == "trust_reads"
 
 
+def _bot_file_switches_the_dashboard_off(monkeypatch, tmp_path) -> None:
+    """The stock worker base and pixel's own file, in a crewmate folder of this test's
+    own: the file mounts ``kirocrew-dashboard`` (Add abilities from a template that
+    does) and its owner switched it off, so the spec built for pixel's worker has it
+    off while the base and the global settings do not."""
+    from kiro_crew.config import paths
+    from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+    user, mates = tmp_path / "kiro-agents", tmp_path / "kiro-mates"
+    user.mkdir()
+    mates.mkdir()
+    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: user)
+    monkeypatch.setattr(paths, "mate_agents_dir", lambda: mates)
+    base = {
+        "name": MATE_WORKER_AGENT,
+        "prompt": "You are the worker.",
+        "tools": ["@kirocrew-core"],
+        "mcpServers": {"kirocrew-core": {"command": "kirocrew", "args": ["mcp", "core"]}},
+    }
+    switched_off = {"command": "kirocrew", "args": ["mcp-dashboard"], "disabled": True}
+    own = {"name": "pixel", "mcpServers": {MEMBER_DISPATCH_SERVER: switched_off}}
+    (mates / f"{MATE_WORKER_AGENT}.json").write_text(json.dumps(base), encoding="utf-8")
+    (mates / "pixel.json").write_text(json.dumps(own), encoding="utf-8")
+    assert mate_worker.mate_file_for_member("pixel") == "pixel"
+
+
 class TestTheFirstTurnOnTheKit:
     """rfc-bot-workers-conduct.md section 5.6: at the first turn a thread-born worker
     runs on the conducting kit, its posture becomes the stricter of what it holds and
@@ -573,15 +602,21 @@ class TestTheFirstTurnOnTheKit:
     @staticmethod
     def _admit(state, slot, config=None) -> bool:
         """What turn admission runs before the provider is claimed and again after it:
-        the Profile seed, then the tighten, on the turn's config load."""
+        the Profile seed, then the tighten, on the turn's config load, with the start's
+        own mount prediction for a session that is not live yet."""
         from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.dashboard.crewmate_approval import seed_for_turn, tighten_for_conducting
+        from kiro_crew.dashboard.crewmate_approval import (
+            predicted_start_mounts,
+            seed_for_turn,
+            tighten_for_conducting,
+        )
         from kiro_crew.execution_context import read_session_execution
 
         config = config if config is not None else KiroCrewConfig.load()
         execution = read_session_execution(slot_history_key(slot))
         seed_for_turn(state, slot, config, execution)
-        return tighten_for_conducting(state, slot, config, execution)
+        start_mounts = asyncio.run(predicted_start_mounts(state, slot, config))
+        return tighten_for_conducting(state, slot, config, execution, start_mounts=start_mounts)
 
     @pytest.mark.parametrize(
         "profile, held, expected",
@@ -687,6 +722,50 @@ class TestTheFirstTurnOnTheKit:
         worker._trust = True  # a person trusts the conducting worker
         assert self._admit(state, worker)  # still no id: checked again
         assert not worker._trust
+
+    @pytest.mark.parametrize(
+        ("backend", "dashboard_off", "mounts"),
+        [
+            pytest.param(ACP_BACKEND_KAS, False, True, id="kas-start-that-mounts"),
+            pytest.param(ACP_BACKEND_KAS, True, False, id="kas-dashboard-switched-off"),
+            pytest.param(ACP_BACKEND_CLAUDE, True, False, id="claude-dashboard-switched-off"),
+            pytest.param(ACP_BACKEND_CLAUDE, "bot-file", False, id="claude-bot-file-off"),
+            pytest.param(ACP_BACKEND_KAS, "bot-file", False, id="kas-bot-file-off"),
+            pytest.param(ACP_BACKEND_COPILOT, False, False, id="backend-that-carries-no-mount"),
+        ],
+    )
+    def test_a_cold_start_is_held_only_when_it_mounts(
+        self, crewmate, tmp_path, monkeypatch, backend, dashboard_off, mounts
+    ):
+        """Before the claim, the start's own predicate decides: a worker whose start
+        cannot mount session control (a backend that carries no mount, a switched-off
+        ``kirocrew-dashboard``, in the global settings or in the Bot's own file) keeps
+        the mode a person set, at the cold start and after the claim, while one whose
+        start mounts is held to its Profile."""
+        from kiro_crew.acp import session_mcp
+        from kiro_crew.dashboard.chat_api import slot_effort
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        state, caller, _execution = crewmate
+        _profile_mode(tmp_path, "normal")
+        _switch(tmp_path, on=True)
+        worker = state.get_slot(_create(state, caller)["target"])
+        _hold(worker, "trust")
+        monkeypatch.setattr(
+            slot_effort, "configured_backend_for_session", lambda _key, _config: backend
+        )
+        off = {"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabled": True}}}
+        monkeypatch.setattr(
+            session_mcp, "_global_settings", lambda **_kw: off if dashboard_off is True else {}
+        )
+        if dashboard_off == "bot-file":
+            _bot_file_switches_the_dashboard_off(monkeypatch, tmp_path)
+        assert self._admit(state, worker) is mounts  # the cold start, before the claim
+        assert worker._trust is not mounts
+        live = _start(state, worker)  # the claim's start mounts what the predicate said
+        live.member_dispatch_mounted = mounts
+        assert not self._admit(state, worker)
+        assert worker._trust is not mounts
 
     def test_the_check_after_the_claim_holds_a_start_the_admission_did_not_predict(
         self, crewmate, tmp_path

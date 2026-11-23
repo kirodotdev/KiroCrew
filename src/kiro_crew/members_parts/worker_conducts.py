@@ -145,7 +145,7 @@ def _log_plain(slot: str, why: str) -> None:
     logger.warning("worker session %s runs as a plain worker: %s", slot, why)
 
 
-def mounts_session_control(session_key: str | None) -> bool:
+def mounts_session_control(session_key: str | None, config: Any = None) -> bool:
     """Whether *session_key* is a session the dashboard session-control server is
     mounted into: a crew member's DM thread (:func:`is_member_session_key`) or one of
     its conducting workers (:func:`conducting_worker_session`).
@@ -155,7 +155,8 @@ def mounts_session_control(session_key: str | None) -> bool:
     the per-chat client's array. Which population holds the mount still decides what
     rides it: the crew panel and the member grant set are the thread's alone.
 
-    A worker's answer reads its Bot's record from the cached config load, the
-    source its spec reads (blocking): a caller on the event loop runs this off it.
+    A worker's answer reads its Bot's record from *config* when the caller holds the
+    loaded config, else from the cached config load, the source its spec reads
+    (blocking): a caller on the event loop runs this off it.
     """
-    return is_member_session_key(session_key) or conducting_worker_session(session_key)
+    return is_member_session_key(session_key) or conducting_worker_session(session_key, config)

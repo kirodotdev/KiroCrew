@@ -14,11 +14,13 @@ is byte for byte what it is today.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from kiro_crew import agent, crewmate_prompts, mate_worker, members
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_PI
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.mate_worker_conducts import CONDUCTS_PIECE, conducting_worker_kit
@@ -451,6 +453,273 @@ class TestTheKasKitFollowsTheStartsMount:
         assert (conductor_verbs <= set(spec["allowedTools"])) is kit
         if not kit:
             assert not conductor_verbs & set(spec["allowedTools"])
+
+
+_CONDUCTOR_VERBS = {*agent._CONDUCTOR_DASHBOARD_GRANTS, "@kirocrew-work/work_ledger_record"}
+
+
+def _has_kit(spec: dict | None) -> bool:
+    """Whether *spec* carries the conducting kit, which comes whole or not at all."""
+    spec = spec or {}
+    piece = "You may conduct." in (spec.get("prompt") or "")
+    allowed = set(spec.get("allowedTools") or [])
+    assert piece is (_CONDUCTOR_VERBS <= allowed)
+    assert piece or not _CONDUCTOR_VERBS & allowed
+    return piece
+
+
+@pytest.fixture
+def composer(bot, monkeypatch, tmp_path):
+    """pixel's worker composed by a per-chat client the way its start composes it:
+    the stock worker base on disk, pixel's switch on, and a global settings file a
+    test may switch a server off in. Yields ``(compose, settings)``; ``compose(backend,
+    client=None)`` composes a new client on *backend*, or *client* again (a respawn
+    inside its turn), and returns it."""
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.config import paths
+
+    name = mate_worker.MATE_WORKER_AGENT
+    (paths.mate_agents_dir() / f"{name}.json").write_text(json.dumps(BASE), encoding="utf-8")
+    monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
+    settings: dict = {}
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **_kw: settings)
+    bot.worker_conducts = True
+    clients: list = []
+
+    def compose(backend: str, client=None):
+        if client is None:
+            work = tmp_path / f"work-{len(clients)}"
+            work.mkdir()
+            client = AcpClient(work_dir=work, agent=name, acp_backend=backend)
+            client._session_key = WORKER
+            client.member_context = True
+            clients.append(client)
+            if backend == ACP_BACKEND_CLAUDE:
+                client._write_claude_local_settings()
+                assert client._permission_surface_governed
+        client._resolve_session_mcp_servers()
+        return client
+
+    yield compose, settings
+    for client in clients:
+        try:
+            if client.backend == ACP_BACKEND_CLAUDE:
+                asyncio.run(client._discard_claude_settings_seed())
+        finally:
+            client._reset_state()
+
+
+class TestTheKitFollowsTheClientsMount:
+    """A per-chat client decides what its start mounts before it reads the worker's
+    spec (``mate_worker_conducts.start_mounts_session_control``) and hands that answer
+    to the projection, so the conducting kit rides only a start that holds session
+    control. A mount the parse then withholds is projected again with no kit. KAS's
+    projection follows its start's mount the same way (``TestTheKasKitFollowsTheStartsMount``)."""
+
+    BACKENDS = pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_PI])
+
+    @BACKENDS
+    def test_a_start_that_mounts_keeps_its_kit(self, composer, backend):
+        compose, _settings = composer
+        client = compose(backend)
+        assert client._member_dispatch_mounted is True
+        assert _has_kit(client._session_agent_spec)
+
+    @BACKENDS
+    def test_a_switched_off_dashboard_server_leaves_no_kit(self, composer, backend):
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        compose, settings = composer
+        settings["mcpServers"] = {MEMBER_DISPATCH_SERVER: {"disabled": True}}
+        client = compose(backend)
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+
+    @BACKENDS
+    def test_a_respawn_after_a_switch_on_mid_turn_leaves_no_kit(self, composer, bot, backend):
+        compose, _settings = composer
+        bot.worker_conducts = False
+        client = compose(backend)  # its start: a plain worker
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+        bot.worker_conducts = True  # the owner turns it on while the turn runs
+        compose(backend, client)  # a respawn inside that turn composes again
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+
+    @BACKENDS
+    def test_a_dashboard_server_the_bot_file_switches_off_leaves_no_kit(self, composer, backend):
+        """pixel's own file mounts the dashboard server (Add abilities from a template
+        that does) and its owner then switched it off. The start's own answer reads the
+        spec built for the session, that file included, so the start mounts nothing and
+        the check before the claim keeps the person's mode for it as well."""
+        from kiro_crew.acp import session_mcp
+        from kiro_crew.config import paths
+        from kiro_crew.mate_worker_conducts import start_mounts_session_control
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        compose, _settings = composer
+        own = {
+            "name": "pixel",
+            "mcpServers": {
+                MEMBER_DISPATCH_SERVER: {
+                    "command": "kirocrew",
+                    "args": ["mcp-dashboard"],
+                    "disabled": True,
+                }
+            },
+        }
+        (paths.mate_agents_dir() / "pixel.json").write_text(json.dumps(own), encoding="utf-8")
+        assert mate_worker.mate_file_for_member("pixel-id") == "pixel"
+        client = compose(backend)
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+        agent_name = mate_worker.MATE_WORKER_AGENT
+        assert not start_mounts_session_control(WORKER, backend, agent_name, client._work_dir)
+        # The session's key is what brings the Bot's file into the read.
+        work = client._work_dir
+        assert not session_mcp.session_mcp_server_is_disabled(MEMBER_DISPATCH_SERVER, agent_name)
+        assert session_mcp.session_mcp_server_is_disabled(
+            MEMBER_DISPATCH_SERVER, agent_name, work_dir=work, session_key=WORKER
+        )
+
+    @BACKENDS
+    def test_the_append_mounts_on_the_starts_own_answer(self, composer, monkeypatch, backend):
+        """One decision per composition: the start's answer says plain while the switch
+        reads on (a save between two reads), and the append mounts on that answer, so
+        the start is plain, mount and kit alike, rather than mounted with no kit."""
+        from kiro_crew import mate_worker_conducts
+
+        compose, _settings = composer
+        monkeypatch.setattr(
+            mate_worker_conducts, "start_mounts_session_control", lambda *_a, **_k: False
+        )
+        assert members.mounts_session_control(WORKER)
+        client = compose(backend)
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+
+    @BACKENDS
+    def test_a_mount_the_composition_cannot_make_is_projected_again_without_the_kit(
+        self, composer, monkeypatch, backend
+    ):
+        """The start's answer said mount; the composition could not (here the dashboard
+        server's launch does not resolve), so the spec the session consumes is the one
+        with no kit."""
+        compose, _settings = composer
+        monkeypatch.setattr(members, "member_dispatch_session_server", lambda *_a, **_k: None)
+        client = compose(backend)
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+
+    def test_a_narrowed_dashboard_server_on_pi_is_projected_again_without_the_kit(self, composer):
+        """pi has no per-tool deny, so its client withholds a dashboard server with a
+        tool switched off: a withhold only the composition makes, after the start's
+        answer said mount, so the spec it consumes is projected again with no kit."""
+        from kiro_crew.mate_worker_conducts import start_mounts_session_control
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        compose, settings = composer
+        settings["mcpServers"] = {MEMBER_DISPATCH_SERVER: {"disabledTools": ["session_create"]}}
+        client = compose(ACP_BACKEND_PI)
+        agent_name = mate_worker.MATE_WORKER_AGENT
+        assert start_mounts_session_control(WORKER, ACP_BACKEND_PI, agent_name, client._work_dir)
+        assert client._member_dispatch_mounted is False
+        assert not _has_kit(client._session_agent_spec)
+
+
+class TestTheMirrorsHandTheMountDown:
+    """The mirrors that host a worker pass the start's mount answer to the projection
+    (``session_control_mounted``): claude through its keyword arguments, codex by name,
+    which the runtime fills on ``session/new`` and ``session/load``."""
+
+    @pytest.fixture(autouse=True)
+    def _base(self, bot, _floor_monkeypatch):
+        from kiro_crew.acp import session_mcp
+        from kiro_crew.config import paths
+
+        name = mate_worker.MATE_WORKER_AGENT
+        (paths.mate_agents_dir() / f"{name}.json").write_text(json.dumps(BASE), encoding="utf-8")
+        _floor_monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
+        _floor_monkeypatch.setattr(session_mcp, "_global_settings", lambda **_kw: {})
+        bot.worker_conducts = True
+
+    @staticmethod
+    def _claude(mounted):
+        from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
+
+        return ClaudeCodeMirror().session_projection(
+            mate_worker.MATE_WORKER_AGENT,
+            permission_surface_owned=True,
+            session_key=WORKER,
+            session_control_mounted=mounted,
+        )
+
+    @staticmethod
+    def _codex(mounted):
+        from kiro_crew.providers.mirrors.codex import CodexMirror
+
+        return CodexMirror().session_projection(
+            mate_worker.MATE_WORKER_AGENT, session_key=WORKER, session_control_mounted=mounted
+        )
+
+    @pytest.mark.parametrize("mirror", ["_claude", "_codex"])
+    @pytest.mark.parametrize(("mounted", "kit"), [(True, True), (False, False), (None, True)])
+    def test_the_projection_follows_the_answer(self, mirror, mounted, kit):
+        assert _has_kit(getattr(self, mirror)(mounted).agent_spec) is kit
+
+
+class TestTheContextBlockFollowsTheMount:
+    """claude, codex and pi read the worker's prompt from the ``[AGENT SYSTEM PROMPT]``
+    block, so the conducting rules ride it only for a session whose start mounted
+    session control (its live ``member_dispatch_mounted``); a turn with no session
+    evidence reads the switch."""
+
+    @pytest.fixture(autouse=True)
+    def _block(self, bot, _floor_monkeypatch):
+        from kiro_crew.config import paths
+        from kiro_crew.members_parts import member_sessions
+
+        name = mate_worker.MATE_WORKER_AGENT
+        (paths.mate_agents_dir() / f"{name}.json").write_text(json.dumps(BASE), encoding="utf-8")
+        _floor_monkeypatch.setattr(member_sessions, "_CREWMATE_WORKER_PROMPT_IN_CONTEXT", set())
+        member_sessions.note_crewmate_worker_prompt_channel(WORKER, True)
+        bot.worker_conducts = True
+
+    @pytest.mark.parametrize(("mounted", "piece"), [(True, True), (False, False), (None, True)])
+    def test_the_block_follows_the_live_sessions_mount(self, mounted, piece):
+        from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
+
+        block = _crewmate_worker_prompt(
+            mate_worker.MATE_WORKER_AGENT, "The contract.", WORKER, mounted
+        )
+        assert ("You may conduct." in block) is piece
+
+    @pytest.mark.parametrize("mounted", [True, False])
+    def test_the_resolved_contract_carries_the_mount_through(self, tmp_path, monkeypatch, mounted):
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        contract = tmp_path / "prompt.md"
+        contract.write_text("The contract.", encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.context._prompt_path", lambda **_kw: contract)
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        block = builder._resolve_agent_prompt(
+            mate_worker.MATE_WORKER_AGENT,
+            project=None,
+            mode="",
+            session_key=WORKER,
+            is_cc=False,
+            private_owner=False,
+            session_start=True,
+            member_dispatch_mounted=mounted,
+        )
+        assert ("You may conduct." in block) is mounted
 
 
 class TestTheKitAlone:
