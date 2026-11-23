@@ -9,6 +9,7 @@ part binds ``_never_touch_the_real_state`` in its own namespace.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from pathlib import Path
@@ -17,9 +18,28 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import hooks, security
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes
 
 _BASE = "/api/apps/spec-builder"
+
+
+def _inline_sensitive_gate(monkeypatch) -> None:
+    """Answer the sensitive-path gate inline, for a test about something else.
+
+    ``is_sensitive_path`` resolves on the bounded ``mc-pathres`` pool and answers
+    True when a resolution misses its budget. On a loaded runner ``_safe_dir`` then
+    refuses a healthy test root and ``_read_spec_text`` reads ``tasks.md`` as
+    absent, so the request or scan stops before the code under test runs. A
+    ``tmp_path`` tree holds no symlinks, so the pre-resolved gate and the reader's
+    ``canonical_gate`` reach the verdict the bounded gate would, off the pool.
+    """
+    monkeypatch.setattr(routes, "is_sensitive_path", security.is_sensitive_resolved_path)
+    monkeypatch.setattr(
+        routes,
+        "safe_read_file_bytes_nolink",
+        functools.partial(hooks.safe_read_file_bytes_nolink, canonical_gate=True),
+    )
 
 
 _REAL_DECISIONS_PATH: Path | None = None
