@@ -140,8 +140,43 @@ def test_responses_and_other_frames_are_left_alone():
     assert [response.result, chunk.params, odd.params] == before
 
 
+def _full_status(name: str) -> JsonRpcMessage:
+    """One server carrying all four lists, each non-empty."""
+    item = [{"name": "x", "description": "d"}]
+    return JsonRpcMessage(
+        method=METHOD_KAS_MCP_STATUS,
+        params={
+            "sessionId": "s1",
+            "servers": [
+                {
+                    "name": name,
+                    "tools": _catalog(1),
+                    "prompts": list(item),
+                    "resources": list(item),
+                    "resourceTemplates": list(item),
+                }
+            ],
+        },
+    )
+
+
 def test_the_held_catalogs_are_bounded_by_server_name():
+    """The cap counts servers, however many lists each one carries."""
     sharing = RepeatedPayloads()
     for i in range(MAX_SERVERS + 50):
-        sharing.share(_status("s1", {f"server{i}": _catalog(1)}))
+        sharing.share(_full_status(f"server{i}"))
     assert len(sharing._by_server) == MAX_SERVERS
+
+    # The last server let in keeps sharing all four of its lists.
+    last = f"server{MAX_SERVERS - 1}"
+    first, again = _full_status(last), _full_status(last)
+    sharing.share(first)
+    sharing.share(again)
+    for field in ("tools", "prompts", "resources", "resourceTemplates"):
+        assert again.params["servers"][0][field] is first.params["servers"][0][field]
+
+    # A server past the cap is left as sent.
+    late, late_again = _full_status("late"), _full_status("late")
+    sharing.share(late)
+    sharing.share(late_again)
+    assert late_again.params["servers"][0]["tools"] is not late.params["servers"][0]["tools"]

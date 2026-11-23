@@ -34,7 +34,8 @@ class RepeatedPayloads:
     __slots__ = ("_by_server", "_config_options")
 
     def __init__(self) -> None:
-        self._by_server: dict[tuple[str, str], list[Any]] = {}
+        #: Server name -> list name (``tools``, ``prompts``, ...) -> the held list.
+        self._by_server: dict[str, dict[str, list[Any]]] = {}
         self._config_options: list[Any] | None = None
 
     def share(self, msg: JsonRpcMessage) -> None:
@@ -58,16 +59,20 @@ class RepeatedPayloads:
         name = entry.get("name")
         if not isinstance(name, str):
             return
+        lists = self._by_server.get(name)
+        if lists is None:
+            if len(self._by_server) >= MAX_SERVERS:
+                return
+            lists = self._by_server[name] = {}
         for field in _SERVER_LISTS:
             value = entry.get(field)
             if not isinstance(value, list) or not value:
                 continue
-            key = (name, field)
-            held = self._by_server.get(key)
+            held = lists.get(field)
             if held is not None and held == value:
                 entry[field] = held
-            elif held is not None or len(self._by_server) < MAX_SERVERS:
-                self._by_server[key] = value
+            else:
+                lists[field] = value
 
     def _shared_options(self, options: list[Any]) -> list[Any]:
         held = self._config_options
