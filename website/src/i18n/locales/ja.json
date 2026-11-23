@@ -6345,6 +6345,12 @@
         "all_install_states": "すべて",
         "installed": "インストール済み"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "未解決の問いから、論文とそれを発表するスライドまで。",
+        "research_to_deliverable_title": "リサーチから成果物まで",
+        "ship_better_code_blurb": "スペックを書き、レビューし、計測します。コードベースを健全に保つループです。",
+        "ship_better_code_title": "より良いコードをリリース"
+      },
       "featuredSpotlight": {
         "collection": "コレクション",
         "desktop_app": "デスクトップアプリ",

@@ -6919,6 +6919,12 @@
         "all_install_states": "Все",
         "installed": "Установленные"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "От открытых вопросов к статье и презентации, которая её представляет.",
+        "research_to_deliverable_title": "От исследования к итогу",
+        "ship_better_code_blurb": "Опиши, проверь, измерь: цикл, который держит кодовую базу честной.",
+        "ship_better_code_title": "Выпускай качественный код"
+      },
       "featuredSpotlight": {
         "collection": "ПОДБОРКА",
         "desktop_app": "Настольное приложение",

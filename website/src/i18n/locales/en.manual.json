@@ -2095,6 +2095,12 @@
         "productivity": "Productivity",
         "research_writing": "Research & Writing"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "From open questions to a paper and the deck that presents it.",
+        "research_to_deliverable_title": "Research to deliverable",
+        "ship_better_code_blurb": "Spec it, review it, measure it: the loop that keeps a codebase honest.",
+        "ship_better_code_title": "Ship better code"
+      },
       "trustAppModal": {
         "title": "Trust “{{app}}” to run its own code?",
         "scope": "This applies to “{{app}}” only. Every other third-party app stays blocked.",

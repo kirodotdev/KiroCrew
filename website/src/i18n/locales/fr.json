@@ -6741,6 +6741,12 @@
         "all_install_states": "Toutes",
         "installed": "Installées"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "Des questions ouvertes jusqu’à un article et la présentation qui l’accompagne.",
+        "research_to_deliverable_title": "De la recherche au livrable",
+        "ship_better_code_blurb": "Spécifier, relire, mesurer : la boucle qui garde une base de code honnête.",
+        "ship_better_code_title": "Livrer du meilleur code"
+      },
       "featuredSpotlight": {
         "collection": "COLLECTION",
         "desktop_app": "Application de bureau",

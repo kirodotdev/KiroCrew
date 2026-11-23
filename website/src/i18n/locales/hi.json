@@ -6563,6 +6563,12 @@
         "all_install_states": "सभी",
         "installed": "इंस्टॉल है"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "खुले सवालों से एक पेपर तक, और उसे पेश करने वाले डेक तक।",
+        "research_to_deliverable_title": "रिसर्च से नतीजे तक",
+        "ship_better_code_blurb": "spec लिखो, समीक्षा करो, मापो: वह चक्र जो कोडबेस को ईमानदार रखता है।",
+        "ship_better_code_title": "बेहतर कोड शिप करो"
+      },
       "featuredSpotlight": {
         "collection": "संग्रह",
         "desktop_app": "डेस्कटॉप ऐप",

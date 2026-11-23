@@ -6741,6 +6741,12 @@
         "all_install_states": "Todas",
         "installed": "Instaladas"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "De las preguntas abiertas a un artículo y la presentación que lo expone.",
+        "research_to_deliverable_title": "De investigar a entregar",
+        "ship_better_code_blurb": "Especifica, revisa, mide: el ciclo que mantiene honesta una base de código.",
+        "ship_better_code_title": "Entrega mejor código"
+      },
       "featuredSpotlight": {
         "collection": "COLECCIÓN",
         "desktop_app": "Aplicación de escritorio",

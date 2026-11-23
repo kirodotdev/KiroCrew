@@ -6563,6 +6563,12 @@
         "all_install_states": "Alle",
         "installed": "Installiert"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "Von offenen Fragen zu einem Paper und der Präsentation dazu.",
+        "research_to_deliverable_title": "Recherche bis zum Ergebnis",
+        "ship_better_code_blurb": "Spec schreiben, prüfen, messen: die Schleife, die eine Codebasis ehrlich hält.",
+        "ship_better_code_title": "Besseren Code ausliefern"
+      },
       "featuredSpotlight": {
         "collection": "KOLLEKTION",
         "desktop_app": "Desktop-App",
