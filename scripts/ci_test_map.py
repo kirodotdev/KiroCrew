@@ -47,7 +47,9 @@ never written empty, so a reader can tell "no data" from "no links". A shallow
 clone cannot build `co_change` unless it holds `--commits` commits and the one
 before them: a part of the window would read as the whole of it. The window is
 written beside the table, and a reader takes the table as data only when
-`window_is_whole` says so.
+`window_is_whole` says so. `bundle --require TABLE` exits 1 and writes nothing
+when that table cannot be built, for a caller that must not publish a file
+without it.
 
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
@@ -399,6 +401,12 @@ def bundle(
 def _cmd_bundle(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     doc, absent = bundle(load_map(Path(args.map)), root, args.ref, args.commits)
+    refused = sorted(set(args.require) & set(absent))
+    for table in refused:
+        print(f"::error::{table} is required and could not be built: {absent[table]}")
+    if refused:
+        print("bundle: nothing written")
+        return 1
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     data = gzip.compress(text.encode("utf-8"), mtime=0)
     Path(args.out).write_bytes(data)
@@ -466,6 +474,13 @@ def main(argv: list[str] | None = None) -> int:
     pack.add_argument("--ref", default="HEAD", help="branch whose first parents feed co_change")
     pack.add_argument(
         "--commits", type=int, default=CO_CHANGE_COMMITS, help="first-parent commits to read"
+    )
+    pack.add_argument(
+        "--require",
+        action="append",
+        default=[],
+        choices=BUNDLE_TABLES,
+        help="exit 1 and write nothing when this table cannot be built (repeatable)",
     )
     pick = sub.add_parser("select", help="print the test files a diff would run")
     pick.add_argument("--map", required=True, help="schema-1 map or schema-2 bundle")

@@ -263,6 +263,15 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert "bundle: tables none" in printed
     assert all(f"::warning::{table} left out" in printed for table in ctm.BUNDLE_TABLES)
     assert ctm.load_map(out) == MAP and not set(ctm.load_bundle(out)) & set(ctm.BUNDLE_TABLES)
+    # `--require` turns a table left out into exit 1 with nothing written.
+    out.unlink()
+    for table in ctm.BUNDLE_TABLES:
+        assert ctm.main([*argv, "--out", str(out), "--require", table]) == 1
+        assert f"::error::{table} is required" in capsys.readouterr().out and not out.exists()
+    monkeypatch.setattr(ctm, "guard_tier", lambda root: TIER)
+    whole = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
+    assert ctm.main([*whole, *(a for t in ctm.BUNDLE_TABLES for a in ("--require", t))]) == 0
+    assert set(ctm.BUNDLE_TABLES) <= set(ctm.load_bundle(out))
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
