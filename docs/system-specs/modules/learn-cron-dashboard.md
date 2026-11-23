@@ -6473,6 +6473,11 @@ An Apple iWork name (`.key`, `.pages`, `.numbers`) stays refused, since nothing
 here reads that closed format, but the 400 `unsupported_file_type` error from
 both `POST /api/upload/file` and `POST /api/directory-upload` names the
 File > Export To copy (PowerPoint, Word, Excel or PDF) that does upload.
+A `.msg` (`_ALLOWED_DOC_EXT`) uploads through both endpoints and is stored as
+sent, never turned into text at upload: the agent reads the stored file, as it
+does an uploaded `.pdf`. No content signature is enforced, because the name
+covers both an Outlook message (an OLE compound file) and a plain-text file such
+as a ROS message definition, the same split the Knowledge Library's reader makes.
 
 The composer can cancel uploads: while any upload request is in flight, a Cancel
 control replaces the attach control, and pressing it aborts every in-flight

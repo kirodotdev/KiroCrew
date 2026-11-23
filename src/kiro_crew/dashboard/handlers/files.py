@@ -782,6 +782,10 @@ _ALLOWED_DOC_EXT = {
     ".ods",
     ".odp",
     ".rtf",
+    # Outlook messages (an OLE compound file) and plain-text files sharing the
+    # extension (ROS message definitions), so no signature is enforced: the
+    # agent reads the stored file, as the Knowledge Library's reader does.
+    ".msg",
     ".zip",
     ".tar",
     ".gz",
