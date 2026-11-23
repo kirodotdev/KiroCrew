@@ -929,6 +929,9 @@ export default function MembersPage() {
           slotsLoaded={slotsLoaded} active={active} activeSlug={activeSlug}
           activeMemberName={activeMemberName} onGoalsDraftChange={onGoalsDraftChange}
           onExportDraftChange={onExportDraftChange}
+          // The copy lands through the import card, so it is offered exactly
+          // where both Import from file doors are.
+          copyOpen={createHeld === null && !importHeld}
         />
         <MembersPageSidePanel
           layout={layout} profileCard={profileCard} drawers={drawers} rosterView={rosterView} thread={thread}
