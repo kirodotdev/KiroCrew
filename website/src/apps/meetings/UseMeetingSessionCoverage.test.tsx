@@ -14,6 +14,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18nT } from '../../i18n/t'
+import { STREAM_ERROR_CODE_KEY, UNAVAILABLE_CODE_KEY, streamErrorMessage } from '../../lib/sttProviders'
 
 const apiMocks = vi.hoisted(() => ({
   init: vi.fn(),
@@ -95,7 +96,7 @@ vi.mock('./hooks/useMeetingTranscription', async importOriginal => {
 })
 
 import { MeetingsApiError, type AgentDef, type MeetingMeta, type MeetingsConfig } from './api'
-import { useMeetingSession } from './hooks/useMeetingSession'
+import { STT_REASON_CODES, useMeetingSession } from './hooks/useMeetingSession'
 
 type SessionProps = Parameters<typeof useMeetingSession>[0]
 
@@ -540,6 +541,53 @@ describe('useMeetingSession transcription binding', () => {
       i18nT('apps.meetings.session.sttUnavailable'),
       { type: 'error' },
     )
+  })
+
+  it('names the reason for exactly the shared sentences that read true in a meeting', async () => {
+    const notify = vi.fn()
+    await mountLoaded({ notify })
+    const generic = i18nT('apps.meetings.session.sttUnavailable')
+    const codes = [...new Set([...Object.keys(UNAVAILABLE_CODE_KEY), ...Object.keys(STREAM_ERROR_CODE_KEY)])]
+    const named: string[] = []
+    for (const code of codes) {
+      notify.mockClear()
+      act(() => stt.onError?.(code))
+      if (notify.mock.calls[0]?.[0] !== generic) named.push(code)
+    }
+
+    // Only the codes the hook lists name a reason; every other shared code keeps the generic copy.
+    const eligible = [...STT_REASON_CODES]
+    expect(eligible.length).toBeGreaterThan(0)
+    expect(named.sort()).toEqual([...eligible].sort())
+    // Each listed code shows its own shared sentence, never the generic copy.
+    for (const code of eligible) {
+      notify.mockClear()
+      act(() => stt.onError?.(code))
+      const shown = notify.mock.calls[0]?.[0]
+      expect(shown).toBe(streamErrorMessage(code))
+      expect(shown).not.toBe(generic)
+    }
+  })
+
+  it.each([
+    ['stt_no_wheel_for_platform', 'pages.settings.sttSettings.unavailable_no_wheel'],
+    ['stt_codex_login_required', 'pages.settings.sttSettings.unavailable_codex_login'],
+    ['stt_model_missing', 'lib.sttProviders.stream_error_model_missing'],
+    // Its shared sentence points at a Provider menu "below" that a meeting lacks.
+    ['stt_load_crashed', 'apps.meetings.session.sttUnavailable'],
+    // Also a load that timed out, so "could not be loaded" would be wrong.
+    ['stt_import_failed', 'apps.meetings.session.sttUnavailable'],
+    // Its shared sentence says to reload the page, which drops unsaved minutes.
+    ['stt_apple_needs_toolchain', 'apps.meetings.session.sttUnavailable'],
+    // Its shared sentence says to restart the app, which drops unsaved minutes.
+    ['stt_codex_extra_missing', 'apps.meetings.session.sttUnavailable'],
+    ['stt_session_failed', 'apps.meetings.session.sttUnavailable'],
+  ] as const)('says why transcription failed for %s', async (code, key) => {
+    const view = await mountLoaded()
+
+    act(() => stt.onError?.(code))
+
+    expect(view.notify).toHaveBeenCalledWith(i18nT(key), { type: 'error' })
   })
 })
 

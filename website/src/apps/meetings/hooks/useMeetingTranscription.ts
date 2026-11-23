@@ -52,16 +52,67 @@ const STOP_FRAME = JSON.stringify({ type: 'stop' })
 /**
  * Server error codes that a reconnect cannot fix: a setting, a consent or a
  * package must change first. After one of these the hook halts instead of
- * reopening the socket (see `halted`). Every other code is retried.
+ * reopening the socket (see `halted`). Every other code is retried, after
+ * `reopenDelayMs` when the socket failed before `ready`.
+ *
+ * Includes the provider setup refusals the endpoint sends before `ready`: the
+ * local recogniser that is missing or cannot run on this host, Apple Speech
+ * that this macOS cannot run, and a Codex adapter that is missing, signed out
+ * or unable to run on this host. Retryable codes are NOT here: `stt_codex_voice_unavailable`,
+ * which the Codex client also sends for a transient RPC error; `stt_model_missing`,
+ * because the endpoint starts the download when it refuses, and
+ * `stt_import_failed`, because the engine also sends it for a model load that
+ * timed out or is still running, which a later attempt finds resident.
  */
-const TERMINAL_ERROR_CODES = new Set([
+export const TERMINAL_ERROR_CODES = new Set([
   'stt_streaming_disabled',
   'stt_consent_required',
   'stt_aws_access_denied',
   'stt_extra_missing',
+  'stt_no_wheel_for_platform',
+  'stt_unsupported_cpu',
+  'stt_load_crashed',
+  'stt_native_probe_crashed',
+  'stt_apple_unsupported',
+  'stt_apple_needs_toolchain',
+  'stt_codex_missing',
+  'stt_codex_extra_missing',
+  'stt_codex_login_required',
+  'stt_codex_sandbox_unavailable',
+  'stt_codex_cli_unresolved',
   'stt_transcribe_vocabulary_rejected',
   'stt_transcribe_sdk_outdated',
 ])
+
+/** True for a failure fixed in Settings → Voice, so the meeting's notice links there. */
+export function opensVoiceSettings(code: string | null): boolean {
+  return code !== null && (code === 'stt_model_missing' || TERMINAL_ERROR_CODES.has(code))
+}
+
+/** The wait before reopening after the first socket that failed before `ready`. */
+export const REOPEN_BACKOFF_BASE_MS = 1_000
+/** The longest wait between reopen attempts while every socket fails before `ready`. */
+export const REOPEN_BACKOFF_MAX_MS = 30_000
+/**
+ * The longest wait after a refusal that clears on its own once the gateway is
+ * ready: the model still downloading, or a model load still running. A short
+ * cap keeps the meeting from missing much speech after the model lands.
+ */
+export const REOPEN_BACKOFF_SOON_MAX_MS = 5_000
+const SOON_RETRY_CODES = new Set(['stt_model_missing', 'stt_import_failed'])
+
+/**
+ * How long `start()` waits after *failures* consecutive sockets failed before
+ * `ready`, the last with *code*: none for the first open, then 1 s, doubling,
+ * capped at 5 s for a refusal that clears on its own and 30 s otherwise. A
+ * failure that repeats would otherwise reopen the socket, and reach the user,
+ * about once a second.
+ */
+export function reopenDelayMs(failures: number, code: string | null = null): number {
+  if (failures <= 0) return 0
+  const cap = code !== null && SOON_RETRY_CODES.has(code) ? REOPEN_BACKOFF_SOON_MAX_MS : REOPEN_BACKOFF_MAX_MS
+  return Math.min(REOPEN_BACKOFF_BASE_MS * 2 ** (failures - 1), cap)
+}
 
 /** Cap the locally buffered pre-`ready` audio at ~8s (16 kHz mono Int16 = 32 KB/s). */
 const MAX_BUFFERED_BYTES = 8 * 32 * 1024
@@ -215,6 +266,13 @@ interface Lease {
   bufferedBytes: number
   /** `stop` was sent on this lease; its close is expected and silent. */
   stopping: boolean
+  /**
+   * The first code this lease failed with before `ready`, counted once in
+   * `failedOpensRef`; null while it has not failed.
+   */
+  failedCode: string | null
+  /** Whether this lease's failure is reported: its first code differs from the last one's. */
+  failureReported: boolean
   /** The drain grace passed: successors no longer hold their finals behind it. */
   holdExpired: boolean
   /**
@@ -386,6 +444,41 @@ export function useMeetingTranscription({
   onPartialRef.current = onPartial
   onCommittedRef.current = onCommitted
   onErrorRef.current = onError
+
+  /** Consecutive live leases that failed before `ready`: the reopen backoff. */
+  const failedOpensRef = useRef(0)
+  /** True while the stall watchdog tears the live lease down; keeps a synchronous close from counting as a refusal. */
+  const stallTeardownRef = useRef(false)
+  /**
+   * The first code of the last lease that failed before `ready`, since the last
+   * `ready` or `stop()`. A reopen that fails the same way again is not reported
+   * again: the user already has that notice, and one per attempt reads as an
+   * error that never goes away. A different code, or a return to an earlier
+   * one, is reported.
+   */
+  const lastFailureRef = useRef<string | null>(null)
+  /** The pending reopen wait, cancelled by `cleanup()` (a stop or an unmount). */
+  const backoffRef = useRef<{ timer: ReturnType<typeof setTimeout>; resolve: () => void } | null>(null)
+
+  /**
+   * Report why the live lease failed before `ready`, and count it once for the
+   * backoff. Every code of one lease (an open failure, then its close) shares
+   * the decision its first code made. A lease the user is stopping (pause or
+   * end) is reported and not counted, so resuming opens at once and reports.
+   */
+  const reportOpenFailure = useCallback((lease: Lease, code: string) => {
+    if (lease.failedCode === null && stoppingRef.current) {
+      onErrorRef.current?.(code)
+      return
+    }
+    if (lease.failedCode === null) {
+      lease.failedCode = code
+      failedOpensRef.current += 1
+      lease.failureReported = code !== lastFailureRef.current
+      lastFailureRef.current = code
+    }
+    if (lease.failureReported) onErrorRef.current?.(code)
+  }, [])
 
   useEffect(() => {
     dispatchBlockedRef.current = false
@@ -561,6 +654,12 @@ export function useMeetingTranscription({
   const cleanup = useCallback((abandonDrain = false) => {
     teardownRef.current += 1
     clearWatchdog()
+    const backoff = backoffRef.current
+    backoffRef.current = null
+    if (backoff) {
+      clearTimeout(backoff.timer)
+      backoff.resolve()
+    }
     // Close, THEN null the ref: a close handler that runs synchronously (the test
     // double does) still sees its own lease as current and reports the close the
     // way a live socket's would; a real socket closes on a later task either way.
@@ -645,6 +744,8 @@ export function useMeetingTranscription({
       buffer: [],
       bufferedBytes: 0,
       stopping: false,
+      failedCode: null,
+      failureReported: false,
       holdExpired: false,
       rotateTimer: null,
       closeTimer: null,
@@ -745,6 +846,9 @@ export function useMeetingTranscription({
             Math.max(maxDurationMs - ROTATE_LEAD_MS, 1_000),
           )
         }
+        // A lease went live: the next failure reopens at once and is reported.
+        failedOpensRef.current = 0
+        lastFailureRef.current = null
         lease.settle()
         return
       }
@@ -808,7 +912,9 @@ export function useMeetingTranscription({
           // Pass the machine-readable `code` so STT_ERROR_KEY can route to the
           // right user-facing copy. Fall back to the human message, then a
           // generic sentinel.
-          onErrorRef.current?.(msg.code || msg.message || 'error')
+          const code = msg.code || msg.message || 'error'
+          if (lease.ready) onErrorRef.current?.(code)
+          else reportOpenFailure(lease, code)
           // The server closes after an error frame. Mark as stopping so that
           // close is not reported as a second, generic 'disconnected' error
           // over the code-specific one, and so no rotation is planned for a
@@ -859,7 +965,12 @@ export function useMeetingTranscription({
       if (!isActive()) return
       // A close we did not ask for, while recording, is a transport failure:
       // surface it rather than silently going quiet mid-meeting.
-      if (!stoppingRef.current) onErrorRef.current?.('disconnected')
+      // The stall watchdog's own teardown is not a refusal: a synchronous close
+      // during it reports directly and adds nothing to the wait.
+      if (!stoppingRef.current) {
+        if (lease.ready || stallTeardownRef.current) onErrorRef.current?.('disconnected')
+        else reportOpenFailure(lease, 'disconnected')
+      }
       cleanup()
     }
     ws.onerror = () => {
@@ -873,10 +984,11 @@ export function useMeetingTranscription({
         try { ws.close() } catch { /* never opened */ }
         return
       }
-      onErrorRef.current?.('connection')
+      if (lease.ready) onErrorRef.current?.('connection')
+      else reportOpenFailure(lease, 'connection')
     }
     return lease
-  }, [cleanup, dispatchInOrder, dropSuccessor, expireHold, finishDrain])
+  }, [cleanup, dispatchInOrder, dropSuccessor, expireHold, finishDrain, reportOpenFailure])
 
   rotateRef.current = () => {
     // One rotation at a time, and none once the user has stopped.
@@ -916,6 +1028,21 @@ export function useMeetingTranscription({
     // `heldDispatchesRef` is deliberately NOT reset: a predecessor left draining
     // by a stop or a restart still releases what was held behind it.
 
+    // After a socket that failed before `ready`, wait before the next one. The
+    // wait counts as starting, so a pause during it stops it (`isStarting`).
+    const backoffMs = reopenDelayMs(failedOpensRef.current, lastFailureRef.current)
+    if (backoffMs > 0) {
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(() => {
+          backoffRef.current = null
+          resolve()
+        }, backoffMs)
+        backoffRef.current = { timer, resolve }
+      })
+      // A stop or an unmount during the wait reset the session (cleanup ran).
+      if (teardownRef.current !== teardown) return
+    }
+
     let stream: MediaStream
     try {
       // The microphone saved in Settings, as dictation records; the system
@@ -951,7 +1078,7 @@ export function useMeetingTranscription({
         lease.ws.onopen = () => resolve()
       })
     } catch {
-      onErrorRef.current?.('connection')
+      reportOpenFailure(lease, 'connection')
       cleanup()
       return
     }
@@ -965,7 +1092,7 @@ export function useMeetingTranscription({
       // cleanup() already ran (the socket closed and reported why), and closing
       // this context is what rejected the load: not a worklet failure to report.
       if (ctxRef.current !== ctx) return
-      onErrorRef.current?.('worklet')
+      reportOpenFailure(lease, 'worklet')
       cleanup()
       return
     }
@@ -1031,7 +1158,11 @@ export function useMeetingTranscription({
       if (Date.now() - lastFrameRef.current > stallMs) {
         // No frame, and no audio leaving the socket: the stream is wedged or
         // capture stopped, and either loses the rest of the meeting, so reconnect.
-        cleanup()
+        // A stall takes STALL_TIMEOUT_MS to see, so its reconnect is immediate:
+        // it resets the wait and is not counted as a refusal before `ready`.
+        stallTeardownRef.current = true
+        try { cleanup() } finally { stallTeardownRef.current = false }
+        failedOpensRef.current = 0
         void start()
       }
     }, WATCHDOG_INTERVAL_MS)
@@ -1049,12 +1180,16 @@ export function useMeetingTranscription({
     if (activeRef.current !== lease || !lease.ready || stoppingRef.current) return
     setConnecting(false)
     setActive(true)
-  }, [cleanup, clearWatchdog, openLease])
+  }, [cleanup, clearWatchdog, openLease, reportOpenFailure])
 
   const stop = useCallback(() => {
     stoppingRef.current = true
     haltedRef.current = false
     setHalted(false)
+    // Leaving the open state (pause, end) ends the failure run: coming back
+    // opens at once and says again why, as after a halt.
+    failedOpensRef.current = 0
+    lastFailureRef.current = null
     clearWatchdog()
     // A successor still connecting has no audio and nothing to drain: drop it
     // now, so its `ready` cannot take the microphone over after the user

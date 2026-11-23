@@ -45,6 +45,7 @@ import TranslationSidebar from './components/TranslationSidebar'
 import TaskReviewView from './TaskReviewView'
 import { useExpandedAgent } from './hooks/useExpandedAgent'
 import { useMeetingSession } from './hooks/useMeetingSession'
+import { opensVoiceSettings } from './hooks/useMeetingTranscription'
 
 interface Props {
   eventId: string
@@ -447,8 +448,8 @@ export default function MeetingView({
         </div>
 
         {/* The one surface for a refused start or a transcription error while
-             the meeting is open (no toast as well). Streaming-off links to its
-             setting; the start notice's copy names the button to use.
+             the meeting is open (no toast as well). A failure fixed in Settings
+             → Voice links there; the start notice's copy names the button to use.
              No hand-off: the minutes drafts in the AgentPanel below are unsaved
              local state, and capture is live. Navigating to chat would unmount
              this view, discard those drafts and stop the microphone. */}
@@ -458,7 +459,7 @@ export default function MeetingView({
             onDismiss={dismissTranscriptionError}
             className="mx-4 mt-2 animate-rise"
             footer={
-              transcriptionErrorCode === 'stt_streaming_disabled' ? (
+              opensVoiceSettings(transcriptionErrorCode) ? (
                 <button
                   type="button"
                   className="underline"

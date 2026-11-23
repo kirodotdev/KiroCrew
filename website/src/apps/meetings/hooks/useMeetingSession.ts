@@ -25,6 +25,7 @@ import {
   type TranscriptSegment,
   type TranslationLine,
 } from '../api'
+import { streamErrorMessage } from '../../../lib/sttProviders'
 import { useMeetingTranscription } from './useMeetingTranscription'
 import { useNoteDraft } from './useNoteDraft'
 
@@ -70,6 +71,30 @@ const STT_ERROR_KEY = {
   // or provider not in _STREAMING_PROVIDERS). The error frame carries the actionable copy.
   stt_streaming_disabled: 'apps.meetings.session.sttStreamingDisabled',
 } as const
+
+/**
+ * Server codes whose shared speech-to-text sentence (`streamErrorMessage` in
+ * `lib/sttProviders.ts`) names the reason and reads true in a meeting. Left
+ * out: sentences that point at a Settings control "below", say to record or
+ * dictate again, that a draft was kept, that a load failed for good
+ * (`stt_import_failed` is also a load that timed out), or to reload the page or
+ * restart the app, which would drop unsaved minutes. Those keep the generic copy.
+ */
+export const STT_REASON_CODES: ReadonlySet<string> = new Set([
+  'stt_model_missing',
+  'stt_consent_required',
+  'stt_aws_access_denied',
+  'stt_transcribe_vocabulary_rejected',
+  'stt_transcribe_sdk_outdated',
+  'stt_extra_missing',
+  'stt_no_wheel_for_platform',
+  'stt_apple_unsupported',
+  'stt_codex_missing',
+  'stt_codex_login_required',
+  'stt_codex_voice_unavailable',
+  'stt_codex_sandbox_unavailable',
+  'stt_codex_cli_unresolved',
+])
 
 /**
  * The copy for a 409 start refusal. One helper so the inline notice and the
@@ -710,11 +735,14 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       // Indexed INSIDE the `i18nT(...)` call rather than via a local `const key`:
       // the gate collects only file-scope consts, so a function-local binding is
       // opaque to it however resolvable its initializer is.
-      const localizedMessage = i18nT(
-        code in STT_ERROR_KEY
-          ? STT_ERROR_KEY[code as keyof typeof STT_ERROR_KEY]
-          : 'apps.meetings.session.sttUnavailable',
-      )
+      // A server code with a reason sentence says why; anything else is generic.
+      const localizedMessage = STT_REASON_CODES.has(code)
+        ? streamErrorMessage(code)
+        : i18nT(
+          code in STT_ERROR_KEY
+            ? STT_ERROR_KEY[code as keyof typeof STT_ERROR_KEY]
+            : 'apps.meetings.session.sttUnavailable',
+        )
       // While the meeting is active, MeetingView shows the error inline (one
       // surface, so it is not read as two errors). Outside `active` the inline
       // notice is cleared, so fall back to the toast or the error is lost.
@@ -765,7 +793,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // error, the close and this effect's re-run land in. Leaving the open state
   // (pause, end) calls `stop()`, which clears the halt, and coming back retries
   // once. A retryable frame (the stream cap, a failed session) does not halt:
-  // the close clears `active`/`connecting` and this effect reopens the socket.
+  // the close clears `active`/`connecting` and this effect reopens the socket,
+  // which `start()` delays while sockets keep failing before `ready`.
   const transcriptionRef = useRef(transcription)
   transcriptionRef.current = transcription
   const transcriptionActive = transcription.active
