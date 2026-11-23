@@ -134,6 +134,9 @@ class FakeClient(MultipartFake):
         #: (interaction_id, text, ephemeral) per interaction callback response.
         self.responses: list[tuple[str, str, bool]] = []
         self.response_destinations: list[str] = []
+        self.defers: list[tuple[str, str]] = []
+        self.webhook_writes: list[tuple[str, str, str, Any, str]] = []
+        self.fail_webhooks = False
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
         #: thread id -> ``ThreadOrigin`` as Discord would report it; absent reads
@@ -224,6 +227,58 @@ class FakeClient(MultipartFake):
         self.responses.append((interaction_id, text, ephemeral))
         self.response_destinations.append(destination)
         return True
+
+    # Interaction-webhook verbs. ``webhook_writes`` records every one in order as
+    # ``(verb, token, text, components, destination)``; ``defers`` records each
+    # ephemeral deferral as ``(interaction_id, destination)``. ``fail_webhooks``
+    # makes them answer as an expired token does (None / False).
+
+    async def defer_interaction(
+        self, interaction_id: str, interaction_token: str, *, destination: str
+    ) -> bool:
+        self.defers.append((interaction_id, destination))
+        return True
+
+    async def edit_interaction_original(
+        self,
+        interaction_token: str,
+        text: str,
+        *,
+        components: Any = None,
+        destination: str,
+        caller_permitted: Any = None,
+    ) -> str | None:
+        return self._webhook_write(
+            "edit_original", interaction_token, text, components, destination
+        )
+
+    async def send_interaction_followup(
+        self,
+        interaction_token: str,
+        text: str,
+        *,
+        components: Any = None,
+        destination: str,
+        caller_permitted: Any = None,
+    ) -> str | None:
+        return self._webhook_write("followup", interaction_token, text, components, destination)
+
+    async def delete_interaction_original(
+        self, interaction_token: str, *, destination: str
+    ) -> bool:
+        return (
+            self._webhook_write("delete_original", interaction_token, "", None, destination)
+            is not None
+        )
+
+    def _webhook_write(
+        self, verb: str, token: str, text: str, components: Any, destination: str
+    ) -> str | None:
+        self.webhook_writes.append((verb, token, text, components, destination))
+        if self.fail_webhooks:
+            return None
+        self._mid += 1
+        return str(self._mid)
 
     async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
         self.reactions.append((message_id, emoji))
