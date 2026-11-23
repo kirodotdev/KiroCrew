@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 /** `hidden` px of content beyond the right edge of a 320px scroller. */
 function stubGeometry(hidden: number) {
@@ -40,16 +41,9 @@ const WITH_LINK = [
 const scroller = () => screen.getByTestId('table-scroller')
 
 describe('markdown table keyboard stop', () => {
-  beforeEach(() => {
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
-  })
-  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+  // The scroller's edges are first measured on the observer's first delivery.
+  beforeEach(() => { installInitialResizeObserver() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup() })
 
   it('makes a clipped table with nothing focusable inside a named Tab stop', async () => {
     stubGeometry(240)

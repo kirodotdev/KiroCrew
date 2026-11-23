@@ -153,8 +153,9 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean, a
     const group = metricsGroupRef.current
     if (!probe) return
     const read = () => setMetricsInlineFits(getComputedStyle(probe).display !== 'none')
-    read()
-    if (typeof ResizeObserver === 'undefined' || !group) return
+    // A new observer delivers once on its own, after the browser's layout, so
+    // reading here too would force a layout inside the commit's task.
+    if (typeof ResizeObserver === 'undefined' || !group) { read(); return }
     const ro = new ResizeObserver(read)
     ro.observe(group)
     return () => ro.disconnect()

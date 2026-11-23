@@ -1,4 +1,4 @@
-import { forwardRef, type ForwardedRef } from 'react'
+import { createContext, forwardRef, useContext, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -173,6 +173,13 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
  *  right-edge geometry in a real browser — the one check that can see the
  *  badge-over-chord overlap this row's unit tests can only pin structurally
  *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
+/** What can move the rail's rows (their order and the rail's width), as one
+ *  string. A row's layout glide measures the row only when this changes, not on
+ *  every render: the shell re-renders the rail many times while a page opens,
+ *  and each measurement forced a layout of the whole page inside that task.
+ *  Undefined outside the rail, which keeps Framer's measure-every-render. */
+export const NavRowLayoutKey = createContext<string | undefined>(undefined)
+
 export const NavItem = forwardRef(function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed, touch, replace, caption, 'data-ui-location': uiLocationId }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
@@ -205,6 +212,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   // >4,000px of it). The desktop rail is framer-free motion-wise, so it keeps
   // the row-reorder glide that `layout` buys there.
   const isMobileRow = useIsMobile()
+  const layoutKey = useContext(NavRowLayoutKey)
   const iconEl = <span className={`app-icon-nav w-5 h-5 [&>*]:!w-5 [&>*]:!h-5 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip, pointerProps: tipPointerProps } = useNavTip<HTMLDivElement>(collapsed)
   // Derived from the shortcut registry by route, so a row with a bound panel
@@ -240,7 +248,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
     onClick?.(); (onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
   }
   return (
-    <motion.div layout={isMobileRow ? undefined : 'position'}
+    <motion.div layout={isMobileRow ? undefined : 'position'} layoutDependency={layoutKey}
       data-onboarding-nav={navId}
       // Forwarded, not a render site of its own: the site is the spread on <NavItem>.
       {...forwardUiLocation(uiLocationId, rowRef, forwardedRef)}

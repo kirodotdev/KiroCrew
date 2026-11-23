@@ -11,6 +11,7 @@
  */
 import { screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installInitialResizeObserver } from '../../test/initialResizeObserver'
 import { renderWithProviders } from '../../test/helpers'
 import MemoryRetiredCard from './MemoryRetiredCard'
 
@@ -35,13 +36,15 @@ function stubGeometry(hidden: number) {
 }
 
 beforeEach(() => {
+  // Table edges are first measured on the observer's first delivery.
+  installInitialResizeObserver()
   vi.clearAllMocks()
   api.themes.mockResolvedValue({ themes: [] })
   api.themeDetail.mockResolvedValue({})
   api.themeBoot.mockResolvedValue({})
 })
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('MemoryRetiredCard empty table keyboard stop', () => {
   it('makes a clipped table with no rows a Tab stop named after the card', async () => {

@@ -42,10 +42,12 @@ describe('usePinnedScrollOrigin', () => {
     expect(box.scrollLeft).toBe(0)
   })
 
-  it('pins an element passed directly, and a box already scrolled when it mounts', () => {
+  it('pins an element passed directly, and a box already scrolled when it mounts', async () => {
     const el = scrollable(document.createElement('div'))
     el.scrollTop = 300
     render(<ElementBox el={el} />)
+    // A box already scrolled at mount is put back in the next frame.
+    await new Promise(r => requestAnimationFrame(() => r(undefined)))
     expect(el.scrollTop).toBe(0)
     el.scrollTop = 90
     el.dispatchEvent(new Event('scroll'))

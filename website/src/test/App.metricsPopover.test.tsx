@@ -75,7 +75,14 @@ Object.defineProperty(window, 'matchMedia', {
     removeEventListener: vi.fn(),
   })),
 })
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
+// Delivers once when it starts watching a target, as a browser's observer does:
+// the metrics control reads the rung's verdict from that first delivery.
+globalThis.ResizeObserver = class {
+  constructor(private cb: ResizeObserverCallback) {}
+  observe(target: Element) { this.cb([{ target, contentRect: target.getBoundingClientRect() } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver) }
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver
 
 import App from '../App'
 import { api } from '../api/client'

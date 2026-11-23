@@ -64,8 +64,8 @@ export function useKeyboardViewportReset(): void {
       if (el.isContentEditable || el instanceof HTMLTextAreaElement) return true
       return el instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(el.type)
     }
-    let restWidth = layoutWidth()
-    let restHeight = vv?.height ?? 0
+    let restWidth = 0
+    let restHeight = 0
     let restartedWhileTyping = false
     const keyboardOpen = () => {
       if (!vv) return false
@@ -102,7 +102,14 @@ export function useKeyboardViewportReset(): void {
       }
     }
 
-    let wasOpen = keyboardOpen()
+    // The resting record is taken in the next frame: reading the layout width
+    // here forces a layout of the page inside the commit that mounts the shell.
+    let wasOpen = false
+    const firstRead = requestAnimationFrame(() => {
+      restWidth = layoutWidth()
+      restHeight = vv?.height ?? 0
+      wasOpen = keyboardOpen()
+    })
     const onViewportChange = () => {
       const open = keyboardOpen()
       // Only act on the open -> closed transition, or on any viewport movement
@@ -132,6 +139,7 @@ export function useKeyboardViewportReset(): void {
     // once the keyboard is gone is the stale pan: undo it.
     window.addEventListener('scroll', onWindowScroll, { passive: true })
     return () => {
+      cancelAnimationFrame(firstRead)
       vv?.removeEventListener('resize', onViewportChange)
       vv?.removeEventListener('scroll', onViewportChange)
       document.removeEventListener('focusout', onFocusOut)

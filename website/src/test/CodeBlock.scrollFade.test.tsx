@@ -25,6 +25,7 @@ import { render, fireEvent, waitFor, cleanup } from '@testing-library/react'
 
 import { CodeBlock } from '../components/CodeBlock'
 import { __resetStagingForTests } from '../components/pierreStaging'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 /** How the mocked Pierre fills its shadow root: at once, or only on demand. */
 const pierreMode: { lazy: boolean; fill: (() => void) | null } = { lazy: false, fill: null }
@@ -83,16 +84,10 @@ describe('CodeBlock: right-edge fade while code continues past the edge', () => 
     __resetStagingForTests()
     pierreMode.lazy = false
     pierreMode.fill = null
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
+    installInitialResizeObserver()
     stubGeometry()
   })
-  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup() })
 
   it('fades the right edge of a clipped stand-in block until the scroll reaches the end', () => {
     const { container } = render(<CodeBlock code={LONG} lang="ts" complete={false} />)

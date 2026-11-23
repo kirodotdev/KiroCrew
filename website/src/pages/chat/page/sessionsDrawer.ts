@@ -403,7 +403,8 @@ export function useSessionsDrawer({
     const el = chatContainerRef.current
     if (!el) return
     const measure = () => setContainerH(el.clientHeight)
-    measure()
+    // The observer's first delivery measures it; reading here as well forced a
+    // layout of the page inside the task that mounts the chat page.
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()

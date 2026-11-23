@@ -9,7 +9,8 @@
  * (scripts/capture-topbar-flow.mjs sweeps that in Chromium).
  */
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installInitialResizeObserver } from './initialResizeObserver'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import {
   TOPBAR_CONTAINER_FOLDS,
@@ -243,6 +244,9 @@ describe('settleTopbarSide', () => {
 })
 
 describe('useTopbarCollapse', () => {
+  // The first settle comes from the observer's first delivery.
+  beforeEach(() => { installInitialResizeObserver() })
+  afterEach(() => { vi.unstubAllGlobals() })
   it('re-settles on mount, on a group gaining an element, on a text change and on a class change, and clears when disabled', async () => {
     // Each rung saves the actions group 40px against its 400px track: it starts
     // at level 1, an element mounting pushes it to 2, and its text growing to 3.
@@ -252,7 +256,8 @@ describe('useTopbarCollapse', () => {
     const label = document.createTextNode('Downloading 5%')
     groups.right.appendChild(label)
     const ref = { current: header }
-    const flush = () => new Promise(r => setTimeout(r, 0))
+    // Mutations settle in the next frame's animation callback.
+    const flush = () => new Promise(r => requestAnimationFrame(() => r(undefined)))
 
     const { result, rerender } = renderHook(({ on }) => useTopbarCollapse(ref, on), { initialProps: { on: true } })
     expect(result.current).toEqual({ left: 0, right: 1 })
@@ -298,7 +303,8 @@ describe('useTopbarCollapse', () => {
     const ref = { current: header }
     const root = document.documentElement
     const saved = { style: root.getAttribute('style'), font: root.dataset.fontFamily, theme: root.dataset.theme }
-    const flush = () => new Promise(r => setTimeout(r, 0))
+    // Mutations settle in the next frame's animation callback.
+    const flush = () => new Promise(r => requestAnimationFrame(() => r(undefined)))
 
     const { result, unmount } = renderHook(() => useTopbarCollapse(ref, true))
     expect(result.current.right).toBe(1)

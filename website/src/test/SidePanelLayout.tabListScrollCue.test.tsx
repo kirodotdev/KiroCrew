@@ -27,6 +27,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
@@ -60,15 +61,9 @@ const more = () => screen.queryByTestId('side-panel-tab-list-more')
 describe('side-panel rail: "More below" label on a clipped tab list', () => {
   beforeEach(() => {
     sessionStorage.clear()
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
+    installInitialResizeObserver()
   })
-  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup() })
 
   it('shows nothing when every row fits', () => {
     stubGeometry({ hidden: 0 })

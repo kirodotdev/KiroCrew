@@ -40,14 +40,22 @@ export function useVisualViewport(): VisualViewport {
     const vv = window.visualViewport
     // `scroll` matters as much as `resize`: iOS keeps the height and moves the
     // origin when it scrolls the focused input into view.
-    const onChange = () => setBox(read())
+    // An unchanged box keeps its object, so a read re-renders nothing.
+    const onChange = () => {
+      const next = read()
+      setBox(prev => (prev.height === next.height && prev.offsetTop === next.offsetTop ? prev : next))
+    }
     if (vv) {
       vv.addEventListener('resize', onChange)
       vv.addEventListener('scroll', onChange)
     }
     window.addEventListener('resize', onChange)
-    onChange()
+    // The catch-up read for a change between render and this effect waits for
+    // the next frame: reading the viewport here forces a layout of the page
+    // inside the commit's task.
+    const first = requestAnimationFrame(onChange)
     return () => {
+      cancelAnimationFrame(first)
       if (vv) {
         vv.removeEventListener('resize', onChange)
         vv.removeEventListener('scroll', onChange)

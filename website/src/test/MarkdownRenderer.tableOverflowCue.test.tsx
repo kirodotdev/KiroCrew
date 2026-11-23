@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 /** `hidden` px of content beyond the right edge, `scrolled` px already past the left. */
 function stubGeometry({ hidden, scrolled = 0 }: { hidden: number; scrolled?: number }) {
@@ -42,16 +43,8 @@ const renderTable = () => render(<MarkdownRenderer content={MD} />)
 const overflow = () => screen.getByTestId('table-scroller').getAttribute('data-overflow')
 
 describe('markdown table overflow cue', () => {
-  beforeEach(() => {
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
-  })
-  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+  beforeEach(() => { installInitialResizeObserver() })
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup() })
 
   it('shows no fade when the table fits', () => {
     stubGeometry({ hidden: 0 })

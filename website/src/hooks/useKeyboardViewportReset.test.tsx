@@ -38,6 +38,12 @@ describe('useKeyboardViewportReset', () => {
   let originalScrollY: PropertyDescriptor | undefined
   let originalScrollTo: typeof window.scrollTo
   let originalClientWidth: PropertyDescriptor | undefined
+  // The hook takes its resting record in the first frame after it mounts.
+  const mountHook = () => {
+    const view = renderHook(() => useKeyboardViewportReset())
+    vi.advanceTimersToNextFrame()
+    return view
+  }
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -69,7 +75,7 @@ describe('useKeyboardViewportReset', () => {
 
   it('resets scroll once the keyboard closes', () => {
     const { vv, fire } = installVisualViewport(500) // keyboard open
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     fire('resize')
     vi.advanceTimersByTime(1000)
     expect(scrollTo).not.toHaveBeenCalled() // never fight the pan while open
@@ -82,7 +88,7 @@ describe('useKeyboardViewportReset', () => {
 
   it('does nothing while the keyboard is open, even on focusout', () => {
     installVisualViewport(500)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     document.dispatchEvent(new Event('focusout'))
     vi.advanceTimersByTime(1000)
     expect(scrollTo).not.toHaveBeenCalled()
@@ -95,7 +101,7 @@ describe('useKeyboardViewportReset', () => {
     // cancel the pan. Deferring re-checks after settle, by when the keyboard is
     // reported open — so no reset.
     const vp = installVisualViewport(800) // keyboard not yet reported
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     window.dispatchEvent(new Event('scroll')) // pan scroll arrives first
     vp.vv.height = 500 // keyboard now reported open, before the settle timers run
     vi.advanceTimersByTime(1000)
@@ -104,7 +110,7 @@ describe('useKeyboardViewportReset', () => {
 
   it('undoes a stale pan: a window scroll after the keyboard is gone resets', () => {
     installVisualViewport(800) // keyboard closed throughout
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     window.dispatchEvent(new Event('scroll'))
     vi.advanceTimersByTime(1000)
     expect(scrollTo).toHaveBeenCalledWith(0, 0)
@@ -116,7 +122,7 @@ describe('useKeyboardViewportReset', () => {
     // keyboard is up. Reading that as "closed" scrolled the page back to 0,0
     // and left the composer under the keyboard.
     const { vv, fire } = installVisualViewport(800)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     vv.height = 450 // keyboard opens...
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 450 }) // ...and innerHeight follows
     fire('resize')
@@ -138,7 +144,7 @@ describe('useKeyboardViewportReset', () => {
     // on the visual width restarted it at the zoomed height, read the zoom as
     // "keyboard closed" and snapped the zoomed reader back to 0,0 on every pan.
     const { vv, fire } = installVisualViewport(800)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     vv.width = 195
     vv.height = 400
     setInnerHeight(400)
@@ -161,7 +167,7 @@ describe('useKeyboardViewportReset', () => {
     const { vv, fire } = installVisualViewport(800)
     const composer = document.createElement('textarea')
     document.body.append(composer)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     composer.focus()
     vv.height = 450 // portrait keyboard opens
     setInnerHeight(450)
@@ -193,7 +199,7 @@ describe('useKeyboardViewportReset', () => {
     const { vv, fire } = installVisualViewport(800)
     const composer = document.createElement('textarea')
     document.body.append(composer)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     composer.focus()
     vv.height = 745 // the shortcut bar appears: 55px, under the 120px threshold
     fire('resize')
@@ -220,7 +226,7 @@ describe('useKeyboardViewportReset', () => {
     // a viewport a little short of its rest height, with nothing focused, is
     // not a keyboard.
     const { vv, fire } = installVisualViewport(800)
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     vv.height = 745
     fire('resize')
     window.dispatchEvent(new Event('scroll'))
@@ -231,7 +237,7 @@ describe('useKeyboardViewportReset', () => {
   it('leaves document scroll alone on routes without the dashboard shell', () => {
     const { vv, fire } = installVisualViewport(500)
     document.body.replaceChildren()
-    renderHook(() => useKeyboardViewportReset())
+    mountHook()
     fire('resize')
     vv.height = 800
     fire('resize')
@@ -241,7 +247,7 @@ describe('useKeyboardViewportReset', () => {
 
   it('removes its listeners on unmount', () => {
     const { vv, fire } = installVisualViewport(500)
-    const { unmount } = renderHook(() => useKeyboardViewportReset())
+    const { unmount } = mountHook()
     fire('resize')
     unmount()
     vv.height = 800

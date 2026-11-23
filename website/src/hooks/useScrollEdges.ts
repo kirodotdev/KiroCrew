@@ -77,9 +77,11 @@ export function useScrollEdges<T extends HTMLElement>(): [
       setEdges({ left: false, right: false })
       return
     }
-    remeasure()
     node.addEventListener('scroll', remeasure, { passive: true })
+    // A new observer delivers once on its own, after the browser's layout and
+    // before paint; measuring here too would force a layout inside the commit.
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    if (!ro) remeasure()
     ro?.observe(node)
     detachRef.current = () => {
       node.removeEventListener('scroll', remeasure)
@@ -92,8 +94,8 @@ export function useScrollEdges<T extends HTMLElement>(): [
     detachContentRef.current?.()
     detachContentRef.current = null
     if (!node) return
-    remeasure()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    if (!ro) remeasure()
     ro?.observe(node)
     detachContentRef.current = () => ro?.disconnect()
   }, [remeasure])
@@ -161,9 +163,11 @@ export function useScrollEdgesY<T extends HTMLElement>(): [
       setEdges({ top: false, bottom: false })
       return
     }
-    remeasure()
     node.addEventListener('scroll', remeasure, { passive: true })
+    // A new observer delivers once on its own, after the browser's layout and
+    // before paint; measuring here too would force a layout inside the commit.
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    if (!ro) remeasure()
     ro?.observe(node)
     detachRef.current = () => {
       node.removeEventListener('scroll', remeasure)
@@ -176,8 +180,8 @@ export function useScrollEdgesY<T extends HTMLElement>(): [
     detachContentRef.current?.()
     detachContentRef.current = null
     if (!node) return
-    remeasure()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    if (!ro) remeasure()
     ro?.observe(node)
     detachContentRef.current = () => ro?.disconnect()
   }, [remeasure])

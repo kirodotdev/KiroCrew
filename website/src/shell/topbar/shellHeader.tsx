@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, lazy, Suspense, isValidElement, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
@@ -641,8 +641,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                  a pulse: 0.25s right after an intentional collapse/expand
                  click, else 0s so header reflows (panel open/close, resize)
                  snap the capsule into place instead of sliding it. */
+              /* Measured only when the segment list changes, the one thing
+                 the pulse animates: measuring on every header render forced a
+                 layout of the page inside each task that re-rendered it. */
               <motion.div
                 layout
+                layoutDependency={segments.map(s => (isValidElement(s) ? s.key : '')).join(',')}
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
                 className="flex items-center shrink-0"
               >

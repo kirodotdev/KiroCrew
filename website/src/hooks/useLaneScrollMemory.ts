@@ -137,11 +137,14 @@ export function useLaneScrollMemory(
     // and is taken out of the document instead (SessionsSidebarChrome), which
     // drops the lane's scroll offset. Restore again each time the lane comes
     // back on screen.
-    let shown = el.clientHeight > 0
+    // Unknown until the observer's first delivery, which reports the lane as it
+    // mounted: reading `clientHeight` here would force a layout of the page
+    // inside the commit that mounts the sidebar.
+    let shown: boolean | null = null
     const ro = typeof ResizeObserver === 'function'
       ? new ResizeObserver(() => {
         const now = el.isConnected && el.clientHeight > 0
-        if (now && !shown) restore()
+        if (now && shown === false) restore()
         shown = now
       })
       : null
