@@ -597,7 +597,13 @@ function ChatInput({
   // not the callback itself: the handler's identity may change every render
   // and would re-run the effect for nothing.
   const hasAutomation = !!onAutomationClick
-  useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
+  // Not on mount: the row's observer measures it on its first delivery, and a
+  // read here would force a layout inside the commit that opens a session.
+  const controlRowMountedRef = useRef(false)
+  useEffect(() => {
+    if (!controlRowMountedRef.current) { controlRowMountedRef.current = true; return }
+    remeasureControlRow()
+  }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT(terminal.canAdvertise
     ? 'components.chatInput.message_placeholder_terminal'

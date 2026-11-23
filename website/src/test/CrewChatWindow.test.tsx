@@ -14,6 +14,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { installInitialResizeObserver } from './initialResizeObserver'
 import type { RootState } from '../store'
 
 // jsdom has no MediaRecorder, so the real flag reads false and hides the mic:
@@ -233,6 +234,8 @@ describe('CrewChatWindow', () => {
     const offsetWidth = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 806 : 0 })
     const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 800 : 0 })
     onTestFinished(() => { offsetWidth.mockRestore(); clientWidth.mockRestore() })
+    // The dock's first measurement comes from its observer's first delivery.
+    installInitialResizeObserver()
     renderWindow()
     await screen.findByRole('textbox', PEER_ROW_WAIT)
     expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
