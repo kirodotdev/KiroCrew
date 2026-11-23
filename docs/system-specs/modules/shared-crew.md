@@ -1730,7 +1730,11 @@ Rules:
    connection principal the socket handler stamps, never a value from a frame. A
    person's tabs fold into one holder (`typing_lease.same_person`: the same
    principal id, or the local operator's machine-local subjects from
-   `crew_mode.operator_ids`), so their other tabs stay unlocked.
+   `crew_mode.operator_ids`), so their other tabs stay unlocked. The lease and
+   the send race read the gateway's owner id at each comparison, not when they
+   are built: a messaging reconnect sets it from the saved `KIROCREW_OWNER_ID`
+   while the gateway runs, and a tab signed in after that still folds with the
+   operator's earlier tabs.
 2. The first collaborator whose tab sends an accepted `typing` report with a
    non-empty draft acquires a free lease. Each later accepted `typing` report from
    the holder renews it. A typing report never takes a held lease away. Unknown and
