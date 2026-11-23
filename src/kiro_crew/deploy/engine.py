@@ -25,6 +25,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, NamedTuple, Optional
@@ -96,7 +97,7 @@ def random_bucket_name() -> str:
 # exactly why the Artifact Deploy "Verify" step failed for Homebrew users until
 # the gateway was relaunched from a shell that carried the full PATH. The SSM
 # session-manager-plugin installs into these same dirs, so it is resolved and
-# spawn-searched through them too.
+# spawn-searched through them too. Windows skips both: see :func:`_aws_bin_dirs`.
 _AWS_BIN_DIRS = (
     "/opt/homebrew/bin",  # Apple Silicon Homebrew
     "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
@@ -104,6 +105,18 @@ _AWS_BIN_DIRS = (
 # The tools in those dirs that a child runs by name: ``aws ssm start-session``
 # runs the plugin, and an ssh ``ProxyCommand`` can run either.
 _AWS_BIN_DIR_TOOLS = ("session-manager-plugin", "aws")
+
+
+def _aws_bin_dirs() -> tuple[str, ...]:
+    """:data:`_AWS_BIN_DIRS` for this platform.
+
+    On Windows the drive-less POSIX dirs are left out: there ``/usr/local/bin``
+    resolves against the current drive, to a folder no AWS installer uses.
+    """
+    if sys.platform == "win32":
+        return tuple(d for d in _AWS_BIN_DIRS if not d.startswith("/"))
+    return _AWS_BIN_DIRS
+
 
 # ``(name, directory)`` pairs in :data:`_AWS_BIN_DIRS` whose candidate the
 # provenance chokepoint most recently REFUSED. Keyed by the pair, not the dir
@@ -139,7 +152,7 @@ def _refresh_aws_bin_dir_trust() -> None:
     global _TRUSTED_AWS_BIN_DIRS
     with _AWS_BIN_DIR_TRUST_LOCK:
         trusted: list[tuple[str, str]] = []
-        for directory in _AWS_BIN_DIRS:
+        for directory in _aws_bin_dirs():
             if not directory:
                 continue
             try:
@@ -242,7 +255,7 @@ def resolve_aws_tool_bin_with_refusals(name: str) -> tuple[str, tuple[AwsToolRef
         # Same trust class as the pre-existing behaviour: execvp against the
         # inherited PATH already executed exactly this binary.
         return found, ()
-    for directory in _AWS_BIN_DIRS:
+    for directory in _aws_bin_dirs():
         if not directory:
             continue
         found = shutil.which(name, path=directory)
@@ -342,7 +355,7 @@ def refresh_aws_tool_trust() -> None:
     # The whole sweep holds the lock, so an overlapping sweep waits and its later
     # verdict is the one that stays.
     with _AWS_BIN_DIR_TRUST_LOCK:
-        for directory in _AWS_BIN_DIRS:
+        for directory in _aws_bin_dirs():
             if not directory:
                 continue
             for name in _AWS_BIN_DIR_TOOLS:

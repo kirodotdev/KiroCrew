@@ -1450,7 +1450,7 @@ token mint, `restart_remote`, the diagnostics probes — therefore goes through
 `token_mint.ssh_spawn_argv_env`: the `ssh` head is resolved against the inherited
 `PATH` only, and the child gets `deploy.engine.tool_spawn_env`, the env the
 SSM transport's `aws` child is built from. That helper APPENDS the well-known install dirs
-(`/opt/homebrew/bin`, `/usr/local/bin`) and withholds them for a bare head, so
+(`/opt/homebrew/bin`, `/usr/local/bin`; none on Windows) and withholds them for a bare head, so
 the inherited `PATH` keeps first claim on every name and an `ssh` found only in
 those dirs is never exec'd. Before building that env, each spawn re-runs the
 provenance walk for `session-manager-plugin` and `aws`, so a dir holding a
