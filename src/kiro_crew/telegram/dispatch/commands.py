@@ -444,8 +444,12 @@ async def _handle_compact(
     chat_id: int,
     *,
     session_key: str | None = None,
+    focus: str = "",
 ) -> None:
     """In-place ACP ``/compact`` on the user's session (mirrors Slack).
+
+    *focus* is the cleaned text a person typed after ``/compact``; empty (a bare
+    ``/compact``) calls ``provider.compact()`` with no argument, as before.
 
     Holds the per-session semaphore for the WHOLE compaction. Each Telegram
     update is dispatched as its own task, so a bare ``locked()`` check
@@ -500,7 +504,9 @@ async def _handle_compact(
             # nested inside another timeout, or the graceful "timed out"
             # branch is unreachable and a slow-but-healthy session gets
             # destroyed by the outer TimeoutError.
-            await asyncio.wait_for(provider.compact(), timeout=120)
+            await asyncio.wait_for(
+                provider.compact(focus) if focus else provider.compact(), timeout=120
+            )
             cr = await provider.wait_for_compaction(
                 timeout=self.sessions.compact_wait_budget_secs()
             )
