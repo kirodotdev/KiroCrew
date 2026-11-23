@@ -3383,8 +3383,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   session's own snapshot; the pattern matches past the cap; an agent whose limits
   Crew applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
   `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
-  its own `preToolUse` hooks), because the gate reads those only on the session's
-  own agent's requests and a native sub-agent's request carries none of them
+  its own `preToolUse` hooks), because a native sub-agent's request carries the
+  session's own agent's gate limits, never the target's
   (`session_handle_permissions._build_permission_event`); an agent that
   declares a Crew server the session's own entry does not, whose copy would
   refuse every call as `identity_unattested`; and an agent that declares a pooled
@@ -3410,6 +3410,21 @@ spec the same way kiro-cli v2 does where the wire allows it:
   naming the parent and the denied targets. The session-start notice names
   the targets past either limit and points to `spawn_run`, which runs an agent with
   its own limits. A target past either limit is not denied.
+  With no `availableAgents` nothing is registered and the engine's own roster
+  answers. When the session's own entry leaves out a built-in tool
+  (`_narrows_tools`: its `tools` is neither `"*"` nor a list holding `@builtin`,
+  or an `excludedTools` entry names a built-in), the engine's bundled agents
+  whose own tool list reaches further (`ENGINE_WIDE_AGENTS`:
+  `general-task-execution`, `custom-agent-creator`) are denied the same way and
+  named in the notice: KAS runs a sub-agent inside its parent's permission rules
+  but with its own tool list. A parent that sets `availableAgents`, or mounts
+  every built-in, keeps them.
+  A native KAS sub-agent's request carries the session's own agent's gate limits
+  (`_build_permission_event`: the shell and write allowlists, the deny record with
+  its grants emptied, the unjudged denies), as a native claude sub-agent's does,
+  so `spec-shell-allowlist`, `spec-write-allowlist`, `spec-denies` and
+  `spec-unjudged-denies` refuse its calls on every approval policy; it carries
+  none of that agent's grants.
   Everything that reads the batch for the session's own agent matches it by id.
   A sub-agent's call the session cannot tell from its own is answered with the
   session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write

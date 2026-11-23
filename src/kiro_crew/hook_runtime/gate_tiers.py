@@ -1361,8 +1361,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     Crew cannot read, which matches nothing and which the refusal names) on their
     own agent's permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
-    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
-    claude sub-agent's the parent's), and this row
+    sub-session's request carries ``None`` too, a native KAS or claude
+    sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
     ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain, or
@@ -1497,8 +1497,8 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     cover, instead of asking. KAS and claude have no rule for it, so the KAS session
     handle and the claude direct client stamp the spec's usable entries, anchored
     at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
-    the spec does not set it, and on a sub-session's or native KAS sub-agent's
-    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    the spec does not set it, and on a sub-session's request; a native KAS or
+    claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
     MCP server behind it) unless every target it names is covered
     (:func:`_write_target_uncovered`, matched by
     :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
@@ -1540,8 +1540,9 @@ def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResu
 
     The KAS projection records them for a Bot's worker only
     (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
-    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
-    other session and on a sub-agent's request). A worker runs under its Bot's
+    on its own agent's requests and a native KAS sub-agent's
+    (``AcpEvent.spec_unjudged_denies``; empty on every other session and on a
+    sub-session's request). A worker runs under its Bot's
     Permissions, and under Trust an ask is answered for the person, so an entry
     nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
     ``execute_bash`` among its names, no MCP server behind it) unless its recovered
