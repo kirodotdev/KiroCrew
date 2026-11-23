@@ -46,6 +46,7 @@ from kiro_crew.instances.remote_update import (
     clean_version,
     read_gate_answer,
 )
+from kiro_crew.instances.ssh_tunnel_manager_child import TunnelState
 from kiro_crew.instances.ssh_tunnel_manager_transport import (
     _transport_method,
     _TransportParams,
@@ -232,8 +233,16 @@ async def _remote_command_target(
     inst = await asyncio.to_thread(self._registry.get, instance_id)
     if inst is None:
         return {"code": "not_found", "message": "unknown instance"}
+    # An asg:/param: crew runs the verb where its open forward leads, so the job
+    # acts on and reads back the machine its pane shows; with none open, on the
+    # instance the target names now.
+    st = self.status(instance_id)
+    live = st is not None and st.state is TunnelState.CONNECTED
     try:
-        params = self._resolve_transport(inst, await self._with_parent(inst))
+        params = self._resolve_transport(
+            self._with_dialled_target(inst) if live else await self._with_resolved_target(inst),
+            await self._with_parent(inst),
+        )
     except (SshValidationError, SsmValidationError) as e:
         return {
             "code": "invalid_transport",
