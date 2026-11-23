@@ -17,8 +17,10 @@ because an identity lookup failed. Every authorized collaborator has the same
 application rights. There are no roles and no per-session ACLs. The one in-Crew
 membership action is the owner's Tailscale invite (§2 Tailscale invites), which
 shares this machine through Tailscale and admits the login that accepted, in
-Tailscale mode only. Tailscale is the only access authority: Crew approves nobody
-and nobody types the set of people who get in. The AWS SSM link is the one other path:
+Tailscale mode only. Tailscale decides who can reach this machine, and the derived
+set of the owner and the people who accepted an invite decides who of them gets in
+(section 2, Who gets in): Crew approves nobody by hand and nobody types the set.
+The AWS SSM link is the one other path:
 Session Manager proves nothing about the person to the gateway, so there the
 owner's invite is the credential (§2 AWS SSM invites).
 
@@ -557,19 +559,27 @@ Missing optional routes and initial owner-only refusals still hide invite contro
 
 ### Who gets in
 
-Tailscale is the only access authority: the tailnet ACL and device sharing decide
-who can reach this machine, and Crew approves nobody itself. The direct listener
-admits every `whois`-verified untagged person, and Tailscale still names them, so
-identity, attribution and owner rights come from `whois` as above. A tagged node is
+The tailnet ACL and device sharing decide who can reach this machine; the derived
+set below decides who of them gets in, and Crew approves nobody by hand. The direct
+listener admits a `whois`-verified untagged person only when they are the owner
+(stable user id and login, `tailnet_direct.is_owner`) or a login the derived set or
+the live overlay admits (`tailnet.login_allowed`): an accepted invite or the seed.
+Anyone else `whois` names, such as a tailnet member the owner never invited or a
+login whose invite was revoked, is refused `login_not_allowed`, and so is everyone
+but the owner while the boot placeholder is installed. Another user who reports the
+owner's login is refused too: the owner's login admits only with the owner's id.
+Identity, attribution and owner rights come from `whois` as above. A tagged node is
 refused unless a `tag:` entry was carried over in the seed below. The
 `not_tailnet_peer`, `forwarded_header`, `whois_failed`, `node_changed` and
-`self_connection` refusals are unchanged. Removing a person is done in Tailscale
-(remove them from the tailnet), or in People: a person who came in by a single-use invite has
-Remove on their row (the revoke route), which ends that share; anyone else (a reusable link admitted them, or the
-owner never invited them) has a "Remove" link to the Tailscale users page.
+`self_connection` refusals are unchanged. People still lists every person the daemon
+shows (`tailscale_sharees`); a row is a label and admits nobody. Removing a person is
+done in Tailscale (remove them from the tailnet), or in People: a person who came in by
+a single-use invite has Remove on their row (the revoke route), which ends that share;
+anyone else (a reusable link admitted them, or the owner never invited them) has a
+"Remove" link to the Tailscale users page.
 
-The `tailscale serve` path and mobile setup check a login against a derived set
-(`shared_crew.access_set`), never typed:
+The `tailscale serve` path, the direct listener and mobile setup check a login against
+a derived set (`shared_crew.access_set`), never typed:
 
 | Member | Matched by | Source |
 |---|---|---|
@@ -633,7 +643,7 @@ sleeps. The acknowledgment is stored once per Crew.
 else is unknown, never a laptop. The gateway's prevent-sleep poll has a third
 reason, `host_power.shared_use_wants_awake`: a collaborator (a Tailscale person who
 is not the owner) has a dashboard socket open, or work charged to an invited person
-or anyone `whois` named on the direct listener is queued or running. The existing
+or anyone the direct listener admitted is queued or running. The existing
 `power.SleepInhibitor` holds the host awake (`caffeinate -i -w <gateway pid>`,
 `systemd-inhibit --what=idle:sleep`, `SetThreadExecutionState`), each helper
 resolved from a fixed system path, and releases it when that stops. Nothing is
@@ -641,7 +651,7 @@ installed.
 
 **Storage.** `<data_home>/.vault/shared-crew-tailscale/access.json` (0600), beside
 the invite records, masked from every sandbox mode. A file that cannot be parsed
-leaves the set unreadable: the serve path admits only the owner, and the access card
+leaves the set unreadable: the serve path and the direct listener admit only the owner, and the access card
 says so. A failed write drops the in-memory copy, so the next read is the file again.
 
 ### What a teammate may do
@@ -2047,7 +2057,7 @@ tokens, rows wrap at narrow widths):
 
 | State | Shown as |
 |---|---|
-| first invite while nobody else has access | a one-time confirm naming who can open the Crew (anyone Tailscale access rules let reach this machine), the session and Crew memory counts, a laptop note on a laptop host, and where to stop sharing (remove them in People or from the tailnet; worded per sharing path) |
+| first invite while nobody else has access | a one-time confirm naming who can open the Crew (anyone who accepts an invite, a reusable link included), the session and Crew memory counts, a laptop note on a laptop host, and where to stop sharing (remove them in People or from the tailnet; worded per sharing path) |
 | the first-share acknowledgement fails | the invite still runs; its row shows the server's `first_share_ack_required` refusal |
 | the direct link's Copy is refused by the browser | an inline `ErrorNotice` with the agent hand-off; the link stays selectable in its field |
 | Remove key | a confirm, then `DELETE .../credential` with the irreversible-confirm header |

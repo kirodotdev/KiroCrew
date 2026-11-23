@@ -1,7 +1,7 @@
 """Observed collaborators: who this gateway has seen, not who may connect.
 
-Tailscale decides access, and this Crew has no authoritative membership
-directory, so the People view can only report what the gateway observed or the
+Tailscale decides who can reach this machine and the derived access set who gets
+in, and this Crew has no authoritative membership directory, so the People view can only report what the gateway observed or the
 local Tailscale daemon lists. Three sources feed it, and each row says which:
 
 * ``observed``: principals whose authorized requests this process has seen

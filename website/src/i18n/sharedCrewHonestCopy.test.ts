@@ -1,8 +1,10 @@
 /**
  * Shared Crew copy that has to match what the gateway does.
  *
- * 1. **Tailscale decides who gets in.** Shared-access copy names Tailscale
- *    access rules and promises no in-Crew approval step.
+ * 1. **An invite decides who gets in.** Tailscale access rules decide who can
+ *    reach the Crew, and only the owner and people who accepted an invite get
+ *    in, on the direct link too. Shared-access copy promises no in-Crew
+ *    approval step and never says anyone the rules let through can open it.
  * 2. **A hard-limit refusal names its cause and a next step.** The gateway
  *    refuses `containment_unavailable` until the host's resource-limit setup is
  *    fixed or hard limits are turned off, so "try again later" never helps.
@@ -38,14 +40,19 @@ describe('Shared Crew copy matches gateway behavior', () => {
     expect(LOCALES.length).toBeGreaterThanOrEqual(13)
   })
 
-  it('lets Tailscale access rules decide, with no in-Crew approval', () => {
+  it('lets Tailscale access rules decide who reaches the link and an invite who opens it', () => {
     const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
-    const keys = ['direct_link_note']
-    for (const key of keys) {
-      const copy = value(en, `sharedCrew.${key}`)
-      expect(copy).toMatch(/Tailscale (access )?rules/)
-      expect(copy.toLowerCase()).not.toMatch(/local authorization|approve/)
-    }
+    const copy = value(en, 'sharedCrew.direct_link_note')
+    expect(copy).toMatch(/Tailscale (access )?rules/)
+    expect(copy.toLowerCase()).toContain('accepted an invite')
+    expect(copy.toLowerCase()).not.toMatch(/local authorization|approve|^anyone/)
+  })
+
+  it('says the people who accept an invite open a Tailscale-shared Crew, not everyone on the tailnet', () => {
+    const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
+    const copy = value(en, 'sharedCrew.first_share_audience_tailscale').toLowerCase()
+    expect(copy).toContain('accepts an invite')
+    expect(copy).not.toMatch(/access rules let|not only the people you invite/)
   })
 
   it('says plainly what Remove does to a person, without promising an approval step', () => {

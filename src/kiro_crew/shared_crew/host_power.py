@@ -259,8 +259,8 @@ def collaborator_work_active() -> bool:
         return False
     owner = snap.owner_login.strip().lower()
     ids: set[str] = set()
-    # Invited people, and anyone whois named on the direct listener, where
-    # Tailscale alone decides who gets in.
+    # Invited people, and every login whois named on the direct listener: a
+    # login whose invite was revoked can still have work queued or running.
     for login in (snap.member_logins | tailnet_live_allowlist.seen_logins()) - {owner}:
         ids |= principal_ids_for(login, frozenset())
     if not ids:

@@ -94,9 +94,10 @@ class SharedCrewConfig:
             "Direct Tailnet Link",
             "Off by default. On: while Tailscale runs, also listen on this "
             "machine's own Tailscale addresses (100.x and fd7a:) on the dashboard "
-            "port, and let in every person Tailscale names, without a "
-            "dashboard token. Tailscale (the tailnet ACL and device sharing) "
-            "decides who can reach it. Never binds any other address. Off keeps the "
+            "port, and let in the owner and people who accepted a Crew invite, "
+            "without a dashboard token. Tailscale (the tailnet ACL and device "
+            "sharing) decides who can reach it; anyone else on the tailnet is "
+            "refused. Never binds any other address. Off keeps the "
             "loopback-only listener. A value that is not true or false reads as "
             "off." + SHARED_CREW_NEEDS_PREVIEW_HELP,
             restart=True,

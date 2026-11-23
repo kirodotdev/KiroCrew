@@ -1,10 +1,10 @@
-"""Who Tailscale lets reach this Crew, as Shared Crew derives it: computed, never typed.
+"""Who may open this Crew over Tailscale, as Shared Crew derives it: computed, never typed.
 
-Tailscale is the only access authority: the tailnet ACL and device sharing
-decide who can reach this machine, and Crew approves nobody itself. On the
-direct tailnet listener every person ``whois`` names is admitted (named by
-Tailscale), and a tagged node only by a tag carried over below. This module
-derives the set the ``tailscale serve`` path checks logins against:
+The tailnet ACL and device sharing decide who can reach this machine, and Crew
+approves nobody by hand: this module derives the set that decides who of them
+gets in. The ``tailscale serve`` path checks logins against it, and the direct
+tailnet listener admits the owner (by stable id and login) or a login it admits,
+and a tagged node only by a tag carried over below. The set holds:
 
 * the owner (this machine's own Tailscale user);
 * each person who accepted a Crew Tailscale invite, by the login Tailscale's

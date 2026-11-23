@@ -642,9 +642,11 @@ it before step 1, and no other request is affected: loopback, the unix socket an
    daemon's `whois` of that peer `ip:port` must name a node and a user with a
    stable id. A `Tailscale-User-*` header is never read. Any failure is a 403
    (`code: tailnet_direct_refused` with a `reason`); there is no fallback.
-2. Tailscale decides who reaches this machine, so every untagged person `whois`
-   names is admitted while Shared Crew's set is installed (`shared_crew.access_set`,
-   published through `tailnet_live_allowlist`); Crew approves nobody itself. A
+2. Tailscale decides who reaches this machine; while Shared Crew's set is
+   installed (`shared_crew.access_set`, published through `tailnet_live_allowlist`)
+   an untagged person `whois` names is admitted only as the owner (stable id and
+   login) or a login the set or the live overlay admits, and anyone else is refused
+   `login_not_allowed`. Crew approves nobody by hand. A
    tagged node needs a `tag:<name>` entry carried over from the one-time migration
    seed of `dashboard.tailscale.allowed_logins`. With no set installed, an
    unreadable config allowlist admits nobody.

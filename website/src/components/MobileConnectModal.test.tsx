@@ -545,7 +545,7 @@ describe('MobileConnectModal direct tailnet link', () => {
     mount(['tailnet_qr', 'login_link'])
     const link = await screen.findByTestId('tailnet-direct-link')
     expect((link.querySelector('input') as HTMLInputElement).value).toBe('http://crew.tail1234.ts.net:5476/')
-    expect(link).toHaveTextContent('Anyone allowed by Tailscale access rules can open this link.')
+    expect(link).toHaveTextContent('Only you and people who accepted an invite can open this link; Tailscale access rules decide who can reach it.')
     const advanced = screen.getByTestId('mobile-connect-advanced')
     expect(advanced.tagName).toBe('DETAILS')
     expect(advanced).not.toHaveAttribute('open')

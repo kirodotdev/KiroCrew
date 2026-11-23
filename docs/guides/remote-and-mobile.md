@@ -962,11 +962,12 @@ shows a plain link to share:
 http://<this-machine>.<your-tailnet>.ts.net:<port>/
 ```
 
-The link carries no token. Tailscale tells the gateway who is connecting. Any
-verified, untagged person whom the Tailscale access rules let reach this machine
-can open the Crew, even without a Crew invite. Tailscale decides who gets in:
-Crew has no waiting list and nothing to approve. Manage who can connect through
-Tailscale's users and access rules. Settings > People names each person by their
+The link carries no token. Tailscale tells the gateway who is connecting. The
+Tailscale access rules decide who can reach this machine, and of those only you
+and the people who accepted a Crew invite can open the Crew; anyone else gets a
+"not allowed" page. Crew has no waiting list and nothing to approve: send an
+invite to let someone in. Manage who can reach the machine through Tailscale's
+users and access rules. Settings > People names each person by their
 Tailscale account in its **People** list.
 The machine's own Tailscale account has owner rights, including settings,
 the API key and invites; irreversible actions still require confirmation.

@@ -470,18 +470,89 @@ def test_the_listener_installs_the_set() -> None:
     assert tailnet_live_allowlist.snapshot() is not None
 
 
+def _accept_invite(login: str, user_id: str) -> None:
+    store.update_state(lambda s: s["members"].update({user_id: {"login": login}}))
+    access_set.rebuild()
+
+
 @pytest.mark.asyncio
-async def test_any_person_tailscale_names_is_admitted_on_the_direct_link() -> None:
-    """Tailscale decides who reaches this machine; Crew approves nobody itself."""
+async def test_an_uninvited_tailnet_member_is_refused_on_the_direct_link() -> None:
+    """``whois`` naming a person is not an invite: the derived set decides, as on serve."""
     _install()
     client = await _client()
     try:
-        status, me = await _call(client, "GET", "/api/whoami", "100.64.0.7")
+        status, body = await _call(client, "GET", "/api/whoami", "100.64.0.7")
     finally:
         await client.close()
-    assert status == 200 and me == {"user": "tailnet:uid:31", "owner": False}
-    # The tailscale serve path still admits only the owner, accepted invites and the seed.
+    assert status == 403 and body["reason"] == "login_not_allowed"
     assert tailnet.login_allowed("mallory@example.com", ()) is False
+
+
+@pytest.mark.asyncio
+async def test_the_owner_and_an_invited_member_are_admitted_on_the_direct_link(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(PEERS, "100.64.0.6", _whois("carol@example.com", 41, "carol", "d"))
+    _install(("carol@example.com",))
+    _accept_invite("alice@example.com", "u-a")
+    client = await _client()
+    try:
+        owner_status, owner_me = await _call(client, "GET", "/api/whoami", OWNER_PHONE_IP)
+        alice_status, alice_me = await _call(client, "GET", "/api/whoami", "100.64.0.5")
+        carol_status, carol_me = await _call(client, "GET", "/api/whoami", "100.64.0.6")
+        mallory_status, _ = await _call(client, "GET", "/api/whoami", "100.64.0.7")
+    finally:
+        await client.close()
+    assert owner_status == 200 and owner_me["owner"] is True
+    assert alice_status == 200 and alice_me == {"user": "tailnet:uid:21", "owner": False}
+    # A login carried over from the migration seed is admitted too.
+    assert carol_status == 200 and carol_me == {"user": "tailnet:uid:41", "owner": False}
+    assert mallory_status == 403
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_member_is_refused_on_the_direct_link() -> None:
+    _install()
+    _accept_invite("alice@example.com", "u-a")
+    tailnet_live_allowlist.revoke("alice@example.com")
+    client = await _client()
+    try:
+        status, body = await _call(client, "GET", "/api/whoami", "100.64.0.5")
+    finally:
+        await client.close()
+    assert status == 403 and body["reason"] == "login_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_the_boot_placeholder_admits_only_the_owner_on_the_direct_link() -> None:
+    _install()
+    _accept_invite("alice@example.com", "u-a")
+    access_set.install_placeholder()
+    client = await _client()
+    try:
+        owner_status, _ = await _call(client, "GET", "/api/whoami", OWNER_PHONE_IP)
+        alice_status, alice_body = await _call(client, "GET", "/api/whoami", "100.64.0.5")
+        mallory_status, _ = await _call(client, "GET", "/api/whoami", "100.64.0.7")
+    finally:
+        await client.close()
+    assert owner_status == 200
+    assert alice_status == 403 and alice_body["reason"] == "login_not_allowed"
+    assert mallory_status == 403
+
+
+@pytest.mark.asyncio
+async def test_another_user_with_the_owners_login_is_refused_on_the_direct_link(
+    monkeypatch,
+) -> None:
+    """The owner is matched by stable id and login; the set's owner login alone admits nobody."""
+    monkeypatch.setitem(PEERS, "100.64.0.4", _whois("owner@example.com", 12, "spoof", "f"))
+    _install()
+    client = await _client()
+    try:
+        status, body = await _call(client, "GET", "/api/whoami", "100.64.0.4")
+    finally:
+        await client.close()
+    assert status == 403 and body["reason"] == "login_not_allowed"
 
 
 @pytest.mark.asyncio

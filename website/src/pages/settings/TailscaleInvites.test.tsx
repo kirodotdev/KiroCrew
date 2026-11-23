@@ -376,7 +376,7 @@ describe('InviteEntry and its dialog', () => {
     fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
     fireEvent.click(screen.getByTestId('invite-send'))
     expect(await screen.findByText('They will see every session (4 now) and Crew memory (12 items).')).toBeInTheDocument()
-    expect(screen.getByTestId('first-share-audience')).toHaveTextContent('Anyone Tailscale access rules let reach this machine')
+    expect(screen.getByTestId('first-share-audience')).toHaveTextContent('Anyone who accepts an invite you send can open this Crew')
     expect(screen.getByTestId('first-share-laptop')).toHaveTextContent('Crew keeps it awake')
     expect(screen.getByTestId('first-share-stop')).toHaveTextContent('remove them in People, or from your tailnet in Tailscale')
     expect(create).not.toHaveBeenCalled()

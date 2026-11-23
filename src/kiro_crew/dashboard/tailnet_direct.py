@@ -16,8 +16,9 @@ authenticated by the daemon, never by a header:
 3. the user must be admitted by :func:`admission_refusal`: the Crew owner
    (the login of this machine's own node), or a login
    :func:`tailnet.login_allowed` admits, which covers
-   ``dashboard.tailscale.allowed_logins`` and logins an in-Crew invite granted
-   or revoked since startup. With no login listed or granted, only the owner
+   ``dashboard.tailscale.allowed_logins`` (Shared Crew's derived set in its
+   place once one is installed) and logins an in-Crew invite granted or
+   revoked since startup. With no login listed or granted, only the owner
    gets in. An ACL-tagged node is admitted only when the list names one of
    its tags.
 
@@ -353,14 +354,17 @@ def admission_refusal(
     ``tag:<name>`` admit an ACL-tagged node carrying that tag and are never a
     login. With no login listed or granted, only the owner is admitted. An
     unreadable allowlist admits nobody. While Shared Crew's derived set is
-    installed, Tailscale alone decides: every person ``whois`` names is admitted,
-    and a tagged node only by a tag the set carried over.
+    installed, that set decides instead of ``allowed_logins``: a person ``whois``
+    names is admitted only as the owner or a login the set (or the live overlay)
+    admits, so a tailnet member nobody invited, a revoked login and anyone but
+    the owner during the boot-window placeholder are refused. A tagged node is
+    admitted only by a tag the set carried over.
     """
     from kiro_crew.dashboard import tailnet_live_allowlist
 
     derived = tailnet_live_allowlist.snapshot()
     if derived is not None and not peer.tagged:
-        return None
+        return _member_refusal(peer, owner, derived)
     if identity_unknown:
         return REFUSE_ALLOWLIST_UNREADABLE
     if derived is not None:
@@ -385,6 +389,22 @@ def is_owner(peer: DirectPeer, owner: SelfNode) -> bool:
         and peer.user_id == owner.user_id
         and peer.login.lower() == owner.login.lower()
     )
+
+
+def _member_refusal(peer: DirectPeer, owner: SelfNode, derived: Any) -> str | None:
+    """A person, while the derived set is installed: the owner or a login the set admits.
+
+    The owner is matched by stable id and login (:func:`is_owner`), so another
+    user who reports the owner's login is refused rather than admitted by login.
+    Anyone else needs :func:`login_allowed`, which reads the set and the live
+    overlay: an accepted invite or the seed admits, a revoke refuses.
+    """
+    if is_owner(peer, owner):
+        return None
+    owner_logins = {owner.login.lower(), str(derived.owner_login).lower()} - {""}
+    if peer.login.lower() not in owner_logins and login_allowed(peer.login, ()):
+        return None
+    return REFUSE_NOT_ALLOWED
 
 
 def _tag_refusal(peer: DirectPeer, derived: Any) -> str | None:

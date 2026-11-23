@@ -3,7 +3,8 @@
 ``GET /api/shared-crew/access`` returns the entries the first start carried over
 from config and the first-share warning (real session and Crew memory counts,
 whether this host is a laptop, and whether it can be kept awake). Tailscale
-decides who gets in; Crew approves nobody itself.
+decides who can reach this machine and the derived set who gets in; Crew
+approves nobody by hand.
 
 Both routes are owner-only, with the same gate as the invite routes
 (``routes_invites._owner_refusal``). The first invite while nobody else has

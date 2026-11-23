@@ -5,9 +5,9 @@ import { TailnetDirectLink } from './TailnetDirectLink'
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => false) }))
 
 describe('TailnetDirectLink', () => {
-  it('describes Tailscale rules rather than promising invite-only access', () => {
+  it('says only the owner and invited people open the link, and Tailscale rules decide who reaches it', () => {
     render(<TailnetDirectLink direct={{ state: 'active', urls: ['https://crew.example.ts.net/'] } as never} />)
-    expect(screen.getByTestId('tailnet-direct-link')).toHaveTextContent('Anyone allowed by Tailscale access rules can open this link.')
+    expect(screen.getByTestId('tailnet-direct-link')).toHaveTextContent('Only you and people who accepted an invite can open this link; Tailscale access rules decide who can reach it.')
   })
 
   it('shows the first URL in the field', () => {

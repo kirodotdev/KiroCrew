@@ -8,8 +8,9 @@ direct tailnet listener (:mod:`kiro_crew.dashboard.tailnet_direct`):
   with :func:`install` at gateway start and after every change
   (``kiro_crew.shared_crew.access_set``). The ``tailscale serve`` path reads it
   in place of ``dashboard.tailscale.allowed_logins``, which was read once as a
-  migration seed. On the direct tailnet listener Tailscale alone decides: every
-  person ``whois`` names is admitted, and the set only carries tagged nodes over.
+  migration seed. The direct tailnet listener reads it too: a person ``whois``
+  names is admitted only as the owner (by stable id and login) or a login the
+  set admits, and a tagged node only by a tag the set carried over.
 * **The live overlay** (:func:`grant` / :func:`revoke`). A login an invite
   accept or revoke just changed, applied at once. A revoked login is refused
   even when the set still names it, so a removal holds from the next request.
@@ -123,9 +124,8 @@ def granted(login: str) -> bool:
 
 def decision(login: str) -> bool | None:
     """``True`` admitted, ``False`` refused, ``None`` when neither layer decides."""
-    # The direct tailnet listener does not read this (Tailscale alone decides
-    # there). The ``tailscale serve`` path keeps the owner, accepted invites and
-    # the seeded list.
+    # Both the ``tailscale serve`` path and the direct tailnet listener read this:
+    # the owner, accepted invites and the seeded list.
     key = _norm(login)
     snap = snapshot()
     with _LOCK:
