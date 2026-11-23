@@ -151,7 +151,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "ack_job": ("function", False, "1dcd84422c4a", "job_writes"),
     "ack_job_async": ("function", True, "1dcd84422c4a", "job_writes"),
     "active_session_keys": ("function", False, "602c14087aa8", "run_registry"),
-    "add_job": ("function", False, "887f725aa171", "job_writes"),
+    "add_job": ("function", False, "cb5dfbe64433", "job_writes"),
     "add_job_async": ("function", True, "d46a2f8a751a", "job_writes"),
     "add_job_if_absent": ("function", False, "43f1e87b70b1", "job_writes"),
     "add_job_if_absent_async": ("function", True, "43f1e87b70b1", "job_writes"),

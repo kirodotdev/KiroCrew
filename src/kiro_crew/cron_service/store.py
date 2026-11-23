@@ -377,6 +377,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         silent=j.get("silent", False),
         session_key=_guard_str("session_key"),
         person_owner_key=_guard_str("person_owner_key"),
+        owner_member_id=_guard_str("owner_member_id"),
+        owner_approval_mode=_guard_str("owner_approval_mode"),
         last_posted_hash=_guard_str("last_posted_hash"),
         consecutive_dupes=_guard_num("consecutive_dupes", 0),
         last_posted_at=_guard_num("last_posted_at", 0.0),
@@ -609,6 +611,9 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["app_manifest_digest"] = j.app_manifest_digest
     if j.person_owner_key:
         record["person_owner_key"] = j.person_owner_key
+    if j.owner_member_id or j.owner_approval_mode:
+        record["owner_member_id"] = j.owner_member_id
+        record["owner_approval_mode"] = j.owner_approval_mode
     # The per-entry ack ids follow the same rule: a job whose acks carry no id
     # (every ack before this key, and every Slack ack) writes nothing new.
     if any(j.acked_item_ids):
@@ -628,7 +633,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``user_pause_requested``, ``managed_by``, ``app_manifest_digest``,
-#: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
+#: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``,
+#: ``acked_item_ids`` with ``acked_item_ids_digest``,
 #: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``, and a
 #: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
 #: are omitted at the default). A record key outside this set came from a newer
@@ -646,6 +652,7 @@ _KNOWN_JOB_KEYS = frozenset(
             managed_by="-",
             app_manifest_digest="-",
             person_owner_key="-",
+            owner_member_id="-",
             project_path="-",
             new_chat_per_run=True,
             secret_env_resurfaced_pin="-",
