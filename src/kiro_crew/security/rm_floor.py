@@ -283,6 +283,8 @@ def _rm_wipe_targets(command: str) -> "set[str]":
             continue
         if name not in _RM_WORDS and name.lower() not in _RM_WORDS - {"rm"}:  # Windows: any case
             continue
+        if platform_compat.IS_WINDOWS and _ps_previews(words[1:]):
+            continue  # PowerShell only previews, and GNU rm rejects the unknown ``-W``
         recursive = force = done = False
         operands = []
         for arg in words[1:]:
@@ -337,6 +339,15 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
             # cmd never expands ``~``: only a drive root is a root there
             kinds |= {"root" for arg in args if arg not in switches and _target_kind(arg) == "root"}
     return kinds
+
+
+def _ps_previews(args: "list[str]") -> bool:
+    """A word of *args* binds ``-WhatIf`` (not ``-WhatIf:$false``): the delete only previews."""
+    for arg in args:
+        param, glued, value = arg[1:].partition(":") if arg[:1] == "-" else ("", "", "")
+        if _ps_param(param.lower()) == "whatif":
+            return not glued or value.lower() not in ("$false", "0")
+    return False
 
 
 def _ps_param(word: str) -> str:
