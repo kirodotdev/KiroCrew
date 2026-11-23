@@ -10,7 +10,9 @@ Three layers of defense:
 3. ``asyncio`` loop exception handler — catches "Task exception was never
    retrieved" and task-internal exceptions that asyncio would otherwise swallow
    at DEBUG level. Writes real failures to crash.log and the normal logger at
-   ERROR; known connection-teardown noise is warning-only.
+   ERROR; known connection-teardown noise is warning-only. A record names the
+   task asyncio passed and, for a bare ``aclose()``/``asend()`` task, the async
+   generator behind it, and says when the exception carries no traceback.
 
 Call ``install(loop)`` once at gateway startup.  Safe to call multiple times
 (idempotent via module-level flag).
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import atexit
 import faulthandler
+import gc
 import logging
 import os
 import sys
@@ -32,6 +35,11 @@ logger = logging.getLogger(__name__)
 _INSTALLED = False
 _CRASH_LOG: Path | None = None
 _PROACTOR_CONNECTION_LOST_CALLBACK = "_ProactorBasePipeTransport._call_connection_lost"
+_TASK_REPR_CAP = 500
+# The awaitables an async generator's ``aclose()``/``athrow()`` and ``asend()``
+# return. Their repr names no generator, so the generator is found by referent.
+_ASYNC_GEN_AWAITABLE_TYPES = frozenset({"async_generator_athrow", "async_generator_asend"})
+_NO_TRACEBACK_LINE = "(no traceback: the exception carries no Python frames)"
 
 
 def _crash_log_path() -> Path:
@@ -109,6 +117,33 @@ def _is_transport_shutdown_noise(context: dict) -> bool:
     )
 
 
+def _task_lines(context: dict) -> list[str]:
+    """Return the ``Task:`` and ``Async generator:`` lines for an asyncio context.
+
+    Best effort: the handler is the last-resort sink, so a failure here yields
+    no extra lines instead of losing the record.
+    """
+    try:
+        task = context.get("future") or context.get("task")
+        if task is None:
+            return []
+        lines = [f"Task: {repr(task)[:_TASK_REPR_CAP]}"]
+        get_coro = getattr(task, "get_coro", None)
+        coro = get_coro() if get_coro is not None else None
+        if type(coro).__name__ in _ASYNC_GEN_AWAITABLE_TYPES:
+            for referent in gc.get_referents(coro):
+                code = getattr(referent, "ag_code", None)
+                if code is not None:
+                    lines.append(
+                        f"Async generator: {referent.__qualname__} "
+                        f"({code.co_filename}:{code.co_firstlineno})"
+                    )
+                    break
+        return lines
+    except Exception:
+        return []
+
+
 def _asyncio_exception_handler(loop, context) -> None:  # noqa: no-blocking-call-on-event-loop
     """Catches exceptions swallowed by asyncio (task-never-retrieved, etc.).
 
@@ -129,16 +164,21 @@ def _asyncio_exception_handler(loop, context) -> None:  # noqa: no-blocking-call
         )
         return
 
+    task_lines = _task_lines(context)
+    task_suffix = "".join(f"\n{line}" for line in task_lines)
     # Log to the normal logger at ERROR (default asyncio only logs at DEBUG)
     if exception:
         logger.error(
-            "asyncio unhandled: %s — %s: %s",
+            "asyncio unhandled: %s — %s: %s%s",
             message,
             type(exception).__name__,
             exception,
+            task_suffix,
             exc_info=exception,
         )
-        header = f"ASYNCIO UNHANDLED: {message}"
+        header = f"ASYNCIO UNHANDLED: {message}{task_suffix}"
+        if exception.__traceback__ is None:
+            header += f"\n{_NO_TRACEBACK_LINE}"
         exc_tuple = (type(exception), exception, exception.__traceback__)
         _write_crash(header, exc_tuple)
     else:
@@ -147,8 +187,8 @@ def _asyncio_exception_handler(loop, context) -> None:  # noqa: no-blocking-call
             # not worth a crash.log entry.
             logger.warning("asyncio unhandled (noise): %s", message)
         else:
-            logger.error("asyncio unhandled: %s (no exception object)", message)
-            _write_crash(f"ASYNCIO UNHANDLED (no exc): {message}")
+            logger.error("asyncio unhandled: %s (no exception object)%s", message, task_suffix)
+            _write_crash(f"ASYNCIO UNHANDLED (no exc): {message}{task_suffix}")
 
 
 def install(loop=None) -> None:
