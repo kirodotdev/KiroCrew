@@ -564,6 +564,9 @@ def main() -> None:
     _register_remote_control(sub)
     cli_parser_admin.register_telemetry_parser(sub)
     cli_parser_admin.register_policy_parser(sub)
+    from kiro_crew.cli_compliance import register_parser as _register_compliance
+
+    _register_compliance(sub)
 
     register_perf_parser(sub)
     register_bench_parser(sub)
@@ -839,14 +842,14 @@ def main() -> None:
     # A member store written before member identities existed cannot be resolved
     # until its identity is published, and no command can do it later: the
     # resolvers refuse the store outright. So every CLI command runs it here, in
-    # the sync prologue, BEFORE it resolves a member. Three commands are exempt:
+    # the sync prologue, BEFORE it resolves a member. Four commands are exempt:
     # `gateway`, whose boot path admits no new work (the dashboard socket must
     # accept requests first) and which runs the same repair in its post-readiness
-    # memory worker instead; `doctor`, the read-only triage command, which
+    # memory worker instead; the read-only `compliance` report; `doctor`, the triage command, which
     # reports the same stores; and the mcp-* stdio servers, children of a gateway
     # that already ran it. A no-op scan of the loaded config when there is
     # nothing to repair; never raises.
-    if args.command not in ("gateway", "doctor") and not args.command.startswith("mcp-"):
+    if args.command not in ("gateway", "doctor", "compliance") and args.command[:4] != "mcp-":
         from kiro_crew.memory_stores import repair_legacy_member_stores
 
         repair_legacy_member_stores()
@@ -1164,6 +1167,11 @@ def main() -> None:
         from kiro_crew.cli_commands import _policy
 
         _policy(args)
+    elif args.command == "compliance":
+        from kiro_crew.cli_compliance import compliance_cmd
+
+        if rc := compliance_cmd(args):
+            raise SystemExit(rc)
     elif args.command == "knowledge":
         sys.exit(_knowledge(args))
     elif args.command == "secrets":
