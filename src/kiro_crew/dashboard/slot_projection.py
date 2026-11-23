@@ -546,6 +546,13 @@ class SlotProjection:
             # shown as "auto". "" = not known. DISPLAY only, like the verdict
             # above: never a write source.
             "served_model": slot.served_model,
+            # The model an engine promotion moved this slot's session onto for
+            # the rest of it ("" = none, or a reset is armed, so the next turn
+            # starts fresh): while `served_model` still equals it, an inheriting
+            # slot's chip names it. DISPLAY only.
+            "engine_promoted_model": (
+                "" if slot._pending_reset_history_key else slot._engine_promoted_model
+            ),
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             # An app's mode lists as plain while the app may not hide it.

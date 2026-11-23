@@ -134,14 +134,18 @@ export function useComposerChips({
     : availableModels
   const modelPin = currentSlot?.model || resolvedModel || ''
   const displayPin = codexPairModels ? modelWithoutEffort(modelPin) : modelPin
+  const servedModel = codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model || ''
+  // A slot with no pick names the model an engine promotion moved its session
+  // onto while the session still serves it, else the model it inherits.
+  const promoted = !!currentSlot?.served_model && currentSlot?.served_model === currentSlot?.engine_promoted_model
   const shownModel = displayModel(
-    displayPin,
+    (!currentSlot?.model && promoted && servedModel) || displayPin,
     displayModels,
     _modelsUnconfirmed,
     currentSlot?.model_withheld,
     // Names the backend's own choice when the slot inherits, so the chip is not
     // a bare `auto` for a session running one specific model.
-    codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
+    servedModel,
   )
   // An unknown effort verdict leaves the currently shown model to answer.
   const effortCaps = selectionCapabilities ?? selectionCapabilitiesQ.data

@@ -62,7 +62,7 @@ def record_engine_fallback(
     # pin the session withheld, which the engine never ran.
     withheld = getattr(client, "model_pin_refused", "")
     if is_unpinned_pick(getattr(slot, "model", "")) or (isinstance(withheld, str) and withheld):
-        _sync_slot(state, slot, client)
+        _sync_slot(state, slot, client, promoted=True)
         return
     slot.model = to
     # Counted as a pick, so a pending Crew restore reads as stale.
@@ -127,11 +127,18 @@ def _retarget_crew_fallback(slot: Any, client: Any, frm: str, to: str) -> None:
             slot._refusal_fallback_candidate = to
 
 
-def _sync_slot(state: Any, slot: Any, client: Any) -> None:
-    """Let the slot's chip name the model now serving, and push the change."""
+def _sync_slot(state: Any, slot: Any, client: Any, *, promoted: bool = False) -> None:
+    """Let the slot's chip name the model now serving, and push the change.
+
+    *promoted*: the engine moved a slot with no pin of its own onto this model
+    for the rest of the session, which the chip names while it is still served.
+    """
+    served = str(getattr(client, "served_model", "") or "")
     record = getattr(slot, "record_served_model", None)
     if record is not None:
-        record(str(getattr(client, "served_model", "") or ""))
+        record(served)
+    if promoted:
+        slot._engine_promoted_model = served
     push = getattr(state, "push_slots_update", None)
     if push is not None:
         push()

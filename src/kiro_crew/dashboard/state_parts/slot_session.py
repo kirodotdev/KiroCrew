@@ -12,7 +12,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_reported_resume``, ``_eager_spawn_retry_at``, ``_eager_spawn_task``,
-``_effort_pick_gen``, ``_fork_lock``, ``_fork_title_spent``,
+``_effort_pick_gen``, ``_engine_promoted_model``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_mcp_sign_in_notice_shown``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -204,6 +204,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     # inheriting rather than pinning. "" = unknown. Written through
     # `record_served_model`.
     self.served_model = ""
+    # The served model an engine promotion moved this slot's session onto, for
+    # a slot with no pin of its own. "" = none. Written by `engine_fallback`.
+    self._engine_promoted_model = ""
     # Reasoning effort: "" = provider default, else one of
     # low/medium/high/xhigh/max (``EFFORT_LEVELS`` in ``effort.py``). A live
     # session applies it as ``session/set_config_option`` on the backends in
@@ -715,3 +718,4 @@ def forget_session_model_state(self: _ChatSlot) -> None:
     self.record_model_withheld(None)
     self._session_requested_model = None
     self.record_served_model(None)
+    self._engine_promoted_model = ""

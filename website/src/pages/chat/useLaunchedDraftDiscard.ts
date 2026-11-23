@@ -29,6 +29,7 @@ const SERVER_STATE = new Set<string>([
   'preparing_lang', 'wait_state', 'has_options', 'options', 'options_ts',
   'prompt_preview', 'admission_queued', 'last_ts', 'last_turn_ts', 'last_message',
   'last_activity_ts', 'last_agent_ts', 'effective_agent', 'served_model',
+  'engine_promoted_model',
   'model_withheld', 'mcp_report', 'process', 'row_identity', 'incarnation',
   'history_key', 'linked_session_key', 'pin_rev', 'manual_rev', 'subagents_running',
   'subagents_queued', 'subagents_queued_reason', 'work_aggregate', 'crew_work',

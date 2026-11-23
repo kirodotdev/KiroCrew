@@ -77,6 +77,7 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "_engine_promoted_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
         "_crew_log_previous_undecided",
@@ -469,6 +470,7 @@ class _ChatSlot:
     _crew_log_opened_sid: str
     _crew_log_pending_channel: bool
     served_model: str
+    _engine_promoted_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
     memory_store: str
