@@ -14,6 +14,7 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew artifact show SLUG` | Print artifact content |
 | `kirocrew artifact show SLUG --version 2` | Show specific version |
 | `kirocrew artifact show SLUG --meta` | Show metadata as JSON |
+| `kirocrew artifact show SLUG --docx FILE` | Write a markdown or text artifact as a Word file (FILE must not exist) |
 | `kirocrew artifact save --name "My Widget" --content-file widget.html` | Save new artifact |
 | `kirocrew artifact save --name "X" --content "..." --tags ops,cr` | Save with inline content |
 | `kirocrew artifact update SLUG --content-file widget.html` | Update artifact content |

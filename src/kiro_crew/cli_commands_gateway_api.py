@@ -567,6 +567,34 @@ def _artifact(args: argparse.Namespace) -> None:
             )
         return
 
+    def _write_docx(art: dict, out_name: str) -> None:
+        kind = art.get("kind")
+        if kind not in ("markdown", "text"):
+            print(
+                "Error: --docx needs a markdown or text artifact "
+                f"(this one is {safe_terminal_line(str(kind))})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from kiro_crew.artifact_docx import DocxTooLarge, write_docx
+
+        target = Path(out_name).expanduser()
+        shown = safe_terminal_line(target.name)
+        if is_sensitive_path(str(target.resolve())):
+            print(f"Error: refusing to write sensitive path: {shown}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            write_docx(str(art.get("content") or ""), target, markdown=kind == "markdown")
+        except (OSError, ValueError) as exc:  # never str(exc): it quotes a path
+            why = type(exc).__name__
+            if isinstance(exc, FileExistsError):
+                why = "it already exists; nothing written"
+            elif isinstance(exc, DocxTooLarge):
+                why = "too large to convert"
+            print(f"Error: could not write {shown}: {why}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Wrote {shown}")
+
     if action == "show":
         seg = _slug_segment(args.slug)
         version = getattr(args, "version", None)
@@ -580,6 +608,8 @@ def _artifact(args: argparse.Namespace) -> None:
         if getattr(args, "meta", False):
             d.pop("content", None)
             print(json.dumps(d, indent=2))
+        elif getattr(args, "docx", None):
+            _write_docx(d, args.docx)
         else:
             print(d.get("content") or "")
         return

@@ -785,6 +785,7 @@ Examples:
   kirocrew artifact show cr-queue
   kirocrew artifact show cr-queue --version 2
   kirocrew artifact show cr-queue --meta
+  kirocrew artifact show weekly-report --docx weekly-report.docx
   kirocrew artifact update cr-queue --content-file widget.html
   kirocrew artifact versions cr-queue
   kirocrew artifact delete cr-queue
@@ -807,10 +808,19 @@ Examples:
     art_show.add_argument(
         "--version", type=positive_int, help="Specific version, 1 or more (default: current)"
     )
-    art_show.add_argument(
+    art_show_out = art_show.add_mutually_exclusive_group()
+    art_show_out.add_argument(
         "--meta",
         action="store_true",
         help="Print metadata as JSON instead of the content body",
+    )
+    art_show_out.add_argument(
+        "--docx",
+        metavar="FILE",
+        help=(
+            "Write a markdown or text artifact to FILE as a Word document instead of "
+            "printing it. FILE must not exist; it is created owner-only"
+        ),
     )
 
     art_save = art_sub.add_parser("save", help="Save a new artifact")
