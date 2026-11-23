@@ -136,6 +136,36 @@ test("windowsListenPidsRetrying returns the first successful answer", async () =
   assert.strictEqual(calls, 2);
 });
 
+// --- The launch checks' listener snapshot -------------------------------------
+//
+// The proven-home-gateway check and the manual-quit takeover refuse on a null
+// snapshot, so one failed netstat run must not produce one.
+
+const LISTENING_4242 = "  TCP    127.0.0.1:5476         0.0.0.0:0              LISTENING       4242\r\n";
+
+test("the Windows port snapshot retries a netstat that failed once", async () => {
+  const { calls, execFileFn } = scriptedNetstat([timedOut(), LISTENING_4242]);
+  const logs = [];
+  const pids = await windowsHolders(execFileFn, { log: (line) => logs.push(line) })
+    .snapshotGatewayPortPids(5476);
+  assert.deepStrictEqual(pids, [4242]);
+  assert.strictEqual(calls.length, 2);
+  assert.deepStrictEqual(calls.map((options) => options.timeout), [5000, 5000], "each attempt stays bounded");
+  assert.ok(logs.some((line) => line.includes("netstat probe 1/2 on :5476 failed: timed out after 5000ms")));
+});
+
+test("the Windows port snapshot is still null when netstat never answers", async () => {
+  const { calls, execFileFn } = scriptedNetstat([timedOut()]);
+  assert.strictEqual(await windowsHolders(execFileFn).snapshotGatewayPortPids(5476), null);
+  assert.strictEqual(calls.length, 2, "bounded: two attempts, then unknown");
+});
+
+test("the Windows port snapshot does not retry a netstat that names no listener", async () => {
+  const { calls, execFileFn } = scriptedNetstat([""]);
+  assert.strictEqual(await windowsHolders(execFileFn).snapshotGatewayPortPids(5476), null);
+  assert.strictEqual(calls.length, 1);
+});
+
 // --- An empty netstat answer is checked with a real bind ---------------------
 //
 // netstat can leave a held port out of its table: no row at all, a LISTENING row
