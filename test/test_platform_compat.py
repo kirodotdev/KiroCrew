@@ -1234,9 +1234,11 @@ class TestUtf8Console:
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_windows_call_turns_off_current_directory_program_lookup(self, monkeypatch):
-        # A bare program name, or a shutil.which result, must not resolve to a
-        # same-named file in the current directory on Windows.
+    def test_windows_call_turns_off_current_directory_which_lookup(self, monkeypatch):
+        # A shutil.which result must not resolve to a same-named file in the
+        # current directory on Windows. The variable does not reach a bare name
+        # passed straight to subprocess (CreateProcess ignores it), so this pins
+        # only the PATH lookup.
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc.sys, "stdout", None)
         monkeypatch.setattr(pc.sys, "stderr", None)
@@ -1283,7 +1285,7 @@ class TestUtf8Console:
         pc.ensure_utf8_console()
 
         assert shutil.which("kc_probe_39483") is None
-        # A program on PATH still resolves by bare name.
+        # A program on PATH is still found by shutil.which.
         assert shutil.which("kc_onpath_39483") is not None
 
     def test_ensure_utf8_console_is_safe_to_call(self, monkeypatch):
