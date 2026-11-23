@@ -129,6 +129,81 @@ The **Credentials** section reports:
 Nothing in that section reads a secret value, and it never fails the overall
 `doctor` run — a missing AWS setup is not a Kiro Crew fault.
 
+## Finding who was refused what
+
+Every tool call, governance decision and dashboard or API access is recorded in
+the security event log, `security_events.jsonl` in the config directory. A row
+holds the time, event type, caller identity, agent, source (`dashboard`, `slack`,
+`cron`, ...), operation, outcome, the resources and error text, and the hash
+that chains it to the row before it. The signing key is kept outside the log
+directory. `kirocrew security events` prints the newest 20 rows; the flags below
+narrow them and export them.
+
+| Flag | Keeps a row when |
+|---|---|
+| `--operation X`, `--outcome X`, `--source X`, `--caller X` | that field equals `X` exactly (`--caller` reads the caller identity) |
+| `--since T`, `--until T` | its time is at or after `--since` and before `--until` |
+| `-n N` | at most `N` rows are shown (default 20, counted after the filters) |
+| `--format F` | `text` (default), `jsonl` or `csv` |
+| `--out FILE` | writes a `jsonl` or `csv` export to `FILE` and `FILE.manifest.json` |
+
+Flags combine, and a row must match every field filter. A value is compared as
+whole text, never as a pattern, and case matters: `--outcome Denied` finds
+nothing. A time is an age (a number and `s`, `m`, `h`, `d` or `w`, such as `7d`)
+or an ISO 8601 instant; one without an offset is read as UTC. An unreadable time,
+or a `--since` that is not earlier than `--until`, prints an error and exits 2.
+A field filter looks at the newest 50,000 rows of the window. If that budget ran
+out first, standard error says it looked at the newest 50000 rows only; an
+earlier `--until` reaches older rows.
+
+### Export
+
+`--format jsonl` writes each row as stored, one JSON object per line. `--format
+csv` writes a header and one row per event in a fixed column order (`timestamp`,
+`event_id`, `event_type`, `caller_identity`, `agent`, `source`, `operation`,
+`tool_kind`, `outcome`, `resources`, `downstream_service`, `request_id`, `error`,
+`metadata`, `prev_hash`, `entry_hash`). Control characters other than tab,
+newline and carriage return are removed from CSV cells, and a cell that starts
+with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` so a
+spreadsheet does not run it as a formula. An export holds every match, oldest
+first, unless you give `-n`, which keeps the newest `N`. An unknown format prints
+a warning and shows text. `--out` with `text` is ignored with a warning.
+
+Without `--out`, the export goes to standard output and a `rows=N first=...
+last=...` line goes to standard error. With `--out FILE`, two new files are
+created, readable by the owner only: `FILE` and `FILE.manifest.json`. Neither is
+ever overwritten. If either already exists, the command exits 1 with `could not
+write FILE: it or its manifest already exists; nothing written`. Any other write
+failure also exits 1 and deletes whatever it had created, so no half export is
+left. The messages name the file, not its full path.
+
+The manifest records `format`, `exported_at`, the `filters` given, `since` and
+`until`, `rows`, `first_timestamp`, `last_timestamp`, `chain_hash_first`,
+`chain_hash_last`, `scan_capped` and `sha256`. What each lets you check:
+
+- `sha256` is the SHA-256 of the export file's text. `sha256sum FILE` matching it
+  shows the file has not changed since the export. It is an unkeyed hash, so it
+  does not stop someone who rewrites both files.
+- `chain_hash_first` and `chain_hash_last` are the `entry_hash` of the first and
+  last exported rows (`null` for an empty export). Compare them with the `entry_hash`
+  of the same rows in the log to show the ends of the export are real log entries.
+  `kirocrew security verify` checks the whole chain in the log itself. A rotated
+  segment starts a new chain, so an export that spans one has ends in two chains.
+- `scan_capped: true` means older matching rows were not looked at, so the
+  export may be incomplete.
+
+### Examples
+
+```bash
+kirocrew security events --outcome denied --caller dashboard:alice --since 7d -n 50
+kirocrew security events --outcome denied --since 7d --format csv --out denied-week.csv
+sha256sum denied-week.csv && grep '"sha256"' denied-week.csv.manifest.json
+```
+
+The first prints one caller's refusals from the last week. The second writes
+every refusal from the week to a spreadsheet file plus its manifest, and the
+third compares the file's hash with the manifest's.
+
 ## Adjusting the rules
 
 **Settings → Security** lets you disable individual built-in rules, disable them

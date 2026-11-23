@@ -63,7 +63,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.agent_sdk import host_auth, kas_model_catalog
+from kiro_crew.agent_sdk import host_auth, kas_machine, kas_model_catalog
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, model_registry_namespace
 from kiro_crew.dashboard.kiro_readiness import is_probe_timeout_refusal
 from kiro_crew.executors import maintenance_executor
@@ -134,7 +134,10 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    if not await asyncio.to_thread(_vault_signed_in):
+    # KAS machine mode (``agent_sdk/kas_machine.py``): the engine's token file is its
+    # sign-in, so the vault is not asked.
+    machine = await asyncio.to_thread(kas_machine.configured_machine_auth)
+    if machine is None and not await asyncio.to_thread(_vault_signed_in):
         return web.json_response(
             {
                 "error": host_auth.signed_out_message(ACP_BACKEND_KAS),

@@ -282,7 +282,7 @@ class TestTheWorkerLookup:
         assert "autoApprove" not in spec["mcpServers"][SERVER]
         assert spec["mcpServers"][SERVER]["disabledTools"] == ["write"]
         injected = session_servers.pooled_session_servers(
-            home.overlay, WORKER, kas_worker_session_key="chat-1"
+            home.overlay, WORKER, worker_session_key="chat-1"
         )
         assert [e["name"] for e in injected] == [SERVER]
 
@@ -304,15 +304,15 @@ class TestTheWorkerLookup:
         spec = mate_overlays.worker_overlay_spec(home.overlay, "chat-1")
         assert "autoApprove" not in spec["mcpServers"][SERVER]
         injected = session_servers.pooled_session_servers(
-            home.overlay, WORKER, kas_worker_session_key="chat-1"
+            home.overlay, WORKER, worker_session_key="chat-1"
         )
         assert [e["name"] for e in injected] == [SERVER]
         assert all("autoApprove" not in json.dumps(e) for e in injected)
 
-    def test_without_a_kas_session_key_no_worker_stub_is_injected_by_name(self, home, monkeypatch):
+    def test_without_a_session_key_no_worker_stub_is_injected_by_name(self, home, monkeypatch):
         """The stock worker overlay is written under the worker's name; a lookup by
         that name would hand its base stubs to a session without its merged limits,
-        so every host but KAS (which passes the session key) gets none."""
+        so a lookup without the session's key gets none."""
         base = {"command": sys.executable, "args": ["-V"]}
         _write(
             home.mates / f"{WORKER}.json",
@@ -396,7 +396,7 @@ class TestTheWorkerLookup:
         assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1")["mcpServers"] == {}
         assert (
             session_servers.pooled_session_servers(
-                home.overlay, WORKER, kas_worker_session_key="chat-1"
+                home.overlay, WORKER, worker_session_key="chat-1"
             )
             == []
         )
@@ -471,7 +471,7 @@ class TestTheSessionKeyReachesTheLookupOnKasOnly:
         runtime_mod._pooled_session_servers_and_ref_spec(
             tmp_path, WORKER, backend, tmp_path, None, "chat-1"
         )
-        assert seen.get("kas_worker_session_key") == expected
+        assert seen.get("worker_session_key") == expected
 
 
 class TestTheKasWorkerStubSetIsOneLookup:

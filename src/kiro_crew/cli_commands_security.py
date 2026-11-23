@@ -246,10 +246,10 @@ def _security(args: argparse.Namespace) -> None:
             since = parse_time_selector(getattr(args, "since", "") or "")
             until = parse_time_selector(getattr(args, "until", "") or "")
         except ValueError as exc:
-            print(f"❌ {exc}")
+            print(f"❌ {exc}", file=sys.stderr)
             sys.exit(2)
         if since and until and since >= until:
-            print("❌ --since must be earlier than --until")
+            print("❌ --since must be earlier than --until", file=sys.stderr)
             sys.exit(2)
         from contextlib import ExitStack, suppress
         from pathlib import Path

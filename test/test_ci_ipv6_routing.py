@@ -111,6 +111,20 @@ def _env(root):
     return env
 
 
+def _combine_body(jobs, root):
+    """The Coverage Combine step's body, for a ``root`` staged like the job's checkout.
+
+    The step runs its report script by repository path with ``python3``; the
+    script is copied to that path under ``root`` and ``python3`` is bound to
+    this interpreter, which a Windows environment does not put on PATH by that name.
+    """
+    body = _step(jobs, "coverage-combine", "Combine into")["run"]
+    for name in set(re.findall(r"(?<![\w./-])(scripts/[\w./-]+\.py)", body)):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, root / name)
+    return f'python3() {{ "{Path(sys.executable).as_posix()}" "$@"; }}\n' + body
+
+
 def _shell(body, cwd, env):
     shell = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
     assert shell, "CI routing tests require native Git Bash on Windows or Bash on POSIX"
@@ -442,7 +456,7 @@ def test_real_coverage_combine_preserves_both_routes_and_requires_ipv6(jobs, cov
     baseline = CoverageData(basename=str(staged / "baseline"))
     baseline.read()
     shutil.copyfile(staged / "fleet", tmp_path / ".coverage.1")
-    body = _step(jobs, "coverage-combine", "Combine into")["run"]
+    body = _combine_body(jobs, tmp_path)
     result = _shell(body, tmp_path, env)
     assert result.returncode != 0 and "required IPv6 coverage data missing" in result.stdout
     assert not (tmp_path / "coverage.xml").exists()

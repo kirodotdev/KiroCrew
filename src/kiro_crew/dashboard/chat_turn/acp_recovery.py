@@ -139,7 +139,7 @@ async def _recover_posttoken_transient(
     # reading "resuming…" forever.
     _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
     if _will_recover:
-        # A throttle is the provider's answer, not a dropped connection.
+        # A throttle is an answer, not a dropped connection.
         if throttled:
             _notice, _text = TRANSIENT_NOTICE_THROTTLE_RESUMING, TRANSIENT_THROTTLE_RESUMING_TEXT
         else:
@@ -902,7 +902,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
                 continue
             _tail = _row
             break
-        # A throttle is the provider's answer, not a dropped connection, so
+        # A throttle is an answer, not a dropped connection, so
         # its row says so.
         if _throttled:
             _notice, _notice_text = (

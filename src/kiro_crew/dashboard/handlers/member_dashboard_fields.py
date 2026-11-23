@@ -715,7 +715,7 @@ def _run_package_page(
         return None, None, None
     # Deferred: this module is imported before the socket binds and must not pull in
     # the browser runner, and `member_dashboard` imports this module (a cycle).
-    from kiro_crew import dashboard_verify
+    from kiro_crew import dashboard_page_image, dashboard_verify
     from kiro_crew.dashboard.handlers import member_dashboard
 
     def skipped(reason: str) -> tuple[dict[str, Any], None, None]:
@@ -808,9 +808,12 @@ def _run_package_page(
         # its errors, and it can build a string that no scan of its source saw (two literals
         # joined at run time), so what goes back to the agent crosses the same recursive pass,
         # the page's rendered text included.
+        # Redacted whole, THEN cut: a cut first can keep the start of a secret too short
+        # for the redactor to know.
         text = verdict.text
         if text is not None:
-            text = dataclasses.replace(text, text=member_dashboard._page_safe(text.text))
+            safe = member_dashboard._page_safe(text.text)[: dashboard_page_image.MAX_TEXT_CHARS]
+            text = dataclasses.replace(text, text=safe)
         return member_dashboard._page_safe(verdict.wire()), verdict.image, text
     except Exception:
         logger.warning("dashboard: the page for %r could not be checked", slug, exc_info=True)

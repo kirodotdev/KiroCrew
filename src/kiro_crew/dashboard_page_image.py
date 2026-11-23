@@ -23,8 +23,9 @@ not the first screen only (:func:`read_text`): ``document.body.innerText`` once 
 field the frame marked "not current" or "may be out of date" has that mark written after
 it as text, since the frame draws the marks with CSS, which ``innerText`` leaves out. The
 document is the run's throwaway copy and the picture is already taken, so the write
-changes neither the picture nor a person's tab. At most :data:`MAX_TEXT_CHARS` characters
-are kept.
+changes neither the picture nor a person's tab. The whole text comes back, up to
+:data:`MAX_READ_CHARS` characters, so the caller can redact it before it cuts it to
+:data:`MAX_TEXT_CHARS`; a page longer than :data:`MAX_READ_CHARS` gives no text.
 
 Nothing here talks to the browser itself: :func:`capture` is handed the call that sends
 ``Page.captureScreenshot`` and :func:`read_text` the one that sends ``Runtime.evaluate``,
@@ -42,6 +43,7 @@ from typing import Any, Final
 
 __all__ = [
     "MAX_IMAGE_BYTES",
+    "MAX_READ_CHARS",
     "MAX_REPLY_BYTES",
     "MAX_TEXT_CHARS",
     "PNG_SIGNATURE",
@@ -72,9 +74,18 @@ PNG_SIGNATURE: Final[bytes] = b"\x89PNG\r\n\x1a\n"
 #: both sides (``Array.from`` in the page, ``len`` here), so an emoji counts once.
 MAX_TEXT_CHARS: Final[int] = 6000
 
+#: The most characters of the page's text read back before it is redacted. The text is
+#: redacted whole and only then cut to :data:`MAX_TEXT_CHARS`, because a cut first can
+#: keep the start of a secret too short for the redactor to know. Bounded so
+#: the reply fits the run's DevTools message cap (4 MiB): a code point is at most twelve
+#: bytes of JSON (an escaped surrogate pair), so this is at most 2.4 MB. A page over it
+#: gives no text.
+MAX_READ_CHARS: Final[int] = 200_000
+
 #: The one expression :func:`read_text` evaluates in the page. It writes each frame mark
 #: after its field as text (a field marked missing is never also marked out of date), then
-#: returns the body's rendered text cut to the cap and its full length.
+#: returns the body's whole rendered text (``null`` over :data:`MAX_READ_CHARS`) and its
+#: length.
 TEXT_EXPRESSION: Final[str] = (
     "(() => {"
     "for (const node of document.querySelectorAll("
@@ -85,7 +96,8 @@ TEXT_EXPRESSION: Final[str] = (
     "node.appendChild(document.createTextNode(' [' + (label || '') + ']'));"
     "}"
     "const chars = Array.from(document.body ? document.body.innerText : '');"
-    f"return {{text: chars.slice(0, {MAX_TEXT_CHARS}).join(''), length: chars.length}};"
+    f"return {{text: chars.length > {MAX_READ_CHARS} ? null : chars.join(''),"
+    " length: chars.length};"
     "})()"
 )
 
@@ -109,8 +121,11 @@ class PageImage:
 
 @dataclasses.dataclass(frozen=True)
 class PageText:
-    """The page's rendered text, at most :data:`MAX_TEXT_CHARS` characters of it, and the
-    full text's length in characters (over :data:`MAX_TEXT_CHARS` exactly when it was cut)."""
+    """The page's rendered text and its length in characters.
+
+    As :func:`read_text` returns it, the text is whole and not yet redacted (at most
+    :data:`MAX_READ_CHARS`); the caller redacts it, then cuts it to :data:`MAX_TEXT_CHARS`.
+    ``length`` is the page's own, over :data:`MAX_TEXT_CHARS` exactly when it was cut."""
 
     text: str
     length: int
@@ -182,9 +197,11 @@ def read_text(call: Callable[[Mapping[str, Any]], Mapping[str, Any]]) -> PageTex
     *call* sends ``Runtime.evaluate`` with the parameters it is given and returns the
     reply's ``result``; its exceptions are the caller's, as for :func:`capture`. The page's
     script ran before this and can have replaced anything the expression uses, so the
-    reply is checked here and not trusted: cut to the cap again, a ``length`` that is not
-    a whole number at least as large as the text replaced by the text's own, and lone
-    surrogates, which no UTF-8 reader takes, dropped.
+    reply is checked here and not trusted: a text over :data:`MAX_READ_CHARS` is no text
+    (never cut here, since a cut before redaction can keep part of a secret), a ``length``
+    that is not a whole number at least as large as the text replaced by the text's own,
+    and lone surrogates, which no UTF-8 reader takes, dropped. The text is NOT redacted or
+    cut to :data:`MAX_TEXT_CHARS`: the caller does both, in that order.
     """
     reply = call({"expression": TEXT_EXPRESSION, "returnByValue": True})
     if reply.get("exceptionDetails"):
@@ -193,7 +210,9 @@ def read_text(call: Callable[[Mapping[str, Any]], Mapping[str, Any]]) -> PageTex
     value = result.get("value") if isinstance(result, Mapping) else None
     if not isinstance(value, Mapping) or not isinstance(value.get("text"), str):
         return None
-    text = value["text"][:MAX_TEXT_CHARS].encode("utf-8", "ignore").decode("utf-8")
+    if len(value["text"]) > MAX_READ_CHARS:
+        return None
+    text = value["text"].encode("utf-8", "ignore").decode("utf-8")
     length = value.get("length")
     if not isinstance(length, int) or isinstance(length, bool) or length < len(text):
         length = len(text)

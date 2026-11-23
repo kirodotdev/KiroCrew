@@ -2082,7 +2082,9 @@ of these servers, and an unbound or foreign stub, stay withheld. So a Codex user
 gets Crew's tools by listing those servers in `mcp_gateway.stub_servers`; without
 that setting nothing changes. A Bot's chat gets them the same way: its stock
 conductor spec has an overlay of its own, under its own name
-([mcp: Bot overlays](../../architecture/mcp.md#bot-overlays)).
+([mcp: Bot overlays](../../architecture/mcp.md#bot-overlays)). A Bot's worker gets
+them through its own session key, never by name: both mirrored session paths pass
+that key to the stub lookup and withhold exactly the stubs it returns.
 
 On an enforced sandbox, credential-bearing host readers need the broker route:
 configure `mcp_gateway.stub_servers` to include `kirocrew-core` and

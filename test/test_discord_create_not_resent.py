@@ -6,7 +6,8 @@ posts the reply twice. It is retried only when Discord certainly did not apply
 it: after a 429, or when the connection failed before the request went out.
 
 A thread create keeps the ladder's retry: re-sending it cannot open a second
-thread for one message.
+thread for one message, and a retry Discord refuses because the first attempt
+already opened one is reported as ``""`` rather than as a failure.
 """
 
 from __future__ import annotations
@@ -62,4 +63,28 @@ async def test_a_thread_create_keeps_its_retry(monkeypatch: pytest.MonkeyPatch) 
     harness = _harness(monkeypatch, [asyncio.TimeoutError(), _Resp(200, {"id": "555"})])
     thread_id = await harness.client.create_thread_from_message("9111", "555", "topic")
     assert thread_id == "555"
+    assert len(harness.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_thread_create_whose_response_was_lost_reports_the_existing_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    taken = _Resp(400, {"code": 160004, "message": "A thread has already been created"})
+    harness = _harness(monkeypatch, [asyncio.TimeoutError(), taken])
+    thread_id = await harness.client.create_thread_from_message("9111", "555", "topic")
+    assert thread_id == ""
+    assert len(harness.requests) == 2
+    # Nothing is cached for it: admitting the thread is the caller's decision.
+    assert "555" not in harness.client._channel_types
+
+
+@pytest.mark.asyncio
+async def test_a_thread_create_refused_for_another_reason_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refused = _Resp(400, {"code": 50013, "message": "Missing Permissions"})
+    harness = _harness(monkeypatch, [asyncio.TimeoutError(), refused])
+    thread_id = await harness.client.create_thread_from_message("9111", "555", "topic")
+    assert thread_id is None
     assert len(harness.requests) == 2

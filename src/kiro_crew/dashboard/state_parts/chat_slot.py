@@ -821,7 +821,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    # The prefix entry is its text, or ``(offset, size[, crc, msgs])`` in the file.
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
     _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool

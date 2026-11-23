@@ -55,7 +55,7 @@ if (fix === 'off') {
   // drift from the "after" arm in anything but the one property under test.
   const css = document.createElement('style')
   css.textContent = `
-    [data-capture-root] [aria-label$="unread conversations"],
+    [data-capture-root] [aria-label*="unread conversation"],
     [data-capture-root] [aria-label$="updates"],
     [data-capture-root] [aria-label$="approvals needed"] {
       position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
@@ -144,7 +144,7 @@ window.__measure = () => {
     const c = chord.getBoundingClientRect()
     const which = (row as HTMLElement).dataset.captureRow
     const targets: Array<[string, Element | null]> = [
-      ['unread-badge', row.querySelector('[aria-label$="unread conversations"]')],
+      ['unread-badge', row.querySelector('[aria-label*="unread conversation"]')],
       ['activity', row.querySelector('[aria-label$="subagents in flight"]')],
       ['wide-badge', row.querySelector('[aria-label$="approvals needed"]')],
     ]

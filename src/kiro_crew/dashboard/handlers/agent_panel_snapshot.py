@@ -42,9 +42,9 @@ must not steer the gateway's write. Only the crewmate's own session is told the 
 the crew logs its values come from, the file is not fenced at the OS level from another
 process running as the same user.
 
-The page's TEXT does travel in the body: ``snapshot.text`` (cut at
-``dashboard_page_image.MAX_TEXT_CHARS`` characters before redaction, with the full length
-in ``snapshot.text_length``), on an ``image`` and a ``no_image`` answer alike whenever the
+The page's TEXT does travel in the body: ``snapshot.text`` (redacted whole, then cut at
+``dashboard_page_image.MAX_TEXT_CHARS`` characters, with the full length in
+``snapshot.text_length``), on an ``image`` and a ``no_image`` answer alike whenever the
 run read it, to the calling crewmate's own session only, after
 ``member_dashboard._page_safe`` here and the MCP server's redaction pass there.
 

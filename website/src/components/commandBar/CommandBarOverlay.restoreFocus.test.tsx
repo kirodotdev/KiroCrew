@@ -32,6 +32,7 @@ vi.mock('../../store', () => ({
   useAppStore: () => storeHandle,
 }))
 vi.mock('../../store/chatSlice', () => ({
+  selectSlotStreamState: () => 'idle',
   switchSlot: (arg: { key: string }) => ({ type: 'switchSlot', ...arg }),
 }))
 vi.mock('../../components/commandPalette/paletteActions', () => ({

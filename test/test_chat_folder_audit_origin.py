@@ -259,10 +259,11 @@ class TestKnownCallerRatchet:
 
         An unlisted internal caller fails loudly (``unknown-internal`` + warning). Each
         listed one validates through ``request_origin`` and has its own audit test:
-        ``test_crew_log_routes_unit_door_audit.py`` and ``test_mcp_debug.py``.
+        ``test_crew_log_routes_unit_door_audit.py``, ``test_mcp_debug.py`` and
+        ``test_cron_tool_chat_folder.py``.
         """
         assert _KNOWN_INTERNAL_CALLERS == frozenset(
-            {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"}
+            {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-cron"}
         )
 
     def test_crew_log_server_name_is_a_known_caller(self) -> None:

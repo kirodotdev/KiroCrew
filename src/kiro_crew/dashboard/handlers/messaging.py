@@ -558,6 +558,12 @@ _COLLECTED_IDS_CAP = 1000
 _SPAWN_STATUS_MAX_LINES = 2000  # cap lines returned per spawn_status page
 _SPAWN_STATUS_MAX_GREP_LEN = 500
 
+#: Last reported truncation of a NON-internal persisted spawn listing, per
+#: ``auditee``: the ``overflow_is_lower_bound`` it was reported with, the key
+#: absent once complete. Only those callers are remembered because their listing
+#: depends on the app claim alone; an internal caller's is scoped to its own session.
+_PERSISTED_TRUNCATION_REPORTED: dict[str, bool] = {}
+
 
 #: No unit holds the child, so no crew-log record was owed or written.
 DISMISSAL_LOG_ABSENT = "absent"

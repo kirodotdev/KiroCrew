@@ -1622,7 +1622,12 @@ unverifiable-shell refusal) or an id with no recorded event is answered with
 `reject_tool` and a `rejected_transport_floor` SEL row; a gate that cannot be
 built or consulted refuses (fail closed). Refusal reasons keep their original text
 for the in-band result, while operator logs and SEL metadata use the shared
-fail-closed redaction helper. Both methods return `True` only after they send an
+fail-closed redaction helper. A refusal of a recorded event steers the host notice
+(`_steer_host_deny`, cause `DENY_CAUSE_POLICY`) into the turn after the
+audit row and before the `reject_tool`, while the request is still unanswered; KAS and
+kiro-cli otherwise hand the model their fixed "rejected" text and the model reports a
+denial nobody made. A backend without refusal steer, and an id with no
+recorded event (no title to name), send the reject alone. Both methods return `True` only after they send an
 allow answer and `False` when this floor sends a rejection instead.
 Every production caller consumes that result before it records approved state or
 activity. This transport consultation is uncounted and writes no
@@ -2249,7 +2254,16 @@ The details below describe the Kiro and Claude paths implemented directly here:
     open until the second is taken (`safe_file_identity(hold=...)`), because a
     filesystem may give a freed inode's number to the next file it creates, and a
     swap and swap-back in one timestamp tick would otherwise sample equal to the
-    file the pass started on; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
+    file the pass started on. An in-place same-size rewrite inside the tick of
+    the file's last change moves no identity field, so when a file's mtime is
+    under `_NATIVE_SETTLE_NS` (2 s) old by the wall clock the pass is read once
+    more after the second sample, every identity is sampled a third time after
+    that re-read (the first samples still held), and the pass is kept only when
+    the re-read returns the same servers and the third sample still matches; a
+    settled file costs no extra read. The age compares the host clock with a
+    filesystem-stamped mtime, so a network share whose clock runs behind the
+    host can make a fresh file look settled; that file then gets the
+    identity-only check main had before. After `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
     set is treated as unreadable, the same as a refused read. When the settings
     are unreadable every identity element is withheld and a WARNING names the
     agent: its unpooled Kiro Crew servers mounted from the spec then refuse calls
@@ -4646,7 +4660,12 @@ message, and shows a failed fetch's own error text under its lead
   retry ladder. A timed-out or refused `whoami`, a failure after output, the
   KAS backend, and callers with no registered service (the CLI) keep the
   connection-failure retry unchanged. Pinned by
-  `test/test_acp_signed_out_dispatch_failure.py`.
+  `test/test_acp_signed_out_dispatch_failure.py`. Off the send path, the
+  Connections mint (`connections/mint.py`, `start_oauth_mint`) is another
+  caller: it asks only after its dedicated client's readiness wait failed with
+  an error that carries no reason of its own (no `kiro_cli_missing` tag, no
+  `mint_reason`) or hit its deadline, and records `mint_kiro_cli_signed_out` on
+  a True answer (see [connections](connections.md)).
 - **The readiness `whoami` runs against the real home, like an ACP session.**
   `kiro_prerequisite._run_auth_command(..., isolate_home=False)` runs the
   resolved CLI against the real environment/home under the standard OS sandbox
@@ -5206,7 +5225,7 @@ message of spaced fragments from every start before the tail guard refused it.
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
 
-**Attached sheets** (`acp/sheet_digest.py`, off by default). With `dashboard.attachment_sheet_digest` on, `build_prompt_blocks` follows the user's text with a short digest of each CSV or TSV it names that sits directly in the data home's `uploads/` folder (a file attached in dashboard chat): column names, an inferred type per column, a row count and the first `SAMPLE_ROWS` (3) rows. Each step is bounded: `MAX_READ_BYTES` (256 KiB) read per file, `MAX_COLUMNS` (20), `MAX_CELL_CHARS` (40), `MAX_FILES` (3) per prompt and `MAX_DIGEST_CHARS` (4000) per digest. The file text passes `redact_exfiltration_urls` and `redact_credentials` before the digest is built, and the digest's typed markers are escaped like the rest of the text. The setting is read per prompt (`digest_enabled`, false on any failure), so a change takes effect on the next message. Off, the agent gets the path alone.
+**Attached sheets** (`acp/sheet_digest.py`, off by default). With `dashboard.attachment_sheet_digest` on, `build_prompt_blocks` follows the user's text with a short digest of each CSV, TSV or workbook (`.xlsx`, `.xlsm`, `.xltx`, `.xltm`) it names that sits directly in the data home's `uploads/` folder (a file attached in dashboard chat): column names, an inferred type per column, a row count and the first `SAMPLE_ROWS` (3) rows. Each step is bounded: `MAX_READ_BYTES` (256 KiB) read per file, `MAX_COLUMNS` (20), `MAX_CELL_CHARS` (40), `MAX_FILES` (3) per prompt and `MAX_DIGEST_CHARS` (4000) per digest. A workbook larger than `MAX_WORKBOOK_BYTES` (8 MiB) is skipped; a smaller one is read through `workbook_rows.read_workbook_rows`, which refuses an archive past `WORKBOOK_MAX_MEMBERS` (1024) members or `WORKBOOK_MAX_EXPANDED_BYTES` (64 MiB) expanded, keeps at most `MAX_READ_BYTES` characters and stops at `WORKBOOK_WALL_SECS` (5 s). It gives one block per sheet, split where each sheet begins, for the first `MAX_SHEETS` (5) sheets, then a line counting the sheets not shown; when the walk stops early only the sheet it stopped in shows a floor, and the count of sheets not shown is a floor too. The file text passes `redact_exfiltration_urls` and `redact_credentials` before the digest is built, and the digest's typed markers are escaped like the rest of the text. The setting is read per prompt (`digest_enabled`, false on any failure), so a change takes effect on the next message. Off, the agent gets the path alone.
 
 **Text-only turns.** Every prompt entry point (`LLMProvider.stream`, the handle's `prompt`, the direct client's `stream_events`) takes a keyword-only `allow_image` (default `True`) and forwards it down to `build_prompt_blocks`. `False` builds the blocks with `allow_image=False`, whatever the agent advertises: no path in the message is read or inlined, and it stays in the text. `llm_helpers.stream_and_collect` (and `stream_and_collect_json`) forward the same keyword to every attempt. `run_bg_oneliner` sends every background one-liner this way, and the history consolidator every turn it sends, because its prompt is text about a session and any path in it is quoted history (see the history-scrub section of [session](session.md)). The default call shape is unchanged for every other caller.
 

@@ -180,6 +180,12 @@ history, and a too-recent result is cached in memory until it can expire, so
 repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
+`dashboard.warm_task_brief` (default on) turns the brief off: off, a return that
+would qualify schedules nothing (skip reason
+`turned_off`), while the on-screen stamps and the leave rule still run. Each
+such return reads it from the live config watcher's in-memory snapshot, never
+from `config.json` on the loop (no snapshot reads as on), so it takes effect on
+the next one; a brief already being prepared when it flips still finishes.
 
 A conductor mode root (a root chat running a conductor) is eligible on the same
 rules as a Bot thread, trigger included: a switch to another chat, from the
@@ -6347,8 +6353,8 @@ a trust root on its own; publication therefore also writes a
   attempt — the `.1` slot blocked by a planted directory, a sharing violation
   that never clears — is logged at WARNING with its sizes, since the primitive
   tells its caller nothing and its own hourly WARNING carries the path, the
-  error class and the cap of a refused rename but no sizes (and there is none at
-  all for a lock file it could not open); the line is throttled to one per
+  error class and the cap, for a refused rename or for a lock file it could
+  not open, but no sizes; the line is throttled to one per
   `shell_audit_log.SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` (an hour) per data home,
   not one per attempt, because the tick retries for the gateway's whole life and
   a blocked slot does not clear itself, and it names the usual causes rather than

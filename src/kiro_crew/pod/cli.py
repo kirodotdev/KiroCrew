@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -55,6 +56,15 @@ def _audit(operation: str, outcome: str, resources: str = "", error: str = "") -
 def _die(msg: str) -> NoReturn:
     print(f"pod: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _shell_quoted(path: Path) -> str:
+    """*path* as one argument of the operator's shell: POSIX quoting, else Windows'."""
+    # Same rule as ``cli_commands_app._shell_quoted``; importing that module would
+    # pull the whole app CLI into ``pod`` for one printed hint.
+    if rt.IS_WINDOWS:
+        return subprocess.list2cmdline([str(path)])
+    return shlex.quote(str(path))
 
 
 # The default health-wait budget for `pod up` is POD_HEALTH_WAIT_SECS_DEFAULT
@@ -477,7 +487,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if not prov.has_dist(checkout):
             _die(
                 f"no built dist for {name!r}.\n"
-                f"  Build it (slow, one-time):  cd {checkout / 'website'}\n"
+                f"  Build it (slow, one-time):  cd {_shell_quoted(checkout / 'website')}\n"
                 f"                              npm run build\n"
                 f"  Or let pod do the full chain: kirocrew pod up {name} --provision"
             )

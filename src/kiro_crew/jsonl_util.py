@@ -619,9 +619,23 @@ def strict_records(handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP) -> I
             raise UndecodableRecord(f"record is not valid UTF-8 in {path!r}") from exc
 
 
-#: Fewest seconds between two WARNINGs for one path whose rename keeps being refused.
+#: Fewest seconds between two WARNINGs for one path whose rotation keeps failing.
 ROTATE_REFUSED_WARN_INTERVAL_SECS = 3600.0
 _rotate_refused_warned_at: dict[Path, float] = {}
+
+
+def _warn_rotation_stuck(path: Path, exc: OSError, max_bytes: int, until: str) -> None:
+    now = time.monotonic()
+    last = _rotate_refused_warned_at.get(path)
+    if last is None or now - last >= ROTATE_REFUSED_WARN_INTERVAL_SECS:
+        _rotate_refused_warned_at[path] = now
+        logger.warning(
+            "could not rotate %s (%s); it grows past its %d-byte cap until %s",
+            path,
+            type(exc).__name__,
+            max_bytes,
+            until,
+        )
 
 
 def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
@@ -650,17 +664,24 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
     the very incidents these logs diagnose, so a rotation failure must
     never cost the record; only a failure of the caller's own append may.
 
-    A refused rename leaves the log growing past its bound with nothing
+    A refused rename, or a lock file that cannot be opened while the log is
+    at or over its cap, leaves the log growing past its bound with nothing
     else to show for it, so it is logged at WARNING with the path and the
     error class, at most once per :data:`ROTATE_REFUSED_WARN_INTERVAL_SECS`
     per path in each process: the caller retries on every append, and a
     holder such as a child that inherited the log's handle keeps refusing
-    until it exits.
+    until it exits. A missing or under-cap log and a lost try-lock stay
+    silent.
     """
     try:
-        lock_fd = platform_compat.open_create_or_existing(
-            path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
-        )
+        try:
+            lock_fd = platform_compat.open_create_or_existing(
+                path.with_name(path.name + ".lock"), os.O_RDWR, 0o600
+            )
+        except OSError as exc:
+            if path.stat().st_size >= max_bytes:
+                _warn_rotation_stuck(path, exc, max_bytes, "its .lock file can be opened")
+            return
         try:
             locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
             try:
@@ -668,17 +689,7 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
                     try:
                         os.replace(path, path.with_name(path.name + ".1"))
                     except OSError as exc:
-                        now = time.monotonic()
-                        last = _rotate_refused_warned_at.get(path)
-                        if last is None or now - last >= ROTATE_REFUSED_WARN_INTERVAL_SECS:
-                            _rotate_refused_warned_at[path] = now
-                            logger.warning(
-                                "could not rotate %s (%s); it grows past its %d-byte cap "
-                                "until a rename succeeds",
-                                path,
-                                type(exc).__name__,
-                                max_bytes,
-                            )
+                        _warn_rotation_stuck(path, exc, max_bytes, "a rename succeeds")
             finally:
                 if locked:
                     platform_compat.release_lock(lock_fd)

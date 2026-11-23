@@ -476,13 +476,14 @@ class DashboardConfig:
     attachment_sheet_digest: bool = field(
         default=False,
         metadata=_meta(
-            "Digest Attached CSV And TSV Files",
-            "When on, a CSV or TSV file attached in chat is followed in the prompt by "
-            "a short digest: column names, an inferred type for each column, a row "
-            "count and the first three rows. Only the first 256 KiB is read; each "
-            "prompt shows at most 3 files, 20 columns each, with cells cut to 40 "
-            "characters. Off by default: the agent then gets the path alone. Takes "
-            "effect on the next message; no restart.",
+            "Digest Attached CSV, TSV And Excel Files",
+            "When on, a CSV, TSV or Excel file attached in chat is followed in the "
+            "prompt by a short digest: column names, an inferred type for each column, "
+            "a row count and the first three rows, for each sheet of a workbook (at "
+            "most 5). Only the first 256 KiB of a CSV or TSV is read, and a workbook "
+            "over 8 MiB is skipped; each prompt shows at most 3 files, 20 columns "
+            "each, with cells cut to 40 characters. Off by default: the agent then "
+            "gets the path alone. Takes effect on the next message; no restart.",
         ),
     )
     mcp_probe_timeout_secs: int = field(
@@ -669,6 +670,15 @@ class DashboardConfig:
             "backend it is a no-op. On some Windows laptops (Modern Standby), "
             "locking the screen can still let it sleep, so keep the screen on "
             "for long tasks.",
+        ),
+    )
+    warm_task_brief: bool = field(
+        default=True,
+        metadata=_meta(
+            "Since You Left Briefs",
+            "When you return to a conductor mode chat or a bot thread after 30 minutes "
+            "away, post a catch-up brief of its work. Off: a return posts no brief. "
+            "Takes effect on the next return; no restart.",
         ),
     )
     quick_send: bool = field(

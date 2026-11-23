@@ -822,6 +822,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
         kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
+        kas_auth=section.get("kas_auth"),
+        kas_token_path=section.get("kas_token_path"),
+        kas_endpoint=section.get("kas_endpoint"),
+        kas_control_plane_endpoint=section.get("kas_control_plane_endpoint"),
+        kas_region=section.get("kas_region"),
+        kas_machine_env_drop=section.get("kas_machine_env_drop"),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
@@ -1461,6 +1467,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)

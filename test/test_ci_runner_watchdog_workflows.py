@@ -142,6 +142,10 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
             # protects a re-run; those same triggers keep it out of the
             # pull-request-only set, which admits one trigger.
             "codeql.yml",
+            # Dispatch-only and publishes nothing, but a stuck verify run is a
+            # human's to re-run: it exists to be watched by the person who
+            # started it.
+            "verify-cli-publish.yml",
         }
     )
     assert wd.HEAL_SAFE_WORKFLOWS == heal_safe

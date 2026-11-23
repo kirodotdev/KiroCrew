@@ -1,8 +1,9 @@
-"""A bounded digest of a CSV or TSV the person attached in dashboard chat.
+"""A bounded digest of a CSV, TSV or workbook the person attached in dashboard chat.
 
 An upload reaches the agent as a bare path. With ``dashboard.attachment_sheet_digest``
 on, the prompt builder follows each such path with the file's shape (header, a type
 per column, a row count, a few rows), so the agent can plan before it opens the file.
+A workbook gets one such block per sheet, read through the shared workbook walk.
 Every step is bounded, it runs on the thread that builds the prompt (callers offload
 it), and only files the dashboard stored in its own uploads folder qualify.
 """
@@ -12,7 +13,10 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
+import itertools
 import logging
+import time
+from collections.abc import Iterable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -26,8 +30,17 @@ MAX_COLUMNS = 20
 MAX_CELL_CHARS = 40
 MAX_FILES = 3
 MAX_DIGEST_CHARS = 4000
+#: A workbook: the file size read, sheets shown, seconds of reading, and the archive
+#: ceilings (members, bytes once expanded) checked before the reader opens it.
+MAX_WORKBOOK_BYTES = 8 * 1024 * 1024
+MAX_SHEETS = 5
+WORKBOOK_WALL_SECS = 5
+WORKBOOK_MAX_MEMBERS = 1024
+WORKBOOK_MAX_EXPANDED_BYTES = 64 * 1024 * 1024
+_WORKBOOK_STRIDE = 256
 
 _DELIMITERS = {".csv": ",", ".tsv": "\t"}
+_WORKBOOKS = (".xlsx", ".xlsm", ".xltx", ".xltm")
 #: Characters that may wrap a path in prose: one may precede it or trail it.
 _WRAPPERS = "\"'`<>()[]{},;"
 _BOOLEANS = ("true", "false")
@@ -45,8 +58,9 @@ def digest_enabled() -> bool:
 
 
 def uploaded_sheet_paths(scan: str, spans: list[tuple[int, int]]) -> list[Path]:
-    """Distinct CSV and TSV files directly in the uploads folder that *scan*'s user
-    *spans* name, in order, at most :data:`MAX_FILES`. *scan* has literal text masked.
+    """Distinct CSV, TSV and workbook files directly in the uploads folder that
+    *scan*'s user *spans* name, in order, at most :data:`MAX_FILES`. *scan* has
+    literal text masked.
 
     A path is the uploads folder as written plus one stored name, so a space in the
     folder is kept; a stored name never holds whitespace.
@@ -67,7 +81,8 @@ def uploaded_sheet_paths(scan: str, spans: list[tuple[int, int]]) -> list[Path]:
             if not (lead.isspace() or lead in _WRAPPERS) or tail[:1] not in ("/", "\\"):
                 continue
             raw = folder + tail.split(maxsplit=1)[0].rstrip(_WRAPPERS)
-            real = validate_file_path(raw) if Path(raw).suffix.lower() in _DELIMITERS else None
+            sheet = Path(raw).suffix.lower() in (*_DELIMITERS, *_WORKBOOKS)
+            real = validate_file_path(raw) if sheet else None
             if real and Path(real).parent == Path(uploads) and Path(real) not in found:
                 found.append(Path(real))
     return found
@@ -110,6 +125,14 @@ def _column_type(kinds: set[str]) -> str:
     return "empty" if not kinds else "number" if kinds == {"integer", "number"} else "text"
 
 
+def _redacted(text: str) -> str:
+    """*text* with exfiltration URLs and credentials removed, in the attachment path's order."""
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    text, _ = redact_exfiltration_urls(text)
+    return redact_credentials(text)[0]
+
+
 def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str | None:
     """The digest of the sheet *text*, or None when it is not a readable table.
 
@@ -121,23 +144,34 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
         header = next(rows, None)
         if not header:
             return None
-        kinds: list[set[str]] = [set() for _ in header]
-        samples: list[list[str]] = []
-        count = 0
-        for row in rows:
-            if not row:
-                continue
-            count += 1
-            if count <= SAMPLE_ROWS:
-                samples.append([_cell(v) for v in row[:MAX_COLUMNS]])
-            if count <= MAX_TYPED_ROWS:
-                for index, value in enumerate(row[: len(kinds)]):
-                    value = value.strip()
-                    if value:
-                        kinds[index].add(_kind(value))
+        read = f"first {MAX_READ_BYTES // 1024} KiB read"
+        return _shape(name, header, rows, partial=partial, read=read)
     except csv.Error:
         return None
-    shown = min(len(header), MAX_COLUMNS)
+
+
+def _shape(
+    name: str, header: list[str], rows: Iterable[list[str]], *, partial: bool, read: str
+) -> str:
+    """The digest block for a table: its *header* and the data *rows* after it.
+
+    *partial* marks the row count as a floor, and *read* says how much was read.
+    """
+    kinds: list[set[str]] = [set() for _ in header[:MAX_COLUMNS]]
+    samples: list[list[str]] = []
+    count = 0
+    for row in rows:
+        if not row:
+            continue
+        count += 1
+        if count <= SAMPLE_ROWS:
+            samples.append([_cell(v) for v in row[:MAX_COLUMNS]])
+        if count <= MAX_TYPED_ROWS:
+            for index, value in enumerate(row[: len(kinds)]):
+                value = value.strip()
+                if value:
+                    kinds[index].add(_kind(value))
+    shown = len(kinds)
     columns = ", ".join(
         f"{_cell(header[i]) or '(blank)'} ({_column_type(kinds[i])})" for i in range(shown)
     )
@@ -145,7 +179,7 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
         columns += f", and {len(header) - shown} more columns"
     rows_note = f"{count}{'+' if partial else ''} data rows"
     if partial:
-        rows_note += f" (first {MAX_READ_BYTES // 1024} KiB read)"
+        rows_note += f" ({read})"
     lines = [f"[sheet digest: {name}]", f"{rows_note}; {len(header)} columns: {columns}"]
     lines += [f"sample: {' | '.join(sample)}" for sample in samples]
     if count > MAX_TYPED_ROWS:
@@ -154,9 +188,11 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
 
 
 def digest_file(path: Path) -> str | None:
-    """The digest of the CSV or TSV at *path*, or None when there is none to give."""
+    """The digest of the CSV, TSV or workbook at *path*, or None when there is none to give."""
     from kiro_crew.hooks import safe_read_file_bytes_nolink
 
+    if path.suffix.lower() in _WORKBOOKS:
+        return digest_workbook(path)
     delimiter = _DELIMITERS.get(path.suffix.lower())
     if delimiter is None:
         return None
@@ -173,16 +209,99 @@ def digest_file(path: Path) -> str | None:
         # The read stopped mid-line: drop the unfinished last row (LF, CRLF or CR).
         data = data[: max(data.rfind(b"\n"), data.rfind(b"\r")) + 1]
     try:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-
-        text = data.decode("utf-8-sig", errors="replace")
         # Redacted in the attachment path's order, so a secret in a cell never reaches the prompt.
-        text, _ = redact_exfiltration_urls(text)
-        text, _ = redact_credentials(text)
+        text = _redacted(data.decode("utf-8-sig", errors="replace"))
         return digest_text(path.name, text, delimiter, partial=partial)
     except Exception:
         logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)
         return None
+
+
+def digest_workbook(path: Path) -> str | None:
+    """One digest block per sheet of the workbook at *path*, or None when there is none.
+
+    The rows come from :func:`kiro_crew.workbook_rows.read_workbook_rows`, which
+    vets the archive and holds the character budget and the deadline; each sheet is
+    then summarised like a CSV, and the sheet's name follows the file's. A refused,
+    unreadable or oversized workbook, or a missing reader, gives None.
+    """
+    from kiro_crew.hooks import safe_read_file_bytes_nolink
+    from kiro_crew.workbook_rows import read_workbook_rows
+
+    try:
+        if path.stat().st_size > MAX_WORKBOOK_BYTES:
+            return None
+        data = safe_read_file_bytes_nolink(str(path), max_bytes=MAX_WORKBOOK_BYTES)
+        if not data:
+            return None
+        walk = read_workbook_rows(
+            io.BytesIO(data),
+            deadline=time.monotonic() + WORKBOOK_WALL_SECS,
+            max_chars=MAX_READ_BYTES,
+            separator="\t",
+            stride=_WORKBOOK_STRIDE,
+            collapse_whitespace=True,
+            keep_blanks=True,
+            mark_sheets=True,
+            scrub_title=_redacted,
+            max_members=WORKBOOK_MAX_MEMBERS,
+            max_expanded_bytes=WORKBOOK_MAX_EXPANDED_BYTES,
+        )
+        partial = walk.cut or walk.failure is not None
+        starts = walk.starts or [0]
+        # One group per sheet reached; only the sheet the walk stopped in is partial.
+        sheets = [
+            (walk.rows[a:b], partial and a == starts[-1])
+            for a, b in zip(starts, [*starts[1:], len(walk.rows)])
+            if b > a
+        ]
+        blocks = []
+        for rows, cut in sheets[:MAX_SHEETS]:
+            texts = [text for _label, text in rows]
+            if cut:
+                texts = texts[:-1]  # the last row may have been cut short
+            title = rows[0][0].rpartition(" · row ")[0]
+            blocks.append(_sheet_block(f"{path.name} · {title}", texts, partial=cut))
+        omitted = len(sheets) - MAX_SHEETS
+        if partial and (omitted > 0 or blocks):
+            # Sheets past the stop were never reached, so the count is a floor.
+            more = (
+                f"at least {omitted} more sheets not shown"
+                if omitted > 0
+                else "more sheets may follow"
+            )
+            blocks.append(f"{path.name}: {more}; the read stopped early")
+        elif omitted > 0:
+            blocks.append(f"{path.name}: {omitted} more sheets not shown")
+        return "\n\n".join(block for block in blocks if block) or None
+    except Exception:
+        logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)
+        return None
+
+
+def _sheet_block(name: str, texts: list[str], *, partial: bool) -> str:
+    """The digest of one sheet whose rows are the tab-joined *texts*, or ``""``.
+
+    Every number comes from *texts*. The typed or shown rows are redacted together, so a
+    credential spread over rows is still seen; if that moves a line or cell break, the
+    block gives only the counts and a note.
+    """
+    if not texts:
+        return ""
+    window = texts[: MAX_TYPED_ROWS + 1]
+    kept = _redacted("\n".join(window)).split("\n")
+    # The walk drops trailing blank labels: pad them back to the widest row of the
+    # whole sheet, so a column first filled after the typed rows is still reported.
+    width = max(text.count("\t") for text in texts) + 1
+    read = f"first {MAX_READ_BYTES} characters read"
+    if [line.count("\t") for line in kept] != [text.count("\t") for text in window]:
+        note = "column names, types and samples left out: a redacted value spans rows or cells"
+        floor = f"+ data rows ({read})" if partial else " data rows"
+        return f"[sheet digest: {name}]\n{len(texts) - 1}{floor}; {width} columns\n{note}"
+    rows = [line.split("\t") for line in kept]
+    header = rows[0] + [""] * (width - len(rows[0]))
+    counted = itertools.repeat([""], len(texts) - len(window))
+    return _shape(name, header, itertools.chain(rows[1:], counted), partial=partial, read=read)
 
 
 def sheet_digests(scan: str, spans: list[tuple[int, int]]) -> str:

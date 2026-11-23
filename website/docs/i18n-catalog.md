@@ -514,7 +514,13 @@ wired; there is no in-repo producer of those attributes yet.
 Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
 platform picks for a missing glyph. A test pins the `:root` tokens, every
 declaration site (including the theme blocks, which redeclare both), the
-`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
+`html:lang(zh-CN/ja/ko)` overrides, and the ordering. The one exception is the
+rich-text composer (`[data-lexical-composer]`): Lexical keeps a U+200B after an
+open IME composition and an alias has no space glyph to draw it with, so
+`src/styles/chat-transcript.css` lists the bundled Latin face ahead of the
+aliases there. No character that paints changes face, because the Latin faces'
+ranges overlap no alias range; `src/i18n/composerImeFonts.test.ts` pins those two
+stacks, which the ordering test does not read.
 
 **No letter-spacing under a Hindi or Bengali UI.** Devanagari and Bengali hang
 each word from one headline stroke and join letters into conjuncts, so

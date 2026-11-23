@@ -4825,7 +4825,7 @@
       "model_list": "Model list",
       "split_down": "Split down",
       "split_right": "Split right",
-      "split_right_d": "Split right (⌘D)",
+      "split_right_d": "Split right ({{shortcut}})",
       "type_to_filter": "Type to filter…",
       "preparing_catch_up": "Preparing your catch-up…"
     },
@@ -5886,7 +5886,7 @@
       "search_sessions": "Search sessions…",
       "split_down": "Split down",
       "split_right": "Split right",
-      "split_right_d": "Split right (⌘D)",
+      "split_right_d": "Split right ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Terminal pane — coming in Phase 2"
     },
     "sessionMoveUndoBar": {
@@ -7075,6 +7075,7 @@
       "backend_refused_notice": "The backend of {{name}} did not start: {{reason}}",
       "action_warnings_disabled": "{{name}} is disabled, but not every step finished. Details: {{warnings}}",
       "action_warnings_enabled": "{{name}} is enabled, but not every step finished. Details: {{warnings}}",
+      "action_warnings_uninstalled": "{{name}} is uninstalled, but not every step finished. Details: {{warnings}}",
       "cancel": "Cancel",
       "category": "Category",
       "confirm_uninstall": "Confirm uninstall",
@@ -7271,7 +7272,7 @@
       "save_failed": "Save failed:",
       "save_overwrite_newer_content": "Save — overwrite newer content",
       "save_overwrite_newer_content_title": "Save — the content changed since you loaded it; saving now overwrites the newer content with your draft",
-      "save_to_live_cmd_s_updates_the_live_state_withou": "Save to Live (Cmd+S) — updates the live state without versioning",
+      "save_to_live_cmd_s_updates_the_live_state_withou": "Save to Live ({{shortcut}}) — updates the live state without versioning",
       "snapshot": "Snapshot",
       "snapshot_the_current_content_as_a_new_version_an": "Snapshot the current content as a new version and publish it",
       "tag": "tag…",
@@ -7810,11 +7811,11 @@
         "restored": "Connection restored",
         "interrupted": "Connection interrupted",
         "give_up": "Connection unstable — please try again.",
-        "throttle_retrying": "The model provider is throttling requests — retrying…",
+        "throttle_retrying": "Requests are being throttled — retrying…",
         "throttle_restored": "Throttling cleared",
-        "throttle_interrupted": "The model provider kept throttling requests",
-        "throttle_give_up": "The model provider is throttling requests — please try again.",
-        "throttle_resuming": "The model provider is throttling requests — finishing this answer…"
+        "throttle_interrupted": "Throttled — retry stopped",
+        "throttle_give_up": "Requests are being throttled — please try again.",
+        "throttle_resuming": "Requests are being throttled — finishing this answer…"
       },
       "gatewayNotice": {
         "turn_limit_minutes_one": "{{count}}-minute",
@@ -8171,7 +8172,7 @@
       "return_to_split_view": "Return to split view",
       "scroll_to_bottom": "Scroll to bottom",
       "session_options": "Session options",
-      "split_view_d": "Split view (⌘D)",
+      "split_view_d": "Split view ({{shortcut}})",
       "start_a_new_chat": "Start a new chat",
       "session_closed_in_another_window": "This session was closed in another window",
       "close_window": "Close window",

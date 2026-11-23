@@ -3,11 +3,12 @@
  * The menu sets its own `scrollTop` because `scrollIntoView` could move the page.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -15,7 +16,9 @@ import {
 } from './ui/dropdown-menu'
 import { IconButton } from './ui'
 import { keepRowInMenuView } from '../lib/menuRowReveal'
+import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import { offlineMenuRow } from '../utils/offline'
+import type { GuideRevealScopeId } from '../uiLocations/guidePlans.gen'
 
 export interface AllTabsRow {
   id: string
@@ -42,19 +45,35 @@ export interface AllTabsMenuProps {
   label: string
   /** Set while the gateway is unreachable, to what a pick would do. Refused picks keep the menu open: closing it would read as though they ran. */
   offlineVerb?: string
+  /** One action below the rows (e.g. close every tab), after a separator. It
+   *  may open a dialog (a confirm), so it runs after the menu has closed and
+   *  focus returns to the trigger once its promise settles. */
+  footer?: { label: string; icon?: ReactNode; onSelect: () => void | Promise<unknown>; testId?: string }
+  /** A trigger button to use instead of the chevron, for a strip whose tab
+   *  list shares a menu with its other actions. It carries its own label. */
+  trigger?: ReactElement
+  /** The strip's other actions, below the rows and above the footer. */
+  children?: ReactNode
+  guideScope?: GuideRevealScopeId
+  /** Let a guide's name search open this menu to look inside it. Its open
+   *  state is local, so opening it has no other effect. */
+  guideProbe?: boolean
+  /** Runs when no footer action is handing focus to the dialog it opened. */
+  onCloseAutoFocus?: (e: Event) => void
 }
 
 export const ALL_TABS_SECONDARY_CLASS = 'truncate text-[11px] leading-4 text-muted'
 export const ALL_TABS_MARK_SLOT_CLASS = 'flex w-[13px] shrink-0 items-center justify-center'
 export const ALL_TABS_CURRENT_TITLE_CLASS = 'text-accent'
 
-export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb }: AllTabsMenuProps): JSX.Element {
+export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb, footer, trigger, children, guideScope, guideProbe, onCloseAutoFocus }: AllTabsMenuProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   // In state, not a ref: the portalled content mounts after `open` flips, and its arrival must re-run the scroll effect.
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
   const rowEls = useRef(new Map<string, HTMLElement>())
   const focusedIdRef = useRef<string | null>(null)
+  const layer = useMenuOpensDialog()
 
   const surviving = groups.filter(g => g.rows.length > 0)
 
@@ -83,10 +102,10 @@ export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb }:
   }, [open, currentId, contentEl])
 
   return (
-    <DropdownMenu open={open} onOpenChange={handleOpenChange}>
-      <DropdownMenuTrigger asChild>
+    <DropdownMenu open={open} onOpenChange={handleOpenChange} guideScope={guideScope} guideProbe={guideProbe}>
+      <DropdownMenuTrigger asChild ref={triggerRef} onPointerDown={layer.rememberOpener} onKeyDown={layer.rememberOpener}>
+        {trigger ?? (
         <IconButton
-          ref={triggerRef}
           // mc-touch-hit-y gives a 44px coarse-pointer height without overlapping the adjacent +.
           className="mc-touch-hit-y flex items-center justify-center w-7 h-7 shrink-0 self-center rounded-md p-0 data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors"
           aria-label={label}
@@ -95,8 +114,15 @@ export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb }:
         >
           <ChevronDown size={15} aria-hidden="true" />
         </IconButton>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="min-w-[240px] max-w-[min(360px,calc(100vw-16px))]" ref={setContentEl}>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="min-w-[240px] max-w-[min(360px,calc(100vw-16px))]"
+        ref={setContentEl}
+        onCloseAutoFocus={(e) => { if (!layer.onCloseAutoFocus(e)) onCloseAutoFocus?.(e) }}
+      >
         <DropdownMenuRadioGroup value={currentId ?? ''}>
           {surviving.map((group, i) => (
             <GroupRows
@@ -112,6 +138,24 @@ export function AllTabsMenu({ groups, currentId, onSelect, label, offlineVerb }:
             />
           ))}
         </DropdownMenuRadioGroup>
+        {children != null && (
+          <>
+            {surviving.length > 0 && <DropdownMenuSeparator />}
+            {children}
+          </>
+        )}
+        {footer && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => layer.openLayer(() => { void Promise.resolve(footer.onSelect()).finally(layer.returnFocus) })}
+              data-testid={footer.testId}
+            >
+              {footer.icon != null && <span className="text-muted shrink-0">{footer.icon}</span>}
+              {footer.label}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

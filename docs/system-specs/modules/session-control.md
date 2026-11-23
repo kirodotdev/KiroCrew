@@ -827,7 +827,8 @@ and `session_revive` refuse a named folder in another Bot's home
 in a Bot's home the forker does not own (the person's Fork, or `session_fork`
 by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
 is saved with a chat folder there only when it runs on that Bot's store (the
-cron create and update routes refuse it `mate_home_locked` (403) and record the
+cron create and update routes refuse it `mate_home_locked` (403), the `cron_add` /
+`cron_update` tools refuse it the same way, and each records the
 denial in the security event log, the Schedule form offers such a folder only
 for a job that runs as that Bot, and the tab placement re-checks it at run time and records a refusal
 the same way), and the name lookups that adopt an existing

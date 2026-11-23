@@ -17,6 +17,7 @@ import { useSidebarCreators } from './chat-sidebar/creators'
 import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
+import { SessionRefStageContext } from '../components/sessionRefStage'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
@@ -897,14 +898,14 @@ function ChatSidebar({
     onNativeDragStart: startBoardCardDrag, onNativeDragEnd: endNativeSessionDrag,
     onPinnedKeyboardReorder: reorderPinnedByKeyboard, onManualKeyboardReorder: reorderManualByKeyboard,
     openElsewhere, toggleConductor: toggleConductorExpanded,
-    onDropSessionRef, canStageSessionRef,
+    onDropSessionRef,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
     renameOfflineSlot, renameOfflineScope,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,
-    onDropSessionRef, canStageSessionRef,
+    onDropSessionRef,
   ])
   // The values every row shows the same way, ONE object per change of any of them:
   // each view holds it by reference, so it re-renders every row exactly when one of
@@ -1077,6 +1078,7 @@ function ChatSidebar({
 
   return (
     <SharedCrewBylineContext.Provider value={creatorView.bylines}>
+    <SessionRefStageContext.Provider value={!!canStageSessionRef}>
     {/* stable theming hook 'sidebar' — see website/docs/theming-contract.md
         The region is the session picker a guide's "choose the session" step
         points at (`sessions.list`): both layouts draw their rows inside it. */}
@@ -1244,6 +1246,7 @@ function ChatSidebar({
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
     </>
+    </SessionRefStageContext.Provider>
     </SharedCrewBylineContext.Provider>
   )
 }

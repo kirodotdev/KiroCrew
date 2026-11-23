@@ -255,6 +255,10 @@ describe('McpBrowserModal', () => {
     fireEvent.click(installBtn)
 
     await waitFor(() => expect(screen.getAllByText('Name in use').length).toBeGreaterThan(0))
+    const notice = await screen.findByTestId('mcp-browser-detail-conflict')
+    expect(notice.querySelector('span.whitespace-pre-wrap')?.textContent).toBe(
+      'A server named “widgets” already exists with a different configuration. Manage it from the installed servers table.',
+    )
     // No overwrite path for MCP conflicts — the row must not re-offer Install.
     expect(screen.queryByRole('button', { name: /Overwrite/ })).not.toBeInTheDocument()
   })

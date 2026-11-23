@@ -6158,7 +6158,12 @@ is decided there and reaches no dashboard layer:
   from many frames or a compressed one. When either side ends, both legs close
   with the code that side reported: no status (an empty close frame, or 1005)
   becomes 1000, a dropped connection (1006, or 1015) becomes 1001, and a code outside
-  1000-4999 becomes 1002, because those codes are never sent.
+  1000-4999 becomes 1002, because those codes are never sent. The relay follows
+  no upstream redirect: `ws_connect` has no switch for that, so both sessions
+  the relay dials through carry a `TraceConfig` (`_NO_REDIRECTS`) that closes a
+  30x answer and fails the upgrade with 502, and `Kiro-Relay-Authorization`
+  never reaches the redirect target. The HTTP relay passes
+  `allow_redirects=False` itself.
 
 **Remote Crew pane ports.** A pane loads this dashboard at
 `http://<hub's loopback name>:P`, where P is the hub's SSH forward port and

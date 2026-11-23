@@ -7,9 +7,11 @@
 ``toolkit/living-ui.js`` in the ``living-ui`` built-in skill is the one place the
 toolkit's code is edited. Each helper in it sits between ``// living-ui:begin
 <name>`` and ``// living-ui:end <name>``. A crewmate with no file tools cannot open
-that file, so the skill's ``SKILL.md`` carries every helper as its own fenced
-block, between a ``<!-- living-ui:blocks begin`` line and a ``<!-- living-ui:blocks
-end -->`` line, and an author copies the blocks a figure needs from there.
+that file, so the sibling ``living-ui-blocks`` skill's ``SKILL.md`` carries every
+helper as its own fenced block, between a ``<!-- living-ui:blocks begin`` line and
+a ``<!-- living-ui:blocks end -->`` line, and an author copies the blocks a figure
+needs from there. They live in their own skill, not in ``living-ui``'s, so that a
+crewmate reads them by skill key while ``living-ui``'s own body stays one read.
 
 This script writes that region from the file, each helper byte for byte, under a
 heading naming it. ``--check`` names every helper whose block is missing, extra or
@@ -31,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "living-ui"
 TOOLKIT = SKILL_DIR / "toolkit" / "living-ui.js"
-SKILL_MD = SKILL_DIR / "SKILL.md"
+SKILL_MD = SKILL_DIR.parent / "living-ui-blocks" / "SKILL.md"
 
 _BEGIN = re.compile(r"^// living-ui:begin ([A-Za-z][A-Za-z0-9]*)$")
 _END = re.compile(r"^// living-ui:end ([A-Za-z][A-Za-z0-9]*)$")

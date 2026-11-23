@@ -82,6 +82,7 @@ from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the 
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
+    MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
@@ -143,6 +144,11 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
+    could_be_echo,
+    echo_prefix_len,
+    is_echo,
+)
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -185,7 +191,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
-from kiro_crew.option_marker_scan import LINE_BREAKS, line_start  # noqa: F401 - read by the owners
+from kiro_crew.option_marker_scan import LINE_BREAKS  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -411,12 +417,13 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _at_tag_line_start,
     _blocks_with_run,
     _comment_hold_is_protocol,
+    _could_open_marker_line,
     _filter_options_brackets,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
     _safe_update,
-    _settle_options_head,
+    _settle_marker_line,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401

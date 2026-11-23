@@ -1,5 +1,7 @@
 /**
  * Script fallback faces must lead every font stack, and must never claim Latin.
+ * The rich-text composer's two stacks are the one exception; composerImeFonts.test.ts
+ * pins them.
  *
  * zh-CN, ja, ko, hi and bn have no font coverage otherwise: every family in
  * `--font-body` and `--mono` covers Latin only, so those scripts fall through to the

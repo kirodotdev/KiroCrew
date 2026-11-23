@@ -1140,6 +1140,15 @@
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
+    },
+    {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
@@ -1878,6 +1887,13 @@
       "tab": "display",
       "route": "/settings/display/theme?highlight=display.theme",
       "hint": "Select a theme for the dashboard"
+    },
+    {
+      "id": "display.touch-screen-layout",
+      "label": "Touch screen layout",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.touch-screen-layout",
+      "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only."
     },
     {
       "id": "display.translucent-panels",

@@ -312,7 +312,10 @@ def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
 
     One lock for the fork/publish endpoints, the agent-detail PATCH, and the
     background fork refresh: a read-modify-writer that skips it can interleave
-    with any of the others and silently revert their write. Sidecar lockfile
+    with any of the others and silently revert their write. ``rebuild_agent_config``
+    reads its base copy before taking it, so under the lock it reads the file again
+    and keeps another writer's edit to a key it did not derive
+    (``_carry_concurrent_spec_edits``). Sidecar lockfile
     (not the spec's own fd) for the same reason update_config_locked uses one:
     atomic replace swaps the inode, so a lock on the spec fd would not
     serialize across the rename.
