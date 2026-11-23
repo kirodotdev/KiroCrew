@@ -5423,6 +5423,26 @@ length stay as the engine sent them, and every value a reader compares is
 equal, so no reader can tell; none writes to these lists. At most
 `MAX_SERVERS` server names are held.
 
+**A parked queue keeps one of each re-sent state.** A session's queue is a
+`SessionFrameQueue` (`acp/session_frame_queue.py`) with a `parked` flag. It is
+born unparked; `create_session` and `load_session` park it once their readiness
+wait or init drain has returned, and `mark_turn_active` unparks it for the
+length of a turn. On a parked queue the reader loop calls
+`drop_superseded_if_parked` right before it queues a frame, with no await
+between the check and the frame landing, so a turn that begins sees the queue
+only after both: a new
+`config_option_update` removes the unread one before it,
+and a new `_kiro/mcp/status` removes the nearest unread status before it when
+the two agree on everything except each server's `tools`, `prompts`, `resources`
+and `resourceTemplates`. A nearest status that differs is a state the reader
+must still pass through, so it and everything older stay. The search stops at
+the first frame of any other kind, so no frame moves past another. Only the pre-turn drain reads a parked queue, and
+it feeds status frames to the sign-in tracker, which reads only the fields the
+comparison keeps, and absorbs no options; the MCP report already folded each
+frame on arrival. So an idle session's queue stays bounded however long it
+idles, and a turn or a start, which count frames by queue length, never sees a
+frame leave.
+
 They share the stdio framing (`acp/transport_framing.py`), the error taxonomy
 (`acp/transport_errors.py`), the model catalog (`acp/runtime_models.py`) and
 process-tree inspection (`acp/runtime_process_tree.py`) the same way.

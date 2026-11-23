@@ -39,6 +39,7 @@ from kiro_crew.acp.runtime_frame_accounting import (
     is_unread_session_start_notice,
 )
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
+from kiro_crew.acp.session_frame_queue import drop_superseded_if_parked
 from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
 from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
 from kiro_crew.acp.transport_framing import (
@@ -752,8 +753,10 @@ async def _reader_loop(self: AcpRuntime) -> None:
                         self._note_switched_model(session_id, msg.params)
                     self._session_activity_at[session_id] = time.monotonic()
                     # An idle session holds every frame until its next turn:
-                    # its catalogs share one copy with the frames before it.
+                    # its catalogs share one copy with the frames before it,
+                    # and a parked queue keeps one of each re-sent state.
                     self._repeated_payloads.share(msg)
+                    drop_superseded_if_parked(queue, msg)
                     await queue.put(msg)
                 elif (
                     _announced_owner is not None

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_start import _split_init_frames
+from kiro_crew.acp.session_frame_queue import set_parked
 from kiro_crew.acp.session_handle import AcpRequestTimeout
 from kiro_crew.acp.types import (
     MCP_ROSTER_COMPLETE_NOTE,
@@ -182,12 +183,15 @@ def mark_turn_active(self: AcpRuntime, session_id: str, active: bool) -> None:
     Called by ``AcpSessionHandle.prompt()`` on entry and (in a finally)
     on every exit path. Child permission requests are routed only while
     the owner is marked active; otherwise they are answered fail-closed
-    immediately, because nothing reads the queue until the next turn.
+    immediately, because nothing reads the queue until the next turn. The
+    session's queue is parked between turns and read during one
+    (``session_frame_queue``).
     """
     if active:
         self._turn_active_sessions.add(session_id)
     else:
         self._turn_active_sessions.discard(session_id)
+    set_parked(self._session_queues.get(session_id), not active)
 
 
 async def terminate_session(

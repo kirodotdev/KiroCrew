@@ -56,6 +56,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _pooled_session_servers_and_ref_spec,
     _with_runtime_ipc_pickups,
 )
+from kiro_crew.acp.session_frame_queue import SessionFrameQueue, set_parked
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
     AcpRequestTimeout,
@@ -619,7 +620,7 @@ async def load_session(
     # A host with per-session state (claude) can start a turn on its own; its
     # queue tells the handle (``session_handle_agent_turns``). One flag read.
     queue: asyncio.Queue[JsonRpcMessage | None] = (
-        AgentTurnQueue() if self._harness.per_session_state else asyncio.Queue()
+        AgentTurnQueue() if self._harness.per_session_state else SessionFrameQueue()
     )
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)
@@ -852,6 +853,9 @@ async def load_session(
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
     else:
         await handle.drain_init(no_report_ceiling=0.0)
+    # The load has read every frame it counts: the queue now waits for a turn.
+    # No turn can be running yet, since the handle has not been handed out.
+    set_parked(self._session_queues.get(resume_sid), True)
 
     if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
         self._copy_native_launch_sources(
