@@ -19,7 +19,6 @@ the produced script passes ``validate``.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import functools
 import hashlib
@@ -76,7 +75,7 @@ from .registry import (
 )
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
-from .validate import validate
+from .validate import ends_mid_construct, validate
 
 #: Decimal width of the largest run number the allocator issues.
 _RUN_ID_DIGITS = len(str(_RUN_ID_MAX))
@@ -94,18 +93,6 @@ _AUTHOR_ERRORS_PER_ATTEMPT = 5
 _AUTHOR_ERROR_CHARS = 300
 # ACP ``StopReason`` for a turn that ended on the model's output-token limit.
 _STOP_REASON_MAX_TOKENS = "max_tokens"
-# Best-effort substrings of the SyntaxError messages CPython raises when the
-# source ENDS inside an unfinished construct: an open bracket, an open
-# triple-quoted string, or bare end of input. The list is not exhaustive and
-# the wording is CPython's, so ``_ends_mid_construct`` also treats any syntax
-# error reported on the source's last line as cut off; that fallback covers
-# shapes with other messages, such as an unterminated one-line string or a
-# statement left unfinished at end of input.
-_CUT_OFF_SYNTAX_MARKERS = (
-    "was never closed",
-    "unterminated triple-quoted string",
-    "unexpected EOF",
-)
 _AUTHOR_REFERENCE_LIMIT = 3
 #: A dashboard request named the workflow by a ref that now reaches another one.
 _REF_MOVED_ERROR = "that name now reaches a different saved workflow; reload the library"
@@ -1116,7 +1103,7 @@ class WorkflowService:
                 errors = vr.errors
                 if cut_off:
                     errors = ["script was cut off at the output length limit", *errors]
-                cut_off = cut_off or _ends_mid_construct(source, errors)
+                cut_off = cut_off or ends_mid_construct(source, errors)
                 label = f"attempt {i + 1}/{attempts}: "
                 all_errors.extend(
                     label + error[:_AUTHOR_ERROR_CHARS]
@@ -1884,28 +1871,6 @@ def _strip_fence(text: str) -> str:
             elif t.startswith("py"):
                 t = t[len("py") :]
     return t.strip() + "\n"
-
-
-def _ends_mid_construct(source: str, errors: list[str]) -> bool:
-    """True when ``source`` failed to parse because it stops mid-construct.
-
-    That is what a reply cut off at the output limit looks like: an open
-    bracket or string at end of input, or a syntax error on the last line.
-    Only consulted after ``validate`` reported a syntax error, so the re-parse
-    runs on the failure path and never on a size-rejected script.
-    """
-    if not any(error.startswith("syntax error:") for error in errors):
-        return False
-    try:
-        ast.parse(source)
-    except SyntaxError as exc:
-        if any(marker in (exc.msg or "") for marker in _CUT_OFF_SYNTAX_MARKERS):
-            return True
-        last_line = len(source.rstrip().splitlines())
-        return exc.lineno is not None and exc.lineno >= last_line
-    except (RecursionError, MemoryError, ValueError):
-        return False
-    return False
 
 
 def _authoring_references(matches: list[dict[str, Any]]) -> str:

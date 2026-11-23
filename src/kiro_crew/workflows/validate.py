@@ -910,3 +910,39 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         return ValidationResult(ok=False, errors=[_TOO_DEEP_ERROR])
 
     return ValidationResult(ok=not errors, errors=errors, meta=meta, compile_errors=compile_errors)
+
+
+# Best-effort substrings of the SyntaxError messages CPython raises when the
+# source ENDS inside an unfinished construct: an open bracket, an open
+# triple-quoted string, or bare end of input. The list is not exhaustive and
+# the wording is CPython's, so ``ends_mid_construct`` also treats any syntax
+# error reported on the source's last line as cut off; that fallback covers
+# shapes with other messages, such as an unterminated one-line string or a
+# statement left unfinished at end of input.
+_CUT_OFF_SYNTAX_MARKERS = (
+    "was never closed",
+    "unterminated triple-quoted string",
+    "unexpected EOF",
+)
+
+
+def ends_mid_construct(source: str, errors: list[str]) -> bool:
+    """True when ``source`` failed to parse because it stops mid-construct.
+
+    That is what a reply cut off at the output limit looks like: an open
+    bracket or string at end of input, or a syntax error on the last line.
+    Only consulted after ``validate`` reported a syntax error, so the re-parse
+    runs on the failure path and never on a size-rejected script.
+    """
+    if not any(error.startswith("syntax error:") for error in errors):
+        return False
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        if any(marker in (exc.msg or "") for marker in _CUT_OFF_SYNTAX_MARKERS):
+            return True
+        last_line = len(source.rstrip().splitlines())
+        return exc.lineno is not None and exc.lineno >= last_line
+    except (RecursionError, MemoryError, ValueError):
+        return False
+    return False
