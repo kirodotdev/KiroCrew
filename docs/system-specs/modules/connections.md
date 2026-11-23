@@ -177,6 +177,28 @@ before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
 
+A cold mint whose kiro-cli cannot start names the cause for the card. A failure
+with no reason of its own records the coarse `mint_<exception type>` (for example
+`mint_acperror`), which the card shows as its generic setup failure. A spawn
+refused with the `kiro_cli_missing` tag records `mint_kiro_cli_missing`. Any
+other such failure of the readiness wait (an `ensure_ready` error, for example,
+or the `_MINT_READY_TIMEOUT_SECONDS` deadline) then asks kiro-cli whether it is
+signed out, through `kiro_prerequisite.kiro_signed_out_confirmed()` (its
+`whoami`, see [acp-client](acp-client.md)). That runs after the dedicated process is released
+and outside the mint table's lock, and a True answer records
+`mint_kiro_cli_signed_out`, so the deadline can end there rather than at
+`mint_timeouterror`. A disproved stored grant keeps `mint_grant_unproven` (see
+below), and the outcomes of the wait for the server's report,
+`mint_server_failed` and `mint_process_gone`, come after kiro-cli started:
+none of them is asked about. The
+card shows the same `mint_failure_kiro_cli_missing` sentence for the missing and
+the signed-out reason: Connect needs kiro-cli installed and signed in. The
+verdict comes from kiro-cli, never from the error's text: a remote server's own
+401 can sit in the same stderr tail. A failure anywhere else in the mint (the
+spec write, the URL gate) keeps its coarse reason.
+Decision:
+[2026-11-16](../../decisions/2026-11-16-a-signed-out-kiro-cli-gets-the-connect-cards-sign-in-message.md).
+
 A refused sign-in ends the attempt. kiro-cli answers the loopback callback before
 it exchanges the code, so a code the provider rejects never lands a grant: kiro-cli
 reports it only as a `server_init_failure` frame for that server and closes the
@@ -1475,7 +1497,10 @@ so chats skip the pool while they would be bridged (`bypass_crew_oauth_bridge`).
 harness as allow-once, since the proxy refuses a call no approval was minted for. The answer is always an option id
 the frame offered: KAS asks a bridged call through an explicit `ask` rule, which offers no allow-always, so its one
 allow id (`accept`) is sent; an id the frame never offered reads to KAS as a refusal (`once_for_always`). A frame that
-offered allow-always alone is answered with the canonical allow-once instead (`RECORDED_ALWAYS_ONLY`). The agent spec keeps the provider's client
+offered allow-always alone is answered with the canonical allow-once instead (`RECORDED_ALWAYS_ONLY`). On every
+approval, a canonical `allow_once` / `allow_always` that no recorded id replaced is sent as the id the frame offered
+for that kind (claude-agent-acp's `allow-once`), since that adapter refuses an id it never offered
+(`offered_allow_id`, see the ACP client spec). The agent spec keeps the provider's client
 secret unless chats run on KAS or no kiro-cli session can start
 (`crew_oauth.strips_spec_secret`). goose names the server in
 `_meta.goose.toolCall`, and its `rawInput` is the arguments it sends. DeepSeek
@@ -1752,6 +1777,17 @@ owner-only `PUT` / `DELETE /api/connections/oauth-clients/{slug}`. The launch
 gate keeps governing the entry's quality claims: a configured GitHub still runs
 the normal first-connect (`not-verified`) flow, and `launch_gate_passed` flips
 only after the manual L2 walk with an operator-registered app.
+
+**Creating the app from the card.** When the gateway can generate a
+pre-registered card's OAuth app, owner-only
+`GET /api/connections/app-manifests` answers `{slug: {create_url, manifest}}`
+(handlers/connections_app_manifest.py). Only Slack has a generator: the
+`slack_manifest.deep_link()` link and its payload, for this install's alias and
+Slack Code switches plus `slack_mcp`, so one app serves the channel bot and the
+card. While the card is `needs-configuration` and its client is not saved, the
+"Before you connect" tip carries **Create the <provider> app** (the link, https
+only, new tab), **Copy manifest** and one line on what Slack does next. The card
+names no vendor; a refused or failed route leaves the tip without the buttons.
 
 **Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
 (index in its `README.md`): console, app type, scopes, the exact redirect URI,

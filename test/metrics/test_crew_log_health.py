@@ -122,6 +122,7 @@ class _FakeWriter:
 
         self._stats = WriterStats(
             buffered=buffered,
+            claimed=0,
             peak_buffered=buffered,
             dropped=0,
             overflowed=0,

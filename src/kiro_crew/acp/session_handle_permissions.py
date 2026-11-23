@@ -27,6 +27,7 @@ Instance fields read: ``_config_options``, ``_runtime``,
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -37,9 +38,11 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    asks_allow_always,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
+    offered_allow_id,
     redact_text,
     scope_overflowed,
     scoped_tool_cache_key,
@@ -68,9 +71,14 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     permission_value_for,
 )
-from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
+from kiro_crew.constants import (
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
+)
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant, as_spec_denied_grant
 from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
@@ -162,7 +170,10 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
-        await self.reject_tool(request_id)
+        if gate_event is None:
+            await self.reject_tool(request_id)
+        else:
+            await self._reject_with_host_notice(gate_event, reason, cause=DENY_CAUSE_POLICY)
         return False
     if withdraw_if is not None and withdraw_if():
         # The floor's thread hop is an await: read again before anything else
@@ -176,13 +187,16 @@ async def approve_tool(
         # human-wait segment of the park so an observer does not attribute the
         # person's thinking time to the consumer (see _end_human_wait).
         self._end_human_wait()
+    # By the kind the frame offered an explicit id as, before its spelling.
+    wants_always = asks_allow_always(option_id, gate_event, always=False)
     if recorded:
         if resolved_id is None:
             resolved_id = recorded.get("once") or recorded.get("always")
-        elif resolved_id == OPTION_ALLOW_ALWAYS:
-            resolved_id = recorded.get("always") or recorded.get("once") or resolved_id
-        elif resolved_id == OPTION_ALLOW_ONCE:
-            resolved_id = recorded.get("once") or resolved_id
+        elif resolved_id in (OPTION_ALLOW_ALWAYS, OPTION_ALLOW_ONCE):
+            once = recorded.get("once")
+            resolved_id = (
+                (recorded.get("always") or once) if wants_always else once
+            ) or resolved_id
     if resolved_id is None:
         resolved_id = OPTION_ALLOW_ONCE
     if capability.for_connection:
@@ -190,6 +204,20 @@ async def approve_tool(
         # tool, and the gateway proxy refuses every call no approval was minted
         # for. Crew keeps its own approval memory; the harness is answered once.
         resolved_id = once_for_always(resolved_id, recorded or {})
+    # A canonical literal no recorded id replaced is answered with the offered id of its kind.
+    offered_id = offered_allow_id(
+        resolved_id, gate_event, always=wants_always and not capability.for_connection
+    )
+    if offered_id is None:
+        logger.warning(
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            _loggable_request_id(request_id),
+        )
+        # Put back what was taken, so the reject answers with the offered reject id.
+        self._restore_withdrawn(request_id, gate_event, recorded)
+        await self.reject_tool(request_id)
+        return False
+    resolved_id = offered_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the runtime reads the withdrawal again under that lock, ahead
     # of its own liveness check, and the grant's deadline after it: a runtime
@@ -817,6 +845,15 @@ def _claude_mcp_identity_servers(
     return tuple(state._harness_mcp_server_names()), _bridged_servers(state)
 
 
+def _denies_only(value: Any) -> SpecDeniedGrant | None:
+    """The deny record *value* with its grants emptied, so the gate's ``spec-denies``
+    row still refuses by it and its grant row grants nothing by it."""
+    record = as_spec_denied_grant(value)
+    if record is None:
+        return None
+    return dataclasses.replace(record, builtins=frozenset(), commands=(), web_fetch_trusted=())
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -888,28 +925,34 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # call it serves: marked as the per-chat client marks it, so the dashboard
         # keeps the parent's deny overrides away from it.
         event.native_child_call = True
-    elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
-        # A native KAS sub-agent's call carries this session's id, so mark it:
-        # the dashboard keeps the parent's deny overrides away from it.
-        event.native_child_call = True
     elif self._runtime.acp_backend == ACP_BACKEND_KAS:
-        # What this session's own agent granted and the KAS policy kept at ask,
-        # so the gate can answer the request itself after its checks. A child's
-        # request runs another agent's spec, so it never carries this: neither
-        # one under a foreign sessionId, nor a native KAS sub-agent's tool call,
-        # which shares this session's id and is told apart by the id its
-        # agentSubtaskId frame recorded.
-        event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
-        event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
-        event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+        # The limits of this session's own agent that only Crew's gate applies.
+        # KAS runs a native sub-agent inside this agent's permission rules (its
+        # own and the child's, the stricter answer winning), so they bind a native
+        # sub-agent's call too, as they do a native claude sub-agent's below.
         event.spec_shell_allowlist = getattr(self, "kas_spec_shell_allowlist", None)
+        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)
         event.spec_write_cwd = str(getattr(self, "_bound_cwd", "") or "")
-        event.spec_denied_grant = getattr(self, "kas_spec_denies", None)
         event.spec_unjudged_denies = tuple(getattr(self, "kas_spec_unjudged_denies", ()))
-        event.spec_shell_readonly = bool(getattr(self, "kas_spec_shell_readonly", False))
-        event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
-        event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
+        denies = getattr(self, "kas_spec_denies", None)
+        if _is_native_child_call(self, event):
+            # A native KAS sub-agent's call carries this session's id, so mark it:
+            # the dashboard keeps the parent's deny overrides away from it. It
+            # runs another agent's spec, so it gets the deny record's denies and
+            # none of this agent's grants.
+            event.native_child_call = True
+            event.spec_denied_grant = _denies_only(denies)
+        else:
+            # What this session's own agent granted and the KAS policy kept at
+            # ask, so the gate can answer the request itself after its checks.
+            # A request under a foreign sessionId never reaches this branch.
+            event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
+            event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
+            event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
+            event.spec_denied_grant = denies
+            event.spec_granted_paths = tuple(getattr(self, "kas_crew_answered_paths", ()))
+            event.spec_granted_read_paths = tuple(getattr(self, "kas_crew_answered_read_paths", ()))
     if self._runtime.acp_backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
         # A harness that never reads ``toolsSettings`` (claude): the shell and write
         # allowlists its own setup stamped on this handle

@@ -179,6 +179,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     _queued_depth_off_loop,
+    cron_tab_name,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -232,6 +233,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    _normalize_slot_key,
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
@@ -338,6 +340,7 @@ from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
     consume_reinjection,
+    open_turn_crew_log,
     rearm_reinjection,
     rollback_skill_bodies,
     stop_reason_landed,
@@ -363,6 +366,11 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.spawn_approval_delivery import deliver_spawn_approval
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.metrics.usage_attrs import (
+    TRIGGER_MONITOR,
+    reset_current_trigger,
+    set_current_trigger,
+)
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
@@ -547,6 +555,7 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _result_hash,
 )
 from kiro_crew.slack.gateway_runtime.exit_path import (
+    _CTRL_C_MARK_WAIT_SECS,
     _FORCE_EXIT_DEADLINE_SECS,
     _MARKER_WRITE_WAIT_SECS,
 )
@@ -747,6 +756,7 @@ class GatewayOrchestrator:
     # The constructor's fields (gateway_runtime/orchestrator_init.py):
     _cfg: KiroCrewConfig
     _no_dashboard: bool
+    _headless: bool
     _no_crons: bool
     _no_open: bool
     _port_override: str | None
@@ -815,6 +825,8 @@ class GatewayOrchestrator:
     _sign_in_refresher_task: "asyncio.Task[None] | None"
     _marker_clear_pending: threading.Event
     _force_exit_claimed: threading.Event
+    # Set only by the first Ctrl-C (exit_path); read with getattr(..., None).
+    _ctrl_c_marking: threading.Thread
     _dashboard_runner: web.AppRunner | None
     _handler_tasks: set[asyncio.Task]
     _session_tasks: dict[str, asyncio.Task]
@@ -898,6 +910,7 @@ class GatewayOrchestrator:
             cfg: KiroCrewConfig,
             *,
             no_dashboard: bool = False,
+            headless: bool = False,
             no_crons: bool = False,
             no_open: bool = False,
             port_override: str | None = None,

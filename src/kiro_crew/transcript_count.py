@@ -95,6 +95,14 @@ def _store(path: Path, stamp: tuple[int, int], count: int) -> None:
         atomic_write(_sidecar(path), json.dumps(payload), fsync=False)
 
 
+def store_count(path: Path | str, count: int) -> None:
+    """Store *count* for *path* as it is now, for a writer that knows the count it wrote."""
+    path = Path(path)
+    now = _stamp(path)
+    if now is not None:
+        _store(path, now, count)
+
+
 def stored_count(path: Path | str) -> int | None:
     """The message count stored for *path*, or ``None`` when absent or stale.
 

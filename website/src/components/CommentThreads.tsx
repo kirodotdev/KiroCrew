@@ -21,6 +21,7 @@ import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
+import TruncatedText from './TruncatedText'
 import { sourceProviderCapabilities, sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
 
@@ -360,9 +361,7 @@ export default function CommentThreads(
             {/* Anchor line: which file and line this conversation is about. */}
             <div className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-muted border-b border-border bg-bg-elevated flex-wrap">
               {t.path ? (
-                <span className="font-mono text-[11px] truncate max-w-[260px]" title={t.path}>
-                  {t.path}{t.line ? `:${t.line}` : ''}
-                </span>
+                <TruncatedText full={t.line ? `${t.path}:${t.line}` : t.path} className="font-mono text-[11px] max-w-[260px]" />
               ) : (
                 <span className="text-[11px]">
                   {t.root.kind === 'review' ? 'review' : 'conversation'}

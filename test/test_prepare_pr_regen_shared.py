@@ -17,7 +17,7 @@ from pathlib import Path
 import git_repo_templates
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -500,7 +500,7 @@ def test_every_uncovered_file_exists_so_the_reminder_names_a_real_path() -> None
 
 
 def test_the_skill_names_the_script_and_the_reference_it_points_to_exists() -> None:
-    skill = SKILL.read_text(encoding="utf-8")
+    skill = skill_text(SKILL)
     assert "`regen_shared.py [base]`" in skill
     assert "references/split-and-regen.md" in skill
     reference = REFERENCE.read_text(encoding="utf-8")

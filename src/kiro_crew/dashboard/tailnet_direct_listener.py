@@ -225,6 +225,31 @@ async def start(
     return sites
 
 
+def prepare_tailnet_path(
+    cfg: KiroCrewConfig,
+    *,
+    host: str,
+    trust: tailnet.TailnetTrust,
+    local_only: bool,
+) -> None:
+    """Before the bind: record the tailnet path and install the placeholder access set.
+
+    The part of :func:`prepare_at_start` that is not about the direct listener. A
+    headless gateway, which starts no direct listener, calls it alone and then
+    :func:`finish_access_set` after the bind, so the ``tailscale serve`` path is
+    judged by the same derived set as on an ordinary gateway.
+    """
+    access.note_tailnet(
+        enabled=bool(cfg.dashboard.tailscale.enabled),
+        host=host,
+        identity_trust=trust.enforces_identity and not trust.identity_unknown,
+        loopback_only=local_only,
+        proof_gap=None,
+        identity_config_unreadable=tailnet_identity_unknown(cfg.degraded_sections),
+    )
+    prepare_access_set(cfg)
+
+
 def prepare_at_start(
     cfg: KiroCrewConfig,
     *,
@@ -240,15 +265,7 @@ def prepare_at_start(
     proxy-proof probe after the bind too (``host_power.probe_after_start``), so
     the path is recorded with no proof gap here.
     """
-    access.note_tailnet(
-        enabled=bool(cfg.dashboard.tailscale.enabled),
-        host=host,
-        identity_trust=trust.enforces_identity and not trust.identity_unknown,
-        loopback_only=local_only,
-        proof_gap=None,
-        identity_config_unreadable=tailnet_identity_unknown(cfg.degraded_sections),
-    )
-    prepare_access_set(cfg)
+    prepare_tailnet_path(cfg, host=host, trust=trust, local_only=local_only)
     return tailnet_direct.GateRef()
 
 
@@ -271,6 +288,7 @@ __all__ = [
     "finish_access_set",
     "prepare_access_set",
     "prepare_at_start",
+    "prepare_tailnet_path",
     "resolve",
     "start",
     "start_after_bind",

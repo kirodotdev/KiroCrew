@@ -456,6 +456,9 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
+    from kiro_crew.dashboard import full_chat_waits
+
+    app.on_startup.append(full_chat_waits.startup_warm)
     # ``request_server`` (kirocrew-core): any template session asks for an MCP
     # server; MCP-only under the same strict "/api/cards/agent" prefix.
     for _method, _path, _name in (

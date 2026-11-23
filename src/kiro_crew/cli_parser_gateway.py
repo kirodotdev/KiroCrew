@@ -163,6 +163,19 @@ def register_update_parser(sub: _Commands) -> None:
             "upstream (git installs only)"
         ),
     )
+    # A plain string, never validated here: argparse's exit 2 is what tells the
+    # hub's "Update remote" this CLI predates the option, so a bad value must be
+    # refused by the update itself (exit 1), never by the parser.
+    update_parser.add_argument(
+        "--release",
+        metavar="VERSION",
+        default=None,
+        help=(
+            "For a git checkout detached at a release tag, move to the release tag "
+            "of VERSION (never an older one) instead of origin's main branch; "
+            "other installs ignore it"
+        ),
+    )
 
 
 def register_stop_parser(sub: _Commands) -> None:
@@ -189,6 +202,9 @@ def register_stop_parser(sub: _Commands) -> None:
             "that already identified the gateway they mean to stop."
         ),
     )
+    # The desktop's "Stop and restart" of an older gateway: a restart, not a stop the
+    # user chose, so the grants kept across other exits are kept (``kept_grants``).
+    stop_parser.add_argument("--keeps-grants", action="store_true", help=argparse.SUPPRESS)
 
 
 def register_restart_parser(sub: _Commands) -> None:
@@ -359,6 +375,15 @@ def register_token_parser(sub: _Commands) -> None:
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
     )
     token_parser.add_argument("--ttl", default="20h", help="Token TTL, e.g. 1h, 30m (default: 20h)")
+    token_parser.add_argument(
+        "--bearer",
+        action="store_true",
+        help=(
+            "Print the credential alone, instead of a dashboard link, for a client "
+            "to send in 'Authorization: Bearer' to the Crew API paths under /v1/. "
+            "POST /v1/chat/completions does not read that header."
+        ),
+    )
     token_parser.add_argument(
         "--embed-parent-port",
         type=int,

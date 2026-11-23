@@ -1,6 +1,6 @@
 import { isMac } from '../utils/platform'
 import { safeGetItem } from '../utils/safeStorage'
-import { CODE_TOKENS } from './shortcutRegistry'
+import { CODE_TOKENS, keyCapGlyph } from './shortcutRegistry'
 import { savePrefExplicitly } from './uiPrefs'
 
 /**
@@ -271,7 +271,7 @@ export function formatChordKeys(chord: QuickSearchChord, mac: boolean = isMac): 
   return caps
 }
 
-/** Display form of a stored key token: single letters upper-cased, names as-is. */
+/** Display form of a stored key token: a single character as the user's layout prints it, names as-is. */
 export function displayKeyCap(key: string): string {
-  return key.length === 1 ? key.toUpperCase() : key
+  return key.length === 1 ? keyCapGlyph(key) : key
 }

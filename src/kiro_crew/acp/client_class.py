@@ -278,9 +278,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
-        # A member session's spec ``tools`` allowlist on a mirror-less array host
-        # (pi), from the same parse; the pooled stubs pass through it.
+        # pi: the stubs' spec ``tools`` allowlist, and a worker's stub names withheld.
         self._member_stub_allowlist: ToolsAllowlist | None = None
+        self._pi_worker_stub_names: frozenset[str] = frozenset()
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()

@@ -69,6 +69,9 @@ KAS_REMOTE_MCP_TIMEOUT_MS = 300_000
 #: whatever the agent says, so an exclusion would only hide their tools.
 _MANDATORY_ENV = "ASBX_KIRO_MANDATORY_MCPS"
 
+#: Stub names the "not sent" log line spells out before it counts the rest.
+_LOGGED_STUB_NAME_CAP = 8
+
 
 def _unreadable_line(exc: NativeSettingsUnreadable) -> str:
     """The session-start line for a settings file *exc* says could not be read."""
@@ -362,7 +365,8 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
 
     Only Crew's own servers are hoisted into the session-level array, on
     ``session/new`` and ``session/load`` alike, so every user server the block
-    keeps gets the ``timeout`` here (KAS's session-level element has no slot).
+    keeps gets the ``timeout`` here (the hoist stamps Crew's own, and each pooled
+    broker stub with this same budget, in their ``_meta.kiro``).
     """
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
     if not isinstance(stamp, dict):
@@ -408,10 +412,17 @@ def without_excluded_stubs(servers: list[Any], agents: Any) -> list[Any]:
     # Imported here: mcp_session_report reaches this module through kas_permissions.
     from kiro_crew.acp.mcp_session_report import NAME_CAP, sanitize_sink_text
 
-    for name in sorted(dropped):
-        # The name comes from a settings file a checkout can supply.
-        shown = sanitize_sink_text(str(name), NAME_CAP)
-        logger.info("pooled stub %s not sent: the agent does not load mcp.json servers", shown)
+    # One line per call: this runs on every session start, so a line per server
+    # would repeat the whole list each time. A name comes from a settings file a
+    # checkout can supply, so each is sanitized.
+    names = [sanitize_sink_text(str(name), NAME_CAP) for name in sorted(dropped)]
+    more = len(names) - _LOGGED_STUB_NAME_CAP
+    logger.info(
+        "%d pooled stub(s) not sent: the agent does not load mcp.json servers: %s%s",
+        len(names),
+        ", ".join(names[:_LOGGED_STUB_NAME_CAP]),
+        f" (+{more} more)" if more > 0 else "",
+    )
     return [e for e in servers if not (isinstance(e, dict) and e.get("name") in dropped)]
 
 

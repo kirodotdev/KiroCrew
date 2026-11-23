@@ -79,9 +79,10 @@ const EXCHANGE_TIMEOUT_MS = 10_000;
  * signed-in request that carries `?token=`, so that same request for the page is
  * sent once as a plain fetch through the window's own session, whose cookie jar
  * the page then loads with. A failed exchange still loads the bare URL; the
- * token is never put back.
+ * token is never put back. A given `mayLoad` is asked after the exchange, and a
+ * false answer leaves the page unloaded.
  */
-async function loadDashboardWithToken(webContents, url, token) {
+async function loadDashboardWithToken(webContents, url, token, mayLoad) {
   if (token) {
     const exchange = new URL(url);
     exchange.searchParams.set("token", token);
@@ -93,6 +94,7 @@ async function loadDashboardWithToken(webContents, url, token) {
       // The bare load below then shows the signed-out page.
     }
   }
+  if (mayLoad && !(await mayLoad())) return;
   if (!webContents.isDestroyed()) webContents.loadURL(url);
 }
 

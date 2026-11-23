@@ -19,6 +19,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.host_sandbox_refusal import plan_error_text
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_ownership import TASK_REVIEW_SLOT_PREFIX, task_review_session_key
 from kiro_crew.dashboard.state import DashboardState
@@ -1118,9 +1119,8 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     except asyncio.CancelledError:
         return web.json_response({"error": "Planning was cancelled."}, status=400)
     except (FileNotFoundError, PermissionError, FileTooLargeError, ValueError) as exc:
-        # A descriptor-gate refusal or an oversize spec is the caller's problem to
-        # see, not a bare 500: the message names what was withheld.
-        return web.json_response({"error": str(exc)}, status=400)
+        # The caller's to see, not a 500; host detail goes to the machine owner alone.
+        return web.json_response({"error": plan_error_text(request, exc)}, status=400)
     finally:
         state.task_runner._plan_task = None
     return web.json_response(

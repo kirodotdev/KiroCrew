@@ -1460,7 +1460,12 @@ the new pair and drops the older expansion of the same launch: the values come
 from the gateway environment (the operator's shell and the crew `.env`), which
 no agent can write. A sidecar publication failure drops every rebind from that
 pass, so gatewayd refuses the changed expansion and the next boot retries. A
-changed command, argument or declared env text is still refused.
+changed command, argument or declared env text is still refused, with one
+exception: a command that `env.saved_command_casing` produced from an approved
+spelling (the PATHEXT extension case, read from the directory entry) keeps the
+approval when the same args and env pair are approved with a stored display. It
+is recorded beside the old spelling and audited as
+`approved launch, Windows command casing repaired`.
 Both halves of the fingerprint fold exactly three gateway-computed spellings
 (`hashing.install_aliases`), each in the ONE slot the gateway's own writer
 (`apps/bridges_mcp.py`) emits it in: `sys.executable` (what the rewriter substitutes
@@ -1759,6 +1764,22 @@ writes it and applies it in-process: the broker is stopped and, while any server
 is still stubbed, restarted so every stub is re-emitted with or without
 `--poolable`, and sessions are relinked. A write that bypasses that endpoint takes
 effect at the next gateway start.
+
+A per-server share (`POST /api/mcp-gateway/servers/stub`) applies the same way,
+with the configured set: the broker is stopped and started with it
+(`mcp_broker._apply_mcp_stub`), because a routed server's target lives in the
+daemon's environment from spawn (`daemon.launch.env_target_resolver`) and the
+overlays are written with it. The gateway keeps running. Chats attached to the old
+daemon get their in-flight routed calls failed with a retryable error after
+`DRAIN_SECS`. Stubs for retained targets reconnect (`stub.py`) unless they have
+requested resource subscriptions, which the new daemon cannot recover. Every
+broker restart resets open chats through `reset_sessions`, including additions
+and approved launches; removing a served target also resets them. Busy chats
+reset when their turn ends (`defer_busy=True`, `keep_busy=True`), and the response
+reports `sessions_reset`. This applies even when an `mcp.server` card leaves
+**Restart open chats to use it** unchecked. Starting the first broker only
+refreshes defaults; the card's checked option resets open chats so they pick up
+the new toolset.
 
 `response_spill_threshold_bytes` is read in the BROKER process
 (`gatewayd`), which runs no config watcher — `config.live.snapshot()` is always
@@ -2269,6 +2290,16 @@ zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, 
 its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
 
+A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
+not a checkout for this rule. The home folder is exactly that when the user-level
+agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
+finds the user-level spec itself there. `session_servers._is_overlay_source`
+compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+spec is not a shadow: the overlay stays in effect and every shared server stays
+brokered. Counted as a shadow, it would run those servers raw inside the session;
+on the Claude Code backend that is inside the chat's sandbox, where a stdio server
+that keeps its sign-in outside its own process finds none.
+
 ### Bot overlays
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
@@ -2349,7 +2380,9 @@ folder has.
 A worker session finds its stubs by its own execution record, never by the shared
 name: KAS (`_pooled_session_servers_and_ref_spec`, on a positive `backend == kas`
 check) and the mirrored hosts (`AcpRuntime._mirrored_session_mcp`,
-`AcpClient._resolve_session_mcp_servers`) pass the session key, and
+`AcpClient._resolve_session_mcp_servers`) pass the session key, as pi
+(`AcpClient._pooled_broker_stubs`) does only when the session is a pi worker
+whose slot this process has noted (`members.is_crewmate_worker_session`), and
 `session_servers` answers `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. A lookup with no
 key gets no stub for `kirocrew-mate-worker`: the stock worker spec is
@@ -2392,6 +2425,16 @@ That read also re-checks them as KAS does (`withdrawn_worker_stubs`): a stub who
 server it drops, mutes or marks registry-governed leaves the array, and its name
 stays withheld, so neither half mounts it. So a Codex worker reaches
 `kirocrew-work` through a stub bound to its own session token.
+On pi, `AcpClient._resolve_session_mcp_servers` withholds from the
+worker's spec mounts the names of the stubs that keyed lookup returned, so the
+gateway, not pi, starts a Bot-added server and resolves its `secret://` values;
+the worker base's own routed servers (`kirocrew-core` and the rest) are stubs in
+place of their spec entries too.
+The stubs that reach pi come from a second keyed lookup made after that spec read,
+so the merged-spec check above drops a stub whose server was removed, muted or
+marked registry-governed in between, and they pass the worker spec's `tools`
+allowlist (`_member_stub_allowlist`), which a worker records whether or not the
+session is marked a member.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile
@@ -3091,7 +3134,9 @@ server's args, env, url and headers) and refuses the proposal with `400
 invalid_text` naming the offending path, because the card shows the parameters
 and Apply sends them as written; the plan is never rewritten at publication. An
 ordinary server URL is not exfiltration-shaped and passes. Because of that, an
-`mcp.add_custom` card shows everything Apply sends: the full launch line
+`mcp.add_custom` card (no longer raised by an agent: `propose_change` refuses it
+with `use_request_server`, and `request_server` raises `mcp.server` instead) shows
+everything Apply sends: the full launch line
 (`shlex.join` of command and args, or the url; the row wraps), every env and
 header value (`KEY=value`, `Name: value`), and any other spec field, each passed
 through the credential redactor as a second line of defence. `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change` and `get_change_status` are exact
@@ -3619,7 +3664,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. An id the official registry cannot resolve (absent, as on an
+  install plan. The server name follows the additions record's own rule, which
+  the card applies too (`template_mcp_additions._check_server`: letters, digits,
+  `.`, `_`, `-` and a `:` inside the name, up to 64 characters), so a name with
+  `/` or `@` is refused with a reason that says it cannot be added to an agent
+  template. A name with `:` must be one the user's own MCP config declares and
+  no installed app mints (`template_server_request._users_own_server`), else
+  `400 app_server`: an app's `<app>:<server>` key lives in the rendered spec,
+  and a template's copy would not follow the app's own install. An id the
+  official registry cannot resolve (absent, as on an
   edition that withholds it, or lacking the id) but the edition package
   registry holds (`mcp_discover.edition_package_detail`, the `capability`
   provider) is refused `edition_package`: that registry installs through the
@@ -5240,7 +5293,8 @@ mid-conversation and a signed thinking block stays valid. Measured on the bundle
 third-party tools on separate turns: no rejection, and the first request's MCP share
 fell from 156,746 characters to 0. KAS ignores the toggle and the
 thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so for an
-agent whose `tools` grants no `tool_search` Crew sends that list with each of the
+agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
+is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
 it already holds; a server it holds none for stays deferred. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
@@ -5253,7 +5307,7 @@ trip, the load. For an agent whose whole procedure is a few MCP tools that is a
 round trip on every session, so each shipped agent declares its job tools, once, in
 `JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
 the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
-`tool_search`. Everything else the spec mounts stays deferred.
+`tool_search` while `agent.tool_search` is on. Everything else the spec mounts stays deferred.
 
 | Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|
@@ -6327,13 +6381,25 @@ A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
 raw arguments, never the payload) to `POST /api/session-directive`; the gateway
 re-runs the tool on those arguments (`mcp_core.derive_directive`) and parks the
-record in `dashboard/directive_queue.py`, keyed by the digest of the raw call
+record in `directive_queue.py`, keyed by the digest of the raw call
 input. The runner applies it only when `directive_queue.claim` finds a record
 whose digest equals the one the turn's own `tool_call` frame carried, parked
 during that turn; on such a backend the marker in the result text is display
-only. Records are in memory, expire after `MAX_AGE_SECS` (300 s), and are capped
+only. The applier's outcome then replaces the tool's own text on the tool
+result the dashboard shows and stores, as on the marker path, and the runner
+logs the claim as applied only when `DirectiveOutcome.applied` is set; a
+refusal or an error is logged as not applied, with its text. Records are in
+memory, expire after `MAX_AGE_SECS` (300 s), and are capped
 per session (`MAX_PER_SESSION`) and in total (`MAX_SESSIONS`). The messaging
-`TurnDriver` applies directives from the verified marker alone.
+`TurnDriver` (and the Slack thread's plain wake) claims the same way through
+`messaging/directive_tracker.py`: a call with no trusted tool name records the
+digest of its `tool_call` frame's raw input, and the final result frame claims the
+record parked under it during this turn, through the `claim_parked` that
+`messaging.dispatch.build_directive_consumer` binds to the channel session. A
+native sub-agent's call is refused and its record retired, and a parent call that
+shares a sub-agent call's digest is refused, as in the dashboard runner. The input
+is read from the `tool_call` frame only; a backend that sends it on a later
+`tool_call_update` (opencode, Claude) is not claimed on a channel turn.
 
 The route's reply also carries `turn_wrote_text`: whether the caller's running
 turn has already streamed reply text, read from the session's dashboard tab

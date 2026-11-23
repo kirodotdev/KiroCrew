@@ -60,6 +60,16 @@ if __name__ == "__main__":
     if run_if_slim(sys.argv[1:]):
         raise SystemExit(0)
 
+    if sys.argv[1:2] == ["gateway"]:
+        # Same as the console script (`_bootstrap.main`): import the gateway with
+        # cyclic GC off, so the desktop app and every `python -m kiro_crew gateway`
+        # launch skip the gen-2 passes over an import heap that all survives. Boot
+        # freezes that heap and turns GC back on once its socket is bound
+        # (slack/gateway_runtime/service_boot.py, run()).
+        import gc
+
+        gc.disable()
+
     from kiro_crew.cli import main  # noqa: E402
 
     main()

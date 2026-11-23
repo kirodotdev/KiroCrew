@@ -717,36 +717,67 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
     return {"enabled": enabled, "running": running, "ping_ok": ping_ok}
 
 
-async def _apply_mcp_stub(self: GatewayOrchestrator) -> dict:
-    """Dashboard callback: record a stub change for the NEXT gateway start.
+async def _apply_mcp_stub(self: GatewayOrchestrator, *, launch_approved: bool = False) -> dict:
+    """Dashboard callback: apply a stub change now, with no gateway restart.
 
-    Deliberately leaves the running broker alone, because there is nothing
-    useful to do to it. A session's MCP toolset is fixed at ``session/new``,
-    so no running session can adopt a new stub set however the broker is
-    cycled; the change only ever matters to sessions created later, and the
-    next start builds their routing from this config.
+    A routed server's target lives in the daemon's process environment, set at
+    spawn (``daemon.launch.env_target_resolver``), and the agent overlays are
+    written with it (``_init_mcp_gateway``). The two must agree: a new session
+    that routes a server through the stub while the daemon holds no target for
+    it gets nothing. So a changed set restarts the BROKER, not the gateway: the
+    same stop-then-start the sharing switch runs (``_apply_mcp_gateway_enabled``),
+    with the configured set instead of the served one, then the provider factory
+    is refreshed so new sessions read the new overlays.
 
-    Restarting to shorten that wait still destroys work: the drain gives
-    in-flight tool calls ``DRAIN_SECS`` to finish and then cancels them.
-    The stub re-attaches to the replacement daemon afterwards, so those
-    servers are not lost for the session's life -- but a cancelled call
-    is still a cancelled call, and the restart buys the running session
-    nothing, because its toolset was fixed at ``session/new``.
-
-    Rewriting the agent specs without restarting is worse still: a new
-    session would route a server through the stub while the running daemon
-    has no target for it, and an unknown target is a TERMINAL rejection in
-    ``stub.py``, not a fallback. The spec rewrite and the daemon's routing
-    environment are built together at startup and must stay that way, so
-    this callback persists intent only and reports that a restart is needed.
+    What the broker restart costs the chats already attached to it: their
+    in-flight routed calls get ``DRAIN_SECS`` and are then failed with a
+    retryable error, and each stub for a retained target re-attaches to the new
+    daemon (``stub.py``'s reconnect loop), except one holding a live resource
+    subscription. A removed target cannot reconnect either. Every broker restart
+    resets open chats through the same path as ``POST /api/sessions/restart``,
+    including additions and approved launches, so subscribed stubs are replaced.
+    Busy chats reset when their turn ends. The result reports ``sessions_reset``.
+    Starting the first broker only refreshes defaults: no attached stub is lost.
+    An unchanged set restarts only when the press approved a launch
+    (``launch_approved``).
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
     self._cfg = KiroCrewConfig.load()
+    configured = frozenset(self._cfg.mcp_gateway.stub_servers)
+    lock = getattr(self, "_mcp_overlay_refresh_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        self._mcp_overlay_refresh_lock = lock
+    async with lock:
+        serving = frozenset(getattr(self, "_mcp_stub_servers_started", frozenset()) or ())
+        running = self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None
+        # A launch approval can replace the daemon's target even if its name
+        # was already routed. A pure re-apply must leave attached calls alone.
+        changed = configured != serving or (bool(configured) and launch_approved)
+        if changed:
+            if running:
+                await self._stop_mcp_broker()
+            self._mcp_stub_servers_started = frozenset()
+            if configured:
+                await self._init_mcp_gateway(stub_servers=configured)
+    mgr = self._mcp_gateway_manager
+    if self.dashboard_state is not None:
+        self.dashboard_state._mcp_gateway_manager = mgr
+    sessions_reset = 0
+    if changed and self.sessions is not None:
+        if (running or serving - configured) and self.dashboard_state is not None:
+            from kiro_crew.dashboard.handlers.sessions import reset_sessions
+
+            sessions_reset = await reset_sessions(self.dashboard_state)
+        else:
+            await self.sessions.refresh_defaults()
+    applied = not configured or mgr is not None
     return {
-        "applied": False,
-        "restart_required": True,
-        "stub_servers": sorted(self._cfg.mcp_gateway.stub_servers),
+        "applied": applied,
+        "restart_required": not applied,
+        "stub_servers": sorted(configured),
+        "sessions_reset": sessions_reset,
     }
 
 

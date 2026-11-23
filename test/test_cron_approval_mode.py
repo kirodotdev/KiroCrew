@@ -839,6 +839,7 @@ class TestNoCronsFlag:
             mock_cls.assert_called_once_with(
                 cfg,
                 no_dashboard=False,
+                headless=False,
                 no_crons=True,
                 no_open=False,
                 port_override=None,

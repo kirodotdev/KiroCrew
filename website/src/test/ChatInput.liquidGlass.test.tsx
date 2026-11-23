@@ -98,6 +98,8 @@ describe('composer liquid glass', () => {
     // wrapper box), carrying the radius, the caller's class and the effect
     // layers, with the children rendered directly after them.
     expect(dock.classList.contains('liquid-glass')).toBe(true)
+    // The composer keeps the default `thin` step (maintainer direction on #16299).
+    expect(dock.classList.contains('glass-thin')).toBe(true)
     expect(dock.style.isolation).toBe('isolate')
     // The tint rides the oversized frost box inside the clipping effect layer.
     const boxes = Array.from(dock.querySelectorAll<HTMLElement>(':scope > span[aria-hidden="true"] > span'))

@@ -258,7 +258,7 @@ describe('header click routing', () => {
 
   it('leaves the row alone when the filename is clicked with no open handler', () => {
     const { container } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />)
-    const filename = collapsedHeader(container).querySelector('[title="/a.ts"]')!
+    const filename = collapsedHeader(container).querySelector('[data-fcc-filename]')!
     expect(() => fireEvent.click(filename)).not.toThrow()
     expect(rowIsOpen(container)).toBe(false)
   })

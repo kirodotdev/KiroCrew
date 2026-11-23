@@ -209,6 +209,10 @@ class _SpawnRunStep(DeferredTool):
 
 def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     """Prepare a background batch; its deferred steps submit one task at a time."""
+    # The call's own arguments: validation fills an absent flag with its default
+    # true, so only the raw call can say which block the caller named.
+    raw = mcp_core.current_call_raw_args()
+    named_true = [g for g in ("memory", "lessons") if raw.get(f"include_{g}") is True]
     args = validate_tool_args(args, SPAWN_RUN_SCHEMA)
 
     tasks = args.get("tasks")
@@ -268,6 +272,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     agents_list = args.get("agents") or []
     max_turns = args.get("max_turns") or 0
     cwd = args.get("cwd") or ""
+    isolate = args.get("isolate") or ""
     model = args.get("model") or ""
     reasoning_effort = args.get("reasoning_effort") or ""
     backend = args.get("backend") or ""
@@ -389,6 +394,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["max_turns"] = max_turns
         if cwd:
             body["cwd"] = cwd
+        if isolate:
+            body["isolate"] = isolate
         if t_model:
             body["model"] = t_model
         if t_effort:
@@ -399,6 +406,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["label"] = t_label
         if t_light:
             body["light"] = True
+            # Only a light run reads a named true (agent.subagent_light_lean_context
+            # keeps that block); any other body stays as it was.
+            body.update({f"include_{g}": True for g in named_true})
         if keep:
             body["keep"] = True
         if silent:

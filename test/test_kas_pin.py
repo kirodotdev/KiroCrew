@@ -17,7 +17,7 @@ from kiro_crew.acp import kas_pin
 
 #: An engine release, optionally followed by the Node runtime a republish of that
 #: same engine build bundles (``0.66.117-node22.23.4``).
-_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+)?$")
+_PIN_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-node\d+\.\d+\.\d+(?:-al2)?)?$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -28,12 +28,16 @@ def test_the_pinned_version_is_a_release_with_an_optional_node_suffix() -> None:
     assert _PIN_VERSION.match(kas_pin.KAS_PIN_VERSION), kas_pin.KAS_PIN_VERSION
 
 
-@pytest.mark.parametrize("version", ["0.66.117", "0.66.117-node22.23.4"])
+@pytest.mark.parametrize(
+    "version", ["0.66.117", "0.66.117-node22.23.4", "0.66.117-node22.23.4-al2"]
+)
 def test_the_pin_version_shape_accepts_a_release_and_a_node_republish(version: str) -> None:
     assert _PIN_VERSION.match(version)
 
 
-@pytest.mark.parametrize("version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66"])
+@pytest.mark.parametrize(
+    "version", ["0.66.117-rc.1", "0.66.117-node22", "v0.66.117", "0.66", "0.66.117-al2"]
+)
 def test_the_pin_version_shape_refuses_anything_else(version: str) -> None:
     assert not _PIN_VERSION.match(version)
 
@@ -60,13 +64,24 @@ def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
     assert kas_pin.KAS_PIN_VERSION.startswith(kas_pin.KAS_PIN_ENGINE_RELEASE)
 
 
+def test_the_glibc_floor_covers_only_linux_keys_and_never_drops_below_al2() -> None:
+    # 2.26 is the lowest glibc any published build (the AL2 one) is linked for;
+    # arm64 has no AL2 build, so it stays at the nodejs.org floor.
+    floors = kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR
+    assert set(floors) <= {k for k in kas_pin.KAS_PIN_NODE_BUILDS if k.startswith("linux-")}
+    assert all((2, 26) <= f <= (2, 28) for f in floors.values()), floors
+    assert floors["linux-arm64"] == (2, 28)
+
+
 def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
+        "KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION",
         "KAS_PIN_ENGINE_RELEASE",
         "KAS_PIN_MANIFEST_SHA256",
         "KAS_PIN_VERSION",
         "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
         "KAS_VERSION_OVERRIDE_ENV",
+        "engine_checks_auto_approvals",
         "engine_spec_permissions_supported",
         "pinned_version",
     ]

@@ -1013,3 +1013,45 @@ class TestFramingMatchesTheRegexWalk:
         new = list(jsonl_util._frames_with_offsets(_ReadlineOnly(data), 8))
         old = list(_reference_frames_with_offsets(_ReadlineOnly(data), 8))
         assert new == old
+
+    @pytest.mark.parametrize("chunk,block", [(1, 1), (3, 2), (5, 64), (64, 3), (64, 1 << 18)])
+    def test_tiny_reads_and_blocks_frame_identically(self, tmp_path, monkeypatch, chunk, block):
+        # Small read-ahead chunks and line blocks put a chunk or block edge
+        # inside records, terminators and CRLF pairs on most cases.
+        import random
+
+        monkeypatch.setattr(jsonl_util, "_FRAME_CHUNK", chunk)
+        monkeypatch.setattr(jsonl_util, "_FRAME_BLOCK", block)
+        rng = random.Random(chunk * 1000 + block)
+        tokens = [b"\n", b"\r", b"\r\n", b"{}", b"x", b"\xe4\xb8\xad"]
+        for case in range(150):
+            cap = rng.choice([1, 2, 5, 8, 64])
+            data = b"".join(
+                b"y" * rng.randrange(0, cap + 4) if rng.random() < 0.3 else rng.choice(tokens)
+                for _ in range(rng.randrange(0, 40))
+            )
+            new, old = self._both(tmp_path, data, cap)
+            assert new == old, (case, cap, data)
+
+    def test_a_chunk_of_short_records_is_taken_in_blocks(self, tmp_path, monkeypatch):
+        # One call per record from the read-ahead made framing a short-row
+        # transcript about twice as slow; whole lines come in blocks instead.
+        path = tmp_path / "rows.jsonl"
+        path.write_bytes(b'{"a":1}\n' * 2000)
+        calls = 0
+
+        def counted(real):
+            def wrapper(self, size):
+                nonlocal calls
+                calls += 1
+                return real(self, size)
+
+            return wrapper
+
+        for name in ("readline", "read_lines"):
+            real = getattr(jsonl_util._ChunkedLines, name)
+            monkeypatch.setattr(jsonl_util._ChunkedLines, name, counted(real))
+        with open(path, "rb") as fh:
+            frames = list(jsonl_util._frames_with_offsets(fh, 1024))
+        assert len(frames) == 2000
+        assert calls < 20, calls

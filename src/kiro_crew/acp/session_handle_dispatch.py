@@ -45,7 +45,6 @@ from kiro_crew.acp.client import (
     _COMPACTION_FAILED_TURN_BUDGET,
     _is_tool_interrupted_marker,
     _loggable_request_id,
-    _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
     format_command_result,
@@ -798,7 +797,11 @@ async def _dispatch_events(
                     # AcpPromptBusy when the backend reports a concurrent
                     # in-flight prompt. Advertised ids feed the entitlement
                     # discriminator (see _wait_for_response).
-                    _raise_acp_error(
+                    # Under KAS machine mode a refused credential is the host token's.
+                    from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                    raise_turn_error(
+                        self._runtime,
                         msg.error,
                         self._advertised_model_ids(),
                         backend=self._runtime.acp_backend,

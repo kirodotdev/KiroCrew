@@ -1006,6 +1006,9 @@ def register_memory_parser(sub: _Commands) -> None:
         help="Save facts from a text or Markdown file another assistant wrote about you",
     )
     mem_import_text.add_argument("file", help="Path to a plain text or Markdown file")
+    mem_import_text.add_argument(
+        "--store", default=None, help="Store to save into (default: the default store)"
+    )
     mode = mem_import_text.add_mutually_exclusive_group()
     mode.add_argument("--yes", action="store_true", help="Save every listed fact without asking")
     mode.add_argument("--dry-run", action="store_true", help="List the facts and save nothing")
@@ -1233,6 +1236,7 @@ Examples:
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
   kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
+  kirocrew app config oncall-watchtower set root /srv/oncall
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -1297,6 +1301,22 @@ Examples:
             "App directory to update from; it becomes the app's recorded source "
             "(default: the recorded source, where it was installed or last updated from)"
         ),
+    )
+    app_config = app_sub.add_parser(
+        "config",
+        help="Read or set an installed app's config (needs a running gateway; not on "
+        "native Windows)",
+        description="Print an installed app's config, or set one top-level key in it, "
+        "through the running gateway. `set` runs none of the app's own checks and works "
+        "only for an app whose config the host stores.",
+    )
+    app_config.add_argument("name", help="App name")
+    app_config_sub = app_config.add_subparsers(dest="config_action")
+    app_config_sub.add_parser("get", help="Print the app's config (the default)")
+    app_config_set = app_config_sub.add_parser("set", help="Set one top-level key")
+    app_config_set.add_argument("key", help="Top-level key, taken literally (a.b is one key)")
+    app_config_set.add_argument(
+        "value", help="Value, typed as `kirocrew config set` types it (JSON for an object)"
     )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")

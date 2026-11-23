@@ -128,7 +128,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   // VoiceStatusBar, which owns the dismissible error affordance — the panel
   // has no way to surface it. Resolves to the sample ref (not a boolean) so
   // the non-optional prop narrows without a cast.
-  const dictationUsable = useDictationPanelUsable(voiceDictationPanel)
+  const dictationUsable = useDictationPanelUsable(voiceDictationPanel && voiceRecording)
   const showDictation =
     dictationUsable && voiceRecording && !voiceError && voiceSampleRef ? voiceSampleRef : null
   // Focus the composer when the dictation panel is up (as before) OR while a

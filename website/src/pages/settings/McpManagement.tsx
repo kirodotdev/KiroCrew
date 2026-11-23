@@ -718,6 +718,9 @@ export function McpManagement({
       const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      // An approval only clears the refusal; with sharing off nothing is shared
+      // yet, so ask to turn it on, as the table's share action does.
+      if (supported && res?.sharing_on !== true && !status?.enabled) void askToTurnOnSharing()
       return null
     } catch (err) {
       if (keepCurrentLaunch(name, refused, err)) {

@@ -605,9 +605,10 @@ def _drain_writer_and_relay(writer: "CrewLogWriter", started: float, timeout: fl
     feed = _relay_feed()
     stats = writer.stats()
     logger.warning(
-        "crew log shutdown drain ran out with work left: %d append(s) buffered, %d relay "
-        "decision(s) pending",
+        "crew log shutdown drain ran out with work left: %d append(s) buffered, %d entry(ies) "
+        "claimed, %d relay decision(s) pending",
         stats.buffered,
+        stats.claimed,
         feed.pending() if feed is not None else 0,
     )
     return False

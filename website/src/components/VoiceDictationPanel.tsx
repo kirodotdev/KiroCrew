@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import Strands, { strandsSupported } from './Strands'
 import { useReducedMotion } from '../hooks/useReducedMotion'
@@ -128,6 +128,12 @@ function restOpacity(stability: number): number {
   return Math.min(1, 0.7 + stability * 0.1)
 }
 
+let strandsProbe: boolean | undefined
+function strandsSupportedOnce(): boolean {
+  if (strandsProbe === undefined) strandsProbe = strandsSupported()
+  return strandsProbe
+}
+
 /**
  * True when the animated panel should be used. Kept as a hook (rather than a
  * module constant) so a runtime change to the OS reduced-motion preference
@@ -139,9 +145,9 @@ function restOpacity(stability: number): number {
  */
 export function useDictationPanelUsable(enabled: boolean): boolean {
   const reduced = useReducedMotion()
-  const [supported] = useState(strandsSupported)
-
-  return enabled && supported && !reduced
+  // Probed on first use, not on mount: creating a WebGL2 context costs several
+  // milliseconds, and the composer mounts on every chat open.
+  return enabled && !reduced && strandsSupportedOnce()
 }
 
 interface Props {

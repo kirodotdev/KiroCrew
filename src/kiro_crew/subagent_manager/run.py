@@ -246,6 +246,7 @@ class RunEventCoordinator(ManagerComponent):
     _write_state_off_loop_impl = _run_records._write_state_off_loop_impl
     _write_finished_result_off_loop_impl = _run_records._write_finished_result_off_loop_impl
     _start_result_file_impl = _run_records._start_result_file_impl
+    _append_result_chunk_impl = _run_records._append_result_chunk_impl
     _drain_state_writer_impl = _run_records._drain_state_writer_impl
     _hold_for_detached_writer_impl = _run_records._hold_for_detached_writer_impl
     _cap_unclaimed_result_impl = _run_records._cap_unclaimed_result_impl
@@ -269,6 +270,7 @@ class RunEventCoordinator(ManagerComponent):
     _yield_for_stop_recovery_impl = _run_yields._yield_for_stop_recovery_impl
     _await_lane_resume_impl = _run_yields._await_lane_resume_impl
     _withdraw_resume = _run_yields._withdraw_resume
+    _release_dead_runtime_waits = _run_yields._release_dead_runtime_waits
     _yield_for_dependency_impl = _run_yields._yield_for_dependency_impl
     _yield_for_infra_retry_impl = _run_yields._yield_for_infra_retry_impl
     ensure_running_marked = _run_yields.ensure_running_marked

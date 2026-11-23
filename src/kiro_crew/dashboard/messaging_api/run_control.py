@@ -824,12 +824,17 @@ async def _retry_failed_run(
                     {"error": f"memory_unavailable: {exc}", "code": "memory_unavailable"},
                     status=400,
                 )
-        # Same validated warm as the primary spawn handler. old.cwd was validated
+        # An isolated run (``spawn_run`` ``isolate``) is retried isolated, from the
+        # cwd it was admitted with, never inside the failed run's worktree.
+        isolate = str(getattr(old, "isolate", "") or "")
+        worktree = getattr(old, "worktree", None)
+        retry_cwd = worktree.source_cwd if isolate and worktree is not None else old.cwd
+        # Same validated warm as the primary spawn handler. That cwd was validated
         # at the ORIGINAL spawn, but the allowlist may have changed since (and a
         # gateway restart leaves the cache cold), so it is re-checked against the
         # current config before any discovery read.
         if old.agent:
-            await warm_project_agents_for_spawn(state, old.cwd or "")
+            await warm_project_agents_for_spawn(state, retry_cwd or "")
         from kiro_crew.shared_crew.admission_gate import Admission
         from kiro_crew.shared_crew.admission_link import link_spawn
 
@@ -843,7 +848,8 @@ async def _retry_failed_run(
             parent_session_key=old.parent_session_key,
             agent=old.agent,
             max_turns=old.max_turns,
-            cwd=old.cwd,
+            cwd=retry_cwd,
+            **({"isolate": isolate} if isolate else {}),
             model=old.model or None,
             # Like model and the context groups: a retry must run at the SAME
             # effort as the run it replaces, or it is a different experiment.

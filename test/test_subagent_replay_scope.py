@@ -751,6 +751,20 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
             ("subagent_done", "c", "chat-0"),
         ]
 
+    def test_a_finished_runs_replayed_done_frame_carries_its_dollar_cost(self, monkeypatch):
+        from kiro_crew.subagent import SubagentInfo
+
+        finished = SubagentInfo(id="d", task="t", parent_session_key="dashboard:chat-0")
+        finished.done = True
+        finished.cost_usd = 0.0123
+        manager = SimpleNamespace(running=[], all_agents=[finished])
+        frames = [{"type": "subscribe_subagents", "slots": ["chat-0"]}]
+        _replayed, _peak, fake = self._drive(
+            monkeypatch, frames, ["chat-0"], expect_units=set(), expect_ids={"d"}, manager=manager
+        )
+        done = [f["data"] for f in fake.sent if f["type"] == "subagent_done"]
+        assert [(d["id"], d["credits"], d.get("cost_usd")) for d in done] == [("d", 0.0, 0.0123)]
+
     def test_with_the_crew_log_off_the_folder_replay_still_runs_once(self, monkeypatch, folds):
         """The opt-out keeps its folder reader; the per-slot admit must not refuse it."""
         monkeypatch.setenv("KIROCREW_CREW_LOG", "0")

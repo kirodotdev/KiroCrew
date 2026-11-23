@@ -1,10 +1,13 @@
-"""A chat shows each session-start spec notice once, not once per backend session.
+"""A chat shows each session-start spec or adapter notice once, not once per backend session.
 
 A reconnect, a reload and a gateway restart each start a new backend session, and
 the notices ``_prepare_spec_hooks`` adds there (a withheld project hook, a key
 nothing carries, a too-long hook command, ...) describe the agent's spec, which
 the new session did not change. The chat keeps a mark per notice it showed and
-adds the row again only when the text or the folder it is about differs.
+adds the row again only when the text or the folder it is about differs. The
+adapter notices ``_notice_steer_upgrade`` adds (an untested release, a known
+limitation, ...) take the same marks, keyed on their text and the session's
+folder, and show again once no row of the chat shows them any more.
 """
 
 from __future__ import annotations
@@ -122,3 +125,95 @@ def test_the_withheld_project_hooks_notice_shows_once_per_chat(
     assert new_session(first) == 1
     assert new_session(first) == 0, "a second session of the same chat repeats it"
     assert new_session(_repo(tmp_path / "two")) == 1, "another folder shows it again"
+
+
+_ADAPTER_NOTICES = (
+    "steer_upgrade_notice",
+    "agent_prompt_upgrade_notice",
+    "known_limitation_notice",
+    "withheld_credentials_notice",
+    "kiro_cli_model_notice",
+    "engine_fallback_notice",
+    "mode_pinned_notice",
+    "zero_tool_ban_notice",
+)
+
+
+def _adapter_chat(monkeypatch) -> SimpleNamespace:
+    """A chat whose notice rows land in its own window, as ``append_and_surface`` puts them."""
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda _state, slot, role, text, *_a, **_k: slot.messages.append(
+            {"role": role, "content": text}
+        ),
+    )
+    return SimpleNamespace(
+        _session_notice_marks=[], messages=[], _disk_older_count=0, _regenerate_target=None
+    )
+
+
+def _claude_notice(version: str) -> str:
+    from kiro_crew.acp.client_turn_control import untested_version_issue
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+    return untested_version_issue(ACP_BACKEND_CLAUDE, version)
+
+
+def test_each_adapter_notice_shows_once_per_chat_until_its_text_changes(monkeypatch) -> None:
+    chat = _adapter_chat(monkeypatch)
+    client = SimpleNamespace(
+        tested_version_notice=_claude_notice("0.97.0"),
+        **{name: f"ℹ {name}" for name in _ADAPTER_NOTICES},
+    )
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == len(_ADAPTER_NOTICES) + 1
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == len(_ADAPTER_NOTICES) + 1, "a second session repeats them"
+    client.tested_version_notice = _claude_notice("0.98.0")
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert chat.messages[-1]["content"] == client.tested_version_notice
+    assert len(chat.messages) == len(_ADAPTER_NOTICES) + 2, "another release shows again"
+
+
+def test_a_marked_adapter_notice_shows_again_once_no_row_shows_it(monkeypatch) -> None:
+    chat = _adapter_chat(monkeypatch)
+    client = SimpleNamespace(tested_version_notice=_claude_notice("0.97.0"))
+    chat_runner._notice_steer_upgrade(None, chat, client)
+
+    chat.messages.clear()
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == 1, "an edit removed the row, so the next session shows it"
+
+    chat._regenerate_target = SimpleNamespace(rows=[chat.messages[0]])
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == 2, "a Regenerate replaces the old row with its reply"
+
+    chat._regenerate_target = None
+    chat.messages[:] = [{"role": "user", "content": "hi"}]
+    chat._disk_older_count = 40
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert chat.messages == [{"role": "user", "content": "hi"}], "older rows on disk: the mark"
+
+
+def test_older_rows_on_disk_do_not_hide_a_notice_a_regenerate_retires(monkeypatch) -> None:
+    chat = _adapter_chat(monkeypatch)
+    client = SimpleNamespace(tested_version_notice=_claude_notice("0.97.0"))
+    chat_runner._notice_steer_upgrade(None, chat, client)
+
+    chat._disk_older_count = 40
+    chat._regenerate_target = SimpleNamespace(rows=[chat.messages[0]])
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == 2, "the window's only row of it is being retired"
+
+
+def test_an_adapter_notice_shows_again_for_another_folder(monkeypatch) -> None:
+    chat = _adapter_chat(monkeypatch)
+    pinned = "ℹ This chat runs in Default mode. This folder has a .claude/settings.local.json."
+    client = SimpleNamespace(mode_pinned_notice=pinned, cwd="/work/a")
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == 1
+    client.cwd = "/work/b"
+    chat_runner._notice_steer_upgrade(None, chat, client)
+    assert len(chat.messages) == 2, "a workspace switch to a folder with the same problem"

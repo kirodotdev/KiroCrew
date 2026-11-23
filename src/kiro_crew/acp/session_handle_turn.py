@@ -42,7 +42,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard, kas_profile, kas_wire
+from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_profile, kas_wire
 from kiro_crew.acp._dispatch import (
     classify_notification,
     is_unattributed_error_candidate,
@@ -55,7 +55,6 @@ from kiro_crew.acp.client import (
     AcpError,
     _effective_prompt_timeout_async,
     _loggable_request_id,
-    _raise_acp_error,
     parse_slash_command,
 )
 from kiro_crew.acp.elicitation import (
@@ -84,6 +83,7 @@ from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -343,6 +343,10 @@ async def prompt(
     # The servers this session's start left to its first turn: a prompt that
     # does not carry them waits briefly here, before any turn state is touched.
     await hold_untold_first_turn(self, message)
+    if getattr(self._runtime, "acp_backend", "") in ACP_BACKENDS_APPROVE_FOR_ME:
+        # A trust or YOLO grant, or a policy deny, made since the last turn takes
+        # approve-for-me off before this prompt runs under it.
+        await kas_approve_for_me.settle(self)
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
@@ -1195,7 +1199,11 @@ async def _run_turn(
                 # The same state the backend's own error response leaves:
                 # no stop reason, because the turn did not complete.
                 self._last_stop_reason = ""
-                _raise_acp_error(
+                # Under KAS machine mode a refused credential is the host token's.
+                from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                raise_turn_error(
+                    self._runtime,
                     _failure,
                     self._advertised_model_ids(),
                     backend=getattr(self._runtime, "acp_backend", ""),

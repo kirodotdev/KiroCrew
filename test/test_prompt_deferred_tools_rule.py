@@ -4,7 +4,7 @@
 configured MCP server -- which a Kiro Crew install always has, because it
 registers its own managed ``kirocrew-core`` / ``kirocrew-cron``. Every MCP tool
 is therefore deferred: its spec is absent from the model's tool list until
-``tool_search`` loads it. A prompt that names those tools and says to use them
+``tool_search`` (or, on KAS, ``load_resource``) loads it. A prompt that names those tools and says to use them
 directly makes the model emit a call that CANNOT succeed, and the resulting
 ``A tool with the name '<name>' does not exist`` is indistinguishable from a
 dead server -- so the model reports the capability as missing, and that wrong
@@ -49,6 +49,25 @@ def test_prompt_gives_the_exact_recovery_call(name: str) -> None:
     # match threshold and return nothing, which reinforces the wrong diagnosis.
     assert 'tool_search(tool_id="<server>::<name>")' in text
     assert "keyword `query` can score below the match threshold" in text
+
+
+@pytest.mark.parametrize("name", PROMPTS)
+def test_prompt_names_the_kas_loader_and_its_refusals(name: str) -> None:
+    text = (CONFIG_DIR / name).read_text(encoding="utf-8")
+    # A KAS session has no `tool_search`: its loader is `load_resource`, a loaded
+    # tool runs through `tool_call`, and its refusals read differently.
+    assert "`This tool is deferred`" in text
+    assert "`has not been loaded yet`" in text
+    assert "With `load_resource` (KAS)" in text
+    assert "call `tool_call` with that same ID" in text
+
+
+@pytest.mark.parametrize("name", PROMPTS)
+def test_prompt_says_the_listed_tools_may_be_deferred(name: str) -> None:
+    text = (CONFIG_DIR / name).read_text(encoding="utf-8")
+    # The capability list names tools bare; on the default agent most of them are
+    # deferred, so a direct first call would be refused.
+    assert "any tool listed below may be deferred: load it before its first call" in text
 
 
 @pytest.mark.parametrize("name", PROMPTS)

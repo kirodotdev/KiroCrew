@@ -1336,7 +1336,7 @@ untouched.
 | `<app>:<server>` on disk | **persisted as submitted** — the snapshot still wins where the platform agrees the name exists |
 | `<app>:<server>` NOT on disk, app uninstalled | **dropped** — `_deregister_mcp_servers` removed it |
 | `<app>:<server>` NOT on disk, app installed but DISABLED | **dropped** — same, and reconciliation never revisits it |
-| `<app>:<server>` NOT on disk, app installed, ENABLED and DECLARING it | **it depends** — `_register_mcp_servers` scrubs an HTTP server with no live port only when the app runs a GATEWAY-MANAGED backend (`backend.entryPoint` set); a manifest's illustrative port is then a dead URL that breaks every kiro session. A SELF-MANAGED app (empty `backend.entryPoint`) has an authoritative fixed url and is **persisted** — mirroring `_collect_app_mcp_servers` |
+| `<app>:<server>` NOT on disk, app installed, ENABLED and DECLARING it | **it depends** — `_register_mcp_servers` scrubs an HTTP server with no live port only when the app runs a GATEWAY-MANAGED backend (`backend.entryPoint` set); a manifest's illustrative port is then a dead URL that breaks every kiro session. A SELF-MANAGED app (empty `backend.entryPoint`) has an authoritative fixed url and is **persisted** — mirroring `_collect_app_mcp_servers`. Only a loopback url names the backend (`bridges_mcp.is_app_backend_mcp_url`): a url on any other host, such as a hosted MCP gateway, is **persisted** as declared for either kind of app, and its port is never swapped for the backend's |
 | host-owned name containing `:` (an edition extra), not on disk | **persisted** — the host's key, not an app's; the host axis is unchanged |
 | any, spec readable but carrying no `mcpServers` key | **dropped** — a keyless spec holds no bridge, which is a definite answer; reading it as "unknown" lets the resurrection through |
 | any, spec unreadable, or `mcpServers` present but not an object | **persisted** — best-effort, so this endpoint stays the repair path for a corrupt spec, and nothing is deleted on evidence that cannot be read |
@@ -3314,6 +3314,11 @@ Not ownership-judged yet: `/api/sessions/{id}/agents` and its `/{agent_id}` and
 `/api/sessions/usage` (with `usage/refresh`), `/health` and `/memory`. An app
 that declares `/api/sessions/*` still reaches them as before; narrowing them is
 a follow-up. The `/api/sessions/{id}/crew-log*` reads are owner-only already.
+`POST /api/sessions/restart` runs behind `dashboard_owner_surface_guard`
+(its module's `guard_owner_surface_routes(..., dashboard_owner_only=True)`),
+which judges only a dashboard user: a dashboard session that is not the
+owner's is refused 403 `owner_only`, and an app token or an internal caller
+passes it unjudged.
 
 **Every per-slot route takes one ownership decision.** `permissions.api` is a
 prefix match, so an app granted `/api/chat` reaches every
@@ -3546,7 +3551,7 @@ with a compensating per-response control — event scoping is that control for
 returns owner hash, host specs, cron and usage stats, and the live safety-override
 state, and an app that wants it declares it in `permissions.api`.
 
-**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes_listing.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry).
+**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes_listing.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry); a GET carries the file's `ETag` (`conditional_get.strong_content_etag` of its bytes), and a PUT with `If-Match` is written only while the file still has that tag, else 412 `config_changed` with nothing written, the handler's seed and its compare-and-write holding the app's own `config.json.lock` (the lock an app backend such as Issue Radar holds across its own config read-modify-write), so a write by the app cannot land between the compare and the write.
 
 **Install, update and registry writes are owner-only for every caller.**
 `POST /api/apps/install`, `POST /api/apps/registry/install`,
@@ -5945,8 +5950,9 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
 one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
-`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
-rows, all four of which the route serves. They are App Kit seam level 6.
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira, Linear and
+ServiceNow rows, all five of which the route serves. A ServiceNow list offers no label
+filter, since its records have none, and like Jira and Linear it shows no comment count. They are App Kit seam level 6.
 
 The transport is chosen the way §18g chooses the pull-request client, from the
 published identity: an **external** app posts through its scoped client once
@@ -6039,7 +6045,17 @@ It is host code. `sessions` projects `selectSlotsWithLiveLastTs` newest first by
 `recencyEpoch`, with the title `sessionDisplayTitle` gives, the agent label
 `agentOrDefaultLabel` gives against the dashboard's own shared `['default-agent']` entry
 (read with the dashboard's query client, which its socket keeps current, not the app's),
-the live state, the message count and the newest message. `send` is chat-core's `sendTurn`
+the live state, the message count and the newest message. `needsFullChat` is the slot
+list's `needs_full_chat`, read as a literal `true`: the session waits on a change card the
+person can still act on (not dismissed, and `pending`, `failed` or `applying` in a state
+the store's own expiry pass, `CardStore._refresh`, would leave as it is), a live
+guide offer (`offered`, `active` or `target_missing` before its expiry) or a browser `ask`
+parked on the live card before its deadline. `ChatEmbed` draws none of these, so a host
+sends the person to the session. `dashboard/full_chat_waits.py` reads each from the store
+that owns it (`CardStore.holds_open_card`, `GuideStore.holds_live_guide`, the live hub's
+quick-ask binding), never from transcript rows, and the card and guide broadcasts and the
+hub's ask listener push the slot list when one moves. An MCP elicitation is not in it:
+it already sets `pending_approval`. `send` is chat-core's `sendTurn`
 over the dashboard wire, `decide` is `api.decideApproval` and `create` is
 `api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row
 does. The scoped transport alone could not: its `POST /api/chat/slots` names the app
@@ -6123,9 +6139,12 @@ label, so `validate()` refuses it on a name longer than 63 characters.
 
 **Routing.** `apps/app_web_origin.py::app_web_origin_middleware` sits in the
 dashboard chain directly inside the deny-audit boundary and outside the host
-canonicalization and the `Host` barrier (§ the chain in
+canonicalization, the headless dashboard filter and the `Host` barrier (§ the chain in
 `dashboard/server_runtime/middleware_chain.py`). A `Host` under `.apps.localhost`
-is decided there and reaches no dashboard layer:
+is decided there and reaches no dashboard layer. Headless mode keeps this dispatch:
+an enabled app's root page, assets and unmatched navigation paths belong to the app,
+not to the removed dashboard. The app's locality, listener and enablement checks
+still decide every request:
 
 - served only to a direct local request (`is_direct_local_request`, and not
   `is_proxied_request`): a loopback peer with no forwarding header, not relayed.
@@ -7129,7 +7148,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_agents.py` | Materializing an app's agents: the app MCP policy (`_apply_agent_mcp_policy`, `_apply_agent_prompt`), host-managed MCP references, user edits carried across a refresh, shipped agent templates, `_register_agents` / `_deregister_agents` and `purge_uninstalled_agent_residue` |
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
-| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
+| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite of a loopback url (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
 | `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, the per-app boot reconcile `reconcile_enabled_app_resources(app_name)`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
@@ -7799,7 +7818,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
-`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l). Several seams share level 7,
+`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
+`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -9090,7 +9110,9 @@ it opens does not take focus and takes no anchor (its page is never on screen).
 **The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
 no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
 navigation and redirects pinned to its own document: the host's
-`/popout/desktop/<app>/<id>` route on the gateway origin. `main.tsx` renders that path
+`/popout/desktop/<app>/<id>` route on the gateway origin, loaded with no credential in its
+address: when the host holds a link token, it signs the window's session in first, as the
+dashboard window's load does (`loadDashboardWithToken`). `main.tsx` renders that path
 with `website/src/desktopWindow/DesktopWindowRoot.tsx` instead of the dashboard: it
 requires the shell bridge naming that app and window, reads the app row, and mounts the
 declared `entry` through `AppHost` (§18) with `onFailure`, so a bundle that fails or
@@ -9161,8 +9183,9 @@ set changes is closed, so a withdrawn capability leaves no window opened with it
   non-answer changes nothing, so the app keeps the target it has (this computer's
   gateway until a crew answers). A resolved crew is reused for 60 seconds, only while the app
   declares the same windows here (a window added here is checked against the crew first), and a listing for 10,
-  but a reused crew is re-read from core's registry on every tick and before any window
-  loads or reloads from it: a disconnect frees its local port for the next crew to connect,
+  but a reused crew is re-read from core's registry on every tick, and before any window
+  signs in to it and again before that window's page loads or reloads from it: a
+  disconnect frees its local port for the next crew to connect,
   so a crew no longer connected on that port is dropped (its windows close and re-resolve)
   and is never sent the token minted for it. The shell
   never opens a tunnel and the page never sees a host name, port or credential.
@@ -10351,6 +10374,45 @@ entries it returns, the app is enabled and `third_party_ceiling_closed` admits i
 disable, an uninstall, a withdrawn trust grant or an update that drops a site ends the
 grant at the next call.
 
+**The owner's own edits (seam level 13).** The owner may add a site the app never
+declared, remove one, or turn one off (`browser_sites.site_change`). They live in the
+gateway-only record `member-records/app-browser-sites/<app>.json`
+(`protected_app_state.read_owner_browser_sites`, keys `added`, `disabled`, `removed`),
+never in the app's tree. The record names its install (`installedAt`). That value comes from the app's own `installed.json`, which the app's sandboxed code can rewrite, so a mismatch only narrows: the record's `added` entries are dropped and its `disabled` and `removed` entries stay in force. An uninstall, a fresh install and a new registration under the name remove it; the edit holds the app's record lock across the install check and the write. `app_browser_sites` returns the
+approved declared entries the owner did not remove, plus the added ones, less the turned-off
+ones, under the same enabled and trusted checks; an unreadable record grants nothing. An
+added entry meets `entry_refusal`, the rule a declared one meets (https only; no bare `*`,
+wildcard host, public suffix, IP, `localhost`, port or user info), and the owner may add at
+most `MAX_OWNER_SITES` (32). `add` of a declared entry approves it and of a turned-off one
+turns it back on; a removed declared entry stays removed across updates, is still listed
+with status `removed` so the owner can add it back, and cannot be removed or turned off
+again (`not_listed`); the owner's ruled entries are not staged on the detail page. A removal or turn-off ends at the next op,
+as a withdrawn approval does: the op route reads the list fresh and blanks a tab on a site
+no longer listed.
+
+`GET /api/apps/{name}/browser-sites` (`apps/browser_sites_routes.py`) answers
+`{sites: [{site, source: app|owner, status: approved|pending|disabled|removed}], active}` to the
+owner, the app's own token and an internal caller. `POST` with `{action: add|remove|disable,
+site}` is owner-only: an app token is `app_token_forbidden`, an internal caller (an agent's
+MCP tools, kiro-cli) is `dashboard_session_required`, any other dashboard session is
+`owner_only` (`require_owner_dashboard_request`), all 403 and audited. An app's backend is
+not refused: it can mint an owner token through the local owner mint (`/api/token/local`,
+basis `spawned-app`), which carries no app claim, and post `add` with no dialog, the same
+reach it has over `/enable`; the hard refusal covers the app token and the agent's tools,
+not the backend process. `browser-sites` is a
+reserved core segment (`CORE_APP_ROUTE_SEGMENTS`). The SDK's `useBrowserSites`
+(`website/src/app-sdk/browserSites.ts`) reads the list, applies `requestRemove` and
+`requestDisable` at once, and draws the dashboard's own dialog (`askAppConfirm`) before
+`requestAdd` sends anything, naming the site and what the agent may then do. That dialog
+is a guardrail, not a boundary: an app page runs in the dashboard document with the
+owner's session and could call the route without it, as it can call `/enable`
+(`docs/architecture/app-platform-trust-model.md`). The detail page lists every site with a
+Remove, a turned-off one with a Turn on and a removed one with an Add back (no Remove); both
+ask the owner to confirm in the owner's own words (the site, and what the agent may then do
+there) before they send `add`, not with the app's request dialog, since the owner chose
+it there (`pages/AppDetailBrowserSites.tsx`). A refused off-list request tells the agent
+which sites it may open (`site_not_allowed`), so it can look on a site the owner added.
+
 **Two enforcement points.** The tool gate's `app-browser-sites` row
 (`hooks._tier_app_browser_sites`, its conditions in `browser_sites.gate_grants` imported at call time, after every deny row and governance) auto-approves a
 call only when the caller is the app's own dashboard slot (`facts.app`, the slot's
@@ -10433,7 +10495,9 @@ Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.brow
 `hooks.py` (`GATE_TIERS`), `dashboard/handlers/browser_ops.py`,
 `dashboard/handlers/browser_media.py`, `browser_harness/media.py`,
 `browser_harness/snapshot_walker.js` (`media`), `website/src/app-sdk/browserMedia.ts`,
-`website/src/pages/AppDetailPage.tsx`.
+`website/src/pages/AppDetailPage.tsx`, `apps/browser_sites_routes.py`,
+`apps/protected_app_state.py`, `apps/manager_uninstall.py`,
+`website/src/app-sdk/browserSites.ts`, `website/src/pages/AppDetailBrowserSites.tsx`.
 
 ## 46. An app's grant to the browser tabs of its own chats (RFC #38322, step 1a)
 

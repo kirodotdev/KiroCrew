@@ -674,6 +674,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle_native_children.py",
         "acp/session_handle_permissions.py",
         "acp/session_handle_turn.py",
+        # Redacts the tool title of the security-event row for a call KAS approved
+        # on its own; the row goes to the security event log, not to an output.
+        "acp/kas_approve_for_me.py",
         "platform/defaults.py",
         "platform/interfaces.py",
         # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel

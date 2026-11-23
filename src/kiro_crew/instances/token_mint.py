@@ -26,6 +26,7 @@ import re
 import shutil
 from typing import NamedTuple
 
+from kiro_crew import platform_compat
 from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 from kiro_crew.deploy.engine import refresh_aws_tool_trust, refused_aws_tool, tool_spawn_env
@@ -485,6 +486,11 @@ def _build_ssh_argv(
     one-shot ssh would bind that port whenever it is free, wait after the
     remote command exits for the connections riding it, and be killed at the
     caller's timeout with all of them. No caller here wants a forward.
+    The connection-sharing option set to ``no`` keeps this ssh from starting a
+    shared background connection: that one would leave its ``ProxyCommand`` in
+    this ssh's process group, which the leader of :func:`under_group_leader`
+    signals once this ssh exits. Joining a shared connection the user already
+    has open still works.
     ``ssh_host`` is validated by the caller (registry / tunnel manager) before
     reaching here.
     """
@@ -500,6 +506,8 @@ def _build_ssh_argv(
         "AddressFamily=inet",
         "-o",
         "ClearAllForwardings=yes",
+        "-o",
+        "ControlMaster=no",  # wokeignore:rule=master
         ssh_host,
         remote_command,
     ]
@@ -545,6 +553,88 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
     refresh_aws_tool_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
+
+
+#: The POSIX shell the ssh group leader runs in. Fixed and absolute, so the
+#: leader is never looked up on a PATH.
+_LEADER_SHELL = "/bin/sh"
+
+#: ``$0`` of the leader shell, so a process listing names what it is.
+_LEADER_NAME = "ssh-group-leader"
+
+# The leader: runs ssh ("$@") as its child and waits. Every signal it sends goes
+# to its own process group (``kill -TERM 0``), never to a pid it remembered: it
+# is alive and leads that group whenever it signals, so the group id cannot
+# have gone to another process, while ssh's own pid can be reused the moment
+# ssh is reaped. A SIGTERM sent to the leader alone is passed on that way (the
+# leader stops listening for TERM first, so its own signal cannot loop back) and
+# the wait resumes. Once ssh has exited, the leader SIGTERMs the group once more,
+# which reaches ssh's ProxyCommand and whatever that started, and exits with
+# ssh's status. A second ``wait`` on a reaped ssh answers 127, which never
+# replaces the status the first one read.
+# Errexit is turned off so a failing ssh cannot skip the cleanup.
+_LEADER_SCRIPT = (
+    "set +e; "
+    "t=0; trap 't=1; trap \"\" TERM; kill -TERM 0 2>/dev/null' TERM; "
+    '"$@" & c=$!; '
+    'while :; do t=0; wait "$c"; s=$?; '
+    '[ "$s" = 127 ] && [ -n "${rc+x}" ] && break; rc=$s; '
+    '[ "$t" = 1 ] || break; done; '
+    "trap '' TERM; kill -TERM 0 2>/dev/null; "
+    'exit "$rc"'
+)
+
+
+def under_group_leader(argv: list[str]) -> list[str]:
+    """*argv* (an ssh command line) run under a POSIX shell that ends what ssh leaves.
+
+    ssh runs a host's ``ProxyCommand`` in ssh's own process group, and on exit
+    sends it only SIGHUP. A proxy that ignores SIGHUP keeps running under init:
+    one more for every failed mint, probe or tunnel start during an outage. The
+    leader (:data:`_LEADER_SCRIPT`) outlives ssh and SIGTERMs the group while it
+    still holds the group id, so the signal can only reach this ssh's leftovers.
+    The caller spawns the result with ``start_new_session`` so the leader leads
+    a group of its own.
+
+    shortcut: a proxy that also ignores SIGTERM, or one that ``setsid``s out of
+    the group, is still left behind; upgrade to a SIGKILL pass if one shows up.
+
+    Off POSIX *argv* is returned unchanged: there is no ``/bin/sh`` and no
+    process group to lead. So is an *argv* whose head is not an absolute path
+    to an executable file (a bare ``ssh`` that :func:`resolve_ssh_bin` found
+    nowhere): spawning it raises the ``OSError`` callers read as "no ssh
+    client", where under the leader it would be the shell's exit 127, which a
+    remote command that is not found also exits with.
+    """
+    if not platform_compat.IS_POSIX:
+        return list(argv)
+    head = argv[0] if argv else ""
+    if not (os.path.isabs(head) and os.path.isfile(head) and os.access(head, os.X_OK)):
+        return list(argv)
+    return [_LEADER_SHELL, "-c", _LEADER_SCRIPT, _LEADER_NAME, *argv]
+
+
+async def spawn_one_shot_ssh(
+    argv: list[str],
+    env: dict[str, str],
+    *,
+    stdin: int | None = None,
+    stdout: int | None = asyncio.subprocess.PIPE,
+    stderr: int | None = asyncio.subprocess.PIPE,
+) -> asyncio.subprocess.Process:
+    """Spawn a one-shot ssh run (mint, remote run, probe) under its group leader.
+
+    *argv* and *env* come from :func:`ssh_spawn_argv_env`, so the ssh head and
+    the ``PATH`` are the ones resolved for ssh itself.
+    """
+    return await asyncio.create_subprocess_exec(
+        *under_group_leader(argv),
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        env=env,
+        start_new_session=platform_compat.IS_POSIX,
+    )
 
 
 # stderr phrases meaning the ``ProxyCommand`` could not find a program it runs:
@@ -817,12 +907,7 @@ async def mint_remote_token(
     logger.info("Minting token on %s (ttl=%s)", ssh_host, ttl)  # no token in logs
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+        proc = await spawn_one_shot_ssh(argv, env)
     except OSError as e:
         raise TokenMintError(f"failed to spawn ssh for {ssh_host}: {e}") from e
 
@@ -933,12 +1018,7 @@ async def run_remote_kirocrew(
     )
     logger.info("Running 'kirocrew %s' on %s", subcommand, ssh_host)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+        proc = await spawn_one_shot_ssh(argv, env)
     except OSError as e:
         return -1, f"failed to spawn ssh: {e}"
     try:

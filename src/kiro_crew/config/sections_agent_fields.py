@@ -56,6 +56,46 @@ KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP = (
 )
 
 
+#: ``agent.kas_auth``: who gives the bundled engine its credential. ``acp-callback``
+#: asks Crew over ACP, which answers from its own sign-in. ``machine`` has the
+#: engine read a token file the host issues (``kiro_crew.agent_sdk.kas_machine``), and is
+#: honoured only while the ``crew_client`` feature preview is on
+#: (``edition_locks.preview_on``).
+KAS_AUTH_CALLBACK = "acp-callback"
+KAS_AUTH_MACHINE = "machine"
+KAS_AUTH_MODES = (KAS_AUTH_CALLBACK, KAS_AUTH_MACHINE)
+#: ``agent.kas_token_path``'s default: unset. The host that issues machine tokens
+#: names the file; only the engine opens it.
+KAS_MACHINE_TOKEN_PATH_DEFAULT = ""
+
+#: Help for the machine-mode keys, kept here so the ``agent`` section DTO stays
+#: under its line budget.
+KAS_MACHINE_HELP = {
+    "kas_auth": (
+        "How Kiro Crew's own engine bundle gets its credential. 'acp-callback' (the "
+        "default) asks Kiro Crew, which answers from its Kiro sign-in. 'machine' starts "
+        "the engine with --auth=machine: it reads the token file in agent.kas_token_path "
+        "itself, and Kiro Crew never opens that file. Machine mode needs the crew_client "
+        "feature preview, agent.kas_bundle true and the cell keys (endpoint, control "
+        "plane endpoint, region); it has no default service."
+    ),
+    "kas_token_path": (
+        "Machine mode: absolute path of the token file the engine reads. Kiro Crew only "
+        "checks that it exists, is readable and is not empty. No default."
+    ),
+    "kas_endpoint": "Machine mode: the engine's runtime endpoint, an https:// url. Required.",
+    "kas_control_plane_endpoint": (
+        "Machine mode: the engine's control plane endpoint, an https:// url. Required."
+    ),
+    "kas_region": "Machine mode: the region the endpoints serve. Required.",
+    "kas_machine_env_drop": (
+        "Machine mode: a JSON array of environment variable names removed from the "
+        "engine's environment, such as the one that carries the token on this host, so "
+        "the engine reads the token file only. Kiro Crew's own API key is always removed."
+    ),
+}
+
+
 def coerce_kas_bundle_url(value: object) -> str:
     """``agent.kas_bundle_url`` as a usable https base, else the default.
 
@@ -743,8 +783,8 @@ _YOLO_DURATION_SECS: dict[str, int] = {
     "24h": 86400,
 }
 
-# Not a timed value: an ad-hoc grant that stays on with no expiry until the
-# gateway process stops. In-memory only, so it cannot survive a restart.
+# Not a timed value: an ad-hoc grant that stays on with no expiry until the user
+# stops Kiro Crew. A restart, crash or reboot keeps it (``kept_yolo``).
 YOLO_UNTIL_SHUTDOWN = "until_shutdown"
 
 

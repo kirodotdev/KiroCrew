@@ -242,9 +242,11 @@ export default function LibraryPage() {
     setActionLoading(`${name}:uninstall`)
     setError('')
     try {
-      await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
+      const res = await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
+      const warned = appActionNotice(appDisplayName(uninstallTarget), res, 'uninstall')
       recordEvent('app_uninstall', { app: name, version: uninstallTarget.version })
       announceAppsChanged()
+      if (warned) setError(warned)
     } catch (e) {
       setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_uninstall', { name }))
     } finally {

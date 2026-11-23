@@ -41,7 +41,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import guide_catalog
-from kiro_crew.dashboard import chat_cards
+from kiro_crew.dashboard import chat_cards, full_chat_waits
 from kiro_crew.dashboard.guide_observe import MAX_PREDICATES as MAX_OBSERVE_PREDICATES
 from kiro_crew.dashboard.guide_observe import MAX_SCOPES as MAX_OBSERVE_SCOPES
 from kiro_crew.dashboard.guide_observe import MAX_TARGETS as MAX_OBSERVE_TARGETS
@@ -102,6 +102,8 @@ async def _broadcast(state: Any, guide: dict[str, Any]) -> int:
     # conversation learns the new status (and the crew log the outcome).
     await chat_cards.load_conversation_window(state, guide)
     chat_cards.record_guide_status(state, guide)
+    # The slot list's ``needs_full_chat`` reads the store this change just moved.
+    full_chat_waits.push_slot_list(state)
     deliver = getattr(state, "deliver_ws_owners", None)
     if deliver is None:
         return 0

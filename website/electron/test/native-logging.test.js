@@ -692,6 +692,64 @@ describe("redactTokensInBuffer on log lines", () => {
   });
 });
 
+// `<redacted>` is the placeholder the app writes itself in place of a token
+// (`frame-load-log.js`, `src/lib/paneLog.ts`), and `[REDACTED]` is this module's
+// own marker. Neither is a credential, so a pass must leave both alone.
+describe("already-redacted values", () => {
+  const run = (text) => {
+    const input = Buffer.from(text, "latin1");
+    return { input, result: redactTokensInBuffer(input) };
+  };
+
+  for (const text of [
+    'src=http://h/?token=<redacted>" x',
+    "src=http://h/?token=[REDACTED] x",
+    "x?a=1&token=<redacted>&sid=1",
+    "x?access_token=[REDACTED] y",
+  ]) {
+    it(`leaves ${JSON.stringify(text)} as the very same buffer`, () => {
+      const { input, result } = run(text);
+      assert.equal(result.changed, false);
+      assert.equal(result.out, input, "nothing to redact must return the original buffer");
+    });
+  }
+
+  for (const [label, text] of [
+    ["a plain token", "src=http://h/?token=abc123 x"],
+    ["a Chromium console line", TOKENED_LINE],
+  ]) {
+    it(`changes nothing on a second pass over ${label}`, () => {
+      const first = redactTokensInBuffer(Buffer.from(text, "latin1"));
+      assert.equal(first.changed, true);
+      const second = redactTokensInBuffer(first.out);
+      assert.equal(second.changed, false);
+      assert.equal(second.out.toString("latin1"), first.out.toString("latin1"));
+    });
+  }
+
+  it("still redacts a value that only starts like a placeholder", () => {
+    const { result } = run("x?token=<redacted>abc y");
+    assert.equal(result.changed, true);
+    assert.equal(result.out.toString("latin1"), "x?token=[REDACTED] y");
+  });
+
+  it("stops an already-damaged marker from growing", () => {
+    const { input, result } = run("x?token=[REDACTED]] y");
+    assert.equal(result.changed, false);
+    assert.equal(result.out, input);
+  });
+
+  it("reports a placeholder at the end of the buffer as an open value", () => {
+    const { input, result } = run("x?token=<redacted>");
+    assert.deepEqual(result, { out: input, changed: false, endsInValue: true });
+  });
+
+  it("reports the marker at the end of the buffer as a closed value", () => {
+    const { input, result } = run("x?token=[REDACTED]");
+    assert.deepEqual(result, { out: input, changed: false, endsInValue: false });
+  });
+});
+
 describe("redactNativeLogSecrets", () => {
   const TMP = `${PREV}.redact.tmp`;
 
@@ -898,6 +956,22 @@ describe("redactNativeLogSecrets", () => {
       assert.match(outBody, /\?token=\[REDACTED\]&n=1b/);
     });
 
+    it("drops the rest of a value cut right after a placeholder", () => {
+      // `"?token=<redacted>".length === 17`, so the cut lands at the placeholder's
+      // end and the next piece opens with `SECRET`, the rest of that value.
+      const head = "a".repeat(CUT - 17);
+      const fs = fakeFs({
+        present: [PREV],
+        contents: { [PREV]: `${head}?token=<redacted>SECRET&n=1${tail}` },
+      });
+      forceOverCap(fs);
+
+      redactNativeLogSecrets(PREV, { fs });
+      const outBody = fs.body.get(PREV);
+      assert.doesNotMatch(outBody, /SECRET/, "no part of the value may survive the cut");
+      assert.ok(outBody.includes("?token=<redacted>&n=1b"));
+    });
+
     it("keeps every byte of a clean over-long line", () => {
       const clean = `${"a".repeat(CUT - 4)}?tokenless=1${tail}`;
       const fs = fakeFs({ present: [PREV], contents: { [PREV]: clean } });
@@ -906,6 +980,29 @@ describe("redactNativeLogSecrets", () => {
       assert.equal(redactNativeLogSecrets(PREV, { fs }).redacted, false);
       assert.equal(fs.body.get(PREV), clean);
     });
+  });
+
+  describe("a log holding only placeholders", () => {
+    const placeholderLog =
+      '[123:1113/033742.1:INFO:CONSOLE:0] "msg", source: http://127.0.0.1:5476/chat/gateway?token=<redacted> (0)\n' +
+      '[123:1113/033742.2:INFO:CONSOLE:0] "msg", source: http://127.0.0.1:5476/chat/gateway?token=[REDACTED]&sid=1 (0)\n';
+
+    for (const [label, overCap] of [
+      ["whole-file", false],
+      ["streaming", true],
+    ]) {
+      it(`is not rewritten on the ${label} path`, () => {
+        const fs = fakeFs({ present: [PREV], contents: { [PREV]: placeholderLog } });
+        if (overCap) forceOverCap(fs);
+        assert.deepEqual(redactNativeLogSecrets(PREV, { fs }), {
+          scanned: true,
+          redacted: false,
+          skipped: null,
+        });
+        assert.equal(fs.body.get(PREV), placeholderLog);
+        assert.deepEqual(fs.renames, [], "nothing may be renamed over a log with no credential");
+      });
+    }
   });
 
   // Same "do not rewrite what is already clean" property the whole-file path has:

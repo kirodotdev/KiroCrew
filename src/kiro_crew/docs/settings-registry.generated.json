@@ -1140,6 +1140,15 @@
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
+    },
+    {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
@@ -1196,6 +1205,13 @@
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.subagent-model",
       "hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
+    },
+    {
+      "id": "chat.swipe-to-open-and-close-side-panel",
+      "label": "Swipe to Open and Close Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=chat.swipe-to-open-and-close-side-panel",
+      "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone."
     },
     {
       "id": "chat.tail-only-fork",
@@ -1915,6 +1931,12 @@
       "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
     },
     {
+      "id": "instances.crews-kept-loaded",
+      "label": "Crews kept loaded",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.crews-kept-loaded"
+    },
+    {
       "id": "instances.enable-remote-crew-management",
       "label": "Enable remote crew management",
       "tab": "instances",
@@ -2016,6 +2038,13 @@
       "label": "Play sound on new notifications",
       "tab": "notifications",
       "route": "/settings/notifications/sound?highlight=notifications.play-sound-on-new-notifications"
+    },
+    {
+      "id": "notifications.play-sounds-only-during-set-hours",
+      "label": "Play sounds only during set hours",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.play-sounds-only-during-set-hours",
+      "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound."
     },
     {
       "id": "notifications.sound-category-agent",

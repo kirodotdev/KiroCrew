@@ -10,6 +10,7 @@
  * as `MemoryCarveCard.truncate.test.tsx` mocks it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installInitialResizeObserver } from '../../test/initialResizeObserver'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import MemoryCarveCard from './MemoryCarveCard'
@@ -36,6 +37,8 @@ function stubGeometry(hidden: number) {
 }
 
 beforeEach(() => {
+  // Table edges are first measured on the observer's first delivery.
+  installInitialResizeObserver()
   vi.clearAllMocks()
   window.history.replaceState({}, '', '/')
   localStorage.clear()
@@ -55,7 +58,7 @@ beforeEach(() => {
   api.themeBoot.mockResolvedValue({})
 })
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 /** Click the one count and return the entry table once its rows render. */
 async function openEntryTable() {

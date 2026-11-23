@@ -9,8 +9,10 @@ not an isolation boundary: the agent can still name another profile itself.
 The map lives in the operator's own configuration and nowhere else. Nothing here
 reads a file inside the project checkout, so a cloned repository cannot choose
 which credentials an agent uses. The one thing asked of git is which checkout a
-crewmate's worktree was made from, and only for a path under a ``worktrees``
-folder: that names a directory to match, never a profile. Nothing here reads credential material either:
+crewmate's worktree, or an isolated ``spawn_run`` worker's ``<repo>-wt-<run id>``
+worktree beside its repository, was made from, and only for a path under a
+``worktrees`` folder or with a ``-wt-`` component: that names a directory to
+match, never a profile. Nothing here reads credential material either:
 the value is a profile NAME, and the AWS SDK or CLI the agent runs resolves it
 through the operator's own ``~/.aws`` files exactly as it would for a gateway
 started with ``AWS_PROFILE`` set.
@@ -142,7 +144,8 @@ def resolve_project_binding(mapping: Mapping[str, str], cwd: str) -> tuple[str, 
     A cwd in a crewmate's worktree is matched as the same path in the
     repository's own checkout (``crewmate_worktree.source_path``): the worktree
     sits in the crewmate's workspace, so ``<workspace>/worktrees/<slug>/app-<hash>``
-    would otherwise miss the binding on ``/repos/app``.
+    would otherwise miss the binding on ``/repos/app``. So is a cwd in an isolated
+    run's ``/repos/app-wt-<run id>`` worktree beside it.
     """
     if not mapping or not cwd:
         return None

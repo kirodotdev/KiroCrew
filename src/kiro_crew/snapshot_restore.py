@@ -46,6 +46,7 @@ from kiro_crew.snapshot_archive import (
     _safe_name,
 )
 from kiro_crew.snapshot_components import (
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
@@ -66,7 +67,7 @@ from kiro_crew.snapshot_components import (
     is_product_tree_database,
     safe_tree_root,
 )
-from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 
 host_local_installable: ContextVar[frozenset[str]] = ContextVar(
     "host_local_installable", default=frozenset()
@@ -192,7 +193,7 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
 
         try:
             _, dropped = notification_settings.parse_imported_settings(
-                src.read_text(encoding="utf-8")
+                strip_utf8_bom(src.read_text(encoding="utf-8"))
             )
         except (
             notification_settings.ChannelSettingsError,
@@ -740,10 +741,14 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     nothing, so refusing would only fail every other component of the restore.
 
     Only structure is checked, not schema: field-level checks would duplicate each
-    consumer's validation and refuse bundles those consumers accept.
+    consumer's validation and refuse bundles those consumers accept. For the same reason
+    a leading byte-order mark is accepted where the file's readers accept one.
     """
     try:
-        parsed = json.loads(src.read_text(encoding="utf-8"))
+        text = src.read_text(encoding="utf-8")
+        if src.name in _BOM_TOLERANT_JSON_OBJECTS:
+            text = strip_utf8_bom(text)
+        parsed = json.loads(text)
     except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return

@@ -2,20 +2,20 @@
 //
 // Other programs on the machine (a companion app, a Slack button, a Raycast
 // script, `kirocrew open`, a web page listing the user's machines) use this
-// scheme to open the desktop app on one session, on one app's detail page, or
-// on Settings -> Remote Crew's add form filled in with one machine, rather than
-// only bring its window forward. A link carries the same target as the
-// dashboard's own browser URL (`/chat?sid=<slot key>`, `/apps/detail/<name>`,
-// `/settings/instances`) and is delivered through the same `navigate` IPC the
+// scheme to open the desktop app on one session, on one app's detail page, on
+// Settings -> Remote Crew's add form filled in with one machine, or on one Bot,
+// rather than only bring its window forward. A link carries the same target as
+// the dashboard's own browser URL (`/chat?sid=<slot key>`, `/apps/detail/<name>`,
+// `/settings/instances`, `/members?member=<name>`) and is delivered through the same `navigate` IPC the
 // Crew Companion overlay's "Open session" uses inside the process.
 //
 // This module owns the one decision that matters for a scheme handler: which
 // URLs are allowed to drive navigation. The string comes from the OS, which
 // hands the app whatever any other program asked LaunchServices (or the
 // Windows/Linux registration) to open, so it is untrusted input. The rule is an
-// allowlist of five shapes -- raise the window, open one session, open one
-// session on a remote crew, show one app's detail page, or fill in the Remote
-// Crew add form -- mirroring
+// allowlist of six shapes -- raise the window, open one session, open one
+// session on a remote crew, show one app's detail page, fill in the Remote
+// Crew add form, or open the Bots page on one Bot -- mirroring
 // `external-scheme.js`'s stance on outbound schemes: a deny-by-default shape,
 // never a pass-through.
 //
@@ -55,7 +55,7 @@ function deepLinkFromArgv(argv) {
 /**
  * Resolve a kirocrew:// URL to the dashboard route it may open.
  *
- * Exactly five forms are accepted:
+ * Exactly six forms are accepted:
  *
  *   kirocrew://                              -> { route: "" }           (raise the window)
  *   kirocrew://chat?sid=<slot key>           -> { route: "/chat?sid=<encoded key>", slotKey }
@@ -64,13 +64,15 @@ function deepLinkFromArgv(argv) {
  *   kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]
  *                                            -> { route: "/settings/instances?host=<[u@]ssh host>[&port=<n>][&name=<label>]" }
  *                                               (the Remote Crew add form, filled in; see resolveRemoteCrewAdd)
+ *   kirocrew://members[?member=<name>]       -> { route: "/members[?member=<encoded name>]" }
+ *                                               (the Bots page, on one Bot; see resolveMembers)
  *
  * A crew link's route carries no `sid`, so an older dashboard never opens a
  * same-named LOCAL session. A `crew` that is not a crew id routes to the
  * value-free `/chat?crewError=1`, so the dashboard can say so.
  *
  * Anything else -- another scheme, an unknown host, an extra path segment, a
- * missing or malformed sid or app name, any other query parameter -- is refused
+ * missing or malformed sid, app name or member name, any other query parameter -- is refused
  * with a reason. The route is REBUILT from the parsed pieces, never copied from
  * the input, so the only characters that can reach `navigate` are the ones the
  * sid or name check admits. A token never rides a deep link: the desktop window
@@ -144,7 +146,31 @@ function resolveDeepLink(raw) {
 
   if (host === "remote-crew") return resolveRemoteCrewAdd(raw, segments, url.searchParams);
 
+  if (host === "members") return resolveMembers(raw, segments, url.searchParams);
+
   return refuse("unknown route");
+}
+
+/**
+ * `kirocrew://members` opens the Bots page; `?member=<name>` opens one Bot by its
+ * roster `name` (its config key), the value the page's own `?member=` matches
+ * exactly, not the label the page shows. Percent-encode the name: the query decodes
+ * `+` to a space and ends the value at `&` or `#`.
+ *
+ * @param {string} raw the URL as the OS delivered it
+ * @param {string[]} segments its path segments
+ * @param {URLSearchParams} query its query
+ */
+function resolveMembers(raw, segments, query) {
+  if (raw.length > LINK_MAX_LENGTH) return refuse("link too long");
+  if (segments.length) return refuse("unknown route");
+  const keys = [...query.keys()];
+  if (keys.some((key) => key !== "member")) return refuse("unknown query parameter");
+  if (keys.length > 1) return refuse("repeated query parameter");
+  if (keys.length === 0) return { ok: true, route: "/members", slotKey: "" };
+  const name = query.get("member");
+  if (!isMemberName(name)) return refuse("invalid member name");
+  return { ok: true, route: `/members?member=${encodeURIComponent(name)}`, slotKey: "" };
 }
 
 // A Remote Crew add link FILLS IN Settings -> Remote Crew's add form and does
@@ -156,8 +182,8 @@ function resolveDeepLink(raw) {
 //
 // The whole URL is capped before anything is read from it, each key may appear
 // once, and an unknown key refuses the link instead of being dropped, so a link
-// is taken whole or not at all.
-const REMOTE_CREW_LINK_MAX_LENGTH = 8192;
+// is taken whole or not at all. A members link is capped at the same length.
+const LINK_MAX_LENGTH = 8192;
 const REMOTE_CREW_ADD_KEYS = ["host", "user", "port", "name"];
 
 /**
@@ -172,7 +198,7 @@ const REMOTE_CREW_ADD_KEYS = ["host", "user", "port", "name"];
  * @param {URLSearchParams} query its query
  */
 function resolveRemoteCrewAdd(raw, segments, query) {
-  if (raw.length > REMOTE_CREW_LINK_MAX_LENGTH) return refuse("link too long");
+  if (raw.length > LINK_MAX_LENGTH) return refuse("link too long");
   if (segments.length !== 1 || segments[0] !== "add") return refuse("unknown route");
   const seen = new Set();
   for (const key of query.keys()) {
@@ -277,11 +303,44 @@ function isCrewName(s) {
   );
 }
 
+// Bot names (config keys): an id for a Bot made today, a free-form name for an
+// older one. Every name the gateway can hold (`is_readable_member_name`,
+// src/kiro_crew/members_parts/member_space.py) gets through, at most its
+// `MEMBER_NAME_MAX_CHARS` code points (test/test_cli_open.py keeps the two equal).
+// The page opens only an exact roster match, so this only keeps control,
+// line-break, bidi-override and invisible characters out of the "gone" notice
+// that shows an unknown name. The four shaping marks stay in only where the
+// gateway keeps them (`strip_hidden_unicode`, text_sanitizer.py): the nearest
+// non-mark on one side is non-ASCII, so no mark can hide inside ASCII text, and
+// edge whitespace is found past any edge marks, as `_trim_edges` finds it.
+// test/fixtures/member-name-samples.json holds the names both sides are tested on.
+const MEMBER_NAME_MAX_LENGTH = 500;
+const MEMBER_NAME_REFUSED_RE = /[\p{Cc}\p{Cs}\p{Zl}\p{Zp}]|(?![\u200c-\u200f])\p{Cf}|^[\u200c-\u200f]*\s|\s[\u200c-\u200f]*$|^\.+$/u;
+const SHAPING_MARK_RE = /^[\u200c-\u200f]$/;
+
+function isMemberName(s) {
+  if (typeof s !== "string" || s.length === 0) return false;
+  if (Array.from(s).length > MEMBER_NAME_MAX_LENGTH || MEMBER_NAME_REFUSED_RE.test(s)) return false;
+  // Judged on the NFC form, as the gateway judges it: `e` + U+0301 is then a non-ASCII `é`.
+  const chars = Array.from(s.normalize("NFC"));
+  return chars.every((ch, i) => !SHAPING_MARK_RE.test(ch) || markTouchesNonAscii(chars, i));
+}
+
+function markTouchesNonAscii(chars, i) {
+  const nearest = (step) => {
+    let j = i + step;
+    while (j >= 0 && j < chars.length && SHAPING_MARK_RE.test(chars[j])) j += step;
+    return chars[j] || "";
+  };
+  return [nearest(-1), nearest(1)].some((ch) => ch !== "" && ch.codePointAt(0) > 0x7f);
+}
+
 module.exports = {
   SCHEME,
   deepLinkFromArgv,
   isAppName,
   isCrewName,
+  isMemberName,
   isSshHost,
   resolveDeepLink,
 };

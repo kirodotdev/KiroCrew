@@ -1,5 +1,8 @@
 # Testing Conventions
 
+<!-- docs-lint: defines soft_deadline_secs, grace_period_s, log_budget_ms, test_bad_spec_does_not_disable_memory_tools_for_other_agents, trace_home, ExpiresAt -->
+<!-- docs-lint: wrong-on-purpose test_policy -->
+
 ## Framework
 
 - `pytest` with `pytest-asyncio` for async tests
@@ -1076,6 +1079,13 @@ over budget.
   (`test_updates_handlers_facade.py`), or a doc that must be reachable from its
   directory's index (`scripts/docs_lint.py`): when two changes leave the merged tree
   inconsistent, the tree is wrong. Fix the tree; do not loosen the check.
+- **A check that arrives with a snapshot of the live tree regenerates it on current
+  `main` right before it merges.** A baseline generated from what is registered or
+  present today (`.github/route-access-baseline.txt`) is stale the moment another
+  change adds a member, and git sees no conflict. Rebase onto current `main`,
+  regenerate the snapshot and let CI run again before merging. When that window was
+  missed, the late members get the real fix (a label, a rule), not a baseline row
+  ([route access § The baseline](../modules/route-access.md#the-baseline)).
 - **Prove it with a two-branch merge.** In a scratch clone, cut two branches from one
   base, make one change of the counted class on each (different files) and update the
   record exactly as the failure message says, then merge both and run the test. It is
@@ -1952,11 +1962,11 @@ measures, never above.
   (`metrics/provider.py`): once per `_CONSENT_RECHECK_SECS`, `get_recorder()` -- on the
   path of `skills`, `session`, `context`, `hooks` and every metric helper -- hands a
   consent re-read to a daemon thread whose `KiroCrewConfig.load()` reaches
-  `config_dir()` and `mkdir`s whatever `KIROCREW_HOME` names at that instant. The
-  recorder is process-global and nothing resets it between tests, so the read lands a
-  few milliseconds later under the NEXT test's pin and creates that test's data home
-  from a thread it never started. The Windows fingerprint of that race is a
-  `\\?\`-prefixed path: `os.path.realpath` keeps the prefix when the directory above a
+  `config_dir()`. Resolved on that thread, the home was whatever `KIROCREW_HOME` named
+  at that instant: the recorder is process-global and nothing resets it between tests,
+  so the read landed a few milliseconds later under the NEXT test's pin and created
+  that test's data home from a thread it never started. The Windows fingerprint of
+  that race is a `\\?\`-prefixed path: `os.path.realpath` keeps the prefix when the directory above a
   not-yet-existing path appears between its two lookups, which is how
   `test_pathres_loop_starvation.py::test_the_inline_anchors_are_the_bounded_anchors`
   saw `\\?\...\<n>-kirocrew-home\diag` in one build of the sensitive-target set and not
@@ -1967,6 +1977,14 @@ measures, never above.
   creator of a home that was not the running test's own. The rootdir teardown hook
   joins it (`_join_telemetry_consent_worker`, bounded by `_EXECUTOR_JOIN_SECS`) beside
   the receipt-worker join, and fails the test that left one wedged past the bound.
+  The first rule closes the rest: `_schedule_consent_check_locked` resolves the home
+  and the thread runs through `config.paths.run_with_data_home` (and
+  `consent_pins.bind_env_pins`, for `KIROCREW_TELEMETRY` and the other consent pins),
+  so the worker never reads either variable. A late worker reads its scheduling test's home, and a gap INSIDE
+  one test body cannot send it to the real default home: `patch.dict(os.environ)`
+  restores by clearing the environment before it refills it, and a body can pin
+  `KIROCREW_HOME` empty (#40975, #41249). The join stays, for the module state a late
+  worker would still change.
   When you see a per-test directory appear with no test writing it, list the threads
   first: `threading.enumerate()` names the lazy resolver, the filesystem never will.
 
@@ -2706,6 +2724,13 @@ tests; the classes below are what the rest was made of.
   one layer up: the caller resolves the home on ITS thread and hands it in
   (`SessionManager._cleanup_deps` → `cleanup_stale_sandbox_profiles(data_home=...)`).
   When a job goes onto a pool, ask what it resolves lazily; the answer must be "nothing".
+  When the job reaches the home through code too deep to thread a parameter through (a
+  sandbox wrap, a crew-log fold), the worker runs it through
+  `config.paths.run_with_data_home(home, target, ...)` with the home its dispatcher
+  resolved: the node compile-cache prewarm thread starts on it, the crew-log eager fold
+  worker reads the home off each wake and folds each home's share through it, and the
+  crew-log cold-cell prime (`crew_log.slot_prime`) resolves it in `schedule` on the
+  caller's thread and submits `_run` through it (#41332).
   The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
   the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
   is the fix there. The loop's executor is covered: a cache write-through in

@@ -54,6 +54,8 @@ import yaml
 
 from kiro_crew import platform_compat
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing import wait
+from kiro_crew.testing.wait import default_timeout
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop.yml"
@@ -265,7 +267,7 @@ def test_the_symbolizer_ships_alongside_the_manifest() -> None:
     listed = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "-s", "--", "scripts/symbolize-crash.sh"],
         capture_output=True,
-        timeout=120,
+        timeout=default_timeout(),
         cwd=str(ROOT),
         **UTF8_TEXT,
     )
@@ -376,7 +378,7 @@ def _probe_node() -> _Node | None:
             "...process.versions.node.split('.').slice(0, 2).map(Number)])",
         ],
         capture_output=True,
-        timeout=120,
+        timeout=default_timeout(),
         **UTF8_TEXT,
     )
     if probe.returncode != 0:
@@ -497,7 +499,7 @@ def _emitter_asset(kind: str, platform: str, arch: str, *, cwd: Path) -> dict[st
             VERSION,
         ],
         capture_output=True,
-        timeout=120,
+        timeout=default_timeout(),
         check=True,
         cwd=str(cwd),
         **UTF8_TEXT,
@@ -505,9 +507,6 @@ def _emitter_asset(kind: str, platform: str, arch: str, *, cwd: Path) -> dict[st
     asset = json.loads(out.stdout)
     assert asset, f"the emitter publishes no {kind} asset for {platform}-{arch}"
     return asset
-
-
-SYMBOLIZER_TIMEOUT = 120
 
 
 def _run_symbolizer(
@@ -557,12 +556,13 @@ def _run_symbolizer(
                 platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
             proc.kill()
 
+        deadline = default_timeout()
         try:
-            stdout, stderr = proc.communicate(timeout=SYMBOLIZER_TIMEOUT)
+            stdout, stderr = proc.communicate(timeout=deadline)
         except subprocess.TimeoutExpired:
             reap_group()
             stdout, stderr = proc.communicate(timeout=platform_compat.REAP_TIMEOUT_SECS)
-            raise subprocess.TimeoutExpired(argv, SYMBOLIZER_TIMEOUT, output=stdout, stderr=stderr)
+            raise subprocess.TimeoutExpired(argv, deadline, output=stdout, stderr=stderr)
         except BaseException:
             # BaseException, not Exception, because the interruption that matters
             # here is not one: pytest-timeout's expiry raises ``Failed``, and
@@ -599,6 +599,48 @@ def _symbolize(tmp_path: Path, manifest: Path) -> subprocess.CompletedProcess[st
         ],
         tmp_path,
     )
+
+
+def test_each_child_is_bounded_at_half_the_running_test_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child deadline at or past the test's own timeout is never reached.
+
+    pytest-timeout fires first and reports a bare ``Timeout`` naming no child, so
+    the emitter's node and the symbolizer's ``communicate`` take half of it.
+    """
+    seen: list[tuple[str, float]] = []
+
+    def fake_run(
+        argv: list[str], *, timeout: float, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        seen.append(("emitter", timeout))
+        return subprocess.CompletedProcess(argv, 0, '{"kind": "breakpad"}', "")
+
+    class FakePopen:
+        pid = 0
+        returncode = 0
+
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> FakePopen:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def communicate(self, timeout: float) -> tuple[str, str]:
+            seen.append(("symbolizer", timeout))
+            return "", ""
+
+    monkeypatch.setattr(wait, "runner_timeout_secs", 180.0)
+    monkeypatch.setitem(globals(), "_NODE", _Node("node", (24, 0)))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    _emitter_asset("breakpad", "darwin", "arm64", cwd=tmp_path)
+    _run_symbolizer(["bash", str(SYMBOLIZER)], tmp_path)
+    assert seen == [("emitter", 90.0), ("symbolizer", 90.0)]
 
 
 @requires_shell_and_node
@@ -789,7 +831,7 @@ def _symbolize_ips(tmp_path: Path, report: Path, *args: str) -> subprocess.Compl
 
     Seeding both rather than the expected one is deliberate. Seeding only the
     expected slice makes a regression miss the cache and start a 1.4 GB download,
-    so the test reports a 120-second timeout instead of the assertion that would
+    so the test reports a timeout instead of the assertion that would
     name the defect -- and does real network I/O on the way. With both present the
     run never fetches, and the asset name it prints is what discriminates: the seed
     bounds the cost without deciding the outcome.

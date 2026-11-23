@@ -390,6 +390,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "with its own reason, and the card appears where it applies, so a card "
         "line would repeat what the refusal says"
     ),
+    "ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD": (
+        "whether the native-crew auto-approve rung may answer a request raised "
+        "while a sub-agent card is open. A non-member asks on the usual approval "
+        "card, so a card line would only say a sub-agent's call may ask once more"
+    ),
     "ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED": (
         "whether a deny-rule refusal on the shared runtime may become an override "
         "card. A non-member keeps today's refusal, which the person already meets "
@@ -723,6 +728,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "switch shows only while the adapter advertises it, so a member needs no card "
         "line, and a wrong membership is a defect, not a feature a card could mark: a "
         "hidden switch, or a write to another harness's option of the same id"
+    ),
+    "ACP_BACKENDS_APPROVE_FOR_ME": (
+        "whether a session may opt into its engine approving tool calls on its own. "
+        "The approval-mode picker offers it only on a member and only where the "
+        "approval_modes policy names it, and the picker row itself says what it "
+        "gives up, so a card line would repeat it"
     ),
     "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": (
         "whether the session's advertised Fast mode switch is read and written. The "

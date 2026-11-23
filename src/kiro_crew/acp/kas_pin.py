@@ -37,19 +37,22 @@ from __future__ import annotations
 import os
 
 __all__ = [
+    "KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION",
     "KAS_PIN_ENGINE_RELEASE",
     "KAS_PIN_MANIFEST_SHA256",
     "KAS_PIN_VERSION",
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
+    "engine_checks_auto_approvals",
     "engine_spec_permissions_supported",
     "pinned_version",
 ]
 
 #: Engine version this release runs. A ``-node<N>`` suffix names a republish of
 #: the same engine build with a different bundled Node runtime; the engine release
-#: is the part before it.
-KAS_PIN_VERSION = "0.66.117-node22.23.4"
+#: is the part before it. A trailing ``-al2`` marks a republish whose linux-x64
+#: Node and onnxruntime are the Amazon Linux 2 builds from ``packaging/kas-al2/``.
+KAS_PIN_VERSION = "0.66.117-node22.23.4-al2"
 
 #: The engine release the pin runs: :data:`KAS_PIN_VERSION` without its
 #: ``-node<N>`` suffix. This is the version the engine reports about itself, so
@@ -57,7 +60,7 @@ KAS_PIN_VERSION = "0.66.117-node22.23.4"
 KAS_PIN_ENGINE_RELEASE = KAS_PIN_VERSION.split("-node", 1)[0]
 
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
-KAS_PIN_MANIFEST_SHA256 = "58600c49bdd758709982051b11043f0f91194b9fe0dfa1cfd34d086ea341d95e"
+KAS_PIN_MANIFEST_SHA256 = "70db3b46ed43067e7b8c5c82423a5750d080825433cbaafed581b6daa0934993"
 
 #: The engine and Node build keys the pinned manifest publishes, the matrix
 #: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host
@@ -66,6 +69,17 @@ KAS_PIN_ENGINE_PLATFORMS = frozenset({"linux-x64", "linux-arm64", "darwin-univer
 KAS_PIN_NODE_BUILDS = frozenset(
     {"linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"}
 )
+
+#: Lowest glibc each Linux Node key of the pinned release runs on, checked before
+#: any download. The nodejs.org builds need 2.28. A release republished for Amazon
+#: Linux 2 (``packaging/kas-al2/``: an AL2-built Node and onnxruntime overlaid by
+#: ``scripts/kas_bundle_publish.py``) runs on 2.26, and lowers its key here in the
+#: SAME commit that moves the version and digest above: the floor describes the
+#: pinned bytes, so it never changes without them.
+KAS_PIN_LINUX_GLIBC_FLOOR: dict[str, tuple[int, int]] = {
+    "linux-x64": (2, 26),
+    "linux-arm64": (2, 28),
+}
 
 #: Operator/developer override of the version the harness resolves.
 KAS_VERSION_OVERRIDE_ENV = "KIROCREW_KAS_VERSION"
@@ -77,6 +91,28 @@ KAS_VERSION_OVERRIDE_ENV = "KIROCREW_KAS_VERSION"
 #: Lowering it needs the block confirmed on that older engine; the pin bump test
 #: keeps it at or below ``KAS_PIN_VERSION`` so the stock install always passes.
 KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION: tuple[int, int, int] = (0, 66, 33)
+
+#: First engine release that, for a client declaring ``checksAutoApprovals``, sends
+#: a call it would approve as ``session/request_permission`` with
+#: ``_meta.kiro.autoApproval`` instead of running it. ``None`` while no release
+#: carries it: approve-for-me is then offered on no engine. Set it to that release
+#: when the pin moves to one, after measuring it.
+KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION: tuple[int, int, int] | None = None
+
+
+def engine_checks_auto_approvals(version: str | None) -> bool:
+    """Pure gate: does an engine at *version* send its approve-for-me verdict to Crew?
+
+    False for an unknown version and while no release is known to
+    (:data:`KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION`).
+    """
+    floor = KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION
+    if floor is None or not version:
+        return False
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version)
+    return parsed is not None and parsed >= floor
 
 
 def pinned_version() -> str:

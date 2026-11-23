@@ -11,6 +11,7 @@ vi.mock('../api/client', () => ({
 import { api } from '../api/client'
 import { AcpAdapter, clearCachedModels, noteKiroAccount } from '../providers/adapters/acp'
 import {
+  markModelsCold,
   markModelsDegraded,
   modelsDegraded,
   modelListRefetchInterval,
@@ -19,7 +20,7 @@ import type { ModelInfo } from '../providers/types'
 
 /** The /api/models rows these fixtures feed the adapter. The adapter's own
  *  RawModel is module-private, so mirror only the fields set here. */
-type ModelRow = { model_name: string; display_name?: string; description?: string }
+type ModelRow = { model_name: string; display_name?: string; description?: string; cold?: boolean }
 
 /** `api.models` as replaced by vi.mock above. The resolved type is a union
  *  because the endpoint has both shapes: rows on success, and the error object
@@ -283,6 +284,36 @@ describe('model-list liveness (self-heal signal)', () => {
     vi.clearAllMocks()
     localStorage.clear()
     markModelsDegraded('acp', false)
+    markModelsCold('acp', false)
+  })
+
+  it('a cold answer is shown but not saved over the last-good list, and keeps polling with no failure', async () => {
+    ;(api.models as ModelsMock).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    // The gateway restarts: a failed read, then no session has recorded this account's list yet.
+    ;(api.models as ModelsMock).mockRejectedValueOnce(new Error('503'))
+    await adapter.fetchAvailableModels()
+    expect(modelsDegraded('acp')).toBe(true)
+    ;(api.models as ModelsMock).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'Backend default', cold: true },
+    ])
+    const served = await adapter.fetchAvailableModels()
+    expect(served.map(m => m.name)).toEqual(['auto'])
+    const cached = JSON.parse(localStorage.getItem('kc.acp.models.v1') as string)
+    expect(cached.models.map((m: ModelInfo) => m.name)).toEqual(['auto', 'claude-opus-4.8'])
+    expect(modelsDegraded('acp')).toBe(false)
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(8_000)
+    // The first recorded list ends the cold state, and the polling with it.
+    ;(api.models as ModelsMock).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    await adapter.fetchAvailableModels()
+    expect(modelListRefetchInterval({ queryKey: ['available-models', 'acp'] })).toBe(false)
   })
 
   it('marks degraded on failure and clears it on a live success', async () => {

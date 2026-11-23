@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { KeyboardEvent } from 'react'
 import { formatCost } from '../../utils/formatCost'
 import SimpleSelect from '../../components/SimpleSelect'
 
@@ -134,6 +135,19 @@ function DayFigures({
   )
 }
 
+/** DayFigures' lines as one string: the keyboard slider's value text. */
+function dayFiguresText(d: TokenBucket & { date: string }, providerSel: string, modelSel: string): string {
+  return [
+    d.date,
+    i18nT('pages.overview.tokenDailyChart.in_out', { input: fmtCompact(d.input), output: fmtCompact(d.output) }),
+    d.cacheRead > 0 && `${i18nT('pages.overview.tokenDailyChart.cache_read')} ${fmtCompact(d.cacheRead)}`,
+    d.cacheCreate > 0 && `${i18nT('pages.overview.tokenDailyChart.cache_create')} ${fmtCompact(d.cacheCreate)}`,
+    d.costUsd > 0 && `${i18nT('pages.overview.tokenDailyChart.cost')} ${formatCost(d.costUsd)}`,
+    providerSel !== ALL && `${i18nT('pages.overview.tokenDailyChart.provider_2')} ${providerSel}`,
+    modelSel !== ALL && `${i18nT('pages.overview.tokenDailyChart.model_2')} ${modelSel}`,
+  ].filter(Boolean).join('. ')
+}
+
 /**
  * Stacked bar chart of daily token usage with cascading provider/model
  * filters. The model dropdown narrows to only models that have actually
@@ -156,6 +170,8 @@ export function TokenDailyChart({
 }) {
   const [providerSel, setProviderSel] = useState<string>(ALL)
   const [modelSel, setModelSel] = useState<string>(ALL)
+  // The day the keyboard slider selected; null shows no tooltip.
+  const [day, setDay] = useState<number | null>(null)
 
   // Provider option list: prefer the explicit API list, else derive from
   // whatever shows up in the daily entries (back-compat with old payloads).
@@ -217,6 +233,24 @@ export function TokenDailyChart({
     1,
   )
 
+  // The keyboard path to each day's figures, as on the Spend over time chart: the
+  // bar row is one slider, the arrows step the day, Home/End jump, Escape hides the
+  // tooltip, and the value text reads the selected day out.
+  const last = recent.length - 1
+  const selected = day ?? last
+  const stepTo = (e: KeyboardEvent) => {
+    const next =
+      e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? Math.max(0, selected - 1)
+      : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? Math.min(last, selected + 1)
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? last
+      : e.key === 'Escape' ? null
+      : undefined
+    if (next === undefined) return
+    e.preventDefault()
+    setDay(next)
+  }
+
   return (
     <div>
       {/* Filters */}
@@ -230,15 +264,30 @@ export function TokenDailyChart({
           )}
         </div>
       )}
-      {/* Bar chart */}
-      <div className="flex items-stretch gap-1 h-32 mb-3">
-        {recent.map(d => {
+      {/* Bar chart: one keyboard stop. The selected day's tooltip shows only for
+          keyboard focus (`:focus-visible`); a mouse click or a tap still shows
+          just the hovered day's. */}
+      <div
+        className="flex items-stretch gap-1 h-32 mb-3 group/days rounded outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--bg)]"
+        role="slider"
+        tabIndex={0}
+        aria-label={i18nT('pages.overview.usageTab.daily_token_usage')}
+        aria-orientation="horizontal"
+        aria-valuemin={0}
+        aria-valuemax={last}
+        aria-valuenow={selected}
+        aria-valuetext={dayFiguresText(recent[selected], providerSel, effectiveModel)}
+        onKeyDown={stepTo}
+        onFocus={() => setDay(cur => cur ?? last)}
+      >
+        {recent.map((d, i) => {
           const total = d.input + d.output + d.cacheCreate + d.cacheRead
           const pct = (total / maxTokens) * 100
           const inputPct = total > 0 ? (d.input / total) * pct : 0
           const outputPct = total > 0 ? (d.output / total) * pct : 0
           const cacheReadPct = total > 0 ? (d.cacheRead / total) * pct : 0
           const cacheCreatePct = total > 0 ? (d.cacheCreate / total) * pct : 0
+          const slide = last > 0 ? (i / last) * 100 : 50
           return (
             <div key={d.date} className="flex-1 h-full flex flex-col items-center gap-0.5 group relative">
               <div className="w-full flex flex-col justify-end" style={{ height: '100%' }}>
@@ -252,16 +301,20 @@ export function TokenDailyChart({
                 *  day's figures: the bar has no click action for iOS to drop,
                 *  and this tooltip is the only place those numbers appear on
                 *  screen. Hidden from assistive technology, which reads the
-                *  same figures from the list after the chart. */}
-              <div aria-hidden="true" className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
+                *  same figures from the list after the chart. Under keyboard focus
+                *  only the selected day's shows, over any hovered one. Centred on its
+                *  bar for a pointer; under keyboard focus slid along the row (left-aligned
+                *  on the first day, right-aligned on the last) so the selected day's
+                *  figures stay inside the card. */}
+              <div aria-hidden="true" style={{ ['--slide' as string]: `${slide}%`, ['--shift' as string]: `${-slide}%` }} className={`absolute top-0 left-1/2 -translate-x-1/2 group-focus-visible/days:left-[var(--slide)] group-focus-visible/days:translate-x-[var(--shift)] mt-1 hidden [.group:hover_&]:block ${i === day ? 'group-focus-visible/days:block' : 'group-focus-visible/days:hidden!'} bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none`}>
                 <DayFigures d={d} providerSel={providerSel} modelSel={effectiveModel} />
               </div>
             </div>
           )
         })}
       </div>
-      {/* The bars are drawn, and the tooltip shows only under a pointer, so
-          without this list a screen reader learns nothing about any day. */}
+      {/* The bars are drawn and the tooltip is hidden from assistive technology,
+          so this list is where a screen reader reads every day's figures. */}
       <ul className="sr-only">
         {recent.map(d => (
           <li key={d.date}>

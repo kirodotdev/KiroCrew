@@ -59,6 +59,7 @@ from kiro_crew.instances.token_mint import (
     refused_plugin_folder,
     refused_plugin_message,
     ssh_spawn_argv_env,
+    under_group_leader,
 )
 from kiro_crew.sandbox import without_python_env
 
@@ -358,7 +359,10 @@ class _SshTunnel:
         try:
             ssm = self._transport == "ssm"
             self._proc = await asyncio.create_subprocess_exec(
-                *argv,
+                # ssh runs under a leader shell that ends the ProxyCommand ssh
+                # leaves behind when it exits (token_mint.under_group_leader).
+                # spawn_env above was resolved for the ssh head, not the shell.
+                *(argv if ssm else under_group_leader(argv)),
                 # SSM only: `aws ssm start-session` prints every session-close
                 # notice to STDOUT (its own diagnostics go to a rolling log
                 # file), so this pipe is the ONLY place the reason a forward
@@ -465,14 +469,21 @@ class _SshTunnel:
         end-to-end health); after ``_PROBE_FAILS`` consecutive failures the
         tunnel is treated as a zombie (alive child, no forwarding) and the child
         is terminated — the existing ``_monitor`` then fires ``on_exit`` so
-        Stage 2 can rebuild/re-mint. Mirrors ``TunnelManager._probe_loop``.
+        Stage 2 can rebuild/re-mint.
 
         The check is :meth:`_forward_alive`, an end-to-end request through the
         forward — not :meth:`_port_reachable`. A bare TCP connect proves only
         that the local listener is bound, which a zombie forward satisfies while
         relaying nothing to the far end, so a connect-only probe can never
         observe the very stall it exists to catch.
+
+        A probe that runs out of ``_PROBE_HEALTH_TIMEOUT`` is a miss, but its
+        request stays open (see :meth:`_await_answer`). A far end that is alive
+        but slow answers it late; a forward that relays nothing never answers.
+        That late answer is the only thing that tells the two apart, so dropping
+        it would tear a working forward down every probe window.
         """
+        open_probes: set[asyncio.Task[bool]] = set()
         try:
             while not self._stopping and self.status.state == TunnelState.CONNECTED:
                 try:
@@ -482,7 +493,11 @@ class _SshTunnel:
                     pass  # interval elapsed — time to probe
                 if self._stopping or self.status.state != TunnelState.CONNECTED:
                     return
-                if await self._forward_alive():
+                open_probes.add(asyncio.ensure_future(self._forward_alive()))
+                if await self._await_answer(open_probes):
+                    # Older requests are stale once one answered: a late answer on
+                    # one of them must not stand in for the next probe.
+                    await self._cancel_probes(open_probes)
                     self._probe_failures = 0
                     # A proven end-to-end round trip is the signal that clears
                     # the self-heal attempt counter — not a bind-only rebuild.
@@ -519,6 +534,43 @@ class _SshTunnel:
             raise
         except Exception as exc:  # never let the probe loop crash silently
             logger.exception("Tunnel probe loop crashed for %s: %s", self._id, exc)
+        finally:
+            await self._cancel_probes(open_probes)
+
+    @staticmethod
+    async def _await_answer(open_probes: set[asyncio.Task[bool]]) -> bool:
+        """Wait up to ``_PROBE_HEALTH_TIMEOUT`` for ANY open probe to answer.
+
+        True as soon as one request completes with an HTTP response, the newest
+        or one an earlier miss left open. A request that ends without one (a
+        refusal, its own cap) leaves the set and is never an answer. With no
+        older request open, a refusal is therefore a miss at once.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _PROBE_HEALTH_TIMEOUT
+        while open_probes:
+            done, _pending = await asyncio.wait(
+                open_probes,
+                timeout=max(0.0, deadline - loop.time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                return False
+            open_probes.difference_update(done)
+            # Every done task is read, so none leaves an unretrieved exception.
+            answers = [not t.cancelled() and t.exception() is None and t.result() for t in done]
+            if any(answers):
+                return True
+        return False
+
+    @staticmethod
+    async def _cancel_probes(open_probes: set[asyncio.Task[bool]]) -> None:
+        """Cancel every open probe request and wait for each to close its session."""
+        for task in open_probes:
+            task.cancel()
+        if open_probes:
+            await asyncio.wait(open_probes, timeout=_PROBE_HEALTH_TIMEOUT)
+        open_probes.clear()
 
     async def _wait_until_ready(self) -> bool:
         """Poll the local forward until it accepts a connection or we time out.
@@ -648,9 +700,12 @@ class _SshTunnel:
         Probing the wrong path would still prove liveness, but the fargate
         container authorises before it routes and would log a ``control`` deny
         for each probe, so the right path keeps the probe silent in its logs.
-        Only a timeout or a connection error (no response at all) is a failure;
-        the caller's consecutive-failure threshold keeps one slow round trip
-        from tearing down a good tunnel.
+        Only a timeout or a connection error (no response at all) is a failure.
+        The request's own cap is the longest a missed request can wait and still
+        count, ``(threshold - 1) x (interval + budget) + budget`` (32s at the
+        defaults), not the per-probe budget: the probe loop judges the budget and
+        keeps a request open past it, so a slow far end's late answer still lands
+        here. The cap also bounds how many requests are open at once.
         """
         if self._local_port <= 0:
             return False
@@ -659,7 +714,10 @@ class _SshTunnel:
         health_path = FARGATE_HEALTH_PATH if self.status.turn_url else "/api/health"
         url = f"http://{_LOOPBACK}:{self._local_port}{health_path}"
         try:
-            timeout = aiohttp.ClientTimeout(total=_PROBE_HEALTH_TIMEOUT)
+            # The teardown is decided this long after a miss's request starts,
+            # so an answer any later could never count.
+            cap = (self._probe_fails - 1) * (_PROBE_INTERVAL + _PROBE_HEALTH_TIMEOUT)
+            timeout = aiohttp.ClientTimeout(total=cap + _PROBE_HEALTH_TIMEOUT)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, allow_redirects=False) as resp:
                     # Any status line is proof the far end sent bytes back. A

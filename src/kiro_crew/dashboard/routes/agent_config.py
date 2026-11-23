@@ -115,6 +115,7 @@ def register(app: web.Application) -> None:
         allow_head=False,
     )
     app.router.add_get("/api/connections/oauth-clients", handlers.api_connections_oauth_clients)
+    app.router.add_get("/api/connections/app-manifests", handlers.api_connections_app_manifests)
     app.router.add_put(
         "/api/connections/oauth-clients/{slug}", handlers.api_connections_oauth_client_put
     )

@@ -515,15 +515,18 @@ class EvalRunner:
                 vector_store=vector_store,
             )
 
-            # Constructed on a running loop, where construction-time sync
-            # skips itself; eval runs standalone with no gateway to own the
-            # sync, so run the explicit seam in a worker thread (mirrors
-            # gateway startup). The loader targets a scenario-local skills
-            # dir: eval must never write quarantines into the user's real
-            # skills home, and a self-contained dir keeps scenarios
+            # Built in a worker thread (the constructor resolves every
+            # `skills.extra_paths` root, which blocks on a slow or network
+            # mount) and without the builtin sync: eval runs standalone with no
+            # gateway to own it, so run the explicit seam in a worker thread
+            # too (mirrors gateway startup). The loader targets a scenario-local
+            # skills dir: eval must never write quarantines into the user's
+            # real skills home, and a self-contained dir keeps scenarios
             # reproducible across machines. A failed sync must not fail the
             # scenario before it runs.
-            skills = SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            skills = await asyncio.to_thread(
+                lambda: SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            )
             try:
                 await asyncio.to_thread(skills.sync_builtins)
             except Exception:

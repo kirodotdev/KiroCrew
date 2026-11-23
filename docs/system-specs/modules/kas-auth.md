@@ -197,7 +197,9 @@ set, even to a bad value:
   `None` (unknown), so the Remote Crew launch form asks for a target.
 - `GET /api/models` serves the engine's recorded list
   (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
-  `--list-models`, which needs kiro-cli's own sign-in.
+  `--list-models`, which needs kiro-cli's own sign-in. It starts no probe, so a
+  cold answer is marked `"cold": true` and the page reads again (see
+  common/model-selection.md).
 - The relay lease reads `tunnel.relay_lease_credential` as a JWT-SVID only when
   it names the file `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` names
   (`RelaySettings.uses_workload_identity`); any other file and a `secret://`
@@ -302,9 +304,13 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   exchange has succeeded, and a failed or timed-out exchange, or a sign-in cancelled
   mid-exchange, gets a fixed failure page sending the user back to the dashboard's
   code. A callback carrying
-  `error` fails the sign-in at once, and the tab names the reason in fixed words for
-  each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
-  `error_description` included, reaches the page.
+  `error` (with this sign-in's `state`, or none) fails the sign-in at once, and the
+  tab names the reason in fixed words for each RFC 6749 §4.1.2.1 code
+  (`_PORTAL_ERROR_REASONS`); nothing the request carries, `error_description`
+  included, reaches the page. Every page the tab can land on (signed in, failed,
+  already finished, replaced, wrong address) is one titled HTML page, "Kiro Crew
+  sign-in", whose line sends the user back to the Kiro Crew dashboard (`_page`); a
+  stray hit without this sign-in's `state` gets a plain-text "Not found.".
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
@@ -562,6 +568,11 @@ access token.
   existing credential-redaction floor).
 - The child process running any browser-open MUST bind the callback listener to
   `127.0.0.1` only.
+- `GET /api/kas-login` takes the same owner gate as the sign-in routes beside it and
+  `GET /api/kas-login/sources` (`dashboard/handlers/kas_login._require_owner`, i.e.
+  `is_owner_dashboard_request`: the owner and Shared Crew teammates with owner rights).
+  Anyone else, an app token included, gets an audited 403 `owner_only` before the
+  store or the config is read.
 - The loopback sign-in listener (`auth/login/portal.py:bind_allowed_port`) claims its
   port per platform: `SO_REUSEADDR` on POSIX (a rebind through `TIME_WAIT`; a live
   listener still refuses it) and `SO_EXCLUSIVEADDRUSE` on Windows, where two listeners
@@ -690,7 +701,14 @@ engine instead ([aws-control.md](aws-control.md)).
   the 409 and the user's own "Use a code instead" keep "couldn't come back to this
   computer directly" as a status line. `POST /api/kas-login/cancel` abandons a
   pending sign-in and releases the loopback callback port at once instead of at its
-  deadline.
+  deadline. Start over re-binds that same port, so a tab of the replaced sign-in can
+  come back to the new listener: a callback carrying another sign-in's `state` gets a
+  "replaced by a newer one" page and changes nothing (one with no `state` still fails
+  the sign-in). After a successful sign-in the listener keeps answering until the
+  attempt's deadline, so a second tab gets an "already finished" page rather than the
+  browser's error for a closed port. A new sign-in inside that window retires it first,
+  as it does an older pending one, so it can take the same port; a sign-out does not
+  cut that window short: the listener only answers pages and changes nothing.
 - Wiring `KasAuthProvider` to the running engine is done through the kiro-cli relay
   (`acp/kas_host_auth.py` + the `_kiro/auth/getAccessToken` handler on
   `AcpRuntime`'s reader loop). Verified end-to-end against a real kiro-cli release
@@ -900,7 +918,9 @@ engine instead ([aws-control.md](aws-control.md)).
   state already reports (`useOutageFailure`, as the app-level notice does); the
   dashboard window, a chat embedded in one of its pages (an artifact's companion
   chat) included, leaves it to that app-level notice, which reads the same
-  endpoint.
+  endpoint. A read refused as `owner_only` (a caller who is not the owner) is shown
+  in no frame and is not polled again, so that caller's row never gains Resume; the
+  composer's Resume, or sending the message again, still reruns the turn.
   Its intro sentence says Kiro Agent and
   other Kiro features run as this account whichever harness is picked, and that
   Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
@@ -1061,7 +1081,16 @@ engine instead ([aws-control.md](aws-control.md)).
   check sign-in status", with a plain-language line saying to sign in again
   if the sign-in stopped working or to ask the agent (the
   server's error goes to the hand-off, not the visible text), since the
-  sign-in then goes unchecked. A config read that fails before any good read
+  sign-in then goes unchecked. A read refused as `owner_only` (a caller who is not
+  the owner, see Security invariants) is not a failure: the client does not journal
+  it on the status or the sources read, neither read polls it again, the notice
+  shows nothing, and the Settings card, the sign-in dialog and the Kiro account popup
+  show `components.kasLogin.owner_only` in place of the sign-in choices or an error.
+  A failed status read is not re-read when another `useKasLoginStatus` reader mounts
+  (`retryOnMount: false`): it stays on its error and Check again until the next poll,
+  since re-reading on mount, with the card swapping its spinner for the sign-in flow
+  (a new reader), would loop between the two.
+  A config read that fails before any good read
   shows "Could not read the dashboard settings" with the hand-off and no
   sign-in button or sign-in claim: it cannot say whether KAS runs the agents,
   and kiro-cli and Claude have no Kiro sign-in. It stays hidden while the

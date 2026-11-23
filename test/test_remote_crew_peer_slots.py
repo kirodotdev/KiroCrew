@@ -181,12 +181,18 @@ class TestRelayArchivesHideNoPeerRow:
         data = await _body(await hi.api_instances_chat_slots(_request(state)))
 
         assert data == [
-            {"running": False, "pending_approval": False, "needs_input": False},
+            {
+                "running": False,
+                "pending_approval": False,
+                "needs_input": False,
+                "needs_full_chat": False,
+            },
             {
                 "key": "peer-chat-9",
                 "running": False,
                 "pending_approval": False,
                 "needs_input": False,
+                "needs_full_chat": False,
                 "row_identity": "nobita:peer-chat-9",
             },
         ]
@@ -297,6 +303,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "running",
             "pending_approval",
             "needs_input",
+            "needs_full_chat",
             "last_turn_ts",
             "last_ts",
             "created",
@@ -327,6 +334,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "running": True,
             "pending_approval": True,
             "needs_input": True,
+            "needs_full_chat": True,
             "last_turn_ts": "2026-01-01T00:00:00Z",
             "last_ts": "2026-01-01T00:00:01Z",
             "created": "2025-12-31T00:00:00Z",
@@ -482,14 +490,22 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
     @pytest.mark.asyncio
     async def test_a_truthy_non_boolean_raises_no_badge_it_never_claimed(self, monkeypatch):
-        """``running``, ``pending_approval`` and ``needs_input`` are coerced.
+        """``running``, ``pending_approval``, ``needs_input`` and ``needs_full_chat`` are coerced.
 
         Truth-testing would let ``"running": "no"`` spin the activity indicator.
         """
         _enable_instances(monkeypatch)
         mgr = _manager(
             body=json.dumps(
-                [{"key": "p1", "running": "no", "pending_approval": 1, "needs_input": "yes"}]
+                [
+                    {
+                        "key": "p1",
+                        "running": "no",
+                        "pending_approval": 1,
+                        "needs_input": "yes",
+                        "needs_full_chat": "yes",
+                    }
+                ]
             ).encode()
         )
 
@@ -498,6 +514,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert data[0]["running"] is False
         assert data[0]["pending_approval"] is False
         assert data[0]["needs_input"] is False
+        assert data[0]["needs_full_chat"] is False
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
                 # The ultracode and Fast mode routes' shared writer.
                 ("chat_api/slot_effort.py", "_write_session_switch"),
+                # The approve-for-me route restarts only an idle session; a running
+                # turn refuses the switch with 409 and changes nothing.
+                ("chat_api/slot_effort.py", "api_chat_slot_approve_for_me"),
+                # A mode change ends approve-for-me but never resets a session a
+                # turn holds or that waits on a person; the restart waits for idle.
+                ("chat_api/slot_effort.py", "_restart_for_approve_for_me"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
@@ -279,6 +285,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The idle sweep never picks or pops a slot holding a reservation.
                 ("slot_retention.py", "_still_idle_check"),
                 ("slot_retention.py", "select_idle_slot_keys"),
+                # The idle window release leaves a slot a send has reserved alone:
+                # the turn it admits reads the window it would shorten.
+                ("slot_window_release.py", "release_idle_windows"),
                 ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.

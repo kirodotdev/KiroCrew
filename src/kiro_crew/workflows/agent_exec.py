@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 
 from kiro_crew.acp_backends import (
     backend_from_stored,
+    requested_kiro_pick,
     selectable_backends,
     selectable_stored_backend_values,
 )
@@ -139,12 +140,14 @@ def step_backend_kwargs(opts: dict) -> dict[str, str]:
     backend = backend_from_stored(name)
     if backend is None:
         return {}
-    if not isinstance(backend, str) or backend not in selectable_backends():
+    selectable = selectable_backends()
+    if not isinstance(backend, str) or backend not in selectable:
         raise WorkflowSpawnRefused(
             f"backend {name!r} is not available; choose one of "
             f"{selectable_stored_backend_values()}"
         )
-    return {"backend_override": backend}
+    # "kiro" runs where a saved Kiro CLI pick runs, as spawn_run(backend="kiro") does.
+    return {"backend_override": requested_kiro_pick(backend, selectable) or backend}
 
 
 def step_session_name(opts: dict) -> Optional[str]:

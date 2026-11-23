@@ -222,6 +222,11 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     if single_outcome == OUTCOME_OK and not _flush_only and info.served_model_unverified:
         _model_note = f"Warning: Agent `{info.id}` {UNVERIFIED_MODEL_NOTE}"
         no_tools_note = f"{no_tools_note}\n{_model_note}" if no_tools_note else _model_note
+    # An isolated run (``spawn_run`` ``isolate``) names its worktree and commits,
+    # whatever its outcome: a failed run may have committed too.
+    _worktree_note = "" if _flush_only else str(getattr(info, "worktree_note", "") or "")
+    if _worktree_note:
+        no_tools_note = f"{no_tools_note}\n{_worktree_note}" if no_tools_note else _worktree_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"
@@ -413,6 +418,7 @@ def _subagent_wave_digest(
                     if result_path and getattr(info, "_answer_finished", False)
                     else ""
                 )
+                + (f"\n  {no_tools_note}" if no_tools_note else "")
             )
         _last = bp["total"] > 0 and bp["done"] >= bp["total"]
         if not _last:

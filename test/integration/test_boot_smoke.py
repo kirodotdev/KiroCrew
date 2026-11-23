@@ -482,6 +482,11 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.platform.context", "_GOVERNANCE_GENERATION"): "counter",
     # The trust verdict's install counter: monotonic, no home state.
     ("kiro_crew.approval_mode_policy", "_ceiling_gen"): "counter",
+    # Approve-for-me's owner check: each boot installs one bound to its own
+    # dashboard state (``dashboard.approve_for_me.install``), replacing the last.
+    ("kiro_crew.acp.kas_approve_for_me", "_owner_check"): "rebuilt by each boot",
+    # Whether the engine sends its approve-for-me verdict: re-read by each boot.
+    ("kiro_crew.acp.kas_approve_for_me", "_ENGINE_SUPPORT"): "re-read by each boot",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",
     # Host facts re-probed on their own TTL or backoff: the user login session
     # behind cgroup scopes and the machine's own host names. A boot that

@@ -260,6 +260,9 @@ describe('transcript scroll shell pane width', () => {
     onTestFinished(() => { vi.useRealTimers() })
     const { container, unmount } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    // The observer's first delivery, which a browser makes after its first
+    // layout, publishes the starting width.
+    act(() => { FakeResizeObserver.instance?.fire() })
     expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
     // Inheritance down to the rows and the measure farm is a browser fact jsdom
     // does not model; scripts/capture-chat-table-breakout.mjs measures it.
@@ -297,6 +300,7 @@ describe('transcript scroll shell pane width', () => {
     onTestFinished(() => { vi.useRealTimers() })
     const { container } = render(<Shell />)
     const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    act(() => { FakeResizeObserver.instance?.fire() })
     // A resize still waiting to rest when the slide starts must not publish
     // in the middle of it.
     act(() => { paneWidth = 1200; FakeResizeObserver.instance?.fire() })

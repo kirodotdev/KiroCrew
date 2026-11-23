@@ -474,6 +474,32 @@ def test_a_shutdown_drain_that_runs_out_with_relay_work_left_says_so(_live_crew_
     assert "3 relay decision(s) pending" in caplog.text
 
 
+def test_a_shutdown_drain_that_runs_out_names_what_is_claimed_when_it_gives_up(caplog):
+    """The warning reads the claimed count when it reads the buffered one, so a batch a lane
+    claimed after the last round's drain answered is named, not reported as 0."""
+    import itertools
+    import logging
+    import time
+    import types
+
+    from kiro_crew.crew_log import emit_runtime
+
+    writer = emit_runtime._writer()
+    timeout = default_timeout()
+    caplog.set_level(logging.WARNING, logger=emit_runtime.logger.name)
+    with pytest.MonkeyPatch.context() as patch:
+        # A wake noted between every two reads: a drained writer never ends the rounds.
+        patch.setattr(work_relay_feed, "generation", itertools.count().__next__)
+        # A lane holds a claimed batch of 4 by the time the rounds give up.
+        claimed = types.SimpleNamespace(buffered=0, claimed=4)
+        patch.setattr(writer, "stats", lambda: claimed)
+        # Past the deadline: the first round drains on its floor alone, the second gives up.
+        started = time.monotonic() - 2 * timeout
+        drained = emit_runtime._drain_writer_and_relay(writer, started, timeout)
+    assert drained is False
+    assert "0 append(s) buffered, 4 entry(ies) claimed" in caplog.text
+
+
 def test_the_writer_shutdown_drain_can_run_again_after_more_is_written(_live_crew_log):
     """A second ``drain_for_shutdown`` on the same writer writes what was queued since."""
     from kiro_crew.crew_log import emit_runtime

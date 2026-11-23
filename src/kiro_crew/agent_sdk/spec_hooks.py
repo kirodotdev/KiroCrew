@@ -808,8 +808,7 @@ def _from_documents(
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _event_for_hook_trigger, normalize_spec_hooks
 
-    # The normalizer drops a document whose command is too long before this loop
-    # sees it, so name the hook and the fix here.
+    # The normalizer drops a too-long command before this loop: name the hook and fix here.
     for overlong in _overlong_commands({"hooks": hooks}):
         logger.warning(
             "agent %r: spec hook on %s does not run on this backend: %s",
@@ -818,16 +817,21 @@ def _from_documents(
             _overlong_reason(overlong.matcher, overlong.length, overlong.limit),
         )
     out: list[ScriptHook] = []
-    for index, doc in enumerate(normalize_spec_hooks(hooks, matcher_ok=_matcher_ok)):
-        if past_cap is not None and len(out) >= _MAX_SPEC_HOOKS:
-            past_cap.append(str(doc.get("trigger")))
-            continue
-        if len(out) > _MAX_SPEC_HOOKS:
-            break
+    index = -1
+    for doc in normalize_spec_hooks(hooks, matcher_ok=_matcher_ok):
         trigger = doc.get("trigger")
         raw_action = doc.get("action")
         action: dict = raw_action if isinstance(raw_action, dict) else {}
         command = action.get("command")
+        if trigger in ("PreCompact", "PostCompact"):  # unnumbered: policy names are by index
+            _reject(agent_id, trigger, command, "no Crew hook event can run this trigger or action")
+            continue
+        index += 1
+        if past_cap is not None and len(out) >= _MAX_SPEC_HOOKS:
+            past_cap.append(str(trigger))
+            continue
+        if len(out) > _MAX_SPEC_HOOKS:
+            break
         if doc.get("enabled") is False:
             _reject(agent_id, trigger, command, "hook is disabled")
             continue
@@ -844,20 +848,16 @@ def _from_documents(
         if event is None or action.get("type") != "command":
             _reject(agent_id, trigger, command, "no Crew hook event can run this trigger or action")
             continue
-        # The document's timeout is in seconds, clamped like a Hooks-page hook's.
         hook = _hook(
             agent_id,
             event,
             index,
             {"command": command, "matcher": doc.get("matcher")},
-            _normalize_hook_timeout(doc.get("timeout")),
+            _normalize_hook_timeout(doc.get("timeout")),  # seconds, clamped like Hooks-page hooks
         )
         if hook is not None:
-            # Pure side-count: a document that converts to a runnable hook while
-            # the kept list is already at the cap is recorded for the caller that
-            # asked (``cap_overflow``) and still appended, so the cap / break and
-            # what is kept are exactly as on the no-counter path. The spec-hook
-            # callers pass no list and ``_convert`` audits the overflow as before.
+            # Pure side-count: a runnable hook met at the cap goes in ``cap_overflow`` and is still
+            # appended, so cap, break and kept list match ``_convert``'s no-counter path.
             if cap_overflow is not None and len(out) >= _MAX_SPEC_HOOKS:
                 cap_overflow.append(index)
             out.append(hook)

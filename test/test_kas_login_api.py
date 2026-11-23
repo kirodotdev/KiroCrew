@@ -391,11 +391,14 @@ async def test_logout_store_failure_returns_coded_500():
 
 
 @pytest.mark.asyncio
-async def test_status_open_to_non_owner():
-    # status is a read (no credential mutation), so it stays available to any
-    # allowed dashboard user.
-    resp = await api_kas_login_status(_FakeRequest(_StubService(), owner=False))
-    assert resp.status == 200
+async def test_status_refuses_non_owner():
+    # Same owner gate as the sign-in routes: a non-owner dashboard caller gets an
+    # audited 403 and the stored sign-in is never read.
+    svc = _StubService()
+    resp = await api_kas_login_status(_FakeRequest(svc, owner=False))
+    assert resp.status == 403
+    assert _body(resp)["code"] == "owner_only"
+    assert svc.calls == []
 
 
 @pytest.mark.asyncio
@@ -558,12 +561,12 @@ async def test_wait_for_callback_accepts_signin_path():
 
 
 @pytest.mark.asyncio
-async def test_wait_for_callback_state_mismatch_raises():
+async def test_wait_for_callback_without_state_raises():
     sock, port = _bound_loopback()
     task = asyncio.create_task(wait_for_callback(sock, port, "expected", _echo, timeout_secs=10))
     await asyncio.sleep(0.05)
-    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c", "state": "evil"})
-    with pytest.raises(PortalAuthError, match="state mismatch"):
+    await _hit(port, "/oauth/callback", {"login_option": "google", "code": "c"})
+    with pytest.raises(PortalAuthError, match="carried no state"):
         await await_until(task, timeout=5)
 
 

@@ -3,6 +3,7 @@ import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRo
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
+import { CrewModeComposerChip } from './crew/CrewModeMarks'
 import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
@@ -10,6 +11,7 @@ import { useQuery } from '@tanstack/react-query'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import SearchBar from './SearchBar'
 import SearchHighlightContext from '../hooks/SearchHighlightContext'
+import JumpRevealContext from '../hooks/JumpRevealContext'
 import { useChatPaneFind } from '../hooks/useChatPaneFind'
 import { RunInTerminalOriginSlot } from './runInTerminalScope'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
@@ -93,13 +95,15 @@ import { useChatPaneDraft } from './useChatPaneDraft'
 import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
-import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
+import { ChatPaneAgentMenu, ChatPaneModelMenu, ChatPaneProjectMenu } from './ChatPanePickerMenus'
 import { useChatPaneSend } from './useChatPaneSend'
 import { useChatPaneStop, useChatPaneRunSync } from './useChatPaneTurnControl'
 import { useChatPaneContinue } from './useChatPaneContinue'
 import { useChatPaneRenderers, ChatPaneAboveRows } from './ChatPaneTranscript'
+import { useQuoteJump } from '../pages/chat/useQuoteJump'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
+import { platformShortcut } from '../utils/platform'
 
 export type { PaneLeading } from './ChatPaneProps'
 // Side Chat runs the same upload flow under a key of its own.
@@ -796,11 +800,26 @@ export default function ChatPane({
   // The slot whose playback the browser blocked, as the crewmate's
   // VoicePlaybackNotice reports it; its replies reveal their action rows.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
-  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
+  const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
   const find = useChatPaneFind({ enabled: findInChat, messages: listMessages, slotKey, displayItemsRef: pinItemsRef, listRef, scrollerRef })
   // The open find bar floats over the scroller's top edge; the scroller pays
   // for that strip so the first row and a centred match are not under it.
   const findBarH = find.search.isOpen ? FIND_BAR_CLEARANCE_PX : 0
+  // A sent quote card lands its row in THIS pane's transcript, through the
+  // pinned prompt's virtualized glide (the row may not be mounted). Exact: the
+  // quoted row itself, never the head of the prompt run above it.
+  const quoteJump = useQuoteJump({
+    messages: listMessages,
+    getDisplayItems,
+    land: (index) => pin.jumpToPinnedPromptInPlace(index, {
+      mountIndex: (i, opts) => listRef.current?.mountIndex(i, opts) ?? false,
+      estimateRowTop: (i) => listRef.current?.estimateRowTop(i) ?? null,
+    }, { exact: true }),
+    resetKey: slotKey,
+    fold: { messages, open: unfold },
+    scrollerEl: () => scrollerRef.current,
+    claimScroll: pin.cancelJumpInPlace,
+  })
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
   // layout, shared measurement): `dockH` is what the scroller pays below its
@@ -853,7 +872,11 @@ export default function ChatPane({
         data-pane-slot={slotKey}
         data-chat-scope=""
         {...dropTargetProps}
-        className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
+        /* No background of its own, like the single chat page's pane: each
+           host paints `bg-bg` under it (the split grid, the side panel, the
+           shell under a Bot's chat), and where that host is the shell a
+           `layer: "behind"` theme overlay shows through the chat. */
+        className={`relative flex flex-col h-full min-h-0 overflow-hidden ${
           frameless
             ? ''
             : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
@@ -918,7 +941,7 @@ export default function ChatPane({
               : <span data-testid="chat-pane-status-caption" className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>
           )}
           {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />
             </button>
           )}
@@ -1005,6 +1028,7 @@ export default function ChatPane({
         <ChatProjectDirCtx.Provider value={paneProjectDir}>
           <RunInTerminalOriginSlot.Provider value={crewmate ? slotKey : null}>
           <SearchHighlightContext.Provider value={find.highlight}>
+          <JumpRevealContext.Provider value={quoteJump.reveal}>
           <ChatMessageList
             ref={listRef}
             messages={listMessages}
@@ -1033,6 +1057,7 @@ export default function ChatPane({
             searchRows
             onQuote={onQuote}
             onQuoteMessage={messageQuote.quoteMessage}
+            onJumpToQuote={quoteJump.onJumpToQuote}
             onAsk={onAsk}
             threads={threads}
             onFileOpen={onFileOpen}
@@ -1132,6 +1157,7 @@ export default function ChatPane({
               ),
             }}
           />
+          </JumpRevealContext.Provider>
           </SearchHighlightContext.Provider>
           </RunInTerminalOriginSlot.Provider>
         </ChatProjectDirCtx.Provider>
@@ -1211,6 +1237,13 @@ export default function ChatPane({
 
         {/* The composer's notices are kept clear like the composer itself. */}
         <div data-testid="chat-pane-composer-notices" {...GUIDE_KEEP_CLEAR}>
+        {/* Opaque under the warn tint, as the main chat's jump notice is: it
+            floats over the transcript rows passing under the dock. */}
+        {quoteJump.notice && (
+          <div className="mx-4 mt-2 mb-0 rounded-lg bg-bg-elevated animate-rise">
+            <StatusNotice testId="chat-pane-quote-unavailable" message={quoteJump.notice} onDismiss={quoteJump.dismissNotice} />
+          </div>
+        )}
         <StatusNotice
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="chat-pane-upload-hint"
@@ -1417,6 +1450,10 @@ export default function ChatPane({
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
+          // The conductor mode bolt in the agent spot, as ComposerDockView draws it, and
+          // before the first message too: a pane has no chip row to hold the pressed chip.
+          // On a crew member it names the role.
+          agentBadge={showsAsCrewMode(paneSlot) ? <CrewModeComposerChip /> : paneCrewRoot ? <CrewModeComposerChip worker /> : undefined}
           // A Crew Mode root with a message offers no switch, preview on or off: the raw
           // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
           onAgentClick={!agentLocked && (panePickerKept || !showsAsCrewMode(paneSlot))
@@ -1470,6 +1507,11 @@ export default function ChatPane({
           project={paneSlot?.project ?? ''}
           turnProject={paneSlot?.turn_project}
           turnProjectFallback={paneSlot?.turn_project_fallback}
+          // No `projectBranch`: its copy button would make the agent/project
+          // chip group three buttons, over `max-two-buttons-per-row`.
+          projectLocked={pickerModels.projectLocked}
+          projectSwitching={pickerActions.projectSwitching}
+          onProjectClick={(rect, trigger) => { pickerModels.anchorProjectBtn(rect, trigger); pickerModels.setProjectPickerOpen(o => !o) }}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list
@@ -1502,6 +1544,8 @@ export default function ChatPane({
         <ChatPaneAgentMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
 
         <ChatPaneModelMenu slotKey={slotKey} paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
+
+        <ChatPaneProjectMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} />
 
       </div>
     </SlotProvider>

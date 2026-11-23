@@ -825,7 +825,8 @@ describe('CrewLogTab', () => {
     // (the macOS desktop app often does not paint one, and focus never opens it).
     for (const [cell, full] of [[cells[0], 'kirocrew-knowledge'], [cells[1], 'a-model']] as const) {
       const line = within(cell).getByText(full)
-      expect(cell.querySelector('[title]')).toBeNull()
+      expect(line).toHaveAttribute('title', '')
+      expect(cell.querySelector('[title]:not([title=""])')).toBeNull()
       expect(cell).not.toHaveAttribute('title')
       expect(line).toHaveAttribute('tabindex', '0')
       fireEvent.focus(line)

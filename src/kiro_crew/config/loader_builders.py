@@ -822,6 +822,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
         kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
+        kas_auth=section.get("kas_auth"),
+        kas_token_path=section.get("kas_token_path"),
+        kas_endpoint=section.get("kas_endpoint"),
+        kas_control_plane_endpoint=section.get("kas_control_plane_endpoint"),
+        kas_region=section.get("kas_region"),
+        kas_machine_env_drop=section.get("kas_machine_env_drop"),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
@@ -967,6 +973,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
         windows_background_qos=section.read("windows_background_qos", _safe_bool),
         subagent_light_tier=section.read("subagent_light_tier", _safe_bool),
+        subagent_light_lean_context=section.read("subagent_light_lean_context", _safe_bool),
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
         resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
         resource_critical_gb=section.read("resource_critical_gb", _safe_float),
@@ -1152,6 +1159,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # for the other ten, is the RANGE: an int of 999999999 loaded verbatim.
         timeout_secs=section.read(
             "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
+        ),
+        automated_idle_timeout_secs=section.read(
+            "automated_idle_timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
         idle_exempt_keys=_load_idle_exempt_keys(section.get("idle_exempt_keys")),
         empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
@@ -1461,6 +1471,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)

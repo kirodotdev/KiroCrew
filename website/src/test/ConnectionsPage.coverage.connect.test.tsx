@@ -54,6 +54,7 @@ vi.mock('../api/client', () => ({
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
     connectionsTest: (...a: unknown[]) => connectionsTest(...a),
+    connectionsAppManifests: () => Promise.resolve({ schema_version: 1, apps: {} }),
   },
 }))
 
@@ -257,6 +258,11 @@ describe('connecting a new provider', () => {
     },
     {
       reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
+    },
+    {
+      reason: 'mint_kiro_cli_signed_out',
       state: 'failed',
       expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
     },

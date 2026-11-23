@@ -1953,6 +1953,24 @@ def test_note_is_redacted_everywhere(tmp_path, monkeypatch):
     assert "NOTEsecretVALUE1234567890" not in r.github_issue_url
 
 
+@pytest.mark.parametrize("prefix", ["Bearer ", "Authorization: "], ids=["bearer", "header"])
+def test_note_secret_is_counted_in_redaction_tally(tmp_path, monkeypatch, prefix):
+    """A secret scrubbed from the note counts once toward the bundle's redaction total."""
+    _isolate(monkeypatch, tmp_path / "home")
+    secret = "NOTEsecretVALUE1234567890"
+    r = diagnostics.collect_bundle(
+        note=f"it broke, I sent {prefix}{secret}\nand got a 500", output_dir=tmp_path / "out"
+    )
+    with zipfile.ZipFile(r.zip_path) as z:
+        versions = z.read("versions.txt").decode()
+        manifest = json.loads(z.read("manifest.json"))
+    assert secret not in versions and "[REDACTED]" in versions
+    assert r.redaction_summary["versions.txt"] == 1, r.redaction_summary
+    assert r.total_redactions == manifest["total_redactions"] == 1, r.redaction_summary
+    context = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+    assert "1 secret(s) auto-redacted" in context, context
+
+
 def test_old_bundles_are_pruned(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

@@ -298,6 +298,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_put("/api/apps/{name}/bot-grants", handle_bot_grants)
     # An app's calls to its approved Kiro operations (`permissions.kiroOperations`).
     register_kiro_call_routes(app)
+    # The owner's edits of the pages the app's own agent may browse.
+    from kiro_crew.apps.browser_sites_routes import register_browser_sites_routes
+
+    register_browser_sites_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
@@ -472,6 +476,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
+        _read_config_bytes,
         _stamp_installed_trust_repository,
         collect_publish_providers,
     )

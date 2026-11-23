@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 from kiro_crew import agent
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
@@ -30,7 +32,7 @@ def _section(body: str, heading: str, next_heading: str) -> str:
 
 
 def _goal() -> str:
-    return _flat(GOAL_SKILL.read_text(encoding="utf-8"))
+    return _flat(skill_text(GOAL_SKILL))
 
 
 def test_goal_conductor_steers_a_working_fleet_like_one_worker():
@@ -114,7 +116,7 @@ def test_goal_conductor_records_each_slip_and_saves_lessons():
 
 
 def test_team_lead_carries_only_the_routine_incident_delta():
-    skill = _flat(TEAM_LEAD_SKILL.read_text(encoding="utf-8"))
+    skill = _flat(skill_text(TEAM_LEAD_SKILL))
     section = _section(skill, "## 5. Running the team itself", "## 6. When another conductor")
     assert "**Fix a routine incident yourself when it fits one turn.**" in section
     prompt = _flat(agent._TEAM_LEAD_SYSTEM_PROMPT)

@@ -1189,6 +1189,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_stub_eligibility", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/mcp_probe.py": [("api_mcp_active", "dashboard")],
+    "kiro_crew/dashboard/handlers/request_server_page.py": [("mcp_card_share", "dashboard")],
     # The side chat reads the base spec in both scopes under one label. The two
     # ``agent_mode_refusal`` reads word an ACP refusal on any channel, so "unknown";
     # ``side_readonly_reap`` is gateway maintenance, so "unknown" as well.

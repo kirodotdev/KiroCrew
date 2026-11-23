@@ -1312,9 +1312,9 @@ async def create_session(
         #   nothing here can observe. An unattended worker that needs one gets its
         #   own, armed by whatever owns its lifecycle.
         #
-        # Not persisted at birth, matching every other slot: trust is in-memory by
-        # construction, so a restart returns the child to interactive along with
-        # its creator.
+        # Not recorded as the child's own: a posture handed down at birth is not
+        # kept across a restart (``chat_trust_restart``), and the child takes it
+        # again from its creator when the creator's kept mode comes back.
         #
         # A crewmate's own worker is the exception: it takes the crewmate's
         # Profile Permissions from the crew record (`crewmate_approval`), the

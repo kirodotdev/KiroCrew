@@ -20,6 +20,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
+from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.token_auth import (
     _api_pattern_matches,
     _app_owns_path,
@@ -374,7 +375,7 @@ async def test_a_v1_route_without_a_credential_is_refused_with_the_crew_api_erro
         "error": {
             "type": "authentication_error",
             "code": "invalid_token",
-            "message": "Token required",
+            "message": f"Token required {CREDENTIAL_HINT}",
             "param": None,
             "request_id": "req_noauth1",
         }
@@ -407,7 +408,7 @@ async def test_an_app_token_on_an_owner_route_is_refused_as_owner_only(monkeypat
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware()
     token = generate_token("file-explorer", app="file-explorer")
-    req = _make_request(path="/v1/crew/owner/bots", query={"token": token})
+    req = _make_request(path="/v1/crew/owner/bots", headers={"Authorization": f"Bearer {token}"})
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
     error = json.loads(resp.body)["error"]

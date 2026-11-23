@@ -292,6 +292,14 @@ def handle_focus_frame(
     if slot is None or not is_brief_thread(slot):
         _skip(slot_key, "not_member_thread")
         return
+    # The owner's off switch, from the live watcher's in-memory snapshot (boot
+    # primes it), so the loop never reads config.json; no snapshot reads as on.
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is not None and not cfg.dashboard.warm_task_brief:
+        _skip(slot_key, "turned_off")
+        return
     tasks = state._warm_task_brief_tasks
     existing = tasks.get(slot_key)
     if existing is not None and not existing.done():

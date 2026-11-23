@@ -604,6 +604,11 @@ def _read_created_by(r: _Read) -> None:
             claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
         )
         r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
+        # A fence here is a verdict on what the tree held at THIS moment. The tree can
+        # learn the creation record later in the same process, so the claim is kept for
+        # ``session_revive.reconfirm_restored_creators``, which re-checks it on each tree
+        # change and lifts the fence only when the crew log names this creator.
+        r.slot._unconfirmed_creator = "" if verified else claimed
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).
@@ -1713,8 +1718,18 @@ def _own_link(meta: Mapping[str, Any], history_key: str, prefix: str | tuple[str
 
 
 def own_cron_link(meta: Mapping[str, Any], history_key: str) -> str:
-    """The line's ``cron:`` link when it names *history_key*'s own file, else ``""``."""
-    return _own_link(meta, history_key, "cron:")
+    """The ``cron:`` key of *history_key*'s own file, else ``""``.
+
+    The line's link when it names that file. An existing ``cron_<job id>``
+    transcript that no tab ever saved carries no link, so it gets the key its
+    job's tab ``cron-<job id>`` restores to (``slot_transcript_key``). No other
+    cron transcript is keyed by its name.
+    """
+    if meta.get("linked_session_key"):
+        return _own_link(meta, history_key, "cron:")
+    stem = transcript_stem(history_key)
+    key = slot_transcript_key("cron-" + stem.removeprefix("cron_"))
+    return key if meta and stem.startswith("cron_") and key.startswith("cron:") else ""
 
 
 def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
@@ -1738,7 +1753,10 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
         # Unbound, the slot of a cron transcript, or of a task-runner review
         # transcript the dashboard user reopens, saves to a second ``dashboard:`` file.
         kinds = ("cron:",) if purpose.app else ("cron:", "taskrunner:")
-        if link := _own_link(meta, purpose.history_key, kinds):
+        link = _own_link(meta, purpose.history_key, kinds)
+        if not link and not purpose.app:
+            link = own_cron_link(meta, purpose.history_key)
+        if link:
             args["linked_session_key"] = link
     else:
         args["app"] = meta.get("app", "")

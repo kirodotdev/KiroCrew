@@ -758,7 +758,7 @@ class CodexMirror(AgentConfigMirror):
         cannot discover them, and they are not decoration: a codex stdio child
         starts from ``env_clear()`` plus an allowlist, so without them Crew's own
         control plane comes up with no session to act on, and the out-of-band
-        session-directive path (``dashboard/directive_queue``) -- the one that
+        session-directive path (``directive_queue``) -- the one that
         carries ``monitor_start`` and friends on a backend emitting no
         ``_meta.kiro`` -- has nothing to claim against.
 

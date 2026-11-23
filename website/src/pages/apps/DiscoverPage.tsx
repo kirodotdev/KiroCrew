@@ -109,11 +109,17 @@ function BrowseCardFallback({ label, message, className }: { label?: string; mes
  * hijack it. (The key is still cleared either way.)
  */
 export default function DiscoverPage() {
-  const { pathname } = useLocation()
-  const stored = sessionStorage.getItem('appstore-tab')
-  const legacyLibrary = stored === 'library' || stored === 'installed'
+  const { pathname, state } = useLocation()
+  // Decided once per mount: a re-render before the redirect lands (the key is
+  // gone by then) must not fall through to the body, which would consume the
+  // router state and replace the URL back to /apps.
+  const [legacyLibrary] = useState(() => {
+    const stored = sessionStorage.getItem('appstore-tab')
+    return (stored === 'library' || stored === 'installed') && pathname !== UPDATES_PATH
+  })
   useEffect(() => { sessionStorage.removeItem('appstore-tab') }, [])
-  if (legacyLibrary && pathname !== UPDATES_PATH) return <Navigate to="/apps/library" replace />
+  // Router state (an uninstall's notice) is for whichever page this lands on.
+  if (legacyLibrary && pathname !== UPDATES_PATH) return <Navigate to="/apps/library" replace state={state} />
   return <DiscoverPageBody />
 }
 

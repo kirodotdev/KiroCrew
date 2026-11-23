@@ -7,6 +7,7 @@ const {
   deepLinkFromArgv,
   isAppName,
   isCrewName,
+  isMemberName,
   isSshHost,
   resolveDeepLink,
 } = require("../deep-link");
@@ -294,6 +295,121 @@ describe("resolveDeepLink: a session on a remote crew", () => {
     // The pane's check on the posted key must accept exactly what the resolver let through.
     const crewLink = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "crewDeepLink.ts"), "utf8");
     assert.match(crewLink, /\/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}\$\/\.test\(v\)/);
+  });
+});
+
+describe("resolveDeepLink: the Bots page", () => {
+  it("members routes to the Bots page and carries no session", () => {
+    assert.deepEqual(resolveDeepLink("kirocrew://members"), { ok: true, route: "/members", slotKey: "" });
+    assert.deepEqual(resolveDeepLink("KIROCREW://MEMBERS"), { ok: true, route: "/members", slotKey: "" });
+  });
+
+  it("members?member= routes to that Bot by its roster name", () => {
+    assert.deepEqual(resolveDeepLink("kirocrew://members?member=code-reviewer"), {
+      ok: true,
+      route: "/members?member=code-reviewer",
+      slotKey: "",
+    });
+  });
+
+  it("re-encodes the name rather than copying the input", () => {
+    for (const [raw, name] of [
+      ["kirocrew://members?member=Code%20Reviewer", "Code Reviewer"],
+      ["kirocrew://members?member=C%2B%2B", "C++"],
+      ["kirocrew://members?member=%F0%9F%98%80%20bot", "\u{1F600} bot"],
+      ["kirocrew://members?member=P%C3%A9bble", "P\u00e9bble"],
+    ]) {
+      const r = resolveDeepLink(raw);
+      assert.deepEqual(r, { ok: true, route: `/members?member=${encodeURIComponent(name)}`, slotKey: "" }, raw);
+      assert.equal(new URL(r.route, "http://x.invalid").searchParams.get("member"), name, raw);
+    }
+  });
+
+  it("refuses anything but one member parameter on the bare page", () => {
+    for (const [raw, reason] of [
+      ["kirocrew://members?member=", "invalid member name"],
+      ["kirocrew://members?member=a%E2%80%AEb", "invalid member name"],
+      ["kirocrew://members?member=a%0Ab", "invalid member name"],
+      ["kirocrew://members?member=a%E2%80%8Db", "invalid member name"],
+      ["kirocrew://members?member=a&member=b", "repeated query parameter"],
+      ["kirocrew://members?create=1", "unknown query parameter"],
+      ["kirocrew://members?member=a&create=1", "unknown query parameter"],
+      ["kirocrew://members?team=core", "unknown query parameter"],
+      ["kirocrew://members?member=a&sid=k", "unknown query parameter"],
+      ["kirocrew://members/fixer", "unknown route"],
+      ["kirocrew://members/detail?member=a", "unknown route"],
+      ["kirocrew://members?member=a#profile", "fragment not allowed"],
+    ]) {
+      assert.deepEqual(resolveDeepLink(raw), { ok: false, reason }, raw);
+    }
+  });
+
+  it("caps the name at the gateway's 500 code points and the whole link at 8192 characters", () => {
+    const emoji = "\u{1F600}".repeat(500);
+    assert.equal(resolveDeepLink(`kirocrew://members?member=${"a".repeat(500)}`).ok, true);
+    assert.equal(resolveDeepLink(`kirocrew://members?member=${encodeURIComponent(emoji)}`).ok, true);
+    assert.deepEqual(resolveDeepLink(`kirocrew://members?member=${"a".repeat(501)}`), {
+      ok: false,
+      reason: "invalid member name",
+    });
+    assert.deepEqual(resolveDeepLink(`kirocrew://members?member=${"a".repeat(8192)}`), {
+      ok: false,
+      reason: "link too long",
+    });
+    const head = "kirocrew://members?member=";
+    const atCap = head + "%F0%9F%98%80".repeat(Math.floor((8192 - head.length) / 12));
+    assert.ok(atCap.length <= 8192 && atCap.length > 8192 - 12);
+    assert.equal(resolveDeepLink(atCap + "a".repeat(8192 - atCap.length)).reason, "invalid member name");
+    assert.equal(resolveDeepLink(atCap + "a".repeat(8193 - atCap.length)).reason, "link too long");
+  });
+
+  it("decodes + to a space, so a name holding + must be percent-encoded", () => {
+    assert.equal(resolveDeepLink("kirocrew://members?member=a+b").route, "/members?member=a%20b");
+    assert.equal(resolveDeepLink("kirocrew://members?member=C%2B%2B").route, "/members?member=C%2B%2B");
+  });
+
+  it("never returns a route outside the Bots page or with a key the page does not take", () => {
+    const probes = [
+      "kirocrew://members?member=fixer",
+      "kirocrew://members?member=%2F..%2Fsettings",
+      "kirocrew://members?member=x%26create%3D1",
+      "kirocrew://members?member=javascript:alert(1)",
+      "kirocrew://members/../chat?member=x",
+      "kirocrew://members?member=x%0D%0Ainjected",
+    ];
+    let resolved = 0;
+    for (const raw of probes) {
+      const r = resolveDeepLink(raw);
+      if (!r.ok) continue;
+      resolved += 1;
+      const url = new URL(r.route, "http://x.invalid");
+      assert.equal(url.pathname, "/members", raw);
+      assert.deepEqual([...url.searchParams.keys()], ["member"], raw);
+      assert.match(r.route, /^\/members\?member=[A-Za-z0-9_.~!*'()%-]+$/, raw);
+    }
+    assert.ok(resolved >= 3, `only ${resolved} probes resolved`);
+  });
+});
+
+describe("isMemberName admits every name the gateway can hold", () => {
+  // test/test_cli_open.py runs the same names through is_readable_member_name.
+  const samples = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "member-name-samples.json"), "utf8"));
+
+  it("accepts every readable sample", () => {
+    assert.ok(samples.readable.length > 0);
+    for (const name of samples.readable) assert.equal(isMemberName(name), true, JSON.stringify(name));
+  });
+
+  it("refuses every refused sample", () => {
+    assert.ok(samples.refused.length > 0);
+    for (const name of samples.refused) assert.equal(isMemberName(name), false, JSON.stringify(name));
+  });
+
+  it("counts code points, not UTF-16 units, and refuses non-strings", () => {
+    for (const value of [undefined, null, 7, ["a"], { name: "a" }]) assert.equal(isMemberName(value), false);
+    assert.equal(isMemberName("\u{1F600}".repeat(500)), true);
+    assert.equal(isMemberName("\u{1F600}".repeat(501)), false);
+    assert.equal(isMemberName("\ud83d"), false);
   });
 });
 

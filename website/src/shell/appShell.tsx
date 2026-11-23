@@ -18,6 +18,7 @@ import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
   isAppDetailPath,
+  isMembersPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -78,7 +79,7 @@ import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
 import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { shortcutEntry } from '../lib/shortcutRegistry'
-import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
+import { ariaKeyshortcutsFor, useKeyboardLayout, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -278,6 +279,8 @@ export function useAppShell() {
   // must not be advertised.
   const shortcutBindings = useShortcutBindings()
   const shortcutsEnabled = useShortcutsEnabled()
+  // Re-render once the keyboard layout loads: both focus-mode sentences name the chord's key.
+  useKeyboardLayout()
   const focusModeChordDef = (() => {
     if (!shortcutsEnabled) return null
     const entry = shortcutEntry('toggle-focus-mode')
@@ -982,11 +985,11 @@ export function useAppShell() {
         navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
-      // An app detail link names an app installed in the local Crew. Over a
+      // An app detail or Bots page link names an app or Bot in the local Crew. Over a
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
+      if ((isAppDetailPath(path) || isMembersPath(path)) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry

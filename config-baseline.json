@@ -38,6 +38,12 @@
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "kas_sso_start_url": "",
         "kas_sso_region": "",
+        "kas_auth": "acp-callback",
+        "kas_token_path": "",
+        "kas_endpoint": "",
+        "kas_control_plane_endpoint": "",
+        "kas_region": "",
+        "kas_machine_env_drop": [],
         "native_skill_projection": true,
         "default_agent": "",
         "crew_mode_agent": "kirocrew-conductor",
@@ -133,6 +139,7 @@
         "subagent_spawn_stagger_secs": 0.25,
         "windows_background_qos": false,
         "subagent_light_tier": false,
+        "subagent_light_lean_context": false,
         "subagent_max_turns": 1000,
         "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
@@ -557,6 +564,113 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.kas_auth",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: engine credential",
+      "help": "How Kiro Crew's own engine bundle gets its credential. 'acp-callback' (the default) asks Kiro Crew, which answers from its Kiro sign-in. 'machine' starts the engine with --auth=machine: it reads the token file in agent.kas_token_path itself, and Kiro Crew never opens that file. Machine mode needs the crew_client feature preview, agent.kas_bundle true and the cell keys (endpoint, control plane endpoint, region); it has no default service.",
+      "hasChildren": false,
+      "enumValues": [
+        "acp-callback",
+        "machine"
+      ],
+      "defaultValue": "acp-callback",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_token_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine token file",
+      "help": "Machine mode: absolute path of the token file the engine reads. Kiro Crew only checks that it exists, is readable and is not empty. No default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine endpoint",
+      "help": "Machine mode: the engine's runtime endpoint, an https:// url. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_control_plane_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine control plane endpoint",
+      "help": "Machine mode: the engine's control plane endpoint, an https:// url. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: machine region",
+      "help": "Machine mode: the region the endpoints serve. Required.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_machine_env_drop",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: variables kept from the engine",
+      "help": "Machine mode: a JSON array of environment variable names removed from the engine's environment, such as the one that carries the token on this host, so the engine reads the token file only. Kiro Crew's own API key is always removed.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_machine_env_drop.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.native_skill_projection",
@@ -1104,7 +1218,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Ad-hoc Auto-approve Duration",
-      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on with no timed expiry until Kiro Crew restarts. Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
+      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on until you stop Kiro Crew (a restart keeps any grant). Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
       "hasChildren": false,
       "enumValues": [
         "30m",
@@ -1383,7 +1497,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Resource Critical Threshold (GB)",
-      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which on Linux stops the largest Crew tool or test tree at critical memory, or at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and turns the memory guard off. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
+      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which on Linux stops the largest Crew tool or test tree at critical memory, or at tight memory with PSI full avg10 >= 10, or, with no memory controller in view, when the cgroup in view stalls 10% of the time between samples. 0 disables the critical tier and turns the memory guard off. When the container's memory limit is at or under it, the gateway logs one start-up warning naming the settings to lower.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 2.0
@@ -2108,6 +2222,20 @@
       "defaultValue": false
     },
     {
+      "path": "agent.subagent_light_lean_context",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Light Sub-agent Lean Context",
+      "help": "While agent.subagent_light_tier is on, start a spawn marked light without the lessons and memory blocks, since a search, lookup or summarize helper rarely needs them. A spawn that sets include_lessons or include_memory to true keeps that block, and a spawn that names an agent, a crew or a backend is not changed. Off by default: with it off every spawn starts with the context it always has.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.subagent_max_turns",
       "kind": "core",
       "type": "integer",
@@ -2303,6 +2431,7 @@
       "enumValues": null,
       "defaultValue": {
         "timeout_secs": 3600,
+        "automated_idle_timeout_secs": 0,
         "idle_exempt_keys": [],
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
@@ -2341,6 +2470,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "session.automated_idle_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Idle Timeout After an Automated Turn",
+      "help": "Idle timeout in seconds for a session whose last turn no person sent, such as a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. Your next message puts the session back on the Session Timeout. Used only when shorter than the Session Timeout, and not while that is 0. 0 (the default) turns it off. Read at every idle sweep, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "session.idle_exempt_keys",
@@ -6573,7 +6716,8 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "default_deliver": "slack"
+        "default_deliver": "slack",
+        "keep_backoff": false
       }
     },
     {
@@ -6592,6 +6736,20 @@
         "dashboard"
       ],
       "defaultValue": "slack"
+    },
+    {
+      "path": "heartbeat.keep_backoff",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Space out a retained task",
+      "help": "A heartbeat task that keeps being retained (it answers HEARTBEAT_KEEP, fails, times out or is refused by fair admission) waits 1, 2, 4, 8 and then 15 minutes between runs instead of running on every 60-second tick, and stays in HEARTBEAT.md meanwhile. Each run starts a new session, so spacing the retries saves the context it builds. A new or edited task runs on the next tick; a restart starts the ladder again. Off by default: every retained task runs on every tick.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "monitoring",
@@ -6671,7 +6829,8 @@
         },
         "run": {
           "max_ops": 0,
-          "max_repeats": 0
+          "max_repeats": 0,
+          "max_minutes": 0
         }
       }
     },
@@ -6943,7 +7102,8 @@
       "enumValues": null,
       "defaultValue": {
         "max_ops": 0,
-        "max_repeats": 0
+        "max_repeats": 0,
+        "max_minutes": 0
       }
     },
     {
@@ -6970,6 +7130,20 @@
       "tags": [],
       "label": "Most repeats of one step",
       "help": "After this many times in a row of the same browser step with the same details (the same click on the same element, the same scroll), the next one is not run and the agent is told to try something else. Any different step starts the count again. 0 (the default) sets no limit.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "browser.run.max_minutes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Most minutes of one browser run",
+      "help": "Once a chat's browser run has lasted this many minutes since its first step, the next step is not run and the agent is told why. Time between turns counts, as the step count does. Taking over the browser or starting a new chat starts the clock again. 0 (the default) sets no limit.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -10544,6 +10718,7 @@
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "prevent_sleep": false,
+        "warm_task_brief": true,
         "quick_send": false,
         "model_picker_configured": false,
         "model_picker_hidden_models": [],
@@ -11679,6 +11854,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.warm_task_brief",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Since You Left Briefs",
+      "help": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief of its work. Off: a return posts no brief. Takes effect on the next return; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.quick_send",

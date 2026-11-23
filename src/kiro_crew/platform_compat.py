@@ -330,6 +330,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         is_exec_supervisor_of_this_process,
         linux_process_name,
         own_process_start_time,
+        process_argv,
         process_argv_fingerprint,
         process_argv_matches_exact,
         process_can_read_under_sandbox,

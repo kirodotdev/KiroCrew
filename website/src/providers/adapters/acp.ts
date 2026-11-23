@@ -1,7 +1,7 @@
 import { api } from '../../api/client'
 import { apiErrorCode } from '../../api/apiError'
 import modelTokensRaw from '../../model_tokens.json'
-import { markModelsDegraded, markModelsAuthRequired, modelHealthKey } from '../modelListHealth'
+import { markModelsDegraded, markModelsAuthRequired, markModelsCold, modelHealthKey } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -244,6 +244,9 @@ interface RawModel {
    *  gateway/kiro-cli predating the field simply omits it, and we render no
    *  badge rather than inventing a price (see ModelInfo.rateMultiplier). */
   rate_multiplier?: number
+  /** Set on the one `auto` row of a cold answer: no session has recorded this
+   *  account's list yet (`models_kas_bundle._cold_response`). */
+  cold?: boolean
 }
 
 /** The window a /api/models row reports, or 0 when it reports none. */
@@ -523,8 +526,12 @@ export class AcpAdapter implements ProviderAdapter {
       // The account moved while this was in flight: the list (and its health) may be the
       // old account's, and the request that replaced it owns both.
       if (configured && account !== seenAccount()) return result
-      if (configured) writeCachedModels(result, account) // remember this good live list for next hiccup
-      markModelsDegraded(health, false) // live success → self-heal can stop polling
+      // A cold answer is shown, but it is not this account's list: never the
+      // last-good one, and the page keeps reading, with no failure notice.
+      const cold = models.some((m: RawModel) => m.cold === true)
+      if (configured && !cold) writeCachedModels(result, account) // remember this good live list for next hiccup
+      markModelsDegraded(health, false)
+      markModelsCold(health, cold)
       return result
     } catch (err) {
       // Transient backend failure (503 / network): NOT live — keep polling.

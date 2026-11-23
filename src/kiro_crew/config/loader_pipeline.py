@@ -97,6 +97,7 @@ from kiro_crew.config.section_builders import (
     _build_cron_history_config,
     _build_discord_config,
     _build_feishu_config,
+    _build_heartbeat_config,
     _build_imessage_config,
     _build_instances_config,
     _build_knowledge_config,
@@ -131,7 +132,6 @@ from kiro_crew.config.sections import (
     BrowserConfig,
     ChannelConfig,
     DecisionsConfig,
-    HeartbeatConfig,
     InstancesConfig,
     KiroCrewAgentConfig,
     MemoryStoreConfig,
@@ -1006,12 +1006,7 @@ def build_config(
     mint_timeout_raw = instances.get("mint_timeout_secs")
     mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
     mcp_data = _coerced_section(data, "mcp", _degraded)
-    heartbeat = _sections.SectionReader(
-        HeartbeatConfig, _coerced_section(data, "heartbeat", _degraded)
-    )
-    heartbeat_default_deliver = str(heartbeat.get("default_deliver")).strip().lower()
-    if heartbeat_default_deliver not in ("slack", "dashboard"):
-        heartbeat_default_deliver = heartbeat.default("default_deliver")
+    heartbeat_data = _coerced_section(data, "heartbeat", _degraded)
     # A stored document written before this key existed has no "monitoring"
     # object at all, and that is the case that must keep working: the miss
     # resolves to the dataclass default, which is the off position. So an
@@ -1343,7 +1338,7 @@ def build_config(
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),
-        heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
+        heartbeat=_build_heartbeat_config(heartbeat_data),
         monitoring=_build_monitoring_config(monitoring_data, monitoring_prefer_structured_arming),
         decisions=DecisionsConfig.from_raw(decisions_data),
         browser=BrowserConfig.from_raw(browser_data),

@@ -107,6 +107,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, info: 'SubagentInfo', text: 'str') -> 'bool'",
         "run_records",
     ),
+    "_append_result_chunk_impl": (
+        "coroutine",
+        "(self, info: 'SubagentInfo', text: 'str') -> 'bool'",
+        "run_records",
+    ),
     "_drain_state_writer_impl": (
         "coroutine",
         "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\", *, bound: 'float | None' = None) -> 'bool'",
@@ -292,6 +297,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "run_yields",
     ),
     "_withdraw_resume": ("function", "(self, info: \"'SubagentInfo'\") -> 'None'", "run_yields"),
+    "_release_dead_runtime_waits": ("function", "(self) -> 'None'", "run_yields"),
     "_yield_for_dependency_impl": (
         "coroutine",
         "(self, info: 'SubagentInfo', signal: 'Any') -> 'bool | None'",

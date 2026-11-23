@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from skill_script_helpers import skill_text as whole_skill_text
 
 from kiro_crew import agent, crew_mode, crewmate_prompts
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, MATE_CONDUCTOR_AGENT_FILENAME
@@ -607,7 +608,7 @@ _SKILLS_DIR = Path(agent.__file__).parent / "builtin_skills"
 
 
 def _skill_text(name: str) -> str:
-    return _words((_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8"))
+    return _words(whole_skill_text(_SKILLS_DIR / name / "SKILL.md"))
 
 
 def _team_lead_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:

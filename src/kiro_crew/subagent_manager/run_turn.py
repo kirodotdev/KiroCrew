@@ -19,14 +19,14 @@ they read unqualified are that module's, imported here for typing only; this mod
 no other.
 
 The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads:
-``_clear_tool_dispatch``, ``_completion_keep``, ``_completion_keep_chars``, ``_ctx_builder``,
-``_effective_turn_limit``, ``_fire_event``, ``_leave_startup``, ``_note_tool_dispatch``,
-``_note_tool_result``, ``_note_tool_update``, ``_provider_label_of``, ``_sessions``,
-``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
-``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
-``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
-``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
-``dependency_coordinator_async``, ``hook_store``.
+``_append_result_chunk``, ``_clear_tool_dispatch``, ``_completion_keep``,
+``_completion_keep_chars``, ``_ctx_builder``, ``_effective_turn_limit``, ``_fire_event``,
+``_leave_startup``, ``_note_tool_dispatch``, ``_note_tool_result``, ``_note_tool_update``,
+``_provider_label_of``, ``_sessions``, ``_sharing_plan``, ``_shutting_down``,
+``_start_result_file``, ``_stop_error_text``, ``_stop_recovery_wanted``, ``_touch_activity``,
+``_write_finished_result_off_loop``, ``_write_state_off_loop``, ``_write_tombstone``,
+``_yield_for_dependency``, ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``,
+``arm_report_in_flight``, ``dependency_coordinator_async``, ``hook_store``.
 """
 
 from __future__ import annotations
@@ -269,6 +269,17 @@ async def _run_inner_impl(
             source="subagent",
             resources=f"subagent_id={info.id},inherited_agent={agent}",
         )
+    if info.isolate and not info.conversation_key:
+        # ``spawn_run``'s ``isolate``: the run's own worktree of the repository its
+        # cwd is in, made once here and before the session, so the provider, the
+        # session record and every continuation take it as the run's cwd. A
+        # refusal fails this admitted run with its reason. A recovery attempt
+        # makes it again from the cwd the run was admitted with.
+        from kiro_crew.subagent_worktree import prepare_run_worktree
+
+        source = info.worktree.source_cwd if info.worktree is not None else info.cwd
+        info.worktree = await asyncio.to_thread(prepare_run_worktree, info.id, source)
+        info.cwd = info.worktree.cwd
     effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
     from kiro_crew.mate_worker import is_own_worker_execution
 
@@ -571,6 +582,7 @@ async def _run_inner_impl(
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
+    from kiro_crew.hook_output import bounded_hook_output
     from kiro_crew.hooks import pre_tool_match_names
     from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
@@ -730,7 +742,7 @@ async def _run_inner_impl(
             if _attempt_has_text:
                 info.streaming_text += "\n\n"
             if _result_file_started:
-                _result_file_started = write_result_chunk(info.id, "\n\n")
+                _result_file_started = await self._manager._append_result_chunk(info, "\n\n")
         return _next
 
     async def _stream_with_transient_retry():
@@ -797,6 +809,7 @@ async def _run_inner_impl(
         # swap below is stated in its [ACTIVE MODEL] line rather than the model the
         # prompt was built on. A continuation prompt carries no such line.
         from kiro_crew.llm_helpers import ActiveModelLine
+        from kiro_crew.messaging.alternation_echo import drop_echo
 
         _active_line = ActiveModelLine(full_message, client)
         msg = full_message
@@ -847,7 +860,8 @@ async def _run_inner_impl(
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
                 _prompt = _active_line.current() if msg is full_message else msg
-                stream = (
+                # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+                stream = drop_echo(
                     client.stream(_prompt)
                     if prompt_timeout is None
                     else client.stream(_prompt, timeout=prompt_timeout)
@@ -1231,7 +1245,7 @@ async def _run_inner_impl(
             if _result_file_started:
                 # A refused append starts the file over on the next
                 # chunk, so a lost chunk leaves no hole mid-file either.
-                _result_file_started = write_result_chunk(info.id, event.text)
+                _result_file_started = await self._manager._append_result_chunk(info, event.text)
             else:
                 _result_file_started = await self._manager._start_result_file(info, result_text)
             await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
@@ -1495,13 +1509,12 @@ async def _run_inner_impl(
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
-                    _out = _redact((event.tool_output or "")[:2000])
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     results = await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
-                        tool_response={"output": _out},
+                        tool_response=bounded_hook_output(_redact(event.tool_output or "")),
                         # This child's own key, for per-session attribution;
                         # parent_session_key below names who spawned it.
                         session_key=session_key,
@@ -1640,6 +1653,8 @@ async def _run_inner_impl(
         info.result = f"{_warn}\n\n{info.result}"
         info.partial = True
         # result.txt is what spawn_status / spawn_run read for a done run.
+        # Once per run and on the loop: an await here would let a cancel cut
+        # this tail before the ending below is recorded.
         write_result_chunk(info.id, f"\n\n{_warn}\n")
     # The whole answer a claimed completed ending rewrites result.txt from.
     _finished_text = result_text

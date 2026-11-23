@@ -26,6 +26,10 @@ This module gives the job that grant with two reads:
 The job's own Approval field stays the owner's switch, which no tool can turn on.
 The mode carried here is the Bot's Profile Permissions, which only the owner sets.
 
+A job a Bot made before this build has no stored grant. :func:`migrate_owner_grants`
+runs once at start and stamps such a job only when its record proves the Bot made
+it, with the Bot's Profile mode at that moment.
+
 Anything missing, unreadable or different answers "no grant", which is today's
 behaviour: the call goes to the approval prompt. A held Bot limit still reaches
 the prompt (``fields.auto_job_approver``). ``crons.json`` is a protected file an
@@ -39,7 +43,9 @@ Upgrade when the cron approval path gains one.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 # The cron channel every cron_service owner logs on.
@@ -47,6 +53,11 @@ logger = logging.getLogger("kiro_crew.cron")
 
 #: The only stored mode that lets a job auto-approve (see the shortcut above).
 _CARRIED_MODE = "trust"
+
+#: Written beside ``crons.json`` once :func:`migrate_owner_grants` has run, so a
+#: later start never stamps again (a job made after it gets its grant from
+#: ``cron_add``, or none).
+MIGRATION_MARKER = "cron_owner_grants_migrated"
 
 
 def _profile_mode(config: Any, name: str) -> str:
@@ -130,3 +141,75 @@ def fire_approval_mode(job: Any, execution: Any, config: Any) -> str:
     if effective_job_approval_mode(getattr(job, "approval_mode", "")) == "auto":
         return "auto"
     return "auto" if owner_grant_holds(job, execution, config) else ""
+
+
+def _proven_owner(record: dict[str, Any], config: Any) -> tuple[str, str]:
+    """``(member_id, mode)`` when *record*'s maker provably is the Bot it runs as.
+
+    All of these must agree, else ``("", "")``: the job's ``member_id``, the
+    member its captured ``execution_context`` names, and the Bot whose chat or
+    worker the job's ``session_key`` (the session that made it) is.
+    """
+    member = record.get("member_id")
+    capture = record.get("execution_context")
+    if not isinstance(member, str) or not member or not isinstance(capture, dict):
+        return "", ""
+    if capture.get("member_id") != member:
+        return "", ""
+    if str(record.get("created_by") or "").startswith("app:"):
+        return "", ""
+    session_key = record.get("session_key")
+    if not isinstance(session_key, str) or not session_key:
+        return "", ""
+    owner, mode = creator_grant(session_key, config)
+    return (owner, mode) if owner == member else ("", "")
+
+
+def migrate_owner_grants(store_dir: Path, config: Any = None) -> list[str]:
+    """Give each job a Bot made before ``cron_add`` stamped grants its Bot's grant, once.
+
+    Never raises. Runs at start, before the scheduler arms, and only while
+    :data:`MIGRATION_MARKER` is absent; the marker is written after a pass that
+    read the store, so a second start is a no-op. A job is stamped only when
+    :func:`_proven_owner` proves its maker is the Bot it runs as, with that
+    Bot's Profile mode now; a job with a grant already, an unknown or a
+    different maker gets nothing and keeps asking. Each fire still checks the
+    Bot's live Profile (:func:`owner_grant_holds`). *config* is read from disk
+    when None. Returns the stamped ids.
+    """
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
+
+    marker = store_dir / MIGRATION_MARKER
+    path = store_dir / _CRONS_FILE
+    try:
+        if marker.exists():
+            return []
+        if not path.is_file():
+            atomic_write(marker, "1\n")
+            return []
+        if config is None:
+            config = KiroCrewConfig.load()
+        with cron_store_lock(store_dir):
+            data = json.loads(path.read_bytes())
+            records = data.get("jobs") if isinstance(data, dict) else None
+            if not isinstance(records, list):
+                return []
+            stamped: list[str] = []
+            for record in records:
+                if not isinstance(record, dict) or record.get("owner_member_id"):
+                    continue
+                owner, mode = _proven_owner(record, config)
+                if not owner:
+                    continue
+                record["owner_member_id"] = owner
+                record["owner_approval_mode"] = mode
+                stamped.append(str(record.get("id") or ""))
+            if stamped:
+                atomic_write(path, json.dumps(data, indent=2))
+            atomic_write(marker, "1\n")
+        return stamped
+    except Exception:
+        logger.warning("Bot jobs made before owner grants were not stamped", exc_info=True)
+        return []

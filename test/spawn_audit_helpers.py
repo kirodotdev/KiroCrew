@@ -784,10 +784,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server_update.py::_update",
         # `git ls-remote` for a checkout on no branch, split out of _update: the
         # same `git` the fetch runs, under the same env, after the same source-pin
-        # and exec-config checks. The argv is literals plus the three reviewed
-        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
-        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
-        "cli_server_update.py::_detached_upstream_branch",
+        # and exec-config checks. The argv is literals plus the refs asked about:
+        # the three reviewed primary branch refs, or the release tags
+        # `release_channel.release_refs` builds for `--release`; stdin=DEVNULL,
+        # 60s timeout. Pinned by the `checkout_on_no_branch` tests in
+        # test_cli_server_more_coverage.py and test_cli_update_release_tag.py.
+        "cli_server_update.py::_remote_refs_present",
+        # The release-tag probes for `kirocrew update --release`: `git rev-parse
+        # --verify HEAD^{commit}` and `git for-each-ref --points-at=HEAD` over
+        # refs/tags. Literal argv, the update's own git env, cwd the detected
+        # checkout, stdin=DEVNULL, 10s timeout, read-only. Pinned by
+        # test_cli_update_release_tag.py.
+        "cli_server_update.py::_head_oid",
+        "cli_server_update.py::_release_tag_checkout",
+        # `git rev-parse --is-shallow-repository`, which picks `--depth 1` for the
+        # `--release` fetch only on a shallow clone. Literal argv, the update's own
+        # git env, cwd the detected checkout, stdin=DEVNULL, 10s timeout,
+        # read-only. Pinned by test_cli_update_release_tag.py.
+        "cli_server_update.py::_is_shallow_clone",
         # The changed-path listing before the reset: `git diff --name-status -z
         # --no-renames HEAD <pinned commit>`. Literal flags plus the commit pinned
         # right after the fetch, the same `git` under the same env as the fetch and
@@ -1014,11 +1028,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it replaced the inline fetch spawns in _check_git_checkout and
         # _auto_apply_update.
         "platform/update_fetch.py::fetch_and_pin_upstream",
-        "instances/diagnostics.py::_run_ok",
-        "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
-        "instances/token_mint.py::mint_remote_token",
-        "instances/token_mint.py::run_remote_kirocrew",
+        # The one ssh spawn behind the token mint, the remote run, the two
+        # diagnosis probes and the ssh tunnel: an argv built by token_mint's
+        # _build_ssh_argv or the tunnel's _build_argv, in a process group of its
+        # own so a ProxyCommand it leaves behind can be ended.
+        "instances/token_mint.py::spawn_one_shot_ssh",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
         # desktop tunnel keeper's CLI entry point. The only child it creates is the
         # forward ``_SshTunnel.start`` spawns, listed just above.

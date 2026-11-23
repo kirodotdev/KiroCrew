@@ -5572,9 +5572,13 @@ those trees after session start, and a name with glob characters is never
 written as a `match` entry (it would deny in-scope skills too), so such a skill
 stays offered. Every projection that adds the rules records one
 `kas_skill_scope_denied` security event (source `kas_agent_projection`) naming
-the agent and what the rules keep or deny, at most 40 names per line. Any failure
-adds no rule and logs a warning, so the session starts with KAS's default trees
-rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
+the agent and what the rules keep or deny, at most 40 names per line. When the
+scope or its rules cannot be worked out, the session still starts, but with one
+rule that denies every skill except the copies already made; the error is logged
+and, for the session's own agent, the chat shows one notice (a sub-agent target
+gets the same rule and the log line). A failure making the copies only drops the
+copies.
+Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
@@ -6358,12 +6362,20 @@ exclude). To keep it off the per-message filesystem/config hot path:
   resolve, deduplicate, sort or probe a path: the loader below remains the only authority, and
   a path it declines is skipped there rather than rejected at the save;
 - `extra_paths` is re-resolved by `reconfigure(cfg)` on a config write, running
-  the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
-  reject, existence check — and failing closed per entry, so a root added by hand
-  to `config.json` can no more reach a credential directory than one present at
-  boot. An entry that cannot be resolved at all (an unknown `~user`, an embedded
-  NUL) is skipped with a warning at construction and on reload, never raised, so
-  one bad entry cannot stop the loader. Edition-contributed roots are preserved and stay LAST (lowest
+  the SAME screening as construction (`_screen_extra_paths`) — expanduser, resolve,
+  `is_sensitive_path` reject, existence check — and failing closed per entry, so a
+  root added by hand to `config.json` can no more reach a credential directory than
+  one present at boot. Each skipped entry logs a warning naming its position
+  (`skills.extra_paths[1]`), never its value. An entry that cannot be resolved at
+  all (an unknown `~user`, an embedded NUL) is skipped, never raised, so one bad
+  entry cannot stop the loader; one that is not a directory (a missing folder, or a
+  Windows network share that cannot be reached) is skipped the same way, and so is
+  one whose stat fails (`EACCES`, `ESTALE`, `EIO`). A root on
+  a slow or network mount blocks the resolve until the mount answers, so gateway
+  start, `kirocrew run` and the eval runner build the loader in a worker thread (it
+  holds no asyncio primitives): the event loop keeps running, and start, the
+  dashboard bind included, still waits for the screening.
+  Edition-contributed roots are preserved and stay LAST (lowest
   precedence): they come from the platform context, not config, so a config write
   must not drop them. The discovery cache is cleared, so the next listing walks
   the new roots instead of serving the old set for the rest of the TTL;
@@ -6728,7 +6740,20 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory; a directory with no
   `SKILL.md` entry of its own (a folder of nested skills such as `auto`) is not a skill
-  and is refused (`False`, so the DELETE route answers 404 as GET does)
+  and is refused (`False`, so the DELETE route answers 404 as GET does). The removal is
+  `platform_compat.rmtree_force`, so a read-only entry inside the skill (a Windows
+  read-only file, a POSIX `0555` directory) does not keep it, and a folder that still
+  stays raises `OSError` naming what is left: a delete never returns `True` over a
+  folder still on disk. `rmtree_force` goes on past an entry that stays. On the by-name
+  floor (Windows) that is a file another process holds open, which a retry gets past
+  once the holder lets go, so the other entries (subfolders, then top-level files) go
+  before `SKILL.md`: such a delete fails with `SKILL.md` in place, the skill stays
+  listed and a retry reaches it. A top-level link that stays, or the folder's own
+  removal refused, can still leave the folder without its `SKILL.md`. POSIX unlinks an
+  open or read-only file, so the pinned branch keeps the single removal, rooted at the
+  skill folder as before; an entry that stays there (a folder this user may not list,
+  one another user owns, a file held open on a network filesystem) can leave the folder
+  without its `SKILL.md`.
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
   ancestor swapped for a link after resolution cannot redirect the write. Windows
@@ -6736,9 +6761,11 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
   descriptor-relative calls these branches issue — `os.mkdir` (create, under the
   parent descriptor `create_skill` already walked), `os.unlink` (update, via
   `atomic_write`'s staging cleanup) and `os.stat` (delete, via `stat_at`) — on top of
-  `pinned_fs.supports_pinned_walk()`. `os.rmdir` is NOT probed: delete's removal is
-  a by-name `shutil.rmtree`, the residual noted below. `update_skill` additionally
-  requires `atomic_write.pinned_parent_replace_supported()` (the descriptor-relative
+  `pinned_fs.supports_pinned_walk()`. `os.rename` and `os.rmdir` are probed for create's
+  rollback, not for delete: delete's removal is a by-name `rmtree_force`, so a
+  directory renamed onto the skill's name after the pinned checks is removed in its
+  place. `update_skill` additionally requires
+  `atomic_write.pinned_parent_replace_supported()` (the descriptor-relative
   rename) and takes the by-name floor without it, because `atomic_write` refuses a
   `parent_dir_fd` it cannot publish through rather than quietly writing by name.
 - Once the skill directory is pinned, `SKILL.md` is never addressed by name again —
@@ -7424,6 +7451,11 @@ warning on `kiro_crew.hooks` rather than dropped silently. Pinned by
 `TestHookToolInput` (`test_fire_tool_hooks.py`) and `TestHookToolInputFromRawParams`
 (`test_dashboard_approval.py`).
 
+**`tool_response` on PostToolUse.** Every site that fires `PostToolUse` (the ACP
+client, a dashboard turn, a channel turn, a subagent run) builds `tool_response` with
+`hook_output.bounded_hook_output` from the redacted full output: `output` cut to its
+first 2,000 characters, `truncated`, and `output_length`, the length it was cut from.
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
@@ -7897,8 +7929,10 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 - `trigger` accepts the whole alias table from the trigger alias table in `kiro-team/kiro-agent` (blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, `trigger-names.ts` under its hooks package) — twelve canonical triggers with their PascalCase identity rows, the IDE's
   legacy camelCase spellings, the CLI aliases and one Open Plugins legacy alias —
   keyed case-insensitively, which is one deliberate leniency over kiro-agent's
-  own case-sensitive lookup. That blob is the version to re-read when adding a
-  name
+  own case-sensitive lookup. The two compaction triggers, `PreCompact` and
+  `PostCompact` (and their camelCase spellings), come from the same table in the
+  pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
+  that bundle are the ones to re-read when adding a name
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
@@ -7915,9 +7949,13 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 Left out of the kiro-cli emission, kept in the stored spec — and left out for
 that TRIGGER only, since autoimport still discovers a script in the hooks
 directory on its own unless a suppressed document names it: an `action` of type
-`agent`, the seven triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
-`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`), and
-the per-hook `name`, `description` and `timeout`. `enabled: false` and
+`agent`, the nine triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`,
+`PreCompact`, `PostCompact`), and
+the per-hook `name`, `description` and `timeout`. Crew's own conversion
+(`agent_sdk/spec_hooks._from_documents`) gives a `PreCompact` or `PostCompact`
+document no number, so the other documents' `<agent>/<Event>/<n>` policy names
+are the ones they would have without it. `enabled: false` and
 `confirm: true` are NOT in that class: each grants less execution than the object
 form can express, so either one keeps the hook out of the kiro-cli spec entirely,
 with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`
@@ -8136,7 +8174,7 @@ importable from `kiro_crew.context`:
 | `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the early memory reads (`prefetch_session_memory`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text. The rails include the own `[DASHBOARD]` block of a root session running the conductor template with an adopted page, which `chat_runner` builds from the slot (`dashboard_agentic.root_session_dashboard_block`) and hands over as `session_dashboard` |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
-| `tool_names.py` | the provider-specific `[TOOL NAMES]` block: qualified-name compatibility for legacy direct calls, exact catalogue IDs for loading, and unchanged returned IDs for executors; the direct-call fallback never rewrites loader or executor IDs; present at session start, minimal start and after compaction |
+| `tool_names.py` | the per-harness `[TOOL NAMES]` block naming that harness's own loader (kiro-cli `tool_search`, Claude Code `ToolSearch`, MiMo Code `mcp_tool_search`, none needed on a direct-listing harness, nothing for an unknown label); on KAS: qualified-name compatibility for legacy direct calls, exact catalogue IDs for loading, and unchanged returned IDs for executors; the direct-call fallback never rewrites loader or executor IDs; present at session start, minimal start and after compaction |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |
 | `mcp_servers.py` | the per-turn `[MCP SERVERS]` block: the servers a session cannot use yet by state, what the model does about each, and the bounded per-session record of what it was last told |
 | `turn_message.py` | `ContextBuilder.build_message`: what one turn sends and in which order, the trigger-matched skill-body delivery and its audit, the request boundary |

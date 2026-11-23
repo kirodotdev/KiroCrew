@@ -163,6 +163,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
 
+  // ── Since you left briefs (server-side; read on each qualifying return) ──
+  const warmTaskBrief = mcCfg?.dashboard?.warm_task_brief ?? true
+  const warmTaskBriefMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('dashboard.warm_task_brief', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_warm_task_brief')),
+  })
+
   // ── Auto-title refresh cadence (server-side; one background call per refresh) ──
   // The GET serializes the LOADED config, so a hand-edited 2 shows as the 4 that
   // runs. Per-path overlay like the Model selectors, so the stepper moves at click
@@ -1060,6 +1068,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} hint={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_swipe')} hint={i18nT('pages.settings.chatPanel.side_panel_swipe_hint')} checked={chatCfg.sidePanelSwipe} onChange={v => setChat('sidePanelSwipe', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
           {crewModeOffered && (
             <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_conductor_board')} hint={i18nT('pages.settings.chatPanel.auto_open_conductor_board_hint')} configKey="dashboard.auto_open_conductor_board" checked={dashCfg.auto_open_conductor_board ?? true} onChange={v => setDash({ auto_open_conductor_board: v })} disabled={dashDisabled} />
@@ -1200,6 +1209,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.warm_task_brief')}
+            description={i18nT('pages.settings.chatPanel.warm_task_brief_desc')}
+            hint={i18nT('pages.settings.chatPanel.warm_task_brief_hint')}
+            checked={warmTaskBrief}
+            onChange={v => warmTaskBriefMut.mutate(v)}
+            disabled={!mcQ.isSuccess || warmTaskBriefMut.isPending}
+            configKey="dashboard.warm_task_brief"
+          />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it
               for the minimum cadence, − at the minimum returns to it, and − at
               Default is disabled: there is nothing below it. A plain +/− stepper

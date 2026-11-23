@@ -1130,7 +1130,7 @@ test("every lane hands back the handle shape its callers read", () => {
     { keys: stub, disabled: "externally-managed" });
   assert.deepStrictEqual(keys({ isPackaged: false }), { keys: stub, disabled: "dev" });
   assert.deepStrictEqual(keys({ osPlatform: "freebsd" }), { keys: stub, disabled: "platform" });
-  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "relaunch", "getInfo", "isReady"]);
+  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "relaunch", "getInfo", "isReady", "flags"]);
 
   const restoreTimers = (() => {
     const originalSetTimeout = global.setTimeout;

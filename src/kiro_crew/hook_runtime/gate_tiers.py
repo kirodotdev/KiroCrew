@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         _GATE_TIER_KINDS,
         _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
-        KIRO_TOOL_ALIASES,
         GateRule,
         GateTier,
         HookManager,
@@ -52,6 +51,7 @@ if TYPE_CHECKING:
         _search_deny_target,
         _tool_matches,
         audit_bash_exfiltration,
+        builtin_names,
         command_invokes_git,
         current_context,
         deepseek_policy_alias,
@@ -1160,6 +1160,9 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
     if patterns:
         call = facts.call
         targets = [*grant_targets, call.title, facts.normalized]
+        if not call.mcp_server and call.mcp_tool:
+            # A built-in answers to its aliases too (``run_command`` -> ``execute_bash``).
+            targets += builtin_names(call.mcp_tool)
         if call.mcp_server:
             tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
             targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")]
@@ -1249,22 +1252,8 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
 
 
 def _spec_builtin_names(call: ToolCall) -> tuple[str, ...]:
-    """Every name a KAS built-in call answers to on the grant plane.
-
-    Its stamped id, kiro-cli's spelling of that id (``shell`` -> ``execute_bash``),
-    the kiro-cli policy names that are the SAME work (``read_file`` -> ``fs_read``),
-    and for a shell call both of KAS's shell tools. A deny-only alias is left out: ``delete_file`` is governed under
-    ``fs_write`` but a ``fs_write`` grant never mounted it, so it never approves it.
-    """
-    raw = call.mcp_tool
-    names = [raw, KIRO_TOOL_ALIASES.get(raw, raw)]
-    may_admit, _deny_only = policy_alias_split(raw)
-    names.extend(may_admit)
-    if "execute_bash" in names:
-        # KAS's one built-in alias pair: both shell tools reach the permission
-        # frame as ``run_command``, so a grant of either names this call.
-        names.append("execute_pwsh")
-    return tuple(dict.fromkeys(n for n in names if n))
+    """Every name a KAS built-in call answers to on the grant plane (``tool_names.builtin_names``)."""
+    return builtin_names(call.mcp_tool)
 
 
 def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
@@ -1372,8 +1361,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     Crew cannot read, which matches nothing and which the refusal names) on their
     own agent's permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
-    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
-    claude sub-agent's the parent's), and this row
+    sub-session's request carries ``None`` too, a native KAS or claude
+    sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
     ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain, or
@@ -1508,8 +1497,8 @@ def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     cover, instead of asking. KAS and claude have no rule for it, so the KAS session
     handle and the claude direct client stamp the spec's usable entries, anchored
     at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
-    the spec does not set it, and on a sub-session's or native KAS sub-agent's
-    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    the spec does not set it, and on a sub-session's request; a native KAS or
+    claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
     MCP server behind it) unless every target it names is covered
     (:func:`_write_target_uncovered`, matched by
     :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
@@ -1551,8 +1540,9 @@ def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResu
 
     The KAS projection records them for a Bot's worker only
     (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
-    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
-    other session and on a sub-agent's request). A worker runs under its Bot's
+    on its own agent's requests and a native KAS sub-agent's
+    (``AcpEvent.spec_unjudged_denies``; empty on every other session and on a
+    sub-session's request). A worker runs under its Bot's
     Permissions, and under Trust an ask is answered for the person, so an entry
     nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
     ``execute_bash`` among its names, no MCP server behind it) unless its recovered

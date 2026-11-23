@@ -238,7 +238,7 @@
       "missing_code": 7
     },
     "dashboard/handlers/mcp_custom.py": {
-      "missing_code": 14
+      "missing_code": 12
     },
     "dashboard/handlers/mcp_discover.py": {
       "missing_code": 12

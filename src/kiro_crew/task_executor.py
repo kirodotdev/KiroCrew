@@ -58,6 +58,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     stream_and_collect_json,
 )
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -958,7 +959,10 @@ async def execute_task(
             # A call whose own silence timer ends the prompt is handed back to the
             # model on this session (``acp.timed_out_continuation``), so the step
             # goes on with what it already did instead of re-running from the top.
-            async for event in continue_timed_out_calls(client.stream, full_prompt):
+            # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+            async for event in continue_timed_out_calls(
+                lambda prompt: drop_echo(client.stream(prompt)), full_prompt
+            ):
                 await _refuse_person_only(event)
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True

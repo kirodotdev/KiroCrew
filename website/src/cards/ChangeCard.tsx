@@ -396,7 +396,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
               {/* The reason is one more row of the same grid: same label
                   column, same divider, so it reads like Goal or Affects. */}
               {card.reason && (
-                <CardRow label={i18nT('components.changeCards.reason_label', { name: author })} testId="change-card-reason">
+                <CardRow label={spec?.reasonLabel?.() ?? i18nT('components.changeCards.reason_label', { name: author })} testId="change-card-reason">
                   <p className="m-0 whitespace-pre-wrap">{card.reason}</p>
                 </CardRow>
               )}

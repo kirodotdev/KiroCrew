@@ -971,6 +971,24 @@ describe('SlackPanel setup wizard', () => {
     await openWizard()
   })
 
+  it('keeps the command the wizard saved at Create in a later Save Slack settings', async () => {
+    const { save } = seed({ connected: false, configured: false, bot_token_set: false })
+    vi.mocked(api.getSlackManifest).mockResolvedValue({ ...MANIFEST, alias: 'jdoe', command: 'kirocrew-jdoe' })
+    await hydrated()
+    const shown = await openWizard()
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
+    const created = screen.getByRole('button', { name: /I created the app/ })
+    await waitFor(() => expect(created).toBeEnabled())
+    fireEvent.click(created)
+    await waitFor(() => expect(shown).toHaveAttribute('data-step', 'bot_token'))
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0][0]).toEqual({ command: 'kirocrew-jdoe' })
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).toMatchObject({ command: 'kirocrew-jdoe' })
+  })
+
   it('stays open after Slack connects, so the test step is reachable', async () => {
     vi.spyOn(api, 'getSlackManifestStatus').mockResolvedValue({
       features: [], required_scopes: [], required_events: [], required_features: [], feature_changes: {},

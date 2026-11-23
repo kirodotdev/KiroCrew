@@ -260,6 +260,8 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "release-lts.yml",
     "release.yml",
     "sensitive-change-review.yml",
+    # Calls build-wheel.yml, whose fleet job runs in this caller's run.
+    "verify-cli-publish.yml",
 )
 # Put the workflows that carry routine pull-request traffic ahead of release
 # and audit workflows when looking for recent fleet starts.

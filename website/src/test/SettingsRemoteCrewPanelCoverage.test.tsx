@@ -52,6 +52,8 @@ vi.mock('../api/client', () => {
       updateInstance: vi.fn(),
       instanceStatus: vi.fn(),
       patchConfig: vi.fn(),
+      // The Settings card reads the stored warm-set cap; an empty config is automatic.
+      kirocrewConfig: vi.fn(async () => ({})),
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
       cloudProvisioners: vi.fn(),

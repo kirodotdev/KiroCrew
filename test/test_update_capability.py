@@ -441,6 +441,32 @@ class TestDeriveCapability:
         monkeypatch.setattr(update_capability, "running_from_checkout", lambda root, **kw: True)
         assert derive_capability(dist="source").managed_by == "git"
 
+    def test_install_root_falls_back_to_the_running_checkout(self, tmp_path, monkeypatch):
+        # A gateway started outside its clone with no saved project dir: the
+        # checkout the package loads from is the root, so provenance holds unstubbed.
+        _init_repo(tmp_path)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(update_capability, "_source_checkout_root", lambda: tmp_path)
+        assert derive_capability(dist="source").managed_by == "git"
+
+    def test_the_harness_pin_withholds_the_running_checkout(self, tmp_path, monkeypatch):
+        _init_repo(tmp_path)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setenv(update_capability.NO_CHECKOUT_ROOT_ENV, "1")
+        monkeypatch.setattr(update_capability, "_source_checkout_root", lambda: tmp_path)
+        assert update_capability.default_install_root() == ""
+        assert derive_capability(dist="source").managed_by == "kirocrew"
+
+    def test_the_harness_pin_keeps_an_explicit_project_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv(update_capability.NO_CHECKOUT_ROOT_ENV, "1")
+        assert update_capability.default_install_root() == str(tmp_path)
+
+    def test_a_release_install_without_a_project_dir_takes_the_feed(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(update_capability, "_source_checkout_root", lambda: None)
+        assert derive_capability(dist="source").managed_by == "kirocrew"
+
     def test_a_checkout_this_process_does_not_run_from_takes_the_feed(self, tmp_path):
         """The defect the provenance half exists for.
 

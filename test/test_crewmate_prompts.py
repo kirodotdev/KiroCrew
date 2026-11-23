@@ -719,3 +719,11 @@ def test_how_you_work_tells_the_bot_to_close_a_finished_one_off_worker() -> None
     assert "never close a worker that waits on the user" in words.lower()
     # The report turn names the worker's key, so the Bot can close it directly.
     assert "{key}" in crewmate_prompts.text("worker_report.session")
+
+
+def test_how_you_work_tells_the_bot_not_to_wait_in_its_own_thread() -> None:
+    """Every tool call in the Bot's thread rereads that whole thread, so a
+    sleep loop there costs far more than the same wait on a worker."""
+    words = " ".join(crewmate_prompts.text("conductor.how_you_work").split())
+    assert "Never wait here with `sleep` or the `wait` tool" in words
+    assert "Hand the wait to a worker or a babysit loop" in words

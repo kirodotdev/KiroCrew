@@ -54,6 +54,7 @@ def broadcast_side_result(
     ts: float | None = None,
     steer: bool = False,
     message_id: str = "",
+    redactions: list[dict] | None = None,
 ) -> None:
     """Broadcast a side conversation event on the dedicated side channel.
 
@@ -70,7 +71,8 @@ def broadcast_side_result(
 
     Set final=True on the terminal frame of a side turn so the frontend
     can flip the streaming flag off cleanly. A final assistant frame carries the
-    blocked-link records of its text under ``link_blocks`` (:func:`shown_link_blocks`).
+    blocked-link records of its text under ``link_blocks`` (:func:`shown_link_blocks`),
+    and a stored answer's credential records, bounded, under ``redactions``.
 
     ``message_id`` names the sidecar row the frame announces (a question, a
     steer, a final answer, a stop row). A panel restored from ``GET .../side``
@@ -95,6 +97,11 @@ def broadcast_side_result(
             records = shown_link_blocks(state, slot_key, payload["content"])
             if records:
                 payload[LINK_BLOCKS_KEY] = records
+            if redactions:
+                # Deferred, for the reason shown_link_blocks gives.
+                from kiro_crew.dashboard.chat_utils import with_bounded_redaction_records
+
+                payload.update(with_bounded_redaction_records({"redactions": redactions}))
     if steer:
         payload["steer"] = True
     if message_id:

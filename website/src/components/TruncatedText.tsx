@@ -10,12 +10,17 @@ import { InstantTip, useInstantTip } from './InstantTip'
  * keyboard user can reach it. `children` is a label shown over `full` (a translated name over a raw
  * value); the line is then described by `full` through a `hidden` copy, as in
  * `HoverTip`, and the bubble starts with the whole label, so it names the row it
- * belongs to. A line that shows `full` itself needs neither.
+ * belongs to. A line that shows `full` itself needs neither. A `data-*`
+ * attribute lands on the line, so the caller's hook for it still matches. The
+ * line's `title` is empty, not absent, as in `InfoTip`: a browser shows the
+ * nearest title at or above the hovered element, so a titled row or card
+ * around the line would otherwise show its own tooltip beside the bubble.
  */
-export default function TruncatedText({ full, className = '', children }: {
+export default function TruncatedText({ full, className = '', children, ...data }: {
   full: string
   className?: string
   children?: ReactNode
+  [attr: `data-${string}`]: string | boolean | undefined
 }) {
   const { tip, tipHandlers, tipId } = useInstantTip()
   const descId = useId()
@@ -25,7 +30,7 @@ export default function TruncatedText({ full, className = '', children }: {
   return (
     <>
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop is how a keyboard user reaches the full text. */}
-      <span className={`truncate ${className}`} tabIndex={0} aria-describedby={described ? descId : undefined} {...handlers}>
+      <span {...data} className={`truncate ${className}`} title="" tabIndex={0} aria-describedby={described ? descId : undefined} {...handlers}>
         {described ? children : full}
       </span>
       {described && <span id={descId} hidden>{full}</span>}

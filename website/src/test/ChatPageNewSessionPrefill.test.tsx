@@ -41,6 +41,8 @@ import { performSlotSwitch } from '../lib/slotSwitch'
 import { captureUrlToken } from '../lib/urlToken'
 import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { i18nT } from '../i18n/t'
+import * as transport from '../chat-core/transport/sendTurn'
+import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
 
 let knowledgeInTest: ReturnType<typeof useKnowledgeFetch>
@@ -363,6 +365,24 @@ describe('App SDK chat launch intent', () => {
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
     expect(sendChat.mock.calls[0]).toContain('chat-old')
     expect(createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps a launched message copyable when Stop cancels it before its POST', async () => {
+    let release: (v: number | undefined) => void = () => {}
+    const wait = vi.spyOn(revisionSeed, 'baseRevisionForPress').mockReturnValue(new Promise((resolve) => { release = resolve }))
+    launch({ message: PROMPT, slotKey: 'chat-old' })
+    await renderAt('/chat?sid=chat-old')
+    await waitFor(() => expect(wait).toHaveBeenCalled())
+    await act(async () => {
+      // The first thing requestStop does, while the send waits for the revision.
+      transport.abortPendingSends('chat-old')
+      release(undefined)
+      await Promise.resolve()
+    })
+    const notice = await screen.findByTestId('action-error')
+    expect(notice.textContent).toContain('Message not sent. Copy it to try again:')
+    expect(notice.textContent).toContain(PROMPT)
+    expect(sendChat).not.toHaveBeenCalled()
   })
 
   it('keeps the full resend guidance when a launched send times out, since a launch raises no strip', async () => {

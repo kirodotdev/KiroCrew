@@ -42,7 +42,7 @@ function props(over: Partial<Props> = {}): Props {
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
     handleFork: vi.fn(async () => false), highlightTs: null, landedTs: null, jumpMid: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
-    revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
+    revealAppInPanel: fn(), lastTextIdx: -1, regenerateIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
     openKiroSignIn: fn(), openMemberCapabilities: fn(), openModelPickerFromError: fn(), openTurnLimitSetting: fn(), quoteWholeMessage: fn(),
     handleAsk: undefined, handleQuote: fn(), handleEditResend: fn(), editLast: null, farmPassRef: { current: false }, handleEditConsumed: fn(),
@@ -132,7 +132,7 @@ describe('message row handlers', () => {
   function mount() {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    const first = props({ lastTextIdx: 1, messages: [user, reply], messagesRef: { current: [user, reply] } })
+    const first = props({ lastTextIdx: 1, regenerateIdx: 1, messages: [user, reply], messagesRef: { current: [user, reply] } })
     const hook = renderHook((p: Props) => useTranscriptRendering(p), { wrapper, initialProps: first })
     const rows = () => ({
       user: findByType(hook.result.current.renderMessage(0, user), UserMessage)!,
@@ -351,6 +351,25 @@ describe('a signed-out row on the dashboard and in an embed or popout frame (#34
     act(() => setGatewayConnected(true))
     expect(await screen.findByTestId('error-card-continue')).toBeInTheDocument()
     expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+  })
+
+  it('shows a caller who is not the owner no failure in a frame, and does not poll the refusal again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+    notifyManager.setScheduler(queueMicrotask)
+    onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockClear()
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    status.mockRejectedValue(new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' })))
+    const client = renderRow({ embedded: true }, '/embed/chat/s1')
+
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    expect(client.getQueryState(['kas-login', 'm-out'])?.status).toBe('error')
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+
+    await act(() => vi.advanceTimersByTimeAsync(KIRO_SIGN_IN_NOTICE_POLL_MS * 2))
+    expect(status).toHaveBeenCalledTimes(1)
   })
 
   it('offers no Resume and reads no sign-in for a row a later request follows', async () => {

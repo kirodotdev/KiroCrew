@@ -146,6 +146,20 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         # must still reach the finally.
         if jitter > 0:
             logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
+            # The same marker, written before the wait so a hard exit in it
+            # still leaves the claimed run on disk; the write below replaces it.
+            marker_write = asyncio.ensure_future(
+                asyncio.to_thread(
+                    cron_inflight.write_marker,
+                    self._dir,
+                    job.id,
+                    job.name,
+                    started_at,
+                    run=claim.marker_run,
+                    phase=cron_inflight.JITTER_PHASE,
+                )
+            )
+            await asyncio.shield(marker_write)
             await seams._sleep_out_jitter(jitter)
         exec_started_at = seams.time.time()
         # The record a hard exit leaves behind: an os._exit from the loop-stall
@@ -259,6 +273,9 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                 row_error = interruption_note(dispatched=claim.outcome_reset)
             try:
                 record = CronRunRecord(
+                    # The marker token: the clear above is best-effort, and a
+                    # marker it left must not be filed again (``_file_cut_run``).
+                    run_id=claim.marker_run,
                     job_id=job.id,
                     trigger=trigger,
                     started_at=started_at,
@@ -385,6 +402,9 @@ def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:
 
 def _alert_interrupt(self: CronService, job: CronJob, detail: str) -> None:
     """Start the notice for *job*, whose run ``stop()`` cut short, and return.
+
+    The next ``start()`` sends the same notice for a run a hard exit cut
+    (:meth:`_file_cut_run`), which no ``stop()`` saw.
 
     ``stop()`` cancels every run without a cancel or reap flag, so a run that
     recorded no outcome of its own is filed ``cancelled`` with *detail* (the

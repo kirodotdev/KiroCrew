@@ -682,6 +682,8 @@ class AcpSessionProvider(LLMProvider):
             # and the transcript unlink is the only thing that removes
             # `~/.kiro/sessions/cli/{sid}.json(+.jsonl)`, as the comment below
             # says. Nothing retries: every caller drops the provider afterwards.
+            # Before the first await, so a sharing decision made meanwhile sees it.
+            self._runtime.subagent_departed = True
             try:
                 if self._handle.is_turn_active and not self.turn_survives_disconnect:
                     try:
@@ -1475,7 +1477,13 @@ class AcpSessionProvider(LLMProvider):
         :attr:`backend` is: this provider fronts whichever backend the runtime
         spawned.
         """
-        return self._runtime.acp_backend in host_auth.backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file instead
+        # (``agent_sdk/kas_machine.py``), so a personal sign-out does not retire it.
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        return self._runtime.acp_backend in host_auth.backends_retired_by_host_logout() and not (
+            runs_machine_auth(self._runtime)
+        )
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.

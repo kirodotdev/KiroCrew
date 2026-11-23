@@ -488,20 +488,30 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             _record_terminal_directive(
                 turn, _applied_kind, _applied_outcome, event.tool_call_id or ""
             )
-            logger.info(
-                "session-directive applied OUT OF BAND for %s "
-                "(tool_call_id=%s, kind=%s): the marker was unavailable; "
-                "the gateway-parked payload selected by "
-                "the call's input digest was used.",
-                session_key,
-                event.tool_call_id,
-                _oob.get("kind"),
-            )
             # Same surface contract as the marker path: the applier's
             # real outcome replaces the tool's own (deliberately
             # non-committal) text, re-redacted because that string
             # interpolates LLM-derived values.
-            _out = _redact_tool_field(session_directive.strip_marker(_out) + "\n\n" + _applied_one)
+            _out = _redact_tool_field(_applied_one)
+            if _applied_outcome.applied:
+                logger.info(
+                    "session-directive applied OUT OF BAND for %s "
+                    "(tool_call_id=%s, kind=%s): the marker was unavailable; "
+                    "the gateway-parked payload selected by "
+                    "the call's input digest was used.",
+                    session_key,
+                    event.tool_call_id,
+                    _oob.get("kind"),
+                )
+            else:
+                logger.info(
+                    "session-directive taken OUT OF BAND for %s "
+                    "(tool_call_id=%s, kind=%s) was not applied: %r",
+                    session_key,
+                    event.tool_call_id,
+                    _oob.get("kind"),
+                    _out,
+                )
             _dir_consumed_out[event.tool_call_id] = _out
             _pending_input_digest.pop(event.tool_call_id, None)
             _pending_dir_for_digest.pop(event.tool_call_id, None)
@@ -937,12 +947,13 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # call title is not; the id the turn learned for the call names it.
         _post_identity = turn._pending_tool_ids.pop(event.tool_call_id, None)
         try:
-            _redacted_out_bounded = _redacted_out[:2000]
+            from kiro_crew.hook_output import bounded_hook_output
+
             await _fire(
                 turn,
                 HOOK_EVENT_POST_TOOL_USE,
                 tool_name=_tool_name,
-                tool_response={"output": _redacted_out_bounded},
+                tool_response=bounded_hook_output(_redacted_out),
                 tool_id=(_post_identity.tool_id or None) if _post_identity else None,
                 tool_identity=_post_identity.tool_identity if _post_identity else "",
                 mcp_server=_post_identity.mcp_server if _post_identity else "",

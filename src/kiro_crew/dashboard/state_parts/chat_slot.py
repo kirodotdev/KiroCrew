@@ -10,6 +10,7 @@ from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
+from kiro_crew.dashboard.chat_trust_restart import note_trust_changed
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -77,6 +78,7 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "_engine_promoted_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
         "_crew_log_previous_undecided",
@@ -153,6 +155,7 @@ class _ChatSlot:
         "_participants_dropped",
         "_created_by_sid",
         "_saved_created_by",
+        "_unconfirmed_creator",
         "_lineage_minted",
         "_reports_to_creator",
         "_work_aggregate",
@@ -181,6 +184,7 @@ class _ChatSlot:
         "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
+        "_full_chat_waits",
         "_linked_session_busy",
         "_has_reader_flag",
         "_compacting",
@@ -469,6 +473,7 @@ class _ChatSlot:
     _crew_log_opened_sid: str
     _crew_log_pending_channel: bool
     served_model: str
+    _engine_promoted_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
     memory_store: str
@@ -499,6 +504,7 @@ class _ChatSlot:
     _participants_dropped: dict[str, Any]
     _created_by_sid: str
     _saved_created_by: str
+    _unconfirmed_creator: str
     _lineage_minted: bool
     _reports_to_creator: bool
     _work_aggregate: dict[str, Any] | None
@@ -510,7 +516,8 @@ class _ChatSlot:
     # this gateway run; in memory only, so a restart shows it once more.
     _hidden_scratch_notice_shown: bool
     # Whether this chat has shown its "waiting for a sign-in" notice during this
-    # gateway run; in memory only, so a restart shows it once more.
+    # gateway run; in memory only. After a restart a row still among the chat's
+    # restored rows keeps a server it names from being named again here.
     _mcp_sign_in_notice_shown: bool
     # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
     # on the metadata line, so a restart does not show the same notice again.
@@ -625,6 +632,7 @@ class _ChatSlot:
     _dashboard_card_exempt: bool
     _on_question_retired: object | None
     _coordinator_approvals: Callable[[str], list[dict]] | None
+    _full_chat_waits: Callable[[str], bool] | None
     _linked_session_busy: Callable[[str], bool] | None
     _has_reader_flag: bool
     _compacting: bool
@@ -821,7 +829,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    # The prefix entry is its text, or ``(offset, size[, crc, msgs])`` in the file.
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
     _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
@@ -1052,9 +1061,14 @@ class _ChatSlot:
     def _trust(self) -> bool:
         return self._trust_held and session_mode_permitted("trust")
 
+    # A change is reported to ``chat_trust_restart``, which records the chats holding a
+    # mode right away, so a grant ended just before a crash is not kept by the next boot.
     @_trust.setter
     def _trust(self, value: bool) -> None:
+        was = getattr(self, "_trust_held", False)
         self._trust_held = bool(value) and session_mode_permitted("trust")
+        if self._trust_held != was:
+            note_trust_changed()
 
     @property
     def _trust_reads(self) -> bool:
@@ -1062,7 +1076,10 @@ class _ChatSlot:
 
     @_trust_reads.setter
     def _trust_reads(self, value: bool) -> None:
+        was = getattr(self, "_trust_reads_held", False)
         self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
+        if self._trust_reads_held != was:
+            note_trust_changed()
 
     @property
     def _has_reader(self) -> bool:
@@ -1517,6 +1534,7 @@ class _ChatSlot:
     update_message = _slot_transcript.update_message
     load_window = _slot_transcript.load_window
     loaded_messages = _slot_transcript.loaded_messages
+    release_saved_head = _slot_transcript.release_saved_head
     sidebar_messages = _slot_transcript.sidebar_messages
     to_dict = _slot_transcript.to_dict
 

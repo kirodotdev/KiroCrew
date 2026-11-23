@@ -872,14 +872,15 @@ def test_an_explicit_always_option_is_written_as_once_on_an_armed_session(
     assert _options(written) == [(0, "once")]
 
 
-def test_always_true_without_recorded_options_falls_back_to_the_canonical_once(
+def test_always_true_without_recorded_options_falls_back_to_the_offered_once(
     tmp_path, monkeypatch
 ) -> None:
-    """With no options on record, the canonical always id is still downgraded."""
+    """With no options on record, the canonical always id is still downgraded, and the
+    once goes out as the id the frame offered for it, never a literal it did not offer."""
     client, written = _asked_client(tmp_path, monkeypatch)
     client._permission_options.pop(0)
     assert _run(client.approve_tool(0, always=True)) is True
-    assert _options(written) == [(0, "allow_once")]
+    assert _options(written) == [(0, "once")]
 
 
 def test_an_unarmed_opencode_session_sends_its_always_option(tmp_path, monkeypatch) -> None:

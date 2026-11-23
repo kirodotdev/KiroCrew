@@ -30,6 +30,7 @@ from kiro_crew.discord.client import (
     DISCORD_BLOCKED,
     DISCORD_OK,
     DISCORD_TRANSIENT,
+    DiscordApiResult,
     DiscordClient,
     DiscordInbound,
     SendPermission,
@@ -657,7 +658,14 @@ class TestCallerSuppliedDestination:
             p.read_text(encoding="utf-8")
             for p in sorted(Path(td.__file__).parent.glob("transport_dispatch*.py"))
         )
-        verbs = {"respond_interaction", "ack_component_interaction"}
+        verbs = {
+            "respond_interaction",
+            "ack_component_interaction",
+            "defer_interaction",
+            "edit_interaction_original",
+            "send_interaction_followup",
+            "delete_interaction_original",
+        }
         exempt_markers = ("Commands run in a direct message", "disabled by policy")
         sites: list[tuple[int, str, bool]] = []
         for node in ast.walk(ast.parse(source)):
@@ -669,7 +677,7 @@ class TestCallerSuppliedDestination:
             rendered = " ".join(ast.unparse(a) for a in node.args) + " " + " ".join(passed.values())
             announces_a_refusal = any(m in rendered for m in exempt_markers)
             sites.append((node.lineno, passed.get("destination", ""), announces_a_refusal))
-        assert len(sites) == 7, f"call-site count changed: {sites}"
+        assert len(sites) == 9, f"call-site count changed: {sites}"
         exempt = [ln for ln, _dest, is_refusal in sites if is_refusal]
         assert len(exempt) == 2, f"expected exactly 2 refusal notices, found {exempt}"
         # Each exempt site must also be ephemeral: that is what makes ungating it safe.
@@ -976,22 +984,26 @@ class TestTransportPredicate:
         The predicate reads a pairing's presence as proof of a DM channel. Driven
         through ``receive`` because the gate is at the call site.
 
-        ``_api`` is stubbed: unstubbed it sends a live request with the bot token, and
-        turning promotion off would return before the pairing gate.
+        ``api_json`` is stubbed (``_api`` reads through it): unstubbed it sends a live
+        request with the bot token, and turning promotion off would return before
+        the pairing gate.
         """
         transport, client = _transport(allowed_user_ids=["u1"], allowed_channel_ids=["g-chan-1"])
         calls: list[tuple[str, str]] = []
 
-        async def _api(method: str, path: str, payload: Any = None, *_a: Any, **_k: Any) -> Any:
+        async def _api_json(
+            method: str, path: str, payload: Any = None, *_a: Any, **_k: Any
+        ) -> DiscordApiResult:
             calls.append((method, path))
+            body: dict[str, Any] = {}
             if method == "POST" and path.endswith("/threads"):
-                return {"id": "g-thread-1"}
-            if method == "GET" and path.startswith("/channels/"):
+                body = {"id": "g-thread-1"}
+            elif method == "GET" and path.startswith("/channels/"):
                 # A public thread, so the thread-type guard admits it.
-                return {"type": 11}
-            return {}
+                body = {"type": 11}
+            return DiscordApiResult(DISCORD_OK, body, status=200)
 
-        monkeypatch.setattr(client, "_api", _api)
+        monkeypatch.setattr(client, "api_json", _api_json)
         await transport.receive(
             DiscordInbound(
                 channel_id="g-chan-1",

@@ -121,9 +121,12 @@ class _GateMixin(ManagerComponent):
         backend: str | None = None,
         failover_from: str | None = None,
         label: str = "",
+        isolate: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _parent_project_dirs: "list[str] | None" = None,
+        _parent_held_spawn: "tuple[str, ...] | None" = None,
+        _parent_live_agent: str = "",
         _agent_check: "AgentCheck | None" = None,
         _recovering_row: bool = False,
         _stop_before_memory_read: bool = False,
@@ -146,6 +149,9 @@ class _GateMixin(ManagerComponent):
            case the spawn is refused immediately (see
            ``_spawn_with_approval_impl``)
         6. Otherwise → rejected
+
+        Under a moved Bot's held ``subagent`` limit (``mate_held_rules``) the
+        parent's spawn skips rungs 1-4: it asks on rung 5 or is rejected on 6.
 
         When ``approval_mode="auto"`` is set, it has two effects:
         - Skips the spawn approval gate (this method)
@@ -173,6 +179,9 @@ class _GateMixin(ManagerComponent):
                 rejected spawns return a done ``SubagentInfo`` with ``error``
                 set. Enables cwd-relative resource globs (``AGENTS.md``,
                 ``.kiro/steering``, ``CLAUDE.md``) to resolve correctly.
+            isolate (str): ``"worktree"`` gives the run a git worktree of the
+                repository *cwd* is in, made at run start; needs a *cwd*.
+                Any other non-empty value is refused here, without git.
             approval_mode (str | None): "auto" to skip spawn gate and
                 set session-level auto-approve.  Only honored from
                 authenticated internal callers (X-Internal-Secret).
@@ -563,6 +572,38 @@ class _GateMixin(ManagerComponent):
             {"task": _redacted_task[:120]} if _persistent_diagnostics else {"subagent_id": agent_id}
         )
 
+        # --- isolate: the two checks that need no git (the rest run at run start) ---
+        if isolate and _gate:
+            if isolate != "worktree":
+                isolate_err = "isolate must be 'worktree'"
+            elif not cwd:
+                isolate_err = "isolate needs a cwd: the repository the worktree is made from"
+            else:
+                isolate_err = ""
+            if isolate_err:
+                logger.warning("Subagent %s refused: %s", agent_id, isolate_err)
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected_invalid_isolate",
+                    metadata={"reason": isolate_err, **_task_audit},
+                )
+                return _refuse_row(
+                    SubagentInfo(
+                        id=agent_id,
+                        task=_redacted_task,
+                        memory_mode=_memory_mode,
+                        agent=agent,
+                        parent_session_key=parent_session_key,
+                        app=app,
+                        done=True,
+                        error=f"spawn refused: {isolate_err}",
+                        batch_id=batch_id,
+                        batch_total=max(0, int(batch_total)),
+                    )
+                )
+
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = cwd if cwd and not _gate else ""
         if cwd and _gate:
@@ -677,6 +718,11 @@ class _GateMixin(ManagerComponent):
         # the parent session has since ended and its live scope reads empty.
         if _parent_project_dirs is None:
             _parent_project_dirs = list(parent_project_dirs(parent_session_key))
+        # The parent's live agent, read at accept time and carried the same way: it
+        # names the Bot of a session that records none (a channel's), which a drain
+        # after that session left the session map would read as no agent.
+        if not _parent_live_agent and parent_session_key:
+            _parent_live_agent = self._manager._sessions.get_agent(parent_session_key)
         if _gate and _parent_spawn_policy is None:
             _parent_spawn_policy = parent_spawn_policy(parent_session_key, _parent_project_dirs)
         allowlist_err = (
@@ -753,6 +799,8 @@ class _GateMixin(ManagerComponent):
             "failover_from": failover_from,
             # Same reason: a queued row would otherwise start under its task text.
             "label": label,
+            # Same reason: a queued row would otherwise start in the shared checkout.
+            "isolate": isolate,
             "allowed_tools": allowed_tools,
             "bare": bare,
             "cwd": resolved_cwd,
@@ -775,8 +823,11 @@ class _GateMixin(ManagerComponent):
             # of the crew it was handed to.
             "memory_store": memory_store,
             "_execution_context": execution.to_record(),
-            # Deliberately NOT queued: ``_parent_spawn_policy``. The queued
-            # entry waits on capacity, so the wait is unbounded in time, and
+            # Deliberately NOT queued: ``_parent_spawn_policy``, nor the parent
+            # Bot's held limits (``_parent_held_spawn``, re-read by the durable
+            # pump off-loop and by the in-memory synchronous drain at the start
+            # ladder below, from ``_parent_live_agent``). The queued entry waits
+            # on capacity, so the wait is unbounded in time, and
             # the declaration it was admitted under may have been tightened
             # while it waited. Every drain re-reads it: the durable pump
             # off-loop before its re-check, the in-memory synchronous drain
@@ -787,6 +838,7 @@ class _GateMixin(ManagerComponent):
             # parent's project directories at accept time, applied on top of
             # its live ones at every drain.
             "_parent_project_dirs": _parent_project_dirs,
+            "_parent_live_agent": _parent_live_agent,
             "crew": crew,
             "_memory_mode": _memory_mode,
             "_depth": _depth,
@@ -1090,6 +1142,7 @@ class _GateMixin(ManagerComponent):
             "keep": keep,
             "execution_context": execution,
             "cwd": resolved_cwd,
+            "isolate": isolate,
         }
         if _dispatch_now:
             # The claim re-entry registers at the price its first half CHECKED;
@@ -1749,10 +1802,29 @@ class _GateMixin(ManagerComponent):
         # Shared Crew: each run's runtime starts in its initiator's containment slice.
         from kiro_crew.shared_crew.containment import start_run_task as _start_run_task
 
-        if self._manager._is_yolo and self._manager._is_yolo():
+        _yolo = bool(self._manager._is_yolo and self._manager._is_yolo())
+        _hooks = self._manager._ctx_builder.hooks if self._manager._ctx_builder else None
+        # A moved Bot's held ``subagent`` limit: no rung below starts the sub-agent
+        # on its own, and rung 5's approver is told the spawn is held, so only a
+        # person answers it (rung 6 still rejects). The event-loop entry points
+        # hand in their off-loop read; the synchronous callers read it here.
+        if _parent_held_spawn is None and parent_session_key:
+            from kiro_crew.mate_held_rules import held_spawn_limits
+
+            _parent_held_spawn = tuple(
+                held_spawn_limits(
+                    parent_session_key,
+                    self._manager._sessions.get_agent(parent_session_key) or _parent_live_agent,
+                )
+            )
+        held_spawn = bool(_parent_held_spawn)
+        if held_spawn:
+            logger.info("Subagent %s asks a person: its Bot holds a sub-agent limit", agent_id)
+
+        if _yolo and not held_spawn:
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
-        elif spawn_auto:
+        elif spawn_auto and not held_spawn:
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(
@@ -1762,7 +1834,7 @@ class _GateMixin(ManagerComponent):
                 outcome="auto_approved_spawn",
                 metadata={"subagent_id": agent_id, "reason": "approval_mode_auto"},
             )
-        elif parent_trusted:
+        elif parent_trusted and not held_spawn:
             self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
             self._manager._log_spawned(info)
             sel().log_tool_invocation(
@@ -1772,8 +1844,8 @@ class _GateMixin(ManagerComponent):
                 outcome="auto_approved_spawn",
                 metadata={"subagent_id": agent_id, "reason": "parent_trusted"},
             )
-        elif self._manager._ctx_builder and self._manager._ctx_builder.hooks:
-            if self._manager._ctx_builder.hooks.auto_approve_subagent_spawn is True:
+        elif _hooks:
+            if _hooks.auto_approve_subagent_spawn is True and not held_spawn:
                 self._manager._tasks[agent_id] = _start_run_task(self._manager._run(info), info)
                 self._manager._log_spawned(info)
                 sel().log_tool_invocation(
@@ -1785,7 +1857,7 @@ class _GateMixin(ManagerComponent):
                 )
             elif self._manager._on_spawn_approval:
                 self._manager._tasks[agent_id] = asyncio.create_task(
-                    self._manager._spawn_with_approval(info)
+                    self._manager._spawn_with_approval(info, _parent_held_spawn or ())
                 )
             else:
                 info.done = True
@@ -1812,7 +1884,7 @@ class _GateMixin(ManagerComponent):
                 return self._manager._announce_rejection(info)
         elif self._manager._on_spawn_approval:
             self._manager._tasks[agent_id] = asyncio.create_task(
-                self._manager._spawn_with_approval(info)
+                self._manager._spawn_with_approval(info, _parent_held_spawn or ())
             )
         else:
             info.done = True

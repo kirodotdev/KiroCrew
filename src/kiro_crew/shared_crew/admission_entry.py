@@ -2,8 +2,9 @@
 
 Each adapter is the whole of what one entry point adds: build the request from
 what the handler already validated, call the gate, and translate the answer
-into that entry point's own response or bookkeeping. They hold no state; the
-gate (``admission_gate``) holds all of it.
+into that entry point's own response or bookkeeping. They hold no state but
+the in-memory marks of a chat turn still waiting for admission; the gate
+(``admission_gate``) holds the rest.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from kiro_crew.shared_crew import admission_gate as _gate
 from kiro_crew.shared_crew.admission import (
     TASKQ_STATE_MAP,
     AcceptedWork,
+    InvalidTransition,
     OperationKind,
     OperationState,
     ReasonCode,
@@ -43,6 +45,8 @@ def _hold(task: "asyncio.Future[Any]") -> None:
 
 #: Slot keys whose dispatched turn is still waiting for admission.
 _PENDING_SLOTS: set[str] = set()
+#: Slot key -> the admission a dashboard send waits in before its runner starts.
+_WAITING_SENDS: dict[str, _gate.Admission] = {}
 
 
 def mark_admission_pending(slot_key: str, pending: bool) -> None:
@@ -55,6 +59,28 @@ def mark_admission_pending(slot_key: str, pending: bool) -> None:
 def admission_pending(slot_key: str) -> bool:
     """Whether *slot_key*'s turn is accepted but not yet started. In memory."""
     return slot_key in _PENDING_SLOTS
+
+
+async def cancel_waiting_send(slot_key: str) -> bool:
+    """Cancel the work a dashboard send on *slot_key* waits in, as a person's Stop.
+
+    Whether it did. The send's turn then ends unstarted through its own
+    ``on_ended``, which hands the slot's queue off. False when no send waits or
+    its work already ended before the cancel landed.
+    """
+    admission = _WAITING_SENDS.get(slot_key)
+    service = admission.service if admission is not None else None
+    work = admission.work if admission is not None else None
+    if service is None or work is None:
+        return False
+    live = service.live_work(work.work_id)
+    if live is None:
+        return False
+    try:
+        await service.cancel(work.work_id, expected_revision=live.revision)
+    except InvalidTransition:
+        return False
+    return True
 
 
 #: Work payload key holding the prompt a chat turn was accepted with.
@@ -282,18 +308,34 @@ async def admitted_chat_turn(
     *,
     still_live: Callable[[], bool],
     on_ended: Callable[[], Any],
+    stop_count: Callable[[], int] | None = None,
+    stoppable: bool = False,
 ) -> Any:
     """Run a dispatched chat turn through its admission: wait, revalidate, run.
 
     While it waits the slot is marked pending (:func:`admission_pending`) so a
-    later send cannot steer into a turn that has not started. Right before the
-    turn runs the slot must still be live; a closed slot ends the work unstarted.
+    later send cannot steer into a turn that has not started; a *stoppable* wait
+    (a dashboard send, whose runner has not started) can also be cancelled by a
+    Stop (:func:`cancel_waiting_send`). Right before the turn runs the slot must
+    still be live and *stop_count* (the Stop count of the session the turn runs
+    on) must not have grown since the wait began; either ends the work unstarted.
+    Only growth is a Stop: teardown resets the count.
     """
     mark_admission_pending(slot_key, True)
+    if stoppable:
+        _WAITING_SENDS[slot_key] = admission
+    stops_before = stop_count() if stop_count is not None else 0
+
+    def _clear_own() -> None:
+        mark_admission_pending(slot_key, False)
+        # A later send on the same slot may already hold the entry.
+        if _WAITING_SENDS.get(slot_key) is admission:
+            del _WAITING_SENDS[slot_key]
 
     async def _revalidate() -> ReasonCode | None:
-        mark_admission_pending(slot_key, False)
-        return None if still_live() else ReasonCode.CANCELLED_BY_USER
+        _clear_own()
+        stopped = stop_count is not None and stop_count() > stops_before
+        return None if still_live() and not stopped else ReasonCode.CANCELLED_BY_USER
 
     try:
         return await admission.run(turn, revalidate=_revalidate)
@@ -309,7 +351,7 @@ async def admitted_chat_turn(
         on_ended()
         return None
     finally:
-        mark_admission_pending(slot_key, False)
+        _clear_own()
 
 
 def admitted_or_direct(
@@ -319,11 +361,23 @@ def admitted_or_direct(
     *,
     still_live: Callable[[], bool],
     on_ended: Callable[[], Any],
+    stop_count: Callable[[], int] | None = None,
 ) -> Coroutine[Any, Any, Any]:
-    """*turn* itself when *admission* is a pass-through, else :func:`admitted_chat_turn`."""
+    """*turn* itself when *admission* is a pass-through, else :func:`admitted_chat_turn`.
+
+    The dashboard send path: its runner has not started, so the wait is stoppable.
+    """
     if admission.passthrough:
         return turn
-    return admitted_chat_turn(slot_key, admission, turn, still_live=still_live, on_ended=on_ended)
+    return admitted_chat_turn(
+        slot_key,
+        admission,
+        turn,
+        still_live=still_live,
+        on_ended=on_ended,
+        stop_count=stop_count,
+        stoppable=True,
+    )
 
 
 # -- subagents -------------------------------------------------------------------
@@ -681,6 +735,7 @@ __all__ = [
     "admitted_chat_turn",
     "admitted_or_direct",
     "admitted_cron_dispatch",
+    "cancel_waiting_send",
     "taskrunner_probe",
     "workflow_probe",
     "WORK_ID_HEADER",

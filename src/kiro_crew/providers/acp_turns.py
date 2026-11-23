@@ -133,6 +133,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         native_child_call=e.native_child_call,
         # Dropping this would offer no deny override on this surface (fail closed).
         child_calls_marked=e.child_calls_marked,
+        # Dropping this would put every approve-for-me verdict on a card (fail closed).
+        kas_auto_approval=e.kas_auto_approval,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would cost a claude worker's Crew wait its trusted identity,

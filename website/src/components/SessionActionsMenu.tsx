@@ -27,6 +27,7 @@ import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useCopyAck } from './FilePathMenu'
 import { useChatPopouts } from '../hooks/useChatPopouts'
+import { SessionRefStageContext } from './sessionRefStage'
 
 import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
@@ -196,6 +197,7 @@ export default function SessionActionsMenu({
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
   const newFolderMove = useNewFolderMove()
+  const canStageSessionRef = React.useContext(SessionRefStageContext)
 
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
@@ -490,9 +492,10 @@ export default function SessionActionsMenu({
       layoutSlot,
       // Stage a reference to this session in the open chat's composer — the
       // menu form of dragging the row into the composer. Self-hiding: the
-      // caller passes the handler only when a reference can be staged right now
-      // (a composer exists, and this is not an incognito/temporary/self target).
-      onReferenceInChat && (
+      // caller passes the handler only when this session may be referenced
+      // (not an incognito/temporary/self target), and SessionRefStageContext
+      // says whether a composer exists to stage into.
+      onReferenceInChat && canStageSessionRef && (
         <Item key="reference-in-chat" onSelect={onReferenceInChat}>
           <MessagesSquare size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reference_in_chat')}
         </Item>

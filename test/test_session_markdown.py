@@ -400,8 +400,8 @@ def test_an_unterminated_raw_html_block_is_closed_at_the_message_boundary(tag):
     ids=["no-break-space", "em-space", "ideographic-space", "line-separator"],
 )
 def test_a_condition_one_opener_is_closed_as_the_parser_reads_it(content, closer):
-    # The parser reads `\s` as Unicode whitespace and folds case by Unicode rules,
-    # so `<pre` followed by a no-break space opens a block that only `</pre>` ends.
+    # The parser reads `\s` as Unicode whitespace, so `<pre` followed by a
+    # no-break space opens a block that only `</pre>` ends.
     # A closer table that stopped at ASCII found no closer for a block the parser
     # had already opened, and the export failed on text anyone can type.
     assert sm._unterminated_blocks(content) == closer
@@ -417,14 +417,22 @@ def test_a_condition_one_opener_is_closed_as_the_parser_reads_it(content, closer
     _assert_later_heading_parses(out)
 
 
-def test_a_long_s_opener_never_hides_the_next_turn():
-    # Whether `<ſcript>` opens an HTML block depends on the markdown-it-py release:
-    # 4.2 folds the long s to `s` and opens a script block, 4.3 reads a plain
+@pytest.mark.parametrize(
+    "content,closer",
+    [
+        ("<\u017fcript>\nvar x = 1;", "</script>"),
+        ("<!doctype html\nhello **bold**", ">"),
+    ],
+    ids=["long-s", "lowercase-declaration"],
+)
+def test_an_opener_the_release_decides_never_hides_the_next_turn(content, closer):
+    # Whether these open an HTML block depends on the markdown-it-py release:
+    # 4.2 folds the long s to `s` and opens a script block where 4.3 reads a
+    # paragraph, and 4.3 opens a declaration on `<!d` where 4.2 reads a
     # paragraph. The export must keep the next turn either way, so this asks the
     # parser rather than pinning one release's answer.
-    content = "<\u017fcript>\nvar x = 1;"
     opens_block = sm._parser().parse(content)[0].type == "html_block"
-    assert sm._unterminated_blocks(content) == ("</script>" if opens_block else "")
+    assert sm._unterminated_blocks(content) == (closer if opens_block else "")
     out = _render(
         _bundle(
             [

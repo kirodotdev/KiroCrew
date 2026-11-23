@@ -50,8 +50,8 @@ do-it-yourself test, the dispatch-depth rule, how to run the team and what to
 report when a conductor dispatched you. Its
 procedure is `goal-conductor` -- dispatch order, the work ledger, the patrol
 loop, acceptance and stop conditions -- and it applies to you unchanged. A
-dispatch tool that is not in your tool list is deferred: load it by id with
-`tool_search`, then call it.
+dispatch tool that is not in your tool list is deferred: load it as the
+`[TOOL NAMES]` block says, then call it.
 
 The owner can message you at any time: apply a goal change at the next natural
 boundary, except a message that invalidates work in flight, which you handle at
@@ -349,7 +349,8 @@ nobody where the goal stands.
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
 tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
 acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
-skill text you read is gone: read it again before you act. """,
+skill text you read is gone: read it again before you act. If a read ends with a
+character-limit notice, keep reading from the offset it gives until the end. """,
 }
 
 #: Conductor mode's reply to a patrol wake. Not a shared rule: a person watches a
@@ -716,7 +717,7 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
   result; `send_message` / `send_notification` to report.
 - Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
 - Reading — `fs_read`, `web_fetch`.
-- `tool_search` loads a tool that is not in your list yet.
+- A tool not in your list yet is deferred: load it as `[TOOL NAMES]` says.
 
 """,
     ),
@@ -925,7 +926,7 @@ Your tools:
   result; `send_message` / `send_notification` to report.
 - Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
 - Reading — `fs_read`, `web_fetch`.
-- `tool_search` loads a tool that is not in your list yet.
+- A tool not in your list yet is deferred: load it as `[TOOL NAMES]` says.
 
 The `pipeline-conductor` skill carries the operating procedure — the pipeline
 spec, the claim preflight, the work-order brief, the probe cycle and its action
@@ -1184,7 +1185,7 @@ Your tools:
   result; `send_message` / `send_notification` to report.
 - Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
 - Reading — `fs_read`, `web_fetch`.
-- `tool_search` loads a tool that is not in your list yet.
+- A tool not in your list yet is deferred: load it as `[TOOL NAMES]` says.
 
 The `security-conductor` skill carries the operating procedure — what qualifies
 as a surface, the auditor seed template and its mandatory governance step, the

@@ -17,6 +17,9 @@ logger = logging.getLogger("kiro_crew.mcp_tools.code_channels")
 _PIN = (
     " It always acts on THIS session's own Slack code channel (the session must be one "
     "a code channel is bound to); it takes no channel and cannot reach any other channel."
+    " No tool opens a code channel: Kiro Crew opens one by itself when someone asks it "
+    "for code work in Slack and it judges the work needs its own channel. Outside a code "
+    "channel, do the work where you are and tell the person."
 )
 
 
@@ -39,7 +42,8 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Publish or update a view tab in your Slack code channel: an html "
                 "page (a full, self-contained document; no external resources load) "
-                "or a display-only block_kit surface. Calls with the same view_key "
+                "or a display-only block_kit surface. Use html for a preview of a page "
+                "or site, not a file upload or a screenshot. Calls with the same view_key "
                 "update the same tab; a channel holds at most five tabs. The Code "
                 "tab's diff comes from your worktree and the Plan tab from "
                 "code_channel_publish_plan_canvas, so neither is a type here." + _PIN

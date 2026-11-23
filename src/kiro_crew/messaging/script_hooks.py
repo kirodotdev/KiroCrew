@@ -187,10 +187,13 @@ async def with_hook_context(message: str, injected: list[str]) -> str:
     if not injected:
         return message
     from kiro_crew.context import _neutralize_structural_markers  # circular at import
+    from kiro_crew.prompt_segments import prepend_injected
 
     block = "\n\n".join(injected)
     safe = await asyncio.to_thread(_neutralize_structural_markers, block)
-    return f"[Hook context]\n{safe}\n[End hook context]\n\n{message}"
+    # An assembled prompt keeps its segments, so text injected into it is
+    # never read as the user's own (an image path there stays text).
+    return prepend_injected(f"[Hook context]\n{safe}\n[End hook context]\n\n", message)
 
 
 async def fire_stop_if_succeeded(turn: ScriptHookTurn, stop_reason: str, reply: str) -> None:

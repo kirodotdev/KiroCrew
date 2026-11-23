@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew.change_card_mcp_server import KIND_MCP_SERVER
 from kiro_crew.dashboard.change_cards_records import (
     CardError,
     _jsonable,
@@ -773,6 +774,10 @@ def _sync_read_state(
         name = ev0.get("name") or _derive_install_name(p["id"])
         exists = bool(name) and _mcp_exists(name)
         return {"name": name, "exists": exists, "scopes": _mcp_scopes(name) if name else {}}
+    if kind == KIND_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.request_server_page import server_state
+
+        return server_state(p["server"])
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},

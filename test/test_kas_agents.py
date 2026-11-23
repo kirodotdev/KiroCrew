@@ -368,6 +368,19 @@ class TestTheSpecIsSpelledInKasToolIds:
         out = to_client_custom_agent("a", _spec(excludedTools=["fs_read", "@x/y"]), "p")
         assert out["excludedTools"] == ["fs_read", "read_file", "list_directory", "@x/y"]
 
+    def test_every_mcp_server_is_excluded_by_kas_s_mcp_tags(self):
+        """kiro-cli's ``@*`` names every MCP server. KAS also matches an exclusion
+        against tags, and its built-ins carry ``@builtin``, so a literal ``@*``
+        there would take the built-ins ``tools`` grants as well. Only that exact
+        entry is rewritten; the grant list is untouched."""
+        spec = _spec(
+            tools=["fs_read", "@x"],
+            excludedTools=["@x/y", "@*", "@*/z", "*x"],
+        )
+        out = to_client_custom_agent("a", spec, "p")
+        assert out["excludedTools"] == ["@x/y", "@mcp", "@powers", "@*/z", "*x"]
+        assert out["tools"] == ["fs_read", "read_file", "list_directory", "@x"]
+
     def test_excluding_fs_write_also_excludes_delete_file(self):
         """Opposite polarity from mounting: a mount family stops at the kiro-cli
         tool's own verbs, an exclusion reaches everything governed under the

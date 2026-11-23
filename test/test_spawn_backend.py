@@ -313,6 +313,58 @@ class TestSpawnEndpoint:
         assert "kas" not in payload["backends"]
 
 
+class TestKiroFollowsTheKiroCliPick:
+    """``backend="kiro"`` runs where a stored Kiro CLI pick would: on KAS once this
+    host confirmed kiro-cli's v3 engine and KAS is selectable and can start, else on
+    the Kiro CLI (v2) launch."""
+
+    @pytest.fixture
+    def kas_startable(self, selectable, monkeypatch):
+        from kiro_crew.agent_sdk import backend_install
+        from kiro_crew.agent_sdk.backend_install import INSTALLED, BackendInstallState
+
+        monkeypatch.setattr(
+            backend_install,
+            "probe_backend",
+            lambda b: BackendInstallState(b, b or "kiro", INSTALLED),
+        )
+
+    @pytest.fixture
+    def kas_confirmed(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+
+        monkeypatch.setattr(backends, "_kiro_cli_offers_kas", True)
+        monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas"}))
+
+    async def _ran_on(self) -> tuple[str | None, dict]:
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        request, mgr = _real_request({"task": "x", "backend": "kiro"})
+        resp = await api_spawn(request)
+        payload = json.loads(resp.text)
+        return mgr.get(payload["id"]).backend, payload
+
+    @pytest.mark.asyncio
+    async def test_kiro_runs_on_kas_when_the_pick_moves_there(self, kas_startable, kas_confirmed):
+        backend, payload = await self._ran_on()
+        assert backend == "kas"
+        assert payload["backend"] == "kas"
+        assert "failover_from" not in payload
+
+    @pytest.mark.asyncio
+    async def test_kiro_keeps_the_v2_launch_without_kas_evidence(self, kas_startable):
+        backend, _payload = await self._ran_on()
+        assert backend == ""
+
+    @pytest.mark.asyncio
+    async def test_kiro_keeps_the_v2_launch_when_kas_cannot_start_here(
+        self, selectable, kas_confirmed
+    ):
+        # ``selectable`` marks KAS installed after the gateway started.
+        backend, _payload = await self._ran_on()
+        assert backend == ""
+
+
 class TestTheParentsCreatedHarnessIsInherited:
     """A session created with ``session_create(backend=...)`` hands its harness to a
     child that names none, resolved at admission, so the run's own ``backend``

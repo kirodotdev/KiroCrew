@@ -33,7 +33,7 @@ from prepare_pr_rounds_helpers import (
     _load,
     _wire,
 )
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 
 def _fix_counts(module: ModuleType) -> dict:
@@ -151,7 +151,7 @@ def test_rounds_view_fails_closed_when_comments_are_unreadable(monkeypatch, caps
 
 
 def test_skill_wires_the_rounds_view_and_the_two_lines():
-    skill = (SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    skill = skill_text((SCRIPT.parent.parent / "SKILL.md"))
     assert "pr_findings.py <pr#> --rounds" in skill
     # The intent lives in the PR body's frozen sections, not in a separate comment.
     assert "prepare-pr-intent" not in skill
@@ -309,7 +309,7 @@ def test_the_seam_protocol_reference_carries_the_pick_order_and_the_sweep_format
         "Nothing here asks a person",
     ):
         assert needle in ref
-    skill = (SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    skill = skill_text((SCRIPT.parent.parent / "SKILL.md"))
     assert "references/seam-protocol.md" in skill and "`SEAM LIMIT`" in skill
 
 
@@ -720,8 +720,7 @@ def test_exactly_one_prepare_pr_script_defines_the_fence_rules():
     holders = [
         path.name
         for path in sorted(SCRIPTS_DIR.glob("*.py"))
-        if "FENCE_OPEN_RE = re.compile" in path.read_text(encoding="utf-8")
-        or "`{3,}" in path.read_text(encoding="utf-8")
+        if "FENCE_OPEN_RE = re.compile" in skill_text(path) or "`{3,}" in skill_text(path)
     ]
     assert holders == [FENCE_OWNER]
     assert "_review_contract" in (SCRIPTS_DIR / "diff_signals.py").read_text(encoding="utf-8")
@@ -1019,7 +1018,7 @@ def test_the_reference_describes_the_formats_the_trigger_and_the_resolution_line
         "> fixed in <sha>",
     ):
         assert needle in ref, needle
-    skill = (SCRIPTS_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+    skill = skill_text((SCRIPTS_DIR.parent / "SKILL.md"))
     assert "just reached" in skill and "`resolution: removed|narrowed|deferred" in skill
 
 

@@ -118,6 +118,9 @@ def gui_gateway(monkeypatch, tmp_path):
     heads: list[str] = []
 
     async def exec_standin(*argv, **kw):
+        # The ssh argv the group leader shell runs, minus the leader itself.
+        if list(argv[:2]) == [token_mint._LEADER_SHELL, "-c"]:
+            argv = argv[4:]
         heads.append(argv[0])
         return await real_exec(sys.executable, str(standin), *argv[1:], **kw)
 

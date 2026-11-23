@@ -904,7 +904,14 @@ class AcpProvider(LLMProvider):
         adapted provider is classified by its own declaration rather than by
         whichever internal shape it happens to expose.
         """
-        return self._client.backend in host_auth.backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file instead
+        # (``agent_sdk/kas_machine.py``), so a personal sign-out does not retire it.
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        runtime = getattr(self._client, "_runtime", None)
+        return self._client.backend in host_auth.backends_retired_by_host_logout() and not (
+            runs_machine_auth(runtime)
+        )
 
     @property
     def member_capabilities_supported(self) -> bool:

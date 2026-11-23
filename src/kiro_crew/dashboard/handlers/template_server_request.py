@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 #: ``request_server`` operation name, in :data:`handlers.guide._USER_TURN_OPERATIONS`.
 OP_REQUEST_SERVER = "cards.request_server"
 
-_BODY_KEYS = frozenset({"server", "source", "registry_id", "reason"})
+_BODY_KEYS = frozenset(
+    {"server", "source", "registry_id", "reason", "action", "entry", "uses_chat_folder"}
+)
 
 #: The opt-in managed sets an owner may mount on the default agent with no
 #: ``entry`` in the body, each with the ``mcp-*`` subcommand it runs. The gateway
@@ -319,6 +321,20 @@ def template_declares(template: str, server: str) -> bool:
     return False
 
 
+def _users_own_server(name: str) -> bool:
+    """Whether a user's own MCP config file declares *name* and no app mints it. Blocking.
+
+    An app's ``<app>:<server>`` key lives only in the rendered spec the gateway
+    lookup reads first, and a template's copy would not follow the app's install.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.mcp_discovery import _load_mcp_json_by_source
+
+    specs = [scope.get(name) for scope in _load_mcp_json_by_source().values()]
+    declared = any(isinstance(s, dict) and agent_mod._declares_server(s) for s in specs)
+    return declared and name not in agent_mod._app_owned_mcp_keys()
+
+
 # ── the default agent and the worker: a mount-only card ──
 
 #: Templates whose servers are the MCP page's: the default agent carries every
@@ -355,9 +371,19 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         return _caller_refusal(exc)
     unknown = sorted(set(body) - _BODY_KEYS)
     if unknown:
-        # A command, url, template or session is never the caller's to give.
+        # A template or session is never the caller's to give, and a launch line
+        # only for a server on the MCP page (``entry``, shown in full on its card).
         _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
         return _deny(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
+    from kiro_crew.dashboard.handlers import request_server_page
+
+    if request_server_page.is_page_request(body):
+        # A server on the MCP page, added with its entry, changed or removed.
+        return await request_server_page.request_page_change(request, slot_key, sk, body)
+    if "entry" in body or "uses_chat_folder" in body:
+        # A gateway or registry server's entry is the gateway's to build.
+        _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
+        return _deny(400, "invalid_body", "entry is only for source 'custom'")
     state = request.app["state"]
     template, code, message = await asyncio.to_thread(_caller_template, state, slot_key, sk)
     if not template:
@@ -382,6 +408,14 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     except CatalogAdditionError as exc:
         _audit(sk, OP_REQUEST_SERVER, "denied", exc.code)
         return _deny(400, exc.code, exc.message)
+    if ":" in name and not await asyncio.to_thread(_users_own_server, name):
+        _audit(sk, OP_REQUEST_SERVER, "denied", "app_server")
+        return _deny(
+            400,
+            "app_server",
+            f"{name} can't be added to an agent template: a name with ':' must be a server "
+            "the user's own MCP config declares, and an installed app's server is not",
+        )
     try:
         if transport is None:
             raise additions.AdditionError("entry_not_object")

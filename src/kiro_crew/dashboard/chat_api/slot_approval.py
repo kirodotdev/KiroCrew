@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
+        end_approve_for_me,
         grant_deadline,
         logger,
         native_resolution_target,
@@ -441,6 +442,10 @@ async def apply_approval_mode(
             mode=mode,
             resource=slot_key or "",
         )
+    # An explicit pick wins over a kept mode the boot restore has not applied yet.
+    from kiro_crew.dashboard.chat_trust_restart import note_mode_pick
+
+    note_mode_pick(state, slot)
     #: Channels this request turned trusted, so a late refusal can undo just those.
     _granted_channels: list[object] = []
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
@@ -786,6 +791,13 @@ async def apply_approval_mode(
                                     "SEL audit failed for channel bulk approval",
                                     exc_info=True,
                                 )
+
+    # Any mode set through here, from every entry point (the dashboard picker, a
+    # Slack code channel, a crewmate profile, a workflow), ends approve-for-me on
+    # the slots it names, every slot for YOLO or an unnamed request.
+    await end_approve_for_me(
+        state, [slot] if slot is not None and mode != "yolo" else list(state._slots.values())
+    )
 
     # Propagate trust/yolo to session approval policies so subagents inherit.
     #

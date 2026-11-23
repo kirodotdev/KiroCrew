@@ -90,6 +90,40 @@ def test_a_column_type_follows_its_cells(cells, kind):
     assert f"c ({kind})" in str(sheet_digest.digest_text("t.csv", body, ",", partial=False))
 
 
+@pytest.mark.parametrize("cell", ["12_34", "1_000", "2024_01", "1_0.5", "1e1_0"])
+def test_a_cell_with_an_underscore_is_text_not_a_number(cell):
+    assert sheet_digest._kind(cell) == "text"
+
+
+@pytest.mark.parametrize(
+    ("cell", "kind"),
+    [
+        ("1000", "integer"),
+        ("-3", "integer"),
+        ("12.5", "number"),
+        ("1e5", "number"),
+        ("2026-01-02", "date"),
+        ("2026-01-02_10:30:00", "date"),
+        ("TRUE", "boolean"),
+        ("ab_12", "text"),
+    ],
+)
+def test_every_other_cell_keeps_its_kind(cell, kind):
+    assert sheet_digest._kind(cell) == kind
+
+
+def test_a_code_column_with_underscores_is_typed_text_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "codes.csv", "code,qty\n12_34,1\n1_000,2\n2024_01,3\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "3 data rows; 2 columns: code (text), qty (integer)" in lines
+
+
+def test_an_underscore_timestamp_column_is_typed_date_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "when.csv", "when,qty\n2026-01-02_10:30:00,1\n2026-01-03_11:00:00,2\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "2 data rows; 2 columns: when (date), qty (integer)" in lines
+
+
 def test_a_secret_in_a_cell_is_redacted_before_the_digest(uploads, digest_on):
     secret = github_classic()
     path = _stage(uploads, "ab12_keys.csv", f"name,token\nci,{secret}\n")
@@ -127,6 +161,54 @@ def test_a_large_file_is_read_in_part_and_its_count_is_a_floor(uploads, digest_o
     count = (sheet_digest.MAX_READ_BYTES - len("n,s,d\n")) // len(row)
     assert f"{count}+ data rows (first 256 KiB read)" in text
     assert f"types come from the first {sheet_digest.MAX_TYPED_ROWS} data rows" in text
+
+
+def test_a_quoted_multi_line_tsv_cell_stays_one_cell_and_the_ids_stay_integers(uploads, digest_on):
+    body = 'id\tnotes\n1\t"line one\nline two"\n2\tplain\n'
+    text = _text(str(_stage(uploads, "ab_q.tsv", body)))
+    assert "2 data rows; 2 columns: id (integer), notes (text)" in text
+    assert "sample: 1 | line one line two" in text
+
+
+def test_a_csv_keeps_its_quote_rules_and_an_ordinary_digest_is_unchanged(uploads, digest_on):
+    body = 'k,v\n"a, b","line one\nline two"\nc,d\n'
+    text = _text(str(_stage(uploads, "ab_pin.csv", body)))
+    assert text.endswith(
+        "[sheet digest: ab_pin.csv]\n2 data rows; 2 columns: k (text), v (text)"
+        "\nsample: a, b | line one line two\nsample: c | d"
+    )
+
+
+@pytest.mark.parametrize("tail", [".", ":", "!", "?", ").", "`?", ".."])
+def test_a_sheet_path_ending_a_sentence_still_gets_its_digest(uploads, digest_on, tail):
+    path = _stage(uploads, "ab_data.csv", _GRID)
+    assert "[sheet digest: ab_data.csv]" in _text(f"please read {path}{tail}")
+
+
+def test_a_longer_name_that_only_starts_like_a_sheet_gets_no_digest(uploads, digest_on):
+    # Not a name ending in a dot: Windows drops a trailing dot when the file is made.
+    message = str(_stage(uploads, "ab_data.csv.bak", _GRID))
+    assert _text(message) == message
+
+
+def test_a_key_redacted_across_csv_rows_keeps_the_counts_and_shows_no_cells(uploads, digest_on):
+    body = [synth(64, B64, seed) for seed in (5, 6)]
+    pem = ["head", "-----BEGIN " "PRIVATE KEY-----", *body, "-----END " "PRIVATE KEY-----", "tail"]
+    text = _text(str(_stage(uploads, "ab_pem.csv", "".join(f"{v},1\n" for v in pem))))
+    assert not any(piece in text for piece in (*body, "head", "tail"))
+    assert text.endswith(
+        "[sheet digest: ab_pem.csv]\n5 data rows; 2 columns\n"
+        "column names, types and samples left out: a redacted value spans rows or cells"
+    )
+
+
+def test_a_key_redacted_inside_one_quoted_csv_cell_keeps_the_shape(uploads, digest_on):
+    body = synth(64, B64, 7)
+    key = "\n".join(["-----BEGIN " "PRIVATE KEY-----", body, "-----END " "PRIVATE KEY-----"])
+    text = _text(str(_stage(uploads, "ab_one.csv", f'name,key\nci,"{key}"\n')))
+    assert "1 data rows; 2 columns: name (text), key (text)" in text
+    assert "sample: ci | " in text
+    assert body not in text
 
 
 def test_a_cell_cannot_start_a_line_or_claim_a_picture(uploads, digest_on):

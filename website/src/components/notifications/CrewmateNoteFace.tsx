@@ -103,6 +103,13 @@ export function CrewmateNoteFace({ member, size, fallback }: { member: NoteMembe
   )
 }
 
+/** Hands `children` the crewmate's display label, or `fallback` while the
+ *  roster loads or when the crewmate is gone. */
+export function CrewmateNoteLabel({ member, fallback, children }: { member: NoteMember; fallback: string; children: (label: string) => ReactNode }) {
+  const row = useCrewmateRow(member)
+  return <>{children(row ? crewDisplayName(row) : fallback)}</>
+}
+
 /** The crewmate's display label, or nothing while the roster loads or when the
  *  crewmate is gone. */
 export function CrewmateNoteName({ member, title, className = '' }: { member: NoteMember; title?: string; className?: string }) {

@@ -604,7 +604,7 @@ async def test_session_extras_attaches_unjudged_denies_only_to_the_worker(
         spec["toolsSettings"] = settings
     (paths.kiro_agents_dir() / f"{agent}.json").write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: None)
-    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda: None)
+    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda *_a: None)
 
     extras = await KasHarness().session_extras(agent, work_dir=work, session_key="worker-1")
 

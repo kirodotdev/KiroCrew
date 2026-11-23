@@ -370,7 +370,7 @@ class TestOldGlibcRefusedFirst:
         from kiro_crew.acp import kas_bundle as acp_kas_bundle
 
         monkeypatch.setattr(acp_kas_bundle, "_host_os", lambda _system: "linux")
-        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 17))
         monkeypatch.setattr(kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched"))
         monkeypatch.setattr(
             kas_bundle, "install_bundle", lambda *a, **k: pytest.fail("install_bundle reached")
@@ -394,7 +394,7 @@ class TestOldGlibcRefusedFirst:
         assert cli_kas.kas_cmd(args) == cli_kas.HOST_UNSUPPORTED_EXIT
         out, err = capsys.readouterr()
         assert "Fetching" not in out and "Installing" not in out
-        assert "❌ this host's glibc (2.26) is older than KAS requires" in err
+        assert "❌ this host's glibc (2.17) is older than KAS requires" in err
 
 
 class TestInstallWhenAlreadyInstalled:

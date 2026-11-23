@@ -15,6 +15,7 @@ import { createTranscriptRenderers } from '../transcriptRenderers'
 import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useStableCallbackProps } from '../useStableCallbackProps'
 import { api, type PlanStepInput } from '../../../api/client'
+import { isPermissionRefusal } from '../../../api/apiError'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { isSystemNoticeRow } from '../CompactionCard'
@@ -127,6 +128,8 @@ interface TranscriptRenderingOptions {
   decideRow: (meta: Record<string, unknown> | undefined, action: string) => Promise<void>
   revealAppInPanel: (toolCallId: string) => void
   lastTextIdx: number
+  /** The row that offers Regenerate: `lastTextIdx` while it is in the newest turn, else -1. */
+  regenerateIdx: number
   regenerating: boolean
   handleRegenerate: () => void
   /** Ids of the previous reply's rows while a Regenerate turn may replace them; drawn as "previous reply". */
@@ -190,7 +193,7 @@ export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
   handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
-  decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
+  decideRow, revealAppInPanel, lastTextIdx, regenerateIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
   handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
@@ -234,6 +237,8 @@ export function useTranscriptRendering({
   // kept data. Popout and embed frames (by path) show a failed read on the row
   // unless it came from a gateway outage; the dashboard window, a chat
   // embedded in one of its pages included, leaves it to the app-level notice.
+  // A caller who is not the owner is refused the same way every time: that is
+  // no failure to show, and it is not polled again.
   const newestError = messages.findLast(m => m.role === 'error')
   const signedOutRow = interrupted && newestError !== undefined && isAuthRequired(newestError) && isKasSignedOut(newestError) && authRequiredIsNewest(messages) ? newestError : undefined
   const { data: kasStatus, error: kasStatusError, isError: kasStatusFailed, errorUpdatedAt: kasStatusErrorAt, refetch: refetchKasStatus } = useQuery({
@@ -241,7 +246,7 @@ export function useTranscriptRendering({
     queryFn: api.kasLoginStatus,
     enabled: signedOutRow !== undefined,
     staleTime: 0,
-    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
+    refetchInterval: query => (isPermissionRefusal(query.state.error) ? false : KIRO_SIGN_IN_NOTICE_POLL_MS),
   })
   const kasStatusOutage = useOutageFailure(kasStatusFailed, kasStatusErrorAt, () => refetchKasStatus({ cancelRefetch: false }))
   const path = appPathname()
@@ -273,6 +278,7 @@ export function useTranscriptRendering({
     if (await handleFork(visibleIndex, messageId, 'head')) openModelPickerFromError()
   }, [handleFork, openModelPickerFromError])
   const lastTextIdxRef = useRef(lastTextIdx); lastTextIdxRef.current = lastTextIdx
+  const regenerateIdxRef = useRef(regenerateIdx); regenerateIdxRef.current = regenerateIdx
   // The first reply in this session with a removed credential: the one-time
   // redaction coach renders after it and nowhere else.
   const redactionCoachTs = useMemo(() => {
@@ -459,7 +465,7 @@ export function useTranscriptRendering({
             <div className={`flex flex-col gap-0${beingReplaced ? ' opacity-60' : ''}`} data-testid={beingReplaced ? 'regenerate-previous-reply' : undefined}>
               {beingReplaced && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1">{i18nT(newReplyStarted ? 'pages.chatPage.regenerate_previous_reply_kept_as_version' : 'pages.chatPage.regenerate_previous_reply')}</span>}
               {startsNewReply && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 border-t border-border pt-2" data-testid="regenerate-new-reply">{i18nT('pages.chatPage.regenerate_new_reply')}</span>}
-              <AssistantMessage body={warmBriefBodyOf(m, activeSlot || undefined)} grillRowId={grillRowId(m)} grillMid={threadMidOf(m)} grillSent={grillKeysSentAfter(messagesRef.current, i)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? replyTurnStats(m, messagesRef.current, i) : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              <AssistantMessage body={warmBriefBodyOf(m, activeSlot || undefined)} grillRowId={grillRowId(m)} grillMid={threadMidOf(m)} grillSent={grillKeysSentAfter(messagesRef.current, i)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? replyTurnStats(m, messagesRef.current, i) : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === regenerateIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onForkWithModel={embedded && !popout ? undefined : handleForkWithModel} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
@@ -509,7 +515,7 @@ export function useTranscriptRendering({
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
       kiroSignedIn,
-      kiroSignInCheckError: framed && !kasStatusOutage ? kasStatusError : null,
+      kiroSignInCheckError: framed && !kasStatusOutage && !isPermissionRefusal(kasStatusError) ? kasStatusError : null,
       onOpenTurnLimit: embedded || popout ? undefined : openTurnLimitSetting,
       // The repeat-start remedy (#13791). The restart itself is owner-gated on
       // the server; a refusal comes back as an ApiError the card shows.

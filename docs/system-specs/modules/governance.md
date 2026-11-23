@@ -114,8 +114,12 @@ can reorder strictness or redefine matching):
   `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
   so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
   stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
-  at all there. A pattern rooted without a drive (`/data/**`) still never
-  meets an item, which `abspath` gives a drive. POSIX is unchanged.
+  at all there. A pattern rooted without a drive (`/data/**`) meets no local
+  drive path, which `abspath` always gives a drive, while a remote-workspace
+  target still meets it (below): on Windows such a rule binds guest files only.
+  A pattern whose first segment is a wildcard (`/**`, `/*`) can also meet a
+  local UNC path (`\\host\share\...`), since either separator matches. POSIX is
+  unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
@@ -623,7 +627,10 @@ in an oss build). One fetch is the Kiro control plane's
   (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
   segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
   (`enterprise_policy_translate._non_canonical`, plain string checks); any other
-  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
+  shape refuses a deny and is dropped from an allow. A `/`-rooted path is
+  canonical on every gateway OS, so a Windows gateway neither refuses nor drops
+  it: there it binds remote-workspace targets and no local drive path ("Path
+  matcher" above). The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
@@ -4280,6 +4287,16 @@ the active slot), and `yolo` (auto-approve every tool everywhere). The
 matcher — data-only shape, no evaluator change, mirroring `agent_backend`
 above) lets a managed fleet forbid an auto-approve mode and force interactive
 approval.
+
+On a KAS chat a person drives from the dashboard, the picker can also offer
+**Approve for me** (`approve_for_me`, set through
+`POST /api/chat/slots/{slot}/approve-for-me`), where the engine judges each call
+(see [security.md](security.md), "KAS approve-for-me"). It is no rung of the
+trust ladder and not in `KNOWN_APPROVAL_MODES`; it has a verdict of its own
+(`approval_mode_policy.APPROVE_FOR_ME_MODE`) that is denied by default. Only an
+installed `approval_modes` rule whose `allow` list names `approve_for_me`, in
+either tier of a composed rule, permits it; allowing `trust`, or a deny-mode
+rule that leaves it out, does not, and a rule that cannot be read denies it.
 
 **The scope governs `trust_reads`, `trust` and `yolo`; `normal` is the floor**
 ([RFC D9](../../request-for-change/rfc-crew-lts-edition.md)). The KGL term is

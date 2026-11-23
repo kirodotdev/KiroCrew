@@ -303,11 +303,11 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     ``{"names": ["a-mcp", "b-mcp"], "stub": true}`` for several.  Adds or
     removes those names from ``mcp_gateway.stub_servers`` in config.json
     (same config lock + atomic write as the enable toggle).  The change is
-    RECORDED, not applied: the running broker is left alone and the response
-    carries ``restart_required``, because the daemon's routing is built with the
-    agent-spec rewrite at startup and a session's MCP toolset is fixed at
-    ``session/new``.  When the gateway is disabled, the allowlist is persisted
-    only (it takes effect when the gateway is enabled).
+    applied at once by restarting the broker, never the gateway
+    (``mcp_broker._apply_mcp_stub``); a chat already open picks a newly routed
+    server up when it restarts, because its MCP toolset is fixed at
+    ``session/new``.  With no gateway wired into this process the allowlist is
+    persisted only and the answer carries ``restart_required``.
 
     The batch form exists because the UI's "toggle all" would otherwise issue
     one request per server: N config rewrites for a single user gesture, each
@@ -330,6 +330,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     is refused (``cwd_unconfirmed``) for a server that is not Kiro Crew's own and
     is not answered ``not_used``, and this route is the only writer of the launch
     approvals the rewriter needs before it wraps a server.
+
+    ``expected_entry`` optionally constrains an approval to the command, args and
+    env shown on an ``mcp.server`` card. The card middleware binds this field to
+    its plan; ``expected_launch`` still independently checks freshness.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
@@ -491,6 +495,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             status=400,
         )
 
+    expected_entry = body.get("expected_entry")
+    if "expected_entry" in body and (batch or not stub or not isinstance(expected_entry, dict)):
+        return web.json_response(
+            {"error": "invalid expected_entry", "code": "expected_entry_invalid"}, status=400
+        )
+
     # The toggle approves a NAME; what that name launches is approved by content
     # (``mcp_gateway.launch_approval``). Resolve it NOW, from the inputs the
     # gateway's own rewrite reads, and approve exactly that: the rewrite that
@@ -579,6 +589,18 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 {
                     "error": "the launch changed after it was shown; refresh before approving",
                     "code": "launch_changed_since_display",
+                },
+                status=409,
+            )
+
+        if expected_entry is not None and not await asyncio.to_thread(
+            launch_resolve.matches_entry, expected_entry, launches.get(name, [])
+        ):
+            _log_stub_rejection("launch_differs_from_card")
+            return web.json_response(
+                {
+                    "error": "the resolved launch differs from the card's entry",
+                    "code": "launch_differs_from_card",
                 },
                 status=409,
             )
@@ -891,9 +913,13 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         # Nothing qualified means nothing was written, so there is no new link for
         # an apply to pick up.
         nothing_written = bool(resolve_eligibility and stub and not resolved.get("eligible"))
-        if apply is not None and not nothing_written:
+        if stub is None and not nothing_written:
+            # Only the working-folder answer was written: nothing routes
+            # differently until a stub press, so the broker is left alone.
+            applied = {"applied": True, "restart_required": False}
+        elif apply is not None and not nothing_written:
             try:
-                applied = await apply()
+                applied = await apply(launch_approved=stub is True)
             except Exception as exc:
                 sel().log_api_access(
                     caller=request.get("user", "dashboard"),

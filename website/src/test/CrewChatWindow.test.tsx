@@ -14,6 +14,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { installInitialResizeObserver } from './initialResizeObserver'
 import type { RootState } from '../store'
 
 // jsdom has no MediaRecorder, so the real flag reads false and hides the mic:
@@ -233,6 +234,8 @@ describe('CrewChatWindow', () => {
     const offsetWidth = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 806 : 0 })
     const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 800 : 0 })
     onTestFinished(() => { offsetWidth.mockRestore(); clientWidth.mockRestore() })
+    // The dock's first measurement comes from its observer's first delivery.
+    installInitialResizeObserver()
     renderWindow()
     await screen.findByRole('textbox', PEER_ROW_WAIT)
     expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
@@ -1190,6 +1193,18 @@ describe('CrewChatWindow', () => {
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
   })
 
+  it("draws a peer's run of identical failures as one card, its Resume note folded in (#38910)", () => {
+    const failed = (ts: string) => ({ role: 'error', content: 'tools not ready', cls: '', ts, meta: { notice: 'tools_not_ready' } }) as ChatMessage
+    const pressed = { role: 'inject', content: '[Continue — requested by the user]\ncarry on', cls: '', meta: { injectKind: 'recovery' } } as ChatMessage
+    const rows = [failed('2026-11-18T20:50:00Z'), pressed, failed('2026-11-18T20:51:00Z')]
+    const crew = mergeRenderers(createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }))
+    const drawn = rows.map((m, i) => resolveRenderer(m, crew)!.render(m, {
+      index: i, messages: rows, running: false, key: `k${i}`, hideCardOwnedOAuth: false, autoDeniedIds: new Set<string>(),
+      wrapper: (children) => children, row: (children) => children,
+    }))
+    expect(drawn.map(o => o !== null)).toEqual([true, false, false])
+  })
+
   it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
     const row = {
       role: 'notice',
@@ -1387,6 +1402,20 @@ describe('CrewChatWindow', () => {
     renderWindow()
     const reply = await screen.findByTestId('crew-window-assistant', {}, PEER_ROW_WAIT)
     expect(within(reply).getByRole('button', { name: 'Regenerate response' })).toBeTruthy()
+  })
+
+  it('offers no Regenerate on an older reply when an inject opened the newest turn and its reply is hidden', async () => {
+    // The press re-runs the newest turn, so a button on "hello" would answer the workflow follow-up instead.
+    detail = { running: false, messages: [
+      { role: 'user', content: 'hi', ts: 't1' }, { role: 'assistant', content: 'hello', ts: 't2' },
+      { role: 'inject', content: 'workflow done', ts: 't3', meta: { injectKind: 'workflow' } },
+      { role: 'assistant', content: '\u200b', ts: 't4' },
+    ] }
+    renderWindow()
+    const reply = await screen.findByTestId('crew-window-assistant', {}, PEER_ROW_WAIT)
+    // The row's actions are drawn, so the missing button is the anchor, not a missing footer.
+    expect(within(reply).getAllByRole('button', { name: 'Copy' }).length).toBeGreaterThan(0)
+    expect(within(reply).queryByRole('button', { name: 'Regenerate response' })).toBeNull()
   })
 
   it('shows a refused effort pick on the window itself', async () => {

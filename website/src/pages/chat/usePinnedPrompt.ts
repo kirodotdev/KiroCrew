@@ -35,7 +35,7 @@ export function isTranscriptRow(node: Element, scroller: Element): boolean {
 }
 
 /** The transcript row wrapper for `idx`, skipping any forged copy in message content. */
-function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
+export function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
   for (const node of scroller.querySelectorAll(`[data-display-index="${idx}"]`)) {
     if (isTranscriptRow(node, scroller)) return node as HTMLElement
   }
@@ -146,6 +146,11 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // later: the flash at the top of the chat. The reader has not moved, so
     // the card holds and is worked out once, when the place has settled.
     if (slideSettling(el)) { afterSlideSettles(el, () => updatePinnedPromptRef.current()); return }
+    // No rows, nothing to pin: the walk below would end in the same
+    // `setPinned(null)`. Answered without reading layout, because the commit
+    // that opens a session (its transcript still empty) runs this, and the
+    // first read there forces a layout of the whole page.
+    if (displayItemsRef.current.length === 0) { setPinned(null); return }
     // Measure with getBoundingClientRect (viewport-relative) so the origin
     // matches the scroller regardless of which ancestor is the items'
     // offsetParent — consistent with useScrollManager, which also deliberately
@@ -527,7 +532,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
    * measurement and the banner swap refine the landing; a frame with neither a
    * mounted row nor an estimate yields no goal (see runConvergingGlide). User
    * scroll intent aborts the glide, and owning each frame's write prevents
-   * follow-controller writes from cancelling it.
+   * follow-controller writes from cancelling it. `exact` lands `target` itself
+   * instead of the head of its prompt run: a quote jump must show the quoted
+   * row, not the prompt above it.
    */
   const jumpCancelRef = useRef<(() => void) | null>(null)
   const jumpToPinnedPromptInPlace = useCallback((
@@ -536,6 +543,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
       estimateRowTop: (index: number) => number | null
     },
+    opts?: { exact?: boolean },
   ) => {
     jumpCancelRef.current?.()
     const sc0 = scrollerRef.current
@@ -544,7 +552,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // before any output, a double-send) so the row on the hand-off line is a
     // non-prompt and the previous turn's banner survives the landing — see
     // jumpAnchorIdx.
-    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    const anchor = opts?.exact ? target : jumpAnchorIdx(displayItemsRef.current, target)
     // The glide aims at that row's prompt and finds the prompt's row again on
     // each frame: a page that lands mid-glide renumbers the rows.
     const anchorItem = displayItemsRef.current[anchor]
@@ -580,6 +588,8 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     })
     jumpCancelRef.current = cancelGlide
   }, [pinnedJumpChrome, scrollerRef, msgKey])
+  /** Ends the in-place jump's glide, for a scroll that takes over from it. */
+  const cancelJumpInPlace = useCallback(() => { jumpCancelRef.current?.() }, [])
 
   return {
     displayItemsRef,
@@ -596,5 +606,6 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     onScrollPin,
     pinnedJumpChrome,
     jumpToPinnedPromptInPlace,
+    cancelJumpInPlace,
   }
 }

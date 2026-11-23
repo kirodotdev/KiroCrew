@@ -283,6 +283,14 @@ class SpawnPlan:
     running, not from the configuration, which may have changed since the spawn.
     """
 
+    machine_auth: Any = field(default=None, kw_only=True)
+    """The KAS machine-mode settings this spawn runs under (``agent_sdk/kas_machine.py``).
+
+    ``None`` for Crew's own sign-in, the only value off the ``crew_client`` preview.
+    The runtime keeps it, so a live session's turn gate judges the token file the
+    running process reads, not the current configuration.
+    """
+
     kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
     """kiro-cli's internal sandbox confines this spawn.
 

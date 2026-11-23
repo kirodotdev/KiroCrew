@@ -724,8 +724,9 @@ def _parse_timestamp(raw: object) -> datetime | None:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        # An offset at the edge of the date range cannot convert to UTC: unplaceable.
         return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)

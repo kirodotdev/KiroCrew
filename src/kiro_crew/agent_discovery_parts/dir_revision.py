@@ -11,6 +11,7 @@ answer derived from the directory for as long as that revision holds.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import stat
 import threading
@@ -22,6 +23,10 @@ from kiro_crew.agent_discovery_parts.spec_reads import _WINDOWS, _fence_refuses,
 from kiro_crew.agent_discovery_parts.spec_snapshot import _iter_spec_entries, spec_cache_generation
 from kiro_crew.agent_spec_format import is_native_skill_alias_name
 from kiro_crew.pinned_fs import open_fenced_for_read
+
+logger = logging.getLogger("kiro_crew.agent_discovery")
+# Directories whose unhashable entry is already logged; one leaves on its next revision.
+_AGENTS_DIR_UNHASHABLE_LOGGED: set[str] = set()
 
 # name, mtime, ctime, size, inode, device, mode, link count, content digest.
 _SpecStatRevision = tuple[str, int, int, int, int, int, int, int, bytes]
@@ -108,7 +113,8 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     Older entries need only metadata: a later write stamps a ctime no POSIX call
     can set back. More than :data:`_AGENTS_DIR_RACY_MAX_DIGESTS` young entries,
     more than :data:`_AGENTS_DIR_RACY_MAX_DIGEST_BYTES` of them, or a young entry
-    that cannot be hashed gives ``None``.
+    that cannot be hashed gives ``None``; the last is logged at WARNING once
+    until the directory next yields a revision.
 
     A symlinked spec gives ``None``: its metadata cannot see edits to its target.
     On Windows (:data:`_PIN_EVERY_ENTRY_ON_BYTES`) ``st_ctime_ns`` is creation
@@ -166,8 +172,18 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
                 digests += 1
                 if max_digests is not None and digests > max_digests:
                     return None
-                hashed = _young_entry_digest(path, st, max_digest_bytes - digest_bytes)
+                budget = max_digest_bytes - digest_bytes
+                hashed = _young_entry_digest(path, st, budget)
                 if hashed is None:
+                    # Past the byte budget is a bulk write, not an entry that cannot be hashed.
+                    key = str(agents_dir)
+                    if st.st_size <= budget and key not in _AGENTS_DIR_UNHASHABLE_LOGGED:
+                        _AGENTS_DIR_UNHASHABLE_LOGGED.add(key)
+                        logger.warning(
+                            "Agents folder %s is read uncached: entry %r cannot be hashed",
+                            key,
+                            entry.name,
+                        )
                     return None
                 digest, read = hashed
                 digest_bytes += read
@@ -188,9 +204,11 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
         # A directory that does not exist holds no specs, which every reader
         # answers as it does an empty one (the crewmate folder before its first
         # file). Creating it with a spec in it adds an entry, so the revision moves.
+        _AGENTS_DIR_UNHASHABLE_LOGGED.discard(str(agents_dir))
         return (), spec_cache_generation()
     except OSError:
         return None
+    _AGENTS_DIR_UNHASHABLE_LOGGED.discard(str(agents_dir))
     return tuple(sorted(entries)), spec_cache_generation()
 
 

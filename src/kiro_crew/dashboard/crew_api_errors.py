@@ -32,6 +32,10 @@ REQUEST_ID_HEADER = "X-Request-Id"
 
 _REQUEST_ID_RE = re.compile(r"^req_[A-Za-z0-9_-]{1,64}$")
 
+#: Ends the message of every 401: where a caller on this machine gets a credential.
+#: One fixed sentence, the same for every caller, naming no port and no value.
+CREDENTIAL_HINT = "On this machine, `kirocrew token --bearer` prints a credential for the owner."
+
 # shortcut: only the statuses a route answers today (401, 403, 404, 409; 5xx is handled below).
 # Any other status gets ``invalid_request_error`` / ``invalid_request``. Add a row
 # with the first endpoint that can answer that status.
@@ -84,10 +88,18 @@ def contract_error(
     message: str,
     request_id: str,
     headers: dict[str, str] | None = None,
+    extra: dict[str, str] | None = None,
 ) -> web.Response:
-    """A Crew API error response, with its request id and version headers set."""
+    """A Crew API error response, with its request id and version headers set.
+
+    *extra* holds the fields the contract adds to one code's body, such as
+    ``entitlement`` on ``entitlement_required``. It never replaces a fixed field.
+    """
+    if status == 401:
+        message = f"{message} {CREDENTIAL_HINT}".strip()
     body = {
         "error": {
+            **(extra or {}),
             "type": error_type(status),
             "code": code,
             "message": message,

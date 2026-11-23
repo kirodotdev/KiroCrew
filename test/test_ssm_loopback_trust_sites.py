@@ -113,6 +113,7 @@ PREDICATE_SITES = {
     # Local authorization's four routes: token auth admits an SSM request and sets
     # its mark before the method-scoped bypass these routes pass through.
     "dashboard/routes/local_authorization.py": 1,
+    "dashboard/crew_api_auth.py": 1,
     "dashboard/messaging_api/discord_settings.py": 2,
     "dashboard/messaging_api/feishu_settings.py": 3,
     "dashboard/messaging_api/imessage_settings.py": 2,

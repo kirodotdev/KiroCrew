@@ -59,6 +59,7 @@ import pytest
 
 from conftest import make_dir_link
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.testing.wait import default_timeout
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _WEBSITE = _REPO_ROOT / "website"
@@ -284,6 +285,7 @@ def _run_node_mirror(docs: list[str], tmp_path: Path) -> list[dict]:
     # global, so it is defined here as a production-shaped object. This changes no
     # code under test -- the block-scalar mirror never reads it -- it only lets the
     # module graph load.
+    deadline = default_timeout()
     try:
         build = subprocess.run(
             [
@@ -300,10 +302,10 @@ def _run_node_mirror(docs: list[str], tmp_path: Path) -> list[dict]:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=180,
+            timeout=deadline,
         )
     except subprocess.TimeoutExpired:  # pragma: no cover - toolchain stall
-        pytest.fail("esbuild timed out bundling the parity driver")
+        pytest.fail(f"esbuild timed out after {deadline:g}s bundling the parity driver")
     if build.returncode != 0:
         pytest.fail(
             "esbuild failed to bundle the parity driver:\n"
@@ -318,7 +320,7 @@ def _run_node_mirror(docs: list[str], tmp_path: Path) -> list[dict]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=180,
+        timeout=default_timeout(),
     )
     if run.returncode != 0:
         pytest.fail(

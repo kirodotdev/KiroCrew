@@ -39,6 +39,7 @@ The `spawn_run` tool accepts:
 - `light` — mark a helper job (search, lookup, run-and-report, summarize) as light, batch-wide; a `tasks` entry's own `true` or `false` wins for that task. See [Light helpers](#light-helpers)
 - `keep` — make the run a continuable conversation with guaranteed resumability and longer retention
 - `cwd` — absolute launch directory, which must be under a configured `subagent_cwd_allowed_roots` entry
+- `isolate` — `"worktree"` gives each task its own git worktree of the repository `cwd` is in, detached at that checkout's HEAD (uncommitted changes there are not carried over) and placed beside the repository as `<repo>-wt-<run id>`, which must also be under `subagent_cwd_allowed_roots`; parallel writers on one repository then never share a working tree. The completion event names the worktree and its commits. A worktree with commits, changes or ignored files is kept; a clean one is removed when the run's record expires. Needs `cwd`
 
 Setting `model`, `reasoning_effort` or `backend`, or `keep: true`, forces the
 dedicated-process path instead of session sharing.
@@ -81,6 +82,14 @@ them yet:
   (`effort_applied`, `effort_dropped`, `effort_pending`) still report only an
   effort the call named itself, so a light spawn that took its effort from the
   pin shows the `light` line and no effort verdict.
+- `agent.subagent_light_lean_context` (off by default) also starts a `light`
+  spawn without the lessons and memory blocks, while the tier is on. A helper
+  that searches or summarizes seldom needs them, and each block adds tokens to
+  every run. A call that sets `include_lessons` or `include_memory` to `true`
+  keeps that block, `include_project` is not changed, and a spawn that names an
+  `agent`, a `crew` or a `backend` is not narrowed. The receipt's `light` line
+  names what was withheld, and the sub-agent is told by name what it lacks. With
+  the setting off every spawn starts with the context it always has.
 
 #### When to delegate
 

@@ -66,6 +66,7 @@ describe('backendRefusedNotice', () => {
 })
 
 const WARN_ON = 'pages.appsPage.action_warnings_enabled'
+const WARN_GONE = 'pages.appsPage.action_warnings_uninstalled'
 const WARN_OFF = 'pages.appsPage.action_warnings_disabled'
 
 describe('appActionNotice', () => {
@@ -74,6 +75,9 @@ describe('appActionNotice', () => {
       .toBe(`${WARN_OFF} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom; config sync failed: denied' })}`)
     expect(appActionNotice('Notes', { ok: true, warnings: ['hooks failed: boom'] }, 'enable'))
       .toBe(`${WARN_ON} ${JSON.stringify({ name: 'Notes', warnings: 'hooks failed: boom' })}`)
+    expect(appActionNotice('Notes', { ok: true, warnings: ["could not verify notes's backend stopped"] }, 'uninstall'))
+      .toBe(`${WARN_GONE} ${JSON.stringify({ name: 'Notes', warnings: "could not verify notes's backend stopped" })}`)
+    expect(appActionNotice('Notes', { ok: true }, 'uninstall')).toBe('')
   })
 
   it('shows a refused backend and the warnings together, and is empty with no usable warnings', () => {

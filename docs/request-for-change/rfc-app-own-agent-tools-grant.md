@@ -3,8 +3,8 @@ title: "A first-party app's own agent calls the app's own declared tools without
 status: implemented
 author: rayrayxu, with kirocrew
 created: 2026-11-19
-last-audited: 2026-11-20
-audited-at: c0d672b7805
+last-audited: 2026-11-23
+audited-at: d597493a9b5
 doc-pr: 39570
 implementation-prs: [39500]
 tracking-issues: [26967]

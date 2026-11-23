@@ -386,6 +386,36 @@ def trusted_mcp_identity(event: object) -> tuple[str, str]:
     return server, tool if isinstance(tool, str) else ""
 
 
+#: Bound on each name an approval prompt's MCP identity line shows, taken BEFORE the
+#: channel's escaping: a kept name runs to 512 characters and escaping can grow it
+#: fourfold, so two unbounded names could pass the 3000 characters Slack allows one
+#: text.
+MCP_IDENTITY_NAME_MAX = 200
+
+
+def mcp_identity_line(server: str, tool: str, fmt: Callable[[str], str] = str) -> str:
+    """The line naming the MCP server and tool an approval prompt asks about, or ``""``.
+
+    *server* and *tool* are :attr:`Renderer.prompt_mcp_identity`, the trusted
+    ``_meta.kiro`` pair, not the title: ``email_send`` on a prompt does not say which
+    server sends the mail, and the model chooses the title. ``""`` when no server is
+    named, so a built-in or unproven call's prompt is unchanged. Each name is
+    stripped, scrubbed like every other string a prompt posts, and cut to
+    :data:`MCP_IDENTITY_NAME_MAX`; only THEN does *fmt* apply the channel's own
+    escaping and styling, so the cut can never split an escape. A blank tool reads
+    ``unnamed tool``. The Slack, Teams, Webex, WhatsApp and Telegram prompts draw
+    their identity line here.
+    """
+    if not server.strip():
+        return ""
+    shown: list[str] = []
+    for name in (server.strip(), tool.strip() or "unnamed tool"):
+        name, _ = redact_exfiltration_urls(name)
+        name, _ = redact_credentials(name)
+        shown.append(fmt(name[:MCP_IDENTITY_NAME_MAX]))
+    return f"MCP tool: {shown[0]} / {shown[1]}"
+
+
 def new_approval_nonce() -> str:
     """A per-prompt token that makes a STALE widget's press unusable.
 
