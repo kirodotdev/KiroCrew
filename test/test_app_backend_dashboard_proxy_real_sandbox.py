@@ -18,6 +18,7 @@ import asyncio
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -93,6 +94,30 @@ async def _gateway(home: Path, monkeypatch, state) -> TestServer:
     return server
 
 
+async def _stub_report_line(proc: subprocess.Popen, seconds: float = 60) -> str:
+    """The stub's one report line, once it has printed it and exited, within *seconds*.
+
+    The read runs off the loop, because this loop serves the gateway the stub talks to. The
+    exit is polled, not waited on from a pool thread. A stub that outlasts the deadline is
+    killed and the test FAILS with its stderr; a timeout never passes or skips.
+    """
+    assert proc.stdout is not None and proc.stderr is not None
+    deadline = time.monotonic() + seconds
+    try:
+        line = await asyncio.wait_for(asyncio.to_thread(proc.stdout.readline), seconds)
+        while proc.poll() is None:
+            if time.monotonic() > deadline:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(0.05)
+    except asyncio.TimeoutError:
+        proc.kill()
+        proc.wait()
+        pytest.fail(
+            f"the stub backend did not finish within {seconds} s; stderr: {proc.stderr.read()}"
+        )
+    return line
+
+
 async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
     import kiro_crew.apps.backend as bmod
     from kiro_crew.apps import dashboard_proxy
@@ -116,7 +141,14 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         extra_hidden_dirs=hidden,
         extra_stand_ins=stand_ins,
     )
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, encoding="utf-8", cwd=home)
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        cwd=home,
+    )
     bmod._processes[_APP] = bmod.AppProcess(
         app_name=_APP,
         pid=proc.pid,
@@ -124,10 +156,7 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         pid_start_time=platform_compat.process_start_time(proc.pid),
     )
     try:
-        assert proc.stdout is not None
-        # Off the loop: the gateway the stub talks to is served by this same loop.
-        line = await asyncio.to_thread(proc.stdout.readline)
-        await asyncio.to_thread(proc.wait, 60)
+        line = await _stub_report_line(proc)
     finally:
         bmod._processes.pop(_APP, None)
         await server.close()
