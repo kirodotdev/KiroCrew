@@ -121,7 +121,8 @@ def _loop_stall_breaker_verdict(self: CronService) -> str | None:
     # Every other abandoned marker names a run cut short by an exit that left no
     # dump of its own (a crash, a kill, a power loss): a dump stays on disk long
     # after its stall, so the newest one can be days older than the exit that
-    # cut these. Each such run is filed before its marker goes.
+    # cut these. A run still in its jitter wait is never a candidate either. Each
+    # such run is filed before its marker goes.
     explained = {m.path for m in attribution.candidates} if attribution is not None else set()
     for marker in cron_inflight.abandoned_markers(self._dir):
         if marker.path in explained or self._file_cut_run(marker):
@@ -220,7 +221,8 @@ def _file_cut_run(self: CronService, marker: cron_inflight.RunningMarker) -> boo
 
     As ``stop()`` files a run it cut (``close_run``): an ``every`` job's
     ``last_run_ts`` moves forward to the run's start, so it waits for its next
-    slot, then a ``cancelled`` history row with the interruption note, and the
+    slot, then a ``cancelled`` history row with the interruption note, which
+    says the run never started when it was cut in its jitter wait, and the
     interrupt notice, which honours ``silent``. The gateway died at a time
     nothing recorded, so the row ends where it began. The row carries the
     marker's run token, as every row a run writes does, so a run that
@@ -258,7 +260,7 @@ def _file_cut_run(self: CronService, marker: cron_inflight.RunningMarker) -> boo
                 job.last_run_ts = previous
                 logger.warning("cut cron run not filed: %s", exc)
                 return False
-    note = interruption_note(dispatched=True)
+    note = interruption_note(dispatched=marker.phase != cron_inflight.JITTER_PHASE)
     record = CronRunRecord(
         job_id=job.id,
         started_at=marker.started_at,
