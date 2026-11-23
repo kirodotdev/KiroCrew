@@ -2761,7 +2761,7 @@
       },
       "manifest": {
         "use_case_1": "接続済みプロバイダーの Issue とプルリクエストをトリアージしながら、要約、推奨ラベル、調査履歴を保持します。",
-        "configuration_1": "リポジトリを接続し、ゲートウェイホストでプロバイダーの CLI を認証します。GitHub は gh、GitLab は glab、Azure DevOps は macOS、Linux、WSL 上で拡張機能を追加した az を使用します。",
+        "configuration_1": "リポジトリを接続し、ゲートウェイホストでプロバイダーの CLI を認証します。GitHub は gh、GitLab は glab、Azure DevOps は拡張機能を追加した az を使用します。",
         "description": "覚えているIssueトリアージアシスタント。AIが提案するラベルと項目ごとの調査ノートを使用して、GitHub のIssue、GitLab のIssue、Azure DevOps の作業項目をブラウズ、フィルター、トリアージします。ローカル台帳で調査結果を保持するため、何度も調査されることはありません。",
         "display_name": "Issue Radar",
         "highlight_1": "Issue とプルリクエストのAI要約と推奨ラベル、それぞれの根拠を表示",

@@ -2679,7 +2679,7 @@
       },
       "manifest": {
         "use_case_1": "对已连接服务商中的 issue 和拉取请求进行分类，同时保留摘要、建议标签和调查历史。",
-        "configuration_1": "连接仓库，并在网关主机上认证服务商 CLI：GitHub 使用 gh，GitLab 使用 glab，Azure DevOps 在 macOS、Linux 或 WSL 上使用带扩展的 az。",
+        "configuration_1": "连接仓库，并在网关主机上认证服务商 CLI：GitHub 使用 gh，GitLab 使用 glab，Azure DevOps 使用带扩展的 az。",
         "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 与 GitLab 的 issue，以及 Azure DevOps 工作项，用 AI 建议标签，为每个条目留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
         "display_name": "Issue Radar",
         "highlight_1": "为 issue 和拉取请求生成 AI 摘要与建议标签，每条都附上理由",

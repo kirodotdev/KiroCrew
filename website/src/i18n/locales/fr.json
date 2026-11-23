@@ -2981,7 +2981,7 @@
         "highlight_9": "Fonctionne avec GitHub, GitLab et Azure DevOps; nécessite sur l’hôte du gateway une CLI authentifiée pour le fournisseur que tu connectes (`gh`, `glab` ou `az`) — aucune CLI particulière n’est requise pour l’installation",
         "page_label": "Issue Radar",
         "use_case_1": "Trie les issues et les pull requests de plusieurs fournisseurs connectés tout en conservant les résumés, les labels suggérés et l'historique des enquêtes.",
-        "configuration_1": "Connecte un dépôt et authentifie la CLI de son fournisseur sur l'hôte de la passerelle : gh pour GitHub, glab pour GitLab, ou az avec l'extension Azure DevOps sous macOS, Linux ou WSL."
+        "configuration_1": "Connecte un dépôt et authentifie la CLI de son fournisseur sur l'hôte de la passerelle : gh pour GitHub, glab pour GitLab, ou az avec l'extension Azure DevOps."
       },
       "views": {
         "comingSoon": {

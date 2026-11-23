@@ -2784,7 +2784,7 @@
         "description": "মনে রাখে এমন একটি ইস্যু ট্রায়াজ সহকারী। AI-প্রস্তাবিত লেবেল আর প্রতিটি আইটেমের অনুসন্ধান নোট নিয়ে GitHub ইস্যু, GitLab ইস্যু ও Azure DevOps ওয়ার্ক আইটেম ঘেঁটে দেখো, ছাঁকো ও ট্রায়াজ করো — ফলাফল একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না।",
         "display_name": "Issue Radar",
         "use_case_1": "সংযুক্ত provider-এর issue ও pull request triage করুন এবং summary, প্রস্তাবিত label ও investigation history ধরে রাখুন।",
-        "configuration_1": "একটি repository সংযুক্ত করে gateway host-এ provider CLI প্রমাণীকরণ করুন: GitHub-এর জন্য gh, GitLab-এর জন্য glab, অথবা macOS, Linux বা WSL-এ Azure DevOps extension-সহ az।",
+        "configuration_1": "একটি repository সংযুক্ত করে gateway host-এ provider CLI প্রমাণীকরণ করো: GitHub-এর জন্য gh, GitLab-এর জন্য glab, অথবা Azure DevOps extension-সহ az।",
         "highlight_1": "ইস্যু ও পুল রিকোয়েস্টের জন্য AI সারসংক্ষেপ ও প্রস্তাবিত লেবেল, প্রতিটির সঙ্গে তার যুক্তি",
         "highlight_2": "প্রতি ইস্যুর অনুসন্ধান নোট একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না",
         "highlight_3": "পেজ ছেড়ে না গিয়েই পুল রিকোয়েস্টে কাজ করো: অনুমোদন, বদল চাওয়া, কমেন্ট, মার্জ, বন্ধ বা আবার খোলা, এবং CI বাতিল বা আবার চালানো — একটি একটি করে বা নির্বাচিত সবগুলোতে একসঙ্গে",
