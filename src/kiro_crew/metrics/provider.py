@@ -48,8 +48,8 @@ from urllib.parse import urlsplit
 
 from kiro_crew import __version__, beacon, edition
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.config.paths import config_dir
-from kiro_crew.metrics import destination_filter
+from kiro_crew.config.paths import config_dir, data_home, run_with_data_home
+from kiro_crew.metrics import consent_pins, destination_filter
 from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import kiro_export, otlp_endpoints, otlp_governance, otlp_session
 from kiro_crew.metrics import provider_flush as _provider_flush
@@ -1698,9 +1698,9 @@ def _schedule_consent_check_locked() -> None:
     global _check_in_flight
     if _check_in_flight:
         return
-    threading.Thread(
-        target=_consent_worker,
-        args=(_build_generation,),
+    threading.Thread(  # the worker reads the home and the pins seen here, never the env
+        target=run_with_data_home,
+        args=(data_home(), consent_pins.bind_env_pins(_consent_worker), _build_generation),
         name=CONSENT_THREAD_NAME,
         daemon=True,
     ).start()
