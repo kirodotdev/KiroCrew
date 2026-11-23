@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,7 +143,8 @@ def _write_tombstone(app_name: str, kind: str, body: dict[str, Any] | None = Non
         path = _tombstone_path(app_name, kind)
         path.parent.parent.mkdir(parents=True, exist_ok=True)
         path.parent.mkdir(mode=0o700, exist_ok=True)
-        if path.parent.stat().st_mode & 0o077:
+        # POSIX modes do not exist on Windows, where the mode bits always read as wide open.
+        if sys.platform != "win32" and path.parent.stat().st_mode & 0o077:
             path.parent.chmod(0o700)  # the same mode ``sandbox_precreate`` gives the leaf
         atomic_write(path, json.dumps(body or {"app": app_name}) + "\n", fsync=True)
         fsync_dir(path.parent)
@@ -417,18 +419,27 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
     if not _namespace_backend() or not registry_verified(app_name):
         return None
     rec = _installed(app_name)
-    registry = getattr(rec, "sourceRegistry", "") or "the bundled catalog"
+    # A bundled-catalog install seals an empty registry; the offer keeps it empty, and the
+    # dashboard card words that case itself.
+    registry = getattr(rec, "sourceRegistry", "")
     source = getattr(rec, "sourceUrl", "")
     version = getattr(rec, "version", "")
+    if registry:
+        text = (
+            f"Allow {app_name} {version} (registry {registry}, source {source}) "
+            f"to use this dashboard on your behalf? {DASHBOARD_ACCESS_SCOPE}"
+        )
+    else:
+        text = (
+            f"Allow {app_name} {version} (from the bundled catalog, source {source}) "
+            f"to use this dashboard on your behalf? {DASHBOARD_ACCESS_SCOPE}"
+        )
     return {
         "app": app_name,
         "registry": registry,
         "source": source,
         "version": version,
-        "text": (
-            f"Allow {app_name} {version} (registry {registry}, source {source}) "
-            f"to use this dashboard on your behalf? {DASHBOARD_ACCESS_SCOPE}"
-        ),
+        "text": text,
     }
 
 

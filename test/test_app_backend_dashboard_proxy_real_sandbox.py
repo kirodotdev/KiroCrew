@@ -4,7 +4,9 @@ A stub backend runs under the real namespace sandbox with the mask list and stan
 ``apps/backend.py`` passes. The test process plays the gateway on a real loopback listener:
 the real ``/api/token/local`` handler and the real token middleware. The stub reads
 ``run/gateway-<port>.secret``, presents what it read as ``X-Local-Secret``, and (when the
-mint succeeds) fetches ``/api/version`` with the token it got.
+mint succeeds) fetches ``/api/auth/me``, a ``READ_ALLOW`` row that must answer 200 with its
+allowed body, and ``/api/version``, which is not a row and must answer 403, both with the
+token it got.
 
 Linux needs unprivileged user and mount namespaces, which the namespace-sandbox CI job
 provides and the shard runners do not, so there these tests skip with that reason.
@@ -12,6 +14,7 @@ provides and the shard runners do not, so there these tests skip with that reaso
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -52,8 +55,13 @@ out = {"file_empty": value == "", "mint": resp.status}
 if resp.status == 200:
     token = json.loads(body)["token"]
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    conn.request("GET", "/api/auth/me?token=" + token)
+    allowed = conn.getresponse()
+    out["allowed_status"] = allowed.status
+    out["allowed_body"] = json.loads(allowed.read().decode())
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
     conn.request("GET", "/api/version?token=" + token)
-    out["status"] = conn.getresponse().status
+    out["denied_status"] = conn.getresponse().status
 print(json.dumps(out), flush=True)
 """
 
@@ -90,6 +98,9 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
     from kiro_crew.apps import dashboard_proxy
 
     dashboard_proxy.set_gateway_secret(_REAL)
+    # Warm the backend probe off the loop: on the loop a cold cache answers "none", so
+    # ``grant`` would refuse with ``platform-unsupported``.
+    await asyncio.to_thread(dashboard_proxy.platform_supported)
     if grant:
         monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _n: True)
         assert dashboard_proxy.grant(_APP)[0] is True
@@ -114,8 +125,9 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
     )
     try:
         assert proc.stdout is not None
-        line = proc.stdout.readline()
-        proc.wait(timeout=60)
+        # Off the loop: the gateway the stub talks to is served by this same loop.
+        line = await asyncio.to_thread(proc.stdout.readline)
+        await asyncio.to_thread(proc.wait, 60)
     finally:
         bmod._processes.pop(_APP, None)
         await server.close()
@@ -127,7 +139,14 @@ async def test_a_granted_stub_reads_its_value_mints_and_fetches_status(home, mon
     state = SimpleNamespace(owner_id="")
     _install_fixture(monkeypatch)
     report = await _run_stub(home, monkeypatch, state, grant=True)
-    assert report == {"file_empty": False, "mint": 200, "status": 200}
+    # One allowed row answers with exactly its allowed body; a row outside READ_ALLOW is refused.
+    assert report == {
+        "file_empty": False,
+        "mint": 200,
+        "allowed_status": 200,
+        "allowed_body": {"token_accepted": True},
+        "denied_status": 403,
+    }
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,19 @@ describe('AppDetailDashboardAccess', () => {
     expect(container.textContent).toBe('')
   })
 
+  it('words the confirm for a bundled-catalog offer without a registry name or empty quotes', async () => {
+    const bundled = { ...OFFERED, offer: { ...OFFER, registry: '' } }
+    api.getAppDashboardAccess.mockResolvedValue(bundled)
+    api.grantAppDashboardAccess.mockResolvedValue({ ...bundled, granted: true, restart_required: true })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+    const body = confirmMock.mock.calls[0][0].body
+    expect(body).toContain('(from the bundled catalog, source “https://example.invalid/tunnel.git”)')
+    expect(body).not.toContain('registry')
+    expect(body).not.toContain('“”')
+  })
+
   it('confirms with the offer text, grants, then offers a restart', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))

@@ -9,6 +9,7 @@ marker stands. Secret-shaped values here are described in words.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -459,6 +460,7 @@ def test_a_grant_whose_tombstone_cannot_be_cleared_is_refused_and_stays_off(
     assert dashboard_proxy.granted(_APP) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits do not exist on Windows")
 def test_the_tombstone_leaf_is_private_to_the_owner_user(records, installed):
     """A first revoke on a fresh home makes the leaf 0o700, as ``sandbox_precreate`` does."""
     import os
@@ -546,7 +548,7 @@ def test_set_app_provenance_reports_a_failed_install_seal(forged_apps, monkeypat
     """The App Store update path hears the failure; it is not logged and dropped."""
     from dataclasses import dataclass
 
-    from kiro_crew.apps import manager_lookup
+    from kiro_crew.apps import manager as manager_mod
 
     @dataclass
     class _Meta:
@@ -557,12 +559,12 @@ def test_set_app_provenance_reports_a_failed_install_seal(forged_apps, monkeypat
         sourceCommit: str = ""
         sourceSigner: str = ""
 
-    monkeypatch.setattr(manager_lookup, "hold_app_record_lock", lambda _name: None)
-    monkeypatch.setattr(manager_lookup, "_read_installed", lambda _name: _Meta())
-    monkeypatch.setattr(manager_lookup, "_write_installed", lambda _name, _meta: None)
+    monkeypatch.setattr(manager_mod, "hold_app_record_lock", lambda _name: None)
+    monkeypatch.setattr(manager_mod, "_read_installed", lambda _name: _Meta())
+    monkeypatch.setattr(manager_mod, "_write_installed", lambda _name, _meta: None)
     _write_refused(monkeypatch)
     with pytest.raises(RuntimeError, match="install record"):
-        manager_lookup.set_app_provenance(_APP, source="registry:x", url="u", registry="r")
+        manager_mod.set_app_provenance(_APP, source="registry:x", url="u", registry="r")
 
 
 def test_process_state_leaks_in(monkeypatch):
@@ -610,6 +612,41 @@ async def test_a_grant_without_confirm_is_refused(records, installed, monkeypatc
     resp = await routes.handle_dashboard_proxy(_request("PUT", {}))
     assert resp.status == 400
     assert dashboard_proxy.granted(_APP) is False
+    resp = await routes.handle_dashboard_proxy(_request("PUT", {"confirm": True}))
+    assert resp.status == 200
+    assert dashboard_proxy.granted(_APP) is True
+
+
+@pytest.mark.asyncio
+async def test_the_grant_route_grants_on_a_cold_probe_cache(records, installed, monkeypatch):
+    """The route runs the grant off the loop, where the backend probe can finish.
+
+    On the event loop a cold probe cache answers "none"; a refactor that moved ``grant`` onto
+    the loop would refuse every first grant with ``platform-unsupported``.
+    """
+    import asyncio
+
+    def _cold_cache(config_mode="auto"):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return "namespace"
+        return "none"
+
+    from kiro_crew import sandbox
+
+    async def _owner(_request, _operation):
+        return None
+
+    monkeypatch.setattr(routes, "_owner_denial", _owner)
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda _name: object())
+    monkeypatch.setattr(sandbox, "detect_backend", _cold_cache)
+    # The fixtures stand in for the platform check; here it asks the probe, as in production.
+    monkeypatch.setattr(
+        dashboard_proxy,
+        "_namespace_backend",
+        lambda: sandbox.detect_backend(config_mode="standard") == "namespace",
+    )
     resp = await routes.handle_dashboard_proxy(_request("PUT", {"confirm": True}))
     assert resp.status == 200
     assert dashboard_proxy.granted(_APP) is True
@@ -701,7 +738,7 @@ def _provenance(monkeypatch, **kwargs):
     """Run the gateway's own install bookkeeping (``set_app_provenance``) for the app."""
     from dataclasses import dataclass
 
-    from kiro_crew.apps import manager_lookup
+    from kiro_crew.apps import manager as manager_mod
 
     @dataclass
     class _Meta:
@@ -712,10 +749,10 @@ def _provenance(monkeypatch, **kwargs):
         sourceCommit: str = ""
         sourceSigner: str = ""
 
-    monkeypatch.setattr(manager_lookup, "hold_app_record_lock", lambda _name: None)
-    monkeypatch.setattr(manager_lookup, "_read_installed", lambda _name: _Meta())
-    monkeypatch.setattr(manager_lookup, "_write_installed", lambda _name, _meta: None)
-    return manager_lookup.set_app_provenance(_APP, source=f"registry:{_APP}", **kwargs)
+    monkeypatch.setattr(manager_mod, "hold_app_record_lock", lambda _name: None)
+    monkeypatch.setattr(manager_mod, "_read_installed", lambda _name: _Meta())
+    monkeypatch.setattr(manager_mod, "_write_installed", lambda _name, _meta: None)
+    return manager_mod.set_app_provenance(_APP, source=f"registry:{_APP}", **kwargs)
 
 
 def test_an_unsigned_official_catalog_install_is_offered_and_grantable(forged_apps, monkeypatch):
@@ -726,7 +763,11 @@ def test_an_unsigned_official_catalog_install_is_offered_and_grantable(forged_ap
     view = routes._view(_APP)
     assert view["update_to_enable"] is False, "the update hint clears once the record is sealed"
     assert view["offer"] is not None
-    assert "the bundled catalog" in view["offer"]["text"]  # type: ignore[index]
+    offer = view["offer"]
+    assert offer["registry"] == ""  # type: ignore[index]
+    assert "from the bundled catalog" in offer["text"]  # type: ignore[index]
+    assert 'registry "the bundled catalog"' not in offer["text"]  # type: ignore[index]
+    assert "registry " not in offer["text"]  # type: ignore[index]
     assert dashboard_proxy.grant(_APP) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
 
