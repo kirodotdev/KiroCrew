@@ -2631,6 +2631,22 @@ archived instead of being permanently deleted:
   where the separator is `ARCHIVE_SEGMENT_DELIMITER`. It is `__` rather than a dot
   because session keys legitimately contain dots (a Slack `thread_ts`), which a
   right-most-dot parse would attribute to the wrong session.
+- **A segment belongs to the whole stem before its LAST delimiter**
+  (`history_files.archive_segment_stem`). `_safe_key` keeps underscores, so a
+  chat whose stem is `<stem>__more` also has segments starting with `<stem>__`.
+  Readers that list the archive with `scandir`/`iterdir` (the session digest,
+  for every stem it is handed, canonical and legacy; the person-message check
+  in `transcript_person_rows.py`; the crewmate prune pass) compare the parsed
+  stem to their own exactly, with the name's case kept. Readers that
+  glob (the rotated read `read_rotated_messages`, `chain_mid_rotation`, the
+  transient-session delete `delete_memory_consolidation_session` and
+  `GET /api/session/archive?key=`) go through
+  `history_files.archive_segments_of(adir, stem)`: it keeps the glob's own case
+  and suffix rule and refuses a file whose last delimiter is not right after
+  the stem. The milestone chat count and the unkeyed `GET /api/session/archive`
+  group by the parsed stem; the list reports it as `key` and the rest as
+  `stamp`, and a file with no delimiter keeps `key` = its stem and
+  `stamp` = "". A live transcript's stem is its whole file name.
 - **Triggers**: `_maybe_rotate()` (>10MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default

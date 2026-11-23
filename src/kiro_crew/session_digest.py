@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
-from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, SESSIONS_DIR_NAME
+from kiro_crew.history import ARCHIVE_DIR_NAME, SESSIONS_DIR_NAME
+from kiro_crew.history_files import archive_segment_stem
 from kiro_crew.jsonl_util import RECORD_CAP, bounded_records
 
 logger = logging.getLogger(__name__)
@@ -63,14 +64,12 @@ def digest(uid: str, stems: tuple[str, ...], sid: str) -> SessionDigest:
     transcript_files: list[Path] = []
 
     for stem in stems:
-        # Archive segments: <stem>__<timestamp>[-N].jsonl
+        # Archive segments: <stem>__<timestamp>[-N].jsonl, matched on the whole
+        # stem so a chat whose stem is <stem>__more does not donate its rows.
         if archive_dir.is_dir():
             try:
-                prefix = stem + ARCHIVE_SEGMENT_DELIMITER
                 segments = sorted(
-                    p
-                    for p in archive_dir.iterdir()
-                    if p.name.startswith(prefix) and p.suffix == ".jsonl"
+                    p for p in archive_dir.iterdir() if archive_segment_stem(p.name) == stem
                 )
                 transcript_files.extend(segments)
             except OSError:
