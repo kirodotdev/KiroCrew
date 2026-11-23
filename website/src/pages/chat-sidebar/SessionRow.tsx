@@ -311,13 +311,15 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, crewWindowCovers, isOut, isPinned, isRunning,
+    slot: s, dividerNext, scope, navScope, holdContainer, crewWindowCovers, isOut, isPinned, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
   // From the row-status store: only a row whose answer flips re-renders on a chat switch.
-  const { isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, isUnread } = useRowStatus(s)
+  const { isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, isUnread, nextIsActive } = useRowStatus(s, dividerNext)
+  // No divider touches the open row: its highlight separates it.
+  const showDivider = dividerNext !== null && !isActive && !nextIsActive
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.

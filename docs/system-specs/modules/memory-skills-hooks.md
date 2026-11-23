@@ -7451,6 +7451,11 @@ warning on `kiro_crew.hooks` rather than dropped silently. Pinned by
 `TestHookToolInput` (`test_fire_tool_hooks.py`) and `TestHookToolInputFromRawParams`
 (`test_dashboard_approval.py`).
 
+**`tool_response` on PostToolUse.** Every site that fires `PostToolUse` (the ACP
+client, a dashboard turn, a channel turn, a subagent run) builds `tool_response` with
+`hook_output.bounded_hook_output` from the redacted full output: `output` cut to its
+first 2,000 characters, `truncated`, and `output_length`, the length it was cut from.
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
@@ -8169,7 +8174,7 @@ importable from `kiro_crew.context`:
 | `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the early memory reads (`prefetch_session_memory`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text. The rails include the own `[DASHBOARD]` block of a root session running the conductor template with an adopted page, which `chat_runner` builds from the slot (`dashboard_agentic.root_session_dashboard_block`) and hands over as `session_dashboard` |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
-| `tool_names.py` | the provider-specific `[TOOL NAMES]` block: qualified-name compatibility for legacy direct calls, exact catalogue IDs for loading, and unchanged returned IDs for executors; the direct-call fallback never rewrites loader or executor IDs; present at session start, minimal start and after compaction |
+| `tool_names.py` | the per-harness `[TOOL NAMES]` block naming that harness's own loader (kiro-cli `tool_search`, Claude Code `ToolSearch`, MiMo Code `mcp_tool_search`, none needed on a direct-listing harness, nothing for an unknown label); on KAS: qualified-name compatibility for legacy direct calls, exact catalogue IDs for loading, and unchanged returned IDs for executors; the direct-call fallback never rewrites loader or executor IDs; present at session start, minimal start and after compaction |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |
 | `mcp_servers.py` | the per-turn `[MCP SERVERS]` block: the servers a session cannot use yet by state, what the model does about each, and the bounded per-session record of what it was last told |
 | `turn_message.py` | `ContextBuilder.build_message`: what one turn sends and in which order, the trigger-matched skill-body delivery and its audit, the request boundary |

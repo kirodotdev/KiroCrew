@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _extra_mcp_scopes,
     _kirocrew_mcp_json,
     _load_config_for_update,
+    _load_config_or_reason,
     _load_json_or_empty,
     _resolve_key_from_read,
 )
@@ -144,10 +145,10 @@ def _set_kirocrew_entry(
     written. The toggle uses it to tell a store-held server from one held
     elsewhere.
 
-    A store that exists but is not a readable MCP config answers ``"corrupt"``
-    in either mode, and its bytes stay as they are. Read as empty, it would be
-    written back holding this one entry, and every other server in it would be
-    gone.
+    A store that exists but cannot be read answers ``"unreadable"``, and one
+    that does not parse as an MCP config answers ``"corrupt"``, in either mode;
+    its bytes stay as they are. Read as empty, it would be written back holding
+    this one entry, and every other server in it would be gone.
 
     When ``enabled`` is True and ``spec`` is provided, upserts the full spec
     (used for preservation copies).  When enabled is False, adds/updates the
@@ -165,13 +166,13 @@ def _set_kirocrew_entry(
     answers ``"ambiguous"``.
 
     Returns a short label describing what happened: ``"added"``, ``"enabled"``,
-    ``"disabled"``, ``"ambiguous"``, ``"noop"`` or ``"corrupt"``, and with
-    ``existing_only`` also ``"absent"``. A spec aimed at a ``"type": "registry"``
-    pointer writes nothing and answers ``"registry"``.
+    ``"disabled"``, ``"ambiguous"``, ``"noop"``, ``"unreadable"`` or
+    ``"corrupt"``, and with ``existing_only`` also ``"absent"``. A spec aimed at
+    a ``"type": "registry"`` pointer writes nothing and answers ``"registry"``.
     """
-    data = _load_config_for_update(_kirocrew_mcp_json())
-    if data is None:
-        return "corrupt"
+    data = _load_config_or_reason(_kirocrew_mcp_json())
+    if not isinstance(data, dict):
+        return data
     servers = data.setdefault("mcpServers", {})
     try:
         key = _resolve_key_from_read(servers, name, preferred)

@@ -9,6 +9,7 @@ fixtures and helpers live in ``sel_helpers.py``.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -16,6 +17,8 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -26,8 +29,11 @@ from sel_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 
 import kiro_crew.sel as sel_mod
 from conftest import requires_symlinks
-from kiro_crew import platform_compat
+from kiro_crew import atomic_write as aw
+from kiro_crew import platform_compat, sel_trust_root
 from kiro_crew.sel import SecurityEventLog, sel_hmac_key_path
+from kiro_crew.testing.ids import unallocatable_pids
+from kiro_crew.testing.wait import default_timeout
 
 # ─────────────────────────────────────────────────────────────────────────
 # Audit-chain hardening regression tests (Track B):
@@ -269,6 +275,11 @@ class TestCorruptTailNewlineBoundary:
         assert log._ends_without_newline() is True
 
 
+def _leftover_temps(trust: Path) -> list[str]:
+    """Temp and staging names left in *trust*: atomic_write's and the publish's."""
+    return sorted(p.name for p in trust.iterdir() if p.name.endswith(".tmp"))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
 class TestHmacKeyAtomicCreation:
     """Key creation is atomic: the key file is only ever visible as the full
@@ -284,8 +295,7 @@ class TestHmacKeyAtomicCreation:
 
     def test_no_temp_key_files_left_behind(self, tmp_path: Path) -> None:
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        leftovers = list((tmp_path / "trust").glob(".sel_hmac_*"))
-        assert leftovers == []
+        assert _leftover_temps(tmp_path / "trust") == []
 
     def test_crash_during_create_leaves_no_short_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -304,7 +314,7 @@ class TestHmacKeyAtomicCreation:
         monkeypatch.setattr(os, "write", real_write)
         # No published key, and no orphaned temp file.
         assert not (tmp_path / "trust" / "sel_hmac.key").exists()
-        assert list((tmp_path / "trust").glob(".sel_hmac_*")) == []
+        assert _leftover_temps(tmp_path / "trust") == []
 
     def test_short_write_still_persists_full_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -337,7 +347,336 @@ class TestHmacKeyAtomicCreation:
             SecurityEventLog(base_dir=tmp_path, sync=True)
         monkeypatch.setattr(os, "write", real_write)
         assert not (tmp_path / "trust" / "sel_hmac.key").exists()
-        assert list((tmp_path / "trust").glob(".sel_hmac_*")) == []
+        assert _leftover_temps(tmp_path / "trust") == []
+
+
+def _assert_owner_only(path: Path) -> None:
+    """POSIX mode bits only: Windows has no 0o600, and its DACL is pinned in test_sel.py."""
+    if os.name != "nt":
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+
+class TestHmacKeyPublish:
+    """Two first starts on one empty data dir share one key, and every publish
+    path still persists one. ``SecurityEventLog`` is a per-process singleton, so
+    each "process" here calls the key loader directly with its own instance
+    stand-in; the race is on the shared filesystem names. Each ``os.link`` spy
+    forwards to the real call unless the destination is the key."""
+
+    @staticmethod
+    def _load_key(base: Path) -> bytes:
+        return sel_trust_root._load_or_create_hmac_key(cast(Any, SimpleNamespace(_dir=base)))
+
+    def test_concurrent_first_starts_converge_on_one_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both starters pass the "no key yet" check and stage a key; only one
+        publish lands, and the other loads the winner's bytes instead of its own.
+
+        The loser is held until the winner has unlinked its staging name, so the
+        loser's read never overlaps that unlink (on Windows an open read handle
+        makes the unlink fail) and the order is the same on every platform."""
+        real_link = os.link
+        real_unlink = os.unlink
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+        both_staged = threading.Barrier(2, timeout=default_timeout())
+        winner_unlinked = threading.Event()
+        published: list[tuple[int, int]] = []
+
+        def _is_staging_name(path) -> bool:
+            name = Path(path).name
+            return (
+                Path(path).parent == key_path.parent
+                and name.startswith(f".{key_path.name}.")
+                and name.endswith(".tmp")
+            )
+
+        def _unlink_and_signal(path, *a, **kw):
+            real_unlink(path, *a, **kw)
+            if _is_staging_name(path):
+                winner_unlinked.set()
+
+        def _link_after_both_staged(src, dst, *a, **kw):
+            if Path(dst) != key_path:
+                return real_link(src, dst, *a, **kw)
+            both_staged.wait()
+            st = os.stat(src)
+            published.append((st.st_mode & 0o777, st.st_size))
+            try:
+                return real_link(src, dst, *a, **kw)
+            except FileExistsError:
+                assert winner_unlinked.wait(timeout=default_timeout())
+                raise
+
+        monkeypatch.setattr(os, "unlink", _unlink_and_signal)
+        monkeypatch.setattr(os, "link", _link_after_both_staged)
+        keys: list[bytes] = []
+        errors: list[BaseException] = []
+
+        def _start() -> None:
+            try:
+                keys.append(self._load_key(tmp_path))
+            except BaseException as exc:  # surfaced by the assert below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_start) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=default_timeout())
+        assert not any(t.is_alive() for t in threads)
+        assert errors == []
+        on_disk = key_path.read_bytes()
+        assert len(on_disk) == 32
+        assert keys == [on_disk, on_disk]
+        # Every inode offered for publish was already complete (and owner-only).
+        assert [size for _, size in published] == [32, 32]
+        if os.name != "nt":
+            assert [mode for mode, _ in published] == [0o600, 0o600]
+        _assert_owner_only(key_path)
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
+
+    def test_loser_that_finds_a_short_key_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key name taken by a too-short regular file is refused like any short
+        key, never answered by publishing yet another key."""
+        real_link = os.link
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+
+        def _short_key_appears_first(src, dst, *a, **kw):
+            if Path(dst) == key_path:
+                Path(dst).write_bytes(b"short")
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "link", _short_key_appears_first)
+        with pytest.raises(RuntimeError, match="too short"):
+            self._load_key(tmp_path)
+        assert key_path.read_bytes() == b"short"
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
+
+    @staticmethod
+    def _windows_read_window(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drive read_bytes_with_retry's Windows branch, with no backoff sleep."""
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    def test_read_sharing_violation_is_retried_then_loads_the_winner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated PermissionErrors on the key read (the Windows sharing window
+        while a winner unlinks its staging name) are retried by
+        read_bytes_with_retry, and the existing key loads."""
+        trust = tmp_path / "trust"
+        trust.mkdir(mode=0o700)
+        key_path = trust / "sel_hmac.key"
+        winner = bytes(range(32))
+        key_path.write_bytes(winner)
+        real_read = Path.read_bytes
+        reads: list[Path] = []
+
+        def _contended_three_times(self_path: Path) -> bytes:
+            if self_path == key_path:
+                reads.append(self_path)
+                if len(reads) <= 3:
+                    raise PermissionError(13, "sharing violation")
+            return real_read(self_path)
+
+        self._windows_read_window(monkeypatch)
+        monkeypatch.setattr(Path, "read_bytes", _contended_three_times)
+        assert self._load_key(tmp_path) == winner
+        assert len(reads) == 4
+        monkeypatch.setattr(Path, "read_bytes", real_read)
+        assert key_path.read_bytes() == winner
+
+    def test_persistent_read_permission_error_fails_init(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key that stays unreadable makes init raise PermissionError; it is
+        never replaced and nothing is added to trust/."""
+        trust = tmp_path / "trust"
+        trust.mkdir(mode=0o700)
+        key_path = trust / "sel_hmac.key"
+        winner = b"\x5a" * 32
+        key_path.write_bytes(winner)
+        real_read = Path.read_bytes
+
+        def _always_denied(self_path: Path) -> bytes:
+            if self_path == key_path:
+                raise PermissionError(13, "sharing violation")
+            return real_read(self_path)
+
+        self._windows_read_window(monkeypatch)
+        monkeypatch.setattr(Path, "read_bytes", _always_denied)
+        with pytest.raises(PermissionError):
+            self._load_key(tmp_path)
+        monkeypatch.setattr(Path, "read_bytes", real_read)
+        assert key_path.read_bytes() == winner
+        assert sorted(p.name for p in trust.iterdir()) == ["sel_hmac.key"]
+
+    @requires_symlinks
+    def test_dangling_link_taking_the_name_still_boots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dangling link that takes the name before the publish is replaced by
+        atomic replace instead of failing init."""
+        real_link = os.link
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+
+        def _dangling_link_appears_first(src, dst, *a, **kw):
+            if Path(dst) == key_path:
+                os.symlink(tmp_path / "nowhere", dst)
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "link", _dangling_link_appears_first)
+        key = self._load_key(tmp_path)
+        assert not key_path.is_symlink()
+        assert key_path.read_bytes() == key
+        assert len(key) == 32
+        _assert_owner_only(key_path)
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
+
+    @staticmethod
+    def _patch_liveness(monkeypatch: pytest.MonkeyPatch, table: dict[int, str]) -> None:
+        monkeypatch.setattr(
+            platform_compat,
+            "pid_liveness",
+            lambda pid: table.get(pid, platform_compat.PID_ALIVE),
+        )
+
+    def test_staging_copies_of_dead_processes_are_swept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a regular staging copy whose pid is DEAD is removed; a live pid's
+        copy, this process's own copy, a directory (never passed to unlink) and
+        every other file are kept."""
+        dead_pid, live_pid = unallocatable_pids(2)
+        assert os.getpid() not in (dead_pid, live_pid)
+        trust = tmp_path / "trust"
+        trust.mkdir(mode=0o700)
+        dead = trust / f".sel_hmac.key.{dead_pid}.0123456789abcdef.tmp"
+        live = trust / f".sel_hmac.key.{live_pid}.0123456789abcdef.tmp"
+        own = trust / f".sel_hmac.key.{os.getpid()}.0123456789abcdef.tmp"
+        dead_dir = trust / f".sel_hmac.key.{dead_pid}.fedcba9876543210.tmp"
+        dead_dir.mkdir()
+        others = [
+            trust / "project-skills.json",
+            trust / f".sel_hmac.key.{dead_pid}.0123456789abcdeg.tmp",
+            trust / f".sel_hmac.key.{dead_pid}.0123456789abcde.tmp",
+            trust / ".sel_hmac.key.12a4.0123456789abcdef.tmp",
+            trust / f".sel_hmac.key.{dead_pid}.0123456789abcdef.bak",
+            trust / f".token_signing.key.{dead_pid}.0123456789abcdef.tmp",
+        ]
+        for path in [dead, live, own, *others]:
+            path.write_bytes(b"k" * 32)
+        self._patch_liveness(
+            monkeypatch,
+            {
+                dead_pid: platform_compat.PID_DEAD,
+                live_pid: platform_compat.PID_ALIVE,
+                os.getpid(): platform_compat.PID_DEAD,
+            },
+        )
+        real_unlink = os.unlink
+        unlinked: list[Path] = []
+
+        def _recording_unlink(path, *a, **kw):
+            unlinked.append(Path(path))
+            return real_unlink(path, *a, **kw)
+
+        monkeypatch.setattr(os, "unlink", _recording_unlink)
+        self._load_key(tmp_path)
+        assert dead_dir not in unlinked
+        assert not dead.exists()
+        assert live.exists()
+        assert own.exists()
+        assert dead_dir.is_dir()
+        assert all(p.exists() for p in others)
+
+    @requires_symlinks
+    def test_sweep_keeps_a_symlink_with_a_dead_staging_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink carrying a dead pid's staging name survives, and its target is
+        untouched."""
+        (dead_pid,) = unallocatable_pids(1)
+        trust = tmp_path / "trust"
+        trust.mkdir(mode=0o700)
+        target = tmp_path / "elsewhere.bin"
+        target.write_bytes(b"t" * 32)
+        link = trust / f".sel_hmac.key.{dead_pid}.0123456789abcdef.tmp"
+        os.symlink(target, link)
+        self._patch_liveness(monkeypatch, {dead_pid: platform_compat.PID_DEAD})
+        self._load_key(tmp_path)
+        assert link.is_symlink()
+        assert target.read_bytes() == b"t" * 32
+
+    def test_transient_link_refusal_is_retried_not_replaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link refusal that does not say "no hard links here" is retried, so
+        the key is still published by the no-clobber link."""
+        real_link = os.link
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+        calls: list[Path] = []
+
+        def _refuse_once(src, dst, *a, **kw):
+            if Path(dst) == key_path:
+                calls.append(Path(dst))
+                if len(calls) == 1:
+                    raise OSError(errno.EACCES, "sharing violation")
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "link", _refuse_once)
+        key = self._load_key(tmp_path)
+        assert len(calls) == 2
+        assert key_path.read_bytes() == key
+        _assert_owner_only(key_path)
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
+
+    def test_persistent_transient_link_refusal_still_persists_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refusal that never clears ends in the atomic-replace publish, so init
+        does not fail where a replace succeeds."""
+        real_link = os.link
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+        calls: list[Path] = []
+
+        def _always_refuse(src, dst, *a, **kw):
+            if Path(dst) == key_path:
+                calls.append(Path(dst))
+                raise OSError(errno.EACCES, "sharing violation")
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "link", _always_refuse)
+        key = self._load_key(tmp_path)
+        assert len(calls) == sel_trust_root._PUBLISH_MAX_ATTEMPTS
+        assert key_path.read_bytes() == key
+        _assert_owner_only(key_path)
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
+
+    def test_filesystem_without_hard_links_still_persists_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link-unsupported error goes straight to the atomic-replace publish."""
+        real_link = os.link
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+        calls: list[Path] = []
+
+        def _no_links(src, dst, *a, **kw):
+            if Path(dst) == key_path:
+                calls.append(Path(dst))
+                raise OSError(errno.EPERM, "hard links not supported")
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "link", _no_links)
+        key = self._load_key(tmp_path)
+        assert len(calls) == 1
+        assert key_path.read_bytes() == key
+        assert len(key) == 32
+        _assert_owner_only(key_path)
+        assert sorted(p.name for p in (tmp_path / "trust").iterdir()) == ["sel_hmac.key"]
 
 
 class TestHmacKeyTrustDirMigration:

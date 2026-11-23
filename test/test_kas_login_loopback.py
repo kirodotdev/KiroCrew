@@ -437,6 +437,47 @@ async def test_loopback_portal_error_is_error(tmp_path, loopback_shape, error, p
     }
 
 
+_OK = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "landing, responses, path, status, says",
+    [
+        ("signed in", [_FakeResp(200, _OK)], "/oauth/callback", 200, "Login complete"),
+        ("exchange failed", [_FakeResp(500, "boom")], "/oauth/callback", 200, "could not finish"),
+        ("login failed", [], "/oauth/callback", 200, "Login failed"),
+        ("already finished", [_FakeResp(200, _OK)], "/oauth/callback", 200, "already finished"),
+        ("replaced", [], "/oauth/callback", 200, "replaced by a newer one"),
+        ("wrong address", [], "/oauth/callback/", 404, "could not finish here"),
+    ],
+)
+async def test_every_page_the_tab_lands_on_is_titled_and_names_the_dashboard(
+    tmp_path, loopback_shape, landing, responses, path, status, says
+):
+    service, _ = _service(tmp_path, responses=responses)
+    begin = await service.begin_loopback("google")
+    query = {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])}
+    if landing == "login failed":
+        query = {"error": "access_denied"}
+    elif landing == "replaced":
+        query["state"] = "older-sign-in"
+    url = f"http://127.0.0.1:{begin['port']}{path}?{urllib.parse.urlencode(query)}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            if landing == "already finished":
+                async with s.get(url) as first_tab:
+                    assert first_tab.status == 200
+            async with s.get(url) as resp:
+                assert (resp.status, resp.content_type) == (status, "text/html")
+                page = await resp.text()
+    finally:
+        await service.cancel(begin["login_id"])
+    assert says in page
+    assert "<title>Kiro Crew sign-in</title>" in page
+    assert "the Kiro Crew dashboard" in page
+
+
 @pytest.mark.asyncio
 async def test_loopback_timeout_reports_expired_with_fallback_code(
     tmp_path, loopback_shape, monkeypatch

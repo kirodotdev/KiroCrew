@@ -127,10 +127,11 @@ class TestRendering:
             "redirect_urls",
         ):
             assert marker not in text
-        # Byte-pinned: the digest of the payload before the manifest became
-        # toggle-aware. A change here changes every default install's deep link.
+        # Byte-pinned: the digest of the payload with no switch on. A change here
+        # changes every default install's deep link. Last changed deliberately when
+        # the bot scopes gained users:read.email (Share Slack access adds by email).
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        assert digest == "bca5f538a73e541d77d4b00dbc5a39b48b499baa514358b3474010c36c984d11"
+        assert digest == "73022fcd365362285d5b60218f25c64a95c8e0cf308d2b4f5c5318e6eb400bce"
 
     def test_an_off_gate_renders_only_while_its_switch_is_off(self) -> None:
         # ``#@!slack_mcp`` marks a line the switch replaces: the legacy

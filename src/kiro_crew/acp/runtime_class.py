@@ -31,6 +31,7 @@ from kiro_crew.acp import runtime_spawn_launch as _rt_launch
 from kiro_crew.acp import runtime_tree_kill as _rt_tree
 from kiro_crew.acp import runtime_wire as _rt_wire
 from kiro_crew.acp.client import CLIENT_NAME
+from kiro_crew.acp.frame_payload_sharing import RepeatedPayloads
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
@@ -624,6 +625,9 @@ class AcpRuntime:
         # before answering. The reader loop counts them; load_session reads the
         # count to tell a restored conversation from a freshly created record.
         self._load_replay_frames: dict[str, int] = {}
+        # The engine's re-sent catalogs, one copy shared by every queued frame
+        # (``frame_payload_sharing``).
+        self._repeated_payloads = RepeatedPayloads()
         # Session ids the engine holds a parked copy of: loaded to make the
         # start agent the stored mode, not yet confirmed freed
         # (``runtime_session_load._park_in_start_agent``).

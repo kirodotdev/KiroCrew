@@ -101,46 +101,54 @@ def conflict_explanation(server: str = "kirocrew-core") -> str:
     )
 
 
-def backend_spawns_kiro_cli(backend: str) -> bool:
+def backend_spawns_kiro_cli(backend: str, pin: str = "") -> bool:
     """True when a session on *backend* runs inside a kiro-cli process.
 
     The Kiro CLI backend, or KAS served through kiro-cli's relay. KAS on Kiro Crew's
     own bundle runs Node with no kiro-cli, and every other harness launches on its
-    own, so kiro-cli's sandbox setting says nothing about why they failed. Reads
-    config for the KAS route; a read that fails answers False, so no hint claims a
-    cause it could not confirm.
+    own, so kiro-cli's sandbox setting says nothing about why they failed. Resolves
+    the KAS route the way a spawn does, for *pin* (the session's own Bot pin as
+    stored, ``""`` for none); a resolve that fails answers False, so no hint claims
+    a cause it could not confirm.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
     if backend == ACP_BACKEND_KIRO:
         return True
     if backend == ACP_BACKEND_KAS:
-        return _kas_runs_on_the_relay()
+        return _kas_runs_on_the_relay(pin)
     return False
 
 
-def _kas_runs_on_the_relay() -> bool:
-    """True when ``agent.kas_bundle`` is off, so KAS starts through kiro-cli's relay."""
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
+def _kas_runs_on_the_relay(pin: str) -> bool:
+    """True when the next KAS spawn for *pin* takes kiro-cli's relay.
 
-        return not KiroCrewConfig.load().agent.kas_bundle
+    The spawn's own rule (``acp.kas_route.resolve_kas_route``), not
+    ``agent.kas_bundle`` alone: a build that prefers the engine runs the bundle
+    with the setting unset, and a Bot pinned to the Kiro CLI keeps the relay.
+    Blocking (config, vault, kiro-cli lookup), like the settings read beside it,
+    so callers already run this off the event loop.
+    """
+    try:
+        from kiro_crew.agent_sdk.kas_bundle import kas_route
+
+        return not kas_route(pin).bundle
     except Exception:  # noqa: BLE001 - an unreadable route is not evidence
         return False
 
 
-def session_start_hint(error_text: str, backend: str) -> str | None:
+def session_start_hint(error_text: str, backend: str, pin: str = "") -> str | None:
     """The cause and fix to append to a session-start error, or None.
 
-    Only when the failing session runs inside kiro-cli (*backend*, see
-    :func:`backend_spawns_kiro_cli`), kiro-cli's error names one of Kiro Crew's own
+    Only when the failing session runs inside kiro-cli (*backend* and its Bot
+    *pin*, see :func:`backend_spawns_kiro_cli`), kiro-cli's error names one of Kiro Crew's own
     servers, AND the setting is on: the error alone has other causes (a broken
     install, a crashed server), and the setting alone is harmless to a session that
     did not fail or that kiro-cli does not host. Reads the settings file and config,
     so an async caller runs it off the event loop.
     """
     match = _CREW_MCP_START_FAILED_RE.search(error_text or "")
-    if match is None or not kiro_cli_self_sandboxes() or not backend_spawns_kiro_cli(backend):
+    if match is None or not kiro_cli_self_sandboxes() or not backend_spawns_kiro_cli(backend, pin):
         return None
     try:
         return f"Likely cause: {conflict_explanation(match.group('server'))}"

@@ -84,6 +84,14 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 * ``[[ERROR]]`` -> reply with a JSON-RPC error instead of a result.
 * ``[[MAXTOKENS]]`` / ``[[REFUSAL]]`` -> alternate terminal ``stopReason``.
 
+With ``KIROCREW_FAKE_ACP_REPUBLISH_SECS`` set to a positive number of seconds,
+the KAS relay re-sends, that often and to every open session, a
+``_kiro/mcp/status`` snapshot whose servers each list
+``KIROCREW_FAKE_ACP_CATALOG_TOOLS`` tools with full descriptions and input
+schemas, followed by a ``config_option_update`` carrying a large select. A
+real engine sends both whenever its servers or options change, idle sessions
+included; this is how a load test gets those frames at a realistic size.
+
 With ``KIROCREW_FAKE_ACP_SCRIPT`` naming a JSON file, a chat prompt the script
 answers gets the script's reply instead of any of the above
 (:mod:`kiro_crew.testing.scripted_replies` documents the file).
@@ -356,9 +364,15 @@ def slow_hold_path(hold_dir: str, token: str) -> str:
     return os.path.join(hold_dir, token)
 
 
+#: Serializes stdout: the republish thread writes beside the main loop.
+_SEND_LOCK = threading.Lock()
+
+
 def _send(obj: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(obj) + "\n"
+    with _SEND_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _result(req_id: Any, result: dict[str, Any]) -> None:
@@ -436,6 +450,86 @@ def _report_mcp_ready(session_id: str, mode_id: str | None = None) -> None:
             "tags": [{"source": "mcp", "tag": f"@{name}/{MCP_CATALOG_TOOL}"} for name in names],
         },
     )
+
+
+REPUBLISH_ENV = "KIROCREW_FAKE_ACP_REPUBLISH_SECS"
+CATALOG_TOOLS_ENV = "KIROCREW_FAKE_ACP_CATALOG_TOOLS"
+
+
+def _catalog(server: str, count: int) -> list[dict[str, Any]]:
+    """*count* tools for *server*, each with a description and an input schema."""
+    tools = [{"name": MCP_CATALOG_TOOL, "description": "probe", "disabled": False}]
+    for i in range(1, count):
+        tools.append(
+            {
+                "name": f"{server}_tool_{i}",
+                "description": f"Tool {i} of {server}. " + "Reads and writes things. " * 40,
+                "disabled": False,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        f"arg_{j}": {"type": "string", "description": "An argument. " * 6}
+                        for j in range(6)
+                    },
+                    "required": ["arg_0"],
+                },
+            }
+        )
+    return tools
+
+
+def _republish(session_id: str, tools: int) -> None:
+    """One status snapshot and one config update for *session_id*."""
+    names = _managed_server_names(session_id, None)
+    _notify(
+        "_kiro/mcp/status",
+        {
+            "sessionId": session_id,
+            "servers": [
+                {
+                    "name": name,
+                    "status": "connected",
+                    "tools": _catalog(name, tools),
+                    "prompts": [],
+                    "resources": [],
+                    "resourceTemplates": [],
+                    "_meta": _MCP_CLIENT_ORIGIN,
+                }
+                for name in names
+            ],
+        },
+    )
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {
+                    "id": "fake_profile",
+                    "name": "Profile",
+                    "type": "select",
+                    "currentValue": "p0",
+                    "options": [
+                        {
+                            "value": f"p{i}",
+                            "name": f"Profile {i}",
+                            "description": "A profile. " * 30,
+                        }
+                        for i in range(60)
+                    ],
+                }
+            ],
+        },
+    )
+
+
+def _republish_loop(every: float, tools: int) -> None:
+    """Re-send every open session's status and options every *every* seconds."""
+    while True:
+        time.sleep(every)
+        for session_id in list(_SESSIONS):
+            if session_id in _SESSIONS:
+                _republish(session_id, tools)
 
 
 # Mid-turn inbox: main() reads stdin on a background thread into this queue, so a
@@ -1037,6 +1131,12 @@ def main() -> None:
     # option: the backend suite also runs on Windows.
     reader = threading.Thread(target=_pump_stdin, name="fake-acp-stdin", daemon=True)
     reader.start()
+    every = float(os.environ.get(REPUBLISH_ENV, "0") or 0)
+    if _KAS_RELAY and every > 0:
+        tools = max(1, int(os.environ.get(CATALOG_TOOLS_ENV, "25") or 25))
+        threading.Thread(
+            target=_republish_loop, args=(every, tools), name="fake-acp-republish", daemon=True
+        ).start()
     while True:
         msg = _INBOX.get()
         if msg is None:

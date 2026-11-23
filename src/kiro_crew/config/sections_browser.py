@@ -267,6 +267,7 @@ class BrowserRecordingConfig:
 #: ``browser.run`` ceilings. 0 is off; the bounds keep a hand-edited value sane.
 RUN_MAX_OPS_CAP = 1_000_000
 RUN_MAX_REPEATS_CAP = 10_000
+RUN_MAX_MINUTES_CAP = 1_440
 
 
 @dataclass
@@ -292,6 +293,16 @@ class BrowserRunConfig:
             "different step starts the count again. 0 (the default) sets no limit.",
         ),
     )
+    max_minutes: int = field(
+        default=0,
+        metadata=_meta(
+            "Most minutes of one browser run",
+            "Once a chat's browser run has lasted this many minutes since its first "
+            "step, the next step is not run and the agent is told why. Time between "
+            "turns counts, as the step count does. Taking over the browser or starting "
+            "a new chat starts the clock again. 0 (the default) sets no limit.",
+        ),
+    )
 
     @classmethod
     def from_raw(cls, section: object) -> "BrowserRunConfig":
@@ -301,6 +312,7 @@ class BrowserRunConfig:
         return cls(
             max_ops=reader.read("max_ops", _safe_int, 0, RUN_MAX_OPS_CAP),
             max_repeats=reader.read("max_repeats", _safe_int, 0, RUN_MAX_REPEATS_CAP),
+            max_minutes=reader.read("max_minutes", _safe_int, 0, RUN_MAX_MINUTES_CAP),
         )
 
 

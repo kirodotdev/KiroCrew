@@ -51,7 +51,7 @@ function gatewayStillRunningNotificationBody(stopCommand) {
  * electron-updater events, points the feed, and arms the launch check and the
  * poll, in that order.
  *
- * @returns {{check: Function, download: Function, install: Function, getInfo: Function, isReady: Function}}
+ * @returns {{check: Function, download: Function, install: Function, relaunch: Function, getInfo: Function, isReady: Function, flags: Function}}
  */
 function createFeedLane({
   app,
@@ -1637,6 +1637,26 @@ function createFeedLane({
     relaunch: () => relaunch(),
     getInfo,
     isReady: () => updateReady,
+    // The lane's phase flags, read and never written: auto-update.lane-phases.test.js
+    // pins each combination the lane reaches to the enum values that will hold it.
+    flags: () => ({
+      checking: gate.checking,
+      checkInFlight: gate.checkInFlight !== null,
+      abandonedCheck: gate.abandonedCheck,
+      verifyQuiet: gate.verifyQuiet,
+      preparingDownload: gate.preparingDownload,
+      verifyingStage: gate.verifyingStage,
+      downloading,
+      quitHandled,
+      quitPathVerifying,
+      installing,
+      deferredInstalling,
+      stagingHold: stagingHold !== null,
+      stagingQuitHeld,
+      quitDeferredForInstall,
+      stagedArmed,
+      relaunchAfterInstall,
+    }),
   };
 }
 

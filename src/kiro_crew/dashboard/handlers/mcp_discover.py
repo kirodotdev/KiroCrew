@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _get_mcp_lock,
     _is_valid_mcp_name,
     _mcp_config_corrupt,
+    _mcp_config_unreadable,
     _offload_config_write,
     _set_kirocrew_entry,
 )
@@ -528,9 +529,9 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             action = await _offload_config_write(
                 _set_kirocrew_entry, name, enabled=enable_now, spec=spec
             )
-            if action == "corrupt":
+            if action in ("corrupt", "unreadable"):
                 # The store exists but is not a readable MCP config, so nothing
-                # was written: report that, not an install.
+                # was written: report that, not an install, and say which.
                 sel().log_api_access(
                     caller="dashboard",
                     operation="mcp_discover_install",
@@ -538,6 +539,8 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
                     source="dashboard",
                     resources=f"official:{name} store unreadable",
                 )
+                if action == "unreadable":
+                    return _mcp_config_unreadable("the Kiro Crew mcp.json")
                 return _mcp_config_corrupt("the Kiro Crew mcp.json")
             if action == "ambiguous":
                 # Two store keys alias to this name and nothing was written:

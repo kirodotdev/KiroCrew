@@ -1043,6 +1043,18 @@ board's own copy of it lands in the conductor's unit. So resolving the header fo
 worker's copy would advance the worker's own board -- which nothing reads. The emitter holds the entry, so it reads the board there; an empty
 board means the header names it, which is true of every type that carries none.
 
+**The wake carries the HOME too.** `note_commit` records the data home the committing
+thread resolved (`data_home()`, a memo hit right after the append; a wake whose home
+cannot be resolved carries none and folds as before), the coalesced key leads with it,
+and `_fold_coalesced` folds each home's share through `config.paths.run_with_data_home`.
+So nothing the fold calls reads `KIROCREW_HOME` on the worker's thread, which a test body
+that clears the variable would otherwise send to the default home (#41332). A cold cell's
+background prime (`slot_prime.schedule`) folds under the home its key names, pinned on the
+prime thread the same way. The pin is per thread: a bus subscriber called on the fold
+thread reads the wake's home, and work it schedules on a loop runs on the loop's thread,
+which the pin does not reach. The home rides each wake rather than the thread because the
+worker outlives any one caller. A real gateway has one home, so a batch is one pass.
+
 **The wake is enqueued AFTER the causal order is recorded.** Both eager entry types are
 folded over units ordered by a record the emitter writes beside the append
 (`note_work_unit_recorded`, `note_panel_unit_recorded`), and the fold reads that order to

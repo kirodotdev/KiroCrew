@@ -222,7 +222,7 @@ def build_session_context(
             )
         )
         # A minimal run still calls Kiro Crew's tools, so it gets the same
-        # spelling rule; nothing at all on a harness that needs none.
+        # naming and loading rule for its harness.
         parts.append(_tool_names.tool_names_block(provider_type))
         # A cron run can be asked which model it is too; nothing when no id came.
         parts.append(_sections.active_model_block(served_model))
@@ -293,9 +293,9 @@ def build_session_context(
         runtime = ctx._runtime_display_name(session_key, runtime_source)
         append_required(_sections.runtime_identity_block(agent_label, runtime))
 
-    # How to spell an MCP tool call on a harness that resolves only qualified
-    # names (KAS). Required, not budgeted: without it a worker's first
-    # ``work_brief`` call fails and it never reports.
+    # How this harness names and loads an MCP tool; prompts and skills point
+    # here instead of naming a loader. Required, not budgeted: without it a
+    # worker's first ``work_brief`` call can fail and it never reports.
     tool_names = _tool_names.tool_names_block(provider_type)
     if tool_names and _session_head.holds(held, _session_head.TOOL_NAMES_KEY, tool_names):
         blocks.charge_held(tool_names)

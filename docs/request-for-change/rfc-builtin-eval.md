@@ -534,7 +534,7 @@ without it, `kirocrew chat` is unchanged.
 | `--idle-grace SECS` | with `--until-done`, the quiet window that counts as done (default 900) |
 | `--cwd DIR` | the session's project directory: set on the run's chat (`POST /api/chat/slots/{slot}/project`; absolute, existing), so no folder is left behind |
 | `--timeout SECS` | wall cap; the run's chats are stopped (exit 4) |
-| `--budget CREDITS` | spend cap over settled usage: the run's chats' `turn_stats.credits` plus the credits of finished background agents they started (`GET /api/spawn`); a turn or agent counts when it ends, so a run can pass the cap by what is still running; the run's chats are stopped (exit 5) |
+| `--budget CREDITS` | spend cap over settled usage: the credits of the run's chats' turns from the per-turn usage store (`usage/tokens`, which also holds a turn that ended with no reply and so carries no `turn_stats` footer) plus the credits of finished background agents they started (`GET /api/spawn`); a turn or agent counts when it ends, so a run can pass the cap by what is still running; the run's chats are stopped (exit 5) |
 | `--resume SESSION` | later |
 | `--json` | one JSON object on stdout at exit (§12.4); human text goes to stderr |
 

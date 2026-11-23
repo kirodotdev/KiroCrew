@@ -85,6 +85,7 @@ Available to all allowed users (no `!` prefix needed):
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
 | `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
+| `/kirocrew conductor <goal>` | Owner only. Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
@@ -279,7 +280,14 @@ or fix what their row says, first.
 - **Who counts.** Each Slack member ID on the list is checked with Slack
   (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
   person rather than a bot or app, not deactivated, and not the owner. The page
-  refuses an ID that fails, and shows each person's name next to their ID. An ID
+  refuses an ID that fails, and shows each person's name next to their ID. You
+  can add a person by their email instead of their ID: the page looks it up with
+  `users.lookupByEmail` (bot scope `users:read.email`, in the shipped manifest;
+  an older install needs a reinstall) and keeps the member ID, and the audit log
+  records the ID, never the email. Pasting a Slack profile link
+  (`https://<workspace>.slack.com/team/U…`) works too. Nobody can be added until
+  the Owner Slack member ID is saved, and an ID that becomes the owner's is shown
+  as the owner's own row and left out of the switch's confirm. An ID
   added with `kirocrew config` gets the same check from the gateway before its
   first message counts. A confirmation is re-checked every 10 minutes, and a
   refusal after a minute: an ID that stays on the list gets access as soon as
@@ -365,7 +373,8 @@ The steps below are the manual path.
 2. **Add a bot user** with these Bot Token Scopes:
    `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
    `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
-   `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+   `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read`, and
+   `users:read.email`.
 3. **Add User Token Scopes** if the same app supplies a user token to a
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
@@ -545,7 +554,7 @@ can name, create or archive a channel.
 |---|---|
 | `code_channel_rename` | Renames the channel and its session (1-200 characters). |
 | `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
-| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads; ask for a preview of a page or site and the agent sends it here as one) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
 | `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
 | `code_channel_read_plan_canvas` | Reads the plan canvas back: its current markdown and the open comments on it. Use it after a restart or when the plan is no longer in the agent's context. |
 | `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |

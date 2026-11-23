@@ -1,0 +1,4 @@
++1
+The `data-exfil-curl-multipart-upload` row's description in `denied_rules_catalog`
+now says it refuses the form-file argument from any program, not only `curl` (#37029).
+The longer text needs one more source line. No rule, pattern or verdict changes.

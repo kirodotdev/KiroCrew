@@ -550,8 +550,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         pattern=".*curl.*(-F|--form)\\s*\\S*=@.*",
         category="credential-exfil",
         description=(
-            "Blocks a `curl` multipart upload that attaches a local file (`-F field=@file`), "
-            "for any field name."
+            "Blocks a `-F field=@file` or `--form field=@file` argument (any field name), which "
+            "reads a local file into the request, whichever program sends it: a `curl` "
+            "multipart upload or a `gh api` field, for example."
         ),
     ),
     DeniedCommandRule(

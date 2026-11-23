@@ -3,8 +3,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import { memo } from 'react'
-import { act, render } from '@testing-library/react'
-import { RowStatusContext, createRowStatusStore, rowStatusOf, useRowStatus, type RowStatus } from './rowStatus'
+import { act, render, renderHook } from '@testing-library/react'
+import { RowStatusContext, createRowStatusStore, rowStatusOf, useActiveRowAmong, useRowStatus, useStableKeySet, type RowStatus } from './rowStatus'
 import type { Slot } from './types'
 
 const status = (over: Partial<RowStatus> = {}): RowStatus => ({
@@ -48,5 +48,40 @@ describe('row status', () => {
     const covered = rowStatusOf(status({ activeSlot: 's2', crewWindow: { instanceId: 'i', key: 'x' } }), slot)
     expect(covered.isActive).toBe(false)
     expect(covered.isSidebarActiveSlot).toBe(true)
+  })
+
+  it('hides a divider next to the open row from either side', () => {
+    const [above, open, below] = slots
+    const st = status({ activeSlot: open.key })
+    expect(rowStatusOf(st, above, open).nextIsActive).toBe(true)
+    expect(rowStatusOf(st, open, below).isActive).toBe(true)
+    expect(rowStatusOf(st, below, slots[3]).nextIsActive).toBe(false)
+    expect(rowStatusOf(st, below).nextIsActive).toBe(false)
+  })
+
+  it('keeps the unread set while its members hold', () => {
+    const { result, rerender } = renderHook(({ keys }) => useStableKeySet(keys), { initialProps: { keys: ['a', 'b'] } })
+    const first = result.current
+    rerender({ keys: ['b', 'a'] })
+    expect(result.current).toBe(first)
+    rerender({ keys: ['a'] })
+    expect([...result.current]).toEqual(['a'])
+    expect(result.current).not.toBe(first)
+  })
+
+  it('reads the open row only among the rows it is given', () => {
+    const store = createRowStatusStore(status({ activeSlot: 's0' }))
+    const among = [slots[2], slots[3]]
+    let renders = 0
+    const { result } = renderHook(() => { renders++; return useActiveRowAmong(among) }, {
+      wrapper: ({ children }) => <RowStatusContext.Provider value={store}>{children}</RowStatusContext.Provider>,
+    })
+    expect(result.current).toBeNull()
+    renders = 0
+    // A switch between two rows outside the set changes nothing here.
+    act(() => { store.set(status({ activeSlot: 's1' })); store.publish() })
+    expect(renders).toBe(0)
+    act(() => { store.set(status({ activeSlot: 's3' })); store.publish() })
+    expect(result.current).toBe(slots[3])
   })
 })

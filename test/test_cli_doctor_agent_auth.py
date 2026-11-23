@@ -256,7 +256,7 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: None)
 
     def test_a_host_below_the_glibc_floor_is_told_so_not_to_install(self, monkeypatch, capsys):
-        """Amazon Linux 2 (glibc 2.26) with kiro-cli signed out: the bundle route is
+        """A glibc 2.17 host (below every floor) with kiro-cli signed out: the bundle route is
         automatic and the engine cannot run here, so the row names glibc instead of
         a first-chat download or an install that is refused every time."""
         from kiro_crew.acp import kas_route
@@ -270,16 +270,16 @@ class TestDoctorKasBundle:
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
         monkeypatch.setattr("platform.system", lambda: "Linux")
         monkeypatch.setattr("platform.machine", lambda: "x86_64")
-        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 17))
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert "bundle:      ❌" in out
-        assert "glibc (2.26)" in out
+        assert "glibc (2.17)" in out
         assert "first chat" not in out
         assert "kirocrew kas install" not in out
         assert len(issues) == 1
-        assert "glibc (2.26)" in issues[0]
+        assert "glibc (2.17)" in issues[0]
 
     def test_a_host_with_no_engine_build_is_told_so_not_to_install(self, monkeypatch, capsys):
         """A Linux host on an architecture the engine publishes no build for: every

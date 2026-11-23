@@ -43,11 +43,13 @@ export interface TailnetStatusData {
  *
  * - `policy_off` — an LTS build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
- * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
- *   — the ways there is no usable tailnet name, kept apart because each is a
- *   different errand for the operator. `untrusted_cli` means Tailscale IS
- *   installed, at a path the gateway refuses to run (user-writable), so the
- *   remedy is `dashboard.url` rather than a download.
+ * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `approve_device` /
+ *   `enable_magicdns` — the ways there is no usable tailnet name, kept apart
+ *   because each is a different errand for the operator. `untrusted_cli` means
+ *   Tailscale IS installed, at a path the gateway refuses to run
+ *   (user-writable), so the remedy is `dashboard.url` rather than a download.
+ *   `approve_device` is signed in but waiting for an admin to approve this
+ *   device, which another sign-in cannot do.
  * - `enable_https` — the tailnet has not granted certificate provisioning for
  *   that name; this requires one-time tailnet administrator consent.
  * - `trust_off` — a name exists but the gateway will not accept it as an origin
@@ -66,6 +68,7 @@ export type TailnetMobileStep =
   | 'install'
   | 'start_daemon'
   | 'sign_in'
+  | 'approve_device'
   | 'enable_magicdns'
   | 'enable_https'
   | 'trust_off'

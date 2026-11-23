@@ -5293,7 +5293,8 @@ mid-conversation and a signed thinking block stays valid. Measured on the bundle
 third-party tools on separate turns: no rejection, and the first request's MCP share
 fell from 156,746 characters to 0. KAS ignores the toggle and the
 thresholds and defers every MCP tool not on its `toolSearch.neverDefer` list, so for an
-agent whose `tools` grants no `tool_search` Crew sends that list with each of the
+agent whose `tools` grants no `tool_search`, and for every agent while `agent.tool_search`
+is off, Crew sends that list with each of the
 agent's MCP tools as `<server>::<tool>`, expanding `@server` grants from the tool names
 it already holds; a server it holds none for stays deferred. A deferred tool costs a name
 plus a description rather than a full JSON schema; it is smaller, not zero, and it
@@ -5306,7 +5307,7 @@ trip, the load. For an agent whose whole procedure is a few MCP tools that is a
 round trip on every session, so each shipped agent declares its job tools, once, in
 `JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
 the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
-`tool_search`. Everything else the spec mounts stays deferred.
+`tool_search` while `agent.tool_search` is on. Everything else the spec mounts stays deferred.
 
 | Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|

@@ -1778,6 +1778,17 @@ gate keeps governing the entry's quality claims: a configured GitHub still runs
 the normal first-connect (`not-verified`) flow, and `launch_gate_passed` flips
 only after the manual L2 walk with an operator-registered app.
 
+**Creating the app from the card.** When the gateway can generate a
+pre-registered card's OAuth app, owner-only
+`GET /api/connections/app-manifests` answers `{slug: {create_url, manifest}}`
+(handlers/connections_app_manifest.py). Only Slack has a generator: the
+`slack_manifest.deep_link()` link and its payload, for this install's alias and
+Slack Code switches plus `slack_mcp`, so one app serves the channel bot and the
+card. While the card is `needs-configuration` and its client is not saved, the
+"Before you connect" tip carries **Create the <provider> app** (the link, https
+only, new tab), **Copy manifest** and one line on what Slack does next. The card
+names no vendor; a refused or failed route leaves the tip without the buttons.
+
 **Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
 (index in its `README.md`): console, app type, scopes, the exact redirect URI,
 review or publishing requirements, and where the result goes. Registering the

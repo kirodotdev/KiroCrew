@@ -70,18 +70,20 @@ number below means exactly this, everywhere -- in the row, in the publish, in th
 strip's copy -- and nothing else:
 
 ``candidates`` -- OFFERED. The rows this point put in front of the oracle: the ones
-the store's ``fit`` walk had already selected, capped at :data:`MAX_CANDIDATES` and
-screened for a usable id. A row the screen dropped is still in ``baseline_keys``,
-because the baseline is what the recall would have returned rather than what was
-asked about.
+the store's ``fit`` walk had already selected, capped at :data:`MAX_CANDIDATES` (or
+:data:`LOCAL_MAX_CANDIDATES` on this machine) and screened for a usable id. A row
+the screen dropped is still in ``baseline_keys``, because the baseline is what the
+recall would have returned rather than what was asked about.
 
 ``baseline_keys`` -- what the recall returns WITHOUT this point. The candidate list
 itself.
 
-``jev_keys`` -- KEPT BY JEV. The memories Jev's answer kept, in the search's order.
-The DECISION's own output, before anything downstream touches it. It is not the set
-that shipped, and it must not be quietly narrowed into one: a receipt whose kept
-count silently absorbed a later removal is what makes the numbers stop adding up.
+``jev_keys`` -- KEPT BY JEV. The memories Jev's answer kept, in the search's order,
+plus every row it was never offered (``candidates`` against ``baseline_keys`` tells
+how many). The DECISION's own output, before anything downstream touches it. It is
+not the set that shipped, and it must not be quietly narrowed into one: a receipt
+whose kept count silently absorbed a later removal is what makes the numbers stop
+adding up.
 
 ``bounded_omitted`` -- DROPPED BY BOUNDING. How many of ``jev_keys`` the response
 budget then removed (``memory_recall.bound_recall_payload`` clips the largest text
@@ -121,7 +123,9 @@ import uuid
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from kiro_crew import decisions as core
+from kiro_crew.decisions import gate as _gate
 from kiro_crew.decisions import log as _log
+from kiro_crew.decisions.local_models import is_loopback_endpoint
 from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
 
@@ -140,11 +144,19 @@ POINT = "memory.recall"
 #: ``list[dict]``, and the type now states what the docstrings promise.
 RowT = TypeVar("RowT", bound=Mapping[str, Any])
 
-#: Cap on how many recalled memories are described to the oracle. One question per
-#: candidate, so this bounds the request's question count as well as its size. The
-#: shipped ``memory.episodic_max_results`` is well under it; a configuration that
-#: raised it far higher would have the tail dropped rather than sent.
+#: Cap on how many recalled memories are described to the oracle, unless the endpoint
+#: is on this machine (:data:`LOCAL_MAX_CANDIDATES`). One question per candidate, so
+#: this bounds the request's question count as well as its size. The shipped
+#: ``memory.episodic_max_results`` is well under it; a configuration that raised it far
+#: higher would have the tail left off the menu and returned unjudged.
 MAX_CANDIDATES = 20
+
+#: Cap on the menu when the decision endpoint is on this machine
+#: (:func:`~kiro_crew.decisions.local_models.is_loopback_endpoint`). A local server
+#: reads every memory once per question, so its time grows with the square of the
+#: menu: Plumb-4B on 4 CPU threads took 2.7 s for 2 memories, 8 s for 4 and 27 s for 8,
+#: against the preset's 5 s wait. A row past the cap is kept, never dropped.
+LOCAL_MAX_CANDIDATES = 2
 
 #: The message excerpt that leaves the machine, same bound ``skills.select`` and
 #: ``message.steer`` apply, so one owner reviewed one number.
@@ -466,14 +478,17 @@ def key_of(row: Mapping[str, Any]) -> str:
 def screen_candidates(candidates: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
     """The rows that may be sent: capped, key-screened, redacted and clipped.
 
-    A row with no id, an over-long id or a duplicate id is DROPPED rather than
-    repaired: the id is what maps an answer back to a memory, so a row that cannot
-    carry one cannot be decided about, and it stays in the baseline block exactly
-    as it is today.
+    The cap is :data:`LOCAL_MAX_CANDIDATES` when the decision endpoint is on this
+    machine and :data:`MAX_CANDIDATES` otherwise. A row with no id, an over-long id
+    or a duplicate id is DROPPED rather than repaired: the id is what maps an answer
+    back to a memory, so a row that cannot carry one cannot be decided about, and it
+    stays in the baseline block exactly as it is today.
     """
+    local = is_loopback_endpoint(_gate.configured_endpoint())
+    cap = LOCAL_MAX_CANDIDATES if local else MAX_CANDIDATES
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
-    for candidate in list(candidates)[:MAX_CANDIDATES]:
+    for candidate in list(candidates)[:cap]:
         if not isinstance(candidate, Mapping):
             continue
         key = key_of(candidate)
@@ -492,9 +507,9 @@ def surviving_rows(
     """The candidate rows that reach the prompt, in candidate order.
 
     A row survives when Jev KEPT it (its key is in *kept_keys*) or was never
-    OFFERED it (absent from *screened*: capped at :data:`MAX_CANDIDATES` or its id
-    refused). Only an answer naming an offered row may drop it; absence from the
-    answer is not "Jev said no".
+    OFFERED it (absent from *screened*: past the cap :func:`screen_candidates`
+    applied, or its id refused). Only an answer naming an offered row may drop it;
+    absence from the answer is not "Jev said no".
 
     Rows come back BY IDENTITY, never copied: ``vector_memory._kept_episodes``
     tests membership with ``id()`` (equal dicts can be distinct episodes), so a

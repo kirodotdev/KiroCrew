@@ -710,7 +710,8 @@ export function useChatPageResourcesController({
    *  is `showOnScreen` (the banner or the action notice). Any other slot holds
    *  it (`holdSlotUploadFailure`) until that chat is shown, where the upload
    *  banner takes it. A slot a memory-mode switch replaced reports to its
-   *  successor, so the failure is never held for a chat that is gone. */
+   *  successor once that switch commits; until then the failure stays with
+   *  the slot, which keeps it if the switch fails. */
   // The page can unmount while a request runs (the person left /chat). Its
   // setters then go nowhere, so the failure is held for the remount.
   const pageMountedRef = useRef(true)
@@ -722,7 +723,7 @@ export function useChatPageResourcesController({
     // A slot still on screen in a mounted page was not replaced, whatever an
     // older entry in the succession table says. An unmounted page's ref is
     // frozen, so it always follows the table.
-    const forSlot = pageMountedRef.current && fromSlot === activeSlotRef.current ? fromSlot : (resolveSlotSuccession(fromSlot) ?? null)
+    const forSlot = pageMountedRef.current && fromSlot === activeSlotRef.current ? fromSlot : (resolveSlotSuccession(fromSlot, { committedOnly: true }) ?? null)
     if (!forSlot || (pageMountedRef.current && forSlot === activeSlotRef.current)) { showOnScreen(message); return }
     holdSlotUploadFailure(forSlot, message)
   }, [activeSlotRef])

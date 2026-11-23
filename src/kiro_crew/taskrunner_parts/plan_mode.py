@@ -19,9 +19,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.execution_context import ExecutionContext, read_session_execution
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_planner import (
+    PlanSandboxRefused,
     auto_name,
     decompose,
     group_parallel_tasks,
@@ -39,10 +41,14 @@ from kiro_crew.taskrunner_parts.run_inputs import (
     _resolve_workspace_dir,
 )
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
+from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.workflow_memory import capture_admission_execution, inherited_step_agent
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
+
+#: What a plan the spec could not be decomposed into fails with.
+_NO_PLAN = "Could not generate a plan. Try rephrasing."
 
 
 # The facade's logger: records keep the name ``kiro_crew.taskrunner``.
@@ -188,8 +194,12 @@ async def plan(
                 raise ValueError("Planning timed out. Try simplifying.")
             except asyncio.CancelledError:
                 raise ValueError("Planning was cancelled.")
+            except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
+                # The host cannot sandbox the planning session: the same failed plan as
+                # any other, carrying the refusal's own text for the machine owner.
+                raise PlanSandboxRefused(_NO_PLAN, safe_terminal_line(str(exc))) from exc
         if not run.tasks:
-            raise ValueError("Could not generate a plan. Try rephrasing.")
+            raise ValueError(_NO_PLAN)
     except BaseException:
         # Only the default plan directory belongs to this attempt. A caller's
         # workspace is an input and must survive a rejected plan unchanged.

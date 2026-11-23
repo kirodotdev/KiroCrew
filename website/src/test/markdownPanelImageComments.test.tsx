@@ -318,7 +318,7 @@ describe('MarkdownPanel image box comments', () => {
     await boxAndComment('Wrapped', 'here')
     const row = await screen.findByText(/^Box 1 on "Wrapped"/)
     // The pending row keeps the author's destination, as the renderer got it.
-    expect(row.getAttribute('title')).toBe('shots/a%20b.png')
+    expect(row).toHaveAccessibleDescription('shots/a%20b.png')
     fireEvent.click(screen.getByRole('button', { name: /Submit All/ }))
     await waitFor(() => expect(onSubmitComments).toHaveBeenCalledTimes(1))
     expect(onSubmitComments.mock.calls[0][0]).toContain('image "/tmp/shots/a b.png", box')

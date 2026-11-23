@@ -35,7 +35,7 @@ Example::
     python3 scripts/kas_bundle_publish.py \\
         --kas-dir ~/kas-build/0.66.33 --version 0.66.33 \\
         --node-version 22.23.3 --out ./publish \\
-        --s3 s3://kirocrew-kas
+        --s3 s3://<bucket behind kas.crew.kiro.dev>
 """
 
 from __future__ import annotations

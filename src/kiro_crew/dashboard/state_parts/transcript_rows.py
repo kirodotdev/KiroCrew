@@ -539,9 +539,9 @@ def is_interruption_stale(messages: list[dict], now: float) -> bool:
     return False
 
 
-#: ``chat_utils.AUTH_REQUIRED_KIND``, spelled here for the reason
-#: ``_MODEL_UNAVAILABLE_KIND`` is (``test_newest_error_is_sign_in.py`` pins the two equal).
-_AUTH_REQUIRED_KIND = "auth_required"
+#: ``chat_utils.AUTH_REQUIRED_KIND`` and ``KIRO_CLI_SIGN_IN_KIND``, spelled here for the
+#: reason ``_MODEL_UNAVAILABLE_KIND`` is (``test_newest_error_is_sign_in.py`` pins them equal).
+_SIGN_IN_KINDS = ("auth_required", "kiro_cli_sign_in")
 
 
 def newest_error_is_sign_in(messages: list[dict]) -> bool:
@@ -558,7 +558,7 @@ def newest_error_is_sign_in(messages: list[dict]) -> bool:
         if not isinstance(meta, dict):
             meta = {}
         if role == "error":
-            return _AUTH_REQUIRED_KIND in (m.get("kind"), meta.get("kind"))
+            return m.get("kind") in _SIGN_IN_KINDS or meta.get("kind") in _SIGN_IN_KINDS
         if role in ("assistant", "nudge", "subagent") or (role == "user" and not meta.get("steer")):
             return False
         if role == "inject" and meta.get("injectKind") in TURN_OPENING_INJECT_KINDS:

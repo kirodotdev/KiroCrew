@@ -179,6 +179,7 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | `files:read` | Read uploaded files |
 | `files:write` | Upload screenshots |
 | `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it the lookup fails and is caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
+| `users:read.email` | **Share Slack access** adds a person by their email (`users.lookupByEmail`). Without it that lookup is refused with a reinstall hint, and adding by member ID still works |
 | `commands` | Slash commands |
 
 The `emoji:read` bot scope is deliberately **not** in the shipped manifest.
@@ -767,7 +768,7 @@ to use instead.
 | `!yolo on` / `!yolo off` | Toggle auto-approve all tool calls |
 | `!agent <name>` / `!agent off` | Switch the active agent |
 | `!ta <agent>` / `!ta off` | Override agent for current thread only |
-| `!bot` / `!bot <name>` / `!bot off` | List Crew Bots, run this thread as one (its mode, memory identity and workspace, as a channel pinned with `slack.channels.<id>.agent` does), or go back. The thread's Bot beats the channel's pin. A Bot with its own memory store also binds that store to the thread, so send `!bot <name>` as the thread's first message: a thread that already has history, or is bound to another Bot, refuses (and `!bot off` refuses on a bound thread). Slack runs no slash command inside a thread, so `/kirocrew bot` only lists the Bots |
+| `!bot` / `!bot <name>` / `!bot off` | List Crew Bots, run this thread as one (its mode, memory identity and workspace, as a channel pinned with `slack.channels.<id>.agent` does), or go back. The thread's Bot beats the channel's pin. A Bot with its own memory store also binds that store to the thread, so send `!bot <name>` as the thread's first message: a thread that already has history, or is bound to another Bot, refuses (and `!bot off`, `!ta <agent>` and `!ta off` refuse on a bound thread). Slack runs no slash command inside a thread, so `/kirocrew bot` only lists the Bots |
 | `!link-to-dashboard` | Import the current Slack thread into a dashboard session |
 | `!project <path>` / `!project off` | Scope which project-local `.kiro` agents `!ta` can find (does not change the working directory) |
 | `!title <text>` | Set the thread title |

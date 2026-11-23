@@ -250,6 +250,59 @@ async def _handle_bot(
     )
 
 
+async def _handle_conductor(
+    orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
+) -> None:
+    """Start a Conductor thread here: post the goal as a new parent message, then make
+    that message's thread a Conductor thread (``kiro_crew.slack.conductor_thread``).
+
+    Slack does not run a slash command typed inside a thread and names no thread, so
+    an existing thread is made one with ``!conductor`` sent in it. Owner only, by
+    identity; every refusal is ephemeral and posts nothing.
+    """
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import published_goal
+    from kiro_crew.slack import conductor_thread
+    from kiro_crew.slack.code_channels.binding import live_config, thread_conductor_on
+
+    goal = args.strip()
+    channel, team = getattr(orch, "_last_slash_room", ("", ""))
+    if not is_owner(caller_id):
+        await respond("⛔ Owner-only command.")
+        return
+    if not thread_conductor_on(live_config(orch)):
+        await respond(f"❌ {conductor_thread.OFF_TEXT}")
+        return
+    if not goal:
+        await respond("Usage: `/kirocrew conductor <goal>`")
+        return
+    slack = orch.slack
+    if not channel or slack is None:
+        await respond("❌ Slack did not say where the command was typed.")
+        return
+    # Refused before the parent message is posted, so a refusal leaves nothing behind.
+    why, _room = await conductor_thread.refusal(
+        slack, channel, "", caller_id, "", in_thread=True, new_thread=True
+    )
+    if why:
+        await respond(f"❌ {why}")
+        return
+    try:
+        parent = await slack.post_message(channel, f"Conductor: {published_goal(goal)}")
+    except Exception:
+        logger.debug("conductor parent message not posted", exc_info=True)
+        parent = ""
+    if not parent:
+        await respond("❌ I can't post here. Invite me to the channel, or use my DM.")
+        return
+    started, text = await conductor_thread.start(
+        slack, channel, parent, caller_id, goal, team_id=team, in_thread=True
+    )
+    await respond(text if started else f"❌ {text}")
+
+
+register_slash_command(
+    "conductor", _handle_conductor, "start a Conductor thread here (`!conductor` in a thread)"
+)
 register_slash_command("bot", _handle_bot, "list Crew Bots (`!bot <name>` in a thread switches it)")
 register_slash_command("voice", _handle_voice, "configure TTS voice settings")
 
@@ -842,6 +895,11 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         handler, _ = entry
         # Stash trigger_id so modal-opening handlers can use it
         orch._last_trigger_id = payload.get("trigger_id", "")  # type: ignore[attr-defined]
+        # And where it was typed: ``conductor`` posts its parent message there.
+        orch._last_slash_room = (  # type: ignore[attr-defined]
+            str(payload.get("channel_id") or ""),
+            str(payload.get("team_id") or ""),
+        )
         _spawn(handler(orch, caller_id, args, _respond))
         return
 

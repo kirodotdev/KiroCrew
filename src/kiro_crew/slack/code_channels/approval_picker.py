@@ -1100,13 +1100,21 @@ async def _post_channel(orch: Any, channel: str, text: str) -> None:
 
 
 async def authorize(
-    orch: Any, binding: Binding, user: str, team: str, resources: str
+    orch: Any,
+    binding: Binding,
+    user: str,
+    team: str,
+    resources: str,
+    *,
+    admit_opener: bool = False,
 ) -> str | None:
     """None when *user* may change *binding*'s mode; else the refusal to show.
 
     The code channel's one owner gate (:func:`.agent_picker.authorize`: bound
     workspace, owner, channel and origin admit the bot, not archived), with this
     module's audit rows. ``""`` means refuse silently (a foreign workspace).
+    *admit_opener* (a helper agent card's Approve / Reject only) admits the
+    channel's opener too; the mode itself stays the owner's.
     """
     from kiro_crew.slack.code_channels import agent_picker
 
@@ -1119,6 +1127,7 @@ async def authorize(
         audit=_audit,
         not_allowed=NOT_ALLOWED_TEXT,
         owner_only=OWNER_ONLY_TEXT,
+        admit_opener=admit_opener,
     )
 
 

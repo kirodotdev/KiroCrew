@@ -1438,11 +1438,13 @@ def collect_bundle(
     except OSError:
         pass
 
-    # Scrub the user-supplied note ONCE up front. It flows into versions.txt,
-    # manifest.json, AND the pre-filled GitHub issue URL — a user may paste a
-    # secret (bearer token, key) into "what happened?", so it needs the same
-    # redaction the log members get below.
-    note, _, _ = _scrub_bundle(note or "")
+    # Scrub the user-supplied note up front for manifest.json AND the pre-filled
+    # GitHub issue URL — a user may paste a secret (bearer token, key) into
+    # "what happened?", so it needs the same redaction the log members get
+    # below. versions.txt is built from the raw note and scrubbed as a whole, so
+    # the note's redactions land in that member's tally like every other member's.
+    raw_note = note or ""
+    note, _, _ = _scrub_bundle(raw_note)
 
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     filename = f"kirocrew-diagnostics-{stamp}-{uuid.uuid4().hex[:8]}.zip"
@@ -1522,7 +1524,7 @@ def collect_bundle(
     )
     with os.fdopen(_fd, "wb") as _raw, zipfile.ZipFile(_raw, "w", zipfile.ZIP_DEFLATED) as zf:
         # Generated members first.
-        versions = _versions_text(note, identity, version_alignment)
+        versions = _versions_text(raw_note, identity, version_alignment)
         # ``versions.txt`` carries the absolute ``data_home`` path
         # unconditionally, which embeds the OS login. Run it through the bundle
         # scrub stack so the archive does not ship a local path in a file whose

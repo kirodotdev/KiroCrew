@@ -35,18 +35,57 @@ def _legacy_venv_entries(home: Path) -> list[str]:
         return []
 
 
+def _all_owned_by_this_account(paths: tuple[str, ...]) -> bool:
+    """Whether every path in *paths* lstats and belongs to this process's effective uid.
+
+    The same ``lstat().st_uid`` lookup ``data_home_owner`` uses. An owner that
+    cannot be read, or a platform without uids, answers False.
+    """
+    from kiro_crew.platform_compat import effective_uid
+
+    uid = effective_uid()
+    if uid is None or not paths:
+        return False
+    for path in paths:
+        try:
+            if Path(path).lstat().st_uid != uid:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _doctor_data_home_owner(issues: list[str]) -> None:
     """Report data-home entries another account owns, and where the docs explain them.
 
     Joins ``issues``: a home this account cannot read fails every config read and
-    every Bot create, which is exactly what the doctor exists to catch.
+    every Bot create, which is exactly what the doctor exists to catch. Entries
+    this account owns but cannot use, seen from a confined shell (an agent's
+    shell is one), are the sandbox's read-only or hidden mounts, so that row is a
+    skip and not an issue; files another account owns, or whose owner cannot be
+    read, still fail there.
     """
     from kiro_crew.data_home_owner import HELP_URL, check_data_home
+    from kiro_crew.doctor_checks import confinement
 
     access = check_data_home(Path(cli_doctor.config_dir()))
     if access.ok:
         print("  owner:       ✅ this account owns its files")
         return
+    if _all_owned_by_this_account(access.foreign):
+        try:
+            confined = confinement._doctor_vantage_confined()
+        except Exception:  # noqa: BLE001 — a broken probe keeps the stricter verdict
+            confined = False
+        if confined:
+            shown = ", ".join(render._safe_display(p) for p in access.foreign)
+            print(f"  owner:       ⏭  skipped — {shown} is not readable from this shell")
+            render._print_wrapped(
+                "This shell runs inside a sandbox (an agent's shell is one), which "
+                "limits part of the Kiro Crew data home. Run `kirocrew doctor` from "
+                "your own terminal to check this row."
+            )
+            return
     whose = f"belong to {access.owner}" if access.owner else "can't be used by this account"
     print(f"  owner:       ❌ some files {whose}, so Kiro Crew can't read them:")
     for path in access.foreign:

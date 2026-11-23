@@ -143,8 +143,13 @@ class _Run:
             self.reconnect_payloads.append(payload)
             return self.reattach.pop(0)
 
-        async def recaller_loop(writer, channel_id, stop):
+        def recaller_loop(writer, channel_id, stop):
+            # Recorded when _amain arms the task, not when it first runs: a task
+            # cancelled before its first step never runs its body.
             events.append(("recaller", writer))
+            return parked_recaller()
+
+        async def parked_recaller():
             self.recaller_started.set()
             try:
                 # Parked until _amain cancels it once the bridge returns; bounded all the same.
@@ -388,6 +393,15 @@ async def test_a_warm_pool_stub_runs_its_recaller_beside_the_bridge(run: _Run) -
     kinds = run.kinds()
     assert ("recaller", "writer-1") in run.events
     assert kinds.index("recaller") < kinds.index("bridge") < kinds.index("recaller_cancelled")
+
+
+@pytest.mark.asyncio
+async def test_a_token_carrying_warm_pool_stub_runs_no_recaller(run: _Run) -> None:
+    # gatewayd refuses every recaller on a token-carrying connection.
+    run.payload = {"stub_uuid": "uuid-1", "session_key": "", "stub_session_token": "tok-1"}
+    assert await run() == 0
+    assert "bridge" in run.kinds()
+    assert "recaller" not in run.kinds()
 
 
 # --------------------------------------------------------------------------- #
