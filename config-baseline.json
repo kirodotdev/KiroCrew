@@ -7266,7 +7266,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Model",
-      "help": "Provider model id. 'jev-latest' is TypeSafe's flagship System One model. Letters, digits, dots, dashes and underscores, up to 64 characters; anything else is refused before a request is sent, because this field travels in the request and config.json is agent-writable.",
+      "help": "Provider model id. 'jev-latest' is TypeSafe's flagship System One model, and the default for every endpoint but an 'aws-https://' one, which has no default: name the model that endpoint serves, or nothing is sent. Letters, digits, dots, dashes and underscores, up to 64 characters; anything else is refused before a request is sent, because this field travels in the request and config.json is agent-writable.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "jev-latest"

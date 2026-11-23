@@ -167,7 +167,8 @@ export function DecisionsSignedHttpsFields({
       <p className="text-[12px] text-muted m-0">
         {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_profile_hint')}
       </p>
-      {field('model', i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model'), 'decider-model-v2')}
+      {/* No placeholder here either: an empty required field must read as empty. */}
+      {field('model', i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model'), '')}
       <p className="text-[12px] text-muted m-0">
         {i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model_hint')}
       </p>
