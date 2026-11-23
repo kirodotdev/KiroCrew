@@ -375,12 +375,14 @@ def canonical_slot(slot_key: str, session_id: str) -> str:
     answers with an empty record.
 
     Falls back whenever the header cannot be proved, so a slot with no unit yet, a
-    crew log that is off, and an unreadable header all behave as before -- with one
-    exception: a messaging-channel key (``slack:<ts>``) falls back to its filename
+    crew log that is off, and an unreadable header all behave as before -- with two
+    exceptions. A messaging-channel key (``slack:<ts>``) falls back to its filename
     fold (``slack_<ts>``), because that fold is what both of its writers record in
     a unit header (the channel dispatcher's ``transcript_stem`` and the dashboard
     tab's slot name). A reader with no live session (a nudge cycle's snapshot)
-    otherwise found only units an older build headed with the raw key.
+    otherwise found only units an older build headed with the raw key. A cron key
+    (``cron:<id>``) falls back to its tab's name (``cron-<id>``) for the same reason:
+    the cron run's opener and the job's dashboard tab both record that name.
     """
     # Function-local: this module is on the gateway boot path, and these owners load
     # config and channel vocabulary that a non-channel ledger read never needs.
@@ -391,6 +393,11 @@ def canonical_slot(slot_key: str, session_id: str) -> str:
         from kiro_crew.history_files import transcript_stem
 
         fallback = transcript_stem(slot_key)
+    elif slot_key.startswith("cron:"):
+        from kiro_crew.dashboard.chat_utils import cron_tab_name
+        from kiro_crew.dashboard.state import _normalize_slot_key
+
+        fallback = _normalize_slot_key(cron_tab_name(slot_key))
     if not session_id:
         return fallback
     try:

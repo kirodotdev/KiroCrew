@@ -171,6 +171,7 @@ def open_turn_crew_log(
     store: tuple[str, bool, bool] | None = None,
     model_requested: str = "",
     workspace: str = "",
+    slot: str = "",
 ) -> None:
     """Open the channel session's crew log ahead of its turn, as the dashboard runner does.
 
@@ -184,7 +185,9 @@ def open_turn_crew_log(
     Only facts the dispatcher can establish are recorded; an absent field means
     "not observed". No ACP session id on *provider* means no log. ``slot`` is the
     channel key folded to the filename charset (``channel_slot_name``, also what
-    ``session_create`` stamps as ``_created_by``), so the session tree joins them.
+    ``session_create`` stamps as ``_created_by``), so the session tree joins them;
+    a cron run passes its tab's name as *slot* (``cron-<id>``), which the dashboard
+    writer records and ``session_ledger.canonical_slot`` folds a session-less read to.
     Served model and cwd come off the provider; ``model_requested`` comes from
     :func:`requested_model_sid`; ``resumed`` is ``get_or_create``'s answer. The
     class is stated only when ``ctx_builder.live_memory_mode_for_session`` knows the
@@ -198,7 +201,8 @@ def open_turn_crew_log(
     new log, which keeps history reachable across a cold successor after a failed
     compaction or a restart.
 
-    For the channel's OWN sessions only. A dashboard session resumed into the chat
+    For the channel's OWN sessions only, and a cron run's, which passes no
+    *ctx_builder* and so states no class. A dashboard session resumed into the chat
     (``!sessions``) is opened by the dashboard runner, which alone holds its
     lineage: an opener from here would create that log without its ``parent``.
     """
@@ -224,7 +228,7 @@ def open_turn_crew_log(
         crew_log_emit.on_session_opened(
             session_id,
             agent=agent or "",
-            slot=transcript_stem(session_key),
+            slot=slot or transcript_stem(session_key),
             model=str(getattr(provider, "served_model", "") or ""),
             model_requested=model_requested,
             cwd=str(getattr(provider, "cwd", "") or ""),
