@@ -15,7 +15,7 @@ Two things follow, and each has its tests here:
   So the variable is held to the action commit its reader was last read at:
   a bump of the pin fails here until someone reads `checkWorkflow` in the new
   source and moves `SKIP_READ_AT`.
-- The warnings `init` no longer prints are four checks of the workflow file
+- The warnings a skipped lint does not print are four checks of the workflow file
   (`getWorkflowErrors`, same source file). `findings` applies the same four
   to every workflow that uses the action, so a finding fails a test instead
   of printing a warning.
@@ -41,7 +41,7 @@ SKIP = "CODEQL_ACTION_SKIP_WORKFLOW_VALIDATION"
 #   src/workflow.ts     checkWorkflow -- the `EnvVar.SKIP_WORKFLOW_VALIDATION`
 #                       test that guards `validateWorkflow`
 #   src/environment.ts  SKIP_WORKFLOW_VALIDATION -- the variable's name
-# If the new source no longer reads the variable, delete it from the workflow
+# If the new source does not read the variable, delete it from the workflow
 # along with these tests' claim on it; the lint below stays either way.
 SKIP_READ_AT = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"
 
