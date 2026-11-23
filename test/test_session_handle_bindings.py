@@ -289,6 +289,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "2dfacffa6279",
         "session_handle_permissions",
     ),
+    "_refuse_reused_call_id": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_refuse_unretained_provenance": (
         "function",
         True,

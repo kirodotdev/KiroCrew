@@ -1162,15 +1162,17 @@ class TestReusedToolCallId:
         [
             {"path": "~/.ssh/authorized_keys"},
             {"path": "/etc/kiro/security_policy.json"},
-            {"path": "/Users/kim/other.txt"},  # same key, other value
+            {"path": "/home/user/other.txt"},  # same key, other value
         ],
     )
     def test_request_with_other_arguments_is_not_judged_as_the_cached_call(self, key, target):
         client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
 
         event = client._build_permission_event(self._permission("tc-Y", **{key: target}))
 
+        assert event.tool_call_id_reused is True
+        # Even the refusal's record carries nothing of the earlier call.
         assert json.loads(event.tool_input) == target
         assert event.raw_tool_params == target
         assert event.raw_params_trusted is False
@@ -1180,16 +1182,105 @@ class TestReusedToolCallId:
 
     def test_a_string_argument_is_not_judged_as_the_cached_call_either(self):
         client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
 
         event = client._build_permission_event(self._permission("tc-Y", rawInput="wipe-it"))
 
+        assert event.tool_call_id_reused is True
         assert "notes.txt" not in event.tool_input
         assert event.raw_params_trusted is False
 
+    @pytest.mark.asyncio
+    async def test_the_auto_approve_site_refuses_a_contradicting_request(self):
+        """Neither side wins: the request is rejected, never approved, and audited."""
+        from unittest.mock import MagicMock
+
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
+        client.reject_tool = AsyncMock()
+        client.approve_tool = AsyncMock(return_value=True)
+        client._audit_spec_restriction = MagicMock()
+
+        await client._handle_permission(
+            self._permission("tc-Y", rawInput={"path": "~/.ssh/authorized_keys"})
+        )
+
+        client.reject_tool.assert_awaited_once_with(900)
+        client.approve_tool.assert_not_awaited()
+        assert client._audit_spec_restriction.call_args.kwargs["reason"] == "tool_call_id_reused"
+
+    @pytest.mark.asyncio
+    async def test_a_non_contradicting_request_is_not_refused(self):
+        client = AcpClient()
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
+        client.reject_tool = AsyncMock()
+
+        for own in ({"rawInput": {"path": "/home/user/notes.txt", "limit": 5}}, {}):
+            event = client._build_permission_event(self._permission("tc-Y", **own))
+            assert event.tool_call_id_reused is False
+            assert await client._refuse_reused_call_id(event) is False
+        client.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_session_handle_refuses_a_contradicting_request(self):
+        """The shared-runtime driver refuses it too, steering its notice first."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+        from kiro_crew.acp.types import ACP_BACKEND_KAS, JsonRpcMessage
+
+        rt = MagicMock()
+        rt.acp_backend = ACP_BACKEND_KAS
+        rt.pid = None
+        rt.is_alive = MagicMock(return_value=True)
+        rt.send_notification = AsyncMock()
+        rt.supports_image_prompt = False
+        sent: list[tuple] = []
+
+        async def _send_response(request_id, payload):
+            sent.append((request_id, payload))
+
+        async def _send_request(method, params, **_kw):
+            sent.append((method, params))
+            return 1
+
+        rt.send_response = _send_response
+        rt.send_request = _send_request
+        handle = AcpSessionHandle("s-1", asyncio.Queue(), rt)
+        update = self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}).params["update"]
+        handle._handle_update(
+            JsonRpcMessage(method="session/update", params={"sessionId": "s-1", "update": update})
+        )
+
+        def _perm(rid, raw_input):
+            return JsonRpcMessage(
+                id=rid,
+                method="session/request_permission",
+                params={
+                    "sessionId": "s-1",
+                    "toolCall": {"toolCallId": "tc-Y", "title": "Read", "rawInput": raw_input},
+                    "options": [
+                        {"optionId": "accept", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "reject", "name": "Deny", "kind": "reject_once"},
+                    ],
+                },
+            )
+
+        same = handle._build_permission_event(_perm(31, {"path": "/home/user/notes.txt"}))
+        assert await handle._refuse_reused_call_id(same) is False
+        assert sent == []
+
+        other = handle._build_permission_event(_perm(32, {"path": "~/.ssh/authorized_keys"}))
+        assert other.raw_params_trusted is False
+        assert await handle._refuse_reused_call_id(other) is True
+        assert [entry[0] for entry in sent] == ["_session/steer", 32], sent
+        assert sent[1] == (32, {"outcome": {"outcome": "selected", "optionId": "reject"}})
+        assert "already used by an earlier call" in sent[0][1]["message"]
+
     def test_request_with_the_same_arguments_keeps_the_cached_provenance(self):
         client = AcpClient()
-        args = {"path": "/Users/kim/notes.txt"}
+        args = {"path": "/home/user/notes.txt"}
         client._extract_tool_event(self._tool_call("tc-Y", args))
 
         event = client._build_permission_event(self._permission("tc-Y", rawInput=dict(args)))
@@ -1200,17 +1291,17 @@ class TestReusedToolCallId:
 
     def test_arguments_extending_the_cached_ones_are_the_same_call(self):
         client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
 
         event = client._build_permission_event(
-            self._permission("tc-Y", rawInput={"path": "/Users/kim/notes.txt", "limit": 5})
+            self._permission("tc-Y", rawInput={"path": "/home/user/notes.txt", "limit": 5})
         )
 
         assert event.raw_params_trusted is True
 
     def test_request_naming_no_arguments_keeps_the_cached_provenance(self):
         client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
 
         event = client._build_permission_event(self._permission("tc-Y"))
 
@@ -1219,23 +1310,10 @@ class TestReusedToolCallId:
 
     def test_another_id_is_untouched(self):
         client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
+        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/home/user/notes.txt"}))
         client._extract_tool_event(self._tool_call("tc-Z", {"path": "/tmp/z"}))
 
         event = client._build_permission_event(self._permission("tc-Z"))
 
         assert event.raw_params_trusted is True
         assert "/tmp/z" in event.tool_input
-
-    def test_a_second_tool_call_for_the_id_without_arguments_drops_the_first_ones(self):
-        """The writer replaced an entry only for a frame with non-empty ``rawInput``,
-        so the first call's arguments stayed bound to the reused id."""
-        client = AcpClient()
-        client._extract_tool_event(self._tool_call("tc-Y", {"path": "/Users/kim/notes.txt"}))
-        client._extract_tool_event(self._tool_call("tc-Y", None, kind="delete"))
-
-        event = client._build_permission_event(self._permission("tc-Y"))
-
-        assert "notes.txt" not in event.tool_input
-        assert event.raw_tool_params is None
-        assert event.raw_params_trusted is False

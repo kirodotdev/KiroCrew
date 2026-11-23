@@ -1369,6 +1369,7 @@ class AcpClient:
     reject_tool = _client_permissions.reject_tool
     _handle_permission = _client_permissions._handle_permission
     _refuse_identity_drift = _client_permissions._refuse_identity_drift
+    _refuse_reused_call_id = _client_permissions._refuse_reused_call_id
     _foreign_mcp_identity = _client_permissions._foreign_mcp_identity
     _unclassified_tool_call = _client_permissions._unclassified_tool_call
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool

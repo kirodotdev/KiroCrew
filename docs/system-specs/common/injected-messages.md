@@ -643,7 +643,9 @@ and tells the model the identity is the backend's, so the identical call would b
 refused again and it should use another tool. Two more handle refusals steer the
 same way, through `_reject_with_host_notice`: a request whose provenance the
 per-turn caches dropped (`_refuse_unretained_provenance`, cause
-`provenance_unretained`: reissue the call alone or in smaller parts) and a
+`provenance_unretained`: reissue the call alone or in smaller parts), a request
+whose arguments contradict the ones cached for its reused `toolCallId`
+(`_refuse_reused_call_id`, cause `reused_call_id`: reissue it as a new call) and a
 low-fidelity sub-agent request on a consumer that never opted into child
 fidelity (`child_low_fidelity_unaware_consumer`, cause `surface_policy`).
 `AcpClient`'s own auto-approve path (`_handle_permission`) steers the `policy`
