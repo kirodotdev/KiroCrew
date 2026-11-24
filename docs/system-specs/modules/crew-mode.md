@@ -360,8 +360,11 @@ file an add copied in), named by its path, and every knowledge-base object, name
 `<type>:<name>`; an add copies such an object as written and the worker spec
 carries it (`agent-spec-fields.md`, Resources). An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
-op. A name in the file's own `skills` list counts as stored: an add copies that
-list as written, so an entry can outlive the agent that listed it, and a
+op. A refused Remove says why under the band, never as the code: a
+`stale_revision` re-reads the view and asks for Remove again, and any other code
+reads as the sentence Add abilities shows for it (`workerKitErrors.ts`). A
+name in the file's own `skills` list counts as stored: an add copies that list
+as written, so an entry can outlive the agent that listed it, and a
 `skills` remove drops the named entry from the list along with any catalog skill
 of that key, leaving every other entry (`mate_capabilities._drop_listed_skills`).
 The view flags every `skills` row the list names `listed`, and lists a name
@@ -397,8 +400,10 @@ other half: it manages the shared templates themselves — "custom agents" in ev
 user-facing string, the agents a chat or a Bot copies abilities from — the files
 under `~/.kiro/agents/` a chat or a Bot runs. The tab sits flat in the pane like
 the Bots tab: no card, no title row (the rail tab and the page title
-already say "Custom agents"), one toolbar row with the filter on the left and
-the **New custom agent** primary button on its right (the Skills tab's rhythm),
+already say "Custom agents"), one toolbar row with the filter on the left (it
+matches a row's name, description, package, source and the names of the MCP
+servers its spec lists, ignoring case) and the **New custom agent** primary
+button on its right (the Skills tab's rhythm),
 then the list and detail panes. The roster on the Bots tab likewise shows
 no page-level private-memory notice and no "New sessions use" default picker
 any more; the default Bot is still marked by its badge on the card / row (a
@@ -1012,7 +1017,10 @@ too. Either failure shows the pane's load error (`crewEditorNext.load_error`)
 as a block notice, never as the code or as `deadline exceeded`. A read past
 either deadline says it ran out of time and names the likely causes, many added
 abilities or a slow or unreachable drive (`load_error_timed_out`); any other
-`capabilities_unavailable` points at the gateway log (`load_error_details`). The
+`capabilities_unavailable` points at the gateway log (`load_error_details`);
+any other refusal reads as the sentence Add abilities shows for the same code
+(`workerKitErrors.ts`), so a Bot file that no longer parses (`invalid_spec`)
+says to fix or restore that file. The
 notice carries **Try again**, which reads the capabilities again, and **Ask the
 agent**, which runs through the editor's leave guard (`leaveGate`): over unsaved
 panes it raises the editor's discard confirm and hands off only once the user

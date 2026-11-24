@@ -651,6 +651,25 @@ def _confirm_tool_patterns() -> tuple[str, ...] | None:
     watcher's last good values while it keeps them, and the real values once
     the loader's process-lifetime degradation flag has gone stale.
     """
+    return _operator_tool_lists()[0]
+
+
+def _auto_deny_tool_patterns() -> tuple[str, ...]:
+    """The operator's ``hooks.auto_deny_tools`` patterns, as the gate reads them.
+
+    Read in the same load as ``confirm_tools`` (:func:`_operator_tool_lists`). A
+    load that stood in defaults gives the list the gate's own config holds too,
+    and a read that failed gives none.
+    """
+    return _operator_tool_lists()[1]
+
+
+def _operator_tool_lists() -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """``(confirm_tools, auto_deny_tools)`` from one config load, memoized.
+
+    See :func:`_confirm_tool_patterns` for how a load that stood in defaults is
+    read; only the confirm list becomes unknown there.
+    """
     global _CONFIRM_PATTERNS_MEMO
     loaded = True
     memo_key: tuple | None = None
@@ -691,28 +710,31 @@ def _confirm_tool_patterns() -> tuple[str, ...] | None:
         logger.warning("config read failed; judging hooks.confirm_tools from the files")
         logger.debug("hooks.confirm_tools read failed", exc_info=True)
         hooks, stood_in, loaded = None, True, False
+    raw_deny = hooks.get("auto_deny_tools") if isinstance(hooks, dict) else None
+    # As ``HooksConfig.from_dict`` reads it: a value that is not a list denies nothing.
+    deny = tuple(p for p in raw_deny if isinstance(p, str)) if isinstance(raw_deny, list) else ()
     if stood_in:
         torn, names_key = _config_files_state()
         if (torn or not loaded) and names_key:
-            return None
+            return None, deny
         if not loaded:
-            return ()
+            return (), deny
         # Every file reads as written, or none that does not names the key:
         # the loaded values below are the whole story.
         # A load that stood in defaults also reads process state the file
         # fingerprint does not carry, so its answer is never reused.
         memo_key = None
-    patterns = _patterns_from_hooks(hooks)
+    lists = (_patterns_from_hooks(hooks), deny)
     if memo_key is not None:
-        _CONFIRM_PATTERNS_MEMO = (memo_key, patterns)
-    return patterns
+        _CONFIRM_PATTERNS_MEMO = (memo_key, lists)
+    return lists
 
 
-#: ``(key, patterns)`` of the last :func:`_confirm_tool_patterns` answer read
-#: from a clean load, keyed on the config files' fingerprint and the loader
-#: cache's invalidation generation. Process-wide cache of file-derived data,
-#: never per-caller state.
-_CONFIRM_PATTERNS_MEMO: tuple[tuple, tuple[str, ...] | None] | None = None
+#: ``(key, (confirm_tools, auto_deny_tools))`` of the last
+#: :func:`_operator_tool_lists` answer read from a clean load, keyed on the
+#: config files' fingerprint and the loader cache's invalidation generation.
+#: Process-wide cache of file-derived data, never per-caller state.
+_CONFIRM_PATTERNS_MEMO: tuple[tuple, tuple[tuple[str, ...] | None, tuple[str, ...]]] | None = None
 
 
 def _patterns_from_hooks(hooks: object) -> tuple[str, ...] | None:
@@ -828,17 +850,9 @@ def server_requires_confirmation(server: str, patterns: Sequence[str]) -> bool:
     target = server.lower()
     heads = (f"@{target}/", f"running: @{target}/")
     exact = (f"@{target}", f"running: @{target}")
-    for pattern in patterns:
-        text = pattern.strip().lower()
-        cut = min((i for i, ch in enumerate(text) if ch in "*?["), default=-1)
-        if cut < 0:
-            if text in exact or text.startswith(heads):
-                return True
-            continue
-        prefix = text[:cut]
-        if prefix.startswith(heads) or any(head.startswith(prefix) for head in heads):
-            return True
-    return False
+    from kiro_crew.platform.server_pattern_reach import may_match_spelling
+
+    return any(may_match_spelling(p.strip().lower(), exact, heads) for p in patterns)
 
 
 def _operator_requires_confirmation(ref: str) -> bool:
@@ -873,6 +887,55 @@ def _operator_requires_confirmation(ref: str) -> bool:
     return server_requires_confirmation(server, patterns)
 
 
+def _operator_denies(ref: str) -> bool:
+    """Whether a ``hooks.auto_deny_tools`` pattern names a tool or server ``ref`` grants.
+
+    The gate refuses such a call, but only a call that reaches it, and a static
+    grant runs it with no permission request. A pattern names a grant when it
+    matches a name the gate judges the granted call under: a built-in under its
+    own name and its KAS ids, ``@server/tool`` under ``Running: @server/tool``,
+    ``@server``, ``mcp__server__tool`` and the bare tool. A grant of a whole
+    server (``@server``, ``@server/q*``) is withheld by every pattern that can
+    match one of those for some tool of that server
+    (``server_pattern_reach.may_name_server_call``), a bare name or wildcard
+    (``read_private``, ``delete_*``) included. It is kept under a pattern
+    qualified to another server (``@other/*``, ``Running: @other/*``,
+    ``mcp__other__*``), under one with whitespace that cannot spell
+    ``Running: @server/<tool>`` (``*rm -rf*``), which binds the calls that reach
+    the gate. Kiro Crew's own managed servers are judged against their real tools
+    instead, so ``*curl*`` or ``web_fetch`` keeps ``@kirocrew-core`` and
+    ``delete_*`` (its ``delete_message``) withholds it. Any other wildcard
+    grant is withheld while a pattern is set, since what it covers is not known
+    here. Case-insensitive ``fnmatch``, as the gate matches.
+    """
+    import fnmatch
+
+    from kiro_crew.platform.server_pattern_reach import may_name_server_call
+    from kiro_crew.platform.tool_names import expand_kiro_cli_tool_exclusions
+
+    patterns = _auto_deny_tool_patterns()
+    if not patterns or not isinstance(ref, str):
+        return False
+
+    def wild(text: str) -> bool:
+        return any(ch in text for ch in "*?[")
+
+    def named(name: str) -> bool:
+        return any(fnmatch.fnmatch(name.lower(), p.lower()) for p in patterns)
+
+    if not ref.startswith("@"):
+        if wild(ref):
+            return True
+        return any(named(n) for n in expand_kiro_cli_tool_exclusions([ref]))
+    server, _, tool = ref[1:].partition("/")
+    if not server or wild(server):
+        return True
+    if tool and not wild(tool):
+        names = (ref, f"Running: {ref}", f"@{server}", f"mcp__{server}__{tool}", tool)
+        return any(named(n) for n in names)
+    return any(may_name_server_call(p, server) for p in patterns)
+
+
 def may_skip_gate_now(ref: str) -> bool:
     """:func:`may_skip_gate` against the CURRENTLY installed ceiling.
 
@@ -890,9 +953,15 @@ def may_skip_gate_now(ref: str) -> bool:
     "skip the gate" to that is the bypass itself.
 
     The operator's own ``hooks.confirm_tools`` opt-in withholds too: a server it
-    names asks on every call, so no writer may grant it statically.
+    names asks on every call, so no writer may grant it statically. So does a
+    ``hooks.auto_deny_tools`` pattern that names the grant: the gate refuses
+    its calls, and a granted call never reaches the gate.
     """
-    return _policy_may_skip_gate_now(ref) and not _operator_requires_confirmation(ref)
+    return (
+        _policy_may_skip_gate_now(ref)
+        and not _operator_requires_confirmation(ref)
+        and not _operator_denies(ref)
+    )
 
 
 def may_skip_gate_for_session(session_key: str, app: Optional[str]) -> Callable[[str], bool]:
@@ -903,9 +972,9 @@ def may_skip_gate_for_session(session_key: str, app: Optional[str]) -> Callable[
     (``governance_profiles.session_profiles_govern``), never every configured one:
     a profile bound to another surface or another app does not withhold a grant
     from this session. *app* is the session's governance app, or ``None`` when it
-    is not known, which counts every app-bound profile. The ceiling and
-    ``hooks.confirm_tools`` are asked as :func:`may_skip_gate_now` asks them, at
-    each call, and an error withholds.
+    is not known, which counts every app-bound profile. The ceiling,
+    ``hooks.confirm_tools`` and ``hooks.auto_deny_tools`` are asked as
+    :func:`may_skip_gate_now` asks them, at each call, and an error withholds.
     """
 
     def permits(ref: str) -> bool:
@@ -920,7 +989,7 @@ def may_skip_gate_for_session(session_key: str, app: Optional[str]) -> Callable[
         except Exception:  # noqa: BLE001 - cannot tell -> withhold
             logger.warning("cannot evaluate the session's governance for %r; withholding", ref)
             return False
-        return not _operator_requires_confirmation(ref)
+        return not _operator_requires_confirmation(ref) and not _operator_denies(ref)
 
     return permits
 
@@ -1014,6 +1083,15 @@ def withheld_by_confirm_tools(ref: str) -> bool:
     confirm list is not reported as an enterprise ceiling.
     """
     return _policy_may_skip_gate_now(ref) and _operator_requires_confirmation(ref)
+
+
+def withheld_by_auto_deny_tools(ref: str) -> bool:
+    """Whether ``hooks.auto_deny_tools``, and not the security policy, withholds ``ref``'s grant.
+
+    The doctor twin of :func:`withheld_by_confirm_tools`, so a deny rule the
+    operator wrote is not reported as an enterprise ceiling either.
+    """
+    return _policy_may_skip_gate_now(ref) and _operator_denies(ref)
 
 
 def _policy_may_skip_gate_now(ref: str) -> bool:

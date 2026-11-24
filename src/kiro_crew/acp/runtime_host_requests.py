@@ -62,7 +62,7 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 # while the engine can still send that attempt's link would hand the link to
 # the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
-# How long a credential re-attempt (a reset without startOAuth) may hold off a
+# How long a re-attempt (a reset without startOAuth) may hold off a
 # sign-in. It opens no consent URL, so the slot does not have to outlast the
 # longest connect: past the engine's default 60 s connect timeout it is freed,
 # and a URL the engine still sends for it is refused because no sign-in is in
@@ -526,7 +526,8 @@ def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> 
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now, or that lost its connection mid-session. Sends
+    exist now or because its start ran out of time, or that lost its
+    connection mid-session. Sends
     ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
     the server's next ``_kiro/mcp/status`` entry reports whether it
     connected. The host that takes this request is the

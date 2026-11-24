@@ -2,8 +2,8 @@
 
 ``_sync_mcp_to_agent`` and its batch form, the refusal when the agent home is not ours to
 write, the refusal to switch off or remove one of Kiro Crew's own servers (one route's
-name, an apply batch, the toggle-all skip), and whether live sessions pick a change up by
-hot reload.
+name, an apply batch, the toggle-all skip), whether live sessions pick a change up by
+hot reload, and marking the ones that take it at their next turn.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -30,7 +30,7 @@ from kiro_crew.agent import (
 )
 from kiro_crew.dashboard.handlers.mcp_config_entries import _kirocrew_entry_is_muted
 from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
-from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_reinjecting_providers
+from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_sessions_for_mcp_change
 from kiro_crew.mcp_provenance import WITHHELD_KEY
 from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now
@@ -575,19 +575,24 @@ def _mcp_hot_reload_active(request: web.Request) -> bool:
         providers = list(sessions.active_providers()) + list(sessions.warm_providers())
         if not live_sessions_apply_mcp_live(providers):
             return False
-        marked = mark_reinjecting_providers(providers)
-        # A warm-pool fill between its start and its enqueue is in neither
-        # snapshot; the pool marks it at the enqueue from this fence.
-        fence = getattr(sessions, "mark_mcp_config_changed", None)
-        if callable(fence):
-            fence()
-        if marked:
-            logger.info(
-                "MCP config changed: %d live session(s) will apply it at their next "
-                "turn instead of being reset",
-                marked,
-            )
+        mark_sessions_for_mcp_change(sessions)
         return True
     except Exception:
         logger.warning("MCP hot-reload gate failed; resetting sessions instead", exc_info=True)
         return False
+
+
+def _mark_live_sessions(request: web.Request) -> None:
+    """After an MCP Servers write lands, tell the open chats that take it at their next turn.
+
+    The routes that switch a server or a tool on or off, remove one or register one
+    call this before they answer, so a session that applies a change at its next turn
+    boundary (KAS re-sends its projection, Strands relaunches) uses the new server set
+    on its next message, conversation kept. A kiro-cli session already watches its
+    agent file, and any other session keeps the set it started with until it restarts:
+    these routes never reset a session. Best effort, because the write already landed.
+    """
+    try:
+        mark_sessions_for_mcp_change(request.app["state"].sessions)
+    except Exception:  # noqa: BLE001 -- the write itself already landed
+        logger.warning("could not mark live sessions for an MCP change", exc_info=True)

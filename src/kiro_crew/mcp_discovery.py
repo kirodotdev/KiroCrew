@@ -19,11 +19,14 @@ import os
 import posixpath
 import sys as _sys
 import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror, mcp_quarantine, platform_compat
 from kiro_crew.env import denied_spec_env_keys, emit_env, spec_env_path
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_discovery_config import (
     _declared_type,
@@ -35,7 +38,11 @@ from kiro_crew.mcp_discovery_config import (
     list_servers,
 )
 from kiro_crew.mcp_discovery_probe import _drop_temp_refusals, probe_server
-from kiro_crew.mcp_discovery_probe_state import _prune_unresolvable, _sanitize_probe_error
+from kiro_crew.mcp_discovery_probe_state import (
+    _probe_identity,
+    _prune_unresolvable,
+    _sanitize_probe_error,
+)
 from kiro_crew.mcp_discovery_server_info import _CC_SIDECAR_SURFACE, SCOPE_KIROCREW, McpServerInfo
 from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
@@ -52,8 +59,8 @@ logger = logging.getLogger(__name__)
 _quarantine_warned: set[str] = set()
 
 
-def _spawn_excluded() -> set[str]:
-    """Servers to report from cache without spawning them again.
+def _spawn_excluded(servers: list[McpServerInfo]) -> set[str]:
+    """Names among *servers* to report from cache without spawning them again.
 
     The count comes from ``mcp_quarantine``, not a second counter here: that
     store is already the per-server consecutive-probe-failure ledger, already
@@ -61,13 +68,22 @@ def _spawn_excluded() -> set[str]:
     caller folds each round's verdicts back into it, so this sees the previous
     pass. Reads a file, so callers run it off the loop; an unreadable store
     probes everything, because refusing would make one bad file a fleet outage.
+
+    A server is held back only while its configured launch (``_probe_identity``)
+    is the one its streak failed under. A changed command, args, env or url is a
+    launch that has never failed, so it is probed, and a good handshake clears
+    the record. A record that names no launch matches nothing and is probed too.
     """
     try:
         snap = mcp_quarantine.snapshot()
     except Exception:
         logger.debug("cannot read MCP quarantine state; probing all", exc_info=True)
         return set()
-    excluded = {name for name, st in snap.items() if st.get("failing")}
+    excluded: set[str] = set()
+    for s in servers:
+        st = snap.get(s.name)
+        if st and st.get("failing") and st.get("launch") == _probe_identity(s):
+            excluded.add(s.name)
     _quarantine_warned.intersection_update(excluded)
     for name in sorted(excluded):
         if name in _quarantine_warned:
@@ -75,8 +91,9 @@ def _spawn_excluded() -> set[str]:
         _quarantine_warned.add(name)
         logger.warning(
             "MCP server %s failed %d consecutive probes, so discovery will no longer "
-            "spawn it. Fix it, then select Retry server on its row in MCP Servers "
-            "(POST /api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
+            "spawn it until its command, args, env or url changes. If you fix it "
+            "another way, select Retry server on its row in MCP Servers (POST "
+            "/api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
             "or set agent.mcp_quarantine_after_failures to 0 to stop quarantining.",
             name,
             snap[name].get("fails") or 0,
@@ -101,8 +118,9 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
     ``mcp.json`` entry, a renamed copy), and each name is its own row. Probing
     every name at once starts the same heavy process several times in the same
     instant, and those copies compete for CPU until each misses the probe
-    timeout -- which the quarantine then counts against a server that works.
-    ``probe_all`` therefore runs probes that share this key one after another.
+    timeout -- which the quarantine then counts against a server that works,
+    and a server that allows one copy refuses the second outright. So every
+    check that shares this key waits its turn (:func:`same_process_lock`).
 
     The key is command plus args, the process that gets started. Env is left out
     on purpose: two names that differ only in a token still start the same
@@ -112,14 +130,56 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
     """
     if server.is_remote or not isinstance(server.command, str) or not server.command:
         return None
-    # ``args`` is unvalidated config JSON, and this runs outside the per-server
-    # ``gather``, so it must not raise: a non-iterable value keys by its repr.
+    # ``args`` is unvalidated config JSON, and callers derive this key before
+    # their per-server error handling, so it must not raise: a non-iterable
+    # value keys by its repr.
     raw_args = server.args or []
     try:
         args = tuple(str(a) for a in raw_args)
     except TypeError:
         args = (repr(raw_args),)
     return (_launcher_key(server.command), *args)
+
+
+#: One lock per started process (:func:`_spawn_fingerprint`), shared by every check
+#: this gateway runs on a configured server: ``probe_all``, the shareability
+#: pre-flight, and the per-row Test. It is process-wide, not per call,
+#: because those checks overlap (a Probe press during Measure All, two Probe presses),
+#: and two names of one server must not start together whichever check starts them.
+#: An entry lives only while a task holds or waits on it (the count beside it), so
+#: config edits cannot grow the table.
+_same_process_locks: dict[tuple[str, ...], LoopBoundLock] = {}
+_same_process_users: dict[tuple[str, ...], int] = {}
+
+
+@asynccontextmanager
+async def same_process_lock(server: McpServerInfo) -> AsyncIterator[None]:
+    """Wait until no other name that starts the same process as *server* is running.
+
+    A server that starts no process (remote, or no command) waits for nothing. A
+    caller that also takes a fan-out slot takes this FIRST, so a name waiting on
+    its sibling holds no slot another server could use. Not reentrant: code
+    holding it must not enter another check of a name with the same key.
+
+    Event-loop only. The bookkeeping has no await in it, so it needs no guard.
+    """
+    key = _spawn_fingerprint(server)
+    if key is None:
+        yield
+        return
+    lock = _same_process_locks.get(key)
+    if lock is None:
+        lock = _same_process_locks[key] = LoopBoundLock()
+    _same_process_users[key] = _same_process_users.get(key, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        remaining = _same_process_users.pop(key) - 1
+        if remaining:
+            _same_process_users[key] = remaining
+        else:
+            del _same_process_locks[key]
 
 
 def _launcher_key(command: str) -> str:
@@ -137,21 +197,6 @@ def _launcher_key(command: str) -> str:
     name = _basename_any(command).casefold()
     stem, ext = ntpath.splitext(name)
     return stem if ext and ext in _win_exec_suffixes() else name
-
-
-def _timed_out_locally(server: McpServerInfo) -> bool:
-    """Whether a stdio probe of *server* just failed on its handshake timeout.
-
-    ``probe_server`` sets the error to exactly ``"timeout"`` on that path and may
-    append the child's stderr on a following line, so only the first line is
-    compared. A remote server's timeout is a network answer, not a cold start.
-    """
-    return (
-        server.status == "error"
-        and not server.is_remote
-        and isinstance(server.error, str)
-        and server.error.partition("\n")[0] == "timeout"
-    )
 
 
 async def probe_all() -> list[McpServerInfo]:
@@ -200,16 +245,7 @@ async def probe_all() -> list[McpServerInfo]:
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
     sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
-    # One lock per started process (see ``_spawn_fingerprint``), so names that
-    # start the same command and args are probed one at a time while other
-    # servers still run in parallel. Taken BEFORE the semaphore: an alias waiting
-    # on its sibling must not hold one of the shared slots while it waits.
-    same_process: dict[tuple[str, ...], asyncio.Lock] = {}
-    for s in servers:
-        key = _spawn_fingerprint(s)
-        if key is not None:
-            same_process.setdefault(key, asyncio.Lock())
-    excluded = await asyncio.to_thread(_spawn_excluded)
+    excluded = await asyncio.to_thread(_spawn_excluded, servers)
 
     async def _guarded(s: McpServerInfo) -> McpServerInfo:
         # Left out of the SPAWN set only, and still returned: callers judge
@@ -230,11 +266,11 @@ async def probe_all() -> list[McpServerInfo]:
             s.error = ""
             _drop_temp_refusals(s)
             return s
-        key = _spawn_fingerprint(s)
-        if key is None:
-            async with sem:
-                return await probe_server(s)
-        async with same_process[key], sem:
+        # Names that start the same process run one after another, here and
+        # against every other check (see ``same_process_lock``), while other
+        # servers still run in parallel. Taken BEFORE the semaphore: an alias
+        # waiting on its sibling must not hold one of the shared slots.
+        async with same_process_lock(s), sem:
             return await probe_server(s)
 
     results = await asyncio.gather(
@@ -250,25 +286,10 @@ async def probe_all() -> list[McpServerInfo]:
             out.append(servers[i])
         else:
             out.append(r)  # type: ignore[arg-type]
-    # A local probe that timed out gets one more try, alone. Right after a gateway
-    # start the first pass starts up to PROBE_MAX_CONCURRENCY interpreters at once
-    # on a host that is busy starting, so a server that answers in a few seconds
-    # alone can miss the timeout -- every Kiro Crew server timing out in the same
-    # second is that burst, not five slow servers. Run one at a time, the retry
-    # starts each server without that contention, and its verdict replaces the
-    # first one, so the burst adds no quarantine strike. A server that really
-    # hangs costs one more probe duration per pass until it is quarantined.
-    for i, s in enumerate(out):
-        if not _timed_out_locally(s):
-            continue
-        first_error = s.error
-        s.error = ""
-        try:
-            out[i] = await probe_server(s)
-        except Exception as exc:
-            # Same contract as the gather above: one server never aborts the pass.
-            s.status, s.error = "error", first_error
-            logger.warning("MCP probe retry failed [%s]: %s", s.name, _sanitize_probe_error(exc))
+    # A row that timed out is kept as it is, not probed again: ``probe_server`` already
+    # gave a local server the longer wait it needs to start (``_get_local_probe_timeout``),
+    # including in the first pass after a gateway start, when up to
+    # PROBE_MAX_CONCURRENCY servers start at once on a busy host.
     for s in out:
         _note_denied_env(s)
     # Same order as ``list_servers`` reported, so the probe response and
@@ -868,6 +889,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _ENV_NOT_A_MAP_ERROR,
+        _EXIT_CODE_WAIT_SECS,
         _MAX_BANNER_LINES,
         _STDERR_FIRST_WAIT_SECS,
         _STDERR_QUIET_SECS,
@@ -887,12 +909,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_temp_refusal_text,
         _served_by_gateway,
         _stderr_text,
+        _stopped_or,
         _temp_refusal_records,
         _with_post_scrub_markers,
         secret_reference_refusal,
     )
     from kiro_crew.mcp_discovery_probe_state import (  # noqa: F401
         _ISO_DATE,
+        _LOCAL_PROBE_TIMEOUT_FACTOR,
+        _NODE_PROGRAMS,
         _PROBE_ERROR_MAX_CHARS,
         _PROBE_TEARDOWN_WAIT_SECS,
         _PROBE_TIMEOUT_SECS,
@@ -901,11 +926,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cache_probe,
         _clear_unresolvable,
         _get_cached,
+        _get_local_probe_timeout,
         _get_probe_timeout,
         _hashable_text,
         _managed_in_process_warned,
+        _node_hint,
         _probe_cache,
-        _probe_identity,
         _probe_sandbox_warned,
         _ProbeResult,
         _unresolvable_warned,
@@ -921,6 +947,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_discovery_remote import (  # noqa: F401
         _CHALLENGE_PARAM_RE,
+        _HEADERS_NOT_A_MAP_ERROR,
         _MAX_CHALLENGE_LEN,
         _MAX_REDIRECT_TARGET_LEN,
         _expand_header_placeholders,
@@ -959,6 +986,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.paths import (  # noqa: F401
         data_home,
         kiro_agents_dir,
+    )
+    from kiro_crew.constants import (  # noqa: F401
+        MIN_NODE_VERSION,
+        format_node_version,
     )
     from kiro_crew.env import (  # noqa: F401
         MCP_PATH_HINT,
@@ -1003,6 +1034,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.mcp_grant_kas import (  # noqa: F401
         kas_grant_observed,
+    )
+    from kiro_crew.mcp_npm_sign_in import (  # noqa: F401
+        npm_sign_in_hint,
     )
     from kiro_crew.mcp_provenance import (  # noqa: F401
         WITHHELD_KEY,

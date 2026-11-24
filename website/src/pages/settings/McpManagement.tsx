@@ -232,13 +232,12 @@ export function McpManagement({
 
   const [confirmSharing, setConfirmSharing] = useState(false)
 
-  const setSharing = useMutation({
-    mutationFn: (enabled: boolean) => api.mcpGatewayEnable(enabled),
-    // Enabling can persist and still leave sharing unreachable; `ping_ok` says so.
-    onSuccess: (res, enabled) => {
+  // Turning sharing ON always goes through the confirm and `turnOn`.
+  const turnOff = useMutation({
+    mutationFn: () => api.mcpGatewayEnable(false),
+    onSuccess: () => {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
-      if (enabled && !res.ping_ok) setError(i18nT('pages.mcpManagement.sharing_not_live'))
     },
     onError: () => {
       invalidate()
@@ -461,7 +460,7 @@ export function McpManagement({
       const skippedNames: string[] = []
       const failed: string[] = []
       let shared = 0
-      let restart = false
+      let restart = res.restart_required === true
       let inEffect: string[] | undefined
       for (const { name, expected } of auto) {
         try {
@@ -479,7 +478,9 @@ export function McpManagement({
     onSuccess: r => {
       invalidate()
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
-      if (!r.pingOk) setError(i18nT('pages.mcpManagement.sharing_not_live'))
+      // A server marked since the last start is shared from the next one, so
+      // sharing that waits for that restart gets the restart notice, not an error.
+      if (!r.pingOk && !r.restart) setError(i18nT('pages.mcpManagement.sharing_not_live'))
       if (r.skippedNames.length > 0) {
         setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) }))
       }
@@ -495,7 +496,7 @@ export function McpManagement({
   })
 
   const busy =
-    setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
+    setStub.isPending || turnOff.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
 
   // "Reload <m> chats": the dashboard's own per-chat reload, one chat at a
   // time, after a confirm. A busy chat is refused by the gateway and skipped.
@@ -1140,7 +1141,7 @@ export function McpManagement({
           // asks first, naming every server it shares. Turning it OFF only ever
           // narrows, and keeps every per-server choice for the next ON.
           if (!status?.enabled) prepareSharing.mutate()
-          else setSharing.mutate(false)
+          else turnOff.mutate()
         }}
         footprint={footprintQ.data}
         footprintFailed={footprintQ.isError}
@@ -1197,7 +1198,7 @@ export function McpManagement({
         skipped={sharePlan?.skipped ?? []}
         failed={sharePlan?.failed ?? []}
         unsupported={contraryMarked}
-        busy={setSharing.isPending || setStub.isPending || turnOn.isPending}
+        busy={turnOff.isPending || setStub.isPending || turnOn.isPending}
         // A stale or failed list must not be what the press confirms.
         ready={!statusQ.isFetching && !serversQ.isFetching && !statusQ.isError && !serversQ.isError}
         onCancel={() => {

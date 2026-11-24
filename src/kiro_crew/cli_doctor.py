@@ -247,6 +247,7 @@ from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
     may_skip_gate_now,
+    withheld_by_auto_deny_tools,
     withheld_by_confirm_tools,
 )
 from kiro_crew.platform.tool_names import (

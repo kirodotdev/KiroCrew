@@ -1730,7 +1730,9 @@ limits (`portability._in_rebuildable_dir`, read by both sides).
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
-component carries the same set.
+component carries the same set, and also `mcp.json`, the servers added on the
+MCP Servers page, which this export does not carry. A restore installs that file
+owner-only and names it when a merge keeps this install's copy.
 
 Every archive settings document is vetted before either mode applies one
 (`portability._vet_archive_settings`): a document that is not its reader's shape

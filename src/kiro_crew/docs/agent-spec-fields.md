@@ -853,11 +853,11 @@ runs one copy of a server per engine process and restarts it whenever a session
 declares it differently. The same launcher also gives each stdio server KAS starts
 for you what a server started by kiro-cli inherits from it: the Kerberos cache
 pointer (`KRB5CCNAME`) and, when the agent's sandbox forwards your ssh-agent,
-`SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote streamable-HTTP
-entry's `headers` reach the server the same way: the snapshot holds its `url` and `headers`, and KAS starts
+`SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote entry's `headers`
+(`type` `http` or `sse`) reach the server the same way: the snapshot holds its `url` and `headers`, and KAS starts
 the launcher as a local stdio server that relays each message to that url with
-the headers added and follows no redirect. An `sse` entry's `headers` stay
-withheld. KAS starts any entry that carries a `command` as a local process, so a
+the headers added and follows no redirect. Like KAS, it falls back to the older
+`sse` transport when the server refuses streamable HTTP. KAS starts any entry that carries a `command` as a local process, so a
 remote entry (a `url` with a `type` of `http` or `sse`, or with a blank
 `command`) is sent without its `command`; the placeholder the agent schema
 requires, such as `"http"`, would otherwise start a program by that name, and

@@ -9,6 +9,7 @@ command-not-found drop, and ``GET /api/mcp`` stamps it onto the server's row as
 from __future__ import annotations
 
 import json
+import logging
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -105,6 +106,92 @@ async def test_a_command_not_found_drop_is_recorded_and_shown_until_it_resolves(
     assert "example-server" in emitted["mcpServers"]
     assert mcp_dropped_servers.load_dropped() == {}
     assert "agentDropped" not in (await _rows(monkeypatch, tmp_path))["example-server"]
+
+
+def _drop_warnings(caplog, name: str) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and r.getMessage().startswith(f"Dropping MCP server {name!r}")
+    ]
+
+
+def test_a_switched_off_server_with_a_missing_program_is_not_a_drop(tmp_path, caplog) -> None:
+    cfg_dir = bundled_defaults(tmp_path)
+    kiro_servers: dict[str, dict] = {
+        "on-server": {"command": "missing-on"},
+        "off-server": {"command": "missing-off", "disabled": True},
+    }
+    # The store's own copy says ``false`` and is merged last: the switch in the
+    # Kiro global still wins, as it does for the listing.
+    store = {"off-server": {"command": "missing-off", "disabled": False}}
+
+    def _missing(c, **kw):
+        return None if c in ("missing-on", "missing-off") else c
+
+    def _rebuild() -> dict:
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.agent"):
+            return run_install_mcp_merge(
+                tmp_path,
+                cfg_dir,
+                cc_servers={},
+                kiro_servers=kiro_servers,
+                kirocrew_servers=store,
+                which_side_effect=_missing,
+            )
+
+    _rebuild()
+    # Per-tool refs the user wrote for both servers, and a grant on the one that is on.
+    spec_path = tmp_path / "kiro_agents" / "kirocrew.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["tools"] += ["@off-server/echo", "@on-server/echo"]
+    spec["allowedTools"] += ["@on-server/echo"]
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    emitted = _rebuild()
+    assert mcp_dropped_servers.load_dropped() == {
+        "on-server": {"command": "missing-on", "reason": "command_not_found"}
+    }
+    assert _drop_warnings(caplog, "on-server")
+    assert _drop_warnings(caplog, "off-server") == []
+    # Its refs are kept for when it is switched back on; it holds no grant meanwhile.
+    assert {"@off-server/echo", "@on-server/echo"} <= set(emitted["tools"])
+    assert "@on-server/echo" in emitted["allowedTools"]
+    assert not any(t.startswith("@off-server") for t in emitted["allowedTools"])
+
+    rows = [{"name": "off-server", "enabled": False}, {"name": "on-server", "enabled": True}]
+    mcp_mod._annotate_agent_drops(rows)
+    assert "agentDropped" not in rows[0]
+    assert rows[1]["agentDropped"]["command"] == "missing-on"
+
+    # Switched back on, it is a drop again.
+    kiro_servers["off-server"] = {"command": "missing-off", "disabled": False}
+    store = {"off-server": {"command": "missing-off"}}
+    emitted = _rebuild()
+    assert mcp_dropped_servers.load_dropped()["off-server"] == {
+        "command": "missing-off",
+        "reason": "command_not_found",
+    }
+    assert _drop_warnings(caplog, "off-server")
+    assert "@off-server/echo" in emitted["tools"]
+
+
+def test_a_row_switched_off_after_the_rebuild_drops_its_note() -> None:
+    # A toggle runs no rebuild, so the record still names the server it turned off.
+    mcp_dropped_servers.record_rebuild_drops({"example-server": "example-mcp-program"})
+    rows: list[dict] = [
+        {
+            "name": "example-server",
+            "enabled": False,
+            "agentDropped": {"command": "example-mcp-program", "reason": "command_not_found"},
+        }
+    ]
+
+    mcp_mod._annotate_agent_drops(rows)
+
+    assert "agentDropped" not in rows[0]
 
 
 def test_a_raw_slashed_drop_does_not_mark_a_surviving_alias(tmp_path) -> None:

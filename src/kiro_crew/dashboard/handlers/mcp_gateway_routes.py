@@ -271,7 +271,8 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     live: the broker is started/stopped and all agent sessions are dropped +
     relinked to the new stub set — without restarting the gateway process,
     so the dashboard session stays authenticated.  Returns the verified state
-    ``{ok, enabled, running, ping_ok}``.
+    ``{ok, enabled, running, ping_ok, restart_required}``; ``restart_required``
+    says a marked server is served only from the next gateway start.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``

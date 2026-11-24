@@ -1637,7 +1637,7 @@ async def run(self: GatewayOrchestrator) -> None:
     # would pay a deepcopy plus a full nested-dataclass rebuild for one scalar.
     _probe_t = self._cfg.dashboard.mcp_probe_timeout_secs + 15
     try:
-        await asyncio.wait_for(_bg_mcp_probe(self.sessions), timeout=_probe_t)
+        await asyncio.wait_for(_bg_mcp_probe(self.dashboard_state), timeout=_probe_t)
     except asyncio.TimeoutError:
         print("👻 MCP probe timed out — continuing without full probe")
 

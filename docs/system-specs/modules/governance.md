@@ -1560,8 +1560,8 @@ The projection is built per session, so the translated merge asks
 `may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
 the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
 `permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
-ask `may_skip_gate_now`. The ceiling
-and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
+ask `may_skip_gate_now`. The ceiling, `hooks.confirm_tools` and `hooks.auto_deny_tools`
+are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
 picks (the surface bind, or the unattended deny-all), every `task` bind (a call's agent may
@@ -4569,6 +4569,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   It keeps the auto-approve surface it decides itself (`may_skip_gate` with
   `BUILTIN_TOOL_SCOPES` / `BUILTIN_TOOL_CAPABILITIES`, `strip_ungoverned_auto_approve`,
   the `hooks.confirm_tools` gate, `may_skip_gate_now`, `withheld_by_confirm_tools`,
+  `withheld_by_auto_deny_tools` (doctor names the operator's own rule as the cause),
   `mcp_scope_governed_now`, `sanitize_agent_config_governance`) and the two boot checks,
   `assert_governance_floor` and `assert_governance_paths_protected`. Its owners, one
   responsibility each, lowest layer first; new work goes to the owner it belongs to:
@@ -4633,6 +4634,28 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   - `platform/policy_distribution_boot.py` — `parse_distributed_policy`,
     `load_distributed_policy`, `fetch_once`, `validate_ceiling` and the
     `_sanitize_detail` redaction sink.
+- `platform/server_pattern_reach.py` — whether an operator tool pattern can reach a
+  call on one MCP server: `may_match_spelling` (the
+  literal-prefix test `server_requires_confirmation` runs over `@server`,
+  `@server/<tool>` and `Running: @server/<tool>`) and `may_name_server_call`, which
+  `_operator_denies` asks for a whole-server grant (`@server`, `@server/q*`). The gate
+  judges such a call's `hooks.auto_deny_tools` under `@server`, `@server/<tool>`,
+  `Running: @server/<tool>`, `mcp__server__<tool>` and the bare tool name, so every
+  pattern that can match one of those withholds the grant, a bare name or wildcard
+  (`read_private`, `delete_*`) included. A pattern keeps it only when it begins `@` or
+  `mcp__` and names another server (`@other/*`, `mcp__other__*`), or holds whitespace
+  and cannot spell `Running: @server/<tool>` (`*rm -rf*`, `Running: @other/*`): only
+  that spelling holds whitespace, one space after `running:`. Kiro Crew's own managed
+  servers (`mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`) are judged against their real tools
+  instead: a pattern withholds such a server's grant only when it matches one of those
+  spellings for a tool the server can expose, switched-off ones included
+  (`_managed_spellings`, read through `mcp_discovery_managed.managed_tool_names_for_policy`
+  once per server per process and imported only then; a list that is empty or cannot be
+  read withholds). So `["*curl*"]` or `["web_fetch"]` keeps `@kirocrew-core` and
+  withholds a third-party `@ops`, whose tool names are not known here, and `["delete_*"]`
+  withholds both, since it names `kirocrew-core`'s `delete_message`. A pattern that
+  names one tool keeps an exact grant of another (`read_private` keeps
+  `@server/other_tool`).
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),

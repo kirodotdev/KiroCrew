@@ -14,6 +14,7 @@ App ownership is read from the manifests that mint the keys
 from __future__ import annotations
 
 import functools
+import hashlib
 import itertools
 import json
 import os
@@ -222,11 +223,13 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
     return owned
 
 
-# Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
-# source has since DROPPED is dropped here too. Anything else on a merged entry is
-# the user's (``autoApprove``, fields we do not model) and survives by being
-# ABSENT here and from :data:`_DECLARATION_OWNED_MCP_KEYS`, so one invented later
-# defaults to surviving.
+# Keys a source AUTHORS that are also TRANSPORT-INDEPENDENT, so one the source
+# has since DROPPED is dropped here too. The source is a scope global, or the
+# ``~/.kiro/crew/mcp.json`` store for a name no scope global claimed in the pass.
+# Anything else on a merged entry is the user's (``autoApprove``, fields we do
+# not model) and survives by being ABSENT here and from
+# :data:`_DECLARATION_OWNED_MCP_KEYS`, so one invented later defaults to
+# surviving.
 # ``url`` is absent (a transport needs a scope that declares one;
 # ``test_mcp_rebuild_reconsumption`` owns that). ``headers`` is absent too --
 # reconciling it without its ``url`` would pair this source's credential with the
@@ -235,7 +238,7 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
 # :func:`_merge_command_unit`, not here.
 _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
 
-# Keys a scope global owns only where it DECLARES the server (a ``command`` or a
+# Keys a source owns only where it DECLARES the server (a ``command`` or a
 # ``url``). The dashboard writes a placeholder (``{"disabledTools": [...]}``) to
 # the Kiro global for a server another file declares; a placeholder starts
 # nothing, so it never replaces or removes the list that file holds for it. Kept
@@ -306,6 +309,24 @@ def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
     return replaced
 
 
+def _project_modifier_keys(existing: dict, spec: dict) -> None:
+    """Project the modifier keys *spec* owns onto *existing*: set when present, else removed.
+
+    ``timeout`` and ``disabled`` always, and ``disabledTools`` when *spec* declares
+    the server (see :data:`_DECLARATION_OWNED_MCP_KEYS`).
+    """
+    owned_keys: tuple[str, ...] = _SOURCE_OWNED_MCP_KEYS
+    if _declares_server(spec):
+        owned_keys += _DECLARATION_OWNED_MCP_KEYS
+    for key in owned_keys:
+        if key in spec:
+            value = spec[key]
+            # A copy, so a later pass mutating the entry never edits the source.
+            existing[key] = list(value) if isinstance(value, list) else value
+        else:
+            existing.pop(key, None)
+
+
 def _merge_source_owned(
     mcps: dict,
     name: str,
@@ -336,16 +357,7 @@ def _merge_source_owned(
     if name not in stale:
         return
     stale.discard(name)
-    owned_keys: tuple[str, ...] = _SOURCE_OWNED_MCP_KEYS
-    if _declares_server(spec):
-        owned_keys += _DECLARATION_OWNED_MCP_KEYS
-    for key in owned_keys:
-        if key in spec:
-            value = spec[key]
-            # A copy, so a later pass mutating the entry never edits the source.
-            existing[key] = list(value) if isinstance(value, list) else value
-        else:
-            existing.pop(key, None)
+    _project_modifier_keys(existing, spec)
     if not edition_owned:
         _previous = _merge_command_unit(existing, spec)
         if _previous is not None:
@@ -410,6 +422,38 @@ class ResolvedServers(NamedTuple):
         would otherwise keep exactly the ref this reconcile exists to drop.
         """
         return {mcp_server_alias(_n) for _n in self.unresolved}
+
+
+def user_mcp_files() -> list[Path]:
+    """The user's own MCP files :func:`merge_mcp_sources` copies servers from, winner first.
+
+    The ``~/.kiro/crew/mcp.json`` store wins a tie, then the Kiro global
+    ``~/.kiro/settings/mcp.json``, then each edition-contributed provider global.
+    """
+    return [
+        agent_mod._user_dir() / "mcp.json",
+        agent_mod._KIRO_MCP_JSON,
+        *_extra_mcp_scope_globals(),
+    ]
+
+
+def sources_fingerprint() -> tuple[tuple[str, bytes | None], ...]:
+    """The user's MCP files (:func:`user_mcp_files`), as they are on disk now.
+
+    One ``(path, sha256)`` pair per file :func:`merge_mcp_sources` reads. The digest
+    is ``None`` for a file that is missing or cannot be read. Two equal answers mean
+    no source file changed in between; ``ensure_agent_materialized`` compares one with
+    the answer the last rebuild took, because nothing else notices a server added to
+    one of these files by hand or by another tool.
+    """
+    answer: list[tuple[str, bytes | None]] = []
+    for path in user_mcp_files():
+        try:
+            digest: bytes | None = hashlib.sha256(Path(path).read_bytes()).digest()
+        except OSError:
+            digest = None
+        answer.append((str(path), digest))
+    return tuple(answer)
 
 
 def merge_mcp_sources(config: dict) -> McpSources:
@@ -526,6 +570,12 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     if name in edition_names
                     else spec
                 )
+                if name in _stale:
+                    # No earlier source claimed the name in this pass, so the
+                    # entry is the previous rebuild's and the store is the only
+                    # source of its modifier keys: one the store dropped (a tool
+                    # switched back on, a removed timeout) leaves the spec too.
+                    _project_modifier_keys(mcps[name], spec)
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(own)
@@ -1147,6 +1197,24 @@ def resolve_mcp_servers(
             # this server's refs, through ResolvedServers.narrowed_away (see
             # prune_dangling_tool_refs for why a per-tool grant cannot be re-derived).
             _unresolved_this_pass.add(name)
+            # A server the user switched off is not a drop: nothing would start it,
+            # so it is neither recorded nor WARNed, and its row never tells them to
+            # install a program for a server they turned off. Off in ANY scope,
+            # keyed canonically, as the listing decides the row is off; the agent
+            # file's own entry is not read, because a mute a previous pass stamped
+            # there can outlive the user switching the server back on.
+            if mcp_entries_muted(
+                entry
+                for _label, _scope in _scopes
+                for key, entry in _scope.items()
+                if mcp_server_alias(key) == _alias_here
+            ):
+                agent_mod.logger.debug(
+                    "MCP server %r is switched off; its command %s was not found",
+                    name,
+                    spec.get("command", ""),
+                )
+                continue
             _unresolved_commands[name] = str(spec.get("command", ""))
             # The searched directories go in the WARNING so a default-level reader
             # can tell "installed outside this path" from "not installed". Built

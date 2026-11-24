@@ -635,8 +635,10 @@ export default function AgentTemplatesTab() {
     openDetail()
   }
 
+  // The MCP server names are searched too, so typing a server's name finds
+  // every agent whose spec lists it.
   const matches = useCallback((r: TemplateRow) =>
-    !filter || `${r.name} ${r.description} ${r.package} ${r.source}`.toLowerCase().includes(filter.toLowerCase()), [filter])
+    !filter || `${r.name} ${r.description} ${r.package} ${r.source} ${r.mcp_servers.join(' ')}`.toLowerCase().includes(filter.toLowerCase()), [filter])
   const grouped = useMemo(() => {
     const g: Record<GroupKey, TemplateRow[]> = { custom: [], private: [], package: [], builtin: [] }
     for (const r of rows) if (matches(r)) g[templateSourceKind(r)].push(r)
