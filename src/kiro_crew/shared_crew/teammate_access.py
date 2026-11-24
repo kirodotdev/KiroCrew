@@ -103,14 +103,20 @@ TEAMMATE_WS_FLAG = "_shared_crew_teammate"
 
 #: Config subtrees that open a listener, open tunnels from this machine to other
 #: machines, or name who may reach the Crew.
-_ADMISSION_CONFIG_ROOTS = ("dashboard.shared_crew", "dashboard.tailscale", "instances", "tunnel")
+_ADMISSION_CONFIG_ROOTS = (
+    "dashboard.shared_crew",
+    "dashboard.tailscale",
+    "dashboard.entry_port",
+    "instances",
+    "tunnel",
+)
 
 
 def is_admission_config_key(path: str) -> bool:
     """Whether config key *path* opens a listener or a tunnel, or is an allow-list.
 
-    The Shared Crew, Tailscale, remote-instance (``instances``) and tunnel subtrees, and
-    any allow-list or DM policy by
+    The Shared Crew, Tailscale, remote-instance (``instances``) and tunnel subtrees,
+    the entry listener (``dashboard.entry_port``), and any allow-list or DM policy by
     its name (a segment starting ``allow``, or ``dm_policy``), so a channel added later
     is covered without a table.
     """

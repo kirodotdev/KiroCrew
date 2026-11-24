@@ -695,8 +695,10 @@ refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, 
 the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
-`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
-`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+`instances` and `tunnel` subtrees, the `dashboard.entry_port` listener key, and any
+key segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered
+by its name; `dashboard.entry_port` has no rule on that route, so the route refuses
+the owner too, 400 `field not editable`). Reading the Remote Control
 state stays open. The teammate's screens follow the same line: an owner-only control
 is hidden or replaced by an "Only the Crew's owner can …" notice
 (`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
