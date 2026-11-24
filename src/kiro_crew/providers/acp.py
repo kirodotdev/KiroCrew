@@ -1129,7 +1129,7 @@ class AcpProvider(LLMProvider):
     def native_steering(self) -> bool:
         # Kiro ACP manual/fileMatch support depends on version and engine;
         # the fallback keeps those guides reachable without a false capability.
-        return self._client.backend == ACP_BACKEND_KAS
+        return self.capabilities.loads_steering_natively
 
     @property
     def reports_compaction(self) -> bool:
