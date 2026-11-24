@@ -10,6 +10,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Mapping
 
+from kiro_crew.sqlite_uri import read_only_uri
+
 logger = logging.getLogger(__name__)
 
 SQLITE_HOME_ENV = "CODEX_SQLITE_HOME"
@@ -48,7 +50,7 @@ def seed_private_state(env: Mapping[str, str], scratch: Path) -> None:
             raise TimeoutError("Codex state snapshot exceeded its preparation budget")
 
     try:
-        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=1)) as src:
+        with closing(sqlite3.connect(read_only_uri(source), uri=True, timeout=1)) as src:
             row = src.execute("SELECT status FROM backfill_state WHERE id = 1").fetchone()
             if row != ("complete",):
                 logger.warning(

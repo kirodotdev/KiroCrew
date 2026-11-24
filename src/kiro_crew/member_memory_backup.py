@@ -27,6 +27,7 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.owner_only_files import owner_only_opener
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -403,7 +404,7 @@ def _check_database(path: Path, name: str, owner: str) -> None:
     try:
         if read_member_database_identity(path) != (owner, name):
             raise ValueError("Member snapshot database belongs to a different member or store")
-        with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+        with closing(sqlite3.connect(read_only_uri(path), uri=True)) as db:
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("Member snapshot database failed integrity checking")
     except sqlite3.Error as exc:
@@ -427,7 +428,7 @@ def _check_snapshot_database(path: Path, manifest: dict, name: str, owner: str) 
         recorded = memory_stores._legacy_member_database_identity(
             path, name, manifest["owner_member"]
         )
-        with closing(sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)) as db:
+        with closing(sqlite3.connect(read_only_uri(path), uri=True)) as db:
             intact = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             stamp = db.execute(
                 "SELECT value FROM memory_meta WHERE key=?", (STORE_NAME_META_KEY,)
@@ -546,7 +547,7 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path:
                 raise ValueError("Snapshot staging directory escaped its parent")
             copied_db = stage / "memory.db"
             with (
-                closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as src,
+                closing(sqlite3.connect(read_only_uri(db_path), uri=True)) as src,
                 closing(sqlite3.connect(str(copied_db))) as dst,
             ):
                 src.backup(dst)

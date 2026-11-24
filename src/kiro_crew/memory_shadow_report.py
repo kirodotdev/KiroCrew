@@ -48,6 +48,7 @@ from typing import Any, Final
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config import memory_sections as _modes
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ def read_meta(db_path: Path | None) -> dict[str, str]:
         patterns.append(stage.source + "rules_version")
     where = " OR ".join("key GLOB ?" for _ in patterns)
     try:
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_uri(db_path.resolve()), uri=True)
     except (sqlite3.Error, StdlibSQLiteError):
         return {}
     try:
@@ -255,7 +256,7 @@ def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
     fields = ("key", "path", "sk", "at", "ts")
     select = ", ".join(f"json_extract(j.value, '$.{name}')" for name in fields)
     try:
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_uri(db_path.resolve()), uri=True)
     except (sqlite3.Error, StdlibSQLiteError):
         return []
     out: list[tuple[str, str, dict]] = []

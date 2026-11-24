@@ -13,6 +13,7 @@ from pathlib import Path
 
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.sqlite_wal import enable_wal
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3  # noqa: F401
@@ -406,7 +407,7 @@ class KnowledgeStore:
             # cannot be read as the start of the query string. journal_mode is
             # left alone: a read-only connection may not change it, and a WAL
             # file is readable as-is.
-            uri = Path(self._db_path).resolve().as_uri() + "?mode=ro"
+            uri = read_only_uri(Path(self._db_path).resolve())
             conn = sqlite3.connect(uri, uri=True, **connect_kwargs)
             if test_mode:
                 conn._owner_ident = threading.get_ident()

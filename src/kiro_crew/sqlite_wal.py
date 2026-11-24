@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.sqlite_uri import read_only_uri
 
 #: Both libraries a connection here may come from: the stores use the compat
 #: module (pysqlite3 where installed), some app stores the stdlib one.
@@ -174,7 +175,7 @@ def close_keeping_wal(conn: Any) -> None:
         row = conn.execute("PRAGMA database_list").fetchone()
         path = str(row[2]) if row is not None and row[2] else ""
         if path:
-            holder = driver.connect(Path(path).as_uri() + "?mode=ro", uri=True)
+            holder = driver.connect(read_only_uri(Path(path)), uri=True)
             holder.execute("SELECT count(*) FROM sqlite_schema").fetchone()
     except Exception:  # fall back to the default close; it never loses committed data
         logger.debug("read-only holder for the close did not open", exc_info=True)
