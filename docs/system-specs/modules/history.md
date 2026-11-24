@@ -2647,8 +2647,9 @@ shared by both vocabulary stores.
   restores the same object still naming the deleted id, which the periodic flush makes
   durable with no later pass able to reach it. EVERY path that pops a slot and may put it
   back therefore wraps its whole frame, restore included, in `close_in_flight` — the
-  single-tab close, the bulk stale-tab archive and History resume's reserved build alike —
-  and both sweeps iterate that registry alongside `state._slots`. A second popping path
+  single-tab close, the bulk stale-tab archive, History resume's reserved build and the
+  Spec Builder worker teardown (whose failed-archive and still-running-orphan put-backs
+  restore the popped slot) alike — and both sweeps iterate that registry alongside `state._slots`. A second popping path
   left unwrapped reopens the hole in full, so the pairing is pop-with-restore, not
   close-the-tab.
   The registry is keyed per REGISTRATION rather than by slot name or by object: by name,
