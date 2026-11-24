@@ -449,23 +449,36 @@ def uninstall_service() -> int:
     return 2
 
 
-def _set_boot_start(enable: bool) -> int:
+def _set_boot_start(enable: bool) -> tuple[int, bool]:
     """Shared body of :func:`disable_service` and :func:`enable_service`.
 
-    0 when the service was turned off (or on), with a ``Warning:`` naming any
+    Returns the exit code and, for a disable, whether a stop ran and the
+    service manager accepted it in some scope or domain (always False for an
+    enable). Exit code 0 when the service was turned off (or on), with a ``Warning:`` naming any
     scope not reached beside one that changed; 1 when a step did not take, when
     no scope that has the unit could be reached, or when a macOS disable missed
     ``gui/<uid>``; 3 when no service is installed; 2 when unsupported.
     """
     plat = current_platform()
     unreached: list[str] = []
+    stop_ran = False
     if plat == Platform.SYSTEMD:
-        report = linux.enable() if enable else linux.disable()
+        if enable:
+            report = linux.enable()
+        else:
+            full = linux.disable()
+            report = None if full is None else (full[0], full[1])
+            stop_ran = full is not None and full[2]
         refused, unreached = report if report is not None else ([], [])
         accepted = None if report is None else not refused
         hints = refused + unreached
     elif plat == Platform.LAUNCHD:
-        mac_report = macos.enable() if enable else macos.disable()
+        if enable:
+            mac_report = macos.enable()
+        else:
+            mac_full = macos.disable()
+            mac_report = None if mac_full is None else (mac_full[0], mac_full[1])
+            stop_ran = mac_full is not None and mac_full[2]
         accepted, skipped = mac_report if mac_report is not None else (None, [])
         # A domain launchd could not reach (gui/<uid> with nobody at the
         # desktop) kept its old setting: name it, as the Linux path does.
@@ -486,10 +499,10 @@ def _set_boot_start(enable: bool) -> int:
             hints = [f"launchctl disable {target}", f"launchctl bootout {target}"]
     else:
         _unsupported_message()
-        return 2
+        return 2, False
     if accepted is None:
         print("Note: No kirocrew service is installed. Install one: kirocrew service install")
-        return 3
+        return 3, False
     if not accepted:
         print(
             f"Error: kirocrew service {'enable' if enable else 'disable'} did not finish. "
@@ -498,7 +511,7 @@ def _set_boot_start(enable: bool) -> int:
         )
         for hint in hints:
             print(f"   {hint}", file=sys.stderr)
-        return 1
+        return 1, stop_ran
     if plat == Platform.LAUNCHD and unreached and not enable:
         # The agent is stopped now, but launchd loads the plist into gui/<uid>
         # at the next desktop login: not the lasting stop the verb promises.
@@ -513,7 +526,7 @@ def _set_boot_start(enable: bool) -> int:
             "   Run `kirocrew service disable` again from a session at the desktop.",
             file=sys.stderr,
         )
-        return 1
+        return 1, stop_ran
     if enable:
         print("✅ kirocrew service enabled and started. It starts at every boot or login.")
         print("   To keep it stopped: kirocrew service disable")
@@ -526,19 +539,19 @@ def _set_boot_start(enable: bool) -> int:
         print("Warning: this changed only the scopes this shell can reach. Not checked:")
         for line in unreached:
             print(f"   {line}")
-    return 0
+    return 0, stop_ran
 
 
-def disable_service() -> int:
+def disable_service() -> tuple[int, bool]:
     """Stop the service and keep it from starting at boot or login, leaving it
-    installed. See :func:`_set_boot_start` for the exit codes."""
+    installed. Returns ``(exit code, stop_ran)``; see :func:`_set_boot_start`."""
     return _set_boot_start(False)
 
 
 def enable_service() -> int:
     """Undo :func:`disable_service`: start the service at boot or login again,
     and start it now. See :func:`_set_boot_start` for the exit codes."""
-    return _set_boot_start(True)
+    return _set_boot_start(True)[0]
 
 
 def service_status() -> int:

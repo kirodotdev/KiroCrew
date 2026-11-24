@@ -408,7 +408,7 @@ def test_disable_boots_the_job_out_and_keeps_it_from_loading_at_login(mac):
     with _run(fake):
         mac.install()
         assert "Starts at the next login: yes" in mac.status()
-        assert mac.disable() == (True, [])
+        assert mac.disable() == (True, [], True)
         status = mac.status()
     assert fake.loaded == set()
     assert fake.disabled == {GUI, USER}
@@ -452,7 +452,7 @@ def test_disable_without_a_desktop_reports_the_gui_domain_it_missed(mac):
     fake = FakeLaunchctl(session=USER, desktop=False)
     with _run(fake):
         mac.install()
-        assert mac.disable() == (True, [GUI])
+        assert mac.disable() == (True, [GUI], True)
     assert fake.loaded == set()
     assert fake.disabled == {USER}
 
@@ -474,9 +474,10 @@ def test_service_disable_without_a_desktop_is_not_reported_as_lasting(mac, capsy
     ):
         mac.install()
         capsys.readouterr()
-        rc = controller.disable_service()
+        rc, stop_ran = controller.disable_service()
     out, err = capsys.readouterr()
     assert rc == 1
+    assert stop_ran is True
     assert "✅" not in out
     assert f"{GUI}: no desktop login" in err
     assert "starts again at the next desktop login" in err
@@ -552,8 +553,9 @@ def test_a_refused_disable_does_not_boot_the_job_out(mac):
         "kiro_crew.service.macos.subprocess.run",
         side_effect=lambda argv, **kw: refused if argv[1] == "disable" else fake(argv, **kw),
     ):
-        assert mac.disable()[0] is False
+        assert mac.disable() == (False, [], False)
     assert fake.loaded == {GUI}
+    assert not any(c[1] == "bootout" for c in fake.calls), fake.calls
 
 
 def test_a_refused_bootout_after_disable_is_not_reported_as_stopped(mac):
@@ -562,7 +564,7 @@ def test_a_refused_bootout_after_disable_is_not_reported_as_stopped(mac):
     fake.loaded.add(GUI)
     fake.refuse_bootout = True
     with _run(fake):
-        assert mac.disable()[0] is False
+        assert mac.disable() == (False, [], False)
     assert fake.loaded == {GUI}
 
 
@@ -573,7 +575,7 @@ def test_enable_right_after_disable_waits_out_the_async_bootout(mac):
     fake = FakeLaunchctl(linger=3)
     with _run(fake):
         mac.install()
-        assert mac.disable() == (True, [])
+        assert mac.disable() == (True, [], True)
         assert not fake.leaving
         assert mac.enable() == (True, [])
     assert fake.loaded == {GUI}
@@ -632,7 +634,7 @@ def test_a_disable_refused_in_one_domain_is_not_a_success(mac):
     fake = FakeLaunchctl()
     fake.loaded.add(GUI)
     with _refusing(fake, "disable", USER):
-        assert mac.disable()[0] is False
+        assert mac.disable() == (False, [], False)
     assert fake.loaded == {GUI}
 
 

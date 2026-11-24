@@ -576,11 +576,12 @@ def stop() -> bool:
     return _bootout(wait=True)
 
 
-def disable() -> tuple[bool, list[str]] | None:
+def disable() -> tuple[bool, list[str], bool] | None:
     """Keep the plist installed but stop the agent loading at login, and stop it
     now: ``launchctl disable`` in every domain, then ``bootout``.
 
-    ``None`` when no plist is installed. Otherwise ``(stopped, skipped)``.
+    ``None`` when no plist is installed. Otherwise ``(stopped, skipped,
+    booted_out)``.
     ``stopped`` is False when launchd refused the disable in a domain that
     exists (logged; the agent is left running), or when the agent still reads
     as loaded after the bootout settled: :func:`is_loaded` counts only a
@@ -588,8 +589,10 @@ def disable() -> tuple[bool, list[str]] | None:
     reported as a stop. ``skipped`` names each domain that does not exist (no
     desktop login), where the disable was not recorded: launchd still loads the
     agent there at the next desktop login, so the caller must not report a
-    lasting stop. The bootout is waited out, so an ``enable`` right after it
-    never sees a job that is still leaving.
+    lasting stop. ``booted_out`` is True only when launchd accepted the
+    ``bootout``, False when none ran (a refused or unrecorded disable) or it was
+    refused. The bootout is waited out, so an ``enable`` right after it never
+    sees a job that is still leaving.
     """
     if not PLIST_PATH.exists():
         return None
@@ -606,11 +609,11 @@ def disable() -> tuple[bool, list[str]] | None:
                 "launchctl disable %s/%s refused (rc=%s): %s",
                 domain, LAUNCHD_LABEL, res.returncode, (res.stderr or res.stdout).strip(),
             )
-            return False, skipped
+            return False, skipped, False
     if not accepted:
-        return False, skipped
-    _bootout(wait=True)
-    return not is_loaded(), skipped
+        return False, skipped, False
+    booted_out = _bootout(wait=True)
+    return not is_loaded(), skipped, booted_out
 
 
 def enable() -> tuple[bool, list[str]] | None:

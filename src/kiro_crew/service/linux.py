@@ -279,12 +279,14 @@ def stop() -> list[str]:
     return refused
 
 
-def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str]] | None:
+def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str], bool] | None:
     """Run *verbs* (``disable`` + ``stop``, or ``enable`` + ``start``) on our unit
     in every scope whose manager has it loaded, running or not.
 
     ``None`` only when both scopes answered and neither has our unit.
-    Otherwise ``(refused, unreached)``. ``refused`` holds one line per step
+    Otherwise ``(refused, unreached, ran)``. ``ran`` is True when systemd
+    accepted both verbs in at least one scope (for ``disable``: a ``stop``
+    actually ran and took), False when no scope got that far. ``refused`` holds one line per step
     that did not take, empty when every step took: a scope stops at its first
     refusal and lists that step and every later one as the command to run by
     hand, and the next scope is still tried. A running unit of ours that is
@@ -319,9 +321,11 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str]] | Non
                 f"systemctl --user enable {SERVICE_NAME} && systemctl --user start {SERVICE_NAME}",
             ],
             [],
+            False,
         )
     lines: list[str] = []
     found = False
+    ran = False
     for state in states:
         user = state.scope == "user"
         spelled = "systemctl --user" if user else "sudo systemctl"
@@ -343,6 +347,7 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str]] | Non
                     lines += [f"{spelled} {left} {SERVICE_NAME}" for left in verbs[i:]]
                     break
             else:
+                ran = True
                 # A Type=simple start job succeeds once the process is forked,
                 # so a gateway that exits at once is caught here, as restart does.
                 failed = _confirm_up(user=user) if verbs[1] == "start" else None
@@ -378,8 +383,8 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str]] | Non
         if not s.reachable
     ]
     if not found:
-        return (unreached, []) if unreached else None
-    return lines, unreached
+        return (unreached, [], False) if unreached else None
+    return lines, unreached, ran
 
 
 def _link_entry(fragment: str, *, user: bool) -> str | None:
@@ -398,17 +403,19 @@ def _link_entry(fragment: str, *, user: bool) -> str | None:
     return None
 
 
-def disable() -> tuple[list[str], list[str]] | None:
+def disable() -> tuple[list[str], list[str], bool] | None:
     """Keep the unit installed but stop it starting at boot or login, and stop it
     now: ``systemctl disable`` then ``stop`` in every scope that has it. Same
-    return as :func:`_set_boot_start`."""
+    return as :func:`_set_boot_start`: its last value says whether a ``stop``
+    ran and took in any scope."""
     return _set_boot_start(("disable", "stop"))
 
 
 def enable() -> tuple[list[str], list[str]] | None:
     """Undo :func:`disable`: ``systemctl enable`` then ``start`` in every scope
-    that has our unit. Same return as :func:`_set_boot_start`."""
-    return _set_boot_start(("enable", "start"))
+    that has our unit. ``(refused, unreached)`` as :func:`_set_boot_start`."""
+    report = _set_boot_start(("enable", "start"))
+    return None if report is None else (report[0], report[1])
 
 
 def _boot_start_line(state: _UnitState) -> str | None:

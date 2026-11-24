@@ -631,9 +631,10 @@ def _service_cmd(args: argparse.Namespace) -> int:
 
             earlier = (kept_grants.kept_dir() / kept_grants.USER_STOP_FILE).exists()
             marked = kept_grants.mark_user_stop("service_disable")
-            rc = service_controller.disable_service()
-            # Exit 1 may have stopped a service before another step failed.
-            if marked and not earlier and rc in (2, 3):
+            rc, stop_ran = service_controller.disable_service()
+            # Exit 1 keeps the mark only when a stop ran and took before another
+            # step failed; a refused disable or stop leaves the gateway running.
+            if marked and not earlier and (rc in (2, 3) or (rc == 1 and not stop_ran)):
                 kept_grants.withdraw_user_stop()
         else:
             rc = service_controller.enable_service()

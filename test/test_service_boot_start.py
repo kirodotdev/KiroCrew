@@ -80,7 +80,8 @@ def test_service_disable_and_enable_parse(action) -> None:
     "action,fn", [("disable", "disable_service"), ("enable", "enable_service")]
 )
 def test_service_disable_and_enable_dispatch_and_audit(monkeypatch, sel_rec, action, fn) -> None:
-    monkeypatch.setattr(cli_server.service_controller, fn, lambda: 1)
+    result = (1, False) if action == "disable" else 1
+    monkeypatch.setattr(cli_server.service_controller, fn, lambda: result)
     assert cli_server._service_cmd(argparse.Namespace(service_action=action)) == 1
     assert sel_rec.operations == [f"service_{action}"]
     assert sel_rec.calls[0]["outcome"] == "error"
@@ -90,7 +91,7 @@ class TestLinuxDisableEnable:
     def test_disable_runs_disable_then_stop_with_sudo_in_the_system_scope(self) -> None:
         run = _fake_systemctl(system=_RUNNING, user=None)
         with _linux(run):
-            assert svc_linux.disable() == ([], [])
+            assert svc_linux.disable() == ([], [], True)
         verbs = [c for c in run.calls if c[:2] == ["sudo", "systemctl"]]
         assert verbs == [
             ["sudo", "systemctl", "disable", _UNIT],
@@ -100,7 +101,7 @@ class TestLinuxDisableEnable:
     def test_disable_acts_on_a_stopped_user_unit_without_sudo(self) -> None:
         run = _fake_systemctl(system=None, user=_DEAD)
         with _linux(run):
-            assert svc_linux.disable() == ([], [])
+            assert svc_linux.disable() == ([], [], True)
         assert ["systemctl", "--user", "disable", _UNIT] in run.calls
         assert ["systemctl", "--user", "stop", _UNIT] in run.calls
         assert not any(c[0] == "sudo" for c in run.calls), run.calls
@@ -112,8 +113,16 @@ class TestLinuxDisableEnable:
             assert svc_linux.disable() == (
                 ["sudo systemctl disable kirocrew", "sudo systemctl stop kirocrew"],
                 [],
+                False,
             )
         assert ["sudo", "systemctl", "stop", _UNIT] not in run.calls
+
+    def test_a_refused_stop_after_an_accepted_disable_is_not_a_stop(self) -> None:
+        refused = subprocess.CompletedProcess([], 1, "", "Interactive authentication required")
+        run = _fake_systemctl(system=_RUNNING, user=None, overrides={"stop": refused})
+        with _linux(run):
+            assert svc_linux.disable() == (["sudo systemctl stop kirocrew"], [], False)
+        assert ["sudo", "systemctl", "stop", _UNIT] in run.calls
 
     def test_a_root_shell_beside_a_user_unit_is_not_told_nothing_is_installed(
         self, monkeypatch
@@ -122,8 +131,9 @@ class TestLinuxDisableEnable:
         monkeypatch.setenv("SUDO_USER", "tester")
         run = _fake_systemctl(system=None, user=_RUNNING)
         with _linux(run):
-            (line,), unreached = svc_linux.disable()
+            (line,), unreached, ran = svc_linux.disable()
         assert unreached == []
+        assert ran is False
         assert line.startswith("user scope: not reachable from this shell"), line
         assert not any("--user" in c for c in run.calls), run.calls
 
@@ -137,9 +147,10 @@ class TestLinuxDisableEnable:
             _linux(run),
             patch("kiro_crew.service.controller.current_platform", return_value=Platform.SYSTEMD),
         ):
-            refused, (line,) = svc_linux.disable()
-            rc = controller.disable_service()
+            refused, (line,), _ran = svc_linux.disable()
+            rc, stop_ran = controller.disable_service()
         assert refused == []
+        assert stop_ran is True
         assert line.startswith("user scope: not reachable from this shell"), line
         out = capsys.readouterr().out
         assert rc == 0
@@ -149,7 +160,8 @@ class TestLinuxDisableEnable:
     def test_a_running_masked_unit_is_reported_with_its_state(self) -> None:
         run = _fake_systemctl(system=_RUNNING, user=None, system_load="masked")
         with _linux(run):
-            (line,), _unreached = svc_linux.disable()
+            (line,), _unreached, ran = svc_linux.disable()
+        assert ran is False
         assert "the unit is masked and still active" in line
         assert "sudo systemctl stop kirocrew" in line
         assert not any("disable" in c for c in run.calls), run.calls
@@ -189,7 +201,7 @@ class TestLinuxDisableEnable:
         link.symlink_to(source)
         run = _fake_systemctl(system=None, user=_RUNNING, user_fragment=str(link))
         with _linux(run):
-            (line,), unreached = svc_linux.disable()
+            (line,), unreached, _ran = svc_linux.disable()
         assert unreached == []
         assert line.startswith("user scope: the unit is linked"), line
         assert "systemctl --user stop kirocrew" in line
@@ -207,7 +219,7 @@ class TestLinuxDisableEnable:
         link.symlink_to(source)
         run = _fake_systemctl(system=None, user=_RUNNING, user_fragment=str(source.resolve()))
         with _linux(run):
-            (line,), unreached = svc_linux.disable()
+            (line,), unreached, _ran = svc_linux.disable()
         assert unreached == []
         assert line.startswith("user scope: the unit is linked"), line
         assert not any("disable" in c or "stop" in c for c in run.calls), run.calls
@@ -220,7 +232,7 @@ class TestLinuxDisableEnable:
             report = getattr(svc_linux, verb)()
         assert report is not None
         if verb == "disable":
-            assert report == ([], [])
+            assert report == ([], [], False)
         else:
             (line,), _ = report
             assert line.startswith("system scope: the unit is masked"), line
@@ -279,9 +291,9 @@ class TestControllerDisableEnable:
         return patch("kiro_crew.service.controller.current_platform", return_value=Platform.SYSTEMD)
 
     def test_disable_reports_success(self, monkeypatch, capsys) -> None:
-        monkeypatch.setattr(svc_linux, "disable", lambda: ([], []))
+        monkeypatch.setattr(svc_linux, "disable", lambda: ([], [], True))
         with self._systemd():
-            assert controller.disable_service() == 0
+            assert controller.disable_service() == (0, True)
         out = capsys.readouterr().out
         assert "stopped and disabled" in out
         assert "kirocrew service enable" in out
@@ -295,11 +307,30 @@ class TestControllerDisableEnable:
     def test_nothing_installed_exits_3(self, monkeypatch, capsys) -> None:
         monkeypatch.setattr(svc_linux, "disable", lambda: None)
         with self._systemd():
-            assert controller.disable_service() == 3
+            assert controller.disable_service() == (3, False)
         assert "kirocrew service install" in capsys.readouterr().out
 
     def test_unsupported_exits_2(self) -> None:
         with patch(
             "kiro_crew.service.controller.current_platform", return_value=Platform.UNSUPPORTED
         ):
-            assert controller.disable_service() == 2
+            assert controller.disable_service() == (2, False)
+
+    @pytest.mark.parametrize(
+        ("report", "stop_ran"),
+        [
+            (
+                (["sudo systemctl disable kirocrew", "sudo systemctl stop kirocrew"], [], False),
+                False,
+            ),
+            ((["systemctl --user stop kirocrew"], [], True), True),
+        ],
+        ids=["disable-refused", "one-scope-stopped"],
+    )
+    def test_a_failed_disable_says_whether_a_stop_ran(
+        self, monkeypatch, capsys, report, stop_ran
+    ) -> None:
+        monkeypatch.setattr(svc_linux, "disable", lambda: report)
+        with self._systemd():
+            assert controller.disable_service() == (1, stop_ran)
+        assert "did not finish" in capsys.readouterr().err

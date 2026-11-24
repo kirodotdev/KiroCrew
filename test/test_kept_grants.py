@@ -191,10 +191,25 @@ class TestTheUserStopMark:
             kept_grants.run_user_stop(_no_gateway, via="cli")
         assert _record_path(home, kept_grants.USER_STOP_FILE).exists()
 
-    @pytest.mark.parametrize("rc", [0, 1, 2, 3])
+    @pytest.mark.parametrize(
+        ("rc", "stop_ran", "kept"),
+        [
+            (0, True, True),
+            (1, True, True),  # a stop took before another step failed
+            (1, False, False),  # disable or every stop refused: still running
+            (2, False, False),
+            (3, False, False),
+        ],
+    )
     @pytest.mark.parametrize("earlier", [False, True])
     def test_service_disable_marks_before_stopping_and_keeps_possible_stops(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, rc: int, earlier: bool
+        self,
+        home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        rc: int,
+        stop_ran: bool,
+        kept: bool,
+        earlier: bool,
     ) -> None:
         from kiro_crew import cli_server
 
@@ -202,16 +217,16 @@ class TestTheUserStopMark:
         if earlier:
             assert kept_grants.mark_user_stop("cli")
 
-        def _disable() -> int:
+        def _disable() -> tuple[int, bool]:
             assert json.loads(mark.read_text(encoding="utf-8"))["via"] == "service_disable"
-            return rc
+            return rc, stop_ran
 
         disable = MagicMock(side_effect=_disable)
         monkeypatch.setattr(cli_server.service_controller, "disable_service", disable)
         monkeypatch.setattr(cli_server, "sel", MagicMock())
         assert cli_server._service_cmd(SimpleNamespace(service_action="disable")) == rc
         disable.assert_called_once_with()
-        assert mark.exists() == (earlier or rc in (0, 1))
+        assert mark.exists() == (earlier or kept)
 
     def test_a_gateway_without_a_dashboard_keeps_and_records_yolo_too(self) -> None:
         # The headless server boot runs the same restore, which arms the recorder.
