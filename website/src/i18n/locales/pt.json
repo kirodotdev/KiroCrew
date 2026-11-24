@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "Não foi possível iniciar {{name}}.",
+      "dismiss": "Ocultar o aviso de inicialização de {{name}} até recarregar",
+      "open_app": "Abrir {{name}}"
+    },
     "crewPrFacts": {
       "read": "lido às {{time}}"
     },

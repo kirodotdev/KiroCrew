@@ -5851,6 +5851,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} 시작에 실패했습니다.",
+      "dismiss": "새로고침할 때까지 {{name}} 시작 알림 닫기",
+      "open_app": "{{name}} 열기"
+    },
     "crewPrFacts": {
       "read": "{{time}}에 확인"
     },

@@ -225,7 +225,7 @@ export type InstalledApp = {
    * `apps/startup_modules.py`. Absent when the app declares none. Only `admitted`
    * mounts; the gateway recomputes it on every read.
    */
-  startup?: { entry: string; state: 'admitted' | 'needs-approval' | 'denied'; reason: string }
+  startup?: { entry: string; state: 'admitted' | 'needs-approval' | 'denied'; reason: string; digest?: string }
   manifest: {
     name: string
     version: string

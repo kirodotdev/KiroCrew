@@ -526,14 +526,28 @@ export default function PointerPal() {
 ```
 
 The component is mounted like a page: it gets the same SDK context (`useAppApi`)
-and its own error boundary, and a throw or a failed import is logged without
-stopping the dashboard. Do the work in an effect and undo it in the effect's
-cleanup. The component unmounts, running that cleanup, as soon as a refreshed
-app list stops admitting it; work done when the module is first evaluated stays
-until the tab reloads.
+and its own error boundary, and a throw or a failed import is logged and shown
+once in a dismissible notice, without stopping the dashboard. Do the work in an
+effect and undo it in the effect's cleanup. The component unmounts, running that
+cleanup, as soon as a refreshed app list stops admitting it; work done when the
+module is first evaluated stays until the tab reloads.
 
 `GET /api/apps` reports each app's `startup` row as `admitted`, `needs-approval`
-or `denied`, with a reason, and only `admitted` mounts. An app is admitted when
+or `denied`, with a reason, and only `admitted` mounts. An admitted row also carries
+`digest`. The dashboard loads `startup:<digest>/<entry>` under the app's `ui/` URL
+and remounts when the name, version or digest changes. Relative imports stay under
+that approval-bound prefix: an absent or different approval returns `409`, including
+after revocation, even for an unchanged file. Ordinary UI URLs retain their behavior.
+Absolute imports, `../` climbs out of the prefix and fetch-and-eval can leave this
+namespace; only already-approved code can do so without failing its hash.
+
+Because the startup graph loads from the `startup:<digest>/` URL and the page
+graph from the ordinary `ui/` URL, a module imported by both is evaluated twice
+and does not share module-scope state between them. A startup module that must
+share state with the app's page keeps that state on `globalThis` or the app SDK,
+not in a module-level variable.
+
+An app is admitted when
 all of these hold:
 
 - It is enabled and its execution ceiling is open (`agent.apps_allow_third_party`
@@ -557,13 +571,39 @@ all of these hold:
   kirocrew app startup <name> --revoke   # withdraw
   ```
 
-  The approval records a SHA-256 of every file under `ui/`, so a new version, a
-  changed entry or any changed file asks again, and so does each edit to a
-  dev-mode app. An entry that is not a plain `.mjs` or `.js` path inside `ui/` is
-  refused. Uninstalling the app drops the approval. The approval is kept in
-  `member-records/app-startup/<app>.json` in the data home, beside the app's
-  other owner decisions, which the agent sandbox hides in every mode, and the
-  command refuses to run inside an agent's shell.
+  The approve verb does not yet show what changed since the last approval.
+  The approval stores `{version, entry, digest, files}`. `files` maps every regular
+  file's relative POSIX path under `ui/` to its SHA-256, taking scripts from the
+  protected copy when `agent.apps_ui_protected_copy` is on (a missing copy refuses
+  approval), non-scripts from live `ui/`, and all files live when the flag is off or
+  the operator granted an out-of-install dev root; `digest` hashes the sorted paths
+  (each followed by a NUL) and their raw SHA-256 bytes. A new version, changed
+  entry or changed tree asks again before startup mounts, including dev-mode edits.
+  Approval is limited to 4,096 regular files (`startup_modules._MAX_UI_FILES`), counting
+  live non-script files plus served-root script files, not live scripts the gateway
+  does not serve. An oversized tree or stored map is refused. The app-list read
+  inventories the tree once, rejects added or deleted paths before reading file bytes,
+  and stops at the first changed or oversize file.
+  Each served UI file is checked against its own approved hash, whatever its type
+  (`.js`, `.mjs`, `.css`, `.json`, `.svg`, `.map`, images or fonts). The
+  gateway reads only the requested file and sends exactly the bytes it checked.
+  Verified responses omit `Last-Modified` and revalidate only by the approval-qualified
+  ETag; `If-None-Match: *` gets the full verified bytes, not a 304.
+  Files served without startup approval keep wildcard and date-based revalidation.
+  Changed, added or unavailable files, unreadable records, records without `files`,
+  and records whose digest disagrees with their map answer `409`, with `reason` and
+  `remedy` fields: run `kirocrew app startup <name>` to approve the current code, or
+  `kirocrew app startup <name> --revoke`. Unchanged approved files remain servable
+  even when another file changes. Revoke while developing in dev mode; it also works
+  after the manifest drops `ui.startup`. Editing the manifest alone never bypasses
+  serving checks. An owner install or update that drops `ui.startup` forgets the
+  record and reports that its UI files are now served without startup approval
+  checks, with an `app_startup_revoke` audit event. A failed operation restores the
+  record and reports no completed withdrawal. Uninstall also drops it. An entry that
+  is not a plain `.mjs` or `.js` path inside `ui/` is refused.
+  The record lives in `member-records/app-startup/<app>.json` beside the app's other
+  owner decisions, hidden by the agent sandbox in every mode. The approval command
+  refuses to run inside an agent's shell.
 - The request comes from the owner's dashboard. A page loaded with `?safe=1`
   and an embedded instance pane mount none.
 

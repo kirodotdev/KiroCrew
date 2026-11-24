@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "Impossibile avviare {{name}}.",
+      "dismiss": "Nascondi l’avviso di avvio di {{name}} fino al ricaricamento",
+      "open_app": "Apri {{name}}"
+    },
     "crewPrFacts": {
       "read": "letto alle {{time}}"
     },

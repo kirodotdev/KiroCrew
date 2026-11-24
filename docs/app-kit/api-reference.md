@@ -3218,7 +3218,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/apps` | List all installed apps, each with cached `update` state |
+| GET | `/api/apps` | List all installed apps, each with cached `update` state and, if declared, a `startup` row (`entry`, `state`, `reason`; `digest` only when admitted) |
 | GET | `/api/apps/registry` | List available apps from registry |
 | GET | `/api/apps/blob?repo=&path=&ref=` | Proxy images from a registry app's git repo |
 | POST | `/api/apps/install` | Install from local path (owner only) |
@@ -3234,7 +3234,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/{name}/disable` | Disable app (owner only) |
 | POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand (owner only) |
-| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call |
+| GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files. A `startup:<digest>/` prefix (64 lower-case hex digits) requires a current matching startup approval and approved file bytes, otherwise 409 `app_startup_approval_required`. Relative imports inherit it. After stripping that prefix, `{path}` is a forward-slash relative path: one holding `..`, a backslash or a colon, or starting with `/`, answers 400 `invalid path` before any file-system call. Malformed prefixes return 400. Ordinary URLs retain their behavior |
 | * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed). An ordinary response is bounded at 30s total. A `text/event-stream` response has no total, but must emit an event or a `:` comment at least every 60s, or it is cut |
 
 "Owner only" routes answer 403 `owner_only` to a dashboard subject that is not

@@ -6195,6 +6195,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} n’a pas pu démarrer.",
+      "dismiss": "Masquer l’avis de démarrage de {{name}} jusqu’au rechargement",
+      "open_app": "Ouvrir {{name}}"
+    },
     "crewPrFacts": {
       "read": "lu à {{time}}"
     },

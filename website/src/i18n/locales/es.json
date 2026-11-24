@@ -6195,6 +6195,11 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "startupModules": {
+      "failed": "No se pudo iniciar {{name}}.",
+      "dismiss": "Ocultar el aviso de inicio de {{name}} hasta recargar",
+      "open_app": "Abrir {{name}}"
+    },
     "crewPrFacts": {
       "read": "leído {{time}}"
     },

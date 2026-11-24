@@ -5851,6 +5851,11 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "startupModules": {
+      "failed": "{{name}} を起動できませんでした。",
+      "dismiss": "再読み込みまで {{name}} の起動通知を非表示にする",
+      "open_app": "{{name}} を開く"
+    },
     "crewPrFacts": {
       "read": "{{time}} に取得"
     },
