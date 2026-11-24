@@ -121,7 +121,7 @@ The other spawn tools:
 - `spawn_release` — end a continuable conversation (`conversation`) so it can no longer be continued. A backend that keeps its own session store answers `Not disposed` instead, since its session was not deleted and may still resume. On a run of yours that is still queued (accepted, not started) it cancels the run instead, so it never starts
 - `spawn_list` — list running, queued (accepted, not yet started) and completed subagents
 - `spawn_status` — read a run's transcript: the live partial view while it runs, the retained full transcript once complete (see below). A spawn that was accepted but has not started yet answers `QUEUED` with the reason it waits; it starts on its own, so do not spawn it again
-- `resource_status` — advisory host headroom (available memory, CPU load, posture, the current concurrent sub-agent cap, and the agent slice's task count against its `pids.max` ceiling)
+- `resource_status` — advisory host headroom (available memory, CPU load, posture, the current concurrent sub-agent cap, and the agent slice's task count against its `pids.max` ceiling). In a nested container whose memory limit sits above the visible cgroup, an ample host reading shows the posture as `unknown` and says the container's limit cannot be read; tight and critical readings still show, and admission keeps using the host figure
 
 ## How It Works
 
