@@ -795,7 +795,11 @@ class McpGatewayConfig:
             "A routed server runs in one fixed folder outside the project, shared "
             "by every chat, so MCP Management routes a server only after it is "
             "answered not_used, and a server answered uses_cwd is never routed. "
-            "Kiro Crew's own servers are not asked: they never read the folder. "
+            "Kiro Crew's own servers, and those the edition lists, are not asked: "
+            "they never read the folder. A server seen asking a chat for its roots "
+            "keeps one copy per chat and is not asked, unless it is answered "
+            "not_used, uses a secret:// reference, or the edition lists it; "
+            "then the usual rules apply. "
             "A server missing here is unanswered. Written by MCP Management.",
             restart=True,
         ),

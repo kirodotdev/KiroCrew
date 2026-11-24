@@ -1694,6 +1694,12 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   non-string, and a provider without the method (read through `getattr`) fold
   nothing. Default returns the token unchanged. v1 addition, no
   `CONTRACT_VERSION` bump.
+- `McpToolingProvider.folder_free_mcp_servers() -> FrozenSet[str]` — WIRED:
+  `mcp_gateway.folder_use` reads it through `getattr`, so MCP Management shares a
+  listed server with the page-wide switch like Kiro Crew's own instead of keeping
+  it in each chat until the person turns its Share switch on (spec:
+  `mcp-shareability.md`, "Folder use gates routing"). Default empty set; no
+  `CONTRACT_VERSION` bump.
 - `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
   GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
   each returned scope's `global_json` (and strip its `agent_mcp_file`) IN

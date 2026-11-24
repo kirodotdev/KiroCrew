@@ -34,6 +34,7 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_registry_governed,
     mcp_entry_is_remote,
 )
+from kiro_crew.mcp_gateway.folder_use import roots_observed
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.launch_approval import (
     _MAX_SERVER_LAUNCHES,
@@ -520,6 +521,7 @@ def _rewrite_single_spec(
     sandbox_mode: str,
     approval_mode: str,
     stub_servers: frozenset[str],
+    roots_excluded: frozenset[str] = frozenset(),
     pooling_enabled: bool = True,
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
@@ -706,6 +708,10 @@ def _rewrite_single_spec(
         # call sites, uncached). Honouring it only in this function produced a
         # stub nothing pointed at, and a dashboard row that read "stub" for a
         # server that had none. One source of truth instead.
+        # The name-wide decision already includes every declaration's vault facts.
+        if roots_observed(name, roots_excluded):
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
         if name not in stub_servers and not (
             secret_reference_keys(entry.get("env"))
             and routed_for_secret_reference(name, stub_servers)
@@ -1006,6 +1012,7 @@ def _injectable_settings_servers(
     settings_spec: dict[str, Any],
     stub_servers: frozenset[str],
     *,
+    roots_excluded: frozenset[str] = frozenset(),
     pooling_enabled: bool = True,
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
@@ -1067,6 +1074,8 @@ def _injectable_settings_servers(
         if "command" not in entry or mcp_entry_is_remote(entry):
             # HTTP/SSE — no stub needed; kiro-cli merges it from the real
             # settings file. A placeholder ``command`` does not make it stdio.
+            continue
+        if roots_observed(name, roots_excluded):
             continue
         if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
             # Not stubbed: leave it to kiro-cli's own merge of the real

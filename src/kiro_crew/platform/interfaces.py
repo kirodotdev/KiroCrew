@@ -690,6 +690,17 @@ class McpToolingProvider(Protocol):
         """
         ...
 
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
+        """MCP server names the edition knows do not work on the project folder.
+
+        WIRED: ``mcp_gateway.folder_use`` reads it, so MCP Management shares a
+        listed server with the page-wide switch like Kiro Crew's own, instead of
+        keeping it in each chat until the person turns its Share switch on. List
+        only servers that take full paths or call a service and never read the
+        folder they start in. The public Default returns an empty set.
+        """
+        ...
+
 
 class AgentCatalogProvider(Protocol):
     """Extra agent-catalog rows the edition contributes.

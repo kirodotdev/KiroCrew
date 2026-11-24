@@ -59,7 +59,8 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
   launch, so an unanswered server never gets a live stub on any harness: kiro-cli
   and KAS read the same overlay.
 - `_resolve_stub_servers` drops a server answered `uses_cwd`, so answering it
-  unroutes it at the next start.
+  unroutes it. The answer route applies that change through the broker when it
+  unroutes a routed server; with no broker wired it takes effect at the next start.
 - A server routed before the question existed keeps its approval and keeps
   running routed until answered. Its row asks once, and re-approving its launch
   needs the answer.
@@ -69,6 +70,66 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 - Third-party servers that advertise `kirocrew.caller-identity`, and stdio remote
   proxies, are asked like any other: the extension says nothing about the folder,
   and a proxy cannot be told apart from a local server by its command alone.
+- The question is skipped when a declared fact answers it
+  (`mcp_gateway/folder_use.py`). Kiro Crew's own servers and the servers the
+  edition lists (`McpToolingProvider.folder_free_mcp_servers()`, none in the public
+  build) are cleared without an answer, and the row reports `cwd_proven` for both.
+  A stored `uses_cwd` answer outranks the edition list, so that server is asked again.
+  A `roots/list` observation (`hazards.HAZARD_ROOTS_REQUESTED`, recorded even
+  with one chat attached) keeps a name per chat only when every source agrees;
+  any mixed case keeps the question and approval behaviour from before roots
+  observations were used. `folder_use.roots_keeps_per_chat` decides this once
+  from the same value-free declaration scan for the row, single-form toggle and
+  rewriter. Its sources are:
+  - all agent declarations, including admitted crewmates and their service specs;
+    any `secret://` env reference disagrees with running without the gateway;
+  - the settings `mcp.json` declaration, with the same vault-reference rule;
+  - the edition's folder-free list, which disagrees with a roots observation
+    (the question is asked rather than treating that list as proof);
+  - saved `cwd_use` answers, read through `effective_cwd_answer` with the current
+    command/args binding: `not_used` disagrees, `uses_cwd` agrees, and an absent
+    or stale answer supplies no disagreement. The binding uses only the source
+    directory's agent specs, keyed by the exact server name, matching the server
+    row's declared launch. Settings and crewmate launches do not join that binding;
+  - canonical aliases, which join the observation, declarations and edition entries
+    under either spelling of a name. For saved answers, the exact name's valid,
+    launch-bound answer wins. Only when it has no valid answer are aliases consulted;
+    among those alias answers, `not_used` wins over `uses_cwd`.
+  An unreadable source cannot establish agreement and keeps the normal approval
+  path. That covers a failed directory listing or crewmate owner record; one
+  unreadable or invalid agent spec is skipped, as the rewriter and the row scan
+  skip it, so the other specs still bind launches. When all sources agree, the
+  row reports `cwd_roots` and `can_stub: false`, the single-form toggle refuses
+  with `409 cwd_roots`, and both agent and settings declarations stay unwrapped
+  at the next start or overlay refresh. A toggle press that carries
+  `cwd_use: not_used` is checked against that answer, bound as the write binds it.
+  The row still offers the owner's answer that the server does not use the
+  folder: it sends `cwd_use: not_used` with no `stub`, and the route alone decides
+  what that answer routes. It reads the routed set before and after the write
+  with `_resolve_stub_servers` (roster, followers, `stub_overrides`) and the same
+  folder rule. When the set does not change (the name is not rostered, or is
+  declined), the answer is saved bound to the current launch, nothing is shared,
+  and the reply carries `routing_changed: false`; the row then shows its Share
+  switch. When the answer adds the name (a rostered server that an exact
+  `uses_cwd` answer or roots alone kept per chat), the route runs the broker
+  apply the toggle runs and reports its `applied` and `restart_required` with
+  `routing_changed: true`, but only when the approval store already approves
+  every launch the name resolves to now. Otherwise it refuses with
+  `409 expected_launch_required` and writes nothing, and the page shows the
+  launch and sends it with the answer as one toggle press. An answer that removes
+  the name from the set (`uses_cwd`) runs the same apply. Probes still
+  resolve every launch. A mixed name keeps its Share control and normal launch
+  approvals; this never approves a changed launch automatically. At registration
+  and respawn, `hazards.retreat_codes` excludes `roots_requested`: roots alone
+  follow the folder-use rule and its saved-answer, vault and edition exceptions.
+  Any other observed hazard for the launch, including `unroutable_server_request`,
+  still forces a private backend. The batch share remains on `_stub_eligibility`
+  and skips any server with the hazard.
+  The fingerprint keeps `stub_servers` and the managed-launch signature based on
+  the configured roster. `roots_excluded` holds only the names the common check
+  made per-chat; it invalidates cached overlays without changing the live refresh
+  policy.
+  Config hints such as a `.` argument are not read; an unknown server is asked.
 
 The answer only gates routing today. Whether `work_dir` joins the pool signature
 for `uses_cwd` servers is a separate decision.

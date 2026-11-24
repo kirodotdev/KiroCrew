@@ -40,14 +40,24 @@ _refresher: _Refresher | None = None
 #: writes to a scratch one), and the servers a config scope mutes
 #: (``scope_muted``), which a toggle in MCP Management changes at any time. A
 #: mute only removes stubs; an unmute that adds one needs a target the running
-#: daemon does not hold, and the probe's target check refuses it. Every other input --
+#: daemon does not hold, and the probe's target check refuses it.
+#: A roots exclusion (``roots_excluded``) only removes stubs, like a mute.
+#: Every other input --
 #: socket, work dir, sandbox and approval modes, stub set, sharing, forwarded
 #: env, identity keys, read limit, interpreter -- is fixed when the broker
 #: starts, and a pass that sees a different value would apply a restart-only
 #: setting early. A crewmate file whose stub needs a target the running daemon
 #: does not hold is still refused, by the probe's target check.
 _REFRESH_VOLATILE_INPUTS = frozenset(
-    {"sources", "mate_sources", "settings", "overlay_dir", "launch_approvals", "scope_muted"}
+    {
+        "sources",
+        "mate_sources",
+        "settings",
+        "overlay_dir",
+        "launch_approvals",
+        "scope_muted",
+        "roots_excluded",
+    }
 )
 
 

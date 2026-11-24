@@ -140,6 +140,11 @@ export function withCurrentLaunch(
   return { ...rest, commands, envs, complete, expected_launch }
 }
 
+/** Whether a write was refused until the page shows the launch it would approve. */
+export function asksForLaunch(error: unknown): boolean {
+  return errorCode(error) === 'expected_launch_required'
+}
+
 export function stubErrorKey(error: unknown): string {
   const code = errorCode(error)
   if (code === 'launch_changed_since_display') return 'pages.mcpManagement.stub_error_launch_changed'
@@ -160,6 +165,7 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
   if (code === 'trust_needs_shared') return 'pages.mcpManagement.stub_error_trust_needs_shared'
   if (code === 'trust_needs_approved_launch') return 'pages.mcpManagement.stub_error_trust_needs_approved_launch'
+  if (code === 'cwd_roots') return 'pages.mcpManagement.stub_error_cwd_roots'
   return 'pages.mcpManagement.stub_failed'
 }
 
@@ -402,6 +408,7 @@ export function detailsWhyKey(
 ): string {
   switch (state) {
     case 'no_stub':
+      if (s.cwd_roots === true) return 'pages.mcpManagement.why_roots'
       return s.denylisted ? 'pages.mcpManagement.why_credentials' : 'pages.mcpManagement.why_no_stdio'
     case 'needs_reapproval':
       if (refusal && !launchIsApprovable(refusal)) return 'pages.mcpManagement.approval_not_approvable_here'
@@ -449,12 +456,23 @@ export function autoShareCandidates(
 
 /**
  * Whether sharing this server first needs the operator to say it can be shared
- * across chats. Kiro Crew's own servers are never asked. A row from a
+ * across chats. A server a declared fact clears (`cwd_proven`: Kiro Crew's own,
+ * or one the edition lists) is never asked. A row from a
  * gateway that sends no answer field at all reads as not needing one, since that
  * gateway does not ask.
  */
 export function needsCwdAnswer(s: McpManagedServer): boolean {
   return s.cwd_proven !== true && s.cwd_use !== undefined && s.cwd_use !== 'not_used'
+}
+
+/**
+ * Whether a row kept per chat because the server asked for roots offers the
+ * owner's answer that it does not use the folder. That answer (`not_used`)
+ * disagrees with roots, so once it is saved the gateway reports the row as
+ * shareable again and the offer goes.
+ */
+export function offersRootsAnswer(s: McpManagedServer): boolean {
+  return s.cwd_roots === true && s.cwd_use !== 'not_used'
 }
 
 /** Marked servers whose launch waits for the operator's OK, and can get it here. */
