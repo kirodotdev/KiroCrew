@@ -26,14 +26,16 @@ const { api } = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api }))
 
 /** What the stub vector card reports, and the props it was given. */
-const vector = vi.hoisted(() => ({ active: false, settled: true, filter: undefined as string | undefined, onDirtyChange: undefined as ((d: boolean) => void) | undefined }))
-function StubVectorCard({ onActiveChange, onSettledChange, onDirtyChange, initialSemanticFilter }: {
+const vector = vi.hoisted(() => ({ active: false, settled: true, filter: undefined as string | undefined, focusKey: undefined as string | undefined, onDirtyChange: undefined as ((d: boolean) => void) | undefined }))
+function StubVectorCard({ onActiveChange, onSettledChange, onDirtyChange, initialSemanticFilter, focusKey }: {
   onActiveChange?: (a: boolean) => void
   onSettledChange?: (s: boolean) => void
   onDirtyChange?: (d: boolean) => void
   initialSemanticFilter?: string
+  focusKey?: string
 }) {
   vector.filter = initialSemanticFilter
+  vector.focusKey = focusKey
   vector.onDirtyChange = onDirtyChange
   useEffect(() => { onActiveChange?.(vector.active) }, [onActiveChange])
   useEffect(() => { onSettledChange?.(vector.settled) }, [onSettledChange])
@@ -96,6 +98,16 @@ describe('?focus=lessons', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" />)
     await waitFor(() => expect(scrolled).toEqual(['memory-semantic-card']))
     expect(document.getElementById(LESSONS_CARD_ID)).toBeNull()
+  })
+
+  it('hands the saved lesson key to the Semantic browser, and only with the focus', async () => {
+    vector.active = true
+    const { unmount } = renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" focusLessonKey="lesson.0123456789ab" />)
+    await waitFor(() => expect(vector.focusKey).toBe('lesson.0123456789ab'))
+    unmount()
+    renderWithProviders(<MemoryTab refreshTrigger={0} focusLessonKey="lesson.0123456789ab" />)
+    await waitFor(() => expect(document.getElementById('memory-semantic-card')).not.toBeNull())
+    expect(vector.focusKey).toBeUndefined()
   })
 
   it('does not land anywhere until the vector status has answered', async () => {

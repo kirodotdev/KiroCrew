@@ -44,6 +44,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
+from kiro_crew.acp.member_goal_mount import mount_member_goal_tools
 from kiro_crew.acp.runtime_models import _substitute_model_from_advisory
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
@@ -445,6 +446,14 @@ async def create_session(
         # construction path gains no conditional, no awaited step and no new
         # failure mode from the panel capability (harness-parity H13).
         mcp_servers, panel_mounted = await self._mount_member_panel(
+            mcp_servers,
+            member_session_key=member_session_key,
+            agent_name=agent or self._agent,
+            session_work_dir=session_work_dir,
+            stub_token=stub_token,
+        )
+        mcp_servers = await mount_member_goal_tools(
+            self,
             mcp_servers,
             member_session_key=member_session_key,
             agent_name=agent or self._agent,

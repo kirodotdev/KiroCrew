@@ -116,7 +116,7 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     ctx.KiroCrewConfig.load = staticmethod(lambda *a, **k: cfg)  # type: ignore[method-assign]
     import kiro_crew.member_mate_tools as mmt
 
-    mmt.binding_has_mate_tools = lambda _b: tools  # type: ignore[assignment]
+    mmt.binding_has_mate_tools = lambda _b, _member="": tools  # type: ignore[assignment]
     # Whether the crewmate's chat mounts the work ledger: off unless the fixture says
     # so, as on a conductor spec that does not mount ``kirocrew-work``.
     ledger = fx.get("has_ledger_tools", False)

@@ -508,7 +508,7 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    credential here and is not read.
 4. A bearer that is not a session is then asked whether it is an **app credential**:
    the access token local authorization issued for a grant the owner approved
-   (`crew_api_auth.refuse_app_credential`, which calls `LocalAuthorization.verify`:
+   (`crew_api_auth.judge_app_credential`, which calls `LocalAuthorization.verify`:
    signature, expiry, and a grant that is still active and names the same
    `client_id`). The order of the checks is the credential's kind, its validity, where
    the request came from, then the tier:
@@ -529,33 +529,40 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
 
      | Case | Answer | Audit `error` |
      |---|---|---|
-     | The pattern is in `OWNER_ONLY_PUBLIC_ROUTES`: read before the table, whatever the row says | `403 owner_only` | `owner_only` |
+     | The pattern is in `OWNER_ONLY_PUBLIC_ROUTES` and no key of `APP_SERVED_ROUTES` names it (`app_owner_only_routes()`): read before the table, whatever the row says | `403 owner_only` | `owner_only` |
      | No row: a path with no route, or a route the spec does not have | `403 owner_only` | `owner_only:no-row` |
      | The row's tier is Owner | `403 owner_only` | `owner_only` |
      | The row names an entitlement (no app credential carries one yet) | `403 entitlement_required`; the body's `entitlement` is the first one the spec lists | `entitlement_required` |
      | The row's scope is `embed` | `403 approval_requires_first_party` | `approval_requires_first_party` |
      | The credential holds none of the row's scopes | `403 insufficient_scope`, the message names them | `insufficient_scope` |
-     | The row admits it: its scope is `any`, or the credential holds one | `403 owner_only` | `owner_only:no-app-route` |
+     | The row admits it (its scope is `any`, or the credential holds one) and the route is not in `APP_SERVED_ROUTES` | `403 owner_only` | `owner_only:no-app-route` |
+     | The row admits it and the route is in `APP_SERVED_ROUTES` | The request goes to the handler | none; the row's `outcome` is `allowed` |
 
      Only an `owner_only` answer carries `X-Auth-Required: true`: signing in again
      cures no missing scope or entitlement.
 
-     The last row is the default while no route serves an app: token auth has no
-     path that lets an app credential through, so the request never reaches a handler
-     on any Crew API path. The path that admits one arrives with the first route that
-     serves apps, at this point and nowhere else. `crew_api_scopes.require_scope` is
-     what such a route's handler calls first, with its own route's key, so a route
-     registered under the wrong row is refused. It decides from what token auth set
+     `crew_api_auth.APP_SERVED_ROUTES` lists the routes that serve an app credential,
+     by their key in the table. It holds `GET /v1/models`, which serves an app
+     credential with an empty list until a grant carries a Bot range or a route
+     lets an app run an agent. The app list comes only from `models_for_grant`;
+     it reads no owner catalog. This is the one
+     point where token auth lets an app credential through: it publishes the actor
+     and calls the handler, and runs none of the later steps, which judge a session
+     (the peer pin, the link exchange, the installed-app allowlist). A route joins
+     the list in the change that makes its handler call
+     `crew_api_scopes.require_scope` first, with its own route's key, so a route
+     registered under the wrong row is refused. `crew_api_owner.owner_route` makes
+     that call for a route that passes it `app_route`. It decides from what token auth set
      on the request and never from what is absent: a verified app credential
      (`request["crew_api_credential"]`) is judged by the table; a first-party
      session (`request["is_dashboard_user"] is True` with `request["app"] == ""`)
      passes to the route's own gate; any other request, one with neither marker
-     included, is `403 owner_only`. Nothing calls it yet.
+     included, is `403 owner_only`.
 
      This table is not `route_access.ROUTES`, which labels every gateway route with
      an action name and a stability tier and is read by no request.
 
-   Before the 403, token auth publishes the caller on the request: `request["user"]`
+   Before either answer, token auth publishes the caller on the request: `request["user"]`
    is `app:<grant id>`, `request["app"]` is `local-grant:<grant id>` and
    `request["is_dashboard_user"]` is `False`. Both values are built from the grant id
    the gateway made. An installed app's name holds no `:`, so neither can be one, and
@@ -617,10 +624,15 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-An owner-only Public route (`/v1/models`, `/v1/responses`) registers through
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
-maps each owner-only Public path to its audit operation; the route passes that
-operation to `owner_route`, and the app-scope refusal reads the same map. Any other caller, an app token included, gets
+maps each such path to its audit operation; the route passes that
+operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
+also passes `app_route`, so a verified app credential from local authorization is
+judged by the route's row in place of the owner gate. The app is served an empty
+list until a grant carries a Bot range or a route lets an app run an agent;
+`models_for_grant` builds that list without reading the owner's catalog. Any other
+caller, an installed app's token included, gets
 `403 owner_only`, including a valid app credential whose API allowlist excludes
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
 permission errors have the Crew API error shape and no `WWW-Authenticate` header;

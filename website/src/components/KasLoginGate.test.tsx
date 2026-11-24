@@ -389,7 +389,7 @@ describe('KasLoginGate', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     await screen.findByTestId('kas-login-user-code')
-    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1', undefined))
 
     // Another tab or the CLI finished a sign-in: the next status read says so.
     kasLoginStatus.mockResolvedValue({
@@ -420,7 +420,7 @@ describe('KasLoginGate', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     await screen.findByTestId('kas-login-user-code')
-    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1'))
+    await waitFor(() => expect(kasLoginPoll).toHaveBeenCalledWith('login-1', undefined))
 
     kasLoginCancel.mockRejectedValueOnce(new Error('network down'))
     kasLoginStatus.mockResolvedValue({

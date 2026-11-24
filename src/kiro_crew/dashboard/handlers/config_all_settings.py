@@ -38,7 +38,7 @@ WHY_OWNED = "owned"  # another step changes it together with other settings
 WHY_MARKER = "marker"  # Kiro Crew sets it itself as a step is finished
 WHY_ALIAS = "alias"  # read from another setting, so a write here changes nothing
 WHY_TEXT = "text"  # free text such as a path, address or command
-WHY_LOCKED = "locked"  # an organization's policy sets it
+WHY_LOCKED = "locked"  # this edition sets it; no policy term reaches it
 WHY_COMPOUND = "compound"  # several values that must change together
 
 #: Keys the page shows but never changes, each with the reason it shows. A key

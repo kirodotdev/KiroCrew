@@ -1105,7 +1105,7 @@ yet decided: install from a committed constraints file, or set
 | `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork), clears the AppArmor userns restriction first, no SPA or browser |
 | `integration` | "Integration (in-process gateway)". The middle layer: `test/integration/` boots the real `GatewayOrchestrator.run()` inside the pytest process on a scratch `KIROCREW_HOME` with the packaged fake ACP backend and talks HTTP to the port it bound, so one test can assert across a restart, across two concurrent requests on one event loop, or on a file the boot itself wrote. Opt-in by `KIROCREW_INTEGRATION=1`, so the unit shards collect and skip it; Linux only. Gated on ROUTE coverage -- `scripts/check_integration_route_coverage.py` reports the share of registered dashboard routes the suite requested (`--min` is a ratchet kept a little under what `main` measures) and the report is uploaded as the `integration-route-coverage` artifact. Details: `docs/system-specs/common/testing-conventions.md`, "The integration layer" |
 | `wheel-engine-real-venv` | "Wheel Engine (real venv build)". Runs the one `real_venv`-marked test (`test/test_wheel_engine_lifecycle.py::TestBuildChildEnvironment::test_build_and_verify_a_real_shadow_venv`) on `ubuntu-latest`; the shards deselect that marker |
-| `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs and merge groups; a queue-landed push to `main` runs `macos-15` alone, and any other push to `main` runs all three. Every leg is fail-closed on missing prerequisites or a collapsed pass count |
+| `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs and merge groups; a queue-landed push to `main` runs `macos-15` alone, and any other push to `main` runs all three. Every leg is fail-closed on missing prerequisites or a collapsed pass count. The Linux leg then runs the Crew API contract cases on one more gateway ([e2e-gate.md](e2e-gate.md#the-crew-api-contract-cases)) |
 
 `backend-lint` also runs `scripts/check_python_audit.py` (report-only findings,
 fail-closed execution). It is on the gate path because it is
@@ -5139,7 +5139,13 @@ status plus one `readiness:` label**.
   required status — and a record whose author the collaborators permission API
   does not confirm as a writer is ignored, exactly as `codex-review.yml`'s
   adjudication ledger ignores it, so the gate never blocks on a record that holds
-  no downgrade power. One consequence to know: readiness has **no
+  no downgrade power. A comment that carries the disposition prefix but a marker
+  the gate cannot parse blocks only while it names the current head (or a head
+  the gate cannot read) and the same writer has posted no later well-formed
+  record for that lane and span. Otherwise the gate prints it under `notices`
+  and does not block, so posting a corrected disposition clears it without
+  deleting anything; its `target=` and `span=` still go through the claim
+  checks, because the ledger still reads it. One consequence to know: readiness has **no
   `issue_comment` trigger**, so correcting the offending comment fires nothing by
   itself. `pr-readiness-sweep.yml` mode 5 covers that — it treats a disposition
   record whose `updated_at` is newer than the verdict as evidence the verdict is

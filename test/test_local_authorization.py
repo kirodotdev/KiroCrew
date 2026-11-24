@@ -497,6 +497,32 @@ def test_requests_and_grants_store_the_namespace_and_only_digests(store, clock, 
         assert secret not in text
 
 
+def test_grants_lists_what_works_now_oldest_first_and_no_secret(store, clock, tmp_path):
+    first = _tokens(store, clock, ["conversations:read"])
+    # Approved but never redeemed: the owner said yes, and no grant exists yet.
+    store.decide(_pending(store), True, caller=SUBJECT)
+    clock.now += 10
+    second = _tokens(store, clock)
+    listed = store.grants()
+    assert [g["grant_id"] for g in listed] == [first["grant_id"], second["grant_id"]]
+    assert listed[0] == {
+        "grant_id": first["grant_id"],
+        "namespace": "default",
+        "client_id": "notely-desktop",
+        "client_name": listed[1]["client_name"],
+        "scopes": ["conversations:read"],
+        "status": "active",
+        "created_at": listed[0]["created_at"],
+        "expires_at": listed[0]["created_at"] + la.REFRESH_MAX_SECS,
+    }
+    assert all(isinstance(g[k], int) for g in listed for k in ("created_at", "expires_at"))
+
+    store.revoke_grant(first["grant_id"], caller=SUBJECT)
+    assert [g["grant_id"] for g in store.grants()] == [second["grant_id"]]
+    clock.now += la.REFRESH_MAX_SECS
+    assert store.grants() == []
+
+
 def test_a_restart_keeps_grants_and_pending_requests(store, clock, tmp_path):
     tokens = _tokens(store, clock)
     waiting = _pending(store)

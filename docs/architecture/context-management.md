@@ -453,6 +453,13 @@ The mechanism, when on:
   turn cannot use: `computer-use` while the session's Computer Use reading (the
   one its agent prompt's block is rendered from) is off. Matches are then
   truncated to `max_triggered`, highest score first.
+- The session's skill scope then narrows the matches in `build_message`: its
+  pinned scope (`skill_scope_pin.py`) when it has one, else the agent's `skill://`
+  mapping from `agent_skill_globs`. That lookup names the turn's session, so a
+  Bot's worker reads the mapping in its session's merged spec, as its session-start
+  skill directory does. Both lookups are strict, as `skill_search`'s are, so a
+  scope that cannot be resolved admits no triggered skill. A scope with no globs
+  narrows nothing, and a turn with no match looks up no scope.
 - The message matched is the person's own request, so a sub-agent completion the
   gateway injects into a channel or `cron:` parent passes `""` (`slack/gateway_runtime/subagent_injection.py`). The dashboard passes it as
   `skill_trigger_text`, without the context it prepends (sub-agent notices,

@@ -4383,9 +4383,16 @@ and every gap fails closed:
     (`state.json` `parent_session`). The walk repeats for a parent that is itself a
     run, so a grandchild carries its grandparent's denies. A session that is not
     a run is not looked at. One key keeps at most `MAX_PARENTS_PER_RUN` (64)
-    distinct parents: a new one past it raises `TooManyParents` and changes
-    nothing, so the run that would add it fails before its session starts, and
-    every parent already noted keeps holding the key.
+    distinct parents: a new one past it is not recorded and marks the key
+    incomplete (`_INCOMPLETE`), and every parent already noted keeps holding the
+    key. The mark lives exactly as long as the key's row of noted parents: a use
+    of the key refreshes both, and the mark leaves only when that row is evicted,
+    after which the key reads its record as any evicted key does. `note_parent` never raises, so a run on another
+    harness, which reads no parent limits, runs as before. A KAS run whose chain
+    reaches a marked key, its own or one above it, is refused at session start
+    with `TooManyParents` (a `ParentLimitsUnreadable`), fail-closed:
+    `holding_agents` raises it, `session_extras` refuses the session, and
+    `run_is_held` answers held, so the warm pool never serves it.
   - *Each session above holds on its own.* An agent name is not one set of
     limits: the directory or the session can decide which spec the name resolves
     to, and a path limit is anchored where its session runs. So `holding_agents`

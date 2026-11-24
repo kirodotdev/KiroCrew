@@ -63,6 +63,7 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_member_goal_tools import with_member_goal_tools
 from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
 from kiro_crew.acp.kas_parent_grants import founding_grants_spec, limit_to_founders
 from kiro_crew.acp.kas_parent_limits import (
@@ -1464,6 +1465,8 @@ class KasHarness(MembershipHarness):
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
             spec = with_kas_steering(spec, steering_dir)
+            # A Bot's own chat on an agent of the user's: goals are set there.
+            spec = with_member_goal_tools(spec, agent, session_key)
             spec_notices.extend(
                 n for n in (inheritance_off_notice(steering_dir), use_aws_notice(agent, spec)) if n
             )

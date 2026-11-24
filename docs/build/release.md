@@ -247,7 +247,12 @@ code.
      not a build failure: the pinned artifact stays downloadable under its own
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
-     kiro-cli".
+     kiro-cli". Whether or not you bump the kiro-cli pin, compare the trigger
+     alias table of the engine the newest kiro-cli release runs with
+     Kiro Crew's, as the paragraph after "Bumping:" in
+     `src/kiro_crew/acp/kas_pin.py` describes, and open an issue for any
+     difference no open issue already tracks: that engine can be newer than
+     the pin, and a spelling Kiro Crew lacks is a spec hook it refuses.
    - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
      `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
      redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged

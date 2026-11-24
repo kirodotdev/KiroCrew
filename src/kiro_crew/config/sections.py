@@ -222,6 +222,7 @@ from kiro_crew.config.sections_browser import (  # noqa: F401
     BrowserLiveConfig,
     BrowserRecordingConfig,
     BrowserRunConfig,
+    _spelled_int,
     _validated_choice,
     _validated_isolation,
     _validated_max_fps,

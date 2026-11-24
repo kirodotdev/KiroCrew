@@ -475,18 +475,13 @@ export default function DeployMyCrewDialog({
           {ready && view.kind === 'none' && (
             <div className="flex flex-col items-center gap-3 text-center" data-testid="deploy-state-none">
               <p className="m-0 text-[14px] font-medium">{t('pages.membersPage.deploy_state_none')}</p>
-              <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
-                {t('pages.membersPage.deploy_action_deploy')}
-              </Btn>
               {/* The label names what the button does (open Settings) and where,
                   never the outcome a reader wants: a button that reads as the
                   act itself is not pressed by a reader who fears something is
-                  created outside this computer right now. The line under it
-                  says the one thing the label cannot: nothing is created until
-                  the steps there are confirmed. */}
-              <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
-                {t('pages.membersPage.deploy_action_hint')}
-              </div>
+                  created outside this computer right now. */}
+              <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
+                {t('pages.membersPage.deploy_action_deploy')}
+              </Btn>
             </div>
           )}
 
@@ -617,16 +612,11 @@ export default function DeployMyCrewDialog({
                 )
               })()}
               {/* The machine is gone, so the one thing to do is the same as
-                  with no launch at all: the set-up flow, with its line. */}
+                  with no launch at all: the set-up flow. */}
               {view.liveness === 'gone' && (
-                <>
-                  <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
-                    {t('pages.membersPage.deploy_action_deploy')}
-                  </Btn>
-                  <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
-                    {t('pages.membersPage.deploy_action_hint')}
-                  </div>
-                </>
+                <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
+                  {t('pages.membersPage.deploy_action_deploy')}
+                </Btn>
               )}
             </div>
           )}
@@ -647,9 +637,6 @@ export default function DeployMyCrewDialog({
               <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
                 {t('pages.membersPage.deploy_action_deploy')}
               </Btn>
-              <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
-                {t('pages.membersPage.deploy_action_hint')}
-              </div>
             </div>
           )}
 

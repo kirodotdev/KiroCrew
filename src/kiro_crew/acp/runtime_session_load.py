@@ -49,6 +49,7 @@ from kiro_crew.acp.mcp_start_wait import (
     person_waits,
     policy_hidden_servers,
 )
+from kiro_crew.acp.member_goal_mount import mount_member_goal_tools
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -366,6 +367,14 @@ async def load_session(
             session_work_dir=session_work_dir,
             stub_token=stub_token,
             resuming=True,
+        )
+        mcp_servers = await mount_member_goal_tools(
+            self,
+            mcp_servers,
+            member_session_key=member_session_key,
+            agent_name=active_agent,
+            session_work_dir=session_work_dir,
+            stub_token=stub_token,
         )
     mirror_used = mirrored is not None
     if mirror_used:

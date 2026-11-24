@@ -46,6 +46,7 @@ from kiro_crew.acp.mcp_ref_guard import (
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_sign_in_probe import schedule_sign_in_probe
+from kiro_crew.acp.member_goal_mount import append_member_goal_server
 from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.spec_tools_allowlists import (
@@ -513,10 +514,16 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
-    composed = self._append_member_panel_server(
-        self._append_member_dispatch_server(
-            out, projection.restricted_servers, projection.disabled_servers, mounts=mounted
+    composed = append_member_goal_server(
+        self,
+        self._append_member_panel_server(
+            self._append_member_dispatch_server(
+                out, projection.restricted_servers, projection.disabled_servers, mounts=mounted
+            ),
+            projection.restricted_servers,
+            projection.disabled_servers,
         ),
+        projection.agent_spec,
         projection.restricted_servers,
         projection.disabled_servers,
     )
@@ -695,8 +702,14 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     self._session_mcp_unhonoured = narrowed
     disabled = projection.disabled_servers
-    members = self._append_member_panel_server(
-        self._append_member_dispatch_server([], narrowed, disabled, mounts=mounted),
+    members = append_member_goal_server(
+        self,
+        self._append_member_panel_server(
+            self._append_member_dispatch_server([], narrowed, disabled, mounts=mounted),
+            narrowed,
+            disabled,
+        ),
+        projection.agent_spec,
         narrowed,
         disabled,
     )

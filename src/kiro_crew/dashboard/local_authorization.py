@@ -390,6 +390,31 @@ class LocalAuthorization:
             raise UnknownRequest(request_id)
         return _request_for_owner(request_id, rec)
 
+    def grants(self) -> list[dict[str, Any]]:
+        """The grants that work now, oldest first, without a secret. A revoked grant
+        keeps nothing to show, so it and an expired one are left out."""
+        now = self._clock()
+        with _LOCK:
+            grants = self._load()["grants"]
+        live = [
+            (grant_id, grant)
+            for grant_id, grant in grants.items()
+            if grant["status"] == "active" and grant["expires_at"] > now
+        ]
+        return [
+            {
+                "grant_id": grant_id,
+                "namespace": grant["namespace"],
+                "client_id": grant["client_id"],
+                "client_name": grant["client_name"],
+                "scopes": list(grant["scopes"]),
+                "status": grant["status"],
+                "created_at": int(grant["created_at"]),
+                "expires_at": int(grant["expires_at"]),
+            }
+            for grant_id, grant in sorted(live, key=lambda item: (item[1]["created_at"], item[0]))
+        ]
+
     def decide(
         self,
         request_id: str,

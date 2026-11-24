@@ -89,6 +89,7 @@ CAPABILITY_FIELDS = (
     "native_workflows",
     "refines_tool_call_titles",
     "permission_requests_name_child",
+    "writes_crew_readable_transcript",
 )
 
 

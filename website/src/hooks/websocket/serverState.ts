@@ -449,6 +449,7 @@ export function handleCredentialRedactionChanged(queryClient: QueryClient, d: { 
       enabled,
       changed_at: typeof d.changed_at === 'string' ? d.changed_at : '',
       locked_by_policy: typeof d.locked_by_policy === 'boolean' ? d.locked_by_policy : prev?.locked_by_policy === true,
+      locked_by_edition: prev?.locked_by_edition,
     }))
   }
   queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })

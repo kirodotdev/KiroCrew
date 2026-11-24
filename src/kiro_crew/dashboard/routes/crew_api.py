@@ -12,7 +12,10 @@ here, and ``test_crew_api_owner.py`` fails when a route and its description
 disagree.
 
 Public tier: ``/v1/models`` and ``/v1/responses``, each served by its own handler
-behind the same ``owner_route`` gate while it serves the owner alone.
+behind the same ``owner_route`` gate. ``/v1/models`` also serves a verified app
+credential with an empty list until a grant carries a Bot range or a route lets
+an app run an agent. The owner gets the full catalog; ``/v1/responses`` serves the
+owner alone.
 """
 
 from __future__ import annotations
@@ -39,6 +42,10 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/v1/crew/owner/grant-requests/{request_id}",
         owner_route(crew_api_grant_requests.get_grant_request, "crew_api.grant_requests.get"),
+    )
+    app.router.add_get(
+        "/v1/crew/owner/grants",
+        owner_route(crew_api_grant_requests.list_grants, "crew_api.grants.list"),
     )
     app.router.add_delete(
         "/v1/crew/owner/grants/{grant_id}",

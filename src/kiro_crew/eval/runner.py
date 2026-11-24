@@ -32,6 +32,7 @@ from kiro_crew.eval.scenario import (
 from kiro_crew.llm_helpers import _steer_host_deny, provider_model_pin_refused
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -705,7 +706,9 @@ class EvalRunner:
         chunks: list[str] = []
         calls = _TurnCalls()
 
-        async for event in provider.stream(turn_def.user):
+        # A scenario's later turns run on the same session, so a turn can open
+        # with the alternation placeholder (``drop_echo``).
+        async for event in drop_echo(provider.stream(turn_def.user)):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
             elif event.kind == EVENT_TOOL_CALL:
