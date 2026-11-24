@@ -53,6 +53,8 @@ def _state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock(return_value=True)
     state.sessions.get_provider = MagicMock(return_value=provider)
+    # A free turn lease, which the live effort push takes without waiting.
+    state.sessions.try_acquire = AsyncMock(return_value=True)
     return state
 
 

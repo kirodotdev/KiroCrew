@@ -183,6 +183,9 @@ def _make_state(tmp_path, **kwargs):
     # awaited for the second. Tests that want a live provider set it explicitly.
     sessions.get_provider = MagicMock(return_value=None)
     sessions.destroy = AsyncMock()
+    # A free turn lease: a live effort or model push takes it without waiting and
+    # awaits the take. Tests of a held lease answer False.
+    sessions.try_acquire = AsyncMock(return_value=True)
     # Real in-memory Slack-link store rather than bare MagicMocks. The unlink
     # path unpacks get_slack_link into (thread_ts, channel_id) and branches on
     # whether a link is PRESENT, and a MagicMock satisfies neither: it iterates

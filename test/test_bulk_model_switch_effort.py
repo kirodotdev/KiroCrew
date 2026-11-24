@@ -310,7 +310,7 @@ async def test_the_bulk_push_goes_through_the_shared_step(
     assert status == 200
     assert data[bucket] == ["a"]
     assert data["effort_deferred"] == deferred
-    push.assert_awaited_once_with(provider, "high", slot.key)
+    push.assert_awaited_once_with(state, "dashboard:a", provider, "high", slot.key)
     provider.change_effort.assert_not_awaited()
     state.sessions.reset.assert_not_awaited()
 
@@ -365,7 +365,7 @@ async def test_the_single_session_route_pushes_through_the_same_step(
     )
 
     assert (got_status, data) == (status, body)
-    push.assert_awaited_once_with(provider, "high", "a")
+    push.assert_awaited_once_with(state, "dashboard:a", provider, "high", "a")
     provider.change_effort.assert_not_awaited()
 
 
@@ -379,14 +379,21 @@ async def test_the_single_session_route_pushes_through_the_same_step(
         ("high", RuntimeError("boom"), "failed"),
     ],
 )
-async def test_the_shared_push_names_each_result(effort, pushed, expected):
+async def test_the_shared_push_names_each_result(tmp_path, effort, pushed, expected):
     provider = _live()
     provider.switches_by_relaunch = False
     mock = AsyncMock(side_effect=pushed) if isinstance(pushed, Exception) else None
     provider.change_effort = mock or AsyncMock(return_value=pushed)
     provider.clear_effort = AsyncMock(return_value=pushed)
+    state = _make_state(tmp_path)
 
-    assert await chat_handlers._push_live_effort(provider, effort, "a") == expected
+    assert (
+        await chat_handlers._push_live_effort(state, "dashboard:a", provider, effort, "a")
+        == expected
+    )
+    state.sessions.release.assert_called_once_with(
+        state.sessions._fold_key("dashboard:a"), wake_queue=True
+    )
     if effort:
         provider.clear_effort.assert_not_awaited()
     else:

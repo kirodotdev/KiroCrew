@@ -30,12 +30,14 @@ if TYPE_CHECKING:
         _ChatSlot,
         _deny_approval_mode,
         _remember_reasoning_effort_for_restore,
+        _replay_gap_open,
         _reset_slot_session,
         _reset_slot_session_or_warn,
         _slot_replaced_while_queued,
         _slot_switch_session_lock,
         _subagents_attached_response,
         _switch_target_busy,
+        _take_turn_lease,
         apply_approval_mode,
         approve_for_me_engine_supported,
         approve_for_me_keys,
@@ -219,7 +221,9 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
     )
 
 
-async def _push_live_effort(provider: AcpProvider, effort: str, slot_name: str) -> str:
+async def _push_live_effort(
+    state: DashboardState, session_key: str, provider: AcpProvider, effort: str, slot_name: str
+) -> str:
     """Push *effort* to the live *provider*: the one live push both effort routes share.
 
     ``change_effort`` for a level, ``clear_effort(every_model=True)`` for ``""``
@@ -229,13 +233,27 @@ async def _push_live_effort(provider: AcpProvider, effort: str, slot_name: str) 
     supports effort, offers the level and runs no turn, since a push during a
     turn would race the streaming prompt loop.
 
-    Returns ``"applied"`` (the session runs the level now), ``"not_applied"``
+    The push holds *session_key*'s turn lease until its reply is in
+    (:func:`_take_turn_lease`). ``"busy"`` means another holder has it or a replay
+    gap holds the key, a turn in flight that ``has_active_turn`` cannot see, and
+    nothing was sent.
+
+    Otherwise returns ``"applied"`` (the session runs the level now), ``"not_applied"``
     (the session takes it only on a restart), ``"overlay_busy"`` (nothing
     changed: another writer holds the workspace effort overlay), ``"refused"``
     (the harness refused the level and kept its prior one) or ``"failed"`` (the
     push raised for another reason). The exception text of the last two stays
     in the log line: it can carry agent-authored words, a path or a host.
     """
+    lease_key = await _take_turn_lease(state, session_key)
+    if lease_key is None:
+        return "busy"
+    logger.info(
+        "Slot %s pushing effort %r live under the turn lease it took on %s",
+        slot_name,
+        effort or "default",
+        lease_key,
+    )
     try:
         if effort:
             pushed: bool | None = await provider.change_effort(effort)
@@ -266,6 +284,9 @@ async def _push_live_effort(provider: AcpProvider, effort: str, slot_name: str) 
             exc,
         )
         return "failed"
+    finally:
+        # Before the caller's reset fallback, which declines a held lease.
+        state.sessions.release(lease_key, wake_queue=True)
     if pushed is None:
         # clear_effort changed nothing: neither the overlay nor the provider's map.
         return "overlay_busy"
@@ -421,6 +442,14 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         # Whether ``clear_effort`` handled the workspace overlay for a Default.
         # A Default committed without it marks the slot for its next spawn.
         _live_cleared = False
+        # What this request saw of the session's turn, named on each outcome line
+        # below: the gateway's own record of why a level went live or waited.
+        replay_gap = _replay_gap_open(state, session_key)
+        lease_seen = (
+            f"live_session={provider is not None} "
+            f"lease_held={state.sessions.is_busy(session_key) is True} replay_gap={replay_gap}"
+        )
+        outcome = ""
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
             # change_effort issues session/set_config_option and its response wait
@@ -428,41 +457,60 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # _prompt_loop → dropped/misrouted frame or a stuck turn. The override
             # is already persisted on the slot, so defer the live push to the next
             # turn instead of pushing now or resetting (effort is a cheap knob).
-            if provider.has_active_turn():
-                logger.info("Slot %s deferred live effort push: turn active", name)
-                if not effort:
-                    # Default does now what a respawn reads, with no RPC under the
-                    # turn: the stored levels and the model's workspace cli.json
-                    # entry go, so neither this provider's respawn nor a reset
-                    # successor brings the old level back.
-                    if not await provider.forget_effort():
-                        return web.json_response(
-                            {
-                                "error": "the workspace effort overlay is locked by another writer",
-                                "code": "effort_overlay_busy",
-                            },
-                            status=409,
-                        )
-                    state.sessions.record_effort_override(session_key, "")
-                # This path's success point: the override is recorded on the
-                # slot now and pushed to the live session next turn. A rebind
-                # during the await above leaves the Default to the new binding's
-                # next spawn.
-                slot.reasoning_effort = effort
-                set_effort_overlay_clear_mark(
-                    slot, not effort and effective_session_key(slot) != session_key
-                )
-                normalized = normalize_legacy_model()
-                state.push_slots_update()
-                return web.json_response(
-                    {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
-                )
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the slot's level → fall back to the
             # model default (kiro: /effort with the workspace default; claude: the
             # adapter's ``default`` live). A push the session cannot take live,
             # or one that failed, leaves _updated_live False for the reset below.
-            outcome = await _push_live_effort(provider, effort, name)
+            # The push also defers while another holder has the session's turn
+            # lease ("busy"): a channel turn that holds it has no prompt in flight
+            # yet, which has_active_turn cannot see.
+            outcome = (
+                "busy"
+                if provider.has_active_turn()
+                else await _push_live_effort(state, session_key, provider, effort, name)
+            )
+        elif provider is None and replay_gap:
+            # A cron or channel turn popped the session to re-claim it. Nothing is
+            # live to push to, and the reset fallback below would tear down nothing
+            # while it advanced the generation of the key that turn is re-claiming.
+            outcome = "busy"
+        if outcome == "busy":
+            logger.info(
+                "Slot %s deferred live effort push: a turn holds the session (%s)",
+                name,
+                lease_seen,
+            )
+            forgot = False
+            if not effort and isinstance(provider, AcpProvider):
+                # Default does now what a respawn reads, with no RPC under the
+                # turn: the stored levels and the model's workspace cli.json
+                # entry go, so neither this provider's respawn nor a reset
+                # successor brings the old level back.
+                if not await provider.forget_effort():
+                    return web.json_response(
+                        {
+                            "error": "the workspace effort overlay is locked by another writer",
+                            "code": "effort_overlay_busy",
+                        },
+                        status=409,
+                    )
+                state.sessions.record_effort_override(session_key, "")
+                forgot = True
+            # This path's success point: the override is recorded on the slot now
+            # and pushed to the live session next turn. A Default with no live
+            # session to forget it, or a rebind during the await above, leaves it
+            # to the next spawn.
+            slot.reasoning_effort = effort
+            set_effort_overlay_clear_mark(
+                slot, not effort and (not forgot or effective_session_key(slot) != session_key)
+            )
+            normalized = normalize_legacy_model()
+            state.push_slots_update()
+            return web.json_response(
+                {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
+            )
+        if outcome:
             _live_cleared = not effort and outcome in ("applied", "not_applied")
             if outcome == "refused":
                 # A fixed sentence: the exception text can carry agent-authored
@@ -482,7 +530,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # Model does not support effort: persist the slot value for when the
             # user switches to a capable model, but do not touch the live session.
             _updated_live = True
-            logger.info("Slot %s effort persisted (model not effort-capable)", name)
+            logger.info(
+                "Slot %s effort persisted (model not effort-capable) (%s)", name, lease_seen
+            )
 
         if _updated_live is None:
             # clear_effort's third outcome: NOTHING changed -- not the workspace
@@ -529,6 +579,12 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             )
 
         if not _updated_live:
+            logger.info(
+                "Slot %s effort %r not pushed live; resetting the session for it (%s)",
+                name,
+                effort or "default",
+                lease_seen,
+            )
             if effective_session_key(slot) != session_key:
                 # Rebound while a FAILED live push awaited: the reset fallback
                 # below would tear down the wrong session, and nothing is
@@ -989,12 +1045,11 @@ async def _write_session_switch(
                 },
                 status=409,
             )
-        # The write also holds the session's turn lease, taken without waiting: a
-        # channel turn holds it before its prompt is in flight, which the busy probe
-        # cannot see, and that prompt would read the stdout this write's reply wait reads.
-        lease_key = state.sessions._fold_key(session_key)
-        if _switch_target_busy(state, slot, session_key, provider) or not (
-            await state.sessions.try_acquire(lease_key)
+        # The write also holds the session's turn lease until its reply is in
+        # (_take_turn_lease).
+        if (
+            _switch_target_busy(state, slot, session_key, provider)
+            or (lease_key := await _take_turn_lease(state, session_key)) is None
         ):
             return web.json_response(
                 {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409

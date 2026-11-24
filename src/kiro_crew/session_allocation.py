@@ -779,6 +779,10 @@ class SessionAllocationService:
             return False
         if session.retire_on_identity_change:
             return False
+        registering = session.registering_task
+        if registering is not None and not registering.done():
+            # Registered, not yet claimed: the session is the starting turn's.
+            return False
         # Idle Semaphore(1).acquire completes without suspending, keeping the
         # locked check and decrement atomic on the event loop.
         await session.semaphore.acquire()
@@ -1027,6 +1031,7 @@ class SessionAllocationService:
                     )
                     session.capability_member = prepared.member
                     self._install_work_dir_claim_probe(key, provider)
+                    session.registering_task = asyncio.current_task()
                     self._sessions[key] = session
                     self.advance_ownership_generation(key)
                     won_race_session = session
@@ -1081,6 +1086,7 @@ class SessionAllocationService:
         assert won_race_session is session
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
+        session.registering_task = None
         try:
             # On KAS an unpinned step starts on kiro-cli's chat.defaultModel. Under
             # the turn semaphore, so no other claimant runs a turn before it lands.
@@ -1655,6 +1661,7 @@ _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",
+    "kiro_crew.session_allocation_parts.resume_cwd",
     "kiro_crew.session_allocation_parts.get_or_create",
 )
 #: Project names this module bound before the owners existed that only the owners read.

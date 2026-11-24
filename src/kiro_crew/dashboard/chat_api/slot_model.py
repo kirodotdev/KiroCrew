@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _switch_target_busy,
         _sync_served_model,
+        _take_turn_lease,
         app_owns_slot_session,
         capabilities_of,
         config_options_refuse_auto,
@@ -280,10 +281,11 @@ async def _try_live_model_switch(
     if provider.has_active_turn():
         # Same hazard api_chat_slot_reasoning_effort documents: awaiting a
         # response mid-turn races the streaming prompt loop on stdout for the
-        # non-multiplexed client. api_chat_slot_model defers the pick to the
-        # turn boundary before reaching here (its check and this call share
-        # one no-await window), so this is defense in depth for any future
-        # caller — decline the live switch rather than race the stream.
+        # non-multiplexed client. Every caller holds the session's turn lease
+        # across this call, so no turn can start under it, and a caller whose
+        # lease is held elsewhere defers the pick instead; this is defense in
+        # depth for any future caller — decline the live switch rather than
+        # race the stream.
         return False
     wire = _wire_model_id(provider, model_name)
     if not wire:
@@ -638,6 +640,15 @@ async def switch_slot_model(
             return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
         _busy = _switch_target_busy(state, slot, session_key, provider, own_turn=caller.own_turn)
+        # The live switch below holds the session's turn lease until its reply is
+        # in, and a lease another holder has reads as a turn in flight
+        # (_take_turn_lease). Taken here so that turn defers the pick like any
+        # other; nothing between here and the live switch awaits or raises, and
+        # the switch's ``finally`` releases it.
+        lease_key: str | None = None
+        if not _busy and isinstance(provider, AcpProvider):
+            lease_key = await _take_turn_lease(state, session_key)
+            _busy = lease_key is None
         if _busy:
             # Never tear down an in-flight turn: _try_live_model_switch
             # declines a mid-turn live switch (awaiting the backend's answer
@@ -827,6 +838,10 @@ async def switch_slot_model(
                 },
                 status=400,
             )
+        finally:
+            # Before the reset fallback below, which declines a held lease.
+            if lease_key is not None:
+                state.sessions.release(lease_key, wake_queue=True)
         if effective_session_key(slot) != session_key:
             # The slot was bound to a different session while the live switch
             # awaited its provider RPCs (a cron/workflow slot gets linked when
@@ -1068,7 +1083,10 @@ async def _bulk_effort_only_switch(
         return "applied"
     if not isinstance(live, AcpProvider) or not live.supports_effort():
         return "deferred" if effort_commit_needs_reset(live) else "applied"
-    outcome = await _push_live_effort(live, effort, slot.key)
+    outcome = await _push_live_effort(state, session_key, live, effort, slot.key)
+    if outcome == "busy":
+        # Another holder has the turn lease: a turn the busy probe above misses.
+        return "skipped" if skip_running else "deferred"
     # A refused or failed push changed nothing, and the push already logged why.
     return {"applied": "applied", "not_applied": "deferred"}.get(outcome, "failed")
 
