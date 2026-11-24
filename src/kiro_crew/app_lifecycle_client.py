@@ -31,6 +31,9 @@ from kiro_crew.terminal_safe import safe_terminal_line
 _ACTION_TIMEOUT_SECS = 300
 # A config read or write is one small file on the gateway's side.
 _CONFIG_TIMEOUT_SECS = 30
+# The credential mint waits as long as `kirocrew token` does for the same request:
+# a gateway that is up but busy can take more than a few seconds to answer it.
+_MINT_TIMEOUT_SECS = 20
 
 
 class AppGatewayError(RuntimeError):
@@ -270,7 +273,7 @@ def _open_gateway() -> tuple[str, str, Path, Callable[..., None]] | None:
     )
     try:
         with unix_socket_urlopen(
-            mint, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+            mint, timeout=_MINT_TIMEOUT_SECS, socket_path=socket_path, verify_peer=verify_peer
         ) as response:
             minted = _read_json(response)
     except AppGatewayError:

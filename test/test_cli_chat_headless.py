@@ -777,6 +777,27 @@ def test_a_run_longer_than_the_sign_in_token_keeps_polling(monkeypatch):
     assert state["minted"] == 4
 
 
+def test_sign_in_waits_as_long_as_kirocrew_token(monkeypatch):
+    """A busy gateway can take 12-14 s to answer; a shorter wait reads it as down."""
+    from kiro_crew.cli_server_requests import _TOKEN_REQUEST_TIMEOUT
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.read_local_secret", lambda port, dial_host=None: "s3cret"
+    )
+    c = h.GatewayClient(4321)
+    answers = [_Resp(b'{"token":"tok"}'), _Resp(cookies=["mc_token_4321=sess; Path=/"])]
+    waits = {}
+
+    def fake_open(req, timeout, operation):
+        waits[operation] = timeout
+        return answers.pop(0)
+
+    c._open = fake_open
+    c.sign_in()
+    assert set(waits) == {"cli_headless_token", "cli_headless_session"}
+    assert min(waits.values()) >= _TOKEN_REQUEST_TIMEOUT
+
+
 def test_client_errors(monkeypatch):
     c, _ = _client(monkeypatch, [403])
     with pytest.raises(RuntimeError, match="refused sign-in: HTTP 403"):
