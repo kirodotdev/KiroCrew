@@ -6348,6 +6348,12 @@
         "all_install_states": "전체",
         "installed": "설치됨"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "열린 질문에서 논문과 그 발표 덱까지.",
+        "research_to_deliverable_title": "조사에서 결과물까지",
+        "ship_better_code_blurb": "스펙을 쓰고, 리뷰하고, 측정하세요. 코드베이스를 건강하게 유지하는 루프입니다.",
+        "ship_better_code_title": "더 나은 코드 출시"
+      },
       "featuredSpotlight": {
         "collection": "컬렉션",
         "desktop_app": "데스크톱 앱",

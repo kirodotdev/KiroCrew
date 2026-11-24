@@ -6566,6 +6566,12 @@
         "all_install_states": "সব",
         "installed": "ইনস্টল করা আছে"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "খোলা প্রশ্ন থেকে একটি পেপার আর সেটি তুলে ধরার উপস্থাপনা পর্যন্ত।",
+        "research_to_deliverable_title": "রিসার্চ থেকে ফলাফল",
+        "ship_better_code_blurb": "spec লেখো, রিভিউ করো, মাপো: যে চক্র কোডবেসকে সৎ রাখে।",
+        "ship_better_code_title": "আরও ভালো কোড শিপ করো"
+      },
       "featuredSpotlight": {
         "collection": "সংকলন",
         "desktop_app": "ডেস্কটপ অ্যাপ",

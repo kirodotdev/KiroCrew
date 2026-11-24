@@ -6744,6 +6744,12 @@
         "all_install_states": "Todos",
         "installed": "Instalados"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "De perguntas em aberto a um artigo e à apresentação que o mostra.",
+        "research_to_deliverable_title": "Da pesquisa à entrega",
+        "ship_better_code_blurb": "Especifique, revise, meça: o ciclo que mantém uma base de código honesta.",
+        "ship_better_code_title": "Entregue código melhor"
+      },
       "featuredSpotlight": {
         "collection": "COLEÇÃO",
         "desktop_app": "Aplicativo para desktop",

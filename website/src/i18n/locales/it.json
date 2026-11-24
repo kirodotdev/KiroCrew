@@ -6744,6 +6744,12 @@
         "all_install_states": "Tutte",
         "installed": "Installate"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "Dalle domande aperte a un articolo e alla presentazione che lo illustra.",
+        "research_to_deliverable_title": "Dalla ricerca al risultato",
+        "ship_better_code_blurb": "Specifica, rivedi, misura: il ciclo che mantiene onesta una codebase.",
+        "ship_better_code_title": "Rilascia codice migliore"
+      },
       "featuredSpotlight": {
         "collection": "RACCOLTA",
         "desktop_app": "App desktop",

@@ -6388,6 +6388,12 @@
         "all_install_states": "全部",
         "installed": "已安装"
       },
+      "editorialCopy": {
+        "research_to_deliverable_blurb": "从悬而未决的问题，到一篇论文和展示它的演示文稿。",
+        "research_to_deliverable_title": "从研究到成果",
+        "ship_better_code_blurb": "写 spec、做审查、做度量：让代码库始终经得起检验的闭环。",
+        "ship_better_code_title": "交付更好的代码"
+      },
       "featuredSpotlight": {
         "collection": "合集",
         "desktop_app": "桌面端",
