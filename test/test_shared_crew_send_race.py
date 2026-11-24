@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -144,6 +145,22 @@ async def test_one_operator_s_local_subjects_never_race_each_other():
     # The operator's other local token sends from a tab that still shows 0.
     stale = await reg.claim("s", principal=startup, base_revision=0)
     assert isinstance(stale, Granted)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_configured_while_the_gateway_runs_never_races_their_own_send():
+    """The race reads the gateway's owner id when it compares, as the typing lease does."""
+    gateway = SimpleNamespace(owner_id="", broadcast_ws=MagicMock())
+    reg = send_race.send_race_for(gateway)
+    first = await reg.claim("s", principal=local_operator_principal("local-app"), base_revision=0)
+    assert isinstance(first, Granted)
+    reg.commit(first.claim, message_id="before-the-claim")
+    gateway.owner_id = "U0OWNER"
+    mine = await reg.claim("s", principal=local_operator_principal("U0OWNER"), base_revision=0)
+    assert isinstance(mine, Granted)
+    reg.release(mine.claim)
+    # Someone else's stale tab still loses.
+    assert isinstance(await reg.claim("s", principal=BOB, base_revision=0), Conflict)
 
 
 @pytest.mark.asyncio
