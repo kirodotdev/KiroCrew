@@ -22817,7 +22817,7 @@
       "remoteControlCard": {
         "title": "Contrôle à distance",
         "on": "Le contrôle à distance est activé. Ton compte Kiro peut accéder à {{productName}} depuis tes autres appareils.",
-        "restart_to_connect": "Le contrôle à distance est réglé sur activé, mais il n'est pas connecté. Redémarre {{productName}} pour le connecter.",
+        "not_connected": "Le contrôle à distance est activé, mais il n'est pas connecté. Si le contrôle à distance a été activé ou configuré depuis le dernier démarrage de {{productName}}, redémarre {{productName}}. Si la tuile Tunnel de Vue d'ensemble affiche une erreur, cette erreur en indique la raison. Si le contrôle à distance utilise la connexion Kiro de cette Crew et que ce n'est pas une connexion valide avec le SSO de ton entreprise, connecte-toi avec le SSO de ton entreprise dans Paramètres → Compte Kiro.",
         "connecting": "Le contrôle à distance est activé et en cours de connexion. Il se connecte tout seul, inutile de redémarrer.",
         "locked": "Le contrôle à distance est géré par cette version et ne peut pas être activé ici.",
         "turn_off": "Désactiver",
