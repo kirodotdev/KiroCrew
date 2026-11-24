@@ -42,12 +42,11 @@ export function useKiroSignInSources() {
  * Remove the sign-in stored in this app (the card's Sign out, and "Use the Kiro
  * CLI account"). One mutation for both, so each leaves the same state behind.
  */
-export function useKiroSignOut(identity: string, onSignedOut: () => void) {
+export function useKiroSignOut(identity: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: () => api.kasLoginLogout(identity),
     onSuccess: () => {
-      onSignedOut()
       // Open relay Crew windows ran as this sign-in: close them now, not at
       // their next renewal.
       void closeRelayCrews()
@@ -157,16 +156,17 @@ export function SignInStoreUnreadableErrors({ sources }: { sources: KasLoginSour
 export function KiroSignInSourcesNotice({
   sources,
   identity,
-  onRemoved,
+  hideTitle = false,
 }: {
   sources: KasLoginSources | undefined
   /** The stored sign-in's slot (`KasLoginStatus.identity`), which the removal names. */
   identity: string
-  onRemoved: () => void
+  /** `using_kiro_cli` only: the page header already reads as this notice's title. */
+  hideTitle?: boolean
 }) {
   const kind = sourcesNotice(sources)
   const [confirming, setConfirming] = useState(false)
-  const remove = useKiroSignOut(identity, onRemoved)
+  const remove = useKiroSignOut(identity)
   const [emailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
   if (!sources || !kind) return null
   const cli = accountName(sources.kiro_cli, sources.name_pending, emailHidden)
@@ -182,10 +182,12 @@ export function KiroSignInSourcesNotice({
           <Info className="lucide-inline" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-text-strong">
-            {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
-          </p>
-          <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
+          {hideTitle ? null : (
+            <p className="text-sm font-medium text-text-strong">
+              {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
+            </p>
+          )}
+          <p className={`${hideTitle ? '' : 'mt-0.5 '}text-[13px] leading-relaxed text-muted`}>
             {cli
               ? i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body', { account: cli })
               : i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}

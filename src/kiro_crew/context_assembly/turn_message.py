@@ -424,7 +424,11 @@ def build_message(
             native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
         ):
             parts.append(_session_head.agent_prompt_block(block_prompt))
-        with ctx._prompt_build_embedding_deadline(bool(text), query=text):
+        # Recall ranks the user's own span, never the context a dispatcher put in
+        # front of it. Before any hook rewrite: the dashboard starts this same
+        # query's embed and memory reads ahead of the build, before hooks run.
+        _recall_query = _turn.recall_query(text, user_text_range)
+        with ctx._prompt_build_embedding_deadline(bool(text), query=_recall_query):
             session_ctx = self.build_session_context(
                 session_key,
                 agent=agent,
@@ -440,7 +444,7 @@ def build_message(
                 exclude_last_n=exclude_last_n,
                 model_window=model_window,
                 context_groups=context_groups,
-                query_text=text,
+                query_text=_recall_query,
                 conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee

@@ -542,10 +542,14 @@ export function CreditUsage({
   usage,
   onClose,
   handoff = true,
+  quiet = false,
 }: {
   usage: KiroAccountUsage
   onClose: () => void
   handoff?: boolean
+  /** No reading yet is one gray line with a small Refresh beside it, not the
+   *  notice box (Settings > Kiro account, where nothing is a filled button). */
+  quiet?: boolean
 }) {
   const queryClient = useQueryClient()
   const refresh = useUsageRefresh()
@@ -735,6 +739,14 @@ export function CreditUsage({
     // outcome REPLACES the standing box while it shows, so the notice is in the
     // same place whichever no-reading state the modal opened in.
     const outcomeReplacesNotice = refresh.notice !== null
+    if (quiet && !outcomeReplacesNotice) {
+      return (
+        <div className="flex items-center gap-3 text-[13px] text-muted" data-testid="kiro-credits-no-reading">
+          <span>{i18nT('components.kiroAccountModal.credit_usage_not_ready')}</span>
+          {canRefreshUsage(usage) && refreshButton(true)}
+        </div>
+      )
+    }
     return (
       <div className="flex flex-col gap-3">
         {outcomeReplacesNotice

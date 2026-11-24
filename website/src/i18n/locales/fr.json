@@ -6497,7 +6497,8 @@
       "sign_out_link_config_unreadable": "Impossible de charger les paramètres, donc le lien de déconnexion ne peut pas s’afficher.",
       "switch_in_settings": "Changer de compte dans les Paramètres",
       "bots_sign_in_in_settings": "Connexion Kiro des Bots dans les Paramètres",
-      "kiro_account_in_settings": "Compte Kiro dans les Paramètres"
+      "kiro_account_in_settings": "Compte Kiro dans les Paramètres",
+      "credit_usage_not_ready": "Ton solde n’est pas encore prêt."
     },
     "agentDropdownList": {
       "active_in_this_session": "Actif dans cette session",
@@ -8397,7 +8398,8 @@
       "pending_cancel_unsettled": "Connecté, mais la connexion lancée ici n’a pas pu être annulée. Elle reste ouverte jusqu’à son expiration.",
       "card_intro": "Kiro Agent et les autres fonctions de Kiro s’exécutent avec ce compte Kiro, quel que soit le harness de l’agent utilisé. Kiro CLI garde sa propre connexion kiro-cli, donc te connecter ici ne la change pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
-      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
+      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici.",
+      "use_another_way": "Utiliser un autre moyen"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Copier la commande de connexion",
@@ -17133,19 +17135,15 @@
         "engine_sign_in_reason": "Connecte-toi à {{productName}} pour passer au moteur intégré."
       },
       "kiroSignInCard": {
-        "title": "Connexion Kiro",
         "checking": "Vérification de la connexion…",
         "signed_in_with": "Connecté avec {{provider}}",
-        "signed_in_body": "Les agents s’exécutent avec ce compte Kiro. Le jeton d’accès est renouvelé automatiquement.",
         "access_token_expires": "Le jeton d’accès expire {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "Le jeton d’accès a expiré et sera renouvelé la prochaine fois qu’un agent en aura besoin.",
         "sign_in_expired": "Connexion expirée.",
         "sign_in_expired_body": "Reconnecte-toi pour reprendre les sessions et le travail des agents.",
         "sign_in_expired_body_account": "Reconnecte-toi pour utiliser les fonctions qui ont besoin de ton compte Kiro.",
         "sign_in_again": "Se reconnecter",
         "switch_account": "Changer de compte",
         "sign_out": "Se déconnecter",
-        "takes_effect_next_process": "S’applique aux processus d’agent démarrés à partir de maintenant ; les sessions en cours l’adoptent à leur prochain tour.",
         "could_not_sign_out": "Déconnexion impossible",
         "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration.",
         "search_label": "Se déconnecter ou changer de compte Kiro",
@@ -17169,7 +17167,10 @@
         "use_kiro_cli_account": "Utiliser le compte Kiro CLI",
         "use_kiro_cli_explain": "Cela supprime la connexion enregistrée ici. Kiro Agent s’exécute ensuite avec le compte Kiro CLI. Pour annuler, reconnecte-toi ici.",
         "remove_this_sign_in": "Supprimer cette connexion",
-        "keep_it": "La conserver"
+        "keep_it": "La conserver",
+        "signed_out_hint": "Tes agents tournent sur ton compte Kiro.",
+        "code_step_hint": "Ouvre la page, puis vérifie qu’elle affiche ce code.",
+        "loading_account": "Chargement du compte"
       },
       "kiroAccountUnlocks": {
         "list_heading": "Avec un compte Kiro",
