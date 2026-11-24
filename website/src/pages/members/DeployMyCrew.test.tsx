@@ -410,11 +410,9 @@ describe('the panel', () => {
     await waitFor(() => expect(screen.getByTestId('deploy-state-none')).toBeTruthy())
     expect(screen.queryByTestId('deploy-error')).toBeNull()
     expect(screen.queryByTestId('deploy-details')).toBeNull()
-    // The button only opens Settings, and its label says so; the line under
-    // it says the one thing the label cannot: nothing is created until the
-    // steps there are confirmed.
+    // The button only opens Settings, and its label says so.
     expect(screen.getByTestId('deploy-action-deploy').textContent).toContain('Settings')
-    expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
+    expect(screen.queryByTestId('deploy-action-hint')).toBeNull()
 
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
     expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
@@ -616,10 +614,8 @@ describe('the panel', () => {
     expect(notice.textContent).toContain('the task role could not be assumed')
     // Never offered as reachable: the failed fixture still carries a machine.
     expect(screen.queryByTestId('deploy-address')).toBeNull()
-    // The same label and where-it-leads line as the not-deployed state, for
-    // the same button.
+    // The same label as the not-deployed state, for the same button.
     expect(screen.getByTestId('deploy-action-deploy').textContent).toContain('Settings')
-    expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
 
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
     expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
@@ -692,7 +688,6 @@ describe('the panel', () => {
     expect(screen.queryByTestId('deploy-check-console')).toBeNull()
     // The one thing to do is the same as with no launch: the set-up flow.
     expect(screen.getByTestId('deploy-action-deploy').textContent).toContain('Settings')
-    expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
     expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
     expect(onClose).toHaveBeenCalledTimes(1)
