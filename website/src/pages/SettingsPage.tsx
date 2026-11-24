@@ -48,6 +48,11 @@ const AgentBackendTab = lazy(() =>
 const KiroSignInCard = lazy(() =>
   import('./developer/KiroSignInCard').then(m => ({ default: m.KiroSignInCard })),
 )
+/** What the sign-in unlocks, under the sign-in card once signed in. Same chunk
+ *  as the card: the card imports its signed-out list from this module. */
+const KiroAccountUnlocksCard = lazy(() =>
+  import('./developer/KiroAccountUnlocks').then(m => ({ default: m.KiroAccountUnlocksCard })),
+)
 /** Subagent Settings + Warm Pool, beside the backend picker: both govern how agents run. */
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
@@ -390,6 +395,15 @@ export default function SettingsPage() {
             <ErrorBoundary scope="settings-kiro-sign-in">
               <Suspense fallback={<ContentSkeleton rows={6} />}>
                 <KiroSignInCard />
+              </Suspense>
+            </ErrorBoundary>
+          )}
+          {kiroSignInOffered && (
+            // Its own boundary: a failure here must not take the sign-in card down.
+            // No skeleton: the card renders nothing until it is signed in.
+            <ErrorBoundary scope="settings-kiro-account-unlocks">
+              <Suspense fallback={null}>
+                <KiroAccountUnlocksCard />
               </Suspense>
             </ErrorBoundary>
           )}

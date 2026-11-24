@@ -16296,6 +16296,23 @@
         "remove_this_sign_in": "このサインインを削除",
         "keep_it": "そのままにする"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "Kiro アカウントでできること",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "エージェントを Kiro Agent で実行します。",
+        "kiro_agent_on": "エージェントは Kiro Agent で実行されています。",
+        "kiro_agent_bots": "Bot は Kiro Agent で実行されています。メインのハーネスは {{harness}} です。",
+        "kiro_agent_missing": "未使用：エージェントは {{harness}} で動いています。",
+        "kiro_models": "Kiro モデル",
+        "kiro_models_pitch": "Kiro のモデルを選び、クレジットレートを確認できます。",
+        "kiro_models_on": "モデル選択に Kiro のモデルとクレジットレートが表示されます。",
+        "kiro_models_missing": "メインのハーネスとして Kiro Agent が必要です。",
+        "card_title": "Kiro アカウントで使える機能",
+        "on": "アクティブ",
+        "not_active": "アクティブではない",
+        "sign_in_again": "使うには再度サインインしてください。",
+        "change_in_agent_harness": "エージェントハーネスで変更"
+      },
       "strandsSetup": {
         "cancel": "キャンセル",
         "desc_anthropic_api_key": "Anthropic の API キー。",

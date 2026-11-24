@@ -17170,6 +17170,23 @@
         "remove_this_sign_in": "Remover este login",
         "keep_it": "Manter"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "Com uma conta Kiro",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "Execute seus agentes no Kiro Agent.",
+        "kiro_agent_on": "Seus agentes são executados no Kiro Agent.",
+        "kiro_agent_bots": "Seus Bots são executados no Kiro Agent. Seu harness principal é {{harness}}.",
+        "kiro_agent_missing": "Não está em uso: seus agentes rodam no {{harness}}.",
+        "kiro_models": "Modelos Kiro",
+        "kiro_models_pitch": "Escolha os modelos da Kiro e veja suas taxas de créditos.",
+        "kiro_models_on": "O seletor de modelos lista os modelos da Kiro e suas taxas de créditos.",
+        "kiro_models_missing": "Requer o Kiro Agent como harness principal.",
+        "card_title": "O que sua conta Kiro desbloqueia",
+        "on": "Ativo",
+        "not_active": "Não ativo",
+        "sign_in_again": "Entre novamente para usar.",
+        "change_in_agent_harness": "Alterar em Harness do agente"
+      },
       "strandsSetup": {
         "cancel": "Cancelar",
         "desc_anthropic_api_key": "Sua chave de API da Anthropic.",

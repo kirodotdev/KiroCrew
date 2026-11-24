@@ -16296,6 +16296,23 @@
         "remove_this_sign_in": "移除这个登录",
         "keep_it": "保留"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "有 Kiro 账户后可用",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "让你的代理在 Kiro Agent 上运行。",
+        "kiro_agent_on": "你的代理在 Kiro Agent 上运行。",
+        "kiro_agent_bots": "你的 Bot 在 Kiro Agent 上运行。你的主运行框架是 {{harness}}。",
+        "kiro_agent_missing": "未使用：你的代理运行在 {{harness}} 上。",
+        "kiro_models": "Kiro 模型",
+        "kiro_models_pitch": "选择 Kiro 的模型，查看各自的额度倍率。",
+        "kiro_models_on": "模型选择器会列出 Kiro 的模型及其额度倍率。",
+        "kiro_models_missing": "需要将 Kiro Agent 作为主运行框架。",
+        "card_title": "你的 Kiro 账户可以解锁的功能",
+        "on": "已启用",
+        "not_active": "未启用",
+        "sign_in_again": "重新登录即可使用。",
+        "change_in_agent_harness": "在代理运行框架中更改"
+      },
       "strandsSetup": {
         "cancel": "取消",
         "desc_anthropic_api_key": "你的 Anthropic API 密钥。",
