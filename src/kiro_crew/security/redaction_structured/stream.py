@@ -68,6 +68,9 @@ class StreamRedactor:
         self._closed = False
         # Input offset where the last committed private-key block's END line ends.
         self._armour_from = 0
+        # Input offset where the last committed Secret span ends: a token glued
+        # after it is read as glued once that span has left the look-behind.
+        self._glued_from = 0
 
     @property
     def spans(self) -> list[Span]:
@@ -121,6 +124,8 @@ class StreamRedactor:
         for h in resolved:
             if h.start >= lo and h.end <= hi:
                 self._spans.append((h.start + offset, h.end + offset, h.rule_id, h.tier))
+                if h.tier == SECRET:
+                    self._glued_from = max(self._glued_from, h.end + offset)
 
     def _note_blocks(self, blocks: tuple[tuple[int, int], ...], cut: int, offset: int) -> None:
         """Keep where whole text resumes its private-key scan after a committed BEGIN."""
@@ -133,7 +138,11 @@ class StreamRedactor:
         base = len(self._ctx)
         offset = self._pos - base
         result = scan(
-            window, final=final, origin=base, armour_from=max(0, self._armour_from - offset)
+            window,
+            final=final,
+            origin=base,
+            armour_from=max(0, self._armour_from - offset),
+            glued_from=max(0, self._glued_from - offset),
         )
         resolved = resolve([h for h in result.hits if h.start >= base])
         n = len(window)
