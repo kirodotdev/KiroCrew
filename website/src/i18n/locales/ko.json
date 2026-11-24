@@ -16274,6 +16274,23 @@
         "remove_this_sign_in": "이 로그인 삭제",
         "keep_it": "유지"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "Kiro 계정으로 할 수 있는 것",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "에이전트를 Kiro Agent에서 실행하세요.",
+        "kiro_agent_on": "에이전트가 Kiro Agent에서 실행됩니다.",
+        "kiro_agent_bots": "Bot은 Kiro Agent에서 실행됩니다. 기본 하네스는 {{harness}}입니다.",
+        "kiro_agent_missing": "사용 안 함: 에이전트가 {{harness}}에서 실행 중입니다.",
+        "kiro_models": "Kiro 모델",
+        "kiro_models_pitch": "Kiro 모델을 고르고 크레딧 배율을 확인하세요.",
+        "kiro_models_on": "모델 선택기에 Kiro 모델과 크레딧 배율이 표시됩니다.",
+        "kiro_models_missing": "기본 하네스로 Kiro Agent가 필요합니다.",
+        "card_title": "Kiro 계정으로 사용할 수 있는 기능",
+        "on": "활성",
+        "not_active": "활성 아님",
+        "sign_in_again": "사용하려면 다시 로그인하세요.",
+        "change_in_agent_harness": "에이전트 하네스에서 변경"
+      },
       "strandsSetup": {
         "cancel": "취소",
         "desc_anthropic_api_key": "Anthropic API 키입니다.",

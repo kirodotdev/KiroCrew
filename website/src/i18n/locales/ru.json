@@ -17567,6 +17567,23 @@
         "remove_this_sign_in": "Удалить этот вход",
         "keep_it": "Оставить"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "С аккаунтом Kiro",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "Запускай агентов в Kiro Agent.",
+        "kiro_agent_on": "Твои агенты работают в Kiro Agent.",
+        "kiro_agent_bots": "Твои Bot работают в Kiro Agent. Твоя основная оболочка — {{harness}}.",
+        "kiro_agent_missing": "Не используется: твои агенты работают на {{harness}}.",
+        "kiro_models": "Модели Kiro",
+        "kiro_models_pitch": "Выбирай модели Kiro и смотри их тарифы в кредитах.",
+        "kiro_models_on": "В выборе модели есть модели Kiro и их тарифы в кредитах.",
+        "kiro_models_missing": "Нужен Kiro Agent в качестве основной оболочки.",
+        "card_title": "Что даёт аккаунт Kiro",
+        "on": "Активно",
+        "not_active": "Не активно",
+        "sign_in_again": "Войди снова, чтобы пользоваться.",
+        "change_in_agent_harness": "Изменить в разделе «Оболочка агента»"
+      },
       "strandsSetup": {
         "cancel": "Отмена",
         "desc_anthropic_api_key": "Твой ключ API Anthropic.",

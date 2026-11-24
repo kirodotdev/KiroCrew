@@ -16705,6 +16705,23 @@
         "remove_this_sign_in": "यह साइन-इन हटाओ",
         "keep_it": "रहने दो"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "Kiro खाते के साथ",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "अपने एजेंट Kiro Agent पर चलाओ।",
+        "kiro_agent_on": "तुम्हारे एजेंट Kiro Agent पर चल रहे हैं।",
+        "kiro_agent_bots": "तुम्हारे Bot Kiro Agent पर चलते हैं। तुम्हारा मुख्य हार्नेस {{harness}} है।",
+        "kiro_agent_missing": "उपयोग में नहीं: तुम्हारे एजेंट {{harness}} पर चल रहे हैं।",
+        "kiro_models": "Kiro मॉडल",
+        "kiro_models_pitch": "Kiro के मॉडल चुनो और उनकी क्रेडिट दरें देखो।",
+        "kiro_models_on": "मॉडल पिकर में Kiro के मॉडल और उनकी क्रेडिट दरें दिखती हैं।",
+        "kiro_models_missing": "मुख्य हार्नेस के रूप में Kiro Agent ज़रूरी है।",
+        "card_title": "तुम्हारा Kiro खाता क्या-क्या खोलता है",
+        "on": "सक्रिय",
+        "not_active": "सक्रिय नहीं",
+        "sign_in_again": "इस्तेमाल करने के लिए फिर से साइन इन करो।",
+        "change_in_agent_harness": "एजेंट हार्नेस में बदलो"
+      },
       "strandsSetup": {
         "cancel": "रद्द करो",
         "desc_anthropic_api_key": "तुम्हारी Anthropic API कुंजी।",

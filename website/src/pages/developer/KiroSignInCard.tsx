@@ -18,6 +18,7 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { signInLapsed } from './kiroSignInState'
+import { KiroAccountUnlocksList } from './KiroAccountUnlocks'
 import {
   SignInStoreUnreadableErrors,
   KiroSignInSourcesNotice,
@@ -237,10 +238,16 @@ function SignInBody({
     // One flow for both states: it stays mounted when a sign-in lands, so the
     // landed result settles (caches dropped) before the summary replaces the
     // choices. The choices keep the dialog's width on a wide card.
+    // Signed out, what the account unlocks sits beside the choices (under them
+    // on a narrow screen). The wrapper stays one element either way, so the
+    // flow is not remounted when the sign-in lands.
     const signedOut = !status.authenticated
     content = (
-      <div className={signedOut ? 'max-w-md' : undefined} data-testid={signedOut ? 'kiro-sign-in-inline' : undefined}>
-        <KiroSignInFlow renderSignedIn={signedIn => renderSignedIn(signedIn, () => setReauthOpen(true))} />
+      <div className={signedOut ? 'flex flex-col gap-6 md:flex-row md:items-start' : undefined}>
+        <div className={signedOut ? 'max-w-md md:flex-1' : undefined} data-testid={signedOut ? 'kiro-sign-in-inline' : undefined}>
+          <KiroSignInFlow renderSignedIn={signedIn => renderSignedIn(signedIn, () => setReauthOpen(true))} />
+        </div>
+        {signedOut ? <KiroAccountUnlocksList /> : null}
       </div>
     )
   }

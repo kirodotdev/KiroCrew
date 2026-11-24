@@ -11523,6 +11523,23 @@
         "remove_this_sign_in": "Remove this sign-in",
         "keep_it": "Keep it"
       },
+      "kiroAccountUnlocks": {
+        "list_heading": "With a Kiro account",
+        "kiro_agent": "Kiro Agent",
+        "kiro_agent_pitch": "Run your agents on Kiro Agent.",
+        "kiro_agent_on": "Your agents run on Kiro Agent.",
+        "kiro_agent_bots": "Your Bots run on Kiro Agent. Your main harness is {{harness}}.",
+        "kiro_agent_missing": "Not in use: your agents run on {{harness}}.",
+        "kiro_models": "Kiro models",
+        "kiro_models_pitch": "Pick Kiro's models and see their credit rates.",
+        "kiro_models_on": "The model picker lists Kiro's models and their credit rates.",
+        "kiro_models_missing": "Needs Kiro Agent as your main harness.",
+        "card_title": "What your Kiro account unlocks",
+        "on": "Active",
+        "not_active": "Not active",
+        "sign_in_again": "Sign in again to use it.",
+        "change_in_agent_harness": "Change in Agent Harness"
+      },
       "agentBackendTab": {
         "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
