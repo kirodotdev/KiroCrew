@@ -248,7 +248,7 @@ async def test_an_app_credential_reaches_no_crew_api_route_the_gateway_registers
         # The row admits it, and no route serves an app: refused, and the row says why.
         (
             "POST",
-            "/v1/responses",
+            "/v1/conversations",
             "responses:write",
             "owner_only",
             "owner_only:no-app-route",

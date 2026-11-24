@@ -14,8 +14,8 @@ app-scope check and audit as for a cookie. A new credential kind is added here.
 authorization issues to an app, and refuses it from the matched route's row in
 :mod:`kiro_crew.dashboard.crew_api_scopes`: no route serves an app yet.
 
-:data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``) that serve
-the owner alone, through :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
+:data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``,
+``/v1/responses``) that serve the owner alone, through :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
 
 The frozen ``/v1/chat/completions`` is outside this module: it keeps the credentials
 it has always read.
@@ -56,7 +56,10 @@ QUERY_TOKEN_REFUSED = "Send the credential in the Authorization header, not in ?
 #: Public routes served by the owner gate, mapped to their audit operations.
 #: The route registers through owner_route with this operation, and the app-scope
 #: refusal reads the same map.
-OWNER_ONLY_PUBLIC_ROUTES = {"/v1/models": "crew_api.models.list"}
+OWNER_ONLY_PUBLIC_ROUTES = {
+    "/v1/models": "crew_api.models.list",
+    "/v1/responses": "crew_api.responses.create",
+}
 
 
 def bearer_credential(request: web.Request) -> str | None:

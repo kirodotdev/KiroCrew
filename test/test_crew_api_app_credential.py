@@ -57,7 +57,14 @@ OWNER_ROUTES = [
 ]
 #: Every Crew API path an app credential is tried on: the Owner routes, the Public
 #: route that serves the owner alone, and a path no route answers.
-CREW_API_ROUTES = [*OWNER_ROUTES, ("GET", "/v1/models"), ("POST", "/v1/responses")]
+#: A Crew API path the gateway registers no route for.
+UNSERVED = "/v1/conversations"
+CREW_API_ROUTES = [
+    *OWNER_ROUTES,
+    ("GET", "/v1/models"),
+    ("POST", "/v1/responses"),
+    ("POST", UNSERVED),
+]
 
 
 class Clock:
@@ -204,7 +211,7 @@ async def test_a_valid_app_credential_is_403_owner_only_on_every_crew_api_path(
     assert audit.log_api_access.call_count == 1
     assert row["caller"] == f"app:{tokens['grant_id']}"
     # The path no route answers has no row in the scope table, and the row says so.
-    why = "owner_only:no-row" if path == "/v1/responses" else "owner_only"
+    why = "owner_only:no-row" if path == UNSERVED else "owner_only"
     assert (row["outcome"], row["error"]) == ("denied", why)
     assert row["resources"] == f"{path} client_id={CLIENT}"
 

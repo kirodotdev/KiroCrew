@@ -59,6 +59,10 @@ def _as_contract_error(response: web.StreamResponse, request_id: str) -> web.Res
         except ValueError:
             parsed = None
     fields = parsed if isinstance(parsed, dict) else {}
+    if isinstance(fields.get("error"), dict) and isinstance(response, web.Response):
+        # Already in the contract shape (``contract_error``): its code and extra
+        # fields are the handler's own.
+        return response
     code = fields.get("code")
     message = fields.get("error")
     code = code if isinstance(code, str) else ""
