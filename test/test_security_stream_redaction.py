@@ -1303,6 +1303,15 @@ class TestStreamRedactor:
         assert compat.word_start("ab \ufb01cd", 6) == 3
         assert compat.word_start("ab密cd", 5) == 3
 
+    def test_an_invisible_character_inside_a_word_is_not_a_word_end(self) -> None:
+        """A zero-width space renders as nothing and the credential plan reads a
+        token through it, so a cut right after it would commit the token's start."""
+        from kiro_crew.security.redaction_structured import compat
+
+        for c in ("\u200b", "\u200d", "\u2060", "\ufeff", "\u00ad", "\u180e"):
+            assert not compat.ends_word(c)
+        assert compat.word_start("ab ghp_\u200bxy", 10) == 3
+
 
 class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on
