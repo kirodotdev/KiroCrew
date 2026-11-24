@@ -8800,6 +8800,7 @@
         "read_only_here": "read-only here",
         "mcp_servers": "MCP servers — external tool connections",
         "mcp_read_only_hint": "read-only in this version — manage servers under MCP Servers",
+        "mcp_reach_via_kiro_global_hint": "read-only here — servers added on the MCP Servers page reach this agent only through Kiro's global mcp.json, if the agent loads it",
         "none": "None",
         "unsaved_changes": "Unsaved changes",
         "discard": "Discard",

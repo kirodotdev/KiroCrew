@@ -19091,6 +19091,7 @@
         "read_only_here": "solo lectura aquí",
         "mcp_servers": "Servidores MCP: conexiones a herramientas externas",
         "mcp_read_only_hint": "solo lectura en esta versión — gestiona los servidores en Servidores MCP",
+        "mcp_reach_via_kiro_global_hint": "solo lectura aquí — los servidores añadidos en la página Servidores MCP solo llegan a este agente a través del mcp.json global de Kiro, si el agente lo carga",
         "none": "Ninguno",
         "unsaved_changes": "Cambios sin guardar",
         "discard": "Descartar",
