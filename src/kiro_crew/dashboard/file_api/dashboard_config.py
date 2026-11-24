@@ -385,7 +385,11 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {"error": "fork_inherits_pin must be a boolean"}, status=400
+                    {
+                        "error": "fork_inherits_pin must be a boolean",
+                        "code": "invalid_fork_inherits_pin",
+                    },
+                    status=400,
                 )
             updates["fork_inherits_pin"] = val
         if "folder_suggestions_enabled" in body:
