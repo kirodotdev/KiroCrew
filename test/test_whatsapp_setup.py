@@ -43,6 +43,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.config.loader as loader
+from kiro_crew.config.section_builders import _build_whatsapp_config
 from kiro_crew.dashboard.handlers import whatsapp_setup as mod
 
 #: A forwarding header on a loopback peer is how every remote path (tunnel,
@@ -407,6 +408,35 @@ def test_config_save_rejects_non_list_allowed_wa_ids(cfg_file: Path) -> None:
     )
     assert status == 400
     assert body["code"] == "allowed_wa_ids_not_list"
+
+
+def test_config_save_stores_a_typed_number_in_the_form_the_loader_keeps(cfg_file: Path) -> None:
+    typed = ["+44 7700 900000", "44-7700-900000", "447700900000@s.whatsapp.net", "(1) 555.123.4567"]
+    status, body = _call(
+        _serve(_FakeState()), "PUT", "/api/whatsapp/config", json={"allowed_wa_ids": typed}
+    )
+    assert (status, body["ok"]) == (200, True)
+    stored = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert stored["whatsapp"]["allowed_wa_ids"] == ["447700900000", "15551234567"]
+    # Every stored entry survives the load, so the transport admits each of them.
+    loaded = _build_whatsapp_config(stored["whatsapp"]).allowed_wa_ids
+    assert loaded == stored["whatsapp"]["allowed_wa_ids"]
+
+
+@pytest.mark.parametrize(
+    "entry", ["alice", "447700900000@g.us", "447700900000@c.us", "++447700900000", "+"]
+)
+def test_config_save_rejects_an_entry_that_is_not_a_number(cfg_file: Path, entry: str) -> None:
+    status, body = _call(
+        _serve(_FakeState()),
+        "PUT",
+        "/api/whatsapp/config",
+        json={"allowed_wa_ids": ["447700900000", entry]},
+    )
+    assert status == 400
+    assert body["code"] == "invalid_wa_id"
+    assert entry in body["error"]
+    assert not cfg_file.exists()
 
 
 def test_config_save_rejects_non_list_groups(cfg_file: Path) -> None:
