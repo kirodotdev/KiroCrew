@@ -60,8 +60,11 @@ A harness that writes none of those transcripts has its sessions counted from
 the per-turn usage rows of the same 30-day window (`_shard_sessions`) into the
 same today, week, month, daily and total figures. A row counts when its
 `provider` is in `usage_store._SHARD_COUNTED_PROVIDERS` (`claude_code`) or its
-`harness` is in `usage_store._SHARD_COUNTED_HARNESSES` (Antigravity, Claude, Codex,
-Copilot, DeepSeek, goose, MiMo Code, OpenCode, Pi, Strands). Every ACP harness other than Claude
+`harness` is in `usage_store._SHARD_COUNTED_HARNESSES`: every known backend
+(`ACP_BACKENDS_KNOWN`) whose `SessionCapabilities.writes_crew_readable_transcript`
+is false, which today is every backend but kiro-cli and KAS (Antigravity, Claude, Codex,
+Copilot, DeepSeek, goose, MiMo Code, OpenCode, Pi, Strands), so a new backend is
+counted rather than missed. Every ACP harness other than Claude
 records `provider: acp`, the same value kiro-cli does, so it is the row's
 `harness` that tells their turns apart. A row is parsed only when its text holds
 one of those providers or a counted `"harness": "<id>"` member, so on an install

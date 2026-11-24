@@ -102,7 +102,10 @@ settings tab (a chat that needs it
 offers the same sign-in above the message box), or in a terminal on the gateway host with
 `kirocrew kas login`. A chat error saying "Not signed in to Kiro" or "Access
 denied. Please check your authentication." is fixed there; then send the message
-again.
+again. A company (IAM Identity Center) sign-in that can use several Kiro profiles
+asks in the dashboard which profile, and so which credit pool, to use.
+`kirocrew kas login` does not ask: it keeps the profile you are already signed in
+with when it is offered, else the first, and names the one it used.
 
 Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
 what carries over (agents, MCP servers, steering, your login), why a Crew chat
