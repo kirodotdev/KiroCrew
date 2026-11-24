@@ -341,9 +341,11 @@ def chat_steering_plan(
     )
 
     via_seam = _loads_through_crew(provider_type, native_steering, agent, is_member)
-    # The switch is offered on Claude Code alone; Codex runs the same load but is
-    # not offered it.
-    switchable = via_seam and ctx.is_claude_code(provider_type)
+    # The switch is offered where the backend's capability record honours it
+    # (Claude Code today); Codex runs the same load but is not offered it.
+    from kiro_crew.steering_off import honoured_for as steering_off_honoured
+
+    switchable = via_seam and steering_off_honoured(provider_type)
     # Files Claude Code reads by itself through a memory file that resolves to them:
     # Crew's copy is then not the only one, so no switch is offered for them.
     natively_read = _claude_memory_targets(project) if switchable else frozenset()
