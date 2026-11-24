@@ -180,7 +180,7 @@ def _direct_children(pid: int) -> list[int]:
     Returns ``[]`` where the walk cannot see a descendant
     (``walk_observes_descendants``).
     """
-    from kiro_crew.acp.client import Path, subprocess_mod, sys  # noqa: F811
+    from kiro_crew.acp.client import Path, platform_compat, subprocess_mod, sys  # noqa: F811
 
     if not walk_observes_descendants():
         return []
@@ -190,12 +190,17 @@ def _direct_children(pid: int) -> list[int]:
         # pushed a 6-leaf tree walked twice past the 3 s TREE_REFRESH_TIMEOUT.
         tasks_dir = Path(f"/proc/{pid}/task")
         return _read_task_children(tasks_dir.iterdir, lambda tid: (tid / "children").read_text())
+    # From the system directories, never PATH, like the ps spawns below: a PATH
+    # entry the agent can write would otherwise choose what runs here.
+    pgrep_bin = platform_compat.trusted_system_bin("pgrep")
+    if pgrep_bin is None:
+        return []
     try:
         # timeout so a hung pgrep cannot occupy a subprocess_executor worker
         # indefinitely (the ps spawns in _get_start_time/_read_basename already
         # cap at 2s; this path must match or a wedged pgrep starves the pool).
         out = subprocess_mod.check_output(
-            ["pgrep", "-P", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
+            [pgrep_bin, "-P", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
         )
         return [int(p) for p in out.decode().split() if p.strip()]
     except Exception:

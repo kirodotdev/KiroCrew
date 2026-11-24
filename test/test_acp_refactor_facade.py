@@ -703,7 +703,8 @@ class _ReachedModule:
         raise _Reached(self._label)
 
 
-_POSIX = SimpleNamespace(IS_WINDOWS=False)
+# ``trusted_system_bin`` answers for the macOS ``pgrep`` the children walk spawns.
+_POSIX = SimpleNamespace(IS_WINDOWS=False, trusted_system_bin=lambda name: f"/usr/bin/{name}")
 # ``proc_phys_footprint_bytes_for_pid`` answers None so the macOS RSS helpers
 # reach their ``ps`` fallback, the branch these rows steer onto.
 _POSIX_PS = SimpleNamespace(
@@ -1345,7 +1346,7 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     ),
     ("kiro_crew.acp.runtime_process_tree", "_direct_children"): (
         "kiro_crew.acp.client",
-        ("Path", "subprocess_mod", "sys"),
+        ("Path", "platform_compat", "subprocess_mod", "sys"),
     ),
     ("kiro_crew.acp.runtime_process_tree", "_read_basename"): (
         "kiro_crew.acp.client",
@@ -1439,8 +1440,8 @@ def test_an_owner_reads_a_facade_only_for_the_listed_seams() -> None:
 
 #: A helper split out of a moved one reads the binding that one read, so its origin is
 #: the helper it came out of: ``walk_observes_descendants`` is the platform test
-#: ``_direct_children`` made itself. The read lives in the new helper alone:
-#: ``_SEAM_IMPORTS`` lists ``platform_compat`` for it and not for ``_direct_children``.
+#: ``_direct_children`` made itself. ``_direct_children`` still reads ``platform_compat``,
+#: for the trusted ``pgrep`` lookup, not for the platform test.
 _SPLIT_FROM: dict[tuple[str, str], str] = {
     ("kiro_crew.acp.runtime_process_tree", "walk_observes_descendants"): "_direct_children",
 }
