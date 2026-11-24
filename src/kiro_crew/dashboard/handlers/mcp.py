@@ -1302,6 +1302,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_quarantine_clear,
         api_mcp_servers,
     )
+    from kiro_crew.mcp_provenance import mark_copied  # noqa: F401
 
 
 async def api_mcp_apply(request: web.Request) -> web.Response:

@@ -18,7 +18,7 @@ import hashlib
 import itertools
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NamedTuple
@@ -46,7 +46,10 @@ from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
     WITHHELD_KEY,
     command_is_ours,
+    copied_key,
+    is_copied,
     is_withheld_mute,
+    mark_copied,
     record_derived,
     recorded_source,
     source_view,
@@ -349,10 +352,13 @@ def _merge_source_owned(
     the edition's (seeded with the entry, ``command``/``args`` refreshed by
     ``_refresh_dynamic_fields``), so a global entry can neither replace its tool
     surface nor switch its program, and the name never enters *replaced*.
+
+    A name the config does not hold yet is copied in stamped (:func:`mark_copied`),
+    so a later rebuild can remove the copy once no source declares the name.
     """
     existing = mcps.get(name)
     if not isinstance(existing, dict):
-        mcps[name] = without_marker(spec)
+        mcps[name] = mark_copied(without_marker(spec))
         return
     if name not in stale:
         return
@@ -485,7 +491,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
     _replaced: dict[str, dict] = {}
-    for _app_srv, _app_spec in _collect_app_mcp_servers().items():
+    _app_servers = _collect_app_mcp_servers()
+    for _app_srv, _app_spec in _app_servers.items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
             # The manifest just spoke, so a same-named shared-file leftover must
@@ -500,7 +507,9 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
-    shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
+    # Whether every scope file was read; a stale copy is removed only then.
+    _read: list[dict | None] = [user_json.read_mcp_servers(agent_mod._KIRO_MCP_JSON)]
+    shared_mcp = _read[0] or {}
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()
@@ -526,7 +535,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # the fallback-candidate lookup and the shared-server tools sync below.
     extra_shared_mcp: dict[str, dict] = {}
     for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = user_json.load_mcp_servers(scope_global)
+        _read.append(user_json.read_mcp_servers(scope_global))
+        scope_shared_mcp = _read[-1] or {}
         for name, spec in scope_shared_mcp.items():
             if not isinstance(spec, dict):
                 continue
@@ -548,7 +558,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
+    _read.append(user_json.read_mcp_servers(agent_mod._user_dir() / "mcp.json"))
+    kirocrew_mcp = _read[-1] or {}
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})
@@ -591,7 +602,39 @@ def merge_mcp_sources(config: dict) -> McpSources:
                         mcps[name]["env"] = {**shipped_env, **store_env}
             else:
                 mcps[name] = dict(spec)
+    if all(_scope is not None for _scope in _read):
+        _drop_stale_copies(
+            config.get("mcpServers", {}),
+            itertools.chain(
+                _app_servers,
+                shared_mcp,
+                extra_shared_mcp,
+                kirocrew_mcp,
+                managed_names,
+                edition_names,
+            ),
+        )
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
+
+
+def _drop_stale_copies(mcps: dict, declared: Iterable[str]) -> None:
+    """Remove each copied entry (:func:`is_copied`) no MCP source declares any more.
+
+    A rebuild starts from its previous output, so a server renamed or removed in a
+    scope global would otherwise stay as a startable copy. An unstamped entry is the
+    user's and always stays. A copy stays while a source declares its name or alias,
+    or the source key it was moved from (:func:`copied_key`, which is what keeps a
+    ``-<n>`` collision alias tied to its own slash key rather than to a neighbour).
+    """
+    names = set(declared)
+    known = names | {mcp_server_alias(_n) for _n in names}
+    for name in [_n for _n, _e in mcps.items() if is_copied(_e)]:
+        if {name, mcp_server_alias(name)} & known or copied_key(mcps[name]) in names:
+            continue
+        agent_mod.logger.info(
+            "Removing MCP server %r from the agent spec: no MCP config declares it", name
+        )
+        del mcps[name]
 
 
 def reconcile_raw_key_tool_overrides(config: dict, sources: McpSources) -> None:
@@ -955,9 +998,14 @@ def resolve_mcp_servers(
     # Read at most once per pass, and only when some server carries a reference.
     _routed = functools.cache(_gateway_routed_names)
     _app_owned = functools.cache(_app_owned_mcp_keys)
+    # Re-stamped on whatever this pass emits for them: the emit below rebuilds the
+    # record from the command alone.
+    _copied: dict[str, str | None] = {}
     for name, spec in _cfg_servers.items():
         if not isinstance(spec, dict):
             continue
+        if is_copied(spec):
+            _copied[name] = copied_key(spec)
         # This file is BOTH this function's output and one of its inputs: the entry
         # is read back so a field the user set and we never model survives. The
         # resolved absolute ``command`` is ours, not the user's, and read back as
@@ -1238,6 +1286,10 @@ def resolve_mcp_servers(
                     MCP_PATH_HINT,
                 )
             agent_mod.logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
+    # Every branch above emits under the config's own key. The alias rename runs
+    # later and carries the stamp to the alias (``mcp_aliases``).
+    for name in _copied.keys() & valid_servers.keys():
+        valid_servers[name] = mark_copied(valid_servers[name], _copied[name])
     config["mcpServers"] = valid_servers
     return ResolvedServers(_unresolved_this_pass, _oauth_client_targets, _unresolved_commands)
 

@@ -31,7 +31,7 @@ from kiro_crew.agent import (
 from kiro_crew.dashboard.handlers.mcp_config_entries import _kirocrew_entry_is_muted
 from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
 from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_sessions_for_mcp_change
-from kiro_crew.mcp_provenance import WITHHELD_KEY
+from kiro_crew.mcp_provenance import WITHHELD_KEY, mark_copied
 from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.sel import sel
@@ -262,7 +262,9 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                     # server.
                     if "autoApprove" in entry and not may_skip_gate_now(tool_ref):
                         entry.pop("autoApprove", None)
-                    mcp_servers[alias] = entry
+                    # Stamped like the rebuild's own copy, so a rebuild removes it
+                    # once the global file stops declaring it.
+                    mcp_servers[alias] = mark_copied(entry)
                     changed = True
                 else:
                     return
@@ -452,7 +454,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                 # Strip a governed autoApprove — see the single-server path.
                 if "autoApprove" in _entry and not may_skip_gate_now(f"@{alias}"):
                     _entry.pop("autoApprove", None)
-                mcp_servers[alias] = _entry
+                mcp_servers[alias] = mark_copied(_entry)  # see the single path
                 changed = True
             # Strip a governed autoApprove REGARDLESS of whether the alias was just
             # copied or already existed — see the single-server path.
