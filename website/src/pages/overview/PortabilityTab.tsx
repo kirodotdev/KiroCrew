@@ -489,7 +489,10 @@ export default function PortabilityTab() {
         // A refused item is a failure, not a caveat: it renders as an error even
         // though the import as a whole succeeded.
         const errors: string[] = []
-        const refused = refusedItems(summary.refused_merges)
+        // `bots` marks the import partial for the server's log; the per-Bot lines
+        // below are the only Bot report, since "left unchanged" is false for a
+        // Bot that arrived without some part.
+        const refused = refusedItems(distinctNames(summary.refused_merges).filter(n => n !== 'bots'))
         if (refused.names.length) {
           errors.push(i18nT('pages.overview.portabilityTab.import_items_refused', { names: joinWithMore(refused.names, refused.more) }))
         }

@@ -695,6 +695,8 @@ describe('PortabilityTab Bot results', () => {
     const refused = screen.getAllByTestId('portability-import-refused').map(n => n.textContent ?? '')
     expect(refused.some(t => t.includes('Bot “Ada” was imported without everything it had. Missing: DM thread link.'))).toBe(true)
     expect(refused.some(t => t.includes('Bea'))).toBe(false)
+    // The per-Bot lines are the Bot report: no "left unchanged: bots" line beside them.
+    expect(refused.some(t => t.includes('left unchanged'))).toBe(false)
     expect(screen.getAllByTestId('portability-import-warning').map(n => n.textContent)).toEqual([
       'The rules of Bot “Ada” were not carried. Set them again on this computer.',
       'Bot chats not imported because no imported Bot owns them: cid.',
@@ -717,6 +719,7 @@ describe('PortabilityTab Bot results', () => {
     })
     const refused = screen.getAllByTestId('portability-import-refused').map(n => n.textContent ?? '')
     expect(refused.some(t => t.includes('Bot data could not be restored: OSError.'))).toBe(true)
+    expect(refused.some(t => t.includes('left unchanged'))).toBe(false)
     // config and the sessions item count; the report line does not.
     expect(screen.getByText(i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: 2 }))).toBeTruthy()
   })
