@@ -10,11 +10,15 @@ reach it through the local bridge when the session has no key yet.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 from kas_agents_helpers import _spec
 
 from kiro_crew.acp import kas_agents, kas_env_launch
 from kiro_crew.acp.kas_agents import (
+    NOT_RUN_CONFIG_UNREAD,
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
@@ -134,6 +138,165 @@ def test_the_refusal_is_read_from_the_agent_config(home, stored, on):
     agent = {} if stored is None else {"kas_refuse_plain_http_mcp_headers": stored}
     (home / "config.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
     assert kas_env_launch.refuses_plain_http_headers() is on
+
+
+_REFUSE_ON = '{"agent": {"kas_refuse_plain_http_mcp_headers": true}}'
+
+
+@pytest.mark.parametrize(
+    ("text", "on"),
+    [
+        # Nothing to say the owner turned it on: off, as before.
+        (None, False),
+        ("{}", False),
+        ('{"agent": {"kas_refuse_plain_http_mcp_headers": false}}', False),
+        (_REFUSE_ON, True),
+        ('{"memory": 5}', False),
+        ('{"memory": 5, "agent": {"kas_refuse_plain_http_mcp_headers": true}}', True),
+        # The read cannot say what the owner chose: the refusal stays on.
+        (_REFUSE_ON[:30], True),
+        ("not json", True),
+        ('{"agent": "oops"}', True),
+    ],
+    ids=[
+        "missing",
+        "key-absent",
+        "false",
+        "true",
+        "other-section-bad",
+        "other-section-bad-on",
+        "torn",
+        "malformed",
+        "agent-bad",
+    ],
+)
+def test_the_refusal_stays_on_when_the_config_cannot_be_read(home, text, on):
+    """A broken config never sends opted-in headers in cleartext; a fresh install stays off."""
+    if text is not None:
+        (home / "config.json").write_text(text, encoding="utf-8")
+    assert kas_env_launch.refuses_plain_http_headers() is on
+
+
+def test_the_refusal_stays_on_when_the_overlay_cannot_be_read(home):
+    (home / "config.json").write_text("{}", encoding="utf-8")
+    (home / "config.local.json").write_text(_REFUSE_ON[:30], encoding="utf-8")
+    assert kas_env_launch.refuses_plain_http_headers() is True
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a POSIX mode bit the user cannot read past",
+)
+def test_the_refusal_stays_on_when_the_config_is_unreadable(home):
+    path = home / "config.json"
+    path.write_text(_REFUSE_ON, encoding="utf-8")
+    path.chmod(0)
+    try:
+        assert kas_env_launch.refuses_plain_http_headers() is True
+    finally:
+        path.chmod(0o600)
+
+
+def test_the_refusal_stays_on_when_the_loader_raises(monkeypatch):
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _boom():
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_boom))
+    assert kas_env_launch.refuses_plain_http_headers() is True
+
+
+def test_the_refusal_reads_the_gateways_last_applied_config(home, monkeypatch):
+    """The live snapshot wins over a torn file on disk, so a bad write does not flip it."""
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    path = home / "config.json"
+    path.write_text('{"agent": {"kas_refuse_plain_http_mcp_headers": false}}', encoding="utf-8")
+    applied = KiroCrewConfig.load()
+    path.write_text(_REFUSE_ON[:30], encoding="utf-8")
+    monkeypatch.setattr(live, "snapshot", lambda: applied)
+    assert kas_env_launch.refuses_plain_http_headers() is False
+
+
+def test_a_broken_config_withholds_plain_http_headers(home):
+    """End to end: the header-bearing plain-http server is not bridged."""
+    (home / "config.json").write_text(_REFUSE_ON[:30], encoding="utf-8")
+    assert (
+        bridgeable({"type": "http", "url": "http://mcp.example/v1", "headers": {"X": "y"}}) is False
+    )
+
+
+_REFUSE_OFF = '{"agent": {"kas_refuse_plain_http_mcp_headers": false}}'
+
+
+def test_a_repaired_agent_section_turns_the_refusal_off_at_the_next_gateway_start(home):
+    """The review's repro: one process, the ``agent`` section broken then repaired.
+
+    The discard is sticky for the process, so the repaired ``false`` is not trusted
+    until a restart (here ``reset_degraded_observations``, a fresh process's state).
+    """
+    from kiro_crew.config.loader import reset_degraded_observations
+
+    path = home / "config.json"
+    path.write_text(_REFUSE_OFF, encoding="utf-8")
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_OFF
+    path.write_text('{"agent": "oops"}', encoding="utf-8")
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_UNREAD
+    path.write_text(_REFUSE_OFF, encoding="utf-8")
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_UNREAD
+    reset_degraded_observations()
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_OFF
+
+
+def test_a_save_from_the_degraded_config_writes_false_so_false_is_not_trusted(home):
+    """Why the repair waits for a restart: a ``false`` on disk may not be the owner's."""
+    import json
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    path = home / "config.json"
+    path.write_text('{"agent": "oops"}', encoding="utf-8")
+    KiroCrewConfig.load().save()
+    stored = json.loads(path.read_text(encoding="utf-8"))["agent"]
+    assert stored["kas_refuse_plain_http_mcp_headers"] is False
+    assert kas_env_launch.refuses_plain_http_headers() is True
+
+
+def test_a_repaired_torn_file_turns_the_refusal_off_without_a_restart(home):
+    path = home / "config.json"
+    path.write_text(_REFUSE_ON[:30], encoding="utf-8")
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_UNREAD
+    path.write_text(_REFUSE_OFF, encoding="utf-8")
+    assert kas_env_launch.plain_http_refusal() == kas_env_launch.REFUSAL_OFF
+
+
+@pytest.mark.parametrize("text", [_REFUSE_OFF[:30], '{"agent": "oops"}'])
+def test_the_notice_says_the_config_could_not_be_read_and_names_the_setting(home, text):
+    (home / "config.json").write_text(text, encoding="utf-8")
+    remote = {"type": "http", "url": "http://mcp.example/v1", "headers": {"X": "y"}}
+    servers, withheld = _collect({"remote": remote, "bare": {"url": "http://mcp.example/v2"}})
+    assert SHIM_MODULE not in (servers["remote"].get("args") or [])
+    assert withheld["remote"] == ((), (NOT_RUN_CONFIG_UNREAD,), False)
+    # No headers: KAS refuses it whatever the setting says, so the url is the fix.
+    assert withheld["bare"] == ((), (NOT_RUN_INSECURE_URL,), False)
+    notice = withheld_credentials_notice(withheld)
+    assert "could not read your config" in notice
+    assert "`agent.kas_refuse_plain_http_mcp_headers`" in notice
+    assert "restart the gateway" in notice
+    head, _, tail = notice.partition("could not read your config")
+    assert "• bare" in head and "• remote" not in head
+    assert "• remote" in tail and "• bare" not in tail
+
+
+def test_a_refusal_the_owner_set_keeps_the_url_notice(home):
+    (home / "config.json").write_text(_REFUSE_ON, encoding="utf-8")
+    _, withheld = _collect({"remote": {"url": "http://mcp.example/v1", "headers": {"X": "y"}}})
+    assert withheld == {"remote": ((), (NOT_RUN_INSECURE_URL,), False)}
+    assert "could not read your config" not in withheld_credentials_notice(withheld)
 
 
 class TestRegistryMode:

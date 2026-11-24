@@ -70,6 +70,10 @@ NOT_RUN_REGISTRY = "registry"
 NOT_RUN_REGISTRY_IF_GOVERNED = "registry-if-governed"
 #: A plain ``http`` url to a non-loopback host, which KAS refuses.
 NOT_RUN_INSECURE_URL = "insecure-url"
+#: The same url with headers the bridge would carry, withheld only because
+#: ``agent.kas_refuse_plain_http_mcp_headers`` reads as on while the config cannot
+#: be read (:func:`kiro_crew.acp.kas_env_launch.refused_for_unread_config`).
+NOT_RUN_CONFIG_UNREAD = "insecure-url-config-unread"
 #: A declared server its ``tools`` asks for that an MCP config scope switches off.
 NOT_RUN_SCOPE_MUTED = "scope-muted"
 
@@ -355,6 +359,7 @@ def _project_mcp_servers(
             # KAS starts managed stdio children with a minimal environment.
             agent_facade.add_policy_markers(projected)
         stdio = bool(projected.get("command"))
+        config_unread = False
         if managed:
             # Native MCP children do not inherit the gateway's environment.
             # Take the live listener from the gateway, never from an editable
@@ -397,13 +402,21 @@ def _project_mcp_servers(
             )
             if bridged:
                 withheld = [w for w in withheld if w != "headers"]
+            else:
+                config_unread = kas_env_launch.refused_for_unread_config(
+                    projected, entry.get("headers")
+                )
         if (
             withheld_out is not None
             and projected.get("url")
             and not projected.get("command")
             and not kas_env_launch.kas_accepts_url(projected["url"])
         ):
-            withheld_out[name] = ((), (NOT_RUN_INSECURE_URL,), False)
+            withheld_out[name] = (
+                (),
+                (NOT_RUN_CONFIG_UNREAD if config_unread else NOT_RUN_INSECURE_URL,),
+                False,
+            )
         elif withheld_out is not None and withheld and not managed:
             fields = tuple(field.split(" ", 1)[0] for field in withheld)
             withheld_out[name] = (tuple(sorted(dropped_env)), fields, stdio)

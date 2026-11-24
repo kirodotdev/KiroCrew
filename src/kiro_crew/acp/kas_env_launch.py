@@ -441,20 +441,54 @@ def bridge_url(url: str) -> str:
     return urlunsplit(("http", netloc, parts.path, parts.query, parts.fragment))
 
 
-def refuses_plain_http_headers() -> bool:
-    """Whether ``agent.kas_refuse_plain_http_mcp_headers`` is a JSON ``true``.
+#: :func:`plain_http_refusal` answers: off, on because the owner set it, or on only
+#: because the config could not be read.
+REFUSAL_OFF = ""
+REFUSAL_SET = "set"
+REFUSAL_UNREAD = "unread"
 
-    Off by default, and off when the config cannot be loaded, so a header-bearing
-    ``http://`` server on another host keeps connecting through the bridge.
+
+def plain_http_refusal() -> str:
+    """Why ``agent.kas_refuse_plain_http_mcp_headers`` is on, or :data:`REFUSAL_OFF`.
+
+    Off by default and when absent. Read from the gateway's last applied config when
+    there is one, else from disk. :data:`REFUSAL_UNREAD` when that read cannot establish
+    the owner's choice (``config.json`` or ``config.local.json`` present but unreadable,
+    or the ``agent`` section discarded), so a broken config never sends opted-in
+    headers in cleartext.
+
+    A discarded ``agent`` section stays discarded for the life of the gateway process
+    (``config.resolution._OBSERVED_DEGRADED_SECTIONS``), so after the owner repairs it
+    the refusal stays on until the gateway restarts. That is deliberate: a whole-file
+    save from the degraded snapshot writes this key's default ``false`` back to disk,
+    so a ``false`` read after the section was discarded may not be the owner's.
     """
     try:
         # Call-time: the config loader pulls in the config plane this leaf stays off.
+        from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return KiroCrewConfig.load().agent.kas_refuse_plain_http_mcp_headers is True
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        if cfg._base_unreadable or cfg._overlay_unreadable or "agent" in cfg.degraded_sections:
+            logger.warning(
+                "could not establish agent.kas_refuse_plain_http_mcp_headers from degraded "
+                "config; refusing plain-http MCP headers"
+            )
+            return REFUSAL_UNREAD
+        return REFUSAL_SET if cfg.agent.kas_refuse_plain_http_mcp_headers is True else REFUSAL_OFF
     except Exception:
-        logger.debug("config unavailable; relaying plain-http MCP headers", exc_info=True)
-        return False
+        # An unreadable config must not drop an opted-in fence.
+        logger.warning(
+            "could not read agent.kas_refuse_plain_http_mcp_headers; refusing plain-http "
+            "MCP headers",
+            exc_info=True,
+        )
+        return REFUSAL_UNREAD
+
+
+def refuses_plain_http_headers() -> bool:
+    """Whether :func:`plain_http_refusal` is on, for any reason."""
+    return plain_http_refusal() != REFUSAL_OFF
 
 
 def bridgeable(entry: Mapping[str, Any]) -> bool:
@@ -467,19 +501,47 @@ def bridgeable(entry: Mapping[str, Any]) -> bool:
     as the bridge's local stdio server, unless :func:`refuses_plain_http_headers`:
     that bridge sends the headers in cleartext.
     """
+    shape = _remote_shape(entry)
+    return shape == "kas" or (shape == "plain" and not refuses_plain_http_headers())
+
+
+def _remote_shape(entry: Mapping[str, Any]) -> str:
+    """``"kas"`` for a url KAS accepts, ``"plain"`` for a dialable plain ``http`` url to
+    another host, else ``""`` (not a streamable-HTTP entry the bridge can carry)."""
     url = entry.get("url")
     if not isinstance(url, str) or entry.get("command") or entry.get("type") == "sse":
-        return False
+        return ""
     url = url.strip()  # as kas_accepts_url and bridge_url read it
     if not url.lower().startswith(("https://", "http://")):
-        return False
+        return ""
     if kas_accepts_url(url):
-        return True
+        return "kas"
     try:
-        urlsplit(url.strip()).port  # noqa: B018 -- a url that does not parse is not dialled
+        urlsplit(url).port  # noqa: B018 -- a url that does not parse is not dialled
     except ValueError:
-        return False
-    return not refuses_plain_http_headers()
+        return ""
+    return "plain"
+
+
+def _relayable_headers(original_headers: Any) -> dict[str, str]:
+    if not isinstance(original_headers, dict):
+        return {}
+    return {
+        k: str(v)
+        for k, v in original_headers.items()
+        if isinstance(k, str) and k and isinstance(v, (str, int, float))
+    }
+
+
+def refused_for_unread_config(entry: Mapping[str, Any], original_headers: Any) -> bool:
+    """Whether *entry* is withheld only because :func:`plain_http_refusal` could not read
+    the config: a plain ``http`` server on another host whose headers the bridge would
+    otherwise carry. The session-start notice then names the setting, not the url."""
+    return (
+        _remote_shape(entry) == "plain"
+        and bool(_relayable_headers(original_headers))
+        and plain_http_refusal() == REFUSAL_UNREAD
+    )
 
 
 def relay_withheld_headers(
@@ -502,11 +564,7 @@ def relay_withheld_headers(
     """
     if not session_key or not isinstance(original_headers, dict) or not bridgeable(projected):
         return projected, False
-    headers = {
-        k: str(v)
-        for k, v in original_headers.items()
-        if isinstance(k, str) and k and isinstance(v, (str, int, float))
-    }
+    headers = _relayable_headers(original_headers)
     if not headers:
         return projected, False
     from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
