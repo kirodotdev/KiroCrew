@@ -25,8 +25,8 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
   - Confirmed (via reading `useWebSocket.ts` + `ChatInput.tsx`) that a `PendingDecision`
     assembles from the existing PreToolUse event with NO new backend wire field, and that the
     resume identifier is `approval.request_id`: plain approve/reject resolves through the
-    id-scoped `api.resolveApproval(request_id, action)` (`chat-input/approval.ts`), NOT slot-scoped
-    `approveChatSlot` (which is used only for trust grants, and downgrades to `resolveApproval`
+    id-scoped `api.decideApproval(approvalTarget, action, responseId)` (`chat-input/approval.ts`), NOT slot-scoped
+    `approveChatSlot` (which carries trust grants and a rejection with a reason, and downgrades a trust grant to `decideApproval`
     for unattended sources).
   - _Requirements: 3.3, 3.4, 5.1, 6.4, 8.1, 8.3_
   - Shipped: PR #5413 (`feat/tal-pending-decision`), MERGED to main 2026-08-24.
@@ -45,9 +45,9 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
 
 - [ ] 3. Wire the resume path (approve / reject / pattern)
   - Route the decision through the existing `onApprove(decision, pattern?)`. Plain
-    approve/reject resolves via the id-scoped `api.resolveApproval(request_id, action)`
-    (`chat-input/approval.ts`); the slot-scoped `api.approveChatSlot(slot, …)` is reserved for trust
-    grants (and downgrades to `resolveApproval` for unattended sources). Forward an approval
+    approve/reject resolves via the id-scoped `api.decideApproval(approvalTarget, action, responseId)`
+    (`chat-input/approval.ts`); the slot-scoped `api.approveChatSlot(slot, …)` carries trust
+    grants and a rejection with a reason (and downgrades a trust grant to `decideApproval` for unattended sources). Forward an approval
     `pattern` verbatim on the path that accepts it. Do NOT introduce a new approval API path.
   - Ensure resume targets the same invocation via `approval.request_id`; a stale/closed id is
     a no-op with a surfaced notice, never a re-issued call.
@@ -57,12 +57,12 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
   - Render a multi-select when N calls are pending in a slot; submitting a batch iterates
     the per-call slot-scoped `approveChatSlot(slot, mappedAction, { request_id })` resume
     (no new transport). **Batches MUST route through the slot-scoped path, not the bare
-    id-scoped `resolveApproval`:** `state.resolve_approval` matches a bare `request_id` across
+    id-scoped `decideApproval`:** `state.resolve_approval` matches a bare `request_id` across
     ALL slots with no session-identity check (see its docstring), so if the same
     connection-scoped id collides in two slots a bare-id resume could resolve the wrong slot's
     call. `approveChatSlot` pins resolution to the addressed slot; the `request_id` rides in
     `extra` to disambiguate within it. (Single approve/reject in Task 3 stays on id-scoped
-    `resolveApproval` — one owned id, no collision surface.)
+    `decideApproval` — one owned id, no collision surface.)
   - Surface any per-call rejection the gate returns at resume as excluded **after the fact**
     (backend-driven, not predicted); never pre-filter by forecasting the verdict, and never
     silently approve an excluded call.
@@ -85,9 +85,9 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
 - [ ] 7. Tests — render, resume, batch, non-bypass
   - Unit (vitest): each `PendingDecision` state; schema-match vs `<pre>` fallback;
     raw-input reveal; keyboard/ARIA.
-  - Resume: single approve/reject routes through id-scoped `resolveApproval` with the correct
+  - Resume: single approve/reject routes through id-scoped `decideApproval` with the correct
     `request_id` (a stale `request_id` is a no-op); an approval `pattern` is asserted on the
-    trust-grant `approveChatSlot(slot, …, { pattern })` branch, since `resolveApproval` carries
+    trust-grant `approveChatSlot(slot, …, { pattern })` branch, since `decideApproval` carries
     no `pattern`.
   - Batch: per-call slot-scoped `approveChatSlot(slot, …, { request_id })` resolution; a
     gate-rejected call surfaced as excluded after the fact.
