@@ -122,8 +122,9 @@ class AgentConfig:
             "Per-role models",
             "Optional per-task-class model overrides. Keys: 'background' "
             "(lite / heartbeat background workers), 'subagent' (spawned "
-            "sub-agents) and 'subagent_light' (sub-agents a spawn marks "
-            "light, while Light Sub-agent Tier is on). An empty value or 'auto' defers to the chat default "
+            "sub-agents), 'subagent_light' (sub-agents a spawn marks "
+            "light, while Light Sub-agent Tier is on) and 'optimizer' (Optimize "
+            "prompt, which runs on the 'background' model while this is unset). An empty value or 'auto' defers to the chat default "
             "(agent.model) and then to the provider default, so an unpinned "
             "role stays usable on every subscription tier. Pin a cheaper model "
             "here to run background / sub-agent work on it without changing the "
@@ -138,8 +139,9 @@ class AgentConfig:
         metadata=_meta(
             "Per-role reasoning effort",
             "Optional per-task-class reasoning effort, paired with role_models "
-            "(keys: 'background', 'subagent', 'subagent_light'). Empty for a role inherits the chat "
-            "default (agent.reasoning_effort) and then the provider/model default. "
+            "(keys: 'background', 'subagent', 'subagent_light', 'optimizer'). Empty for a role inherits the chat "
+            "default (agent.reasoning_effort) and then the provider/model default; "
+            "an empty 'optimizer' runs Optimize prompt at the 'background' effort. "
             "Only applies on reasoning-capable models. Like a model pin, a "
             "'subagent' effort runs each spawned sub-agent in its own runtime "
             "(about 0.55 GB of memory each) where it could otherwise share the "

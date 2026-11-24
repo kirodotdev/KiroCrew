@@ -36,6 +36,7 @@ _MODEL_PINS = (
     "agent.role_models.background",
     "agent.role_models.subagent",
     "agent.role_models.subagent_light",
+    "agent.role_models.optimizer",
     "agent.fallback_model",
     "agent.refusal_fallback_model",
 )

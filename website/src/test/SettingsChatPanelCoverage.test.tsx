@@ -1387,6 +1387,32 @@ describe('ChatPanel — per-role reasoning effort', () => {
   })
 })
 
+describe('ChatPanel — Optimize prompt model and effort', () => {
+  it.each([
+    ['Optimize Prompt Model', 'claude-opus-4.8', 'agent.role_models.optimizer', 'claude-opus-4.8'],
+    ['Optimize Prompt Effort', 'High', 'agent.role_efforts.optimizer', 'high'],
+  ])('%s PATCHes its own config path', async (label, option, path, value) => {
+    // A reasoning-capable Background model, so the effort row is live unset.
+    seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+    wrap('composer')
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    await openSelect(label)
+    fireEvent.click(await screen.findByRole('option', { name: option }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, value))
+  })
+
+  it.each([['Optimize Prompt Model'], ['Optimize Prompt Effort']])(
+    '%s labels its unset value Same as Background',
+    async label => {
+      seedMc({ agent: { role_models: { background: 'claude-opus-4.8' } } })
+      wrap('composer')
+      const opts = await openSelect(label)
+      expect(opts[0].textContent).toBe('Same as Background')
+      expect(screen.getByRole('combobox', { name: label })).toHaveTextContent('Same as Background')
+    }
+  )
+})
+
 describe('ChatPanel — About You and Power', () => {
   it('PATCHes the technical comfort level', async () => {
     wrap('aboutyou')
