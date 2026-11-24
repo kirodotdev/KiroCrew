@@ -20,6 +20,9 @@ from kiro_crew.acp.client import AcpClient, AcpError, AcpProcessDied
 from kiro_crew.llm_helpers import acp_error_is_pipe_death, acp_error_is_transient
 from kiro_crew.testing.wait import finished
 
+#: Each test starts a real interpreter child; one worker runs them in turn.
+pytestmark = pytest.mark.xdist_group(name="acp_session_new_death_children")
+
 #: "not running" is a phrase the chat reads as a dead process in an error's text, so
 #: the verdict must not come from the tail.
 _STDERR_LINE = "error: engine not running: failed to load engine binary"
