@@ -349,6 +349,7 @@ concurrency or wake limit was hit).
 |---|---|---|---|
 | 400 | `invalid_request_error` | `invalid_request` | Malformed field |
 | 400 | `invalid_request_error` | `unsupported_parameter`, `unsupported_tool_type` | A refused field or tool type |
+| 400 | `invalid_request_error` | `invalid_scope` | Owner tier only: the `scopes` of an approval on `POST /v1/crew/owner/grant-requests/{request_id}/decision` are empty, repeat a scope, or name a scope the app did not ask for |
 | 401 | `authentication_error` | `invalid_token` | Missing credential, or a bad signature or expiry. Refresh the token and retry once |
 | 401 | `authentication_error` | `token_revoked`, `third_party_disabled` | The grant was revoked, or the user turned off third-party access |
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
@@ -364,6 +365,7 @@ concurrency or wake limit was hit).
 | 405 | `invalid_request_error` | `method_not_supported` | A method this API does not support |
 | 409 | `conflict_error` | `response_in_progress` | The conversation already has a turn running |
 | 409 | `conflict_error` | `approval_already_resolved` | Someone answered first; the body's `final` carries the result |
+| 409 | `conflict_error` | `grant_request_already_resolved` | Owner tier only: the grant request named on `POST /v1/crew/owner/grant-requests/{request_id}/decision` was already answered |
 | 410 | `resync_required_error` | `resync_required` | The event cursor is stale or untrustworthy; the body carries `oldest_seq` and `latest_seq` |
 | 413 | `invalid_request_error` | `payload_too_large` | Input too large |
 | 422 | `invalid_request_error` | `idempotency_key_reused` | The same `Idempotency-Key` with a different body |

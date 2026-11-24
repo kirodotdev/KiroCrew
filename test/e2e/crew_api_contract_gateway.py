@@ -177,6 +177,20 @@ class Gateway:
         request_id, _ = self._ask(f"{_APP_CLIENT}-{uuid.uuid4().hex[:8]}")
         return request_id
 
+    def answered_grant_request(self) -> str:
+        """The id of a grant request the owner has denied, from an app of its own."""
+        request_id = self.pending_grant_request()
+        self._must(
+            self._owner_call(
+                "POST",
+                f"/v1/crew/owner/grant-requests/{request_id}/decision",
+                {"decision": "deny"},
+            ),
+            200,
+            "the owner's denial of the app",
+        )
+        return request_id
+
     def revocable_grant(self) -> str:
         """The id of a grant of its own, so revoking it leaves the app caller's alone."""
         client_id = f"{_APP_CLIENT}-{uuid.uuid4().hex[:8]}"

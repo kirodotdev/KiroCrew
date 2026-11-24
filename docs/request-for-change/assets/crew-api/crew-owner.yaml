@@ -508,7 +508,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/GrantRequest'
         '400':
-          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+          description: 'invalid_request: a malformed body or field, or bots of an approval that are not a subset of
+            the requested Bots or name a Bot this Kiro Crew does not have. invalid_scope: the scopes of an approval are
+            empty, repeat a scope, or name a scope the app did not ask for'
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Error
         '401':
           $ref: ./components.yaml#/components/responses/OwnerUnauthorized
         '403':
