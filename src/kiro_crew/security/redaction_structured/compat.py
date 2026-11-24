@@ -423,14 +423,34 @@ def word_start(buf: str, pos: int) -> int:
     The stream snaps the detectors' fixed tail hold back to here. Snapping to a
     blank alone held a whole Chinese or Japanese paragraph back from the live chat,
     since that prose has none."""
-    while pos > 0 and not ends_word(buf[pos - 1]):
-        pos -= 1
-    return pos
+    return _last_word_end(buf, pos) + 1
 
 
-def _last_word_end(buf: str) -> int:
-    """The index of the last character of *buf* that :func:`ends_word`, or -1."""
-    for i in range(len(buf) - 1, -1, -1):
+#: The ASCII characters ``str.isspace`` accepts, and every other one (inside a word).
+_ASCII_SPACES = "".join(c for c in map(chr, range(128)) if c.isspace())
+_ASCII_WORD = "".join(c for c in map(chr, range(128)) if not c.isspace())
+
+
+def _last_word_end(buf: str, end: int | None = None) -> int:
+    """The index of the last character of ``buf[:end]`` that :func:`ends_word`, or -1.
+
+    The stream asks once per chunk, so a walk of one Python step per character made a
+    long run with no word end cost the whole run each time. ``rstrip`` skips the ASCII
+    part of a word in C, over a window that doubles while it finds nothing else, and
+    :func:`ends_word` reads only the characters it stops at.
+    """
+    i = len(buf) if end is None else end
+    if buf.isascii():
+        # Only a blank ends a word here, and ``rfind`` finds one fastest.
+        return max(buf.rfind(c, 0, i) for c in _ASCII_SPACES)
+    width = 64
+    while i > 0:
+        lo = max(0, i - width)
+        kept = len(buf[lo:i].rstrip(_ASCII_WORD))
+        if not kept:
+            i, width = lo, min(width * 2, 4096)
+            continue
+        i, width = lo + kept - 1, 64
         if ends_word(buf[i]):
             return i
     return -1

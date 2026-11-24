@@ -1303,6 +1303,24 @@ class TestStreamRedactor:
         assert compat.word_start("ab \ufb01cd", 6) == 3
         assert compat.word_start("ab密cd", 5) == 3
 
+    def test_the_fast_word_end_search_agrees_with_ends_word(self) -> None:
+        """The stream skips ASCII word characters in C to find a word end, for speed;
+        it must find the same end a walk with :func:`compat.ends_word` finds."""
+        from kiro_crew.security.redaction_structured import compat
+
+        texts = [chr(cp) for cp in range(128)] + [
+            "a" * 5000,
+            "x\u200b" * 300 + "y",
+            "密" + "a\u017f" * 3000,
+            "ab cd\x1cef",
+            "head 令牌" + "q" * 9000,
+        ]
+        for text in texts:
+            walk = max((i for i, c in enumerate(text) if compat.ends_word(c)), default=-1)
+            assert compat._last_word_end(text) == walk, text[:20]
+        assert compat.word_start("ab\u200bcd", 5) == 0
+        assert compat.word_start("ab 密cd", 6) == 4
+
 
 class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on
