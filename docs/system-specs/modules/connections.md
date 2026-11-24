@@ -521,7 +521,9 @@ after the card has written the entry, so a Connect the mint keeps on kiro-cli st
 warm URL. The premint asks before the click, so it warms only providers whose Connect would
 still sign in on kiro-cli (`kiro_cli_sign_in_providers`): a pre-registered provider, or one
 whose main-spec entry the engine is not sent bare. A provider the spec does not hold yet is
-judged by the bare registry url its Connect writes first. Test enumerates through kiro-cli's
+judged by the bare registry url its Connect writes first. The shared mint's two automatic
+re-arms (after a process death, and after a provider's grant is invalidated) apply the same
+filter to their candidates. Test enumerates through kiro-cli's
 grant, so the card offers none for such a provider (`crewHeld`) and `api_connections_test`
 refuses it with 409 `kas_sign_in_test_unsupported`.
 

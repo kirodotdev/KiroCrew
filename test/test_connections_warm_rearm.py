@@ -27,10 +27,11 @@ from connections_warm_helpers import (
 
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
-from kiro_crew.connections import warm
+from kiro_crew.connections import mint_kas, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
 from kiro_crew.connections.warm_runtime import shared_rows
+from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
@@ -45,6 +46,20 @@ def _empty_invalidation_rearms():
     warm._invalidation_rearms.clear()
     yield
     warm._invalidation_rearms.clear()
+
+
+@pytest.fixture(autouse=True)
+def _chats_not_on_kas(_floor_monkeypatch: pytest.MonkeyPatch):
+    # The re-arms warm only providers whose Connect signs in on kiro-cli, which on KAS chats
+    # drops a bare-url provider; the KAS case is pinned by its own tests below.
+    _floor_monkeypatch.setattr(mint_kas, "kas_signs_in", lambda entry=None: False)
+
+
+def _kas_chats_with_one_kiro_cli_sign_in(monkeypatch: pytest.MonkeyPatch, kept: str) -> None:
+    """KAS chats, where only ``kept``'s Connect still signs in on kiro-cli (its entry has headers)."""
+    entry = {"url": f"https://{kept}.example/mcp", "headers": {"X-Team": "t"}}
+    monkeypatch.setattr(mint_kas, "kas_signs_in", lambda entry=None: True)
+    monkeypatch.setattr(mint_kas, "_configured_servers", lambda: {mcp_server_alias(kept): entry})
 
 
 # ── redeemability takes TWO questions, and they die independently ──
@@ -543,6 +558,45 @@ async def test_invalidation_rearms_only_the_invalidated_provider(
     assert await warm._rearm_invalidated_provider("vercel") == ["vercel"]
 
     assert warmed == [(["vercel"], False)]
+
+
+@pytest.mark.asyncio
+async def test_on_kas_chats_a_dead_mint_rearm_warms_only_kiro_cli_sign_ins(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The page warm's filter applies: a Connect that signs in on KAS never adopts a warm URL."""
+    warmed: list[tuple[list[str], bool]] = []
+    _kas_chats_with_one_kiro_cli_sign_in(monkeypatch, "linear")
+    monkeypatch.setattr(
+        warm, "mintable_providers", lambda: [_provider("linear"), _provider("vercel")]
+    )
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_dead_warm_mint(4) == ["linear"]
+    assert warmed == [(["linear"], False)]
+
+    _kas_chats_with_one_kiro_cli_sign_in(monkeypatch, "github")
+    assert await warm._rearm_dead_warm_mint(5) == []
+    assert len(warmed) == 1, "no activation when every candidate signs in on KAS"
+
+
+@pytest.mark.asyncio
+async def test_on_kas_chats_an_invalidation_rearm_skips_a_kas_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An invalidated provider whose Connect signs in on KAS is not warmed; a kiro-cli one is."""
+    warmed: list[tuple[list[str], bool]] = []
+    _kas_chats_with_one_kiro_cli_sign_in(monkeypatch, "linear")
+    monkeypatch.setattr(
+        warm, "mintable_providers", lambda: [_provider("linear"), _provider("vercel")]
+    )
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_invalidated_provider("vercel") == []
+    assert warmed == []
+
+    assert await warm._rearm_invalidated_provider("linear") == ["linear"]
+    assert warmed == [(["linear"], False)]
 
 
 @pytest.mark.asyncio
