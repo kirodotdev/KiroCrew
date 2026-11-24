@@ -292,6 +292,15 @@ class SessionCapabilities:
     #: included: there the list offers no switch and the load sends every file.
     honors_chat_steering_off: bool
 
+    #: Whether a session of the default agent gets Kiro Crew's own persona prompt
+    #: in its ``[AGENT SYSTEM PROMPT]`` block, written for this harness (the
+    #: ``kiro-cli`` transport name respelled), because the harness loads no Crew
+    #: agent spec that would carry it.
+    #:
+    #: True for claude. False everywhere else, an unknown backend included: there
+    #: the default agent's block comes from its spec as before.
+    crew_sends_persona_prompt: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -326,6 +335,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         permission_requests_name_child=backend in ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
         writes_crew_readable_transcript=backend in _CREW_READABLE_TRANSCRIPT_BACKENDS,
         honors_chat_steering_off=is_claude_backend_name(backend),
+        crew_sends_persona_prompt=is_claude_backend_name(backend),
     )
 
 
@@ -363,6 +373,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     permission_requests_name_child=False,
     writes_crew_readable_transcript=False,
     honors_chat_steering_off=False,
+    crew_sends_persona_prompt=False,
 )
 
 

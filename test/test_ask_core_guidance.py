@@ -43,7 +43,6 @@ def _bc_prompt(builder: ContextBuilder) -> str:
         project=None,
         mode="",
         session_key="dashboard:ask-core",
-        is_cc=False,
         private_owner=False,
         session_start=True,
     )
