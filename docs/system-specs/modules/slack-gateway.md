@@ -2857,7 +2857,12 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   a selector, `url()` (https: only), `@charset` or a font / grid-template-areas property, never where it can show as text
   (`content`, `quotes`, list markers, custom properties), and every string still passes the credential screen; Block Kit views are display-only (there is no canvas `set_view`)
   (an allowlist of section / header / divider / context / rich_text / markdown
-  blocks, no accessories or `action_id` elements, no remote media); the diff tab stays the workspace's. `conversations.canvases.create`
+  blocks, no accessories or `action_id` elements, no remote media); `set_view` type `diff`
+  takes no other argument and is refused in a Conductor thread (no Code tab there): the Code tab keeps one writer, so the call runs the channel's own
+  refresh pass now (`CodeTab.show_code_tab`, serialized by `schedule_refresh`, every gate a
+  refresh asks) and says whether the tab holds a diff; when it does not, the agent is told to
+  send the diff as an html view. The wait is bounded (`SHOW_WAIT_SECS`, under the MCP call's
+  timeout): a pass still reading PRs or CI goes on alone and the agent is told to send the html view. `conversations.canvases.create`
   answered `channel_canvas_already_exists` is never retried and never adopted (a
   canvas this gateway did not create may be a shared document).
 - **Plan canvas read-back (`code_channel_read_plan_canvas`).** Takes no argument (a
