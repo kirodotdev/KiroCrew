@@ -276,6 +276,7 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
     _redirect_hypothesis_database,
+    _refuse_unc_network_paths,
     pytest_warning_recorded,
 )
 
@@ -392,6 +393,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _no_leaked_telemetry_exporter,
     _record_skill_search_indexes,
     _restore_boot_wired_globals,
+    _restore_cli_log_file_handlers,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,
@@ -446,6 +448,7 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
     _prefer_short_tmp_base,
     _redirect_tempfile_base,
     _remove_tree,
+    _root_residue_leaves,
     _stop_git_discovery_above_the_temp_roots,
     _tmp_residue,
     _tmp_residue_report,
@@ -666,6 +669,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
     _install_determinism_audit_hook()
+    _refuse_unc_network_paths(str(config.rootpath))
     _put_the_tree_under_test_first_on_child_paths()
     _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
@@ -1906,6 +1910,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     )
     for name in residue:
         reporter.write_line(f"    {name}")
+        for leaf in _root_residue_leaves(_REPO_ROOT / name):
+            reporter.write_line(f"        {leaf}")
     reporter.write_line("")
     reporter.write_line(
         "A test must not write into the checkout. The usual cause is a "

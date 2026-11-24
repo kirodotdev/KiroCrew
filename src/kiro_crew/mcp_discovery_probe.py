@@ -44,7 +44,7 @@ from kiro_crew.mcp_discovery_probe_state import (
     MCP_CLIENT_PROTOCOL_VERSION,
     _cache_probe,
     _clear_unresolvable,
-    _get_probe_timeout,
+    _get_local_probe_timeout,
     _probe_cache,
     _sanitize_probe_error,
     _unresolved_error,
@@ -57,6 +57,7 @@ from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
 from kiro_crew.mcp_entry import lists_before_handlers
 from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
+from kiro_crew.mcp_npm_sign_in import npm_sign_in_hint
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
@@ -240,6 +241,30 @@ async def _read_stdio_jsonrpc_response(
             return parsed
 
 
+#: How long a probe left without an answer waits for the server's process to exit,
+#: so its error can say the server stopped and give the exit code.
+_EXIT_CODE_WAIT_SECS = 1.0
+
+
+async def _stopped_or(proc: Any, still_running: str) -> str:
+    """Why *proc* gave no answer: that it stopped, with its exit code, or *still_running*.
+
+    A server that crashed and one that hangs both leave the probe without a reply;
+    the exit code is what tells a person which one they have. The process gets
+    ``_EXIT_CODE_WAIT_SECS`` to exit; one still running then (a banner flood, or a
+    server that closed its output and went on) keeps *still_running*.
+    """
+    try:
+        code = await asyncio.wait_for(proc.wait(), timeout=_EXIT_CODE_WAIT_SECS)
+    except asyncio.TimeoutError:
+        # ``wait`` also waits for every pipe to close, which a grandchild can hold
+        # open after the process itself has exited.
+        code = proc.returncode
+    if not isinstance(code, int):
+        return still_running
+    return f"the server stopped before it answered (exit code {code})"
+
+
 #: The probe error for a server that listed its tools and then stopped before it
 #: could run one. Its handlers failed to load after the list was written; the
 #: child's stderr tail, appended to this, carries the reason.
@@ -274,7 +299,7 @@ async def _handlers_answer(proc: Any, name: str, skipped: list[str]) -> bool:
     except (BrokenPipeError, ConnectionResetError):
         return False  # the server has already closed its end
     answer = await _read_stdio_jsonrpc_response(
-        proc.stdout, _get_probe_timeout(), name=name, skipped=skipped
+        proc.stdout, _get_local_probe_timeout(), name=name, skipped=skipped
     )
     return answer is not None
 
@@ -525,6 +550,8 @@ async def probe_server(
     # A tools/list failure returns from inside the try; its cache write waits for the
     # finally block, so the cached error carries the stdout and stderr tails too.
     cache_on_exit = False
+    # A failed probe's whole redacted stderr, read for an npm sign-in refusal last.
+    redacted_stderr = ""
     try:
         env = dict(os.environ)
         # The same expression backs command resolution and the PATH emitted into
@@ -896,7 +923,7 @@ async def probe_server(
             # stray line makes json.loads() raise and a healthy server is wrongly
             # marked errored.
             resp = await _read_stdio_jsonrpc_response(
-                proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
+                proc.stdout, _get_local_probe_timeout(), name=server.name, skipped=stdout_skipped
             )
             fallback = downgrade_protocol_version(resp, protocol_version)
             if not fallback:
@@ -904,11 +931,15 @@ async def probe_server(
             protocol_version = fallback
         if resp is None:
             server.status = "error"
-            server.error = "no response"
+            server.error = await _stopped_or(proc, "no response")
+            logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
             return server
 
         if isinstance(resp, dict) and resp.get("error"):
             server.status = "error"
+            # The server started and answered: it is refusing, not wedging, so
+            # the probe quarantine does not count it (see _quarantine_verdicts).
+            server.probe_mode = "refused"
             err = resp["error"]
             server.error = (
                 err.get("message", "unknown error") if isinstance(err, dict) else str(err)
@@ -959,7 +990,7 @@ async def probe_server(
         await proc.stdin.drain()
 
         resp2 = await _read_stdio_jsonrpc_response(
-            proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
+            proc.stdout, _get_local_probe_timeout(), name=server.name, skipped=stdout_skipped
         )
         if resp2 is None:
             # initialize succeeded but tools/list yielded no response (banner
@@ -970,12 +1001,10 @@ async def probe_server(
             # the same failure the direct probe reports, instead of serving a
             # stale prior "ok" for up to the TTL.
             server.status = "error"
-            server.error = "tools/list: no response after a successful initialize"
-            logger.warning(
-                "MCP probe failed [%s]: tools/list returned no response after "
-                "a successful initialize",
-                server.name,
+            server.error = "tools/list: " + await _stopped_or(
+                proc, "no response after a successful initialize"
             )
+            logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
             # Same synthetic-identity rule as the trailing cache write: a
             # pre-flight's second-identity run is a diagnostic, not the
             # canonical observation the dashboard renders.
@@ -984,6 +1013,7 @@ async def probe_server(
         if isinstance(resp2, dict) and resp2.get("error"):
             err2 = resp2["error"]
             server.status = "error"
+            server.probe_mode = "refused"
             server.error = "tools/list: " + (
                 err2.get("message", "unknown error") if isinstance(err2, dict) else str(err2)
             )
@@ -1031,7 +1061,7 @@ async def probe_server(
         server.status = "error"
         server.error = "timeout"
         logger.warning(
-            "MCP probe failed [%s]: timeout after %ds", server.name, _get_probe_timeout()
+            "MCP probe failed [%s]: timeout after %ds", server.name, _get_local_probe_timeout()
         )
     except FileNotFoundError:
         server.status = "error"
@@ -1118,6 +1148,14 @@ async def probe_server(
             f"({_sanitize_probe_error(exc)})"
         )
         _warn_probe_sandbox_unavailable_once(server.name)
+    except (BrokenPipeError, ConnectionResetError) as exc:
+        # A request could not be written: the server closed its input, which it
+        # does when it exits before it reads one.
+        server.status = "error"
+        server.error = _sanitize_probe_error(exc)
+        if proc is not None:
+            server.error = await _stopped_or(proc, server.error)
+        logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
     except Exception as exc:
         server.status = "error"
         server.error = _sanitize_probe_error(exc)
@@ -1157,6 +1195,11 @@ async def probe_server(
         # redactors before it reaches doctor output / dashboard / Slack. The
         # redactors get the text from its first byte and it is cut to the shown
         # width only afterwards: a private key is known by its first line.
+        #
+        # npm prints its error code first and public-registry advice last, so a
+        # registry that refused npm's sign-in is explained from the whole
+        # redacted text, after the teardown below (naming the registry can mean
+        # asking npm, a second spawn).
         if proc is not None and proc.stderr is not None and server.status == "error":
             try:
                 stderr_text = await _stderr_text(proc.stderr)
@@ -1165,10 +1208,9 @@ async def probe_server(
                     clean, _ = redact_credentials(clean)
                     shown = _last_lines(clean, _STDERR_SHOWN_CHARS)
                     server.error = f"{server.error}\nstderr: {shown}"
+                    redacted_stderr = clean
             except (asyncio.TimeoutError, Exception):
                 pass
-        if cache_on_exit:
-            _cache_probe(server)
         if proc is not None and proc.returncode is None:
             try:
                 if proc.stdin:
@@ -1279,6 +1321,10 @@ async def probe_server(
                     await asyncio.to_thread(sweep_all_backend_tmp)
                 except Exception:
                     logger.debug("probe-side backend-tmp sweep failed", exc_info=True)
+        if redacted_stderr and (hint := await npm_sign_in_hint(redacted_stderr, env, _spawn_args)):
+            server.error = f"{hint}\n{server.error}"
+        if cache_on_exit:
+            _cache_probe(server)
 
     # A probe run under a SYNTHETIC identity must not become the cached truth:
     # the per-name cache is what ``GET /api/mcp`` renders, and a pre-flight's

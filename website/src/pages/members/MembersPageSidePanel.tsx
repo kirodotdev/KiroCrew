@@ -31,6 +31,7 @@ import ThreadPanel from './ThreadPanel'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import BotSessionsPanelTab from './BotSessionsPanelTab'
+import BotSessionListSwitches from './BotSessionListSwitches'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { appendPaneDraftReply, suggestPaneDraft } from '../../utils/chatPaneDrafts'
@@ -663,6 +664,7 @@ export function MembersPageSidePanel({
           key={activeMemberKey}
           root={activeMemberKey}
           mateName={crewDisplayName(activeView ?? active)}
+          header={(activeView ?? active) && <BotSessionListSwitches member={(activeView ?? active)!} displayName={crewDisplayName(activeView ?? active)} />}
           liveSlots={drivingSessions}
           slotsLoaded={slotsLoaded}
           openKey={openPanelSession}

@@ -351,7 +351,9 @@ def resolve_effective(
     return _materialize(base, rows, catalog), accepted, changes
 
 
-def validate_request(body: Any, *, commit: bool = False) -> dict:
+def validate_request(
+    body: Any, *, commit: bool = False, sections: tuple[str, ...] = SECTIONS
+) -> dict:
     if not isinstance(body, dict) or set(body) - {
         "revision",
         "enroll",
@@ -381,7 +383,7 @@ def validate_request(body: Any, *, commit: bool = False) -> dict:
             "retain_paths",
         }:
             raise CapabilityError("invalid_operation", 400)
-        if op.get("section") not in SECTIONS or not isinstance(op.get("id"), str) or not op["id"]:
+        if op.get("section") not in sections or not isinstance(op.get("id"), str) or not op["id"]:
             raise CapabilityError("invalid_operation", 400)
         if "retain_paths" in op and (
             op.get("section") != "mcpServers"

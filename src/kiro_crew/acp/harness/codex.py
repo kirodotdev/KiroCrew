@@ -17,7 +17,9 @@ Node processes and N app-servers for N sessions; ``AcpRuntime`` pays one.
 chats on one process. Which hosts put a SUBAGENT's session on the parent's runtime is
 ``ACP_BACKENDS_SESSION_SHARING``, and codex is a member: a foreground chat still owns
 its own runtime, and its subagents ride on that one rather than paying a Node process
-and an app-server each.
+and an app-server each, until one of them leaves it: ``session/close`` leaves that
+session's MCP fleet running, so the parent's later subagents take a process
+of their own (``_should_use_session_sharing``).
 
 Sharing here does not mean a session that outlives its parent. Teardown still sends
 ``session/close`` and the session still leaves the process -- a resident subagent

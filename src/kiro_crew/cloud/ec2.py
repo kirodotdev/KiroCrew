@@ -365,12 +365,11 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
         return
     detail = "; ".join(f"{host} is inside private zone {zone}" for host, zone in hits)
     raise aws.AWSError(
-        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
-        f"must download from ({detail}). Inside this VPC that name resolves to "
-        "NXDOMAIN instead of falling through to public DNS, so the install would "
-        "fail several minutes from now with a misleading error. Launch into a VPC "
-        "without that zone via `--subnet <subnet-id>`, or remove the zone from this "
-        "VPC, then retry.",
+        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap must download "
+        f"from ({detail}). Launch into a VPC without that zone by giving one of its subnets "
+        "(the Subnet ID field, or `--subnet <subnet-id>`), or remove the zone from this VPC, "
+        "then retry. Inside this VPC that name resolves to NXDOMAIN instead of falling through to "
+        "public DNS, so the install would fail several minutes from now with a misleading error.",
         action="route53:ListHostedZonesByVPC",
     )
 
@@ -455,8 +454,9 @@ def discover_network(
         vpc_list = allv.get("Vpcs", []) if isinstance(allv, dict) else []
         if len(vpc_list) != 1:
             raise aws.AWSError(
-                "no default VPC found — create one (`aws ec2 create-default-vpc`) "
-                "or pass `--subnet <subnet-id>`, then retry.",
+                f"no default VPC in {region}, and {len(vpc_list)} other VPCs, so Kiro Crew can't "
+                "pick one. Give a subnet with internet access (the Subnet ID field, or `--subnet`)"
+                " or create a default VPC (`aws ec2 create-default-vpc`), then retry.",
                 action="ec2:DescribeVpcs",
             )
     vpc_id = vpc_list[0]["VpcId"]
@@ -531,8 +531,8 @@ def discover_network(
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
         f"gateway or NAT).{dead_note} Kiro Crew needs outbound access to install packages and "
-        "reach SSM. Add or repair an internet gateway or NAT default route, or pass a "
-        "subnet that has one via `--subnet`, then retry.",
+        "reach SSM. Add or repair an internet gateway or NAT default route, or give a "
+        "subnet that has one (the Subnet ID field, or `--subnet`), then retry.",
         action="ec2:DescribeRouteTables",
     )
 
@@ -1604,4 +1604,15 @@ def wait_for_delete(tag: str, profile: str = "", region: str = "") -> bool:
         timeout=_DEPLOY_TIMEOUT,
     )
     # `wait` exits 0 when the stack reaches DELETE_COMPLETE (including "not found").
+    return rc == 0
+
+
+def wait_for_create(tag: str, profile: str = "", region: str = "") -> bool:
+    """Block until a stack being created settles. Returns True on CREATE_COMPLETE."""
+    rc, _out, _err = aws.run_aws(
+        ["cloudformation", "wait", "stack-create-complete", "--stack-name", stack_name(tag)],
+        profile,
+        region,
+        timeout=_DEPLOY_TIMEOUT,
+    )
     return rc == 0

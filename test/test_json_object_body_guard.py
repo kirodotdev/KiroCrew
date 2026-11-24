@@ -461,6 +461,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     ),
     # The ultracode and Fast mode routes share one writer, which reads the body.
     "chat_api/slot_effort.py::_write_session_switch": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_effort.py::api_chat_slot_approve_for_me": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/session_relaunch.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/session_relaunch.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_settings.py::api_chat_slot_turn_timeout": ("<default>", _BOUNDED_CONTROL_FIELDS),

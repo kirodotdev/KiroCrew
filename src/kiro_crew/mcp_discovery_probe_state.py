@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.env import MCP_PATH_HINT, describe_search_path
 from kiro_crew.mcp_discovery_server_info import McpServerInfo, redact_mcp_error
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
@@ -58,6 +59,15 @@ def negotiated_protocol_version(reply: object, sent: str) -> str:
 # Configurable via dashboard.mcp_probe_timeout_secs in <config_dir>/config.json.
 _PROBE_TIMEOUT_SECS = 15  # fallback if config not loaded yet
 
+# A local probe STARTS the server, so each wait includes the program's own start-up
+# (a package download, an interpreter importing its modules, a sign-in) that a remote
+# server has already paid. A session gives that start-up 120 s; giving it only the
+# probe timeout would report a server that works in every chat as timed out, and the
+# quarantine would then stop probing it. Four times the timeout (60 s by default,
+# never past the setting's own ceiling) covers a slow start, and a server that really
+# hangs still costs one bounded wait.
+_LOCAL_PROBE_TIMEOUT_FACTOR = 4
+
 # Teardown budget for a probed child, paid TWICE on a server that ignores a
 # closed stdin: once waiting for a graceful exit, then again after SIGKILL. A
 # server that hangs rather than exiting therefore costs 2x this before the
@@ -96,6 +106,13 @@ def _get_probe_timeout() -> int:
         return _PROBE_TIMEOUT_SECS
 
 
+def _get_local_probe_timeout() -> int:
+    """How long a local (stdio) probe waits for each reply; see ``_LOCAL_PROBE_TIMEOUT_FACTOR``."""
+    from kiro_crew.config.sections_limits import MCP_PROBE_TIMEOUT_MAX
+
+    return min(_get_probe_timeout() * _LOCAL_PROBE_TIMEOUT_FACTOR, MCP_PROBE_TIMEOUT_MAX)
+
+
 # Probe results expire after 30 minutes → status becomes "outdated"
 _PROBE_TTL_SECS = 1800
 
@@ -120,6 +137,29 @@ _PROBE_TTL_SECS = 1800
 _unresolvable_warned: set[tuple[str, str]] = set()
 
 
+#: Programs that come with Node.js. A missing one means Node.js is missing, which
+#: the program's own name does not tell a reader.
+_NODE_PROGRAMS = frozenset({"node", "npm", "npx"})
+
+
+def _node_hint(command: str) -> str:
+    """The sentence naming Node.js as what to install, or ``""`` for other commands.
+
+    Matches a bare name only, with or without a Windows ``.cmd`` / ``.exe``
+    suffix: a command written as a path names its own location, so the remedy
+    there is that path. The restart is part of the fix because the Node version
+    directories on the search path are listed once per gateway process.
+    """
+    name = command.casefold().removesuffix(".cmd").removesuffix(".exe")
+    if name not in _NODE_PROGRAMS:
+        return ""
+    return (
+        f" {name} is part of Node.js, which is not installed on this computer or "
+        f"was not found. Install Node.js {format_node_version(MIN_NODE_VERSION)} "
+        "or later, then restart the gateway."
+    )
+
+
 def _unresolved_error(command: str, search_path: str = "") -> str:
     """The dashboard-facing string for a command that resolved nowhere.
 
@@ -127,15 +167,18 @@ def _unresolved_error(command: str, search_path: str = "") -> str:
     does not distinguish the two causes a reader can act on: the binary is not
     installed, or it is installed somewhere the search path does not cover. The
     full directory list goes to the log (:func:`_warn_unresolvable_once`) rather
-    than here -- this string renders in a fixed-width dashboard cell.
+    than here -- this string renders in a fixed-width dashboard cell. A Node.js
+    program also says that Node.js is what to install (:func:`_node_hint`).
     """
-    if not search_path:
-        return f"command not found: {command}"
-    count = len([d for d in search_path.split(os.pathsep) if d])
-    return (
-        f"command not found: {command} — not in any of the {count} directories "
-        "searched (see the gateway log for the list)"
-    )
+    message = f"command not found: {command}"
+    if search_path:
+        count = len([d for d in search_path.split(os.pathsep) if d])
+        message += (
+            f" — not in any of the {count} directories searched "
+            "(see the gateway log for the list)"
+        )
+    hint = _node_hint(command)
+    return f"{message}.{hint}" if hint else message
 
 
 def _warn_unresolvable_once(name: str, command: str, search_path: str = "") -> None:

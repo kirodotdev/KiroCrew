@@ -290,13 +290,14 @@ async def delete(
         removed = 0
         kept: set[tuple[Any, ...]] = set()
         for item in items:
-            if _matches(item, rule, repo_scope, exact, scoped):
-                copy = _copy_identity(item)
-                if keep_one and copy not in kept:
-                    kept.add(copy)
-                    continue
-                result = await route.provider.delete(scope, item.id)
-                removed += result.outcome == "deleted"
+            if not _matches(item, rule, repo_scope, exact, scoped):
+                continue
+            copy = _copy_identity(item)
+            if keep_one and copy not in kept:
+                kept.add(copy)
+                continue
+            result = await route.provider.delete(scope, item.id)
+            removed += result.outcome == "deleted"
     except ProviderError as exc:
         logger.warning("memory provider learn_remove failed: %s", exc.code)
         return _respond({"ok": False, "reason": UNAVAILABLE})

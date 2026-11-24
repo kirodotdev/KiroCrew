@@ -1,6 +1,7 @@
 """Reasoning effort: the selection-capabilities read,
 ``POST /api/chat/slots/{slot}/reasoning-effort`` and the on/off switches beside it
-(``POST /api/chat/slots/{slot}/ultracode`` and ``POST /api/chat/slots/{slot}/fast``).
+(``POST /api/chat/slots/{slot}/ultracode``, ``POST /api/chat/slots/{slot}/fast`` and
+``POST /api/chat/slots/{slot}/approve-for-me``).
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ if TYPE_CHECKING:
 
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
+        ACP_BACKENDS_APPROVE_FOR_ME,
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+        APPROVE_FOR_ME_MODE,
         AcpProvider,
         DashboardState,
         KiroCrewConfig,
@@ -25,14 +28,25 @@ if TYPE_CHECKING:
         _app_cancel_denied,
         _append_session_switch_notice,
         _ChatSlot,
+        _deny_approval_mode,
         _remember_reasoning_effort_for_restore,
+        _reset_slot_session,
         _reset_slot_session_or_warn,
         _slot_replaced_while_queued,
         _slot_switch_session_lock,
         _subagents_attached_response,
         _switch_target_busy,
+        apply_approval_mode,
+        approve_for_me_engine_supported,
+        approve_for_me_keys,
+        approve_for_me_offered_on,
+        approve_for_me_permitted,
+        approve_for_me_profile_binds,
+        approve_for_me_reads_on,
+        approve_for_me_refresh_engine_support,
         cap_effort_capability_levels,
         deny_app_slot_access,
+        deny_session_approval_caller,
         effective_session_key,
         get_reasoning_effort_ordered,
         get_reasoning_effort_values,
@@ -43,6 +57,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         relay_archive_refusal,
         resolve_effective_model,
+        sel,
         slot_not_found,
     )
 
@@ -144,6 +159,7 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
                 "backend": backend,
                 "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
                 **await _own_models_field(backend, config),
+                **_approve_for_me_field(state, slot, backend),
                 **harness_effort(
                     state,
                     backend,
@@ -195,6 +211,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             **({} if fast is None else {"fast": fast}),
             # The harness's own words for why the Fast mode switch would not stay on.
             **({} if fast_unavailable is None else {"fast_unavailable": fast_unavailable}),
+            # Present only on a harness that offers approve-for-me.
+            **_approve_for_me_field(state, slot, backend),
         }
     )
 
@@ -651,6 +669,198 @@ async def api_chat_slot_fast_mode(request: web.Request) -> web.Response:
         read=lambda provider: provider.fast_mode_enabled(),
         write=lambda provider, enabled: provider.set_fast_mode(enabled),
     )
+
+
+def _approve_for_me_field(state: DashboardState, slot: _ChatSlot, backend: str) -> dict[str, bool]:
+    """``{"approve_for_me": <on?>}`` for a slot on a harness that offers it, else ``{}``.
+
+    Read from the dashboard's own record, not the session: the engine lists the
+    option only after an opted-in restart, and the slot has no session in between.
+    """
+    if (
+        backend not in ACP_BACKENDS_APPROVE_FOR_ME
+        or not approve_for_me_offered_on(slot)
+        or not approve_for_me_engine_supported()
+    ):
+        # An engine not known to send its verdict to Crew gets no row at all.
+        return {}
+    return {"approve_for_me": approve_for_me_reads_on(state, effective_session_key(slot))}
+
+
+async def _restart_for_approve_for_me(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> bool:
+    """End the slot's idle session so its next start picks up the engine switch.
+
+    False when a turn holds the session, or waits on a person (a permission card,
+    a question): nothing is torn down and nothing pending is answered for them.
+    The record is already changed, so the turn's next settle holds the option off,
+    every verdict the engine sends meanwhile takes the card (the owner check now says
+    no), and the restart waits for an idle session.
+    """
+    provider = state.sessions.get_provider(session_key)
+    if provider is None:
+        return True
+    if _switch_target_busy(state, slot, session_key, provider):
+        return False
+    return bool(await _reset_slot_session(state, slot, session_key, skip_if_busy=True))
+
+
+async def end_approve_for_me(state: DashboardState, slots: list[_ChatSlot]) -> None:
+    """Drop the person's approve-for-me on *slots* after another mode was picked.
+
+    The key leaves the record at once. An idle session is restarted, so its next
+    start runs with the engine switch off. A busy one is held off by the turn's
+    owner check: its next call KAS approves cancels the turn, and the next turn
+    writes the option off.
+    """
+    keys = approve_for_me_keys(state)
+    for slot in slots:
+        session_key = effective_session_key(slot)
+        if session_key not in keys:
+            continue
+        keys.discard(session_key)
+        try:
+            await _restart_for_approve_for_me(state, slot, session_key)
+        except Exception as exc:
+            logger.warning(
+                "approve-for-me restart failed for slot %s: %s: %s",
+                slot.key,
+                type(exc).__name__,
+                exc,
+            )
+
+
+async def api_chat_slot_approve_for_me(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/approve-for-me — let KAS approve calls on its own.
+
+    Body: ``{"enabled": true | false}``; answers ``{"ok": true, "approve_for_me":
+    <bool>}``. Dashboard owner only. Only a slot on a harness in
+    ``ACP_BACKENDS_APPROVE_FOR_ME`` takes it (409 ``approve_for_me_not_offered``), and
+    never one a person does not drive from the dashboard: app-owned, unattended,
+    cron, or tied to a messaging channel (409 ``approve_for_me_not_owners``).
+    Turning it on is checked against the ``approval_modes`` policy (403
+    ``mode_disabled_by_policy``) and first puts the slot back to Normal. Either way
+    the slot's idle session is restarted so the next message starts its engine with
+    the switch set; a running turn refuses with 409 ``turn_in_flight`` and changes
+    nothing.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return slot_not_found()
+    denied = await deny_session_approval_caller(request, "slot_approve_for_me")
+    if denied is not None:
+        return denied
+    if request.get("app") or request.get("internal_auth") is True:
+        return web.json_response(
+            {
+                "error": "approve for me is set from the dashboard only",
+                "code": "approve_for_me_owner_only",
+            },
+            status=403,
+        )
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be true or false", "code": "invalid_value"}, status=400
+        )
+    mode = APPROVE_FOR_ME_MODE
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_approve_for_me"):
+            return slot_not_found()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_approve_for_me"):
+            return slot_not_found()
+        provider = state.sessions.get_provider(session_key)
+        if isinstance(provider, AcpProvider):
+            backend = provider.capabilities.backend
+        else:
+            backend = await _configured_backend_for_slot(slot)
+        if enabled and not approve_for_me_offered_on(slot):
+            # Turns no person at the dashboard sent keep Crew's own checks.
+            return web.json_response(
+                {
+                    "error": "approve for me is offered only on a chat you drive here",
+                    "code": "approve_for_me_not_owners",
+                },
+                status=409,
+            )
+        if backend not in ACP_BACKENDS_APPROVE_FOR_ME or (
+            enabled and not await asyncio.to_thread(approve_for_me_refresh_engine_support)
+        ):
+            # Only an engine known to send its verdict to Crew may hold it on.
+            return web.json_response(
+                {
+                    "error": "this session offers no approve-for-me",
+                    "code": "approve_for_me_not_offered",
+                },
+                status=409,
+            )
+        if enabled and (
+            not approve_for_me_permitted()
+            or approve_for_me_profile_binds(session_key, getattr(slot, "agent", "") or "")
+        ):
+            # The policy does not list the mode, or a governance profile binds the
+            # session and may narrow it: the owner check would hold it off anyway.
+            return _deny_approval_mode(
+                caller="dashboard:approve_for_me",
+                operation=f"mode_change:{mode}",
+                mode=mode,
+                resource=slot.key,
+            )
+        keys = approve_for_me_keys(state)
+        was_on = session_key in keys
+        if was_on == enabled:
+            # Already so: nothing changes, so a running turn is no reason to refuse.
+            return web.json_response({"ok": True, "approve_for_me": enabled})
+        if _switch_target_busy(state, slot, session_key, provider):
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        if enabled:
+            answer = await apply_approval_mode(
+                state,
+                mode="normal",
+                slot=slot,
+                slot_key=slot.key,
+                request_app="",
+                cron_creator="",
+                audit_caller=lambda label: label,
+            )
+            if answer.status != 200:
+                return answer
+            keys.add(session_key)
+        else:
+            keys.discard(session_key)
+        if not await _restart_for_approve_for_me(state, slot, session_key):
+            # A turn started after the busy check: put the record back.
+            if was_on:
+                keys.add(session_key)
+            else:
+                keys.discard(session_key)
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+    try:
+        sel().log_api_access(
+            caller="dashboard:approve_for_me",
+            operation=f"mode_change:{mode}",
+            outcome="enabled" if enabled else "disabled",
+            resources=slot.key,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for approve-for-me change", exc_info=True)
+    state.push_slots_update()
+    logger.info("Slot %s approve_for_me switched to %s", name, enabled)
+    return web.json_response({"ok": True, "approve_for_me": enabled})
 
 
 async def _write_session_switch(

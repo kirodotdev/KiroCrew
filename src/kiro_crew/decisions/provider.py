@@ -144,8 +144,11 @@ class ProviderSpec:
     #: keeps at most this many in flight, and one that needs more falls back to a
     #: mode that asks one at a time.
     max_in_flight: int = 1
-    #: Typical answer time in milliseconds, as declared. A caller reads it only to
-    #: pick a pace before it has measured its own; it never bounds a request.
+    #: Typical answer time in milliseconds, as declared (a local preset's own
+    #: median may raise it, ``gate.capabilities``). A caller reads it to pick a
+    #: pace and a wait, and the browser's pick and check to skip a provider that
+    #: typically answers after their wait; the gate's budget still bounds every
+    #: request.
     latency_ms: int = 1000
 
     def capabilities(self) -> Capabilities:

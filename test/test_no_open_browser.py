@@ -108,6 +108,7 @@ class TestNoOpenCliFlag:
             mock_orch_cls.assert_called_once_with(
                 cfg,
                 no_dashboard=False,
+                headless=False,
                 no_crons=False,
                 no_open=True,
                 port_override=None,

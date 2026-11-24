@@ -14,7 +14,8 @@ import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import type { MemoryMode } from '../../components/MemoryModeChip'
 import { memoryModeAllowsCrewMode, runsCrewMode } from '../../lib/crewMode'
-import { forgetSlotSuccession, recordSlotSuccession } from '../../utils/slotSuccession'
+import { commitSlotSuccession, forgetSlotSuccession, recordSlotSuccession } from '../../utils/slotSuccession'
+import { holdSlotUploadFailure, takeSlotUploadFailure } from '../../utils/slotUploadFailures'
 
 type Ref<T> = { current: T }
 
@@ -148,7 +149,9 @@ export async function runMemorySwitch(
   // Recorded before the switch: `switchSlot.pending` makes `next` active at
   // once, and a host embedding `from` (the Papyrus co-author panel) must
   // already know it is the hand-over, not an unrelated change of session.
-  recordSlotSuccession(from, next)
+  // Pending until the hand-over below: an attachment failure that lands
+  // meanwhile stays with `from`, which keeps it if the switch fails.
+  recordSlotSuccession(from, next, { pending: true })
   try {
     await c.dispatch(switchSlot({ key: next, requestSeq: origin.seq })).unwrap()
   } catch (error) {
@@ -181,7 +184,11 @@ export async function runMemorySwitch(
   // with its hold (see uploadFiles). One that already finished while the
   // switch loaded landed in the old slot's draft after the carry above -- or
   // waits undrained in its arrivals -- so move it across too, otherwise it
-  // is deleted with the old slot.
+  // is deleted with the old slot. A failure held for the old slot moves too;
+  // the hold shows it at once on the page showing `next`.
+  commitSlotSuccession(from)
+  const heldFailure = takeSlotUploadFailure(from)
+  if (heldFailure) holdSlotUploadFailure(next, heldFailure)
   handOverComposerUploads(from, next)
   const late = [...(c.fileDrafts.current[from] ?? []), ...takeComposerArrivals(from)]
     .filter((p, i, all) => !carriedFiles.includes(p) && all.indexOf(p) === i)

@@ -27,6 +27,7 @@ from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.display_battery import display_battery
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     oauth_url_contains_credential,
@@ -121,10 +122,17 @@ def variant_from_row(row: dict) -> dict:
     explanation for good, and the reader switching back would be handed a bare
     placeholder with no way to learn what was removed. The turn stats (model,
     credits, time) are that reply's own too, and nothing can measure them again.
+    So is the ``mid`` of a row with no version list: it names this version
+    wherever the list moves it, and a discussion card keys its sends on it. A
+    row that has a list shows one of its versions, and its ``mid`` names only
+    the newest, so a stash of it takes no id.
     """
     entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
     meta = row.get("meta")
     if isinstance(meta, dict):
+        mid = meta.get("mid")
+        if isinstance(mid, str) and mid and not row.get("variants"):
+            entry["mid"] = mid
         # Bounded here, at retention: the row's meta was read off a transcript
         # line, and a variant list outlives the render that would bound it later.
         for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
@@ -135,6 +143,13 @@ def variant_from_row(row: dict) -> dict:
         if isinstance(stats, dict):
             # Redacted as the row's meta is when it is saved: the list is saved too.
             entry["turn_stats"] = _redact_value(stats)
+        # The record of the KAS engine sub-agents this reply's turn ran is that
+        # reply's own, already bounded and redacted where it was put on the row.
+        from kiro_crew.dashboard.engine_subagent_record import RECORD_META_KEY
+
+        record = meta.get(RECORD_META_KEY)
+        if isinstance(record, dict):
+            entry[RECORD_META_KEY] = record
         # An older build's suspicious-URL placeholder keeps the records that hold its
         # address, so the stashed text can still be shown as that address.
         if _LEGACY_PLACEHOLDER in str(entry["content"]):
@@ -216,6 +231,14 @@ def _variant_for_emit(variant: dict) -> dict:
     # The page reads a reply's stats from its row, which a switch updates; the
     # variant's copy is only there for the switch to put back.
     out.pop("turn_stats", None)
+    # A browsed variant shows its own engine sub-agent record, so it leaves through
+    # the redaction its row's record leaves through, never as the line held it.
+    from kiro_crew.dashboard.engine_subagent_record import RECORD_META_KEY
+
+    record = out.pop(RECORD_META_KEY, None)
+    if isinstance(record, dict):
+        shown = _redact_meta_for_role("assistant", {RECORD_META_KEY: record})
+        out[RECORD_META_KEY] = shown[RECORD_META_KEY]
     return with_blocked_links(with_bounded_redaction_records(out), out["content"])
 
 
@@ -229,9 +252,30 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
     the records are replaced when the variant carries them and REMOVED when it
     does not, because a variant with no records has nothing to explain.
     """
+    from kiro_crew.dashboard.engine_subagent_record import RECORD_META_KEY
+
+    meta = row.get("meta")
+    # The row's engine sub-agent record belongs to the variant it shows now. The
+    # newest variant is listed when its text is written, before its turn's record
+    # is put on the row, so it is given the row's record here before the row moves.
+    record = meta.get(RECORD_META_KEY) if isinstance(meta, dict) else None
+    variants = row.get("variants")
+    if isinstance(record, dict) and isinstance(variants, list) and variants:
+        shown = row.get("variant_idx")
+        shown = shown if isinstance(shown, int) else len(variants) - 1
+        current = variants[shown] if 0 <= shown < len(variants) else None
+        if isinstance(current, dict) and current is not variant and RECORD_META_KEY not in current:
+            current[RECORD_META_KEY] = record
     row["content"] = variant.get("content", "")
     row["ts"] = variant.get("ts", row.get("ts", ""))
-    meta = row.get("meta")
+    chosen = variant.get(RECORD_META_KEY)
+    if isinstance(chosen, dict):
+        if not isinstance(meta, dict):
+            meta = {}
+            row["meta"] = meta
+        meta[RECORD_META_KEY] = chosen
+    elif isinstance(meta, dict):
+        meta.pop(RECORD_META_KEY, None)
     for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
         records = bound(variant.get(key))
         if records:
@@ -1316,6 +1360,9 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
                     row["meta"] = shown
                 out.append(row)
             continue
+        # Sent as the say-nothing reply, in its place, so row indexes still match.
+        if is_stored_echo_row(m):
+            m = {**m, "content": "\u200b"}
         text = m.get("content", "")
         # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
         # display-time redaction boundary for everything the slot detail

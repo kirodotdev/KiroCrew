@@ -276,7 +276,9 @@ def _consolidate_cmd(args) -> None:
                     source="cli",
                     resources=key,
                 )
-                count = conv_log.unconsolidated_count(key)
+                # Transcript reads go to a worker thread, as in consolidate_now: on
+                # the loop their retry over a transient OSError cannot pause.
+                count = await asyncio.to_thread(conv_log.unconsolidated_count, key)
                 if count < 1:
                     print(f"  {key}: no unconsolidated messages, skipping")
                     continue
@@ -293,8 +295,10 @@ def _consolidate_cmd(args) -> None:
                 # process exits here, with no idle sweep behind it to finish a
                 # remainder, so a bare "done" would be the last word on messages
                 # nothing has read.
-                left = conv_log.unconsolidated_count(key)
-                if left and _session_touched_sensitive(conv_log._read_messages(key)):
+                left = await asyncio.to_thread(conv_log.unconsolidated_count, key)
+                if left and _session_touched_sensitive(
+                    await asyncio.to_thread(conv_log._read_messages, key)
+                ):
                     # consolidate_now skips a sensitive session on purpose (before
                     # the first pass, or once it turns sensitive mid-drain) and
                     # returns True. That is a skip, not a stalled drain: rerunning

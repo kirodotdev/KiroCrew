@@ -1209,7 +1209,9 @@ class TestSecurityCli:
             with pytest.raises(SystemExit) as exc:
                 cc._security(_ns(sec_action="events", limit=5, since="yesterdayish"))
         assert exc.value.code == 2
-        assert "cannot read" in capsys.readouterr().out
+        # An error goes to stderr, so a script reading stdout never takes it for output.
+        captured = capsys.readouterr()
+        assert "cannot read" in captured.err and captured.out == ""
         sel.return_value.recent.assert_not_called()
 
     def test_events_rejects_an_inverted_window(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1224,7 +1226,8 @@ class TestSecurityCli:
                     )
                 )
         assert exc.value.code == 2
-        assert "--since must be earlier than --until" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "--since must be earlier than --until" in captured.err and captured.out == ""
         sel.return_value.recent.assert_not_called()
 
     def test_events_names_the_window_when_empty(self, capsys: pytest.CaptureFixture[str]) -> None:

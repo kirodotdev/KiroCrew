@@ -395,6 +395,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('1')
     })
 
+    it('does nothing while Settings → Chat → Side panel turns the swipe off', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      localStorage.setItem('mc-chat-config', JSON.stringify({ sidePanelSwipe: false }))
+      const chat = await openOncall()
+      expect(swipe(chat, 20, 30)).toBe(0)
+      expect(sliding()).toBe(false)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).not.toBe('1')
+    })
+
     /** The width the chat gives up for the sheet during a desktop drag, px. */
     const spacerW = () => {
       const el = screen.queryByTestId('member-side-panel-spacer') as HTMLElement | null
@@ -575,6 +585,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
       swipe(chat, 15)
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
+      expect(sliding()).toBe(false)
+    })
+
+    it('a scroll over the open panel that drifts left keeps its tab and keeps scrolling', async () => {
+      await openOncall()
+      await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
+      fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
+      const panel = screen.getByTestId('member-side-panel')
+      // The first step is a little more sideways than down; then the scroll goes
+      // on down with a few px of leftward drift each step, 124px sideways in all.
+      swipe(panel, 4, 1, {}, 2)
+      expect(swipe(panel, 4, 30, {}, 30)).toBe(0)
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
+      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
       expect(sliding()).toBe(false)
     })
 

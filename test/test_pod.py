@@ -1041,9 +1041,19 @@ class TestNameValidation:
         with pytest.raises(rt.PodError):
             rt.validate_name(bad)
 
-    @pytest.mark.parametrize("good", ["command-palette", "a.b_c-d", "x", "A1"])
+    @pytest.mark.parametrize("stem", ["nul", "NUL", "Con", "aux", "prn", "com1", "lpt9", "nul.dev"])
+    def test_a_new_pod_cannot_take_a_windows_device_stem(self, stem: str) -> None:
+        with pytest.raises(rt.PodError, match="invalid pod name"):
+            rt.validate_new_name(stem)
+        # A pod made under that name before the rule stays addressable, so it can be stopped.
+        assert rt.validate_name(stem) == stem
+
+    @pytest.mark.parametrize(
+        "good", ["command-palette", "a.b_c-d", "x", "A1", "com10", "nulx", "null", "con-1"]
+    )
     def test_accepts(self, good: str) -> None:
         assert rt.validate_name(good) == good
+        assert rt.validate_new_name(good) == good
 
 
 class TestEnvFileAndPin:

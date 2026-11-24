@@ -293,6 +293,13 @@ def install_app(
             name=name,
             error=f"could not clear earlier memory consent for {name!r}: {exc}",
         )
+    # Browsing sites the owner added for an earlier install go too.
+    try:
+        protected_app_state.forget_owner_browser_sites(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not clear earlier browsing sites for {name!r}: {exc}"
+        )
 
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(
@@ -553,10 +560,14 @@ def install_app(
 
     refresh_app_config_keys()
     logger.info("Installed app %s v%s from %s", name, manifest.version, source)
+    from kiro_crew.apps.builtin_shadow import shadowed_builtin_notice
+
+    shadow_notice = shadowed_builtin_notice(name, meta)
     return AppResult(
         ok=True,
         name=name,
-        message=f"installed {name} v{manifest.version}",
+        message=f"installed {name} v{manifest.version}"
+        + (f"; {shadow_notice}" if shadow_notice else ""),
         notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 

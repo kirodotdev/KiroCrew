@@ -59,6 +59,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { STANDALONE_REOPEN_KEY, isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { REVERSE_TRACKPAD_SWIPE_KEY, shellNaturalScrolling } from '../../lib/scrollTouch'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
+import { TouchLayoutSetting } from './TouchLayoutSetting'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../../lib/electron'
@@ -798,6 +799,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               { value: 'cli', label: 'CLI' },
             ]}
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
+          <TouchLayoutSetting />
           {/* The translucent panels (the Liquid Glass primitive: the message
               box, the chips, the Settings search capsule, the list search
               fields, the notification panes) are opt-in. Off (the default)

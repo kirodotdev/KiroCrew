@@ -36,6 +36,11 @@ def _fake_subscription() -> dict:
     }
 
 
+def _vapid() -> tuple[ec.EllipticCurvePrivateKey, str]:
+    """What ``web_push.load_vapid_keys`` returns, without the keypair file."""
+    return ec.generate_private_key(ec.SECP256R1()), "x"
+
+
 # ── vapid_keys ──────────────────────────────────────────────────────────────
 
 
@@ -278,13 +283,9 @@ async def test_send_web_push_marks_gone_on_410(monkeypatch):
             self.post_kwargs = k
             return _Resp()
 
-    monkeypatch.setattr(
-        web_push.vapid_keys, "get_private_key", lambda: ec.generate_private_key(ec.SECP256R1())
-    )
-    monkeypatch.setattr(web_push.vapid_keys, "public_key_b64url", lambda: "x")
     session = _Session()
     result = await web_push.send_web_push(
-        session, sub, {"web_push": 8030, "notification": {"title": "t"}}
+        session, sub, {"web_push": 8030, "notification": {"title": "t"}}, _vapid()
     )
     assert result.gone is True
     # Redirects must never be followed: a public endpoint 3xx-ing to an internal
@@ -328,13 +329,9 @@ async def test_send_web_push_logs_the_reason_a_push_service_gives(monkeypatch, c
         def post(self, *a, **k):
             return _Resp()
 
-    monkeypatch.setattr(
-        web_push.vapid_keys, "get_private_key", lambda: ec.generate_private_key(ec.SECP256R1())
-    )
-    monkeypatch.setattr(web_push.vapid_keys, "public_key_b64url", lambda: "x")
     with caplog.at_level("WARNING", logger=web_push.__name__):
         result = await web_push.send_web_push(
-            _Session(), _fake_subscription(), {"notification": {"title": "t"}}
+            _Session(), _fake_subscription(), {"notification": {"title": "t"}}, _vapid()
         )
     assert result.gone is False
     assert "returned HTTP 403" in caplog.text
@@ -581,23 +578,26 @@ def test_web_push_payload_worst_case_keyed_note_fits_the_push_limit():
 
 
 @pytest.mark.asyncio
-async def test_send_web_push_loads_vapid_keys_off_the_event_loop(monkeypatch, tmp_path):
+async def test_the_drain_loads_vapid_keys_once_off_the_event_loop(monkeypatch, tmp_path):
     """A cold key cache reads or generates the keypair file; that IO must run
-    in a worker thread, never on the gateway's event loop."""
+    in a worker thread, never on the gateway's event loop, and once for every
+    note one drain sends."""
     import threading
 
+    state = _make_state(monkeypatch, tmp_path)
     monkeypatch.setattr(vapid_keys, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr("kiro_crew.notifications.push_store.config_dir", lambda: tmp_path)
     vapid_keys.reset_cache_for_tests()
     loop_thread = threading.get_ident()
-    seen: list[int] = []
-    real_get_keys = vapid_keys._get_keys
+    loads: list[int] = []
+    real_load = web_push.load_vapid_keys
 
-    def _recording_get_keys():
-        seen.append(threading.get_ident())
-        return real_get_keys()
+    def _recording_load():
+        loads.append(threading.get_ident())
+        return real_load()
 
-    monkeypatch.setattr(vapid_keys, "_get_keys", _recording_get_keys)
+    monkeypatch.setattr(web_push, "load_vapid_keys", _recording_load)
+    monkeypatch.setattr(state.push_subscription_store, "all", lambda: [_fake_subscription()])
+    posts: list[str] = []
 
     class _Resp:
         status = 201
@@ -609,18 +609,26 @@ async def test_send_web_push_loads_vapid_keys_off_the_event_loop(monkeypatch, tm
             return False
 
     class _Session:
-        def post(self, *a, **k):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, endpoint, **k):
+            posts.append(endpoint)
             return _Resp()
 
+    monkeypatch.setattr(web_push, "public_push_session", _Session)
     try:
-        result = await web_push.send_web_push(
-            _Session(), _fake_subscription(), {"notification": {"title": "t"}}
-        )
+        for title in ("a", "b", "c"):
+            state._fan_out_web_push({"title": title})
+        await await_until(state._web_push_drain, what="the push drain")
     finally:
         vapid_keys.reset_cache_for_tests()
-    assert result.gone is False
-    assert seen, "the sender never read the VAPID keys"
-    assert loop_thread not in seen
+    assert len(posts) == 3
+    assert len(loads) == 1
+    assert loop_thread not in loads
     assert (tmp_path / "web-push" / "vapid_keys.json").exists()
 
 
@@ -675,7 +683,8 @@ async def test_fan_out_reads_subscriptions_off_the_event_loop(monkeypatch, tmp_p
         return []
 
     monkeypatch.setattr(state.push_subscription_store, "all", _recording_all)
-    await state._send_web_push_all({"title": "t", "body": "b", "channel": "c"})
+    state._web_push_queue.append({"title": "t", "body": "b", "channel": "c"})
+    await state._send_web_push_all()
     assert seen, "the fan-out never read the subscriptions"
     assert loop_thread not in seen
 
@@ -833,9 +842,10 @@ async def test_fan_out_from_a_worker_thread_runs_on_the_serving_loop(monkeypatch
     sent: list[dict] = []
     done = asyncio.Event()
 
-    async def _record(note):
+    async def _record():
         assert asyncio.get_running_loop() is loop
-        sent.append(note)
+        sent.extend(state._web_push_queue)
+        state._web_push_queue.clear()
         done.set()
 
     monkeypatch.setattr(state, "_send_web_push_all", _record)
@@ -847,14 +857,15 @@ async def test_fan_out_from_a_worker_thread_runs_on_the_serving_loop(monkeypatch
 def test_fan_out_without_any_loop_is_a_no_op(monkeypatch, tmp_path):
     """A state that has never seen a loop skips the push instead of raising."""
     state = _make_state(monkeypatch, tmp_path)
-    called: list[dict] = []
+    called: list[bool] = []
 
-    async def _record(note):
-        called.append(note)
+    async def _record():
+        called.append(True)
 
     monkeypatch.setattr(state, "_send_web_push_all", _record)
     state._fan_out_web_push({"title": "t"})
     assert called == []
+    assert not state._web_push_queue
 
 
 @pytest.mark.asyncio
@@ -865,9 +876,11 @@ async def test_fan_out_logs_a_failed_sender_import(monkeypatch, tmp_path, caplog
 
     state = _make_state(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "kiro_crew.notifications.web_push", None)
+    state._web_push_queue.append({"title": "t", "body": "b", "channel": "c"})
     with caplog.at_level("WARNING"):
-        await state._send_web_push_all({"title": "t", "body": "b", "channel": "c"})
+        await state._send_web_push_all()
     assert "Web push fan-out failed" in caplog.text
+    assert not state._web_push_queue
 
 
 def test_web_push_imports_without_resolve_result(monkeypatch):
@@ -886,7 +899,7 @@ def test_web_push_imports_without_resolve_result(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fan_out_task_survives_a_gc_pass(monkeypatch, tmp_path):
-    """The scheduled push task is held until it finishes.
+    """The push drain task is held until it finishes.
 
     The loop keeps only a weak reference to a task. A send parked on a future
     nothing else references forms an unreachable cycle with its task, so a
@@ -898,7 +911,7 @@ async def test_fan_out_task_survives_a_gc_pass(monkeypatch, tmp_path):
     state = _make_state(monkeypatch, tmp_path)
     state.bind_serving_loop(asyncio.get_running_loop())
 
-    async def _parked(note):
+    async def _parked():
         await asyncio.get_running_loop().create_future()
 
     monkeypatch.setattr(state, "_send_web_push_all", _parked)
@@ -908,8 +921,154 @@ async def test_fan_out_task_survives_a_gc_pass(monkeypatch, tmp_path):
 
     parked = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "_parked"]
     assert len(parked) == 1, "the push task was garbage-collected mid-run"
-    assert parked[0] in state._background_tasks
+    assert parked[0] is state._web_push_drain
     parked[0].cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await parked[0]
-    assert parked[0] not in state._background_tasks
+    # A note after the drain ended starts a new one.
+    state._fan_out_web_push({"title": "t2"})
+    assert state._web_push_drain is not parked[0]
+    state._web_push_drain.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await state._web_push_drain
+
+
+@pytest.mark.asyncio
+async def test_a_note_burst_shares_one_resolver_and_one_lookup_per_host(monkeypatch, tmp_path):
+    """A burst of notes during slow DNS keeps at most one lookup per push host
+    in flight, even with two subscriptions on one host. Each lookup holds a
+    default-executor thread, so a resolver per note would hold a thread per
+    note per subscription and stall every unrelated ``asyncio.to_thread``."""
+    import asyncio
+    import socket
+
+    state = _make_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_push, "load_vapid_keys", _vapid)
+    subs = []
+    for host in ("a.push.example", "a.push.example", "b.push.example"):
+        sub = _fake_subscription()
+        sub["endpoint"] = f"https://{host}/s"
+        subs.append(sub)
+    monkeypatch.setattr(state.push_subscription_store, "all", lambda: [dict(s) for s in subs])
+    resolvers: list[object] = []
+    in_flight: list[str] = []
+    lookups: list[str] = []
+    peak = 0
+
+    class _SlowFailingResolver:
+        def __init__(self):
+            resolvers.append(self)
+
+        async def resolve(self, host, port=0, family=socket.AF_INET):
+            nonlocal peak
+            lookups.append(host)
+            in_flight.append(host)
+            peak = max(peak, len(in_flight))
+            try:
+                for _ in range(3):
+                    await asyncio.sleep(0)
+            finally:
+                in_flight.remove(host)
+            raise OSError(f"{host} does not resolve")
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(web_push, "ThreadedResolver", _SlowFailingResolver)
+    for i in range(30):
+        state._fan_out_web_push({"title": f"note {i}"})
+    await await_until(state._web_push_drain, what="the push drain")
+    assert len(resolvers) == 1
+    assert set(lookups) == {"a.push.example", "b.push.example"}
+    assert peak <= 2
+
+
+@pytest.mark.asyncio
+async def test_a_burst_past_the_queue_keeps_the_newest_notes_with_one_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """The push queue holds a bounded number of notes. A longer burst drops the
+    oldest (a closed device needs the latest state) and says how many."""
+    from kiro_crew.dashboard.state_parts import dashboard_services
+
+    state = _make_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_push, "load_vapid_keys", _vapid)
+    monkeypatch.setattr(state.push_subscription_store, "all", lambda: [_fake_subscription()])
+    sent: list[str] = []
+
+    async def _send(session, sub, payload, vapid):
+        sent.append(payload["notification"]["title"])
+        return web_push.PushResult(gone=False)
+
+    monkeypatch.setattr(web_push, "send_web_push", _send)
+    total = dashboard_services._WEB_PUSH_QUEUE_MAX + 10
+    with caplog.at_level("WARNING"):
+        for i in range(total):
+            state._fan_out_web_push({"title": f"note {i}"})
+        await await_until(state._web_push_drain, what="the push drain")
+    assert sent == [f"note {i}" for i in range(10, total)]
+    dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert dropped == ["Web push dropped 10 older notes during a burst"]
+
+
+@pytest.mark.asyncio
+async def test_a_note_queued_while_the_session_closes_is_still_sent(monkeypatch, tmp_path):
+    """Closing the session yields to the loop. A note that arrives then finds
+    the drain still running and starts none, so the drain checks the queue
+    again before it ends."""
+    import asyncio
+
+    state = _make_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_push, "load_vapid_keys", _vapid)
+    monkeypatch.setattr(state.push_subscription_store, "all", lambda: [_fake_subscription()])
+    sent: list[str] = []
+
+    async def _send(session, sub, payload, vapid):
+        sent.append(payload["notification"]["title"])
+        return web_push.PushResult(gone=False)
+
+    closes: list[bool] = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            if not closes:
+                state._fan_out_web_push({"title": "late"})
+            closes.append(True)
+            await asyncio.sleep(0)
+            return False
+
+    monkeypatch.setattr(web_push, "send_web_push", _send)
+    monkeypatch.setattr(web_push, "public_push_session", _Session)
+    state._fan_out_web_push({"title": "first"})
+    await await_until(state._web_push_drain, what="the push drain")
+    assert sent == ["first", "late"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prune_does_not_strand_the_notes_behind_it(monkeypatch, tmp_path, caplog):
+    """A 410 whose prune cannot be written (a full or read-only data home) is
+    logged for that note, and the drain still sends the next one."""
+    state = _make_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_push, "load_vapid_keys", _vapid)
+    monkeypatch.setattr(state.push_subscription_store, "all", lambda: [_fake_subscription()])
+
+    def _remove(endpoint):
+        raise OSError("read-only data home")
+
+    monkeypatch.setattr(state.push_subscription_store, "remove", _remove)
+    sent: list[str] = []
+
+    async def _send(session, sub, payload, vapid):
+        sent.append(payload["notification"]["title"])
+        return web_push.PushResult(gone=True)
+
+    monkeypatch.setattr(web_push, "send_web_push", _send)
+    with caplog.at_level("WARNING"):
+        state._fan_out_web_push({"title": "one"})
+        state._fan_out_web_push({"title": "two"})
+        await await_until(state._web_push_drain, what="the push drain")
+    assert sent == ["one", "two"]
+    assert caplog.text.count("Web push fan-out failed") == 2

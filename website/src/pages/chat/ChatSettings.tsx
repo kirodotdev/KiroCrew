@@ -109,6 +109,11 @@ export interface ChatConfig {
    *  reply card beside it (`NeedsMeHoverCard`). Default true. When false no
    *  card opens; the rows and their badges are unchanged. */
   needsMeHoverCard: boolean
+  /** Desktop: a two-finger sideways trackpad swipe opens and closes the side
+   *  panel on the chat page and the Bots page (`useSidePanelSwipe`). Default
+   *  true. When false neither page listens for it; the panel's toggle button,
+   *  its keyboard shortcut and the phone's finger drag are unchanged. */
+  sidePanelSwipe: boolean
   /** How many lines a session card's title may wrap onto before it is cut
    *  off. 1 (the default) keeps the single-line ellipsis. */
   sessionTitleLines: CardLineCount
@@ -185,7 +190,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, codeWrap: 'auto', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, hideEmptyFolders: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sidePanelSwipe: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -244,6 +249,7 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.hideEmptyFolders !== 'boolean') cfg.hideEmptyFolders = false
     if (typeof cfg.fullTitlesOnScroll !== 'boolean') cfg.fullTitlesOnScroll = false
     if (typeof cfg.needsMeHoverCard !== 'boolean') cfg.needsMeHoverCard = true
+    if (typeof cfg.sidePanelSwipe !== 'boolean') cfg.sidePanelSwipe = true
     // Coerced, not trusted: anything but 1, 2 or 3 would pick no clamp class
     // and leave the card's text unbounded.
     if (!isCardLineCount(cfg.sessionTitleLines)) cfg.sessionTitleLines = 1
@@ -435,6 +441,7 @@ export interface DashboardConfig {
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean
+  fork_inherits_pin: boolean
   link_previews: boolean
   link_patterns: { pattern: string; url: string }[]
   mcp_app_panel: boolean

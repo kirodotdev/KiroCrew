@@ -28,7 +28,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers_parts.backend_errors import is_context_overflow_error
-from kiro_crew.llm_helpers_parts.model_fallback import first_advertised_fallback
+from kiro_crew.llm_helpers_parts.model_fallback import reactive_model_candidate
 from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
 from kiro_crew.llm_helpers_parts.turn_usage import (
     _billing_stats,
@@ -306,9 +306,8 @@ async def run_bg_oneliner(
             # neither the rejected id nor "auto", only when the raise-time
             # classifier tagged a rejected model AND named an advertised set.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
             fallback = (
-                first_advertised_fallback(advertised, rejected)
+                reactive_model_candidate(exc, rejected)
                 if rejected and not strict_model and retry_rejected_model
                 else None
             )

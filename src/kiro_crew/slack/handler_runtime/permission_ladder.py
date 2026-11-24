@@ -162,6 +162,7 @@ async def _screen_tool_call(turn: _SlackTurn, event: LLMEvent) -> None:
                 tool_kind=event.tool_kind,
                 outcome="flagged_unenforceable",
                 error="hook_deny",
+                metadata={"rule_id": tool_result.tier} if tool_result.tier else None,
             )
             return
 
@@ -220,8 +221,10 @@ async def _answer_permission_request(
         )
     _deny_reason: str | None = None
     _deny_error = "hook_deny"
+    _deny_meta: dict[str, str] | None = None
     if tool_result is not None and tool_result.action == TOOL_DENY:
         _deny_reason = tool_result.reason
+        _deny_meta = {"rule_id": tool_result.tier} if tool_result.tier else None
     elif capabilities_of(client).crew_fires_spec_hooks:
         _spec = await spec_turn(client, turn.spec_agent or "")
         _deny_reason = await spec_pre_tool_refusal(_spec, client, event, session_key)
@@ -240,6 +243,7 @@ async def _answer_permission_request(
             outcome="denied",
             request_id=event.request_id,
             error=_deny_error,
+            metadata=_deny_meta,
         )
         # A hook deny is a HOST verdict on the call, not the
         # person's: tell the model so in-band before the reject
@@ -687,18 +691,66 @@ async def handle_interaction(
 
     key = f"{channel}:{msg_ts}"
 
+    # A code channel a shared user opened: they answer its own session's prompts
+    # there, posted in that channel, like the owner. Trust stays the owner's (below).
+    if is_shared_listed(user_id) and action_id != _ACTION_TRUST:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_answers_prompt
+
+        _cc_entry = _linked_approvals.get(key)
+        # The slot that asked and the session its turn ran on: both must be the
+        # channel's own, so a slot relinked to another session answers nothing here.
+        _cc_ids = (
+            (_cc_entry.slot_key or _cc_entry.session_key, _cc_entry.session_key)
+            if _cc_entry
+            else ("", "")
+        )
+        if (
+            _cc_entry is not None
+            and await asyncio.to_thread(opener_answers_prompt, channel, *_cc_ids, user_id)
+            # Asked again with nothing awaited before the answer (the store is loaded
+            # now): a removal, rebind or answer during the read above refuses.
+            and _linked_approvals.get(key) is _cc_entry
+            and opener_answers_prompt(channel, *_cc_ids, user_id)
+        ):
+            return _resolve_linked_click(_cc_entry, key, action_id, user_id, sessions)
+
     # A shared user (slack.shared_access) answers only the prompt their own turn
     # posted, and never grants Trust. Checked before the claim, so a refused click
-    # leaves the prompt pending for the person it belongs to.
+    # leaves the prompt pending for the person it belongs to. A linked dashboard
+    # slot's prompt names its requester as a native one does (empty: owner only),
+    # and only while its slot's running turn still names that person.
     if is_shared_listed(user_id):
-        _own = _pending_approvals.get(key)
+        from kiro_crew.slack.code_channels.shared_refusal import shared_user_refused_for_slot
+
+        if key in _linked_approvals:
+            # Loads the code-channel store off the loop; everything below is read
+            # after this, with nothing awaited before the answer.
+            await asyncio.to_thread(shared_user_refused_for_slot, "", thread_ts)
+        _linked = _linked_approvals.get(key)
+        _own: Any = _linked or _pending_approvals.get(key)
+        _asker = str(getattr(_own, "requester", "") or "")
+        _cc_slots: tuple[str, ...] = ()
+        if _linked is not None:
+            from kiro_crew.slack.turn_requester import live_card_requester
+
+            _asker = live_card_requester(_linked)
+            # A code channel's session is reached only through the opener gate
+            # above, never as a requester: a session relinked to another thread
+            # keeps its requester, so the card it posts there is not theirs.
+            _cc_slots = tuple(s for s in (_linked.slot_key, _linked.session_key) if s)
         _refusal = (
             "trust is owner-only"
             if action_id == _ACTION_TRUST
+            # Asked again here, with nothing awaited before the answer: the code
+            # channel check above awaits, and a removal during it answers nothing.
             else (
-                "not the requester"
-                if _own is None or _own.requester != user_id or key in _linked_approvals
-                else ""
+                "shared access ended"
+                if not is_shared_user(user_id)
+                else (
+                    "code channel is owner-only"
+                    if any(shared_user_refused_for_slot(s, thread_ts) for s in _cc_slots)
+                    else ("not the requester" if not _asker or _asker != user_id else "")
+                )
             )
         )
         if _refusal:

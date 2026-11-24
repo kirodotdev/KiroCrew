@@ -136,8 +136,12 @@ test.describe('Settings Page', () => {
     // on a present segment).
     await page.waitForURL('**/settings/overview', { timeout: 10000 })
     expect(new URL(page.url()).pathname).toBe('/settings/overview')
-    // The Overview panel content should render (health status)
-    await expect(page.getByText(/All systems running|Connecting|Reconnecting/)).toBeVisible({ timeout: 10000 })
+    // The Overview panel content should render: its health hero reads one of
+    // these three states. Matched inside the page content only, because until
+    // the first socket opens the top bar also reads "Connecting to the
+    // gateway…", in its status region and in its hidden hint copy, and a
+    // page-wide /Connecting/ resolves to both.
+    await expect(page.locator('#main-content').getByText(/All systems running|Connecting…|Reconnecting…/)).toBeVisible({ timeout: 10000 })
   })
 
   test('/instances redirects to /settings/instances', async ({ page }) => {

@@ -302,8 +302,9 @@ class TestTheVerdictIsResolvedAtCeilingInstall:
 
         assert so.yolo_policy_permits() is False
         # The trust modes are read from the installed ceiling's rule alone (no
-        # governance read), so they follow that rule: `trust` denied, `trust_reads` not.
-        assert so.cached_disabled_approval_modes() == ["trust", "yolo"], (
+        # governance read), so they follow that rule: `trust` denied, `trust_reads` not,
+        # and approve-for-me with `trust`.
+        assert so.cached_disabled_approval_modes() == ["trust", "approve_for_me", "yolo"], (
             "reporting nothing-denied on a resolve error would unhide a mode the "
             "gate is refusing"
         )
@@ -311,7 +312,7 @@ class TestTheVerdictIsResolvedAtCeilingInstall:
         # With no ceiling rule, the trust modes keep main's answer; YOLO keeps its own
         # fail-closed verdict.
         _install_no_policy()
-        assert so.cached_disabled_approval_modes() == ["yolo"]
+        assert so.cached_disabled_approval_modes() == ["approve_for_me", "yolo"]
 
     def test_a_resolve_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
         """Fail-closed silently is a misattribution, not just a missing log line.
@@ -1630,7 +1631,7 @@ class TestNothingResolvesGovernanceOffTheInstallPath:
         from kiro_crew import safety_override as so
 
         for _ in range(20):
-            assert so.cached_disabled_approval_modes() == []
+            assert so.cached_disabled_approval_modes() == ["approve_for_me"]
 
         assert _tripwire == []
 
@@ -1644,11 +1645,11 @@ class TestNothingResolvesGovernanceOffTheInstallPath:
 
         _install_no_policy()
         assert so.yolo_policy_permits() is True
-        assert so.cached_disabled_approval_modes() == []
+        assert so.cached_disabled_approval_modes() == ["approve_for_me"]
 
         _deny("yolo")
         assert so.yolo_policy_permits() is False
-        assert so.cached_disabled_approval_modes() == ["yolo"]
+        assert so.cached_disabled_approval_modes() == ["approve_for_me", "yolo"]
 
     @pytest.mark.asyncio
     async def test_status_snapshot_reports_the_pushed_verdict(self, tmp_path, monkeypatch):
@@ -1662,7 +1663,7 @@ class TestNothingResolvesGovernanceOffTheInstallPath:
 
         # Never ``["trust", "yolo"]``: the backend cannot emit that shape, because
         # those modes are non-deniable.
-        assert snap["disabled_approval_modes"] == ["yolo"]
+        assert snap["disabled_approval_modes"] == ["approve_for_me", "yolo"]
         assert so.yolo_policy_permits() is False
 
 

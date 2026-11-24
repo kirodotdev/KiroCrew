@@ -42,12 +42,15 @@ from kiro_crew import (
     dashboard_synth,
     dashboard_verify,
     mcp_panel,
+    mcp_panel_snapshot,
     pinned_fs,
     platform_compat,
 )
 from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.dashboard.handlers import agent_panel_snapshot, member_dashboard_fields
 from kiro_crew.dashboard_page_image import PageImage
+from kiro_crew.testing.synthetic_credentials import github_classic
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 LINUX_ONLY = pytest.mark.skipif(
     not platform_compat.IS_LINUX, reason="the page check runs on Linux only"
@@ -167,6 +170,134 @@ def test_a_reply_that_is_not_a_usable_png_has_a_reason_and_no_bytes(reply, words
     assert image.png == b"" and words in image.reason
 
 
+def _text_reply(value: Any, **extra: Any) -> dict[str, Any]:
+    return {"result": {"type": "object", "value": value}, **extra}
+
+
+def test_the_page_text_is_read_with_the_fixed_expression_and_kept_as_given():
+    call, sent = _calls(_text_reply({"text": "Open PRs\n7", "length": 11}))
+
+    text = dashboard_page_image.read_text(call)
+
+    assert text == dashboard_page_image.PageText("Open PRs\n7", 11)
+    assert sent == [{"expression": dashboard_page_image.TEXT_EXPRESSION, "returnByValue": True}]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # Longer than the kept cap: whole, so the caller can redact it before it cuts.
+        (
+            {"text": "x" * 7000, "length": 7000},
+            dashboard_page_image.PageText("x" * 7000, 7000),
+        ),
+        # A length that is not a whole number of at least the text's own falls back to it.
+        ({"text": "abc", "length": "9"}, dashboard_page_image.PageText("abc", 3)),
+        ({"text": "abc", "length": True}, dashboard_page_image.PageText("abc", 3)),
+        ({"text": "abc", "length": -4}, dashboard_page_image.PageText("abc", 3)),
+        ({"text": "abc"}, dashboard_page_image.PageText("abc", 3)),
+        # A lone surrogate no UTF-8 reader takes is dropped.
+        ({"text": "a\ud800b", "length": 3}, dashboard_page_image.PageText("ab", 3)),
+    ],
+)
+def test_the_page_text_reply_is_not_trusted(value, expected):
+    call, _sent = _calls(_text_reply(value))
+
+    assert dashboard_page_image.read_text(call) == expected
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _text_reply({"text": "leaked"}, exceptionDetails={"text": "Uncaught"}),
+        _text_reply("just a string"),
+        _text_reply({"text": 42}),
+        # Over the read cap: the expression's null, or a page script's own long string.
+        _text_reply({"text": None, "length": dashboard_page_image.MAX_READ_CHARS + 1}),
+        _text_reply({"text": "x" * (dashboard_page_image.MAX_READ_CHARS + 1)}),
+        {"result": "not an object"},
+        {},
+    ],
+)
+def test_a_page_text_reply_that_is_not_the_expressions_answer_is_no_text(reply):
+    call, _sent = _calls(reply)
+
+    assert dashboard_page_image.read_text(call) is None
+
+
+_MARK_JS = (
+    "[{added: '', getAttribute(n) { return {'data-dashboard-missing': 'true',"
+    " 'data-dashboard-missing-label': 'not current'}[n] ?? null; },"
+    " appendChild(t) { this.added += t.textContent; }}]"
+)
+
+#: Each case: the fake page's innerText (a JS expression) and its frame marks.
+_EXPRESSION_CASES: dict[str, tuple[str, str]] = {
+    "long": (f"'x'.repeat({dashboard_page_image.MAX_TEXT_CHARS + 50})", "[]"),
+    "short": ("'Open PRs\\n7 \U0001f600'", "[]"),
+    "marked": ("'Fleet 42'", _MARK_JS),
+    "over": (f"'x'.repeat({dashboard_page_image.MAX_READ_CHARS + 1})", "[]"),
+}
+
+
+@pytest.fixture(scope="module")
+def expression_answers() -> dict[str, Any]:
+    """TEXT_EXPRESSION's answer for each case, from ONE node child over fake documents."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    cases = ",".join(
+        f"{json.dumps(name)}: () => {{ const marks = {marks};"
+        "globalThis.document = {querySelectorAll: () => marks,"
+        " createTextNode: (s) => ({textContent: s}),"
+        f" body: {{get innerText() {{ return {body} + marks.map((m) => m.added).join(''); }}}}}};"
+        f"return {dashboard_page_image.TEXT_EXPRESSION}; }}"
+        for name, (body, marks) in _EXPRESSION_CASES.items()
+    )
+    script = (
+        f"const cases = {{{cases}}};"
+        "const out = {}; for (const [k, run] of Object.entries(cases)) out[k] = run();"
+        "process.stdout.write(JSON.stringify(out));"
+    )
+    out = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.mark.xdist_group("dashboard_page_text_expression")
+def test_the_expression_hands_back_the_whole_text_so_it_is_redacted_before_any_cut(
+    expression_answers,
+):
+    """A cut in the page can keep part of a secret, so the page hands back all of it."""
+    long = expression_answers["long"]
+    assert long == {"text": "x" * (dashboard_page_image.MAX_TEXT_CHARS + 50), "length": 6050}
+    # Normal cases as before: a short page, an emoji counted once, a frame mark as text.
+    assert expression_answers["short"] == {"text": "Open PRs\n7 \U0001f600", "length": 12}
+    assert expression_answers["marked"] == {"text": "Fleet 42 [not current]", "length": 22}
+
+
+@pytest.mark.xdist_group("dashboard_page_text_expression")
+def test_the_expression_gives_no_text_over_the_read_cap(expression_answers):
+    over = expression_answers["over"]
+    assert over == {"text": None, "length": dashboard_page_image.MAX_READ_CHARS + 1}
+    assert dashboard_page_image.read_text(lambda _p: _text_reply(over)) is None
+
+
+def test_the_read_cap_fits_the_runs_message_cap():
+    """Twelve bytes of JSON a code point at worst (an escaped surrogate pair), with room
+    for the framing."""
+    assert dashboard_page_image.MAX_READ_CHARS * 12 < dashboard_verify._MAX_MESSAGE_BYTES * 0.6
+
+
 # --------------------------------------------------------------------------- #
 # 2. The page run, against a fake browser
 # --------------------------------------------------------------------------- #
@@ -224,6 +355,97 @@ def test_a_run_not_asked_for_a_picture_takes_none(monkeypatch, tmp_path, fast):
 
     assert v.status == dashboard_verify.STATUS_PASSED and v.image is None
     assert _shots(fake) == []
+
+
+def _evaluates(fake: FakeBrowser) -> list[dict[str, Any]]:
+    return [r for r in fake.records("command") if r["method"] == "Runtime.evaluate"]
+
+
+_DRAWN = {"text": "Fleet\n\n4242\n\n [not current]", "length": 27}
+
+
+@LINUX_ONLY
+def test_a_run_asked_for_a_picture_also_reads_the_whole_pages_text(monkeypatch, tmp_path, fast):
+    """One evaluate after the picture, naming both marks; the text is never on the wire."""
+    fake = FakeBrowser(
+        tmp_path, screenshots=[_b64(_png())], evaluate={"result": _text_reply(_DRAWN)}
+    )
+
+    v = _run(monkeypatch, fake, capture=True, real_record=True)
+
+    assert v.status == dashboard_verify.STATUS_PASSED
+    assert v.text == dashboard_page_image.PageText(_DRAWN["text"], 27)
+    assert "text" not in v.wire() and "4242" not in json.dumps(v.wire())
+    (evaluate,) = _evaluates(fake)
+    expression = evaluate["params"]["expression"]
+    assert evaluate["params"]["returnByValue"] is True
+    assert "data-dashboard-missing-label" in expression
+    assert "data-dashboard-out-of-date-label" in expression
+    methods = [r["method"] for r in fake.records("command")]
+    assert methods.index("Page.captureScreenshot") < methods.index("Runtime.evaluate")
+
+
+@LINUX_ONLY
+def test_the_save_check_reads_no_page_text(monkeypatch, tmp_path, fast):
+    fake = FakeBrowser(tmp_path, evaluate={"result": _text_reply(_DRAWN)})
+
+    v = _run(monkeypatch, fake)
+
+    assert v.status == dashboard_verify.STATUS_PASSED and v.text is None
+    assert _evaluates(fake) == []
+
+
+@LINUX_ONLY
+def test_a_failed_text_read_leaves_the_verdict_and_the_picture_alone(monkeypatch, tmp_path, fast):
+    fake = FakeBrowser(
+        tmp_path,
+        screenshots=[_b64(_png())],
+        evaluate={"error": {"code": -32000, "message": "no context"}},
+    )
+
+    v = _run(monkeypatch, fake, capture=True)
+
+    assert v.status == dashboard_verify.STATUS_PASSED and v.text is None
+    assert v.image == PageImage(_png(), 4, 3)
+
+
+@LINUX_ONLY
+def test_a_page_stopped_only_by_a_library_still_hands_back_its_text(monkeypatch, tmp_path, fast):
+    """The commonest chart page: skipped, no picture, but its words and values are read."""
+    url = "https://cdn.jsdelivr.net/npm/chart.js@4"
+    page = f'<script src="{url}"></script>\n<script>\n  new Chart();\n</script>'
+    fake = FakeBrowser(
+        tmp_path,
+        screenshots=[_b64(_png())],
+        evaluate={"result": _text_reply(_DRAWN)},
+        events=[
+            {"type": "request", "id": "lib", "url": url},
+            {
+                "type": "exception",
+                "find": "new Chart",
+                "description": "ReferenceError: Chart is not defined",
+            },
+        ],
+    )
+
+    v = _run(monkeypatch, fake, page, capture=True, real_record=True)
+
+    assert v.status == dashboard_verify.STATUS_SKIPPED and v.image is None
+    assert v.text == dashboard_page_image.PageText(_DRAWN["text"], 27)
+
+
+@LINUX_ONLY
+def test_a_crashed_page_hands_back_no_text(monkeypatch, tmp_path, fast):
+    fake = FakeBrowser(
+        tmp_path,
+        events=[{"type": "crash"}],
+        screenshots=[_b64(_png())],
+        evaluate={"result": _text_reply(_DRAWN)},
+    )
+
+    v = _run(monkeypatch, fake, capture=True)
+
+    assert v.status == dashboard_verify.STATUS_FAILED and v.text is None
 
 
 @LINUX_ONLY
@@ -476,6 +698,57 @@ def test_the_snapshot_draws_the_look_and_theme_first_and_the_save_check_does_not
     assert glue.asked[1]["html"] == _LOOK + theme + "<p>x</p>"
 
 
+def test_the_snapshot_text_crosses_the_tabs_redaction_and_the_save_check_has_none(glue):
+    """The page's script can build a secret no scan of its source saw."""
+    secret = github_classic()
+    page = f"Key {secret} open 7"
+    glue.answer = dashboard_verify.Verification(
+        dashboard_verify.STATUS_PASSED,
+        text=dashboard_page_image.PageText(page, len(page)),
+    )
+
+    saved = member_dashboard_fields.verify_package_page(SLUG, CREW, "slot-1", _GLUE_PACKAGE)
+    _wire, _image, text = member_dashboard_fields.snapshot_package_page(
+        SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
+    )
+
+    assert secret not in text.text and "open 7" in text.text
+    # The page's own length is kept: a cut is judged against the cap, never against the
+    # redacted text, so a redaction does not read as a cut.
+    assert text.length == len(page)
+    assert "text" not in saved and secret not in json.dumps(saved)
+
+
+def test_a_secret_the_cut_falls_inside_is_redacted_not_shown_in_part(glue):
+    """The whole text is redacted, then cut, so no start of the key is kept."""
+    secret = github_classic()
+    cap = dashboard_page_image.MAX_TEXT_CHARS
+    page = "x " * ((cap - 20) // 2) + secret + " tail"  # a cut first keeps ~20 of it
+    glue.answer = dashboard_verify.Verification(
+        dashboard_verify.STATUS_PASSED, text=dashboard_page_image.PageText(page, len(page))
+    )
+
+    _wire, _image, text = member_dashboard_fields.snapshot_package_page(
+        SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
+    )
+
+    assert len(text.text) == cap and text.length == len(page)
+    assert all(secret[i : i + 8] not in text.text for i in range(len(secret) - 7))
+
+
+def test_a_short_page_text_comes_back_as_it_was_read(glue):
+    page = "Fleet\n4242 \U0001f600 [not current]"
+    glue.answer = dashboard_verify.Verification(
+        dashboard_verify.STATUS_PASSED, text=dashboard_page_image.PageText(page, len(page))
+    )
+
+    _wire, _image, text = member_dashboard_fields.snapshot_package_page(
+        SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
+    )
+
+    assert text == dashboard_page_image.PageText(page, len(page))
+
+
 def test_a_snapshot_error_line_is_counted_from_view_html_not_the_theme(glue):
     lines = (_LOOK + member_dashboard_fields._theme_style(_GLUE_PACKAGE)).count("\n")
     glue.answer = dashboard_verify.Verification(
@@ -487,7 +760,7 @@ def test_a_snapshot_error_line_is_counted_from_view_html_not_the_theme(glue):
         ),
     )
 
-    wire, _image = member_dashboard_fields.snapshot_package_page(
+    wire, _image, _text = member_dashboard_fields.snapshot_package_page(
         SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
     )
 
@@ -605,12 +878,12 @@ def test_a_snapshot_with_no_built_tailwind_runtime_draws_nothing_and_says_why(gl
         dashboard_snapshot_look, "look_prefix", lambda: ("", dashboard_snapshot_look.NO_RUNTIME)
     )
 
-    wire, image = member_dashboard_fields.snapshot_package_page(
+    wire, image, text = member_dashboard_fields.snapshot_package_page(
         SLUG, CREW, "slot-1", _GLUE_PACKAGE, None, "dashboard-7", 4, None
     )
 
     assert wire["status"] == "skipped" and wire["reason"] == dashboard_snapshot_look.NO_RUNTIME
-    assert image is None and glue.asked == [] and glue.audited == []
+    assert image is None and text is None and glue.asked == [] and glue.audited == []
 
 
 def test_the_look_inlines_the_built_runtime_and_the_light_tokens(monkeypatch, tmp_path):
@@ -705,6 +978,7 @@ def ran(monkeypatch):
     state = SimpleNamespace(
         calls=calls,
         answer=({"status": "passed", "data": "record", "errors": []}, PageImage(_png(), 4, 3)),
+        text=None,
     )
 
     def _snapshot(slug, crew, slot, package, deadline, package_slug, version, gateway):
@@ -719,7 +993,7 @@ def ran(monkeypatch):
                 state=gateway,
             )
         )
-        return state.answer
+        return (*state.answer, state.text)
 
     monkeypatch.setattr(member_dashboard_fields, "snapshot_package_page", _snapshot)
     return state
@@ -956,6 +1230,80 @@ async def test_a_run_whose_picture_failed_says_why_and_writes_nothing(monkeypatc
     assert "path" not in body["snapshot"] and _shots_of(home) == []
 
 
+_PAGE_TEXT = dashboard_page_image.PageText("Fleet\n4242\n [not current]", 9000)
+
+
+@PINNED_WALK
+@pytest.mark.asyncio
+async def test_an_image_answer_carries_the_pages_text(monkeypatch, ran, home):
+    _live(monkeypatch, pinned=_package())
+    ran.text = _PAGE_TEXT
+
+    async with _client(monkeypatch) as client:
+        _status, body = await _snap(client)
+
+    assert body["snapshot"]["status"] == "image"
+    assert body["snapshot"]["text"] == _PAGE_TEXT.text
+    assert body["snapshot"]["text_length"] == 9000
+
+
+@pytest.mark.asyncio
+async def test_a_no_image_answer_still_carries_the_pages_text(monkeypatch, ran, home):
+    """The picture failed; the text the run read is still the page as it is now."""
+    _live(monkeypatch, pinned=_package())
+    ran.answer = (
+        {"status": "passed", "data": "record", "errors": []},
+        PageImage(reason="the browser could not take the picture"),
+    )
+    ran.text = _PAGE_TEXT
+
+    async with _client(monkeypatch) as client:
+        _status, body = await _snap(client)
+
+    assert body["snapshot"]["status"] == "no_image" and "path" not in body["snapshot"]
+    assert (body["snapshot"]["text"], body["snapshot"]["text_length"]) == (_PAGE_TEXT.text, 9000)
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_text_adds_no_text_fields(monkeypatch, ran, home):
+    _live(monkeypatch, pinned=_package())
+    ran.answer = ({"status": "skipped", "reason": dashboard_verify._BUSY, "errors": []}, None)
+
+    async with _client(monkeypatch) as client:
+        _status, body = await _snap(client)
+
+    assert "text" not in body["snapshot"] and "text_length" not in body["snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_a_secret_in_the_page_text_comes_back_redacted(monkeypatch, home):
+    """Through the real glue, with only the browser run stubbed."""
+    from kiro_crew.dashboard.handlers import member_dashboard
+
+    secret = github_classic()
+    _live(monkeypatch, pinned=_package())
+    granted = member_dashboard._EgressDecision(True, "policy", "no_restriction")
+    monkeypatch.setattr(dashboard_verify, "preflight", lambda: "")
+    monkeypatch.setattr(dashboard_snapshot_look, "look_prefix", lambda: (_LOOK, ""))
+    monkeypatch.setattr(member_dashboard, "_egress_decision", lambda *_a: granted)
+    monkeypatch.setattr(member_dashboard, "_audit_page_script_grant", lambda **_kw: None)
+    monkeypatch.setattr(
+        dashboard_verify,
+        "verify_page",
+        lambda *_a, **_kw: dashboard_verify.Verification(
+            dashboard_verify.STATUS_PASSED,
+            image=PageImage(reason="the browser could not take the picture"),
+            text=dashboard_page_image.PageText(f"Key {secret}", 4 + len(secret)),
+        ),
+    )
+
+    async with _client(monkeypatch) as client:
+        _status, body = await _snap(client)
+
+    assert body["snapshot"]["status"] == "no_image"
+    assert secret not in json.dumps(body) and body["snapshot"]["text"].startswith("Key ")
+
+
 @PINNED_WALK
 @pytest.mark.asyncio
 async def test_each_crewmate_keeps_only_its_newest_pictures(monkeypatch, ran, home):
@@ -1118,6 +1466,60 @@ def test_an_image_answer_without_a_path_is_no_image(monkeypatch):
     _gateway(monkeypatch, {"snapshot": {"status": "image"}, "verification": None})
 
     assert mcp_panel._call_tool_inner("dashboard_snapshot", {}).startswith("No image")
+
+
+def test_the_tool_prints_the_page_text_between_its_fixed_lines_and_redacts_it(monkeypatch):
+    secret = github_classic()
+    _gateway(
+        monkeypatch,
+        {
+            "snapshot": {
+                "status": "image",
+                "path": "/home/x/dashboard-snapshots/fleet-crew/page-1-abcd.png",
+                "width": 1280,
+                "height": 800,
+                "bytes": 1024,
+                "text": f"Open PRs 4242 [not current] {secret}",
+                "text_length": 9000,
+            },
+            "verification": {"status": "passed", "data": "record", "errors": []},
+        },
+    )
+
+    out = mcp_panel._call_tool_inner("dashboard_snapshot", {})
+
+    head, tail = mcp_panel_snapshot.TEXT_HEAD, mcp_panel_snapshot.TEXT_TAIL
+    block = out[out.index(head) + len(head) : out.index(tail)]
+    assert "Open PRs 4242 [not current]" in block and secret not in out
+    assert "(cut at 6000 of 9000 characters)" in out
+    assert out.index(".png") < out.index("verification: passed") < out.index(head)
+
+
+def test_the_tool_says_nothing_of_a_cut_when_the_text_is_whole(monkeypatch):
+    """Only a length over the cap is a cut: one over the text's own (a redaction shortened
+    it, or an emoji counted twice) is not."""
+    text = "\U0001f680 Fleet"
+    _gateway(
+        monkeypatch,
+        {
+            "snapshot": {"status": "no_image", "reason": "busy", "text": text, "text_length": 8},
+            "verification": None,
+        },
+    )
+
+    out = mcp_panel._call_tool_inner("dashboard_snapshot", {})
+
+    assert out.startswith("No image of your page: busy.")
+    assert f"{mcp_panel_snapshot.TEXT_HEAD}\n{text}\n{mcp_panel_snapshot.TEXT_TAIL}" in out
+    assert "cut at" not in out
+
+
+def test_the_tool_adds_no_text_block_when_the_gateway_sent_no_text(monkeypatch):
+    _gateway(monkeypatch, {"snapshot": {"status": "no_image", "reason": "busy"}})
+
+    out = mcp_panel._call_tool_inner("dashboard_snapshot", {})
+
+    assert mcp_panel_snapshot.TEXT_HEAD not in out and mcp_panel_snapshot.TEXT_TAIL not in out
 
 
 def test_the_tool_refuses_a_caller_whose_identity_is_not_strict(monkeypatch):

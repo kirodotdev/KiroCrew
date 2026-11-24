@@ -824,12 +824,17 @@ async def _retry_failed_run(
                     {"error": f"memory_unavailable: {exc}", "code": "memory_unavailable"},
                     status=400,
                 )
-        # Same validated warm as the primary spawn handler. old.cwd was validated
+        # An isolated run (``spawn_run`` ``isolate``) is retried isolated, from the
+        # cwd it was admitted with, never inside the failed run's worktree.
+        isolate = str(getattr(old, "isolate", "") or "")
+        worktree = getattr(old, "worktree", None)
+        retry_cwd = worktree.source_cwd if isolate and worktree is not None else old.cwd
+        # Same validated warm as the primary spawn handler. That cwd was validated
         # at the ORIGINAL spawn, but the allowlist may have changed since (and a
         # gateway restart leaves the cache cold), so it is re-checked against the
         # current config before any discovery read.
         if old.agent:
-            await warm_project_agents_for_spawn(state, old.cwd or "")
+            await warm_project_agents_for_spawn(state, retry_cwd or "")
         from kiro_crew.shared_crew.admission_gate import Admission
         from kiro_crew.shared_crew.admission_link import link_spawn
 
@@ -843,7 +848,8 @@ async def _retry_failed_run(
             parent_session_key=old.parent_session_key,
             agent=old.agent,
             max_turns=old.max_turns,
-            cwd=old.cwd,
+            cwd=retry_cwd,
+            **({"isolate": isolate} if isolate else {}),
             model=old.model or None,
             # Like model and the context groups: a retry must run at the SAME
             # effort as the run it replaces, or it is a different experiment.
@@ -1275,7 +1281,54 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
-    running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
-    return web.json_response(
-        {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
+    # Counted before the first await: the manager's stop below answers only once the
+    # runs it stopped have reported to the parent, which a running turn holds back,
+    # and by then the engine's sub-agents may have ended and their cards closed.
+    engine = _open_engine_subagents(slot)
+    # Both stops start together, the manager's first, so its queue is emptied
+    # before anything else runs and the turn's stop does not wait on its reports.
+    stops: list[Any] = [state.subagents.cancel_for_parent(effective_session_key(slot))]
+    if engine:
+        # The KAS engine has no request that stops its sub-agents while the turn
+        # goes on, so the turn's own stop is the one that reaches them; it ends
+        # the parent's answer too. A second press never escalates to a kill.
+        # circular import: chat_handlers loads most of the dashboard.
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        stops.append(stop_slot_turn(state, slot, escalate=False))
+    running, queued = (await asyncio.gather(*stops))[0]
+    answer: dict[str, Any] = {
+        "ok": True,
+        "stopped": running + queued,
+        "running": running,
+        "queued": queued,
+    }
+    if engine:
+        answer["engine"] = engine
+    return web.json_response(answer)
+
+
+def _open_engine_subagents(slot: Any) -> int:
+    """How many engine-run sub-agents the slot's running KAS turn holds open.
+
+    They are the turn's open ``native:`` cards (``chat_turn/native_cards``) on a
+    KAS client that the engine path marked ``engine``
+    (``dashboard.engine_subagent_cards``), the mark the page's chip counts for its
+    "Stop all and the answer" label; a background card carried from an earlier turn
+    is not this turn's. Any other native card on KAS (a custom agent's own
+    sub-agent, a chat registered with the preview off) is not counted, so Stop all
+    leaves that chat's turn running.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    client = getattr(slot, "_acp_client", None)
+    on_kas = getattr(client, "backend", "") == ACP_BACKEND_KAS
+    tracker = getattr(slot, "_native_subagent_tracker", None) or {}
+    return sum(
+        1
+        for record in (tracker.values() if on_kas and getattr(slot, "running", False) else ())
+        if isinstance(record, dict)
+        and record.get("engine") is True
+        and not record.get("done")
+        and not record.get("background")
     )

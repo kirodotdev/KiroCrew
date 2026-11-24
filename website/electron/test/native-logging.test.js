@@ -16,6 +16,7 @@ const {
   tightenLogMode,
   openRegularFile,
   NATIVE_LOG_BASENAME,
+  NATIVE_LOG_OFF_CAUSES,
   NATIVE_LOG_PREVIOUS_BASENAME,
   SECRET_FILE_MODE,
   MAX_REDACT_BYTES,
@@ -325,6 +326,9 @@ describe("rotateNativeLog", () => {
       blocked: true,
       previousPath: null,
       redacted: true,
+      // The fake's error carries no errno code, so the cause falls back to
+      // the catch-all code.
+      cause: "other",
     });
     assert.equal(fs.files.has(LIVE), true, "the live log must survive a failed rotate");
     assert.equal(lines.length, 1);
@@ -688,6 +692,64 @@ describe("redactTokensInBuffer on log lines", () => {
   });
 });
 
+// `<redacted>` is the placeholder the app writes itself in place of a token
+// (`frame-load-log.js`, `src/lib/paneLog.ts`), and `[REDACTED]` is this module's
+// own marker. Neither is a credential, so a pass must leave both alone.
+describe("already-redacted values", () => {
+  const run = (text) => {
+    const input = Buffer.from(text, "latin1");
+    return { input, result: redactTokensInBuffer(input) };
+  };
+
+  for (const text of [
+    'src=http://h/?token=<redacted>" x',
+    "src=http://h/?token=[REDACTED] x",
+    "x?a=1&token=<redacted>&sid=1",
+    "x?access_token=[REDACTED] y",
+  ]) {
+    it(`leaves ${JSON.stringify(text)} as the very same buffer`, () => {
+      const { input, result } = run(text);
+      assert.equal(result.changed, false);
+      assert.equal(result.out, input, "nothing to redact must return the original buffer");
+    });
+  }
+
+  for (const [label, text] of [
+    ["a plain token", "src=http://h/?token=abc123 x"],
+    ["a Chromium console line", TOKENED_LINE],
+  ]) {
+    it(`changes nothing on a second pass over ${label}`, () => {
+      const first = redactTokensInBuffer(Buffer.from(text, "latin1"));
+      assert.equal(first.changed, true);
+      const second = redactTokensInBuffer(first.out);
+      assert.equal(second.changed, false);
+      assert.equal(second.out.toString("latin1"), first.out.toString("latin1"));
+    });
+  }
+
+  it("still redacts a value that only starts like a placeholder", () => {
+    const { result } = run("x?token=<redacted>abc y");
+    assert.equal(result.changed, true);
+    assert.equal(result.out.toString("latin1"), "x?token=[REDACTED] y");
+  });
+
+  it("stops an already-damaged marker from growing", () => {
+    const { input, result } = run("x?token=[REDACTED]] y");
+    assert.equal(result.changed, false);
+    assert.equal(result.out, input);
+  });
+
+  it("reports a placeholder at the end of the buffer as an open value", () => {
+    const { input, result } = run("x?token=<redacted>");
+    assert.deepEqual(result, { out: input, changed: false, endsInValue: true });
+  });
+
+  it("reports the marker at the end of the buffer as a closed value", () => {
+    const { input, result } = run("x?token=[REDACTED]");
+    assert.deepEqual(result, { out: input, changed: false, endsInValue: false });
+  });
+});
+
 describe("redactNativeLogSecrets", () => {
   const TMP = `${PREV}.redact.tmp`;
 
@@ -894,6 +956,22 @@ describe("redactNativeLogSecrets", () => {
       assert.match(outBody, /\?token=\[REDACTED\]&n=1b/);
     });
 
+    it("drops the rest of a value cut right after a placeholder", () => {
+      // `"?token=<redacted>".length === 17`, so the cut lands at the placeholder's
+      // end and the next piece opens with `SECRET`, the rest of that value.
+      const head = "a".repeat(CUT - 17);
+      const fs = fakeFs({
+        present: [PREV],
+        contents: { [PREV]: `${head}?token=<redacted>SECRET&n=1${tail}` },
+      });
+      forceOverCap(fs);
+
+      redactNativeLogSecrets(PREV, { fs });
+      const outBody = fs.body.get(PREV);
+      assert.doesNotMatch(outBody, /SECRET/, "no part of the value may survive the cut");
+      assert.ok(outBody.includes("?token=<redacted>&n=1b"));
+    });
+
     it("keeps every byte of a clean over-long line", () => {
       const clean = `${"a".repeat(CUT - 4)}?tokenless=1${tail}`;
       const fs = fakeFs({ present: [PREV], contents: { [PREV]: clean } });
@@ -902,6 +980,29 @@ describe("redactNativeLogSecrets", () => {
       assert.equal(redactNativeLogSecrets(PREV, { fs }).redacted, false);
       assert.equal(fs.body.get(PREV), clean);
     });
+  });
+
+  describe("a log holding only placeholders", () => {
+    const placeholderLog =
+      '[123:1113/033742.1:INFO:CONSOLE:0] "msg", source: http://127.0.0.1:5476/chat/gateway?token=<redacted> (0)\n' +
+      '[123:1113/033742.2:INFO:CONSOLE:0] "msg", source: http://127.0.0.1:5476/chat/gateway?token=[REDACTED]&sid=1 (0)\n';
+
+    for (const [label, overCap] of [
+      ["whole-file", false],
+      ["streaming", true],
+    ]) {
+      it(`is not rewritten on the ${label} path`, () => {
+        const fs = fakeFs({ present: [PREV], contents: { [PREV]: placeholderLog } });
+        if (overCap) forceOverCap(fs);
+        assert.deepEqual(redactNativeLogSecrets(PREV, { fs }), {
+          scanned: true,
+          redacted: false,
+          skipped: null,
+        });
+        assert.equal(fs.body.get(PREV), placeholderLog);
+        assert.deepEqual(fs.renames, [], "nothing may be renamed over a log with no credential");
+      });
+    }
   });
 
   // Same "do not rewrite what is already clean" property the whole-file path has:
@@ -1278,6 +1379,101 @@ describe("initNativeLogging verdict line", () => {
     assert.match(verdictOf(fs), /kept=none/);
   });
 });
+
+// The crash notice reads `fileLogOffCause` to tell the user the chromium.log
+// they attach is from an earlier session. It crosses into the renderer, so it is
+// a code from a closed set, never a sentence, a path or an fs error's message.
+describe("initNativeLogging fileLogOffCause", () => {
+  const init = (fs) => initNativeLogging({ logsDir: "/logs", appendSwitch: () => {}, fs });
+  const failingRename = (code) => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: "evidence\n" } });
+    fs.renameSync = () => {
+      const err = new Error(`${code}: rename '${LIVE}' token=abc.def`);
+      err.code = code;
+      throw err;
+    };
+    return fs;
+  };
+
+  it("is null when the sink is armed", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    assert.equal(init(fs).fileLogOffCause, null);
+    assert.equal(init(fakeFs({ present: [] })).fileLogOffCause, null);
+  });
+
+  it("is a closed-set code when redaction aborted the rotation", () => {
+    const fs = fakeFs({
+      present: [LIVE],
+      contents: { [LIVE]: TOKENED_LINE },
+      throwWriteOn: `${LIVE}.redact.tmp`,
+    });
+    assert.equal(init(fs).fileLogOffCause, "other", "no errno code came back, so the cause is unknown");
+  });
+
+  // A tokened log, the normal case, is redacted through a temp write before any
+  // rename, so on a full disk or a read-only directory THAT write is what fails.
+  const failingTempWrite = (code) => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    fs.writeFileSync = () => {
+      const err = new Error(`${code}: write '${LIVE}.redact.tmp'`);
+      err.code = code;
+      throw err;
+    };
+    return fs;
+  };
+
+  it("maps a failed redaction temp write's errno code like a failed rename", () => {
+    assert.equal(init(failingTempWrite("ENOSPC")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingTempWrite("EDQUOT")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingTempWrite("EROFS")).fileLogOffCause, "no_access");
+    assert.equal(init(failingTempWrite("EACCES")).fileLogOffCause, "no_access");
+    assert.equal(init(failingTempWrite("EIO")).fileLogOffCause, "other");
+  });
+
+  it("maps a failed streaming redaction write's errno code too", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    const fstat = fs.fstatSync;
+    // Over the whole-file bound, so the streaming pass runs.
+    fs.fstatSync = (fd) => ({ ...fstat(fd), size: MAX_REDACT_BYTES + 1 });
+    fs.writeSync = () => {
+      const err = new Error(`ENOSPC: write '${LIVE}.redact.tmp'`);
+      err.code = "ENOSPC";
+      throw err;
+    };
+    assert.equal(init(fs).fileLogOffCause, "disk_full");
+  });
+
+  it("is unreadable when the previous log cannot be opened", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    const open = fs.openSync;
+    fs.openSync = (p, flag, mode) => {
+      if (p === LIVE && String(flag) === "r") {
+        const err = new Error(`EACCES: open '${LIVE}'`);
+        err.code = "EACCES";
+        throw err;
+      }
+      return open(p, flag, mode);
+    };
+    assert.equal(init(fs).fileLogOffCause, "unreadable");
+  });
+
+  it("maps a failed rename's errno code to a cause, never its message or path", () => {
+    assert.equal(init(failingRename("ENOSPC")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingRename("EDQUOT")).fileLogOffCause, "disk_full");
+    assert.equal(init(failingRename("EACCES")).fileLogOffCause, "no_access");
+    assert.equal(init(failingRename("EPERM")).fileLogOffCause, "no_access");
+    assert.equal(init(failingRename("EROFS")).fileLogOffCause, "no_access");
+    assert.equal(init(failingRename("EBUSY")).fileLogOffCause, "in_use");
+    assert.equal(init(failingRename("EIO")).fileLogOffCause, "other");
+    assert.equal(init(failingRename("/home/someone/secret")).fileLogOffCause, "other");
+  });
+
+  it("only ever yields a code from NATIVE_LOG_OFF_CAUSES", () => {
+    for (const code of ["ENOSPC", "EACCES", "EBUSY", "EIO", "x"]) {
+      assert.ok(NATIVE_LOG_OFF_CAUSES.includes(init(failingRename(code)).fileLogOffCause));
+    }
+  });
+});
 });
 
 // main.js is not loadable under the unit runner (it requires `electron`), so the
@@ -1328,6 +1524,15 @@ describe("main.js call-site ordering", () => {
       arm < ready,
       "initNativeLogging must be called BEFORE app.whenReady(), or Chromium " +
         "ignores the logging switches"
+    );
+  });
+
+  // The crash notice learns that the file log is off only through this getter;
+  // without it the registrar sees no status and the notice never says so.
+  it("hands this launch's logging result to the IPC registrar", () => {
+    assert.ok(
+      mainSrc.includes("nativeLoggingStatus: () => nativeLogging,"),
+      "expected createIpcRegistrar to get nativeLoggingStatus: () => nativeLogging"
     );
   });
 });

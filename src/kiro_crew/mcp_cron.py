@@ -59,12 +59,17 @@ from kiro_crew.mcp_core_parts.identity import (
     require_strict_session_key,
     strict_identity_diagnosis,
 )
+from kiro_crew.mcp_cron_chat_folder import (
+    move_job_tab,
+    resolve_chat_folder,
+    write_holding_chat_folder,
+)
 from kiro_crew.mcp_cron_list_render import (
     _render_cron_list_compact,
     _render_cron_list_full,
     _render_cron_list_json,
 )
-from kiro_crew.mcp_cron_tool_list import SERVER, _list_tools
+from kiro_crew.mcp_cron_tool_list import SERVER, _list_tools, _redeem_pickup
 from kiro_crew.mcp_cron_vet import (
     _command_cron_platform_refusal,
     _log_cron_denial,
@@ -1007,40 +1012,56 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # A member-named ``agent`` must record a member selection, not a bare
             # template id the reply path cannot resolve.
             from kiro_crew.cron_service.identity import split_cron_agent_member
+            from kiro_crew.cron_service.owner_grant import creator_grant as _creator_grant
 
             _agent_id, _member_id = split_cron_agent_member(agent or "", args.get("member_id", ""))
-            job = svc.add_job(
-                name=n,
-                message=msg,
-                every_secs=every,
-                cron_expr=cron_expr,
-                at_ts=at_ts,
-                channel=channel,
-                thread_ts=thread_ts,
-                # build_job prefers cron_expr/every over at_ts: one-shot only if neither.
-                delete_after_run=bool(at_ts) and not every and not cron_expr,
-                timezone=tz,
-                skip_dates=skip_dates,
+            chat_folder_id, chat_folder_err = resolve_chat_folder(
+                args.get("chat_folder_id"),
+                session_key=session_key,
                 agent_id=_agent_id,
                 member_id=_member_id,
-                approval_mode=approval_mode or "",
-                model=model_arg,
-                silent=bool(silent),
-                strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
-                hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
-                new_chat_per_run=new_chat_per_run,
-                on_tab_close=args.get("on_tab_close", "resume"),
-                folder_id=folder_id,
-                command=command or "",
-                script=script or "",
-                persistent_session=persistent_session,
-                session_key=session_key,
-                minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
-                timeout=timeout_val or 0,
-                timeout_secs=timeout_secs_val or 0,
-                auto_pause_after_failures=auto_pause_val,
-                alert_after_failures=alert_after_val,
-                person_owner=getattr(current_caller(), "person_tab", False),
+            )
+            if chat_folder_err:
+                return chat_folder_err
+            job = write_holding_chat_folder(
+                chat_folder_id,
+                lambda: svc.add_job(
+                    name=n,
+                    message=msg,
+                    every_secs=every,
+                    cron_expr=cron_expr,
+                    at_ts=at_ts,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    # build_job prefers cron_expr/every over at_ts: one-shot only if neither.
+                    delete_after_run=bool(at_ts) and not every and not cron_expr,
+                    timezone=tz,
+                    skip_dates=skip_dates,
+                    agent_id=_agent_id,
+                    member_id=_member_id,
+                    approval_mode=approval_mode or "",
+                    model=model_arg,
+                    silent=bool(silent),
+                    strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
+                    hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
+                    new_chat_per_run=new_chat_per_run,
+                    on_tab_close=args.get("on_tab_close", "resume"),
+                    folder_id=folder_id,
+                    chat_folder_id=chat_folder_id,
+                    command=command or "",
+                    script=script or "",
+                    persistent_session=persistent_session,
+                    session_key=session_key,
+                    minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
+                    timeout=timeout_val or 0,
+                    timeout_secs=timeout_secs_val or 0,
+                    auto_pause_after_failures=auto_pause_val,
+                    alert_after_failures=alert_after_val,
+                    person_owner=getattr(current_caller(), "person_tab", False),
+                    # A Bot's job keeps the Profile mode the Bot holds now, across a
+                    # restart; each fire re-checks it against the live Profile.
+                    owner_grant=_creator_grant(session_key),
+                ),
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -1141,6 +1162,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if folder_err:
                 return f"Error: {folder_err}"
             kwargs["folder_id"] = fid
+        # Filled by the store with the folder this update replaced, as the form's
+        # save is; only a call that names chat_folder_id moves the job's tab.
+        chat_folder_transition: dict[str, str] = {}
+        if "chat_folder_id" in args:
+            fid, chat_folder_err = resolve_chat_folder(args["chat_folder_id"], job=svc.get_job(jid))
+            if chat_folder_err:
+                return chat_folder_err
+            kwargs["chat_folder_id"] = fid
+            kwargs["chat_folder_transition_out"] = chat_folder_transition
         if "persistent_session" in args:
             kwargs["persistent_session"] = args["persistent_session"]
         if isinstance(args.get("new_chat_per_run"), bool):
@@ -1196,7 +1226,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["approval_mode"] = ""
         kwargs["audit_actor"] = _authz_session_key()
         try:
-            updated = svc.update_job(jid, **kwargs)
+            updated = write_holding_chat_folder(
+                str(kwargs.get("chat_folder_id") or ""), lambda: svc.update_job(jid, **kwargs)
+            )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
@@ -1205,6 +1237,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {e}"
         if not updated:
             return f"Error: job not found: {jid}"
+        move_job_tab(updated, chat_folder_transition)
         sel().log_api_access(
             caller="mcp",
             operation="cron.update",
@@ -1462,6 +1495,7 @@ ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    _redeem_pickup()  # before the first request; a no-op once the early answers ran it
     run_mcp_stdio_loop(
         SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )
@@ -1479,6 +1513,7 @@ def run_mcp_server() -> None:
 #   ``mcp_cron_vet`` -- the cron gate: governance, command, script and fire-time vets
 #   ``mcp_cron_tool_list`` -- the tool catalogue ``tools/list`` returns
 #   ``mcp_cron_list_render`` -- how ``cron_list`` renders jobs (full, compact, JSON)
+#   ``mcp_cron_chat_folder`` -- the sidebar chat folder cron_add/cron_update file a job's chat in
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
@@ -1486,6 +1521,7 @@ _OWNERS = (
     "kiro_crew.mcp_cron_vet",
     "kiro_crew.mcp_cron_tool_list",
     "kiro_crew.mcp_cron_list_render",
+    "kiro_crew.mcp_cron_chat_folder",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1497,6 +1533,15 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.mcp_cron_chat_folder import (  # noqa: F401
+        _NEEDS_GATEWAY,
+        _ROUTE_CALL,
+        _T,
+        _error_text,
+        _on_route_loop,
+        reset_route_call,
+        set_route_call,
+    )
     from kiro_crew.mcp_cron_list_render import (  # noqa: F401
         _ERR_PREVIEW_LEN,
         _JSON_BYTE_BUDGET,
@@ -1587,6 +1632,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.cron_history import (  # noqa: F401
         keep_ends,
+    )
+    from kiro_crew.cron_inflight import (  # noqa: F401
+        running_note,
+        running_since_by_job,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
         _ALERT_AFTER_DEFAULT,

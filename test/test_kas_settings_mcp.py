@@ -286,6 +286,18 @@ class TestUndeclaredFileServers:
         lines = [r.getMessage() for r in caplog.records if "pooled stub" in r.getMessage()]
         assert lines and all("\n" not in line for line in lines)
 
+    def test_the_dropped_stubs_share_one_log_line(self, home, work, caplog):
+        names = [f"server-{i:02d}" for i in range(30)]
+        _write(home / "mcp.json", {"mcpServers": {name: {} for name in names}})
+        stamped = stamp_settings_mcp([_agent()], "a", work)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.acp.kas_settings_mcp"):
+            assert without_excluded_stubs([{"name": n} for n in names], stamped) == []
+        lines = [r.getMessage() for r in caplog.records if "not sent" in r.getMessage()]
+        assert len(lines) == 1
+        line = lines[0]
+        assert line.startswith("30 pooled stub(s) not sent")
+        assert "server-00, server-01" in line and line.endswith("(+22 more)")
+
     def test_an_opted_in_agent_keeps_its_pooled_stubs(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
         session = [{"name": "pooled"}]

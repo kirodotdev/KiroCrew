@@ -219,7 +219,8 @@ class TestSpecLimits:
         _refused([_widget(id=bad)], r"widgets\[0\]\.id: .* is not a widget id")
 
     def test_a_32_character_id_is_accepted(self) -> None:
-        dp.validate_package(_package([_widget(id="b" * 32)]))
+        canonical = dp.validate_package(_package([_widget(id="b" * 32)]))
+        assert canonical["widgets"][0]["id"] == "b" * 32
 
     def test_duplicate_ids_are_refused(self) -> None:
         _refused([_widget(), _widget()], r"widgets\[1\]\.id: 'build-health' is used by two")
@@ -393,9 +394,10 @@ class TestNumbers:
             "field": "milestones_done",
             "total": dw.MAX_SAFE_INTEGER,
         }
-        dp.validate_package(_package(_one_block(block)))
-        block["total"] = 1.5e300
-        dp.validate_package(_package(_one_block(block)))
+        for total in (dw.MAX_SAFE_INTEGER, 1.5e300):
+            block["total"] = total
+            canonical = dp.validate_package(_package(_one_block(block)))
+            assert canonical["widgets"][0]["blocks"][0]["total"] == total
 
 
 @pytest.fixture

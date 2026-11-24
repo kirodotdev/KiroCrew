@@ -272,6 +272,10 @@ class TestAsyncCallersOffload:
             async def json(self):
                 return {"level": "DEBUG"}
 
+            def get(self, _key, default=None):
+                # No app claim, as on the internal transport: the owner gate passes.
+                return default
+
         resp = await updates.api_log_level(_Req())
         assert resp.status == 200
         assert (

@@ -326,6 +326,7 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
     # starts; True skips it, as the offline E2E gate does.
     orch._test_mode = True
     orch._no_dashboard = no_dashboard
+    orch._headless = False
     orch._json_ready = True
     orch._owner_id = ""
     orch._dashboard_port = 0

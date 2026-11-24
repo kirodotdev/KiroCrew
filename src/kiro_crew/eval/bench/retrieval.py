@@ -163,6 +163,10 @@ def corpus_has_distractors(corpus: Corpus) -> tuple[bool, str]:
     were present to cover the haystack, so a subset run passed while the full
     corpus was refused.
 
+    Unanswerable queries are skipped even when they carry gold, matching
+    ``BenchQuery.scorable_retrieval``: retrieval does not score them, so their
+    distractors cannot make a corpus measurable and they do not enter the count.
+
     Returns the verdict plus a message suitable for a refusal.
     """
     total = 0
@@ -171,7 +175,7 @@ def corpus_has_distractors(corpus: Corpus) -> tuple[bool, str]:
         all_sessions = {s.session_id for s in inst.sessions}
         for query in inst.queries:
             gold = set(query.gold_session_ids)
-            if not gold:
+            if not gold or query.unanswerable:
                 continue
             total += 1
             if all_sessions - gold:

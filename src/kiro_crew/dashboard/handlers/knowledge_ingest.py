@@ -20,12 +20,15 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import open_multipart, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    open_multipart,
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
     _pipeline,
-    _require_knowledge_owner,
     _sel_log,
     _store,
 )
@@ -47,7 +50,7 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 async def ingest_text(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/ingest-text -- agent submits fetched text."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.ingest_text")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.ingest_text")
     if owner_denied is not None:
         return owner_denied
     source_id = request.match_info["id"]
@@ -215,7 +218,7 @@ def _inspect_zip_archive(path: str) -> str | None:
 
 async def ingest_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/ingest -- multipart file upload."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.ingest")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.ingest")
     if owner_denied is not None:
         return owner_denied
     pipeline = _pipeline(request)
@@ -472,7 +475,7 @@ async def ingest_file(request: web.Request) -> web.Response:
 
 async def get_job(request: web.Request) -> web.Response:
     """GET /api/knowledge/jobs/{id}."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.job.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.job.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)

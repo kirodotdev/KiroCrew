@@ -5,13 +5,16 @@ the fact that its holder is gone, a retry's expiry pass stays scoped to its own 
 parked generation is drained once the current process dies and keeps its rows while it is
 parked (its number can still name the current generation), a dead shared process is re-armed
 once and never into a restart loop, and an invalidated grant re-arms only its own provider's
-premint without blocking the caller or stacking duplicates.
+premint without blocking the caller or stacking duplicates. On KAS chats neither re-arm warms a
+provider whose Connect signs in on the KAS engine.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from pathlib import Path
 from typing import Any
 
 import connections_warm_helpers
@@ -25,9 +28,10 @@ from connections_warm_helpers import (
     _Runtime,
 )
 
+from kiro_crew import mcp_grant_kas
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
-from kiro_crew.connections import warm
+from kiro_crew.connections import status, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
 from kiro_crew.connections.warm_runtime import shared_rows
@@ -45,6 +49,14 @@ def _empty_invalidation_rearms():
     warm._invalidation_rearms.clear()
     yield
     warm._invalidation_rearms.clear()
+
+
+@pytest.fixture(autouse=True)
+def _chats_off_kas(_floor_monkeypatch: pytest.MonkeyPatch):
+    # Off KAS the re-arms' sign-in filter keeps every provider, so each test warms what its
+    # scan returns. The KAS case below sets the backend itself. Through the floor's own
+    # MonkeyPatch, so a test's monkeypatch.undo() cannot lift it.
+    _floor_monkeypatch.setattr(status, "chat_backend_is_kas", lambda: False)
 
 
 # ── redeemability takes TWO questions, and they die independently ──
@@ -702,6 +714,42 @@ async def test_an_invalidation_rearm_reaches_a_real_activation(
     assert _mints["linear"]["state"] == "waiting"
     assert _mints["linear"]["generation"] == 9
     assert warm._warm_mint._supervision_armed is False
+
+
+@pytest.mark.asyncio
+async def test_on_kas_chats_neither_rearm_warms_a_provider_whose_connect_signs_in_on_kas(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The page warm's filter applies to both re-arms: a Connect that signs in on the KAS
+    engine never adopts a warm URL, so warming its provider would spawn kiro-cli for nothing."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    # notion's headers keep its Connect on kiro-cli. linear has no entry, so its Connect
+    # writes the bare registry url and signs in on the KAS engine.
+    (agents / "kirocrew.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "notion": {"url": "https://notion.example/mcp", "headers": {"X-Tenant": "a"}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("kiro_crew.agent.kiro_agents_dir_path", lambda: agents)
+    monkeypatch.setattr(status, "chat_backend_is_kas", lambda: True)
+    monkeypatch.setattr(mcp_grant_kas, "persistence_enabled", lambda: True)
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(
+        warm, "mintable_providers", lambda: [_provider("linear"), _provider("notion")]
+    )
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_dead_warm_mint(4) == ["notion"]
+    assert await warm._rearm_invalidated_provider("linear") == []
+    assert await warm._rearm_invalidated_provider("notion") == ["notion"]
+
+    assert warmed == [(["notion"], False), (["notion"], False)]
 
 
 def test_the_scheduler_is_a_noop_without_a_running_loop():

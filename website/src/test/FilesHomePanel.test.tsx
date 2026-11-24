@@ -91,7 +91,7 @@ describe('FilesHomePanel header', () => {
     // The full path shows in the shared bubble on keyboard focus, and is the name's
     // description, never only a native `title` the desktop app may not paint.
     const name = screen.getByText('my-project')
-    expect(name).not.toHaveAttribute('title')
+    expect(name).toHaveAttribute('title', '')
     expect(name).toHaveAttribute('tabindex', '0')
     expect(document.getElementById(name.getAttribute('aria-describedby') ?? '')).toHaveTextContent(DIR)
     fireEvent.focus(name)

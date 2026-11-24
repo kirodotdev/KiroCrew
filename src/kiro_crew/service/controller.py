@@ -9,6 +9,8 @@ directly. This keeps the dispatch logic in one place and makes the
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from kiro_crew.service import linux, macos
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
     RESTART_REFUSED,
+    SERVICE_NAME,
     Platform,
     RestartReport,
     ScopeRestart,
@@ -148,6 +151,179 @@ def installed_service_has_managed_marker() -> "bool | None":
     return None
 
 
+def _plist_argv() -> "list[str] | None":
+    """The launchd agent's ``ProgramArguments``, or ``None`` when unreadable."""
+    payload = macos._plist_payload(macos.PLIST_PATH)
+    argv = payload.get("ProgramArguments") if payload else None
+    if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+        return None
+    return list(argv) or None
+
+
+# ``systemctl show`` prints ``{ path=<exe> ; argv[]=<words> ; ignore_errors=... }``.
+_SHOWN_COMMAND = re.compile(r"\{ path=.*? ; argv\[\]=(.*) ; ignore_errors=.*\}")
+
+
+def _loaded_argv(scope: str) -> "list[str] | None":
+    """The start command one systemd scope's manager has loaded for our unit.
+
+    The manager is asked, through ``gateway_restart._systemd_show``: what it has
+    loaded is what it starts, drop-ins included, and no unit file is parsed
+    here. ``None`` when the manager cannot be asked or does not answer in time,
+    when the name is not our own loaded unit, when it reports no start command
+    or more than one, and when the command holds a ``$``.
+    shortcut: the manager prints the words joined by spaces, so a word that
+    holds a space reads as several; read the property over D-Bus if a unit with
+    such a word must be told apart.
+    """
+    # Deferred: this module is imported by the CLI before the gateway's own.
+    from kiro_crew import gateway_restart
+
+    user = scope == "user"
+    if user and linux._user_scope_unreachable_reason() is not None:
+        return None
+    try:
+        props = gateway_restart._systemd_show(user)
+    except (gateway_restart._Inconclusive, OSError, subprocess.SubprocessError):
+        return None
+    if props.get("Id") != [f"{SERVICE_NAME}.service"] or props.get("LoadState") != ["loaded"]:
+        return None
+    shown = props.get("ExecStart", [])
+    match = _SHOWN_COMMAND.fullmatch(shown[0]) if len(shown) == 1 else None
+    # The manager prints a ``$VARIABLE`` as written, and expands it at start.
+    if match is None or "$" in match.group(1):
+        return None
+    return match.group(1).split() or None
+
+
+def _scope_definition(scope: str) -> "Path | None":
+    """The installed definition of one scope: ``system``, ``user`` or ``launchd``."""
+    if scope == "system":
+        return linux.UNIT_PATH if linux.UNIT_PATH.is_file() else None
+    if scope == "user":
+        return linux.user_unit_path()
+    return macos.PLIST_PATH if macos.PLIST_PATH.is_file() else None
+
+
+def installed_headless(scope: "str | None" = None) -> "bool | None":
+    """Whether the installed service starts the gateway with ``--headless``.
+
+    ``False`` with no service installed. ``None`` when a service is installed
+    and its start command cannot be read. The command line is the one record of
+    the mode: no setting or environment variable holds it, so nothing in the
+    data home can change what the owner installed. On Linux it is the command
+    the service manager has loaded (:func:`_loaded_argv`); on macOS it is the
+    plist's ``ProgramArguments``.
+
+    Without *scope* the service is the one :func:`installed_unit_path` names,
+    which is the one an install rewrites. With it (a :class:`ScopeRestart`
+    ``scope``) the service is that scope's own: on Linux a stopped system unit
+    can sit beside the running per-user one, and each has its own mode. The
+    caller names a scope that has a service, so that scope is always asked.
+    """
+    if scope is None:
+        path = installed_unit_path()
+        if path is None:
+            return False
+        scope = service_scope(path)
+    argv = _plist_argv() if scope == "launchd" else _loaded_argv(scope)
+    if argv is None:
+        return None
+    # Deferred: the gateway command's parser lives with the CLI, which imports
+    # this module.
+    from kiro_crew.cli_restart_headless import argv_headless
+
+    return argv_headless(argv)
+
+
+#: The line printed when a service is installed and its mode cannot be read.
+MODE_UNKNOWN = "unknown (the service's start command could not be read)"
+
+
+def restarted_headless(report: RestartReport) -> "bool | None":
+    """The mode of the service a restart brought back, for the line printed after it.
+
+    Read for each scope the manager restarted, never for one that was not
+    started. ``None`` when a start command cannot be read, when two restarted
+    scopes disagree, or when the read itself fails: the caller then says the
+    mode is unknown, and a restart that worked is never reported as failed
+    because of this read.
+    """
+    try:
+        modes = {installed_headless(outcome.scope) for outcome in report.restarted}
+    except Exception:  # noqa: BLE001 - a line printed after a restart must not fail it
+        return None
+    return modes.pop() if len(modes) == 1 else None
+
+
+#: What a headless service prints where an ordinary one prints :data:`_OPEN_HINT`.
+_HEADLESS_HINT = (
+    "   Client: kirocrew token --bearer   (credential for a Crew API client; "
+    "no dashboard is served)"
+)
+
+
+def _resolve_install_mode(headless: "bool | None") -> bool:
+    """The mode this install writes.
+
+    An explicit choice wins. Without one the installed definition's mode is
+    kept, so the `service install` that doctor and the updater ask for never
+    turns a headless gateway's dashboard on. A definition whose start command
+    cannot be read installs the ordinary service, as an install without the
+    flag always has, after one warning on stderr.
+    """
+    if headless is not None:
+        return headless
+    try:
+        kept = installed_headless()
+    except Exception:  # noqa: BLE001 - a read that fails must not fail the install
+        kept = None
+    if kept is None:
+        try:
+            where = f" ({installed_unit_path()})"
+        except Exception:  # noqa: BLE001 - the lookup that failed above fails here too
+            where = ""
+        print(
+            "Warning: could not read whether the installed service"
+            f"{where} starts the gateway with --headless, so it is "
+            "installed with the dashboard; `kirocrew service install --headless` "
+            "installs it without the dashboard.",
+            file=sys.stderr,
+        )
+        return False
+    return kept
+
+
+def _print_install_mode(headless: bool, *, chosen: bool) -> bool:
+    """Print the mode line; True when the headless mode is stated as a fact.
+
+    False for an ordinary install, and for a headless one whose start command
+    does not read back as headless (a drop-in replaces it, or it cannot be
+    read): the mode is then unknown and the closing hint stays the ordinary one.
+    """
+    if not headless:
+        return False
+    # The service this install wrote: the plist on macOS, else the system unit.
+    scope = "launchd" if current_platform() == Platform.LAUNCHD else "system"
+    try:
+        stated = installed_headless(scope) is True
+    except Exception:  # noqa: BLE001 - a line printed after an install must not fail it
+        stated = False
+    print(
+        "   mode: "
+        + (
+            "headless (no dashboard; listens on loopback only)"
+            if stated
+            else "unknown (headless was installed, but the service's start command "
+            "does not read back as headless)"
+        )
+        + ("" if chosen else "; kept from the installed service")
+    )
+    if not chosen:
+        print("         `kirocrew service install --no-headless` serves the dashboard again.")
+    return stated
+
+
 def _unsupported_message() -> None:
     print(
         "Error: kirocrew service management is only supported on Linux (systemd)\n"
@@ -157,8 +333,14 @@ def _unsupported_message() -> None:
     )
 
 
-def install_service() -> int:
+def install_service(headless: "bool | None" = None) -> int:
     """Install and start the platform service.
+
+    ``headless`` is the owner's choice on the command line: ``True`` for
+    ``--headless``, ``False`` for ``--no-headless``, ``None`` for neither, which
+    keeps the mode of the service already installed (ordinary on a first
+    install). When that mode cannot be read the ordinary service is installed
+    after a warning.
 
     Returns 0 on success, non-zero otherwise. On Linux the install
     prompts for sudo on first use to write
@@ -170,14 +352,19 @@ def install_service() -> int:
     expected to surface the sudo prompt to a real terminal.
     """
     plat = current_platform()
+    if plat not in (Platform.SYSTEMD, Platform.LAUNCHD):
+        _unsupported_message()
+        return 2
+    mode = _resolve_install_mode(headless)
     if plat == Platform.SYSTEMD:
         try:
-            profile = linux.install()
+            profile = linux.install(headless=mode)
         except linux.ServiceInstallError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
         print("kirocrew service installed and started.")
         print(f"   unit: {linux.UNIT_PATH}")
+        stated = _print_install_mode(mode, chosen=headless is not None)
         # Reported here, but performed inside linux.install() before the unit is
         # started — the directive only applies at service start. Deliberately
         # non-fatal: a failure warns and leaves the service running.
@@ -191,29 +378,27 @@ def install_service() -> int:
         _print_headless_auth_warning()
         _print_dropped_host_env_warning(plat)
         print()
-        print(_OPEN_HINT)
+        print(_HEADLESS_HINT if stated else _OPEN_HINT)
         print("   Status: kirocrew service status")
         print("   Logs:   kirocrew logs -f")
         print("   Remove: kirocrew service uninstall")
         return 0
-    if plat == Platform.LAUNCHD:
-        try:
-            macos.install()
-        except macos.ServiceInstallError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-        print("kirocrew service installed and started.")
-        print(f"   plist: {macos.PLIST_PATH}")
-        _print_headless_auth_warning()
-        _print_dropped_host_env_warning(plat)
-        print()
-        print(_OPEN_HINT)
-        print("   Status: kirocrew service status")
-        print(f"   Logs:   tail -f {macos.STDOUT_LOG}")
-        print("   Remove: kirocrew service uninstall")
-        return 0
-    _unsupported_message()
-    return 2
+    try:
+        macos.install(headless=mode)
+    except macos.ServiceInstallError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print("kirocrew service installed and started.")
+    print(f"   plist: {macos.PLIST_PATH}")
+    stated = _print_install_mode(mode, chosen=headless is not None)
+    _print_headless_auth_warning()
+    _print_dropped_host_env_warning(plat)
+    print()
+    print(_HEADLESS_HINT if stated else _OPEN_HINT)
+    print("   Status: kirocrew service status")
+    print(f"   Logs:   tail -f {macos.STDOUT_LOG}")
+    print("   Remove: kirocrew service uninstall")
+    return 0
 
 
 def uninstall_service() -> int:
@@ -279,13 +464,41 @@ def service_status() -> int:
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
+        _print_status_mode()
         print(linux.status())
         return 0 if linux.is_up() else 1
     if plat == Platform.LAUNCHD:
+        _print_status_mode()
         print(macos.status())
         return 0 if macos.is_up() else 1
     _unsupported_message()
     return 2
+
+
+def _print_status_mode() -> None:
+    """One line above the manager's report for each installed headless definition.
+
+    Read for each scope on its own; an ordinary service prints nothing, so its
+    output is unchanged. With a definition in both systemd scopes each line
+    names its scope, because the two can differ. Never fails the status it
+    sits above.
+    """
+    scopes = ("launchd",) if current_platform() == Platform.LAUNCHD else ("system", "user")
+    modes: list[tuple[str, "bool | None"]] = []
+    for s in scopes:
+        try:
+            if _scope_definition(s) is None:
+                continue
+            modes.append((s, installed_headless(s)))
+        except Exception:  # noqa: BLE001 - a status line must not fail the status
+            # A read that failed is reported as unknown, never left out.
+            modes.append((s, None))
+    for scope, headless in modes:
+        label = "mode" if len(modes) == 1 else f"mode ({scope} unit)"
+        if headless is None:
+            print(f"{label}: {MODE_UNKNOWN}")
+        elif headless:
+            print(f"{label}: headless (no dashboard; the gateway listens on loopback only)")
 
 
 def install_launcher_profile(exec_path: str | None = None) -> int:

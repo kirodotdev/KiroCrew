@@ -11,7 +11,7 @@ import type { WakaTimeStats, WakaTimeStatsEntry, WakaTimeOauthStatus } from '../
 import { i18nT } from '../../i18n/t'
 import { fmtDuration } from '../../i18n/format'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
-import { isElectron } from '../../lib/electron'
+import { isElectron, openWakaTimeInBrowser, type WakaTimeBrowserHandoff } from '../../lib/electron'
 
 // Ranges the stats endpoint accepts, in the order shown in the toolbar. The
 // value is the API's named range; labelKey is the full literal i18n key so the
@@ -86,10 +86,28 @@ export default function WakaTimeTab() {
       return next
     }, { replace: true })
   }, [searchParams, setSearchParams, oauthResult])
-  const { data, error: queryErr, isLoading } = useQuery<WakaTimeStats>({
+  const { data, error: queryErr, isLoading, isFetching } = useQuery<WakaTimeStats>({
     queryKey: ['wakatime-stats', range],
     queryFn: () => api.wakatimeStats(range),
   })
+  const queryClient = useQueryClient()
+  // The desktop's note under Connect: how the last hand-off to the system
+  // browser ended. It lives here, not in WakaTimeConnect, because re-reading a
+  // failed stats read shows the skeleton, which unmounts the control.
+  const [desktopNotice, setDesktopNotice] = useState<WakaTimeBrowserHandoff | null>(null)
+
+  // While the sign-in finishes in the browser, read the connection again each
+  // time this window comes back to the front. The app's queries never go stale,
+  // so the stock focus refetch would not fire. WakaTimeConnect ends the hand-off.
+  useEffect(() => {
+    if (desktopNotice !== 'opened') return
+    const reread = () => {
+      void queryClient.invalidateQueries({ queryKey: ['wakatime-oauth-status'] })
+      void queryClient.invalidateQueries({ queryKey: ['wakatime-stats'] })
+    }
+    window.addEventListener('focus', reread)
+    return () => window.removeEventListener('focus', reread)
+  }, [desktopNotice, queryClient])
 
   // A 502 from the upstream-unavailable guard surfaces here as a query error;
   // show it through the shared ErrorNotice so the structured status, endpoint
@@ -121,7 +139,8 @@ export default function WakaTimeTab() {
             report={findReport(queryErr instanceof Error ? queryErr.message : undefined)}
             askAgent
           />
-          <WakaTimeConnect rejected={rejected} onDisconnect={() => setOauthResult(null)} />
+          <WakaTimeConnect rejected={rejected} statsFailed statsReading={isFetching} onDisconnect={() => setOauthResult(null)}
+            desktopNotice={desktopNotice} setDesktopNotice={setDesktopNotice} />
         </div>
       </Card>
     )
@@ -141,7 +160,8 @@ export default function WakaTimeTab() {
           {oauthErrorNotice}
           {/* Connected but no API key yet: say it worked; the hint below names the key still needed. */}
           {oauthConnectedNotice}
-          <WakaTimeConnect onDisconnect={() => setOauthResult(null)} />
+          <WakaTimeConnect statsReading={isFetching} onDisconnect={() => setOauthResult(null)}
+            desktopNotice={desktopNotice} setDesktopNotice={setDesktopNotice} />
           <div className="text-muted text-[12.5px] max-w-md">{i18nT('pages.overview.wakatimeTab.connect_hint')}</div>
         </div>
       </Card>
@@ -178,7 +198,8 @@ export default function WakaTimeTab() {
       {oauthConnectedNotice}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
-        <WakaTimeConnect onDisconnect={() => setOauthResult(null)} />
+        <WakaTimeConnect statsReading={isFetching} onDisconnect={() => setOauthResult(null)}
+          desktopNotice={desktopNotice} setDesktopNotice={setDesktopNotice} />
       </div>
       {/* Toolbar: range control + export */}
       <div className="flex flex-wrap items-center gap-2">
@@ -275,11 +296,17 @@ function wrongAddressUrl(e: unknown): string | null {
   return ['http:', 'https:'].includes(new URL(url).protocol) ? url : null
 }
 
-function WakaTimeConnect({ rejected = false, onDisconnect }: { rejected?: boolean; onDisconnect: () => void }) {
+function WakaTimeConnect({ rejected = false, statsFailed = false, statsReading, onDisconnect, desktopNotice, setDesktopNotice }: {
+  rejected?: boolean
+  statsFailed?: boolean
+  statsReading: boolean
+  onDisconnect: () => void
+  desktopNotice: WakaTimeBrowserHandoff | null
+  setDesktopNotice: (notice: WakaTimeBrowserHandoff | null) => void
+}) {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
-  const [desktopNotice, setDesktopNotice] = useState(false)
   const [startUrl, setStartUrl] = useState<string | null>(null)
   const { data: status, error: statusErr } = useQuery<WakaTimeOauthStatus>({
     queryKey: ['wakatime-oauth-status'],
@@ -288,18 +315,26 @@ function WakaTimeConnect({ rejected = false, onDisconnect }: { rejected?: boolea
     // read the status again each time the panel opens.
     refetchOnMount: 'always',
   })
+  const handOffDone = !!status?.connected && !statsFailed && !statsReading
+  const handedOff = desktopNotice === 'opened' && !handOffDone
+
+  // The hand-off ends once connected AND the stats re-read finished without failing; a dead grant still reads connected.
+  useEffect(() => {
+    if (desktopNotice === 'opened' && handOffDone) setDesktopNotice(null)
+  }, [desktopNotice, handOffDone, setDesktopNotice])
 
   const connect = async () => {
     setActionErr(null)
     setStartUrl(null)
     if (isElectron) {
-      // The desktop blocks off-origin navigation. Start in a browser so the
-      // authorize request and callback share the same state cookie. Nothing
-      // failed, so this is status text, not an ErrorNotice.
-      setDesktopNotice(true)
+      // The desktop blocks off-origin navigation. Finish in the system browser
+      // so the authorize request and callback share the same state cookie.
+      // With no bridge nothing failed, so that note is status text; a hand-off
+      // the shell could not open or refused shows as an ErrorNotice.
+      setDesktopNotice(await openWakaTimeInBrowser())
       return
     }
-    setDesktopNotice(false)
+    setDesktopNotice(null)
     setBusy('connect')
     try {
       const { authorize_url } = await api.wakatimeOauthAuthorize()
@@ -318,7 +353,7 @@ function WakaTimeConnect({ rejected = false, onDisconnect }: { rejected?: boolea
   const disconnect = async () => {
     setActionErr(null)
     setStartUrl(null)
-    setDesktopNotice(false)
+    setDesktopNotice(null)
     setBusy('disconnect')
     try {
       await api.wakatimeOauthDisconnect()
@@ -332,9 +367,17 @@ function WakaTimeConnect({ rejected = false, onDisconnect }: { rejected?: boolea
     }
   }
 
-  const notice = desktopNotice && (
+  const notice = desktopNotice === 'failed' ? (
+    <ErrorNotice
+      message={i18nT('pages.overview.wakatimeTab.oauth_desktop_notice')}
+      askAgent
+      onDismiss={() => setDesktopNotice(null)}
+    />
+  ) : (desktopNotice === 'unavailable' || handedOff) && (
     <div role="status" className="text-muted text-[12.5px] max-w-md">
-      {i18nT('pages.overview.wakatimeTab.oauth_desktop_notice')}
+      {handedOff
+        ? i18nT('pages.overview.wakatimeTab.oauth_desktop_handoff')
+        : i18nT('pages.overview.wakatimeTab.oauth_desktop_notice')}
     </div>
   )
 

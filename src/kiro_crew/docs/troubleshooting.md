@@ -265,7 +265,10 @@ not found on this computer is dropped at the rebuild; the gateway log names it
 where the gateway already searches, start a new chat: the next default-agent
 session start rebuilds the spec with the server. A program found only through the
 server's own `env.PATH`, or under a Node version installed after the gateway
-started, needs a gateway restart.
+started, needs a gateway restart. The agent's `diagnose_settings` check names a
+server dropped this way, so you can ask the agent why a server is missing. A
+server whose command is `npx`, `npm` or `node` needs Node.js: install Node.js
+22.12 or later, then restart the gateway.
 
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but
@@ -315,7 +318,11 @@ with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
 tool and finishes the request in the same reply. If the server is still not
 ready after that, the agent says so and you can ask again a moment later. For a
 server in any other state it does not wait: it tells you what is true of the
-server and does what it can without it.
+server and does what it can without it. For one that failed to start, it tells
+you that **Test** on that server's row of the **MCP Servers** page shows its error
+if the page lists the server (one only a custom agent declares has no row there),
+and that in a dashboard chat the chat menu's **MCP servers** list shows the error
+from this chat's session. The error itself is never passed to the agent.
 
 A first message that cannot carry that note still waits for your servers, for at
 most 5 seconds, as every first message did before: `kirocrew chat` in a
@@ -325,8 +332,9 @@ of its own. A server that will not start (switched off, or left out by your
 organization's registry) is never waited for.
 
 A server that failed to start usually stays failed for that chat. (One that
-failed over a missing or refused credential may be tried again.) Check its row
-and its command on the **MCP Servers** page, then start a new chat.
+failed over a missing or refused credential may be tried again.) If the
+**MCP Servers** page lists it, check its row and its command there. Then start a
+new chat.
 
 A sub-agent and an unattended run (a schedule, a webhook) still wait briefly for
 the agent's servers before their first prompt, because such a run may have only

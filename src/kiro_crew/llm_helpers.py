@@ -158,6 +158,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         provider_model_pin_partial,
         provider_model_pin_refused,
         provider_raw_model,
+        reactive_model_candidate,
         resolve_substitute_set_model,
         route_baseline_latch,
         slot_switch_session_lock,
@@ -287,6 +288,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.image_refs import (  # noqa: F401
         strip_image_refs,
+    )
+    from kiro_crew.messaging.alternation_echo import (  # noqa: F401
+        could_be_echo,
+        echo_prefix_len,
+        is_echo,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,

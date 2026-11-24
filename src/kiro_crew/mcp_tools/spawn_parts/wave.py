@@ -706,6 +706,9 @@ class _SubAgentsStep(DeferredTool):
                     record["leaked_tool_call"] = f"This agent {LEAKED_TOOL_CALL_NOTE}"
                 if sa_st.get("served_model_unverified") is True:
                     record["served_model_unverified"] = f"This agent {UNVERIFIED_MODEL_NOTE}"
+                withheld = sa_st.get("crew_tools_withheld")
+                if isinstance(withheld, str) and withheld:
+                    record["crew_tools_withheld"] = f"This agent {withheld}"
                 _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(record))
         if _unsettled:

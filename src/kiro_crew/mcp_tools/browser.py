@@ -37,6 +37,7 @@ so an install made mid-session is picked up on the next call.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -63,7 +64,7 @@ from kiro_crew.mcp_tools.catalog.browser import (  # noqa: F401
     schemas,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.validation import ASK_WAIT_SLICE_SECS
+from kiro_crew.validation import ASK_WAIT_SLICE_SECS, TextWithImage
 
 logger = logging.getLogger(__name__)
 
@@ -273,12 +274,14 @@ def _redacted(text: str) -> str:
 
 
 def _popup_note(result: dict[str, Any]) -> str:
-    """The route's popup fields (``popup``, ``popup_closed``) as one line, or ``""``.
+    """The route's own notices (``popup``, ``popup_closed``, ``sign_in``) as one line, or ``""``.
 
-    The snapshot and screenshot branches below print only their own fields, so
-    without this the notice that the tab changed would be lost there.
+    The snapshot and screenshot branches below print only their own fields, and a
+    refusal prints only its error, so without this the notice that the tab changed,
+    or why a site could not be signed in, would be lost there.
     """
-    notes = {k: result[k] for k in ("popup", "popup_closed") if isinstance(result.get(k), dict)}
+    keys = ("popup", "popup_closed", "sign_in")
+    notes = {k: result[k] for k in keys if isinstance(result.get(k), dict)}
     return f"\n{json.dumps(notes, default=str)}" if notes else ""
 
 
@@ -319,6 +322,43 @@ def _result_text(op: str, result: Any) -> str:
     if not fields:
         return f"Browser {op}: ok"
     return _redacted(f"Browser {op}: {json.dumps(fields, default=str)}")[:_RESULT_CAP]
+
+
+def _with_shot_image(op: str, op_args: dict[str, Any], payload: Any, text: str) -> str:
+    """*text*, carrying the screenshot as an image when ``screenshot`` asked ``inline: true``.
+
+    The image is the file the op just saved, held to the inline-image budget
+    (:func:`kiro_crew.imaging.downscale_image_block`). One that cannot be read
+    or fitted is left out with a warning, so the agent opens the file instead.
+    """
+    inline = op_args.get("inline")
+    if op != "screenshot" or inline is None or inline is False:
+        return text
+    ran = isinstance(payload, dict) and payload.get("ok") is True
+    result = payload.get("result") if ran else None
+    path = result.get("path") if isinstance(result, dict) else None
+    if not isinstance(path, str) or not path:
+        return text
+    if inline is not True:
+        return f"{text}\nWarning: `inline` ignored: it must be true or false"
+    # Imported here, as in _read_text: test_mcp_listing_import_budget caps what the list loads.
+    from kiro_crew import hooks
+    from kiro_crew.browser_snapshots import snapshot_dir
+    from kiro_crew.imaging import downscale_image_block
+
+    # The agent's sandbox can write the screenshot leaf and this process runs outside it,
+    # so only a regular file whose real path is inside the leaf is read, the leaf spelled
+    # literally as SNAPSHOT_DIR_NAME asks: a leaf replaced by a link fails the pin.
+    snap = snapshot_dir()
+    root = os.path.join(os.path.realpath(snap.parent), snap.name)
+    try:
+        data = hooks.safe_read_file_bytes_nolink(path, root, within_root_is_canonical=True)
+    except hooks.FileTooLargeError:
+        data = None
+    fitted = None if data is None else downscale_image_block(data, "image/png")
+    if fitted is None:
+        return f"{text}\nWarning: `inline` left out: the image could not be read or fitted"
+    return TextWithImage(text, (base64.b64encode(fitted[0]).decode("ascii"), fitted[1]))
 
 
 def _read_text(result: dict[str, Any]) -> str:
@@ -585,7 +625,7 @@ class _HandbackWait(DeferredTool):
             return None
         text = _settle(self.op, status, payload)
         if text is not None:
-            return text + said
+            return _with_shot_image(self.op, self.op_args, payload, text + said)
         # Taken over again before the op could run: a new hold, as the gateway's
         # re-park starts one (``LiveHub.park``), so the two ends stay in step.
         self.deadline = mcp_core.time.monotonic() + budgets.HOLD_TIMEOUT_S + budgets.HOLD_GRACE_S
@@ -643,7 +683,7 @@ def browser(name: str, args: dict[str, Any]) -> "str | DeferredTool":
         return carded
     text = _settle(op, status, payload)
     if text is not None:
-        return text
+        return _with_shot_image(op, op_args, payload, text)
     # The person holds the browser: park, poll for the hand-back, then run the op.
     interrupted = isinstance(payload, dict) and payload.get("code") == "interrupted"
     return _HandbackWait(

@@ -848,7 +848,7 @@ export default function OnboardingFlow({
         {profileSaveError && (
           <ErrorNotice
             className="mt-3 text-[12.5px]"
-            message={i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o')}
+            message={i18nT('components.onboardingFlow.couldn_t_save_your_answers_press_next_to_retry_o').replace(/\s+/g, ' ')}
             testId="onboarding-profile-save-error"
           />
         )}

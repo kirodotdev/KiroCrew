@@ -578,6 +578,63 @@ def test_the_websocket_message_cap_is_above_the_library_default() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_redirect_is_refused_and_its_answer_closed() -> None:
+    """``ws_connect`` follows redirects; the trace hook stops the first one.
+
+    A followed redirect would carry ``Kiro-Relay-Authorization`` off the relayed
+    Crew, because aiohttp strips only ``Authorization`` and ``Cookie`` cross-origin.
+    """
+    closed: list[bool] = []
+
+    class _Response:
+        status = 302
+
+        def close(self) -> None:
+            closed.append(True)
+
+    params = type("_Params", (), {"response": _Response()})()
+    refuse = getattr(awo, "_refuse_redirect", None)
+    assert refuse is not None, "no redirect hook"
+    with pytest.raises(aiohttp.ClientError, match="302"):
+        await refuse(None, None, params)
+    assert closed == [True]
+
+
+def _redirect_hooks(session: aiohttp.ClientSession) -> list[Any]:
+    return [hook for config in session.trace_configs for hook in config.on_request_redirect]
+
+
+@pytest.mark.asyncio
+async def test_every_relay_session_refuses_redirects() -> None:
+    """The fallback session and the shared ``_proxy_session`` both carry the hook."""
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.apps.routes import register_app_routes
+
+    fallback, owns = awo._client_session(make_mocked_request("GET", "/", app=web.Application()))
+    try:
+        assert owns
+        hooks = _redirect_hooks(fallback)
+        assert hooks, "the fallback session follows redirects"
+        assert hooks == [awo._refuse_redirect]
+    finally:
+        await fallback.close()
+
+    app = web.Application()
+    register_app_routes(app)
+    for start in app.on_startup:
+        await start(app)
+    shared = app["_proxy_session"]
+    try:
+        hooks = _redirect_hooks(shared)
+        assert hooks, "the shared _proxy_session follows redirects"
+        assert hooks == [awo._refuse_redirect]
+        assert awo._client_session(make_mocked_request("GET", "/", app=app)) == (shared, False)
+    finally:
+        await shared.close()
+
+
+@pytest.mark.asyncio
 async def test_an_oversized_message_from_the_page_never_reaches_the_backend(
     gateway: TestClient, backend: _Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:

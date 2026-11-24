@@ -271,4 +271,36 @@ describe('terminal tab close menu', () => {
     expect(deleteTerminalAsync.mock.calls.map(call => call[0])).toEqual([first, second])
     expect(disposeTerminal.mock.calls.map(call => call[0])).toEqual([first, second])
   })
+
+  /** Open the dock's More actions menu (⋯), which also lists the tabs. */
+  async function openTabList() {
+    await act(async () => { fireEvent.keyDown(screen.getByTestId('terminal-more-trigger'), { key: 'Enter' }) })
+  }
+
+  it('closes every tab from the More actions menu after one confirm that names how many', async () => {
+    const ids = seedTabs(3)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+    await openTabList()
+    await act(async () => { fireEvent.click(await screen.findByRole('menuitem', { name: 'Close all terminals' })) })
+    expect(deleteTerminal).not.toHaveBeenCalled()
+    await confirmBatch(3)
+    expect(deleteTerminal.mock.calls.map(call => call[0])).toEqual(ids)
+    const { result } = renderHook(() => useBottomTerminal())
+    expect(result.current.tabs).toEqual([])
+  })
+
+  it('offers Close all in the More actions menu only once two tabs are open, and puts no button on the strip', async () => {
+    seedTabs(1)
+    const { unmount } = renderWithProviders(<TerminalTabsView variant="dock" />)
+    await openTabList()
+    expect(screen.queryByRole('menuitem', { name: 'Close all terminals' })).not.toBeInTheDocument()
+    unmount()
+    __resetBottomTerminal()
+    seedTabs(2)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+    // Outside the menu, nothing on the strip closes every tab.
+    expect(screen.queryByRole('button', { name: 'Close all terminals' })).not.toBeInTheDocument()
+    await openTabList()
+    expect(await screen.findByRole('menuitem', { name: 'Close all terminals' })).toBeInTheDocument()
+  })
 })

@@ -1,5 +1,8 @@
 # Testing Conventions
 
+<!-- docs-lint: defines soft_deadline_secs, grace_period_s, log_budget_ms, test_bad_spec_does_not_disable_memory_tools_for_other_agents, trace_home, ExpiresAt -->
+<!-- docs-lint: wrong-on-purpose test_policy -->
+
 ## Framework
 
 - `pytest` with `pytest-asyncio` for async tests
@@ -136,6 +139,19 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
 - **D10. Loopback only.** Stub the network at the seam the product calls; no test
   depends on a host other than `127.0.0.1` / `::1`. The rootdir network floor reports a
   test that reaches past loopback; one that must is marked `@pytest.mark.real_network`.
+  A UNC path (`\\host\share\x`, `//host/share/x`) is a network host too, and the socket
+  floor does not see it: on Windows `os.path.realpath`, `Path.resolve`, `stat` and
+  `exists` on one open an SMB connection to `host`, and the answer (WinError 53, 64 or
+  67, or a stall) depends on the runner's network. So on Windows the rootdir floor wraps
+  `os.stat`, `os.lstat`, `os.readlink`, `os.path.exists/isdir/isfile/islink` and the
+  `_getfinalpathname` behind `realpath` (`_refuse_unc_network_paths` in
+  `test/conftest_floor_configure.py`): one given `\\host\share`, `//host/share`,
+  `\\?\UNC\` or `\\.\UNC\` raises `UncNetworkPathRefused` at once, on every runner.
+  `\\?\C:\` long paths, `\\.\` devices, file descriptors and a share holding the
+  checkout, working directory, temp dir, home or interpreter pass.
+  A test whose data is a UNC path makes the resolve lexical at the seam the product
+  calls (`test_an_absolute_workspace_folder_keeps_the_whole_config` patches
+  `os.path.realpath` for UNC input only) or asserts a result no resolve reaches.
   [Side effects](#side-effects-what-a-full-run-does-to-the-host-and-how-to-see-it).
 - **D11. Process globals change only through `monkeypatch`**, and an autouse fixture's
   only through `_floor_monkeypatch`. Never `importlib.reload` a shared module in-process:
@@ -1076,6 +1092,13 @@ over budget.
   (`test_updates_handlers_facade.py`), or a doc that must be reachable from its
   directory's index (`scripts/docs_lint.py`): when two changes leave the merged tree
   inconsistent, the tree is wrong. Fix the tree; do not loosen the check.
+- **A check that arrives with a snapshot of the live tree regenerates it on current
+  `main` right before it merges.** A baseline generated from what is registered or
+  present today (`.github/route-access-baseline.txt`) is stale the moment another
+  change adds a member, and git sees no conflict. Rebase onto current `main`,
+  regenerate the snapshot and let CI run again before merging. When that window was
+  missed, the late members get the real fix (a label, a rule), not a baseline row
+  ([route access § The baseline](../modules/route-access.md#the-baseline)).
 - **Prove it with a two-branch merge.** In a scratch clone, cut two branches from one
   base, make one change of the counted class on each (different files) and update the
   record exactly as the failure message says, then merge both and run the test. It is
@@ -1343,7 +1366,7 @@ teardown on an over-budget read at a product site not listed in
 `test/conftest_floor_read_budget.py`, unless its module resets the budget in its own
 fixture.
 
-Eight members are there for a different reason — a **process-global** that any testpath
+Ten members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -1399,7 +1422,14 @@ one scope down:
   installed with nothing attached. The root logger's handler list is doubly excluded —
   pytest's own `catching_logs` adds one per test phase and removes it at the phase
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
-  the teardown phase is capturing through.
+  the teardown phase is capturing through. The one handler that does come off is the next
+  entry's.
+* `_restore_cli_log_file_handlers` closes and detaches every `_AppendOnlyLogFileHandler`
+  the test attached to the root or `kiro_crew` logger, and nothing else. A short-lived
+  `cli.main()` command attaches one, writing a `gateway.log` under that test's deleted
+  `tmp_path`, so every later `kiro_crew` record on the worker prints `--- Logging error ---`
+  to stderr. No module global records it as installed and no list is written back, so
+  neither reason above applies.
 * `_close_skills_loaders_the_test_opened` closes every `SkillsLoader` the test built,
   through production's weak registry of live loaders, and joins each one's catalog
   worker. It then closes every `SkillSearchIndex` built during the test (the
@@ -1952,11 +1982,11 @@ measures, never above.
   (`metrics/provider.py`): once per `_CONSENT_RECHECK_SECS`, `get_recorder()` -- on the
   path of `skills`, `session`, `context`, `hooks` and every metric helper -- hands a
   consent re-read to a daemon thread whose `KiroCrewConfig.load()` reaches
-  `config_dir()` and `mkdir`s whatever `KIROCREW_HOME` names at that instant. The
-  recorder is process-global and nothing resets it between tests, so the read lands a
-  few milliseconds later under the NEXT test's pin and creates that test's data home
-  from a thread it never started. The Windows fingerprint of that race is a
-  `\\?\`-prefixed path: `os.path.realpath` keeps the prefix when the directory above a
+  `config_dir()`. Resolved on that thread, the home was whatever `KIROCREW_HOME` named
+  at that instant: the recorder is process-global and nothing resets it between tests,
+  so the read landed a few milliseconds later under the NEXT test's pin and created
+  that test's data home from a thread it never started. The Windows fingerprint of
+  that race is a `\\?\`-prefixed path: `os.path.realpath` keeps the prefix when the directory above a
   not-yet-existing path appears between its two lookups, which is how
   `test_pathres_loop_starvation.py::test_the_inline_anchors_are_the_bounded_anchors`
   saw `\\?\...\<n>-kirocrew-home\diag` in one build of the sensitive-target set and not
@@ -1967,6 +1997,14 @@ measures, never above.
   creator of a home that was not the running test's own. The rootdir teardown hook
   joins it (`_join_telemetry_consent_worker`, bounded by `_EXECUTOR_JOIN_SECS`) beside
   the receipt-worker join, and fails the test that left one wedged past the bound.
+  The first rule closes the rest: `_schedule_consent_check_locked` resolves the home
+  and the thread runs through `config.paths.run_with_data_home` (and
+  `consent_pins.bind_env_pins`, for `KIROCREW_TELEMETRY` and the other consent pins),
+  so the worker never reads either variable. A late worker reads its scheduling test's home, and a gap INSIDE
+  one test body cannot send it to the real default home: `patch.dict(os.environ)`
+  restores by clearing the environment before it refills it, and a body can pin
+  `KIROCREW_HOME` empty (#40975, #41249). The join stays, for the module state a late
+  worker would still change.
   When you see a per-test directory appear with no test writing it, list the threads
   first: `threading.enumerate()` names the lazy resolver, the filesystem never will.
 
@@ -2706,6 +2744,13 @@ tests; the classes below are what the rest was made of.
   one layer up: the caller resolves the home on ITS thread and hands it in
   (`SessionManager._cleanup_deps` → `cleanup_stale_sandbox_profiles(data_home=...)`).
   When a job goes onto a pool, ask what it resolves lazily; the answer must be "nothing".
+  When the job reaches the home through code too deep to thread a parameter through (a
+  sandbox wrap, a crew-log fold), the worker runs it through
+  `config.paths.run_with_data_home(home, target, ...)` with the home its dispatcher
+  resolved: the node compile-cache prewarm thread starts on it, the crew-log eager fold
+  worker reads the home off each wake and folds each home's share through it, and the
+  crew-log cold-cell prime (`crew_log.slot_prime`) resolves it in `schedule` on the
+  caller's thread and submits `_run` through it (#41332).
   The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
   the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
   is the fix there. The loop's executor is covered: a cache write-through in
@@ -3632,6 +3677,30 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**A mocked "now" is a calendar date, so anchor it to the real clock.** A test that
+mocks `Date.now` to a fixed literal (`Date.parse('<some day>')`) stamps whatever it
+writes with that day. A store that prunes by age against the real clock, or keeps its
+stamps in module memory across tests, then treats those stamps as that many days old,
+and the test starts failing on the day the literal falls past the TTL, on every branch
+at once. `ChatPageDrafts.test.tsx` mocked its steer take-back clock to a fixed day; the
+chat drafts store stamped `slot-a` under it and kept the stamp in module memory, and a
+later test's `slot-a` draft came back `''` once that day was 30 days old. Fix: mock
+`now` relative to the real clock (`const NOW = Date.now()`, then `NOW + offset`), and
+reset each module-level store between tests (`__resetForTests` in `beforeEach`). A
+fixed literal is right only when the date itself is the input under test, such as
+formatting or a time-zone edge, and then nothing that ages by the real clock may read it.
+
+```ts
+// WRONG: expires on a fixed day once the literal is older than the TTL
+const NOW = Date.parse('2025-01-01T00:00:00Z')
+// RIGHT: the same distance from the real clock on every run
+const NOW = Date.now() // flake-ok: read once, then pinned with vi.spyOn(Date, 'now')
+```
+
+The flake-pattern ratchet counts a bare `Date.now()` in a test file as
+`J3-unpinned-date`, so the line that reads the real clock once carries a
+`flake-ok:` reason naming where the value is pinned.
+
 **A request budget the test spends in real seconds measures the runner.** A 3 s recall
 deadline with a 1 s `time.sleep` "burn" left the judge's wait at the mercy of every
 cold step before it (store, pool, embedding): on loaded Windows runners the remaining
@@ -3955,6 +4024,21 @@ publishes itself, then `rt._answer_tasks` draining for the answers those frames 
 For state published on the way to a broadcast, the frame arriving on the owner's queue IS
 the barrier — the demux snapshots before it broadcasts, so the frame proves the snapshot
 ran.
+
+**A scripted stream that ends at once races any task its events start.** The stream
+loop schedules a held peer steer's boundary flush as a TASK on a tool result
+(`deferred_steer.schedule_flush`), and that task hops to threads to warm the gate
+(`prewarm_enabled_check`) before it steers. A real model step after a tool result runs
+for seconds, so production always injects first. A script of
+`[tool_call, tool_result, complete]` ends the turn in the same few loop steps: on a
+loaded macOS runner the turn's hand-off queued the steer before the flush reached the
+client, and `test_a_tool_result_in_a_running_stream_injects_a_held_steer` failed with
+"Expected steer to have been awaited once. Awaited 0 times." on five pull requests in
+twelve hours, never on Linux or Windows. When an event starts a task and the assertion
+is about what that task does INSIDE the turn, the script's next event waits on that
+task's own signal (`await await_until(steered)` in an async generator, set by the
+mock's `side_effect`), the way a real model step outlasts it. A barrier after `_drive`
+cannot help: by then the turn is over.
 
 **A negative assertion is only as strong as the barrier in front of it.**
 `assert qa.empty() and qb.empty()` after a turn budget passes for the trivial reason if

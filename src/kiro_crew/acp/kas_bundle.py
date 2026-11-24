@@ -89,7 +89,16 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from kiro_crew import asset_downloader, platform_compat
-from kiro_crew.acp.kas_pin import KAS_PIN_MANIFEST_SHA256, KAS_PIN_VERSION, pinned_version
+from kiro_crew.acp.kas_pin import (  # noqa: F401 - the default pin is re-exported
+    KAS_PIN_AL2_MANIFEST_SHA256,
+    KAS_PIN_AL2_VERSION,
+    KAS_PIN_GLIBC_FLOORS,
+    KAS_PIN_MANIFEST_SHA256,
+    KAS_PIN_MANIFESTS,
+    KAS_PIN_VERSION,
+    host_pin_version,
+    pinned_version,
+)
 from kiro_crew.config.paths import data_home
 from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
 
@@ -267,36 +276,65 @@ def host_node_key(system: str | None = None, machine: str | None = None) -> str:
     return f"{_host_os(system or platform.system())}-{_host_arch(machine or platform.machine())}"
 
 
-def _require_loadable_glibc(system: str | None, machine: str | None) -> None:
+def _glibc_floor(node_key: str | None, version: str | None) -> tuple[int, int]:
+    """Lowest glibc the release *version* runs on for Linux Node key *node_key*.
+
+    Only the two pins have a recorded floor
+    (:data:`kiro_crew.acp.kas_pin.KAS_PIN_GLIBC_FLOORS`, which moves with each pin's
+    version and digest). Any other version, or a key a pin does not list, gets the
+    floor of the official nodejs.org builds
+    (:data:`kiro_crew.constants._OFFICIAL_NODE_GLIBC_FLOOR`), which every release
+    used before AL2 builds existed.
+    """
+    from kiro_crew import constants
+
+    default = constants._OFFICIAL_NODE_GLIBC_FLOOR
+    return KAS_PIN_GLIBC_FLOORS.get(version or "", {}).get(node_key or "", default)
+
+
+def _require_loadable_glibc(
+    system: str | None, machine: str | None, version: str | None = None
+) -> None:
     """Refuse the install on a Linux host whose glibc is too old to run the bundle.
 
-    The published ``linux-x64`` Node build is linked against glibc 2.28, so a host
-    below that floor cannot run the bundled Node at all. The engine also ships a
-    native ``onnxruntime`` library (via ``@huggingface/transformers``) linked
-    against glibc 2.27, so an Amazon Linux 2-era host below glibc 2.27 additionally
-    cannot load that library even with an older Node swapped in. Stop here, before
-    any engine or Node artifact is downloaded or extracted, with one message naming
-    the found glibc, the minimum, and the reason, rather than letting ``_probe_node``
+    The floor is per architecture and per release (:func:`_glibc_floor`; *version*
+    None means this host's pin, :func:`kiro_crew.acp.kas_pin.host_pin_version`). A release whose ``linux-x64`` Node and onnxruntime come
+    from nodejs.org and npm needs glibc 2.28 (Node) and 2.27 (onnxruntime); one
+    republished from Amazon Linux 2 builds needs 2.26. Stop here, before any engine
+    or Node artifact is downloaded or extracted, with one message naming the found
+    glibc, the minimum, the key and the reason, rather than letting ``_probe_node``
     surface the raw "GLIBC_2.28 not found" loader line after a download.
 
-    Reuses the glibc reader and floor ``doctor``'s Node remedy uses
-    (:func:`kiro_crew.constants._host_glibc_version`,
-    :data:`kiro_crew.constants._OFFICIAL_NODE_GLIBC_FLOOR`). A no-op on non-Linux,
-    at or above the floor, or when glibc cannot be read.
+    Reuses the glibc reader ``doctor``'s Node remedy uses
+    (:func:`kiro_crew.constants._host_glibc_version`). A no-op on non-Linux, at or
+    above the floor, or when glibc cannot be read.
     """
     from kiro_crew import constants
 
     if _host_os(system or platform.system()) != "linux":
         return
     glibc = constants._host_glibc_version()
-    floor = constants._OFFICIAL_NODE_GLIBC_FLOOR
+    try:
+        node_key: str | None = f"linux-{_host_arch(machine or platform.machine())}"
+    except KasHostUnsupported:
+        node_key = None  # the architecture check names that refusal itself
+    version = version or host_pin_version(system, machine)
+    floor = _glibc_floor(node_key, version)
     if glibc is None or glibc >= floor:
         return
+    need = f"{floor[0]}.{floor[1]}"
+    release = f"KAS {version}"
+    if floor >= constants._OFFICIAL_NODE_GLIBC_FLOOR:
+        why = (
+            f"{release} records no lower floor for {node_key or 'this architecture'}, so it "
+            f"is held to the nodejs.org Node build's glibc {need} (the npm onnxruntime "
+            f"library also needs glibc 2.27)"
+        )
+    else:
+        why = f"the {node_key} Node and onnxruntime builds of {release} need glibc {need}"
     raise KasHostUnsupported(
         f"this host's glibc ({glibc[0]}.{glibc[1]}) is older than KAS requires "
-        f"(glibc {floor[0]}.{floor[1]}+): the bundled Node build needs glibc "
-        f"{floor[0]}.{floor[1]}, and Amazon Linux 2-era hosts (glibc below 2.27) "
-        f"also lack the glibc 2.27 the engine's onnxruntime library needs. "
+        f"(glibc {need}+): {why}. "
         f"Move to a newer base image (Amazon Linux 2023, Ubuntu 22.04+). "
         f"Nothing was installed."
     )
@@ -780,7 +818,7 @@ def install_bundle(
     version's name. Raises :class:`KasBundleError`.
     """
     root = root or kas_engines_root()
-    _require_loadable_glibc(system, machine)
+    _require_loadable_glibc(system, machine, manifest.version)
     platform_key = host_platform_key(system, machine)
     node_key = host_node_key(system, machine)
     engine_ref = manifest.engine_for(platform_key)
@@ -939,28 +977,29 @@ def install_pinned(
     """
     explicit_root = root is not None
     root = root or kas_engines_root()
-    present = installed_bundle(root=root, version=KAS_PIN_VERSION)
+    # This host's pin (the AL2 one on a linux-x64 host below glibc 2.28), read
+    # now: a host whose glibc moved since its last install gets the other pin.
+    pin = host_pin_version()
+    present = installed_bundle(root=root, version=pin)
     if present is None and not explicit_root:
         # A platform wheel carries the pin inside the package: nothing to fetch.
-        present = installed_bundle(version=KAS_PIN_VERSION)
+        present = installed_bundle(version=pin)
         if present is not None and not present.packaged:
             present = None
     if present is not None:
         return present
     # The local host checks install_bundle repeats; none of them reads the network.
-    _require_loadable_glibc(None, None)
+    _require_loadable_glibc(None, None, pin)
     host_platform_key()
     host_node_key()
-    manifest, url = fetch_manifest(
-        base_url, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
-    )
+    manifest, url = fetch_manifest(base_url, version=pin, sha256=KAS_PIN_MANIFESTS[pin])
     # A directory at the pin's name that did not resolve above is a damaged
     # install (an interrupted --force, a hand edit): replace it rather than refuse.
     return install_bundle(
         manifest,
         source=url,
         root=root,
-        force=(root / KAS_PIN_VERSION).exists(),
+        force=(root / pin).exists(),
         on_progress=on_progress,
     )
 

@@ -18,6 +18,7 @@ import {
   applyNavIntentInMain,
   chatDeepLinkSlot,
   isAppDetailPath,
+  isMembersPath,
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
@@ -63,7 +64,7 @@ import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
-import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
+import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
@@ -78,7 +79,7 @@ import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
 import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { shortcutEntry } from '../lib/shortcutRegistry'
-import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
+import { ariaKeyshortcutsFor, useKeyboardLayout, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -278,6 +279,8 @@ export function useAppShell() {
   // must not be advertised.
   const shortcutBindings = useShortcutBindings()
   const shortcutsEnabled = useShortcutsEnabled()
+  // Re-render once the keyboard layout loads: both focus-mode sentences name the chord's key.
+  useKeyboardLayout()
   const focusModeChordDef = (() => {
     if (!shortcutsEnabled) return null
     const entry = shortcutEntry('toggle-focus-mode')
@@ -945,8 +948,10 @@ export function useAppShell() {
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
   //
-  // A crew link (`kirocrew://chat?crew=`) is read HERE only, never off the URL.
+  // A crew link (`kirocrew://chat?crew=`) switches panes and connects only from
+  // HERE; the same route on the dashboard's own address only opens the crew window.
   const openCrewLink = useCrewDeepLink()
+  useCrewAddressLink()
   usePaneOpenSlot({ navigate, mayLeave: mayLeaveForNavigation })
   useEffect(() => {
     return subscribeNativeNavigate(path => {
@@ -982,11 +987,11 @@ export function useAppShell() {
         navigate(REMOTE_CREW_SETTINGS_PATH)
         return
       }
-      // An app detail link names an app installed in the local Crew. Over a
+      // An app detail or Bots page link names an app or Bot in the local Crew. Over a
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
+      if ((isAppDetailPath(path) || isMembersPath(path)) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry
@@ -1112,10 +1117,13 @@ export function useAppShell() {
   })
   const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
   const tabProduct = instanceLabel ? i18nT('app.tab_title', { label: instanceLabel, productName: botName }) : botName
+  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
+  // the shell leaves its title alone there.
   useEffect(() => {
+    if (isPopout) return
     const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [totalAttention, tabProduct, tabLabel])
+  }, [isPopout, totalAttention, tabProduct, tabLabel])
   // Name the history entry on screen for the Back/Forward arrows' history
   // menu (#17453): the session on chat, the page anywhere else, and nothing on
   // a route with no rail row, so that entry is left out of the list. Re-run on

@@ -1,7 +1,7 @@
 /**
- * Evidence: a retry the gateway runs because the model provider throttled the
- * request is worded as throttling, pending and settled, never as a connection
- * problem; a plain upstream 5xx retry keeps its connection wording.
+ * Evidence: a retry the gateway runs because the request was throttled is
+ * worded as throttling, pending and settled, never as a connection problem; a
+ * plain upstream 5xx retry keeps its connection wording.
  *
  * Mounts the REAL ChatMessageList with the REAL main-transcript registry
  * (`createTranscriptRenderers`), so every row is drawn by the same code a
@@ -43,7 +43,7 @@ const msg = (role: string, content: string, over: Partial<ChatMessage> = {}): Ch
 // Real wire rows: English fallback content plus the `meta.notice` token
 // (chat_utils.TRANSIENT_* in the gateway).
 const throttled = () =>
-  msg('error', '⟳ The model provider is throttling requests — retrying…', {
+  msg('error', '⟳ Requests are being throttled — retrying…', {
     cls: 'msg msg-err',
     meta: { kind: 'transient_retry', notice: 'transient_throttle_retrying' },
   } as Partial<ChatMessage>)
@@ -53,12 +53,12 @@ const retrying = () =>
     meta: { kind: 'transient_retry', notice: 'transient_retrying' },
   } as Partial<ChatMessage>)
 const throttleResuming = () =>
-  msg('error', '⟳ The model provider is throttling requests — resuming…', {
+  msg('error', '⟳ Requests are being throttled — resuming…', {
     cls: 'msg msg-err',
     meta: { kind: 'transient_retry', notice: 'transient_throttle_resuming' },
   } as Partial<ChatMessage>)
 const throttleGiveUp = () =>
-  msg('error', '⟳ The model provider is throttling requests — please try again.', {
+  msg('error', '⟳ Requests are being throttled — please try again.', {
     cls: 'msg msg-err',
     meta: { notice: 'transient_throttle_give_up' },
   } as Partial<ChatMessage>)

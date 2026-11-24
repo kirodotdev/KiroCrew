@@ -12,11 +12,12 @@ JSON is composed), see
 | [getting-started.md](getting-started.md) | Build your first app: scaffold, run, and iterate. |
 | [manifest-reference.md](manifest-reference.md) | Every `app.json` field. |
 | [api-reference.md](api-reference.md) | The App SDK surface: hooks, storage, chat embedding, and the event bus. |
-| [issues-guide.md](issues-guide.md) | Show GitHub, GitLab, Jira and Linear issues with `IssueList`, `IssueCard` and `useIssues`. |
+| [issues-guide.md](issues-guide.md) | Show GitHub, GitLab, Jira, Linear and ServiceNow issues with `IssueList`, `IssueCard` and `useIssues`. |
 | [publishing-guide.md](publishing-guide.md) | Publishing to the App Store, including the review guidelines an app must meet. |
 | [migration-guide.md](migration-guide.md) | Moving an app across a breaking platform version. |
 
-`examples/` holds two source fixtures: an installable minimal app and a fuller
+`examples/` holds three source fixtures: an installable minimal app, an
+installable backend-only `ctx.browser` example (`browser-reader`), and a fuller
 UI/agent/skill/cron example. The full example intentionally omits build tooling,
 a compiled UI bundle, and a backend; use it as a code reference rather than
 installing it directly.

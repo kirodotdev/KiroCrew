@@ -708,8 +708,8 @@ class TestEvict:
 
         runtime = AcpRuntime(work_dir=tmp_path, sandbox_mode="off", acp_backend=ACP_BACKEND_KAS)
         runtime._session_queues[_SID] = asyncio.Queue()
-        # A process is set, so being dead is the only reason to skip the close.
-        runtime._process = object()  # type: ignore[assignment]
+        # A live process is set, so being dead is the only reason to skip the close.
+        runtime._process = SimpleNamespace(returncode=None)  # type: ignore[assignment]
         runtime._dead = True
         runtime._send_and_await = AsyncMock()  # type: ignore[method-assign]
         await runtime.evict_session(_SID)

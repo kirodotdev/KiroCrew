@@ -368,6 +368,58 @@ describe('useVirtualChat: the hide snapshot captures the live position', () => {
     expect(view.result.current.getFollow()).toBe(false)
   })
 
+  it('a box collapsing and regrowing while hidden leaves the return to the hide-time position', () => {
+    // A backgrounded tab collapses the scroller too, so the ResizeObserver sees
+    // the box lose and regain its height. That is the visibility path's to
+    // place: the stale persisted anchor must not take over.
+    let fire: ((entries: { target: Element }[]) => void) | undefined
+    const origRO = globalThis.ResizeObserver
+    globalThis.ResizeObserver = class {
+      constructor(cb: ResizeObserverCallback) {
+        fire = (entries) => cb(entries as unknown as ResizeObserverEntry[], this as unknown as ResizeObserver)
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    try {
+      seedHeights('sess-vis-hidero', 50, 100)
+      const { el, state, view } = mount(
+        'sess-vis-hidero',
+        { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+        mkItems(50),
+      )
+      attachRows(view, state, [4, 5, 6, 7, 8])
+      saveScrollAnchor('sess-vis-hidero', { key: 'm20', top: -30 })
+      act(() => {
+        state.scrollTop = 590
+        el.dispatchEvent(new Event('scroll'))
+      })
+      act(() => { vi.advanceTimersByTime(250) })
+      expect(loadScrollAnchor('sess-vis-hidero')).toEqual({ key: 'm20', top: -30 })
+
+      act(() => { setHidden(true) })
+      act(() => {
+        state.clientHeight = 0
+        state.scrollHeight = 0
+        state.scrollTop = 0
+        fire?.([{ target: el }])
+      })
+      // Laid out again still hidden, the scroller at its end.
+      act(() => {
+        state.clientHeight = 400
+        state.scrollHeight = 5000
+        state.scrollTop = 4600
+        fire?.([{ target: el }])
+      })
+      act(() => { setHidden(false) })
+      expect(el.scrollTop).toBe(590)
+      expect(view.result.current.getFollow()).toBe(false)
+    } finally {
+      globalThis.ResizeObserver = origRO
+    }
+  })
+
   it('a disturbed return never raises restoreGate (no skeleton over an already-positioned transcript)', () => {
     // The caller hides the transcript behind a skeleton while `restoreGate` is
     // up. That is right for a slot ENTRY, whose rows are still assembling; on a

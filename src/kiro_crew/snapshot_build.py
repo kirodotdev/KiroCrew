@@ -12,6 +12,7 @@ The pinned copy, the consistent SQLite capture and the bundle format live in
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import socket
@@ -44,6 +45,22 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.staging import staging_dir
+
+
+def _caller_name() -> str:
+    """The account running the command, for the audit row and the manifest.
+
+    ``USER`` first, so a run with a non-empty ``USER`` records that name; then
+    ``USERNAME``, which Windows sets instead; then the login the OS reports; ``unknown``
+    when none of them names one.
+    """
+    name = os.environ.get("USER") or os.environ.get("USERNAME")
+    if name:
+        return name
+    try:
+        return getpass.getuser() or "unknown"
+    except (ImportError, KeyError, OSError):
+        return "unknown"
 
 
 def _fsize(p: Path) -> int:
@@ -401,7 +418,7 @@ def _build_snapshot(
             "version": MANIFEST_VERSION,
             "created_at": facade.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hostname": socket.gethostname(),
-            "user": os.environ.get("USER", "unknown"),
+            "user": _caller_name(),
             "kirocrew_dir": str(mc),
             "purpose": purpose.value,
             # Which components rode, and what each declared about credential material.

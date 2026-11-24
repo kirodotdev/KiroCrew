@@ -16,11 +16,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from lesson_write_outcome_helpers import (
-    _INJECTION,
-    _rule_of,
-    _store,
-)
+from lesson_write_outcome_helpers import _INJECTION, _rule_of, _store
 from named_cases_helpers import named_cases
 
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
@@ -983,3 +979,26 @@ class TestConsolidationSkipsANonStringRule:
         finally:
             store.close()
         assert rules == ["run the linter before committing"]
+
+
+class TestWrittenKey:
+    """A write that changed the store names the row it landed on."""
+
+    def test_insert_and_enrich_name_the_row_and_a_refusal_names_none(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            inserted = store.write_lesson("always run the linter before pushing", "tool")
+            stored = [e["key"] for e in store.get_all_semantic() if e["key"].startswith("lesson.")]
+            assert inserted.outcome is LessonWriteOutcome.INSERTED
+            assert stored == [inserted.key]
+
+            enriched = store.write_lesson(
+                "always run the linter before pushing", "tool", negative="pushing unlinted code"
+            )
+            assert enriched.outcome is LessonWriteOutcome.ENRICHED
+            assert enriched.key == inserted.key
+
+            refused = store.write_lesson("The current model identity is gpt-5.6-sol.", "knowledge")
+            assert refused.key is None
+        finally:
+            store.close()

@@ -35,7 +35,7 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
     _build_ssm_tunnel_argv,
 )
 from kiro_crew.instances.ssh_tunnel_manager_transport import _TransportParams
-from kiro_crew.instances.token_mint import ssh_spawn_argv_env
+from kiro_crew.instances.token_mint import ssh_spawn_argv_env, under_group_leader
 from kiro_crew.sel import _HMAC_KEY_MIN_BYTES as _SEL_HMAC_KEY_MIN_BYTES
 from kiro_crew.sel import sel, sel_hmac_key_path
 
@@ -238,7 +238,13 @@ def _verify_and_reclaim_forwarder(
         # reclaim's audited outcome.
         return not _alive() and _is_addr_free(port, "127.0.0.1")
 
+    leader_group: int | None = None
+
     def _deliver(sig: int) -> None:
+        if leader_group is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError, ValueError):
+                platform_compat.kill_process_group(leader_group, sig)
+            return
         if tree and _SshTunnel._signal_group(pid, sig):
             return
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError, ValueError):
@@ -276,6 +282,17 @@ def _verify_and_reclaim_forwarder(
         return "windows_group_unsupported"
     if not _identity_holds():
         return "identity_mismatch"
+    # An ssh forwarder this gateway spawned leads its own group: the group
+    # leader shell (token_mint.under_group_leader) with ssh and its ProxyCommand
+    # under it. The pid was just verified and is alive, so the group id is still
+    # its own, and the group is signalled whole: a pid-scoped SIGKILL would end
+    # the leader alone and leave ssh holding the port. One spawned without a
+    # group of its own (an older gateway's) keeps the pid-scoped signal above.
+    # The group is addressed by the id read here, never resolved from the pid at
+    # signal time: a pid reused in between would resolve to its new owner's group.
+    if not tree and platform_compat.IS_POSIX and platform_compat.pgroup_of(pid) == pid:
+        tree = True
+        leader_group = pid
     _deliver(platform_compat.SIGTERM)
     if _wait_gone(_RECLAIM_TERM_GRACE_SECS):
         _audit("sigterm")
@@ -695,7 +712,7 @@ async def _reclaim_orphan_forwarder(
         # the builder returns: an element-exact compare against the bare
         # head reads every genuine orphan as "not our child" and leaks it.
         # Off the loop, because resolving the head scans PATH.
-        expected, _env = await asyncio.to_thread(
+        ssh_argv, _env = await asyncio.to_thread(
             ssh_spawn_argv_env,
             _build_ssh_tunnel_argv(
                 params.ssh_host,
@@ -709,6 +726,9 @@ async def _reclaim_orphan_forwarder(
                 compression=self._ssh_compression,
             ),
         )
+        # The recorded forwarder is the leader shell the tunnel spawned ssh
+        # under, so its command line is the wrapped one.
+        expected = under_group_leader(ssh_argv)
     outcome = await asyncio.to_thread(
         _verify_and_reclaim_forwarder,
         pid,
@@ -719,6 +739,24 @@ async def _reclaim_orphan_forwarder(
         f"instance={inst.id} pid={pid} port={port} transport={params.method}",
         argv_sig,
     )
+    if (
+        outcome == "identity_mismatch"
+        and not argv_sig
+        and not params.forwards_over_ssm
+        and ssh_argv != expected
+    ):
+        # Fingerprint-free records can name ssh itself rather than its leader.
+        # A mismatch signals nothing, so both candidates keep the full identity guard.
+        outcome = await asyncio.to_thread(
+            _verify_and_reclaim_forwarder,
+            pid,
+            start,
+            ssh_argv,
+            port,
+            False,
+            f"instance={inst.id} pid={pid} port={port} transport={params.method}",
+            argv_sig,
+        )
     if outcome == "reclaimed":
         logger.info(
             "Reclaimed leaked %s forwarder pid %d for %s (released port %d)",

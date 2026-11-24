@@ -27,8 +27,10 @@ channel's own grant (the creator-mode cascade), which answers their waiting
 prompts, and their cards say so in place.
 
 **Who may answer.** The owner, under the gates every code-channel control
-applies (:func:`.approval_picker.authorize`); anyone else is told so
-ephemerally and nothing changes. Every decision writes one SEL row
+applies (:func:`.approval_picker.authorize`), and for Approve / Reject the
+shared user who opened the channel (:func:`.shared_refusal.opener_admitted`);
+Trust this channel stays the owner's. Anyone else is told so ephemerally and
+nothing changes. Every decision writes one SEL row
 (:data:`OPERATION`).
 
 **Answered elsewhere.** When the approval is decided in the dashboard, times
@@ -43,8 +45,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.slack.code_channels import surface
-from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
+from kiro_crew.slack.code_channels import surface, thread_runtime
+from kiro_crew.slack.code_channels.binding import live_config
 from kiro_crew.slack.code_channels.store import Binding, store
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,9 @@ class WorkerCard:
     answered: bool = False
     #: A click on this card answered it: that click writes its text.
     clicked: bool = False
+    #: The room the card was posted for (:func:`.thread_runtime.room_id`): a
+    #: Conductor thread's card answers only for its own thread.
+    room: str = ""
 
 
 #: Live cards by ``"<channel>:<ts>"``.
@@ -242,7 +247,7 @@ def created_by(worker: Any, creator_key: str) -> bool:
 
 
 async def channel_of_worker(state: Any, slot: Any, *, posting: bool = False) -> Binding | None:
-    """The code channel whose session created *slot*, or None.
+    """The code channel (or Conductor thread) whose session created *slot*, or None.
 
     Only a verified direct child of the channel's CURRENT session counts
     (:func:`created_by`: a gateway-minted or crew-log creation edge), while the
@@ -251,14 +256,17 @@ async def channel_of_worker(state: Any, slot: Any, *, posting: bool = False) -> 
     the gates a new card must pass (:func:`_channel_egress_open`); a card
     already posted stays answerable through a mirror pause or a Slack Stop.
     """
-    if state is None or slot is None or not code_channels_on(live_config()):
+    cfg = live_config()
+    if state is None or slot is None or not thread_runtime.any_runtime_on(cfg):
         return None
     if getattr(slot, "_slack_linked", False):
         return None
     creator = str(getattr(slot, "_created_by", "") or "")
     if not creator or not created_by(slot, creator):
         return None
-    binding = await surface.binding_for_slot(state, creator)
+    # A code channel's session, or a Conductor thread's (its own switch, no
+    # code-channel scope), each only while its own gate is on.
+    binding = await thread_runtime.conductor_binding_for_slot(state, creator, cfg)
     if binding is None or await surface.is_archived(binding):
         return None
     if posting and not _channel_egress_open(state, binding, creator):
@@ -297,8 +305,11 @@ def _blocks(
     mcp_server_name: str = "",
     tool_name: str = "",
     mcp_identity_trusted: bool = False,
+    thread: bool = False,
 ) -> list[dict[str, Any]]:
     """The approval card the channel's own session posts, re-headed and re-wired.
+
+    *thread*: a Conductor thread's card, whose Trust button says "this thread".
 
     Carries the permission event's MCP identity as the linked card does, so the
     card names the proven server/tool rather than only the model-written title.
@@ -319,7 +330,11 @@ def _blocks(
         "reject_tool": REJECT_ACTION_ID,
         "kc_code_channel_trust_call": TRUST_ACTION_ID,
     }
-    from kiro_crew.slack.code_channels.approval_picker import WORKER_TRUST_CALL_CONFIRM
+    from kiro_crew.slack.code_channels.approval_picker import (
+        TRUST_THREAD_LABEL,
+        WORKER_TRUST_CALL_CONFIRM,
+        WORKER_TRUST_THREAD_CONFIRM,
+    )
 
     for block in blocks:
         for element in block.get("elements", []) if block.get("type") == "actions" else []:
@@ -327,7 +342,11 @@ def _blocks(
             element["value"] = request_id
             if element["action_id"] == TRUST_ACTION_ID:
                 # Its dialog says whose call this approves: the worker's.
-                element["confirm"] = WORKER_TRUST_CALL_CONFIRM
+                element["confirm"] = (
+                    WORKER_TRUST_THREAD_CONFIRM if thread else WORKER_TRUST_CALL_CONFIRM
+                )
+                if thread:
+                    element["text"] = {"type": "plain_text", "text": TRUST_THREAD_LABEL}
     head = {"type": "section", "text": {"type": "mrkdwn", "text": header}}
     first = blocks[0] if blocks else {}
     if "Tool approval requested" in str((first.get("text") or {}).get("text", "")):
@@ -410,6 +429,9 @@ async def relay(
         slack = surface.slack()
         if binding is None or slack is None or not await surface.outbound_permitted():
             return None
+        # A thread's room reading may have expired: read it now (bounded), so the
+        # synchronous gates below judge the room instead of refusing for want of one.
+        await thread_runtime.prime_room(binding)
         # The lineage again past those awaits (an adoption rewrites _created_by):
         # never post one session's call into another creator's channel.
         if str(getattr(slot, "_created_by", "") or "") != creator or not created_by(slot, creator):
@@ -432,6 +454,9 @@ async def relay(
         worker_title = _worker_title(slot)
         header = HEADER.format(title=worker_title)
         rid = str(request_id)
+        thread = thread_runtime.is_thread(binding)
+        if thread:
+            header = thread_runtime.thread_words(header)
         ts = await slack.post_blocks(
             binding.channel_id,
             _blocks(
@@ -442,13 +467,24 @@ async def relay(
                 mcp_server_name=mcp_server_name,
                 tool_name=tool_name,
                 mcp_identity_trusted=mcp_identity_trusted,
+                thread=thread,
             ),
-            FALLBACK.format(title=worker_title),
-            None,
+            thread_runtime.say(binding, FALLBACK.format(title=worker_title)),
+            # Where the conductor's own replies go: into the thread, never the channel.
+            thread_runtime.post_thread_ts(binding),
         )
         if not ts:
             return None
-        card = WorkerCard(binding.channel_id, str(ts), slot.key, session_key, rid, future, header)
+        card = WorkerCard(
+            binding.channel_id,
+            str(ts),
+            slot.key,
+            session_key,
+            rid,
+            future,
+            header,
+            room=thread_runtime.room_id(binding),
+        )
         _cards[f"{card.channel}:{card.ts}"] = card
         _audit(
             "allowed",
@@ -534,13 +570,15 @@ async def finish(
 
 
 async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
-    """Approve / Reject / Trust this channel on a worker's card; False when the gate is shut."""
-    if not code_channels_on(live_config(orch)):
+    """Approve / Reject / Trust this channel (or thread) on a worker's card; False when the gate is shut."""
+    cfg = live_config(orch)
+    if not thread_runtime.any_runtime_on(cfg):
         return False
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.slack.code_channels.approval_picker import (
         _ephemeral,
         _ids,
+        _sync_gates,
         authorize,
         current_mode,
         set_channel_mode,
@@ -554,10 +592,22 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", f"{resources} team_id={team}", "enterprise_origin_mismatch")
         return True
     card = _cards.get(f"{channel}:{msg_ts}")
-    binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
     state = surface.dashboard_state()
     worker = state.get_slot(card.worker_key) if card is not None and state is not None else None
     live_binding = await channel_of_worker(state, worker) if worker is not None else None
+    # The binding the card answers for: the worker's own conductor thread for a
+    # thread's card (a thread's channel has no channel binding), else the code
+    # channel's stored binding as before.
+    not_live = (
+        thread_runtime.say(live_binding, NOT_LIVE_TEXT)
+        if live_binding is not None
+        else NOT_LIVE_TEXT
+    )
+    binding: Binding | None
+    if live_binding is not None and thread_runtime.is_thread(live_binding):
+        binding = live_binding
+    else:
+        binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
     if (
         card is None
         or binding is None
@@ -565,33 +615,57 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         or worker is None
         or live_binding is None
         or live_binding.channel_id != channel
+        # A card answers only for the room it was posted for: a thread's card
+        # never acts for another thread (or the channel) of the same channel.
+        or (card.room and card.room != thread_runtime.room_id(live_binding))
         or effective_session_key(worker) != card.session_key
         or card.future.done()
     ):
         _audit("denied", resources, "not a live worker approval card here")
-        await _ephemeral(channel, user, NOT_LIVE_TEXT)
+        await _ephemeral(channel, user, not_live)
         return True
+    if not thread_runtime.room_runtime_on(binding, cfg):
+        return False  # this room's own switch is off: not ours to answer
     resources += f" worker={card.worker_key} request={card.request_id}"
+    await thread_runtime.prime_room(binding)
     from kiro_crew.slack.code_channels.approval_picker import _channel_open
     from kiro_crew.slack.code_channels.binding import channel_session
 
     channel_slot_seen = channel_session(state, binding)
-    refusal = await authorize(orch, binding, user, team, resources)
+    # The channel's opener answers Approve / Reject like the owner; Trust this
+    # channel changes the channel's mode, which stays the owner's.
+    admit_opener = action_id != TRUST_ACTION_ID
+    refusal = await authorize(orch, binding, user, team, resources, admit_opener=admit_opener)
     if refusal is not None:
         await _ephemeral(channel, user, refusal)
         return True
     # authorize() awaited: an Archive, a toggle-off or a replaced channel
     # session may have landed meanwhile, so the answer is checked again here,
     # with nothing awaited before it is given.
-    from kiro_crew.slack.code_channels import agent_picker
+    from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
+    from kiro_crew.slack.handler import is_owner
 
+    # The opener is judged on the binding stored NOW (never the one read before the
+    # awaits): one dropped, revoked, archived or rebound meanwhile admits nobody.
+    # A Conductor thread has no opener (it is the owner's alone), so it reads none.
+    current = None if thread_runtime.is_thread(binding) else store().get_binding(channel)
+    opener_ok = (
+        admit_opener
+        and current is not None
+        and current.session_key == binding.session_key
+        and not current.archived_at
+        and opener_admitted(current, user)
+    )
     if (
         not _channel_open(binding, orch)
+        # Still the owner or (Approve / Reject) the channel's opener, asked again
+        # here: a person removed from shared access during the awaits answers nothing.
+        or not (is_owner(user) or opener_ok)
         # An answer that runs something (Approve, Trust) re-runs the owner
         # gates; a Reject only takes it away.
         or (
             action_id != REJECT_ACTION_ID
-            and not agent_picker._sync_gates(orch, binding, user, team)
+            and not _sync_gates(orch, binding, user, team, admit_opener=admit_opener)
         )
         # The per-channel policy holds for a Reject too: nothing is answered
         # from a channel it refuses (the prompt keeps waiting in the dashboard).
@@ -603,7 +677,7 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         or not created_by(worker, getattr(channel_slot_seen, "key", ""))
     ):
         _audit("denied", resources, "not a live worker approval card here")
-        await _ephemeral(channel, user, NOT_LIVE_TEXT)
+        await _ephemeral(channel, user, not_live)
         return True
     line = APPROVED_BY if action_id == APPROVE_ACTION_ID else REJECTED_BY
     if action_id == TRUST_ACTION_ID:
@@ -639,7 +713,7 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         # between this check and the resolve below).
         if not card.future.done() and not (
             _channel_open(binding, orch)
-            and agent_picker._sync_gates(orch, binding, user, team)
+            and _sync_gates(orch, binding, user, team)
             and channel_session(state, binding) is channel_slot_seen
             # Still on Trust: a revoke during the awaits after the grant
             # committed approves nothing by hand.
@@ -647,7 +721,7 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
             and created_by(worker, getattr(channel_slot_seen, "key", ""))
         ):
             _audit("denied", resources, "not a live worker approval card here")
-            await _ephemeral(channel, user, NOT_LIVE_TEXT)
+            await _ephemeral(channel, user, not_live)
             return True
         # The worker's own Trust sweep may have approved this very call: that
         # is this click's answer. Answered any other way meanwhile, the card
@@ -655,9 +729,9 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         swept_here = f"{channel}:{msg_ts}" in outcome.trusted_cards
         if not swept_here and card.future.done():
             _audit("denied", resources, "already answered")
-            await _ephemeral(channel, user, NOT_LIVE_TEXT)
+            await _ephemeral(channel, user, not_live)
             return True
-        line = TRUSTED_BY
+        line = thread_runtime.say(binding, TRUSTED_BY)
     else:
         swept_here = False
     approved = action_id != REJECT_ACTION_ID
@@ -675,7 +749,7 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not resolved:
         card.clicked = False
         _audit("denied", resources, "already answered")
-        await _ephemeral(channel, user, NOT_LIVE_TEXT)
+        await _ephemeral(channel, user, not_live)
         return True
     card.answered = True
     _audit("allowed", f"{resources} result={'approved' if approved else 'rejected'}")

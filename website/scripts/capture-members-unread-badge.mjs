@@ -80,13 +80,13 @@ await page.goto(base + '/members')
 
 // 01 — the badge the user reported: 1 unread member thread, roster visible,
 // and the flagged member's row carries the unread dot saying WHICH member.
-const badge = page.locator('[aria-label="1 unread member threads"]')
+const badge = page.locator('[aria-label="1 unread member thread"]')
 await badge.waitFor({ state: 'visible', timeout: 15000 })
 await page.getByText('Rotation summary posted.').waitFor({ timeout: 15000 })
 const rosterDot = page.locator('[data-testid="member-unread-dot"]')
 await rosterDot.waitFor({ state: 'visible', timeout: 15000 })
 await page.screenshot({ path: `${OUT}/01-badge-stuck.png` })
-console.log('01-badge-stuck: rail badge = 1 unread member threads, roster dot visible')
+console.log('01-badge-stuck: rail badge = 1 unread member thread, roster dot visible')
 
 // 02 — open the thread. Mounting it IS reading it: the badge must drain.
 await page.getByText('oncall', { exact: true }).first().click()

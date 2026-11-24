@@ -117,7 +117,9 @@ is low by the existing `TempHeadroom.low` rule (`TEMP_FREE_PCT_WARN = 10.0`,
    `ITEM_PULLS_PER_HOUR = 12` tick pull-forwards (`conductor_wake.py`) and
    `MAX_WAKES_PER_ITEM_PER_HOUR = 12` wakes (`ledger_wake.py`). So a posture
    that flaps at a threshold cannot wake a conductor more than 12 times an hour,
-   and it never spends a real item's budget.
+   and it never spends a real item's budget. At the 300 s patrol tick
+   (`PATROL_INTERVAL_SECS`, `conductor_patrol.py`) 12 an hour is one wake per
+   tick, so the cap bounds a flap's cost but does not by itself quiet it.
 
 ## 3. CPU in the host posture
 
@@ -241,16 +243,33 @@ Rules:
 - The step is measured from the reading **at the last posture wake**, not from
   the threshold. So a host that falls 1 GB, triggers a re-wake, then falls one
   more GB, triggers a second one.
-- A recovery inside the same level (memory rising again) **wakes nobody**. It
-  resets the reference to the new, better reading, so the next decline is
-  measured from there.
+- A recovery inside the same level (memory rising again) **wakes nobody** and
+  leaves the reference where it is, so the next decline is still measured from
+  the reading at the last posture wake. An input that is not at the current
+  level (memory while the host is `tight` on disk alone) follows its reading
+  down only. So one input that recovers and falls back inside a level re-wakes
+  nobody, however large the swing, until the other input steps: a step makes
+  the whole reading the next reference.
+
+  *Amended for [#41354](https://github.com/kirodotdev/KiroCrew/issues/41354),
+  taking effect with the approving review of the pull request that carries
+  it.* This rule first said a recovery resets the reference to the new, better
+  reading. The hourly budget (§2.2) is one wake per 300 s patrol tick, so a
+  host whose free memory recovered and fell back by one step between ticks woke
+  a conductor with nothing open on almost every tick. The rule now matches the
+  first rule above and the dedupe rule below. The cost: after a recovery, even
+  a long one the conductor saw in its own turns' resource line, a fall back
+  that stays above one step below the last wake wakes nobody until the level
+  changes. With the defaults that is at most one memory step per `tight`
+  period. Raising the reference only after a recovery has held for 600 s was
+  rejected, because a swing slower than that still re-wakes on every cycle.
 - A level change still wakes as in #39289, and resets the reference.
 - Dedupe uses the same seen-token mechanism as #39289. The token carries the
-  level and the reading it woke at, rounded to the step (for example
-  `posture:tight:mem2.9`), and replaces the previous posture token as the
-  level token does today. That stored reading is the reference for the next
-  step, so a gateway restart or a repeated tick cannot re-wake for a reading
-  already reported.
+  level, the level period, a count of its steps and the reading it woke at
+  (for example `worse:tight:<start>.<period>:1:mem2.9:disk-`), and replaces
+  the previous step token as the level token does. That stored reading is the
+  reference for the next step, so a gateway restart or a repeated tick cannot
+  re-wake for a reading already reported.
 - The wake text says what moved: `[work-ledger wake] host posture still tight
   and worse (memory 2.9 GB free, was 4.0 GB at the last wake)`.
 
@@ -573,8 +592,10 @@ Re-wakes (§4):
 
 6. Tight at 4.0 GB wakes once; 3.5 GB wakes nobody; 3.0 GB wakes once; 3.0 GB
    again wakes nobody.
-7. Recovery to 3.8 GB inside `tight` wakes nobody, and a fall to 2.8 GB then
-   wakes once (measured from 3.8 GB).
+7. After a step to 3.0 GB, a recovery to 3.8 GB and a fall back to 2.8 GB
+   inside `tight`, repeated, wake nobody; a fall to 2.0 GB at the same level
+   then wakes once (measured from 3.0 GB), and so does the change to
+   `critical`. (Amended for #41354.)
 8. Under `critical`, the step is 0.5 GB.
 9. Disk re-wake at each 2-point drop inside `tight`.
 10. A worker crossing 25% of RAM on an ample host wakes once, not again at 26%,

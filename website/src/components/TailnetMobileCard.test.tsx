@@ -578,6 +578,7 @@ describe('TailnetMobileCard — mutating actions', () => {
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    expect(mockApi.restartGateway.mock.calls).toEqual([[{ keepTab: true }]])
   })
 
   it('migrates an already-ready user to persistent access before showing a QR', async () => {
@@ -622,6 +623,7 @@ describe('TailnetMobileCard — mutating actions', () => {
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    expect(mockApi.restartGateway.mock.calls).toEqual([[{ keepTab: true }]])
   })
 
   it('labels the full operation as phone access setup while it is running', async () => {
@@ -738,6 +740,16 @@ describe('TailnetMobileCard — terminal steps', () => {
     await mount(data({ step: 'enable_magicdns' }))
     const link = screen.getByRole('link', { name: /Open Tailscale DNS settings/ })
     expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/dns')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('sends a device waiting for approval to the admin console, not to a new sign-in', async () => {
+    await mount(data({ step: 'approve_device' }))
+
+    expect(screen.getByText('Waiting for device approval')).toBeInTheDocument()
+    expect(screen.queryByText('Sign in to Tailscale')).toBeNull()
+    const link = screen.getByRole('link', { name: 'Open Tailscale machines' })
+    expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/machines')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 

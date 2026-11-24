@@ -1114,7 +1114,7 @@ def push_refresh(self: DashboardState, *kinds: str) -> None:
     client guessing on a timer.
 
     Supported kinds: ``crons``, ``lessons``, ``agents``, ``history``,
-    ``turn_end``, ``taskrunner``.
+    ``turn_end``, ``taskrunner``, ``mcp_servers``.
 
     A lone ``turn_end`` goes through ``refresh_coalesce``, at most one frame per window.
     """

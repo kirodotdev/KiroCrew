@@ -6,6 +6,8 @@ What these tests pin (RFC "Crewmate heartbeat"):
   the default 60-minute interval;
 * the interval is one of 30, 60, 120 or 240 minutes, and its cron
   expression follows the clock's marks;
+* optional active hours narrow that expression's hours, and the whole day
+  (the default) leaves it as it was;
 * the switch keeps exactly one gateway schedule of its own, hidden from the
   Schedule page and replaced when the interval changes;
 * only the owner's route and an applied card write it: the crewmate's
@@ -37,7 +39,7 @@ from member_goals_helpers import (  # noqa: F401 -- the autouse fixtures registe
     _thread,
 )
 
-from kiro_crew import member_goals
+from kiro_crew import member_goals, member_goals_hours
 from kiro_crew.dashboard import goal_reminder, mate_welcome
 from kiro_crew.dashboard import session_directive_apply as directive_apply
 
@@ -109,7 +111,116 @@ def test_each_interval_has_its_cron_expression(interval: int, expr: str) -> None
 
 
 def test_every_interval_has_an_expression() -> None:
-    assert set(goal_reminder._HEARTBEAT_EXPRS) == set(member_goals.HEARTBEAT_INTERVALS)
+    assert set(goal_reminder._HEARTBEAT_FIELDS) == set(member_goals.HEARTBEAT_INTERVALS)
+
+
+@pytest.mark.parametrize(
+    ("interval", "hours", "expr"),
+    [
+        (30, (8, 20), "*/30 8-19 * * *"),
+        (60, (8, 20), "0 8-19 * * *"),
+        (120, (9, 20), "0 9-19/2 * * *"),
+        (240, (8, 9), "0 8-8/4 * * *"),
+    ],
+)
+def test_active_hours_narrow_the_heartbeats_hours(
+    interval: int, hours: tuple[int, int], expr: str
+) -> None:
+    sched = {
+        **member_goals.default_schedules(),
+        "interval": interval,
+        "active_from": hours[0],
+        "active_to": hours[1],
+    }
+    assert goal_reminder.cron_expr_for(member_goals.CADENCE_HEARTBEAT, sched) == expr
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"active_from": 20, "active_to": 8},
+        {"active_from": 8, "active_to": 8},
+        {"active_to": 0},
+        {"active_from": 24},
+        {"active_from": True},
+        {"active_to": "20"},
+        {"active_from": 8.0},
+    ],
+)
+def test_active_hours_that_make_no_window_are_refused(changes: dict[str, Any]) -> None:
+    _seed()
+    slug = _slug(ORDINARY)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    with pytest.raises(member_goals.GoalError) as exc:
+        member_goals.set_schedules(slug, ORDINARY, changes)
+    assert exc.value.code == "invalid_active_hours"
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["active_from"], sched["active_to"]) == member_goals_hours.ACTIVE_HOURS_ALL_DAY
+
+
+def test_the_daily_bound_counts_only_the_wakes_inside_the_window() -> None:
+    """One number everywhere: the card's bound is the one its schedule fires."""
+    from kiro_crew import change_card_catalog_plans as plans
+
+    assert [member_goals.wakes_per_day(m) for m in member_goals.HEARTBEAT_INTERVALS] == [
+        48,
+        24,
+        12,
+        6,
+    ]
+    assert member_goals.wakes_per_day(60, [8, 20]) == 12
+    assert member_goals.wakes_per_day(30, [8, 20]) == 24
+    # A window whose hours do not divide by the interval still names every wake.
+    assert member_goals.wakes_per_day(120, [9, 20]) == 6
+    # Anything that is not a window is the whole day.
+    for hours in (None, [20, 8], [0, 24], (8,), "8-20"):
+        assert member_goals.wakes_per_day(60, hours) == 24
+    assert plans._check_in_value("interval", 60, [8, 20]) == "Every 1 hr (up to 12 runs a day)"
+    assert plans._check_in_value("interval", 60) == "Every 1 hr (up to 24 runs a day)"
+
+
+def test_the_window_is_no_conflict_for_a_check_ins_card() -> None:
+    """The card reads the window for its bound; moving it is not a card conflict.
+
+    An Apply or an Undo compares the whole snapshot, so a window the user moved
+    on the Schedules tab meanwhile — a field this card cannot set — would refuse
+    the card for good, and a card stored before the window existed would never
+    undo.
+    """
+    from kiro_crew import change_card_catalog as cards
+    from kiro_crew.dashboard import change_cards_readers as readers
+
+    kind = cards.KIND_CREWMATE_CHECK_INS
+    shown = {"slug": "scout", "schedules": {"heartbeat": True, "interval": 60}}
+    assert not readers.undo_snapshot_changed(
+        kind, {**shown, "heartbeat_hours": [8, 20]}, {**shown, "heartbeat_hours": [0, 24]}
+    )
+    # A snapshot stored before the window existed carries no key at all.
+    assert not readers.undo_snapshot_changed(kind, {**shown, "heartbeat_hours": [8, 20]}, shown)
+    # A field the card does set is still a conflict.
+    assert readers.undo_snapshot_changed(
+        kind,
+        {**shown, "schedules": {"heartbeat": True, "interval": 120}},
+        {**shown, "heartbeat_hours": [8, 20]},
+    )
+
+
+def test_the_wake_prompt_names_the_window_only_when_there_is_one() -> None:
+    rec = member_goals.empty_record()
+    assert goal_reminder.active_hours_line(rec) == ""
+    rec["schedules"].update({"active_from": 8, "active_to": 20})
+    assert goal_reminder.active_hours_line(rec) == " between 08:00 and 20:00"
+
+
+def test_a_stored_window_that_is_not_one_reads_as_the_whole_day() -> None:
+    _seed()
+    slug = _slug(ORDINARY)
+    path = member_goals.member_goals_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"member": ORDINARY, "slug": slug, "schedules": {"active_from": 20, "active_to": 8}}
+    path.write_text(json.dumps(rec), encoding="utf-8")
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["active_from"], sched["active_to"]) == member_goals_hours.ACTIVE_HOURS_ALL_DAY
 
 
 # ── the owner's route and its schedule ──
@@ -139,6 +250,32 @@ def test_the_switch_keeps_one_schedule_replaced_when_its_interval_changes(tmp_pa
     )
     assert status == 200 and body["schedules"]["heartbeat"] is False
     assert _schedules(state, slug, "heartbeat") == []
+
+
+def test_the_route_keeps_the_heartbeat_inside_its_active_hours(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from kiro_crew.cron_service.schedule import compute_next_run_ts
+
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _reminder_state(tmp_path)
+    base = f"/api/members/{slug}/goals"
+    _owner(state, "PUT", base + "/long-term", {"member": ORDINARY, "long_term": "Ship"})
+    window = {"heartbeat": True, "timezone": "UTC", "active_from": 8, "active_to": 20}
+    status, body = _owner(state, "PUT", base + "/schedules", {"member": ORDINARY, **window})
+    assert status == 200, body
+    assert (body["schedules"]["active_from"], body["schedules"]["active_to"]) == (8, 20)
+    (job,) = _schedules(state, slug, "heartbeat")
+    assert job.schedule.cron_expr == "0 8-19 * * *"
+    late = datetime(2026, 11, 13, 23, 0, tzinfo=timezone.utc).timestamp()
+    morning = datetime(2026, 11, 14, 8, 0, tzinfo=timezone.utc).timestamp()
+    assert compute_next_run_ts(job, late) == morning
+    status, body = _owner(
+        state, "PUT", base + "/schedules", {"member": ORDINARY, "active_from": 21}
+    )
+    assert (status, body["code"]) == (400, "invalid_active_hours")
+    assert [j.id for j in _schedules(state, slug, "heartbeat")] == [job.id]
 
 
 def test_the_route_refuses_an_interval_outside_the_list(tmp_path: Path) -> None:

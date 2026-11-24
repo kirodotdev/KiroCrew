@@ -390,6 +390,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "with its own reason, and the card appears where it applies, so a card "
         "line would repeat what the refusal says"
     ),
+    "ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD": (
+        "whether the native-crew auto-approve rung may answer a request raised "
+        "while a sub-agent card is open. A non-member asks on the usual approval "
+        "card, so a card line would only say a sub-agent's call may ask once more"
+    ),
     "ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED": (
         "whether a deny-rule refusal on the shared runtime may become an override "
         "card. A non-member keeps today's refusal, which the person already meets "
@@ -400,6 +405,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which advertised model vocabulary the picker sends. A wrong membership "
         "accepts a write that leaves the model unchanged, so it is a defect rather "
         "than a missing feature a user would choose a harness by"
+    ),
+    "ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY": (
+        "whether a custom agent's session/new array gets Crew's own servers, as Crew's "
+        "default agent's does on every array host (the Crew-tools line). A non-member "
+        "runs that spec as written, a parity gap the agent-host contract names per "
+        "harness rather than a feature anyone picks a harness by"
     ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
@@ -724,6 +735,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "line, and a wrong membership is a defect, not a feature a card could mark: a "
         "hidden switch, or a write to another harness's option of the same id"
     ),
+    "ACP_BACKENDS_APPROVE_FOR_ME": (
+        "whether a session may opt into its engine approving tool calls on its own. "
+        "The approval-mode picker offers it only on a member and only where the "
+        "approval_modes policy names it, and the picker row itself says what it "
+        "gives up, so a card line would repeat it"
+    ),
     "ACP_BACKENDS_FAST_MODE_CONFIG_OPTION": (
         "whether the session's advertised Fast mode switch is read and written. The "
         "switch shows only while the adapter advertises it, so a member needs no card "
@@ -864,7 +881,9 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "client) reaches the engine. The Connections page already says it where "
         "it matters, on each pre-registered provider's card, and the answer "
         "covers only those providers: a server that registers its own client "
-        "signs in on every backend that serves remote MCP at all"
+        "signs in on every backend that serves remote MCP at all. KAS from "
+        "0.66.104 takes a public client but withholds a confidential one, and "
+        "every pre-registered provider is confidential, so KAS is not a member"
     ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
         "whether the drain after session/new folds only the frames already "

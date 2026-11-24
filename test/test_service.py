@@ -434,6 +434,29 @@ class TestLinuxUnitRendering:
         assert ["sudo", "systemctl", "enable", f"{SERVICE_NAME}.service"] in called
         assert ["sudo", "systemctl", "restart", f"{SERVICE_NAME}.service"] in called
 
+    def test_install_clears_the_start_limit_before_the_restart(self, monkeypatch):
+        """A unit that just crash-looped (203/EXEC after an update) has spent
+        `StartLimitBurst`; the install that repairs it must reset that first, or
+        its restart fails with "Start request repeated too quickly"."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", Path(f"/etc/systemd/system/{SERVICE_NAME}.service"))
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ), patch("kiro_crew.service.linux.subprocess.run", return_value=ok) as run:
+            svc_linux.install()
+
+        called = [list(c.args[0]) for c in run.call_args_list]
+        reset = ["sudo", "systemctl", "reset-failed", f"{SERVICE_NAME}.service"]
+        restart = ["sudo", "systemctl", "restart", f"{SERVICE_NAME}.service"]
+        assert reset in called
+        assert called.index(reset) < called.index(restart)
+
     def test_install_raises_with_clear_error_when_sudo_install_fails(
         self, monkeypatch
     ):
@@ -602,7 +625,8 @@ class TestLinuxUnitRendering:
 
         privileged = self._linger_host(monkeypatch, linger=linger)
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
-        monkeypatch.setattr(svc_linux, "install", lambda: apparmor.ProfileOutcome(False, ""))
+        monkeypatch.setattr(svc_linux, "install", lambda **_kw: apparmor.ProfileOutcome(False, ""))
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
         assert controller.install_service() == 0
         assert privileged == [("/usr/bin/loginctl", "enable-linger", "1000")]
         out = capsys.readouterr().out

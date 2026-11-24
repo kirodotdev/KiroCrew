@@ -475,6 +475,23 @@ def moved_from_agents() -> frozenset[str]:
     )
 
 
+def _unsafe_row(name: object, member_id: str) -> bool:
+    """Whether row *name* or its *member_id* is not one path component; logs a warning.
+
+    Both become file names (``mates/agents/<name>.json``, the member directory), so a
+    stored row that names a path is left alone. The row's values are not logged.
+    """
+    from kiro_crew.members import is_single_path_component
+
+    if is_single_path_component(name) and (not member_id or is_single_path_component(member_id)):
+        return False
+    logger.warning(
+        "crewmate migration: row %r skipped: its name or member_id is not a single path component",
+        str(name)[:40],
+    )
+    return True
+
+
 def _mint_candidates(cfg: KiroCrewConfig) -> set[str]:
     """The used rows with no ``member_id`` that move once given an identity. Reads only.
 
@@ -497,6 +514,8 @@ def _mint_candidates(cfg: KiroCrewConfig) -> set[str]:
         return out
     for name, binding in cfg.agents.items():
         if name in ("default", getattr(cfg, "default_agent", "")):
+            continue
+        if _unsafe_row(name, ""):
             continue
         if str(getattr(binding, "member_id", "") or "").strip():
             continue
@@ -580,6 +599,8 @@ def _candidates(
         if name == "default":
             continue
         member_id = str(getattr(binding, "member_id", "") or "").strip()
+        if _unsafe_row(name, member_id):
+            continue
         if not member_id and name not in minting:
             logger.debug("crewmate migration: %r has no member id; not a crewmate", name)
             continue
@@ -1257,12 +1278,14 @@ def migrate_existing_crewmates(
     del work_dir
     report = MigrationReport()
     repair_partial_platform_servers()
+    from kiro_crew.mate_held_rescope import rescope_held_limits
     from kiro_crew.mate_mount_repair import restore_withheld_mounts
     from kiro_crew.mate_policy_repair import restore_dropped_policy
 
     # Before the moves, so only a Bot an earlier start moved is read.
     restore_withheld_mounts(cfg)
     restore_dropped_policy(cfg)
+    rescope_held_limits()
     try:
         cfg = cfg or KiroCrewConfig.load()
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)

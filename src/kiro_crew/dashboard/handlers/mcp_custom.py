@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _get_kirocrew_entry,
     _get_mcp_lock,
     _is_valid_mcp_name,
+    _mark_live_sessions,
     _replace_kirocrew_spec,
 )
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
@@ -177,6 +178,63 @@ def _validate_spec(spec: object, carried_keys: frozenset[str] = frozenset()) -> 
     return None
 
 
+def _update_carried(existing: dict) -> dict:
+    """The fields of stored entry *existing* that a PUT keeps as they are.
+
+    ``headers`` is in the editable allowlist for entries WITHOUT stored values,
+    but once values exist on disk they are carried: reads redact them, so an
+    editable headers key would let the redaction markers overwrite the real
+    credentials on save.  An EMPTY stored map carries no credential, so it does
+    not join the carried set — the entry stays header-authorable.
+    """
+    return {
+        k: v
+        for k, v in existing.items()
+        if (k not in _ALLOWED_SPEC_KEYS or (k == "headers" and v))
+        and k != "disabled"
+        and k != MARKER_KEY
+        and k not in (KIRO_SCOPES_KEY, KIRO_OAUTH_KEY)
+    }
+
+
+def _update_refusal(submitted: object, existing: dict) -> tuple[str, str] | None:
+    """Why a PUT of *submitted* over stored entry *existing* is refused, or None.
+
+    Returns ``(message, code)``. Covers the spec's shape, a carried field other
+    than ``headers`` sent with a different value, and a ``url`` change while
+    header credentials are stored; the stored header values themselves are judged
+    by the PUT. The ``mcp.server`` change card
+    (``change_card_mcp_server.build_preview``) asks this too, so a card the person
+    approves does not fail on Apply.
+    """
+    carried = _update_carried(existing)
+    err = _validate_spec(
+        submitted, frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY, MARKER_KEY}
+    )
+    if err:
+        return err, "invalid_spec"
+    assert isinstance(submitted, dict)  # narrowed by _validate_spec
+    for key, on_disk in carried.items():
+        if key != "headers" and key in submitted and submitted[key] != on_disk:
+            return (
+                f"'{key}' is managed by other flows and cannot be edited here — revert it to save",
+                "managed_field_not_editable",
+            )
+    # A headers map is scoped to the HOST it was typed for. The PUT puts the
+    # on-disk credential back verbatim, so accepting a url change would silently
+    # re-point that credential at a different origin — the next probe would send
+    # it there. Dropping costs a re-auth; forwarding a secret cannot be undone.
+    if "headers" in carried and submitted.get("url", "") != existing.get("url", ""):
+        return (
+            "cannot change 'url' while stored header credentials"
+            " exist — they were issued for the current URL. Remove"
+            " this server and re-add it with the new URL and fresh"
+            " headers.",
+            "url_change_with_stored_headers",
+        )
+    return None
+
+
 def _clean_spec(spec: dict) -> dict:
     """Normalized copy of a validated spec (drops empty optionals)."""
     out: dict = {}
@@ -315,13 +373,41 @@ def _resolve_oauth_hints(spec: dict, submitted: dict, existing: dict) -> str | N
     return None
 
 
+def _build_update_spec(
+    submitted: object, existing: dict
+) -> tuple[dict | None, tuple[str, str] | None]:
+    """Build the spec a PUT stores, or its refusal, shared with the card preview."""
+    refusal = _update_refusal(submitted, existing)
+    if refusal:
+        return None, refusal
+    assert isinstance(submitted, dict)  # narrowed by _validate_spec
+    carried = _update_carried(existing)
+    replaced_headers: dict[str, str] | None = None
+    on_disk = carried.get("headers")
+    if on_disk is not None and "headers" in submitted:
+        if submitted["headers"] != redact_mcp_headers(on_disk):
+            replaced_headers, header_refusal = _merge_stored_headers(on_disk, submitted["headers"])
+            if replaced_headers is None:
+                return None, (header_refusal, "stored_headers_not_editable")
+    spec = _clean_spec(submitted)
+    spec.update(carried)  # preserved verbatim, never dropped
+    if replaced_headers is not None:
+        spec["headers"] = replaced_headers
+    oauth_err = _resolve_oauth_hints(spec, submitted, existing)
+    if oauth_err:
+        return None, (oauth_err, "oauth_field_not_editable")
+    return spec, None
+
+
 def _load_kirocrew_config_strict() -> dict | None:
     """Load ``<data home>/mcp.json`` distinguishing MISSING from BROKEN.
 
     Returns ``{}`` when the file doesn't exist (a fresh add is fine), the
     parsed object when it's valid, and ``None`` when the file exists but
-    is malformed or unreadable.  The batch-add path must refuse to write
-    in the None case: the lenient ``_load_json_or_empty`` coerces a broken
+    is malformed.  A file that exists but cannot be read (held by another
+    program, no permission) raises its ``OSError``: it may be valid, so the
+    caller must not call it malformed.  The batch-add path must refuse to
+    write in both cases: the lenient ``_load_json_or_empty`` coerces a broken
     file to ``{}``, and the subsequent atomic write would then silently
     replace EVERY configured server with just the new batch while reporting
     success.
@@ -330,7 +416,7 @@ def _load_kirocrew_config_strict() -> dict | None:
         text = _mcp._kirocrew_mcp_json().read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    except (OSError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return None
     try:
         data = loads_user_json(text)
@@ -396,23 +482,16 @@ def _tell_running_sessions(request: web.Request, names: list[str]) -> None:
     """Reach each running session with a change to *names*, without restarting any.
 
     A session that applies an MCP change at its next turn (KAS re-injects its
-    projection, Strands relaunches) is marked for it, as the sibling writers do
-    (``connections_custom_oauth._mark_live_sessions_for_new_bridge``); kiro-cli
-    watches its agent file. Every other
-    session lists the servers in its MCP report's ``restart_to_load`` with one
+    projection, Strands relaunches) is marked for it, as the MCP Servers routes do
+    (``mcp_agent_sync._mark_live_sessions``); kiro-cli watches its agent file. Every
+    other session lists the servers in its MCP report's ``restart_to_load`` with one
     notice row in its chat. Best effort: the write already landed.
     """
     # Body-scope import: the chat runner is the only import path of its owners,
     # and importing it at module scope from a handler would close a cycle.
     from kiro_crew.dashboard.chat_runner import notice_mcp_restart_to_load
-    from kiro_crew.dashboard.handlers.connections_custom_oauth import (
-        _mark_live_sessions_for_new_bridge,
-    )
 
-    try:
-        _mark_live_sessions_for_new_bridge(request.app)
-    except Exception:  # noqa: BLE001 -- the write itself already landed
-        logger.warning("could not mark live sessions for %s", names, exc_info=True)
+    _mark_live_sessions(request)
     try:
         notice_mcp_restart_to_load(request.app["state"], names)
     except Exception:  # noqa: BLE001 -- the write itself already landed
@@ -488,7 +567,17 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         # destroy every configured server "successfully").  The read and the
         # collision scan below are blocking file IO, so like the write they
         # run in a worker thread while the lock is held.
-        data = await asyncio.to_thread(_load_kirocrew_config_strict)
+        try:
+            data = await asyncio.to_thread(_load_kirocrew_config_strict)
+        except OSError:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="mcp_custom_add",
+                outcome="error",
+                source="dashboard",
+                resources="mcp.json unreadable — write refused",
+            )
+            return _mcp._mcp_config_unreadable("the Kiro Crew mcp.json")
         if data is None:
             sel().log_api_access(
                 caller="dashboard",
@@ -631,70 +720,11 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
             # external scope this endpoint deliberately does not mutate.
             return web.json_response({"error": f"server '{name}' not found"}, status=404)
 
-        carried = {
-            k: v
-            for k, v in existing.items()
-            # ``headers`` is in the editable allowlist for entries WITHOUT
-            # stored values, but once values exist on disk they are carried:
-            # reads redact them, so an editable headers key would let the
-            # redaction markers overwrite the real credentials on save.  An
-            # EMPTY stored map carries no credential, so it does not join the
-            # carried set — the entry stays header-authorable.
-            if (k not in _ALLOWED_SPEC_KEYS or (k == "headers" and v))
-            and k != "disabled"
-            and k != MARKER_KEY
-            and k not in (KIRO_SCOPES_KEY, KIRO_OAUTH_KEY)
-        }
-        err = _validate_spec(
-            submitted, frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY, MARKER_KEY}
-        )
-        if err:
-            return web.json_response({"error": err}, status=400)
-        assert isinstance(submitted, dict)  # narrowed by _validate_spec
-        replaced_headers: dict[str, str] | None = None
-        for key, on_disk in carried.items():
-            visible_value = redact_mcp_headers(on_disk) if key == "headers" else on_disk
-            if key in submitted and submitted[key] != visible_value:
-                if key == "headers":
-                    replaced_headers, refusal = _merge_stored_headers(on_disk, submitted[key])
-                    if replaced_headers is not None:
-                        continue
-                    return web.json_response(
-                        {"error": refusal, "code": "stored_headers_not_editable"},
-                        status=400,
-                    )
-                return web.json_response(
-                    {
-                        "error": f"'{key}' is managed by other flows and cannot be"
-                        " edited here — revert it to save"
-                    },
-                    status=400,
-                )
-        # A headers map is scoped to the HOST it was typed for. The carried-key
-        # restore below puts the on-disk credential back verbatim, so accepting
-        # a url change here would silently re-point that credential at a
-        # different origin — the next probe would send it there. Dropping costs
-        # a re-auth; forwarding a secret cannot be undone.
-        if "headers" in carried and submitted.get("url", "") != existing.get("url", ""):
-            return web.json_response(
-                {
-                    "error": "cannot change 'url' while stored header credentials"
-                    " exist — they were issued for the current URL. Remove"
-                    " this server and re-add it with the new URL and fresh"
-                    " headers.",
-                    "code": "url_change_with_stored_headers",
-                },
-                status=400,
-            )
-        spec = _clean_spec(submitted)
-        spec.update(carried)  # preserved verbatim, never dropped
-        if replaced_headers is not None:
-            spec["headers"] = replaced_headers
-        _oauth_err = _resolve_oauth_hints(spec, submitted, existing)
-        if _oauth_err:
-            return web.json_response(
-                {"error": _oauth_err, "code": "oauth_field_not_editable"}, status=400
-            )
+        spec, refusal = _build_update_spec(submitted, existing)
+        if refusal:
+            err, code = refusal
+            return web.json_response({"error": err, "code": code}, status=400)
+        assert spec is not None  # a successful build always returns a spec
         # Same offload rationale as the add path: the store write is blocking
         # file IO (owner-only lockdown included, in-process on Windows).
         replaced = await _mcp._offload_config_write(_replace_kirocrew_spec, name, spec)

@@ -365,7 +365,7 @@ def _hook_fire_block() -> str:
         if turn_file.name != "__init__.py"
     )
     start = text.index('logger.info("Hook %s stdout: %s", r.hook_name, r.stdout[:200])')
-    end = text.index('logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[', start)
+    end = text.index('logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)', start)
     return text[start : text.index("\n", end)]
 
 
@@ -380,8 +380,7 @@ def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
     # BLOCKED payload + warning log
     assert block.count("r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else") == 2
     assert block.count("r.stderr[:100] if r.stderr else") == 1  # BLOCKED activity event
-    assert "r.stderr[-200:] if r.stderr else" in block  # fail-closed crash detail
-    assert block.rstrip().endswith("r.stderr[-200:])")  # non-gating crash warning
+    assert "r.stderr[-200:] if r.stderr else" in block  # crash detail: fail-closed + warning
     assert "r.stderr[:200])" not in block
 
 

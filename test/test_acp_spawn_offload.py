@@ -1389,6 +1389,9 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         backend = SimpleNamespace(
             create_windows_cleanup_owned_process=with_fake_process,
             finish_windows_cleanup_owned_spawn=with_fake_process,
+            # Not Linux: the fake tree has no sessions, so the teardown's
+            # session-leftover read stays off the host's /proc.
+            IS_LINUX=False,
             IS_POSIX=not windows,
             IS_WINDOWS=windows,
             terminate_windows_asyncio_tree=terminate_windows_tree,

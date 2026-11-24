@@ -7,6 +7,7 @@ import { SettingsCard, SettingsSection } from '../../components/settings'
 import { tipActionRoute } from '../../components/TipCard'
 import { Btn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
+import { localizedTip } from '../../utils/curatedTips'
 
 /**
  * Settings → Chat → Discovery: every curated tip, dismissed ones included, so a
@@ -29,7 +30,8 @@ export function FeatureTipsList() {
     <SettingsSection title={i18nT('pages.settings.featureTipsList.title')} hint={i18nT('pages.settings.featureTipsList.hint')} collapsible>
       <SettingsCard>
         <ul data-testid="feature-tips-list" className="list-none m-0 p-0 flex flex-col gap-2.5">
-          {tips.map(tip => {
+          {tips.map(served => {
+            const tip = localizedTip(served)
             const route = tipActionRoute(tip.action)
             return (
               // Wraps the button under the text on a narrow pane rather than squeezing the text.

@@ -526,7 +526,7 @@ def apply_job_update(
     # Cross-field: only a persistent job has a job-wide tab to file,
     # so a request that itself names a folder for a job this update
     # leaves stateless is refused. Turning persistence off on a filed
-    # job is NOT refused: MCP/CLI ``cron_update`` exposes
+    # job is NOT refused: CLI ``cron update`` exposes
     # ``persistent_session`` without ``chat_folder_id``, so a refusal
     # there would be a dead end; the assignment below clears the
     # folder instead and reports it through the transition sink.
@@ -893,19 +893,22 @@ def effective_job_approval_mode(approval_mode: str) -> str:
     return approval_mode
 
 
-def auto_job_approver(fallback: Any) -> Any:
+def auto_job_approver(fallback: Any, holds: Any = None) -> Any:
     """The approver an ``auto`` job's turn runs with: approve while ``auto`` holds.
 
     The turn's ``AUTO_APPROVE`` policy is fixed when it starts, so a deny that lands
     mid-turn is honoured here, per request: the call goes to *fallback* (the cron's
-    interactive approval) instead.
+    interactive approval) instead. *holds* answers whether ``auto`` still holds; by
+    default the policy check, and for a Bot's grant also the Bot's live Profile
+    (``owner_grant.fire_approval_mode``).
     """
+    still = holds if holds is not None else cron_job_auto_permitted
 
     async def _approve(event: Any) -> bool:
         from kiro_crew.mate_held_rules import call_is_held
 
         # A call under a Bot limit held for a person always reaches the card.
-        if cron_job_auto_permitted() and not call_is_held():
+        if still() and not call_is_held():
             return True
         return bool(await fallback(event))
 

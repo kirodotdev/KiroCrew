@@ -104,6 +104,8 @@ describe('zh-CN terminology (style/zh-CN.md §2)', () => {
     ['orkspace', '工作空间', '工作区'],
     ['ubagent', '子智能体', '子代理'],
     ['WeCom', 'WeCom', '企业微信'],
+    ['Command Bar', 'Command Bar', '命令栏'],
+    ['Side Chat', 'Side Chat', '随手问'],
   ]
 
   for (const [cue, banned, canonical] of BANNED) {

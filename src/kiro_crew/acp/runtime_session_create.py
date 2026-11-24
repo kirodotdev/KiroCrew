@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
+from kiro_crew.acp import kas_approve_for_me, kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -44,6 +44,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
+from kiro_crew.acp.member_goal_mount import mount_member_goal_tools
 from kiro_crew.acp.runtime_models import _substitute_model_from_advisory
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
@@ -62,18 +63,26 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
+from kiro_crew.acp.session_handle_runtime_contract import host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.bot_chat_ending_fence import (
+    abandoned_start,
+    capture_start_snapshot,
+    current_start_key,
+    runtime_session_start,
+)
 from kiro_crew.config import live
-from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.dashboard.side_readonly_spec import kas_offered, unavailable_mode_explanation
 from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
@@ -133,49 +142,66 @@ _ABANDONED_NEW_CLOSES: set[asyncio.Task[Any]] = set()
 async def _kept_to_its_end(
     runtime: AcpRuntime, request: Awaitable[dict[str, Any]], harness_state: Any
 ) -> dict[str, Any]:
-    """Await *request*, a ``session/new``; on a per-session host, keep it to its end.
+    """Await *request*, a ``session/new``; for a Bot chat's start or on a per-session
+    host, keep it to its end.
 
     A start cancelled while the adapter works on it would otherwise leave a session
     resident with no owner on a process other chats keep alive: the request is
     shielded, and the session it answers with is closed once it arrives
-    (``terminate_session``), unless one of that id is registered by then. A timeout
-    the caller is still there for keeps the late-start collector's handling; one
-    raised after the caller left is closed as above when its late answer lands.
+    (``terminate_session``), unless one of that id is registered by then. A Bot
+    chat's start stays held, and that session on the chat's record, until the
+    close is confirmed (``abandoned_start``). A timeout the caller is still there
+    for keeps the late-start collector's handling; one raised after the caller
+    left is closed as above when its late answer lands.
     """
-    if harness_state is None:
+    if harness_state is None and not current_start_key():
         return await request
     pending = asyncio.ensure_future(request)
     try:
         return await asyncio.shield(pending)
     except asyncio.CancelledError:
-        pending.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+        finish = abandoned_start(runtime, f"new:{id(pending)}")
+        pending.add_done_callback(lambda done: _close_abandoned_new(runtime, done, finish))
         raise
 
 
-def _close_abandoned_new(runtime: AcpRuntime, request: asyncio.Future[Any]) -> None:
+def _close_abandoned_new(
+    runtime: AcpRuntime, request: asyncio.Future[Any], finish: Callable[..., None] = lambda *_: None
+) -> None:
     """Close the session an abandoned ``session/new`` created, once it answered.
 
     A request that timed out after its caller left hands its late answer on
     (``adopted_future``, as ``_send_and_await`` builds it for the start collector):
-    that answer is closed the same way when it lands.
+    that answer is closed the same way when it lands. *finish* settles the chat's
+    start by this request's own outcome (``abandoned_start``): a refusal the host
+    answered left no session; no answer, or a close not confirmed, stays kept.
     """
     if request.cancelled():
+        finish()
         return
     error = request.exception()
     if error is not None:
         adopted = getattr(error, "adopted_future", None)
         if isinstance(adopted, asyncio.Future):
-            adopted.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+            adopted.add_done_callback(lambda done: _close_abandoned_new(runtime, done, finish))
+        else:
+            finish("", host_refused(error))  # only the host's own refusal created nothing
         return
     answer = request.result()
     session_id = str(answer.get("sessionId") or "") if isinstance(answer, dict) else ""
-    if not session_id or session_id in runtime._session_queues:
+    if not session_id:
+        finish("", True)
+        return
+    if session_id in runtime._session_queues:
+        finish()  # an id someone holds now: no close of it here, so it stays kept
         return
     task = asyncio.ensure_future(runtime.terminate_session(session_id))
     _ABANDONED_NEW_CLOSES.add(task)
     task.add_done_callback(_ABANDONED_NEW_CLOSES.discard)
+    task.add_done_callback(lambda _t: finish(session_id))
 
 
+@runtime_session_start
 async def create_session(
     self: AcpRuntime,
     cwd: str | Path | None = None,
@@ -327,6 +353,7 @@ async def create_session(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
                 ),
+                harness_state=harness_state,
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers
@@ -432,6 +459,14 @@ async def create_session(
         # construction path gains no conditional, no awaited step and no new
         # failure mode from the panel capability (harness-parity H13).
         mcp_servers, panel_mounted = await self._mount_member_panel(
+            mcp_servers,
+            member_session_key=member_session_key,
+            agent_name=agent or self._agent,
+            session_work_dir=session_work_dir,
+            stub_token=stub_token,
+        )
+        mcp_servers = await mount_member_goal_tools(
+            self,
             mcp_servers,
             member_session_key=member_session_key,
             agent_name=agent or self._agent,
@@ -624,6 +659,8 @@ async def create_session(
     # cost, not the runtime's, and the adaptive controller reads these
     # samples for its ``start_latency`` / ``timeouts`` signals.
     start_t0 = time.monotonic()
+    # This start's own app snapshot, before anything of it can outlive the call.
+    capture_start_snapshot(session_key)
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
     try:
@@ -706,6 +743,7 @@ async def create_session(
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
+            shipped_helper_parent=getattr(kas_extras, "shipped_helper_parent", ""),
             mcp_servers=wire_servers,
             budget=budget,
             stub_token=stub_token,
@@ -776,6 +814,7 @@ async def create_session(
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
+            shipped_helper_parent=getattr(kas_extras, "shipped_helper_parent", ""),
             mcp_servers=wire_servers,
             budget=budget,
             stub_token=stub_token,
@@ -859,6 +898,7 @@ def _collect_late_start(
     denied_tools: frozenset[tuple[str, str]],
     zero_tools: bool = False,
     mirrored_snapshot: Any,
+    shipped_helper_parent: str = "",
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
@@ -951,6 +991,7 @@ def _collect_late_start(
                 agent=agent,
                 crew_agent=crew_agent,
                 kas_agents=kas_agents,
+                shipped_helper_parent=shipped_helper_parent,
                 mcp_servers=mcp_servers,
                 budget=budget,
                 stub_token=stub_token,
@@ -980,6 +1021,7 @@ def _collect_late_start(
 
         collector.adopt(_adopt)
     self._start_collectors[int(req_id)] = collector
+    collector.session_key = current_start_key()  # a Bot chat's start, else ""
     logger.warning(
         "acp_startup_stage stage=session_new outcome=collecting req_id=%d "
         "collect_budget_s=%g priority=%s gate_active=%d gate_queued=%d %s",
@@ -1026,6 +1068,7 @@ async def _finish_create_session(
     denied_tools: frozenset[tuple[str, str]],
     zero_tools: bool = False,
     mirrored_snapshot: Any,
+    shipped_helper_parent: str = "",
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
@@ -1103,7 +1146,7 @@ async def _finish_create_session(
     handle.mirror_used = mirror_used
     # What the registered agent batch grants, recorded by the harness that
     # registered one; a host that took its agent at spawn time records nothing.
-    self._harness.record_session_projection(handle, kas_agents, active_agent)
+    self._harness.record_session_projection(handle, kas_agents, active_agent, shipped_helper_parent)
     # The snapshot names this projection wrote, for shutdown. session/new hoists
     # builtin app servers, which do start through the launcher, so the names are
     # read from the batch before that hoist (``create_session``); a caller that
@@ -1150,6 +1193,9 @@ async def _finish_create_session(
     # the shared process.
     try:
         await handle.apply_session_permission_routing()
+        if self.acp_backend in ACP_BACKENDS_APPROVE_FOR_ME:
+            # Before any prompt: the session's approve-for-me reads ``on`` or ``off``.
+            await kas_approve_for_me.settle(handle)
     except Exception:
         await self.terminate_session(session_id)
         raise
@@ -1258,11 +1304,15 @@ async def _finish_create_session(
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(session_id)
-        cause, remedy = await asyncio.to_thread(
-            unavailable_mode_explanation,
-            mode_agent,
-            kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
-        )
+        known = await asyncio.to_thread(_known_mode_refusal, self, mode_agent, kas_agents)
+        if known is not None:
+            cause, remedy = known
+        else:
+            cause, remedy = await asyncio.to_thread(
+                unavailable_mode_explanation,
+                mode_agent,
+                kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
+            )
         raise AcpRuntimeError(
             f"Agent mode {mode_agent!r} is not available on this session "
             f"(advertised modes: {_ids or 'none'}); {cause} Refusing to run "
@@ -1336,6 +1386,50 @@ async def _finish_create_session(
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
     return handle
+
+
+def _known_mode_refusal(
+    runtime: AcpRuntime, agent: str, kas_agents: list[dict[str, Any]] | None
+) -> tuple[str, str] | None:
+    """``(cause, remedy)`` when Kiro Crew itself knows why *agent* is not a mode, else ``None``.
+
+    Two causes are known without reading the agent file again:
+
+    * Crew sent *agent*'s definition with this session (KAS), so the engine did
+      not read any file. It leaves out a definition its schema rejects, and says
+      nothing about which field.
+    * The kiro-cli skill view refused the agent (``NativeSkillProjection.errors``),
+      for example because it maps skills and withholds ``skill_search``. That
+      sentence is the reason, and the file itself parses.
+
+    ``None`` sends the caller to :func:`unavailable_mode_explanation`. Blocking
+    (the KAS-offered read): run it off the event loop.
+    """
+    if kas_agents and any(isinstance(a, dict) and a.get("id") == agent for a in kas_agents):
+        return (
+            "Kiro Crew sent its definition with this session, but the engine did not "
+            "register it: the engine leaves out a definition whose fields do not match "
+            "its agent format, without naming the field.",
+            "Check that each field of the agent file has the type the agent format "
+            "documents (for example, excludedTools is a list of names), then start a "
+            "new session.",
+        )
+    projection = getattr(runtime, "_native_skill_projection", None)
+    errors = getattr(projection, "errors", None)
+    if projection is None or not isinstance(errors, dict) or agent not in errors:
+        return None
+    try:
+        projection.agent(agent)
+    except ValueError as exc:
+        return (
+            f"Kiro Crew's skill view refused it: {exc}.",
+            (
+                "Drop the agent's skill:// resources, or spawn it with backend 'kas'."
+                if kas_offered()
+                else "Drop the agent's skill:// resources."
+            ),
+        )
+    return None
 
 
 async def probe_advertised_models(

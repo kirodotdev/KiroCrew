@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -1080,3 +1080,428 @@ async def test_a_pending_config_json_is_refused_before_any_teardown(
     record = _read_installed(_APP)
     assert record is not None and record.enabled is True
     assert lp.leaf_pending(lp.LEAF_CONFIG)
+
+
+@pytest.mark.asyncio
+async def test_teardown_incomplete_409_clears_revocation_fence(
+    home: Path, tmp_path: Path, mock_sel, monkeypatch: pytest.MonkeyPatch
+):
+    """When teardown_app_runtime fails, the teardown_incomplete 409 must lower the fence.
+
+    Flow:
+    1. The handler calls revoke_app_generation, which raises the revocation fence.
+    2. teardown_app_runtime returns a failure, so the handler returns 409.
+    3. Because the grant is kept for a retry, the fence MUST be cleared here.
+       If it is not, every Bot chat start voids that app's tools through the
+       fenced_apps check until a gateway restart.
+
+    Remove the _revocation_fence_clear call before the teardown_incomplete return
+    and the fence stays up after the 409, which is what this test asserts against.
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    import kiro_crew.apps.teardown as appteardown
+    from kiro_crew import bot_chat_app_tools as tools
+
+    # Isolate shared dicts to prevent parallel test interference.
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    async def _teardown_fails(name: str, record: dict, **_kw: object) -> dict:
+        # Simulate a port still listening — a hard teardown failure.
+        return {"app_backend": "failed: port 9999 still open"}
+
+    _install(tmp_path, _APP, enabled=True)
+    with (
+        patch.object(appteardown, "on_app_disable", _AsyncMock(return_value={"ok": True})),
+        patch.object(appteardown, "stop_app_backend", lambda name: True),
+        patch.object(appteardown, "deregister_app", lambda name: None),
+    ):
+        async with _client() as client:
+            assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+            async def _replace_teardown(name, record, **kw):
+                return type(
+                    "_Result",
+                    (),
+                    {
+                        "ok": False,
+                        "failures": ["port 9999 still open"],
+                        "warnings": [],
+                        "bot_stop_failures": [],
+                        "bot_stop_errored": False,
+                    },
+                )()
+
+            from kiro_crew.dashboard.handlers import security as security_mod
+
+            monkeypatch.setattr(security_mod, "teardown_app_runtime", _replace_teardown)
+
+            resp = await client.delete(f"/api/security/trusted-apps/{_APP}")
+            assert resp.status == 409
+            body = await resp.json()
+            assert body["code"] == "teardown_incomplete"
+
+    # The fence must be cleared after the teardown_incomplete 409.
+    # Remove the _revocation_fence_clear call before the early return and this fails.
+    assert _APP not in tools._REVOCATION_FENCE, (
+        "revocation fence must be cleared on teardown_incomplete 409; "
+        "remove the _revocation_fence_clear call before the return and fence stays up, "
+        "blocking Bot tools until gateway restart"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fence_hold_cleared_even_when_mutate_agent_config_raises(
+    home: Path, tmp_path: Path, mock_sel, monkeypatch
+):
+    """An unexpected exception from _mutate_agent_config (e.g. PendingEditBlocksSave,
+    OSError) must not leave _FENCE_HOLD_COUNTS at a non-zero value.
+
+    Before the try/finally fix, only ConfigCorruptError and TrustSettingOverlayOwned
+    had explicit _revocation_fence_clear calls; any other exception left the hold
+    count at 1 forever, so every subsequent cold-start of the same app was fenced
+    out until a gateway restart.
+
+    Remove the try/finally block (or move _revocation_fence_clear to only the
+    named-exception branches) and this test fails because _FENCE_HOLD_COUNTS[_APP]
+    stays at 1 after the exception propagates.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+    from kiro_crew.config.loader import PendingEditBlocksSave
+    from kiro_crew.dashboard.handlers import security as sec
+
+    # Isolate _FENCE_HOLD_COUNTS so parallel tests don't interfere.
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path, _APP, enabled=True)
+
+    # First, trust the app (let _mutate_agent_config run normally).
+    async with _client() as client:
+        assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    # Now mock _mutate_agent_config to raise on the REVOKE call only.
+    async def _always_raises(mutate):
+        raise PendingEditBlocksSave("test: config locked")
+
+    with patch.object(sec, "_mutate_agent_config", _always_raises):
+        async with _client() as client:
+            # Revoke — _mutate_agent_config raises; handler returns 500.
+            await client.delete(f"/api/security/trusted-apps/{_APP}")
+            # 500 is acceptable; the important thing is the fence hold is released.
+
+    # The finally block must have released the hold.
+    # Remove the try/finally and _FENCE_HOLD_COUNTS[_APP] stays at 1 here.
+    assert tools._FENCE_HOLD_COUNTS.get(_APP, 0) == 0, (
+        "_FENCE_HOLD_COUNTS must be 0 after exception from _mutate_agent_config; "
+        "without try/finally the hold leaks and every future cold-start is fenced out"
+    )
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_includes_bot_stop_failed_in_409(home: Path, tmp_path: Path, mock_sel):
+    """When blanket trust is turned off and a Bot chat could not be stopped,
+    the 409 response must carry ``botStopFailed`` with the Bot slug so the
+    dashboard can name the surviving Bot chat.
+
+    Remove ``botStopFailed`` from the 409 response body in
+    ``api_trusted_apps_allow_all`` and this assertion fails: the response has
+    no ``botStopFailed`` key, so the caller cannot identify which Bot
+    teardown failed.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+
+    _install(tmp_path, _APP, enabled=True)
+
+    # Place a Bot chat in _MOUNTED for this app so the sweep calls
+    # stop_app_bot_chat_servers (it only runs for apps in mounted_apps).
+    tools._MOUNTED["atlas"] = {f"{_APP}:lead": "fp1"}
+    tools._MOUNTED_SESSION_KEYS["atlas"] = "dashboard_atlas"
+
+    # Simulate a Bot chat that could not be stopped.
+    async def _bot_stop_fails(state, app_name):
+        return [], ["atlas"]  # (stopped, failed)
+
+    # Trust the app first.
+    async with _client() as client:
+        on = await client.put("/api/security/trusted-apps/allow-all", json={"value": True})
+        assert on.status == 200, await on.text()
+
+    try:
+        with patch.object(tools, "stop_app_bot_chat_servers", _bot_stop_fails):
+            with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+                async with _client() as client:
+                    off = await client.put(
+                        "/api/security/trusted-apps/allow-all", json={"value": False}
+                    )
+                    assert off.status == 409
+                    body = await off.json()
+                    assert body["code"] == "blanket_trust_sweep_incomplete"
+                    assert "atlas" in body.get("botStopFailed", []), (
+                        "botStopFailed must list the Bot slug that could not be stopped; "
+                        "remove botStopFailed from the 409 body in api_trusted_apps_allow_all "
+                        "and this assertion fails"
+                    )
+                    # The error text must also name the Bot.
+                    assert "atlas" in body.get("error", ""), (
+                        "error text must name the failing Bot slug; "
+                        "remove the bot_stop_failed suffix from the error string "
+                        "and this assertion fails"
+                    )
+    finally:
+        tools._MOUNTED.pop("atlas", None)
+        tools._MOUNTED_SESSION_KEYS.pop("atlas", None)
+
+
+@pytest.mark.asyncio
+async def test_revoke_reports_409_when_bot_stop_raises(
+    tmp_path: Path, home: Path, monkeypatch
+) -> None:
+    """trust revoke must return 409 bot_chat_stop_incomplete when
+    stop_app_bot_chat_servers raises, not silently report success.
+
+    Remove the ``_bot_stop_errored`` propagation from teardown_app_runtime and the
+    revoke handler never sees the error; it reports 200 as if cleanup was clean.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    async def _raises(state, app_name):
+        raise RuntimeError("simulated stop failure")
+
+    with patch.object(tools, "stop_app_bot_chat_servers", _raises):
+        with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+            async with _client() as client:
+                resp = await client.delete(f"/api/security/trusted-apps/{_APP}")
+
+    # teardown_app_runtime now surfaces bot_stop_errored=True, which the revoke handler
+    # maps to _bot_failed = ["unknown"], producing a 409.
+    assert resp.status == 409, (
+        "revoke must return 409 when stop_app_bot_chat_servers raises; "
+        "remove bot_stop_errored propagation and it returns 200"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fence_released_when_bot_stop_raises(tmp_path: Path, home: Path, monkeypatch) -> None:
+    """_FENCE_HOLD_COUNTS must be 0 after teardown even when stop_app_bot_chat_servers raises.
+
+    Drop the ``finally`` in ``app_stop_fence`` and the span never releases when the
+    stop raises, so this assertion fails.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+
+    # Isolate _FENCE_HOLD_COUNTS to prevent parallel test interference.
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    async def _raises(state, app_name):
+        raise RuntimeError("simulated stop failure")
+
+    with patch.object(tools, "stop_app_bot_chat_servers", _raises):
+        with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+            async with _client() as client:
+                await client.delete(f"/api/security/trusted-apps/{_APP}")
+
+    assert tools._FENCE_HOLD_COUNTS.get(_APP, 0) == 0, (
+        "_FENCE_HOLD_COUNTS must be 0 after teardown even when stop raises; "
+        "drop the finally in app_stop_fence and the count stays 1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_409_when_bot_stop_raises(tmp_path: Path, home: Path) -> None:
+    """blanket-off must return 409 when stop_app_bot_chat_servers raises, not 200.
+
+    Remove the ``elif swept.bot_stop_errored`` branch from
+    _stop_apps_running_on_blanket_trust and the error disappears from bot_stop_failed;
+    the response becomes 200 instead of 409.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+
+    _install(tmp_path, _APP, enabled=True)
+    tools._MOUNTED["atlas"] = {f"{_APP}:lead": "fp1"}
+    tools._MOUNTED_SESSION_KEYS["atlas"] = "dashboard_atlas"
+
+    async def _raises(state, app_name):
+        raise RuntimeError("simulated stop failure")
+
+    async with _client() as client:
+        await client.put("/api/security/trusted-apps/allow-all", json={"value": True})
+
+    try:
+        with patch.object(tools, "stop_app_bot_chat_servers", _raises):
+            with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+                async with _client() as client:
+                    off = await client.put(
+                        "/api/security/trusted-apps/allow-all", json={"value": False}
+                    )
+                    assert off.status == 409, (
+                        "blanket-off must return 409 when stop raises; "
+                        "remove the elif bot_stop_errored branch and it returns 200"
+                    )
+                    body = await off.json()
+                    assert body["code"] == "blanket_trust_sweep_incomplete"
+    finally:
+        tools._MOUNTED.pop("atlas", None)
+        tools._MOUNTED_SESSION_KEYS.pop("atlas", None)
+
+
+@pytest.mark.asyncio
+async def test_revoke_fence_released_after_trust_write_not_during_teardown(
+    tmp_path: Path, home: Path, monkeypatch
+) -> None:
+    """The revocation fence must remain held until after the trust write commits,
+    not released during teardown.  A Bot turn that starts between teardown and the
+    write would otherwise remount the revoked app server.
+
+    The revoke handler opens ``app_stop_fence`` before the teardown and leaves it
+    after ``_mutate_agent_config`` returns. Close the span before the trust write
+    and the count sampled during the write is 0, so this test fails.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+    from kiro_crew.dashboard.handlers import security as sec
+
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    hold_during_mutate: list[int] = []
+    original_mutate = sec._mutate_agent_config
+
+    async def _spy_mutate(fn):
+        # Sample the hold count at the moment the trust write runs.
+        hold_during_mutate.append(tools._FENCE_HOLD_COUNTS.get(_APP, 0))
+        return await original_mutate(fn)
+
+    with patch.object(sec, "_mutate_agent_config", _spy_mutate):
+        async with _client() as client:
+            resp = await client.delete(f"/api/security/trusted-apps/{_APP}")
+            assert resp.status == 200
+
+    # The hold must have been active DURING the trust write (count > 0).
+    assert hold_during_mutate and hold_during_mutate[0] > 0, (
+        "The revocation fence hold must still be active when _mutate_agent_config runs; "
+        "releasing it inside teardown lets a concurrent Bot turn remount the app server "
+        "between teardown and the trust write."
+    )
+    # After the full revoke, the hold must be released.
+    assert (
+        tools._FENCE_HOLD_COUNTS.get(_APP, 0) == 0
+    ), "Fence hold must be 0 after the revoke completes (released in finally after trust write)"
+
+
+@pytest.mark.asyncio
+async def test_revoke_holds_the_stop_fence_before_the_teardown_starts(
+    tmp_path: Path, home: Path, monkeypatch
+) -> None:
+    """Rule 1, revoke: the span is open at the teardown's very first step (the
+    startup-hook preflight), not only from the Bot stop on. Open it inside the
+    teardown instead and the sample reads 0, so this fails."""
+    from kiro_crew import bot_chat_app_tools as tools
+    from kiro_crew.apps import teardown as teardown_mod
+
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    seen: list[int] = []
+    real_preflight = teardown_mod.stop_app_startup_hooks
+
+    async def _preflight(name, **kw):
+        seen.append(tools._FENCE_HOLD_COUNTS.get(name, 0))
+        return await real_preflight(name, **kw)
+
+    with patch.object(teardown_mod, "stop_app_startup_hooks", _preflight):
+        async with _client() as client:
+            assert (await client.delete(f"/api/security/trusted-apps/{_APP}")).status == 200
+
+    assert seen == [1]
+    assert tools._FENCE_HOLD_COUNTS.get(_APP, 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_holds_every_candidate_fence_across_the_flag_write(
+    tmp_path: Path, home: Path, monkeypatch
+) -> None:
+    """Rule 1, blanket-off: an ungranted app's span stays open from before the first
+    sweep until after the flag write, the second sweep and the Bot-chat pass. Hold
+    it only per app inside the sweep and the sample taken during the flag write
+    reads 0, so a Bot chat could mount the app between the sweep and the write."""
+    from kiro_crew import bot_chat_app_tools as tools
+    from kiro_crew.dashboard.handlers import security as sec
+
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        on = await client.put("/api/security/trusted-apps/allow-all", json={"value": True})
+        assert on.status == 200, await on.text()
+
+    seen: list[int] = []
+    real_mutate = sec._mutate_agent_config
+
+    async def _spy(fn):
+        seen.append(tools._FENCE_HOLD_COUNTS.get(_APP, 0))
+        return await real_mutate(fn)
+
+    with patch.object(sec, "_mutate_agent_config", _spy):
+        with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+            async with _client() as client:
+                await client.put("/api/security/trusted-apps/allow-all", json={"value": False})
+
+    assert seen and seen[0] >= 1
+    assert tools._FENCE_HOLD_COUNTS.get(_APP, 0) == 0
+    assert _APP not in tools._REVOCATION_FENCE
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_stops_a_bot_app_whose_installed_metadata_is_gone(
+    tmp_path: Path, home: Path
+) -> None:
+    """A Bot chat still runs ``ghost-app``'s server, but the app deleted its own
+    installed.json, so neither sweep enumerates it. The blanket-off pass must stop
+    the Bot chat from the Bot records alone and report a failed stop as a 409.
+
+    Only bump the app's generation in that pass (no stop) and ``calls`` stays
+    empty and the response is 200, so this fails.
+    """
+    from kiro_crew import bot_chat_app_tools as tools
+
+    ghost = "ghost-app"
+    tools._MOUNTED["atlas"] = {f"{ghost}:lead": "fp1"}
+    tools._MOUNTED_SESSION_KEYS["atlas"] = "dashboard_atlas"
+    calls: list[str] = []
+
+    async def _stop(state, app_name):
+        calls.append(app_name)
+        return [], ["atlas"]
+
+    async with _client() as client:
+        assert (
+            await client.put("/api/security/trusted-apps/allow-all", json={"value": True})
+        ).status == 200
+    try:
+        with patch.object(tools, "stop_app_bot_chat_servers", _stop):
+            with patch.object(tools, "after_app_change", AsyncMock(return_value=None)):
+                async with _client() as client:
+                    off = await client.put(
+                        "/api/security/trusted-apps/allow-all", json={"value": False}
+                    )
+                    body = await off.json()
+    finally:
+        tools._MOUNTED.pop("atlas", None)
+        tools._MOUNTED_SESSION_KEYS.pop("atlas", None)
+
+    assert ghost in calls
+    assert off.status == 409
+    assert body["code"] == "blanket_trust_sweep_incomplete"
+    assert "atlas" in body["botStopFailed"]

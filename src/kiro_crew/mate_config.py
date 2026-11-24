@@ -31,6 +31,21 @@ class MateConfigError(Exception):
     """A crewmate config file could not be written from its source agent."""
 
 
+def _refuse_unsafe_name(mate_id: str) -> None:
+    """Refuse *mate_id* when it is not exactly one path component.
+
+    The id is joined into ``mates/agents/<id>.json``, and missing folders are created,
+    so a name such as ``../x`` or ``a/b`` would write outside that folder.
+    """
+    from kiro_crew.members import is_single_path_component
+
+    if not is_single_path_component(mate_id):
+        raise MateConfigError(
+            f"{str(mate_id)[:40]!r} is not a single path component, so no Bot may own a "
+            "file by that name; rename the Bot"
+        )
+
+
 def _refuse_service_name(mate_id: str) -> None:
     """Refuse *mate_id* when it names the mate conductor or worker spec.
 
@@ -361,6 +376,7 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
     from kiro_crew.config.loader import publish_mate_agents
     from kiro_crew.mate_worker import drop_partial_platform_servers
 
+    _refuse_unsafe_name(mate_id)
     _refuse_service_name(mate_id)
     # A platform server comes from the gateway; an entry that only switches one
     # on or off would be a server with no transport in this file.

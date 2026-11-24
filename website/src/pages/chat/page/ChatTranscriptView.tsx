@@ -90,6 +90,8 @@ interface ChatTranscriptViewProps {
   footerSentHere?: boolean
   /** `allToolCallsReturned` over the active slot's tool log, for the footer's stall notice. */
   footerToolsReturned?: boolean
+  /** Drawn after the rows, above the footer: ChatPage's live card of the running turn's KAS engine sub-agents. */
+  liveFoot?: ReactNode
   toggleAct: () => void
   renderedDisplayItems: DisplayItem[]
   stableMsgKey: (m: ChatMessage) => string
@@ -112,7 +114,7 @@ interface ChatTranscriptViewProps {
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
-  onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
+  onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, liveFoot, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
@@ -231,6 +233,7 @@ export default function ChatTranscriptView({
           renderItem={renderFarmItem}
           scrollerEl={() => scrollerRef.current}
         />
+        {liveFoot}
         {/* Footer */}
         <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
         {/* The warm catch-up being prepared outside a turn: the gateway's

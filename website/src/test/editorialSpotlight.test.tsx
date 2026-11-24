@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { i18next } from '../i18n/all'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import { EDITORIAL_COPY_KEY } from '../components/appstore/editorialCopy'
+import enManual from '../i18n/locales/en.manual.json'
 import type { RegistryApp } from '../components/appstore/types'
 
 const mockTheme = vi.hoisted(() => ({ value: 'light' as 'light' | 'dark' }))
@@ -266,6 +268,70 @@ describe('a collection card', () => {
     mountCollection({ apps: [app('alpha'), app('beta')] })
     expect(screen.getByText('About alpha.')).toBeTruthy()
     expect(screen.getByText('About beta.')).toBeTruthy()
+  })
+})
+
+describe('curator copy in the reader language', () => {
+  const SHIP = {
+    title: 'Ship better code',
+    blurb: 'Spec it, review it, measure it: the loop that keeps a codebase honest.',
+  }
+  const SHIP_ZH = { title: '交付更好的代码', blurb: '写 spec、做审查、做度量：让代码库始终经得起检验的闭环。' }
+
+  async function inChinese(body: () => void) {
+    await act(async () => { await i18next.changeLanguage('zh-CN') })
+    try {
+      body()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  }
+
+  it('translates a published collection the dashboard knows, title and blurb', async () => {
+    await inChinese(() => {
+      mountCollection(SHIP)
+      const heading = screen.getByRole('heading', { name: SHIP_ZH.title })
+      expect(screen.getByText(SHIP_ZH.blurb)).toBeTruthy()
+      expect(screen.queryByText(SHIP.title)).toBeNull()
+      // Still opaque to the render gate: an unknown theme renders English here.
+      expect(heading.hasAttribute('data-i18n-opaque')).toBe(true)
+    })
+  })
+
+  it('names the compact card and its dialog by the translated title', async () => {
+    await inChinese(() => {
+      mountCollection({ ...SHIP, compact: true })
+      const face = screen.getByRole('button', { name: new RegExp(SHIP_ZH.title) })
+      expect(face.getAttribute('aria-label')).not.toContain(SHIP.title)
+      act(() => { face.click() })
+      expect(screen.getByRole('dialog', { name: SHIP_ZH.title })).toBeTruthy()
+    })
+  })
+
+  it('renders a collection it does not know exactly as published', async () => {
+    await inChinese(() => {
+      mountCollection({ title: 'Ship it before lunch', blurb: 'Three apps, one afternoon.' })
+      expect(screen.getByRole('heading', { name: 'Ship it before lunch' })).toBeTruthy()
+      expect(screen.getByText('Three apps, one afternoon.')).toBeTruthy()
+    })
+  })
+
+  it('keeps the whole card as published when only one field is known', async () => {
+    // A reworded blurb under a known title must not leave English copy under a
+    // translated heading.
+    await inChinese(() => {
+      mountCollection({ title: SHIP.title, blurb: 'Spec it, review it, ship it.' })
+      expect(screen.getByRole('heading', { name: SHIP.title })).toBeTruthy()
+      expect(screen.getByText('Spec it, review it, ship it.')).toBeTruthy()
+    })
+  })
+
+  it('keys each entry by the English its catalog value holds, byte for byte', () => {
+    const catalog = enManual.components.appstore.editorialCopy as Record<string, string>
+    for (const [english, key] of Object.entries(EDITORIAL_COPY_KEY)) {
+      expect(catalog[key.replace('components.appstore.editorialCopy.', '')]).toBe(english)
+    }
+    expect(Object.keys(catalog).length).toBe(Object.keys(EDITORIAL_COPY_KEY).length)
   })
 })
 

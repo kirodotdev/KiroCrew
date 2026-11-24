@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any, NamedTuple
 
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
+
 
 @dataclass(frozen=True)
 class RowMemoContext:
@@ -184,6 +186,10 @@ def summarize_rows(
     # ``[OPTIONS:]`` ask older than that row, so that ask does not hold it.
     cycle_after_reply = False
     for message in reversed(rows):
+        # Sent as the say-nothing reply: no preview, reply, unread mark or activity.
+        # ``last_ts`` above still counts it, so the unread watermark covers it.
+        if is_stored_echo_row(message):
+            continue
         role = message.get("role")
         msg_meta = message.get("meta") or {}
         notice = is_system_notice(role, msg_meta)

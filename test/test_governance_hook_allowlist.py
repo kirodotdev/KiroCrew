@@ -71,6 +71,28 @@ def test_a_hook_is_named_by_its_spec_place_or_its_own_name() -> None:
     assert hook_policy_name(page) == "email-guard"
 
 
+def test_a_compaction_hook_takes_no_number_so_a_grant_keeps_its_hook() -> None:
+    from kiro_crew.agent_sdk.spec_hooks import _convert
+    from kiro_crew.hook_event_governance import hook_policy_name
+
+    def doc(trigger: str, command: str, **extra: object) -> dict:
+        return {"trigger": trigger, "action": {"type": "command", "command": command}, **extra}
+
+    documents = [
+        doc("PreCompact", "c", confirm=True),
+        doc("PreToolUse", "a"),
+        doc("postCompact", "c"),
+        doc("PreToolUse", "b"),
+    ]
+    hooks, unconfirmable = _convert("guarded", {"hooks": documents})
+    named = [dataclasses.replace(h, spec_origin="user") for h in hooks]
+    assert [(hook_policy_name(h), h.command) for h in named] == [
+        ("guarded/PreToolUse/1", "a"),
+        ("guarded/PreToolUse/2", "b"),
+    ]
+    assert unconfirmable == 0
+
+
 @pytest.mark.asyncio
 async def test_a_listed_hook_runs_and_an_unlisted_one_blocks(monkeypatch) -> None:
     from kiro_crew.hooks import run_script_hook

@@ -411,7 +411,7 @@ def _admitted_store_path(
     return db_path
 
 
-def _memory_carve(args: argparse.Namespace) -> None:
+def _memory_carve(args: argparse.Namespace, *, hold: contextlib.ExitStack | None = None) -> None:
     """Filter or count one memory store's rows by their carve facets.
 
     Reads the store NAMED on the command line: facets exist only on a crew silo,
@@ -444,6 +444,9 @@ def _memory_carve(args: argparse.Namespace) -> None:
         db_path, store_id=name, config=cfg, embedding_dim=cfg.memory.embedding_dim
     )
     store.init()
+    if hold is not None:
+        # The caller's namespace hold ends once the store is open; see `_memory_verb`.
+        hold.close()
     try:
         # Keyed by facet NAME, read off the namespace by that name: an omitted flag
         # is absent from the mapping (the axis is unconstrained), while an
@@ -760,6 +763,29 @@ def _memory_shadow(args: argparse.Namespace) -> None:
         print(safe_terminal_line(line))
 
 
+def _refuse_v2_import_destination(store_name: str) -> None:
+    """Exit 1 on stderr when *store_name* is a private V2 store, before anything opens.
+
+    REFUSED BEFORE THE OPEN: ``import`` and ``import-text`` write rows through
+    ``set_semantic`` and ``write_episodic`` with no ``facets=``, so a V2 destination
+    would receive rows stripped of scope, surface, crew, session_key and derived_from
+    while reporting success. A named V1 destination still works; V1 has no facets to
+    lose.
+
+    ``memory_store_version`` is the same resolver ``VectorMemoryStore.__init__``
+    uses, so this does not depend on the store object being built.
+    """
+    if memory_store_version(store_name) == 2:
+        print(
+            f"Error: memory store {store_name!r} is a private V2 store, and this import "
+            "cannot carry the scope, surface, crew, session and derivation facets its "
+            "rows hold, so nothing was written. Import into a V1 store, or use the "
+            "owner-authorized copy in the dashboard, which preserves provenance.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -783,7 +809,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
     """Run one ``kirocrew memory`` verb; :func:`_memory_cmd` owns its refusals."""
     action = getattr(args, "mem_action", None)
     # Verbs that change Crew's own stores refuse while a provider replaces them.
-    writes = action in ("migrate", "carve", "dream", "import", "forget", "restore")
+    writes = action in ("migrate", "carve", "dream", "import", "import-text", "forget", "restore")
     if writes or (action == "retired" and getattr(args, "restore_id", None)):
         from kiro_crew import cli_memory_provider
 
@@ -810,8 +836,18 @@ def _memory_verb(args: argparse.Namespace) -> None:
         _memory_backup_cmd(action, args)
         return
     # "carve" opens the store NAMED on the command line, not the shared open below.
+    # A named store is checked and opened under the same hold as the shared open's.
     if action == "carve":
-        _memory_carve(args)
+        with contextlib.ExitStack() as carve_hold:
+            if named_store_or_empty(getattr(args, "store", None) or DEFAULT_MEMORY_STORE):
+                carve_hold.enter_context(memory_store_namespace_lock(read_only_ok=True))
+            _memory_carve(args, hold=carve_hold)
+        return
+    # "import-text" parses its file and opens the store itself, and only to save.
+    if action == "import-text":
+        from kiro_crew import memory_import_text
+
+        memory_import_text.run(args)
         return
     # "create-store" names the store that does not exist yet, so nothing opens first.
     if action == "create-store":
@@ -821,7 +857,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action is None:
         print(
             "Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|backup|"
-            "backups|restore|create-store|carve|retired|forget|import|dream|shadow}"
+            "backups|restore|create-store|carve|retired|forget|import|import-text|dream|shadow}"
         )
         return
     # "dream" reads a store's file read-only, or only leaves a request for the gateway.
@@ -849,32 +885,23 @@ def _memory_verb(args: argparse.Namespace) -> None:
     # import write into a store none of those checks measured.
     #
     # `memory_store_namespace_lock` is ordered BEFORE the store's own file locks, so
-    # holding it around the open cannot invert. Taken only for an `import` into a
-    # NAMED store, the only path that removes a file.
+    # holding it around the open cannot invert. Taken for every verb that names a
+    # store here (`import`, `export --store`): an `import` into a NAMED store removes
+    # the empty database it created, and a read that checked the file in between and
+    # opened it after would recreate it, so the read's check and open are one hold
+    # too. A read ends it once `init()` returns: an import that starts later finds a
+    # database it did not create and never removes it, and writing the output (into
+    # a paused pager) must not keep every named-store operation waiting. The default
+    # store keeps its path: its absence is a normal state, and nothing removes it.
     import_wrote_nothing = False
     with contextlib.ExitStack() as create_guard:
-        if action == "import" and named_store_or_empty(store_name):
-            create_guard.enter_context(memory_store_namespace_lock())
+        if named_store_or_empty(store_name):
+            create_guard.enter_context(memory_store_namespace_lock(read_only_ok=action != "import"))
         db_path = _admitted_store_path(store_name, cfg, may_create=action == "import")
         if db_path is None:
             sys.exit(1)
-        if action == "import" and memory_store_version(store_name) == 2:
-            # REFUSED BEFORE THE OPEN: `import_memory` rebuilds rows through
-            # `set_semantic` and `write_episodic` with no `facets=`, so a V2 destination
-            # would receive rows stripped of scope, surface, crew, session_key and
-            # derived_from while reporting success. A named V1 destination still works;
-            # V1 has no facets to lose.
-            #
-            # `memory_store_version` is the same resolver `VectorMemoryStore.__init__`
-            # uses, so this does not depend on the store object being built.
-            print(
-                f"Error: memory store {store_name!r} is a private V2 store, and this import "
-                "cannot carry the scope, surface, crew, session and derivation facets its "
-                "rows hold, so nothing was written. Import into a V1 store, or use the "
-                "owner-authorized copy in the dashboard, which preserves provenance.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        if action == "import":
+            _refuse_v2_import_destination(store_name)
         import_payload: dict | None = None
         if action == "import":
             # PARSED BEFORE THE OPEN: `store.init()` creates `memory.db`, so a missing
@@ -942,6 +969,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
             # INSIDE the try: `init()` creates `memory.db`, so an interrupt in it must
             # still reach the settlement below.
             store.init()
+            if action != "import":
+                create_guard.close()
             if action == "list":
                 entries = store.get_all_semantic()
                 if not entries:

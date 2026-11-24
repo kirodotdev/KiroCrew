@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, Circle, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
@@ -21,6 +22,7 @@ import { servedUploadMb } from '../../utils/fileTokens'
 import { pathBasename } from '../../utils/pathBasename'
 import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -458,7 +460,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // no pointer-blur path to exclude.
   const renameButtons = useRef(new Map<string, HTMLButtonElement>())
   const closeRename = (id: string | null) => {
-    setEditingId(null)
+    // Commit the close now: a save closes from its PATCH callback, outside any
+    // event, and a frame that ran before React's own commit would still find
+    // the field focused and skip the hand-off below.
+    flushSync(() => setEditingId(null))
     if (id === null) return
     // Only take back focus the unmount dropped: a rename can resolve after the
     // user has already moved on to another control, and that control keeps it.
@@ -546,6 +551,13 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (body: Record<string, unknown>) =>
       knowledgeApi<{ id: string; status?: string; file_count?: number }>('/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     onSuccess: (res) => {
+      // A folder already added under another spelling (`<dir>/`, `<dir>/.`)
+      // adds nothing: the form stays open and names that row. The list is
+      // refetched in case the row is newer than it.
+      if (res.status === 'exists') {
+        queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+        return
+      }
       // The committed profile and the nudge reset WITH the profile field: the
       // consent query keys on the committed value, so leaving it behind would
       // reopen the form with a confirmed receipt for a profile the empty field
@@ -583,6 +595,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const resetAdd = addMutation.reset
   useEffect(() => { if (!showAdd) resetAdd() }, [showAdd, resetAdd])
   useEffect(() => { if (addKbConsentGranted) resetAdd() }, [addKbConsentGranted, resetAdd])
+  const existingFolder = addMutation.data?.status === 'exists' ? sources.find(s => s.id === addMutation.data?.id) : undefined
 
   const confirmMutation = useMutation({
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}/confirm`, { method: 'POST' }),
@@ -809,6 +822,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         variant="inline"
         testId="sources-folder-error"
         message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+      />
+      <StatusNotice
+        tone="info"
+        testId="sources-folder-exists"
+        message={existingFolder ? i18nT('pages.knowledge.sourcesList.folder_already_a_source', { name: existingFolder.name }) : ''}
       />
     </div>
   )

@@ -234,6 +234,8 @@ jobs:
               - 'website/electron/runtime/update/**'
               # Loaded by both update lanes: the pre-swap stop's refusal code.
               - 'website/electron/gateway-stop.js'
+              # Loaded by the feed lane: a Restart now is a relaunch, not a Quit.
+              - 'website/electron/relaunch-intent.js'
               # gateway-stop.js loads it to pick the shutdown secret.
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
@@ -722,6 +724,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1092,6 +1095,9 @@ jobs:
             fi
           fi
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -1325,6 +1331,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # No uv and no dependency install: every gate below is stdlib-only, so
       # setup-python is the whole toolchain this job needs. The one backend step
       # that DOES need the installed dev group -- the pip-audit dependency
@@ -1434,6 +1441,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1543,6 +1551,8 @@ jobs:
           echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+      - if: steps.scope.outputs.backend == 'true'
+        uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.scope.outputs.backend == 'true'
         with:
@@ -1704,6 +1714,9 @@ jobs:
           # compare a change with its base. At depth 1 it compares nothing.
           fetch-depth: 2
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -2063,6 +2076,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -2267,11 +2281,14 @@ jobs:
           # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
           # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
           # 16,111 MiB; at 6 it peaked at 9,858-11,234 MiB (runs 44434126975,
-          # 44440752272). So one worker per 2 GiB after 2 GiB for the host,
-          # capped at the core count: 6 on the 16 GiB fleet runner, 4 on a
-          # 4-core hosted runner. The step prints its peak memory after the run.
+          # 44440752272). At 8, shard 7 on an AWS c6i.2xlarge (8 vCPU,
+          # 16 GiB, the fleet runner's size) ran in a median 846 s against
+          # 921 s at 6, 5 rounds each, at a 12,109 MiB median peak. So one
+          # worker per 1.5 GiB after 2 GiB for the host, capped at the core
+          # count: 8 on the 16 GiB fleet runner, 4 on a 4-core hosted runner.
+          # The step prints its peak memory after the run.
           mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 1536 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
@@ -2830,6 +2847,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3292,6 +3310,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3418,6 +3437,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3689,13 +3709,15 @@ jobs:
     timeout-minutes: 15
     steps:
       # Sparse: this job reads only setup.cfg (the [coverage:*] sections), the
-      # measured source and pyproject.toml (setup-uv hashes it with setup.cfg
-      # for its cache key). Every file the shards measure is under src/: each
+      # measured source, the script that builds the reports and pyproject.toml
+      # (setup-uv hashes it with setup.cfg for its cache key). Every file the
+      # shards measure is under src/: each
       # `--cov` target is a package or a directory there, and [coverage:paths]
       # maps every spelling onto it. A measured file outside this list stops
       # `coverage xml` and `coverage report` with "No source for code", so a
       # list that falls behind turns this job red and can never shrink what
-      # is measured. test/test_ci_coverage_sparse_checkout.py holds the list
+      # is measured. The seed action is listed because the job runs it from
+      # the tree. test/test_ci_coverage_sparse_checkout.py holds the list
       # against the `--cov` targets and setup.cfg.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3704,8 +3726,11 @@ jobs:
             /src/
             /setup.cfg
             /pyproject.toml
+            /scripts/ci/coverage_chunked_report.py
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3717,8 +3742,11 @@ jobs:
             pyproject.toml
             setup.cfg
 
+      # defusedxml is for the report script, which parses each range's XML;
+      # the version range is the one setup.cfg declares and Coverage Gate
+      # installs.
       - name: Install coverage
-        run: uv pip install --system coverage==7.10.6
+        run: uv pip install --system coverage==7.10.6 'defusedxml>=0.7,<1'
 
       - name: Download shard coverage data
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3738,13 +3766,17 @@ jobs:
 
       - name: Combine into unified coverage.xml
         # The downloaded .coverage.<group> files are parallel data files;
-        # `coverage combine` merges them. -o pins the output path (setup.cfg's
-        # [coverage:xml] otherwise redirects it under build/coverage/).
+        # `coverage combine` merges them.
         #
-        # `xml` and `report` each re-analyse every measured source file (~80s
-        # apiece on the combined data, against ~4s for the combine), and both
-        # only READ .coverage, so they run side by side. Each exit status is
-        # waited on by PID, so either one failing still fails the step.
+        # Analysing every measured source file takes one process about 140s
+        # (the combine takes 5s), and `coverage xml` and `coverage report`
+        # each do it. The script analyses once: it deals the files into one
+        # contiguous range per CPU, runs `coverage xml` on every range side by
+        # side, merges the XML into coverage.xml, and derives the per-file
+        # table from that merged XML in the layout `coverage report` prints.
+        # It exits non-zero when any command does, when the merged XML does
+        # not account for every measured file exactly once, and when the
+        # table's totals differ from the XML's.
         #
         # setup.cfg is asserted because coverage runs without it too: with no
         # `relative_files` it matches no recorded path to a source file and
@@ -3754,15 +3786,11 @@ jobs:
           test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
           test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
-          coverage xml -o coverage.xml &
-          xml_pid=$!
-          coverage report > coverage-report.txt &
-          report_pid=$!
-          xml_rc=0; wait "$xml_pid" || xml_rc=$?
-          report_rc=0; wait "$report_pid" || report_rc=$?
-          cat coverage-report.txt
-          [ "$xml_rc" = 0 ] || { echo "::error::coverage xml failed ($xml_rc)"; exit "$xml_rc"; }
-          [ "$report_rc" = 0 ] || { echo "::error::coverage report failed ($report_rc)"; exit "$report_rc"; }
+          report_rc=0
+          python3 scripts/ci/coverage_chunked_report.py --xml coverage.xml --report coverage-report.txt || report_rc=$?
+          [ ! -f coverage-report.txt ] || cat coverage-report.txt
+          [ "$report_rc" = 0 ] || { echo "::error::building coverage.xml and the text report failed ($report_rc)"; exit "$report_rc"; }
+          test -s coverage.xml || { echo "::error::coverage.xml was not written"; exit 1; }
 
       - name: Upload combined coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -4006,7 +4034,8 @@ jobs:
       # and pyproject.toml is here for setup-uv, which hashes it for its cache
       # key and warns when its glob matches nothing. A missing script exits 2,
       # and a missing baseline reads as an empty one, which holds every
-      # baselined file to the floor it is recorded as being under.
+      # baselined file to the floor it is recorded as being under. The seed
+      # action is listed because the job runs it from the tree.
       # test/test_ci_coverage_sparse_checkout.py holds the list against the
       # paths this job runs and the script's imports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4016,8 +4045,10 @@ jobs:
             /scripts/check_per_file_coverage.py
             /.github/coverage-baselines/
             /pyproject.toml
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The gate parses the Cobertura reports through defusedxml rather than the
       # stdlib parser, which resolves external entities -- and on a fork PR the
       # report is produced by contributor-controlled code. Installed here because
@@ -4352,6 +4383,7 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The Python goldens that run the REAL generator (test_find_ui_auto.py's
       # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
       # skip wherever node or website/node_modules is missing, which is every
@@ -4541,6 +4573,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -4574,6 +4607,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5310,6 +5344,7 @@ jobs:
       # against the same remote, through the shared diff-base resolver script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5721,6 +5756,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5865,6 +5901,7 @@ jobs:
       - uses: ./.github/actions/setup-windows-tests
         if: runner.os == 'Windows'
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5969,11 +6006,37 @@ jobs:
             exit 1
           }
 
+      - name: Check the Crew API contract on a real gateway
+        # Linux only: the contract does not differ by OS, and the step above is
+        # what proves each OS boots. One gateway serves every case, so this adds
+        # one boot. See test/e2e/crew_api_contract_spec.py.
+        if: runner.os == 'Linux'
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_HARNESS_READY_TIMEOUT: "60"
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov -p no:cacheprovider --timeout=420 \
+            test/e2e/test_crew_api_contract.py \
+            | tee crew-api-contract.log
+          # `pytest` exits 0 on a fully skipped module. The case count grows with
+          # every operation, so the canary is "some passed and none skipped"
+          # rather than an exact number.
+          grep -qE '(^|[^0-9])[1-9][0-9]* passed' crew-api-contract.log \
+            && ! grep -qE '(^|[^0-9])[1-9][0-9]* skipped' crew-api-contract.log || {
+            echo "::error::the Crew API contract cases did not all run (none passed, or some were skipped)"
+            exit 1
+          }
+
       - name: Upload the boot-matrix log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-boot-matrix-${{ matrix.os }}
-          path: boot-matrix.log
+          path: |
+            boot-matrix.log
+            crew-api-contract.log
           if-no-files-found: ignore
           retention-days: 7

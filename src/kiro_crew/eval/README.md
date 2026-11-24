@@ -49,7 +49,12 @@ nothing runs; so is a name two files share.
 `--agent` takes a crew member or an agent name, resolved as `kirocrew chat --agent`
 resolves it. `--model` is the explicit pick for every scenario session and outranks
 the agent's own model. Both apply to the sessions the scenario drives; the memory
-consolidation between sessions keeps its default agent and model.
+consolidation between sessions keeps its default agent and model. A `--model` that a
+scenario session refuses when it starts (the backend does not serve it) stops the run
+before that session's first turn: it prints
+`Error: <name> is not a model this backend offers` and exits 1, with nothing scored
+or saved, instead of scoring the backend default under that name. `--model auto` pins
+nothing, so it is never stopped this way.
 
 With `--repeat N` each scenario runs N times in a row. The report shows the runs
 passed (`Runs passed: 2/3`), the scenario counts as passed only when every run did,
@@ -100,9 +105,9 @@ exit code are what they were.
 The command exits 0 only when every scenario passes. It exits 1 when any
 scenario fails (the report is still written first) or when a scenario name is
 unknown (nothing runs), so `kirocrew eval && next` stops on a failure. A backend
-that refuses to start a session (a signed-out kiro-cli, for one) also exits 1:
-it prints the refusal's own message as one line and writes no report or
-`--junit` file.
+that refuses to start a session (a signed-out kiro-cli, for one), or a host that
+cannot sandbox it, also exits 1: it prints the refusal's own message as one line
+and writes no report or `--junit` file.
 
 ## Task cases across harnesses
 

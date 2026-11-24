@@ -3,8 +3,9 @@
  * only (never also the whole list before → after), a scalar as old → new. A
  * list setting's card is titled and labelled for what the person will see.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import { installInitialResizeObserver } from '../test/initialResizeObserver'
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
 import { effortLabel } from '../lib/effort'
@@ -186,6 +187,8 @@ describe('CardChanges', () => {
     }
     Object.defineProperty(proto, 'scrollWidth', { configurable: true, get: () => 900 })
     Object.defineProperty(proto, 'clientWidth', { configurable: true, get: () => 300 })
+    // The code box's edges are first measured on the observer's first delivery.
+    installInitialResizeObserver()
     try {
       render(<CardChanges changes={[
         { field: 'workflow_source', label: 'Script', after: 'X = 1  # ' + 'a'.repeat(140) },
@@ -197,6 +200,7 @@ describe('CardChanges', () => {
       expect(notes).toHaveLength(2)
       for (const n of notes) expect(n).toHaveTextContent(L('code_scrolls'))
     } finally {
+      vi.unstubAllGlobals()
       for (const [k, d] of Object.entries(saved)) {
         if (d) Object.defineProperty(proto, k, d)
         else delete (proto as unknown as Record<string, unknown>)[k]

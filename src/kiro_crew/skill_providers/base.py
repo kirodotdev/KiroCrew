@@ -23,6 +23,9 @@ def provider_available(provider: SkillProvider) -> bool:
     exception must read as "not available" so one broken provider cannot break
     the callers that iterate every registered provider — or 500 a per-provider
     endpoint (install/preview) that probes it directly.
+
+    ``is_available`` is an edition hook and may block, so never call this on the
+    event loop: an async caller awaits ``asyncio.to_thread(provider_available, p)``.
     """
     try:
         return bool(provider.is_available())
@@ -333,7 +336,7 @@ class ProviderRegistry:
 
         if provider:
             p = self._providers.get(provider)
-            if p is None or not provider_available(p):
+            if p is None or not await asyncio.to_thread(provider_available, p):
                 return SkillSearchResponse(results=[], provider_outcomes=[])
             # This path applies no ``[:limit]``: the provider was ASKED for at
             # most *limit* rows and is trusted to honour it. The fan-out below
@@ -344,7 +347,9 @@ class ProviderRegistry:
 
         # Iterate (key, provider) pairs so failure logs name the vetted
         # registration key.
-        available = [(n, p) for n, p in self._providers.items() if provider_available(p)]
+        available = await asyncio.to_thread(
+            lambda: [(n, p) for n, p in self._providers.items() if provider_available(p)]
+        )
         if not available:
             return SkillSearchResponse(results=[], provider_outcomes=[])
 

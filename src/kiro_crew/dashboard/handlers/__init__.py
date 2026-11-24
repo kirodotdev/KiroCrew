@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers_system import (  # noqa: F401
 from kiro_crew.dashboard.origin import is_loopback  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (  # noqa: F401
+    is_sensitive_canonical_path,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -129,6 +130,9 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_status,
     api_connections_test,
     api_mcp_oauth_relay,
+)
+from kiro_crew.dashboard.handlers.connections_app_manifest import (  # noqa: E402, F401
+    api_connections_app_manifests,
 )
 
 # ── Session crew log (handlers/crew_log.py) ──
@@ -860,7 +864,7 @@ def _prompt_dir_entry(path: Path, root_real: Path, src: str) -> dict[str, Any] |
         # for a directory or a device node.
         if not path.is_file() or path.stat().st_nlink > 1:
             return None
-        if is_sensitive_path(str(resolved)):
+        if is_sensitive_canonical_path(str(resolved)):
             return None
     except (OSError, ValueError, RuntimeError):
         return None
@@ -1007,7 +1011,7 @@ def _build_prompt_base() -> list[dict[str, Any]]:
                 resolved = str(sop_file.resolve())
             except OSError:
                 continue
-            if is_sensitive_path(resolved):
+            if is_sensitive_canonical_path(resolved):
                 logger.debug("Skipping sensitive path: %s", sop_file)
                 continue
             name = sop_file.stem.removesuffix(".sop")

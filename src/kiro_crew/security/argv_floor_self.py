@@ -15,8 +15,8 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
+shared name vocabulary below it, and imports no other part of the argv floor.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .self_kill_windows import _windows_self_kill
 from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
@@ -178,6 +179,46 @@ def _is_kill_by_name_program(token: str) -> bool:
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
+
+
+#: An operator expansion (``${w%/}``, ``${!x}``) or a substitution can rewrite a value.
+_VALUE_REWRITE_RE = re.compile(r"\$\{(?![a-z_][a-z0-9_]*\})|\$\(|`", re.IGNORECASE)
+#: What a directory loop's body may run: each moves, links or prints a path, and none
+#: executes, evaluates or stores an argument (``printf -v``, ``eval`` and ``sh`` are out).
+_DIR_LOOP_BODY_PROGRAMS = frozenset(
+    {"ln", "cp", "mv", "mkdir", "rm", "rmdir", "touch", "chmod", "chown", "echo"}
+)
+
+
+def _for_list_directory_globs(tokens: "list[str]", text: str, root: bool) -> "frozenset[int]":
+    """Indexes of list words ending in ``/`` when the frame is ONE plain ``for`` loop.
+
+    Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
+    Its value could still become a program, so the shape is fixed: the root frame
+    (*root*, the command as typed) is exactly ``for NAME in WORDS; do CMD; ...; done``, each CMD is in
+    ``_DIR_LOOP_BODY_PROGRAMS``, no word holds an operator before its end, and the
+    *text* has no pipe, output redirect, substitution or operator expansion.
+    """
+    if "|" in text or ">" in text or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
+        return frozenset()
+    # Only the ROOT frame: an outer frame of a nested loop could define a function ``ln``.
+    if not root:
+        return frozenset()
+    if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
+        return frozenset()
+    if not tokens[1].isidentifier() or any(c in t.rstrip(";") for t in tokens for c in ";&\n"):
+        return frozenset()
+    # The list ends at its first ``;``-ended word and ``do`` comes next (no ``{ …; }`` body).
+    do = next((j for j in range(3, len(tokens)) if tokens[j].endswith(";")), len(tokens)) + 1
+    if do >= len(tokens) or tokens[do] != "do":
+        return frozenset()
+    starts = [do + 1] + [j + 1 for j in range(do + 1, len(tokens) - 1) if tokens[j].endswith(";")]
+    for j in starts:
+        if tokens[j] != ";" and _shell_normalizer._program_basename(tokens[j]) not in (
+            _DIR_LOOP_BODY_PROGRAMS | {"done"}
+        ):
+            return frozenset()
+    return frozenset(j for j in range(3, do) if tokens[j].rstrip(";").endswith("/"))
 
 
 # ``env -S`` splits its argument into a command and execs it.
@@ -386,6 +427,7 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
         # quadratic in the trigger count.  ``None`` until the first trigger token needs
         # it, so a frame carrying none pays nothing.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             # AN INLINE PROGRAM THAT NAMES THE MINT SURFACE IS DENIED WITHOUT NEEDING THE VERB
             # AS AN ARGV WORD, and it is checked FIRST because it does not depend on the
@@ -410,6 +452,11 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            if dir_globs is None:
+                root = any(s == text_lower and t == tokens for s, t in _self_frames(text_lower))
+                dir_globs = _for_list_directory_globs(tokens, text_lower, root)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
             # quotes are already off these tokens, so ``'/tmp/kirocrew;' token`` (a symlink
@@ -857,6 +904,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             if not _is_kill_by_name_program(token):
                 continue
@@ -864,6 +912,11 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            # ``for w in /a/*/`` lists directories, which never run.
+            if dir_globs is None:
+                dir_globs = _for_list_directory_globs(tokens, text_lower, source == text_lower)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
@@ -891,6 +944,9 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 if depth <= 0 and _ends_argv(arg):
                     break
                 depth = max(depth, 0)
+        # ``taskkill``, ``Stop-Process`` and ``wmic`` name their target in one place.
+        if _windows_self_kill(tokens):
+            return whole
     # Bare ``kill`` whose PID comes out of a substitution naming the product.
     # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
     # quoted spelling all count -- a raw-text pattern anchored on separators sees

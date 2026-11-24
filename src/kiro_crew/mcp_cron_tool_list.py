@@ -149,7 +149,9 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
                         "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
                         "day or week count, is read in 'timezone' when given, "
-                        "else the global config timezone, then 'local'. "
+                        "else the global config timezone, then 'local'. An ISO 8601 "
+                        "time with its own zone ('2026-03-28T14:00:00Z', "
+                        "'2026-03-28T14:00+02:00') names an instant and ignores 'timezone'. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {
@@ -217,6 +219,12 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Schedule-page folder to file this job in, by name or "
                         "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
                         "leaves the job ungrouped.",
+                    },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree). Persistent agent jobs only. "
+                        "Not `folder`, the Schedule-page group. Empty or omitted: not filed.",
                     },
                     "persistent_session": {
                         "type": "boolean",
@@ -355,6 +363,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Move the job to this Schedule-page folder, by name "
                         "or id. A missing name is created. Empty string moves the job out "
                         "of its folder (ungrouped).",
+                    },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree); its existing chat moves too. "
+                        "Persistent agent jobs only. Not `folder`, the Schedule-page group. "
+                        "Empty string: not filed.",
                     },
                     "thread_ts": {
                         "type": "string",
@@ -521,6 +536,18 @@ def _list_tools() -> list[dict[str, Any]]:
     return with_titles("kirocrew-cron", tools)
 
 
+def _redeem_pickup() -> None:
+    """Redeem an enforced harness's one-time pickup, when this process carries one.
+
+    As ``kirocrew-core`` does (``mcp_core_tool_list._redeem_pickup``): such a harness
+    withholds the gateway secret, so without it every cron tool is refused, and the
+    listing already reads this session's tool policy from the gateway.
+    """
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
+
+
 #: The server as ``initialize`` describes it. ``kiro_crew.mcp_cron.run_mcp_server``
 #: passes the loop these same values, so the answers written before the handlers load
 #: and the ones the loop writes after cannot differ.
@@ -531,4 +558,5 @@ SERVER = StdioServer(
     advertise_caller_identity=True,
     error_prefix_is_error=True,
     instructions=_INSTRUCTIONS,
+    before_first_request=_redeem_pickup,
 )

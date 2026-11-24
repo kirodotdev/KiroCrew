@@ -30,8 +30,18 @@ from kiro_crew.agent_discovery import (  # noqa: F401
     cached_project_agent_names,
     warm_project_agent_names,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # noqa: F401
+from kiro_crew.agent_sdk.backends import (  # noqa: F401
+    ACP_BACKENDS_APPROVE_FOR_ME,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+)
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
+from kiro_crew.agent_sdk.kas_approve_for_me import (  # noqa: F401
+    engine_supported as approve_for_me_engine_supported,
+)
+from kiro_crew.agent_sdk.kas_approve_for_me import (  # noqa: F401
+    refresh_engine_support as approve_for_me_refresh_engine_support,
+)
+from kiro_crew.agent_sdk.kas_model_catalog import config_options_refuse_auto  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
 from kiro_crew.approval_mode_policy import (  # noqa: F401
@@ -40,6 +50,7 @@ from kiro_crew.approval_mode_policy import (  # noqa: F401
 )
 from kiro_crew.apps import seams as _app_seams
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
+from kiro_crew.chat_default_project import usable_default_project  # noqa: F401
 from kiro_crew.config.fields import _coerce_bool  # noqa: F401 -- read by chat_api.slot_repair
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
@@ -63,6 +74,19 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401 -- read by chat_api.slot_effort
+    APPROVE_FOR_ME_MODE,
+    approve_for_me_keys,
+    approve_for_me_permitted,
+)
+from kiro_crew.dashboard.approve_for_me import offered_on as approve_for_me_offered_on  # noqa: F401
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401
+    owner_allows as approve_for_me_owner_allows,
+)
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401
+    profile_binds as approve_for_me_profile_binds,
+)
+from kiro_crew.dashboard.approve_for_me import reads_on as approve_for_me_reads_on  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
@@ -81,6 +105,7 @@ from kiro_crew.dashboard.chat_api import resume as _owner_resume
 from kiro_crew.dashboard.chat_api import resume_identity as _owner_resume_identity
 from kiro_crew.dashboard.chat_api import resume_live as _owner_resume_live
 from kiro_crew.dashboard.chat_api import resume_window as _owner_resume_window
+from kiro_crew.dashboard.chat_api import send_decision as _owner_send_decision
 from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_relaunch
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
 from kiro_crew.dashboard.chat_api import slot_create as _owner_slot_create
@@ -136,8 +161,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _settle_send_race,
     _sweep_stale_permissions,
     api_chat,
-    decided_message_handling,
-    steer_is_auto,
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
     _close_managed,
@@ -239,6 +262,10 @@ from kiro_crew.dashboard.chat_api.resume_live import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
 )
+from kiro_crew.dashboard.chat_api.send_decision import (  # noqa: F401
+    decided_message_handling,
+    steer_is_auto,
+)
 from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     _report_reload_respawn,
     api_chat_slot_project,
@@ -307,14 +334,18 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
+    _approve_for_me_field,
     _configured_backend_for_slot,
     _own_models_field,
+    _restart_for_approve_for_me,
     _write_session_switch,
+    api_chat_slot_approve_for_me,
     api_chat_slot_fast_mode,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,
     configured_backend_for_session,
+    end_approve_for_me,
 )
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
@@ -348,6 +379,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     close_slot,
 )
 from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
+    _auto_repick_moves_session,
     _broadcast_context_reset,
     _is_jev_route_pick,
     _model_rejected_reason,
@@ -404,6 +436,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
+    _cancel_admission_wait,
     _cancel_cron_run,
     _cancel_preparing_runner,
     _cancel_target,
@@ -448,6 +481,7 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     _unhide_folder,
     resolve_folder_project_dir_off_loop,
 )
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY, paste_meta  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _FLUSH_SNAPSHOT_RETRIES,
     _TRANSIENT_ROLES,
@@ -573,6 +607,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_slot_creator,
     message_required_error,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401
@@ -681,6 +716,10 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     request_slot_origin,
     row_mid,
 )
+from kiro_crew.dashboard.stop_retires_approval import (
+    retire_stopped_cards,
+    waiting_permission_cards,
+)
 from kiro_crew.dashboard.system_notices import (  # noqa: F401
     SESSION_RELOAD_DEFERRED_TEXT,
     SESSION_RELOAD_KIND,
@@ -697,6 +736,7 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 )
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    METADATA_LINE_CORRUPT,
     ConversationLog,
     TranscriptBusy,
     TranscriptWithheld,
@@ -710,6 +750,7 @@ from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # no
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
     provider_model_pin_refused,
+    provider_raw_model,
     slot_switch_session_lock,
 )
 from kiro_crew.memory_startup import (  # noqa: F401
@@ -916,8 +957,15 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     They are combined here deliberately: a new blocking wait added later must
     be released from every stop path, and three separate call sites each
     needing their own second line is how one of them gets missed.
+
+    In a chat whose sub-agents run in the KAS engine, every page is then told
+    which permission cards the stop rejected (``stop_retires_approval``): only the
+    tab whose composer pressed Stop clears its own, and there Stop all stops the
+    turn from the sub-agent chip.
     """
+    waiting = waiting_permission_cards(state, slot)
     _reject_pending_approvals(slot)
+    retire_stopped_cards(state, slot, waiting)
     cancelled = state.cancel_questions_for_slot(slot.key)
     if cancelled:
         logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
@@ -1474,6 +1522,7 @@ _facade_compose(
         _owner_agent_switch,
         _owner_app_admission,
         _owner_chat_send,
+        _owner_send_decision,
         _owner_conductor_close,
         _owner_continue_turn,
         _owner_crew_steer,

@@ -451,9 +451,10 @@ Exactly what `validation.build_tool_response` emits:
 ```
 
 Text only, capped at `MAX_RESPONSE_LEN`. **There is no `isError` field and no
-image block** — an image block is not expressible on this transport, so
-"tree-first, relay the screenshot as a path" is a property of the transport
-rather than a policy someone can regress. An error is the literal string
+image block** — `build_tool_response` adds an image block only to an answer that
+is a `validation.TextWithImage`, and no computer-use handler returns one (the one
+producer is the browser `screenshot` op with `inline: true`), so "tree-first,
+relay the screenshot as a path" holds for every computer-use result. An error is the literal string
 `"Error: …"`; `mcp_shared.call_tool_with_logging` classifies that prefix as SEL
 `outcome="failed"`, so the prefix is load-bearing.
 
@@ -531,7 +532,9 @@ Mechanics:
   ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
-  the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
+  the config GET carries `locked_by_policy: true` (plus `locked_by_edition: true`
+  when no policy term can turn the key on, `enable_state.locked_by_edition`, so the
+  page names the edition instead of a policy), and a PUT with `enabled: true`
   answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
@@ -1310,7 +1313,9 @@ answers "where is this app's caret", including for a background app. Identity is
 compared with `CFEqual`, never pointer equality: `AXFocusedUIElement` is a
 Copy-Rule read returning a fresh reference to a node the walk reaches under a
 different one, so an address comparison would answer "not focused" for every element
-and the marker would silently never appear.
+and the marker would silently never appear. The selection is flattened and clipped
+to `text_limit` with `render._clip` when it is read, so `Snapshot.selected_text`
+never holds more than the caller asked for, whoever consumes it.
 
 **Alternate child collections** (`AXRows`, `AXVisibleChildren`, merged with
 `AXChildren`). `AXChildren` alone is not the whole tree: a table, outline or list
@@ -2464,6 +2469,14 @@ System Settings deep link is the *only* changed one.
 Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
+
+The window the handler creates for such a same-origin `blob:` loads it through
+the dashboard's navigation guard (`createNavigationGuard`, attached on `did-create-window` in
+`window-lifecycle.js`), which admits only `http:` and `https:`. So a window
+opened on a `blob:` URL gets the guard with `allowOwnBlob`, which also admits a
+`blob:` the app origin minted; every other window, the dashboard's own
+included, refuses every `blob:` navigation. `window-lifecycle.test.js` pins
+both.
 
 Editor links that name a file get a fourth verdict, `confirm`:
 `vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,

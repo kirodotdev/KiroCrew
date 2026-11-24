@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { modelHealthKey, useModelsAuthRequired, useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, useModelsAuthRequired, useModelsUnconfirmed } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
-import { setAgentSwitchNotice } from '../store/chatSlice'
+import { selectProjectChipLocked, setAgentSwitchNotice } from '../store/chatSlice'
 import { clearSlotWriteFailure, reportSlotWriteFailure } from './slotWriteFailure'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
@@ -29,16 +29,19 @@ import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
 import { useSlotRunsHere } from './sessionEnvironmentHooks'
+import { BOARD_VIEWS, conductorDefaultPicker } from '../lib/crewMode'
+import { dropPanelViews } from '../hooks/usePanelTabs'
 
 /**
- * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
- * the same hooks and data sources ChatPage uses. `useChatPanePickerModels` is
+ * `ChatPane`'s agent, model and project pickers, bound to the pane's own slot
+ * through the same hooks and data sources ChatPage uses. `useChatPanePickerModels` is
  * what the pickers and the composer chips show: the agent roster and default,
  * the model list (hidden models, the `Auto (decision model)` row, codex pair models), the
- * model that will actually run, effort support and level, and the chip
- * markers. `useChatPanePickerActions` is what a pick does: the agent and model
- * switch protocols, their in-pane failure notice, and the menus' roving-focus
- * keys. `ChatPanePickerMenus` draws the two menus from both results.
+ * model that will actually run, effort support and level, the chip
+ * markers, and the project chip's lock. `useChatPanePickerActions` is
+ * what a pick does: the agent, model and project switch protocols, their in-pane
+ * failure notice, and the menus' roving-focus keys. `ChatPanePickerMenus` draws
+ * the menus from both results.
  */
 
 type PaneSlot = RootState['dashboard']['slots'][number] | undefined
@@ -81,8 +84,15 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
       .catch((err: unknown) => setDefaultAgentFailed(defaultWriteFailureOf(err, name)))
   }, [dispatch])
   // The pop-up lists the full catalog (a same-name member and template are
-  // two rows); every other reader of the roster keeps the name-folded list.
-  const agentDD = useFilteredDropdown(agentChoices)
+  // two rows); every other reader of the roster keeps the name-folded list. A
+  // conductor mode root that may still leave its conductor lists the templates
+  // only: the gateway refuses a Bot there.
+  const templatesOnly = conductorDefaultPicker(paneSlot, defaultAgent)
+  const pickerChoices = useMemo(
+    () => (templatesOnly ? agentChoices.filter(a => a.selection_kind !== 'member') : agentChoices),
+    [templatesOnly, agentChoices],
+  )
+  const agentDD = useFilteredDropdown(pickerChoices)
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
@@ -137,13 +147,18 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // opened it while the menu is open (#10616, same class as #10580).
   const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDD.open)
   const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDD.open)
+  // The project chip, as ComposerDockView draws it: the folder, locked while
+  // attached sub-agents run, and the picker it opens.
+  const projectLocked = useAppSelector(s => selectProjectChipLocked(s, slotKey))
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const { rect: projectBtnRect, anchorTo: anchorProjectBtn } = useAnchoredTriggerRect(projectPickerOpen)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
-  // backend has one; the degraded flag gates only the list-membership fallback —
-  // a cached list served while /api/models fails is stale and cannot disprove
-  // entitlement — and is subscribed to, since it can flip while the served list
-  // stays identical.
-  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
+  // backend has one; the unconfirmed flag gates only the list-membership
+  // fallback — a cached list served while /api/models fails or answers cold is
+  // stale and cannot disprove entitlement — and is subscribed to, since it can
+  // flip while the served list stays identical.
+  const _modelsUnconfirmed = useModelsUnconfirmed(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   // The configured list is short because kiro-cli's own login is missing (see
   // ComposerDockView); a harness's own list (`models_backend`) never sets it.
   const kiroCliSignedOut = useModelsAuthRequired(provider.id) && selectionCapabilitiesQ.data?.models_backend === undefined
@@ -158,7 +173,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const shownModel = displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     paneSlot?.model_withheld,
     codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
@@ -191,7 +206,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const _pinShownModel = displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     paneSlot?.model_withheld,
   )
   // `default` only for the Settings default (see ChatPage).
@@ -208,16 +223,17 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   )
 
   return {
-    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
+    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD, templatesOnly,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
     effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
+    projectLocked, projectPickerOpen, setProjectPickerOpen, projectBtnRect, anchorProjectBtn,
   }
 }
 
 type PickerModels = ReturnType<typeof useChatPanePickerModels>
 
-export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD }: {
+export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD, templatesOnly }: {
   slotKey: string
   paneSlot: PaneSlot
   dispatch: AppDispatch
@@ -225,23 +241,55 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   codexPairModels: PickerModels['codexPairModels']
   agentDD: PickerModels['agentDD']
   modelDD: PickerModels['modelDD']
+  /** The pane's chat is a conductor mode root while a conductor is the default agent (`conductorDefaultPicker`); ChatPane gates the opener. */
+  templatesOnly: boolean
 }) {
-  // In-pane report of a per-slot setting write (agent / model switch) that did
+  // In-pane report of a per-slot setting write (agent / model / project switch) that did
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
+  // Leaving a conductor that is the default agent: a template pick (a bare name
+  // could resolve to a Bot), and the chat's Crew and Dashboard tabs go once it lands.
   const switchAgent = useCallback(async (name: string, kind?: 'member' | 'template') => {
     clearSlotWriteFailure(dispatch, setSwitchError)
     try {
       // Same protocol as switchModel below (#4523): the pane must not depend
       // on the coalesced slots rebroadcast to see its own pick.
       // performAgentSlotSwitch mirrors exactly what the response names.
-      await performAgentSlotSwitch(slotKey, name, dispatch, kind)
+      await performAgentSlotSwitch(slotKey, name, dispatch, templatesOnly ? 'template' : kind)
+      if (templatesOnly) dropPanelViews(slotKey, BOARD_VIEWS)
       // The cold effort answer was judged on the previous crew's model.
       void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slotKey] })
     } catch (e) {
       reportSlotWriteFailure(agentSwitchFailureNotice(e, name), dispatch, setSwitchError)
     }
-  }, [dispatch, queryClient, slotKey])
+  }, [dispatch, queryClient, slotKey, templatesOnly])
+  // Counted per slot, as the main chat's are, so overlapping picks clear the
+  // spinner only when the last one ends, and a host that rebinds the pane to
+  // another slot does not carry it along.
+  const [projectSwitches, setProjectSwitches] = useState<Record<string, number>>({})
+  const switchProject = useCallback(async (path: string) => {
+    const slot = slotKey
+    clearSlotWriteFailure(dispatch, setSwitchError)
+    setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
+    try {
+      // The server realpath-normalizes the directory, so the response's
+      // spelling is what gets written.
+      await performSlotSwitch('project', slot, path,
+        async () => {
+          const r = await api.chatSlotProject(slot, path)
+          return r?.project ?? path
+        },
+        (value) => dispatch(updateSlot({ key: slot, project: value })))
+    } catch (e) {
+      reportSlotWriteFailure(agentSwitchErrorNotice(e), dispatch, setSwitchError)
+    } finally {
+      setProjectSwitches(prev => {
+        const { [slot]: n = 1, ...rest } = prev
+        return n > 1 ? { ...rest, [slot]: n - 1 } : rest
+      })
+    }
+  }, [dispatch, slotKey])
+  const projectSwitching = (projectSwitches[slotKey] ?? 0) > 0
   const switchModel = useCallback(async (name: string) => {
     clearSlotWriteFailure(dispatch, setSwitchError)
     try {
@@ -336,5 +384,5 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   // claims a Tab before the helper re-aims it into the embedded controls.
   const modelDialogIme = useImeGuard()
 
-  return { switchError, setSwitchError, switchAgent, switchModel, onAgentListKeyDown, onModelListKeyDown, modelDialogIme }
+  return { switchError, setSwitchError, switchAgent, switchModel, switchProject, projectSwitching, onAgentListKeyDown, onModelListKeyDown, modelDialogIme }
 }

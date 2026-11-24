@@ -219,7 +219,7 @@ def test_the_shared_loopback_answers_a_refusal_with_its_fixed_page(monkeypatch, 
 
     with caplog.at_level(logging.DEBUG):
         text, code = asyncio.run(_run())
-    assert (text, code) == (PAGE, "callback_access_denied")
+    assert (text, code) == (crew_oauth_dcr._PAGE.format(PAGE), "callback_access_denied")
     assert PROBE not in _emitted(caplog)
 
 

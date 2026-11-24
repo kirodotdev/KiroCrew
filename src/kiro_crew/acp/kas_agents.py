@@ -118,6 +118,7 @@ from kiro_crew.acp.kas_app_identity import (  # noqa: F401
     without_noop_restrictions,
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+from kiro_crew.acp.kas_deny_cli_forms import with_sent_as
 from kiro_crew.acp.kas_env_literals import (  # noqa: F401 - re-exported
     _loggable_key_names,
     _relayable_literal,
@@ -138,6 +139,7 @@ from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation  # noqa
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
 )
+from kiro_crew.acp.kas_permissions import spec_shell_allowlist  # noqa: F401 - re-exported
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
@@ -160,7 +162,6 @@ from kiro_crew.acp.kas_permissions import (
     projection_accepts,
     projection_dropped_rules,
     shell_denies_carried,
-    spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
     trusted_agents_withheld,
@@ -181,6 +182,7 @@ from kiro_crew.acp.kas_prompt import (
 )
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_settings_mcp import include_mcp_json
+from kiro_crew.acp.kas_shell_grant_lift import kas_shell_allowlist
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
@@ -340,7 +342,12 @@ def spec_keys_without_carrier(
     # Only the final notice renderer formats the raw rule for a person.
     deny_notices = [
         json.dumps(
-            {"deniedCommand": {**item, "key": f"toolsSettings.{as_authored(raw, item['key'])}"}}
+            {
+                "deniedCommand": {
+                    **with_sent_as(item),
+                    "key": f"toolsSettings.{as_authored(raw, item['key'])}",
+                }
+            }
         )
         for item in deny_items
         if item["key"] in named
@@ -389,7 +396,7 @@ def spec_keys_without_carrier(
     # says it has no effect.
     gate_read = set()
     if isinstance(tools_settings, dict):
-        if spec_shell_allowlist(tools_settings, spec.get("allowedTools"), translated) is not None:
+        if kas_shell_allowlist(spec, tools_settings, translated) is not None:
             gate_read |= {
                 f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
                 for key in ("execute_bash", "shell")
@@ -596,6 +603,29 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
         agent_id,
     )
     return []
+
+
+#: What a kiro-cli ``excludedTools`` entry of ``@*`` (every MCP server) is on KAS.
+#: KAS matches an exclusion against each tool's tags too, and its built-ins carry
+#: ``@builtin``, so ``@*`` there withholds every tool, the built-ins the spec's
+#: ``tools`` grants included. ``@mcp`` and ``@powers`` are the tags of MCP-served
+#: and Powers tools, which is what ``@*`` names on kiro-cli and in Crew's own reads
+#: (``default_crew_servers.opted_out``, ``mcp_refs.entry_reaches``).
+_KAS_MCP_WILDCARD_EXCLUSIONS: tuple[str, ...] = ("@mcp", "@powers")
+
+
+def _kas_mcp_wildcard(entries: list[str]) -> list[str]:
+    """*entries* with each exact ``@*`` replaced by :data:`_KAS_MCP_WILDCARD_EXCLUSIONS`.
+
+    Only an exclusion list is rewritten, so the built-ins the agent keeps are still
+    the ones its ``tools`` list names. Every other entry stays as written.
+    """
+    if "@*" not in entries:
+        return entries
+    out: list[str] = []
+    for entry in entries:
+        out.extend(_KAS_MCP_WILDCARD_EXCLUSIONS if entry == "@*" else (entry,))
+    return list(dict.fromkeys(out))
 
 
 def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
@@ -1018,15 +1048,17 @@ def to_client_custom_agent(
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
     # A restriction, so recorded whatever the ceiling says; the gate refuses every
     # other shell call of this agent (`spec-shell-allowlist` tier), unless
-    # `allowedTools` names the shell and every deny rides *permissions*.
-    shell_allowlist = spec_shell_allowlist(
-        tools_settings, spec.get("allowedTools"), authored_policy
-    )
+    # `allowedTools` names the shell, every deny rides *permissions* and the
+    # `kas_subagents` preview is not on (`kas_shell_grant_lift`).
+    shell_allowlist = kas_shell_allowlist(spec, tools_settings, authored_policy)
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
-        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel.
+        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel
+        # or travels only split into branches. shortcut: read-only commands then stay
+        # refused, stricter than kiro-cli; lift it once a real run shows the engine
+        # holds every split branch here.
         if shell_auto_allows_readonly(tools_settings) and shell_denies_carried(
-            tools_settings, authored_policy
+            tools_settings, authored_policy, splits=False
         ):
             out[CREW_SHELL_READONLY_KEY] = True
     answered_paths = crew_answered_paths(tools_settings)
@@ -1060,7 +1092,7 @@ def to_client_custom_agent(
             # with the restricting direction's polarity: a spec that excludes
             # ``fs_read`` for kiro-cli must not leave ``read_file`` mounted here,
             # and one that excludes ``fs_write`` must not leave ``delete_file``.
-            out["excludedTools"] = expand_kiro_cli_tool_exclusions(entries)
+            out["excludedTools"] = _kas_mcp_wildcard(expand_kiro_cli_tool_exclusions(entries))
     switched_off, unusable = _disabled_tool_exclusions(spec)
     if unusable:
         raise KasAgentTranslationError(

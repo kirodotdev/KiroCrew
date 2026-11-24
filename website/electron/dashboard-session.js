@@ -7,9 +7,11 @@
  * An overlay is a full-display, non-focusable window that knows nothing about the
  * dashboard's windows, so it asks the main process to raise the right one. The
  * route is the dashboard's own session deep link, the same `?sid=` the System
- * page's session rows and the app SDK build.
+ * page's session rows and the app SDK build; a session on a connected crew gets
+ * the crew link's route instead (`crewChatRoute` in deep-link.js).
  */
 
+const { crewChatRoute } = require("./deep-link");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 
 /**
@@ -102,11 +104,14 @@ function showsForeignOrigin(wc, base) {
  *   hooks the summon hotkey takes: `showApp` runs before the window is shown so
  *   macOS does not ignore `win.show()` for an app a fullscreen tray-close hid,
  *   and `focusApp` runs after it to bring the app in front.
+ * @param {string} [crewId] the connected crew *slotKey* is a session on, or "" for
+ *   this computer. A crew's session opens through the crew link's route, so the
+ *   dashboard switches to that crew instead of opening a same-named local session.
  * @returns {boolean} true when the dashboard was surfaced AND ready to show it;
  *   false when nothing could receive the request, so the caller can KEEP a
  *   notification it could not act on instead of dismissing it.
  */
-function openDashboardSession(win, base, slotKey, { showApp, focusApp } = {}) {
+function openDashboardSession(win, base, slotKey, { showApp, focusApp } = {}, crewId = "") {
   if (!win || win.isDestroyed()) return false;
   const view = win._mcView;
   const wc = view && view.webContents;
@@ -121,8 +126,9 @@ function openDashboardSession(win, base, slotKey, { showApp, focusApp } = {}) {
   // actually there? The local shell is this window on its way to the dashboard,
   // so it is ours to raise but has nothing loaded yet.
   const ready = hostsDashboard(wc, base);
+  const route = crewId ? crewChatRoute(crewId, slotKey) : `/chat?sid=${encodeURIComponent(slotKey)}`;
   // A request that NAMES a session must fail whole, before the window moves.
-  if (slotKey && !ready) return false;
+  if (slotKey && (!ready || !route)) return false;
   // A user-intent show, like the tray's and the summon hotkey's: a close-to-tray
   // hide still pending would hide the window again right after this show.
   cancelPendingTrayHide(win);
@@ -136,7 +142,7 @@ function openDashboardSession(win, base, slotKey, { showApp, focusApp } = {}) {
   // session has somewhere to be acted on is not. So the window comes forward and
   // the caller's notification STAYS.
   if (!ready) return false;
-  if (slotKey) wc.send("navigate", `/chat?sid=${encodeURIComponent(slotKey)}`);
+  if (slotKey) wc.send("navigate", route);
   return true;
 }
 

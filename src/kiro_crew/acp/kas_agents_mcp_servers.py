@@ -352,13 +352,13 @@ def _project_mcp_servers(
             projected, managed=managed, relayed=relayed, dropped_env=dropped_env
         )
         if managed and projected.get("command"):
-            # KAS starts managed stdio children with a minimal environment.
+            # On the entry, so the child adopts this gateway's policy cache
+            # whatever the engine's own environment holds.
             agent_facade.add_policy_markers(projected)
         stdio = bool(projected.get("command"))
         if managed:
-            # Native MCP children do not inherit the gateway's environment.
-            # Take the live listener from the gateway, never from an editable
-            # spec or process discovery.
+            # The live listener goes on the entry from the gateway itself, never
+            # from an editable spec, process discovery or the engine's environment.
             bound_port = gateway_bound_port()
             if bound_port:
                 projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port

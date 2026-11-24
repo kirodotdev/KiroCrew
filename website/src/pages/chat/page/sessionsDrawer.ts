@@ -19,6 +19,7 @@ import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
 import { i18nT } from '../../../i18n/t'
+import { foldersForSessionList } from '../../../utils/mateFolders'
 
 /**
  * Strip of screen the mobile sessions drawer deliberately leaves uncovered, so a
@@ -41,6 +42,8 @@ interface SessionsDrawerOptions {
   location: Location
   isMobile: boolean
   filteredSlots: ChatSlot[]
+  /** The rows the Sessions list shows (`personChatPageSlots`), which decide the folders it draws. */
+  personSlots: ChatSlot[]
   /** True once a slot list has landed; before that an empty `filteredSlots` is not "no sessions". */
   slotsLoaded: boolean
   activeSlot: string | null
@@ -93,7 +96,7 @@ export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): bo
 }
 
 export function useSessionsDrawer({
-  embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
+  embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, personSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
   hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
@@ -288,15 +291,17 @@ export function useSessionsDrawer({
       return 'opened'
     },
   }), [dispatch, showActionError])
+  // A chip reveals a Sessions-list row, so it names only folders that list draws:
+  // a Bot's home leaves it while none of its sessions is listed there.
   const sidebarFolderActions = useMemo<SidebarFolderActions>(() => ({
-    folders: chatFolders,
+    folders: foldersForSessionList(chatFolders, personSlots),
     onFolderReveal: embedMode === 'chat' ? undefined : (folderId: string) => {
       sidebarAutoHidden.current = null
       if (isMobile) openSidebar()
       else if (!sidebarPinned) setSidebarPinned(true)
       dispatch(requestFolderReveal(folderId))
     },
-  }), [chatFolders, dispatch, embedMode, isMobile, openSidebar, sidebarPinned, setSidebarPinned, sidebarAutoHidden])
+  }), [chatFolders, personSlots, dispatch, embedMode, isMobile, openSidebar, sidebarPinned, setSidebarPinned, sidebarAutoHidden])
   /** Mount the panel for a drag in progress. Deliberately NOT `openSidebar`:
    *  that one runs the settle to the rest position, which would race the finger
    *  for the same value and pull the panel out from under it. The gesture has
@@ -398,7 +403,8 @@ export function useSessionsDrawer({
     const el = chatContainerRef.current
     if (!el) return
     const measure = () => setContainerH(el.clientHeight)
-    measure()
+    // The observer's first delivery measures it; reading here as well forced a
+    // layout of the page inside the task that mounts the chat page.
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()

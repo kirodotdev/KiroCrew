@@ -53,6 +53,8 @@ def _request(
     req.transport.get_extra_info = lambda key, default=None: default
     state = MagicMock()
     state._background_tasks = set()
+    # DashboardState starts with no committed ``restart --when-idle`` hold.
+    state._restart_commit_hold = None
     req.app = {"state": state}
     return req
 

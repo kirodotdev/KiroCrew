@@ -196,6 +196,24 @@ class TestBackfillSelection:
         assert "context compacted" not in body
 
     @pytest.mark.asyncio
+    async def test_a_stored_alternation_placeholder_is_not_posted(self, tmp_path):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(
+            slot,
+            [
+                ("user", "real question"),
+                ("assistant", "real answer"),
+                ("user", "next question"),
+                ("assistant", "(No assistant response was recorded for the preceding turn.)"),
+            ],
+        )
+
+        body = "\n".join(await _drain(state, slot))
+        assert "real answer" in body and "next question" in body
+        assert "No assistant response was recorded" not in body
+
+    @pytest.mark.asyncio
     async def test_non_dict_meta_does_not_crash_selection(self, tmp_path):
         """``append``'s ``meta: dict | None`` is not enforced at runtime."""
         state = _state(tmp_path)

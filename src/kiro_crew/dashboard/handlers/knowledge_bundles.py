@@ -15,8 +15,11 @@ import re
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.knowledge_access import _require_knowledge_owner, _sel_log, _store
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
+from kiro_crew.dashboard.handlers.knowledge_access import _sel_log, _store
 from kiro_crew.dashboard.session_export import content_disposition
 from kiro_crew.knowledge.ingestion import _redact
 from kiro_crew.knowledge.store import BUNDLE_STATE_KEY_COL, KnowledgeBundleError
@@ -143,7 +146,7 @@ def _validate_knowledge_bundle(body: object) -> str | None:
 
 async def export_item(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/export -- .knowledge JSON bundle."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.export")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.export")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -159,7 +162,7 @@ async def export_item(request: web.Request) -> web.Response:
 
 async def export_all(request: web.Request) -> web.Response:
     """GET /api/knowledge/export -- full .knowledge JSON bundle, optionally filtered by namespace."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.export")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.export")
     if owner_denied is not None:
         return owner_denied
     namespace = request.query.get("namespace")
@@ -173,7 +176,7 @@ async def export_all(request: web.Request) -> web.Response:
 
 async def import_bundle(request: web.Request) -> web.Response:
     """POST /api/knowledge/import -- accept .knowledge JSON bundle."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.import")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.import")
     if owner_denied is not None:
         return owner_denied
     body, body_err = await read_bounded_json(request, max_bytes=None)

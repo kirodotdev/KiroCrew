@@ -4,7 +4,7 @@
 // so grouping is where the real logic lives — and the reason the tab is usable at
 // all, since a reply separated from the line it answers says nothing.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -150,6 +150,16 @@ describe('reading threads', () => {
   it('anchors the thread to its file and line', () => {
     mount(source([comment({ path: 'src/jar.py', line: 42 })]))
     expect(screen.getByText('src/jar.py:42')).toBeTruthy()
+  })
+
+  it('shows a cut-off anchor line in full in the bubble on keyboard focus, not in a native title', () => {
+    const path = 'src/payments/reconciliation/ledger_adjustments_for_refunds_landing_mid_cycle.py'
+    mount(source([comment({ path, line: 42 })]))
+    const line = screen.getByText(`${path}:42`)
+    expect(line).toHaveAttribute('title', '')
+    expect(line).toHaveAttribute('tabindex', '0')
+    fireEvent.focus(line)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(`${path}:42`)
   })
 
   it('hides resolved threads behind a count instead of dropping them', () => {

@@ -135,6 +135,10 @@ function persist(qc: QueryClient, flag: string, on: boolean): void {
       qc.setQueryData<PreviewFlagsConfigBody>(CONFIG_KEY, prev =>
         prev && setConfigPathValue(prev, previewFlagConfigPath(flag), on))
       baselines.set(flag, on)
+      // A preview can change what the sign-in status lists (`crew_client`: the
+      // portals the company form warns for), so re-read it once the gateway has
+      // the new value (`useKasLogin` KAS_LOGIN_STATUS_KEY).
+      void qc.invalidateQueries({ queryKey: ['kas-login'] })
       // Clears only this switch's notice: another switch's refused write is
       // still true after this one saved.
       if (writeError?.flag === flag) setWriteError(null)

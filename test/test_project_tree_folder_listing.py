@@ -147,7 +147,7 @@ class TestProjectTreeFolderListing:
 
         (plain_project / "keys").mkdir(parents=True)
         real = os.path.realpath(plain_project / "keys")
-        monkeypatch.setattr(files_mod, "is_sensitive_path", lambda p: p == real)
+        monkeypatch.setattr(files_mod, "is_sensitive_canonical_path", lambda p: p == real)
         status, data = await self._get(plain_project, dir="keys")
         assert status == 403
         assert data["code"] == "dir_refused"

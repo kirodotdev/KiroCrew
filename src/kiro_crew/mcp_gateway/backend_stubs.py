@@ -348,6 +348,7 @@ async def forward_from_stub(
             tool_name = ""
             tool_arguments = None
             resource_uri = ""
+            listen_uris: frozenset[str] = frozenset()
             list_paginated = False
             _params = msg.get("params")
             if isinstance(_params, dict):
@@ -372,6 +373,12 @@ async def forward_from_stub(
                     _uri = _params.get("uri")
                     if isinstance(_uri, str):
                         resource_uri = _uri
+                # Only a ``subscriptions/listen`` carries this filter, and routing
+                # reads it for that method alone.
+                _filter = _params.get("notifications")
+                _uris = _filter.get("resourceSubscriptions") if isinstance(_filter, dict) else None
+                if isinstance(_uris, list):
+                    listen_uris = frozenset(u for u in _uris if isinstance(u, str))
             self._pending_requests[fid] = _PendingRequest(
                 stub_uuid=stub_uuid,
                 original_id=orig_id,
@@ -382,6 +389,7 @@ async def forward_from_stub(
                 tool_name=tool_name,
                 tool_arguments=tool_arguments,
                 resource_uri=resource_uri,
+                listen_uris=listen_uris,
                 list_paginated=list_paginated,
                 caller=(caller if resource_uri else None),
             )

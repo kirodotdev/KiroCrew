@@ -20,10 +20,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import _process_group_supervisor, platform_compat
 from kiro_crew.acp import runtime as rt
 from kiro_crew.process_identity import ProcessHandle, process_survived
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 
 def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
@@ -899,3 +899,185 @@ async def test_kill_waits_for_the_group_a_root_that_dies_at_once_leaves(monkeypa
         finally:
             if subreaper:
                 _set_child_subreaper(False)
+
+
+#: A runtime root whose shell job outlived its shell: the middle process starts a
+#: child in a process group of its own and exits, so init adopts the child, which
+#: keeps the root's session id. The root prints the child's pid and waits on stdin.
+_ROOT_THAT_LEAVES_A_SESSION_JOB = (
+    "import os, subprocess, sys\n"
+    "read_end, write_end = os.pipe()\n"
+    "if os.fork() == 0:\n"
+    "    job = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+    "                           preexec_fn=os.setpgrp, stdin=subprocess.DEVNULL,\n"
+    "                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    "    os.write(write_end, str(job.pid).encode())\n"
+    "    os._exit(0)\n"
+    "os.wait()\n"
+    "print(os.read(read_end, 32).decode(), flush=True)\n"
+    "sys.stdin.read()\n"
+)
+
+
+async def _start_root_with_session_job() -> tuple[asyncio.subprocess.Process, int, str | None]:
+    """A session leader running ``_ROOT_THAT_LEAVES_A_SESSION_JOB``, and its job's identity."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _ROOT_THAT_LEAVES_A_SESSION_JOB,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    try:
+        job = int(await asyncio.wait_for(proc.stdout.readline(), timeout=60))
+    except BaseException:
+        # Not handed to the caller's cleanup yet: its group is ended here.
+        os.killpg(proc.pid, signal.SIGKILL)
+        raise
+    return proc, job, _kernel_start_id(job)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or not _process_group_supervisor.can_reap(),
+    reason="the pinned terminator needs Linux and a kernel that pins processes with pidfd_open",
+)
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
+@pytest.mark.asyncio
+async def test_kill_ends_a_job_the_root_left_in_its_session_outside_its_group(monkeypatch):
+    """The reported leak: a closed chat's shell job outlived its runtime.
+
+    The job is in the root's session, reparented to init and in a process group
+    of its own, so neither the walk from the root nor the group signal reaches it.
+    The kill reads it while the root lives and ends it once the root is gone. A
+    second runtime's job of the same shape is in another session and is untouched.
+    """
+    started: list[tuple[asyncio.subprocess.Process, int, str | None]] = []
+    try:
+        started.append(await _start_root_with_session_job())
+        started.append(await _start_root_with_session_job())
+        (proc, job, job_start), (other, other_job, other_job_start) = started
+        other_start = _kernel_start_id(other.pid)
+        assert _still_running(job, job_start) and os.getsid(job) == proc.pid
+        assert os.getpgid(job) == job, "the job must have left the root's process group"
+        r = _bare_runtime(pid=proc.pid)
+        r._process = proc
+        r._start_time = platform_compat.get_process_start_id(proc.pid)
+        # Real processes this test started: the real terminate, pinned to the root.
+        for name in ("kill_process_tree", "kill_process_tree_pinned", "pid_exists"):
+            monkeypatch.setattr(rt.platform_compat, name, getattr(platform_compat, name))
+        # The kill waits for the root's reap, as in production; the zero waits this
+        # file's fixture sets could leave it an unreaped zombie, which still reads
+        # as the root, so nothing would be ended. Lost-run bounds only: it exits at once.
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_REAP_TIMEOUT", FALLBACK_TIMEOUT_SECS)
+        monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+        monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+        await r.kill()
+
+        await async_wait_until(
+            lambda: not _still_running(job, job_start),
+            off_loop=True,
+            describe=lambda: f"session job {job} still running after kill()",
+        )
+        assert _still_running(other.pid, other_start), "another runtime was signalled"
+        assert _still_running(other_job, other_job_start), "another session's job was ended"
+    finally:
+        for root, leftover, leftover_start in started:
+            if _still_running(leftover, leftover_start):
+                os.kill(leftover, signal.SIGKILL)
+            if root.returncode is None:
+                # The root leads its own group, so its number is still ours to signal.
+                os.killpg(root.pid, signal.SIGKILL)
+            await await_until(asyncio.ensure_future(root.wait()), what=f"root {root.pid}'s exit")
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_leftover_read_still_runs_the_kill(monkeypatch):
+    """A cancel that lands while the session is being read cannot skip the kill.
+
+    The read is the teardown's first await, before anything is signalled: a cancel
+    that ended the teardown there would leave the runtime alive and unmarked. The
+    kill runs, the cancel then propagates, and nothing read is ended.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    killed: list[bool] = []
+
+    async def _cancelled_read(pid: int, start_id: str) -> None:
+        raise asyncio.CancelledError
+
+    async def _kill() -> None:
+        killed.append(True)
+
+    async def _end(pid: int, leftovers: object) -> None:
+        raise AssertionError("nothing read may be ended after a cancel")
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _cancelled_read)
+    monkeypatch.setattr(runtime_tree_kill, "_end_root_leftovers", _end)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_tree_kill.kill_ending_session_leftovers(4242, "root-start", _kill)
+    assert killed == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_kill_still_ends_what_was_read(monkeypatch):
+    """A cancel that lands in the kill does not leave the leftovers it read running.
+
+    The kill finishes its signals on a cancel and then re-raises, so the root is gone
+    by then; what was read is still ended, and the cancel then propagates.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    read = object()
+    ended: list[tuple[int, object]] = []
+
+    async def _read(pid: int, start_id: str) -> object:
+        return read
+
+    async def _cancelled_kill() -> None:
+        raise asyncio.CancelledError
+
+    async def _end(pid: int, leftovers: object) -> None:
+        ended.append((pid, leftovers))
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _read)
+    monkeypatch.setattr(runtime_tree_kill, "_end_root_leftovers", _end)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_tree_kill.kill_ending_session_leftovers(4242, "root-start", _cancelled_kill)
+    assert ended == [(4242, read)]
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_kill_marks_the_runtime_dead_before_the_leftover_read(monkeypatch):
+    """A turn cannot claim the runtime while its session is being read.
+
+    The read is an await between the ownership gate's yes and the signal. The runtime
+    is already dead then, so a turn that claims it in that gap is refused before its
+    prompt is sent instead of being killed mid-turn.
+    """
+    from kiro_crew.acp import runtime_tree_kill
+
+    r = _bare_runtime()
+    dead_at_read: list[bool] = []
+
+    async def _read(pid: int, start_id: str) -> None:
+        dead_at_read.append(r._dead)
+
+    monkeypatch.setattr(runtime_tree_kill.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(runtime_tree_kill, "_read_root_leftovers", _read)
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+    monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+    await r.kill()
+
+    assert dead_at_read == [True]

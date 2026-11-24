@@ -1121,7 +1121,10 @@ async def api_shutdown(request: web.Request) -> web.Response:
     exits the process.
 
     Intended for the desktop app to call before installing an auto-update, so
-    the Squirrel bundle swap never races a live gateway. Requires loopback (or a
+    the Squirrel bundle swap never races a live gateway, and on Quit, when the
+    body carries ``{"user_stop": true}``: that is a stop the user chose, so it
+    writes the user-stop mark first and the next boot ends the kept YOLO and chat
+    trust (``kept_grants``). Requires loopback (or a
     kernel-attested same-user AF_UNIX peer, ``_unix_peer_is_self``, which is how
     ``kirocrew stop``'s owner-verified socket send arrives, with an empty
     ``request.remote``) plus the local secret (same auth as
@@ -1153,13 +1156,28 @@ async def api_shutdown(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
+    # ``{"user_stop": true}`` says the user chose this stop (the desktop Quit), so the
+    # grants this gateway holds end with it (``kept_grants``). Any other body -- the
+    # desktop's stop before an update, the CLI's fallback, which marks the stop itself
+    # -- keeps them, as every exit the user did not choose does.
+    user_stop = False
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        user_stop = isinstance(body, dict) and body.get("user_stop") is True
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="shutdown",
         outcome="success",
         source="local-app",
-        resources="gateway",
+        resources="gateway, user_stop" if user_stop else "gateway",
     )
+    if user_stop:
+        from kiro_crew import kept_grants
+
+        await asyncio.to_thread(kept_grants.mark_user_stop, "desktop")
     logger.info("shutdown requested via /api/shutdown — triggering graceful stop")
 
     # Fire the shutdown only AFTER this 200 has flushed to the client, so the

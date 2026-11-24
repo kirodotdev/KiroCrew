@@ -129,8 +129,8 @@ describe('a switch clears the stale toast before reporting a new failure', () =>
 
   const reporters = bodies.filter(b => b.body.includes('reportSlotWriteFailure('))
 
-  it('finds both switch actions, so neither can be renamed out of this pin', () => {
-    expect(reporters.map(r => r.name).sort()).toEqual(['switchAgent', 'switchModel'])
+  it('finds every switch action, so none can be renamed out of this pin', () => {
+    expect(reporters.map(r => r.name).sort()).toEqual(['switchAgent', 'switchModel', 'switchProject'])
   })
 
   for (const { name, body } of reporters) {

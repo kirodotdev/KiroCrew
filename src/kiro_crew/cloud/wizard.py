@@ -113,6 +113,19 @@ def _deploy_with_progress(
     return box["result"]  # type: ignore[return-value]
 
 
+def _wait_for_creating_stack(tag: str, profile: str, region: str) -> None:
+    """Wait for a stack another launch started, printing the same progress as a deploy.
+
+    The wait only polls, so a Ctrl+C here leaves nothing to stop; the caller names the
+    stack. The caller reads the stack's outcome afterwards.
+    """
+    worker = threading.Thread(target=ec2.wait_for_create, args=(tag, profile, region), daemon=True)
+    worker.start()
+    ui.detail("Streaming CloudFormation + bootstrap progress:")
+    _stream_progress(worker, tag, profile, region, set(), set(), "")
+    worker.join()
+
+
 def _terminate_deploy(proc: object) -> None:
     """Best-effort SIGTERM→SIGKILL of an interrupted deploy child."""
     try:
@@ -640,15 +653,12 @@ def launch(
             )
         except KeyboardInterrupt:
             # Stopping the wait does not stop CloudFormation, so say what may be left.
-            print()
-            ui.warn(
-                f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; "
-                f"it bills ~${tier.approx_usd_per_hr:.2f}/hr "
-                f"({sizes.price_basis(region)}) while its instance runs."
+            _name_stack_still_creating(
+                tag,
+                profile,
+                region,
+                f"~${tier.approx_usd_per_hr:.2f}/hr ({sizes.price_basis(region)})",
             )
-            where = _cli_scope(profile, region)
-            ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")
-            ui.detail(f"Remove it: kirocrew cloud destroy --tag {tag}{where}")
             raise
         except AWSError as exc:
             ui.fail(str(exc))
@@ -673,6 +683,24 @@ def launch(
             _name_stack_left_behind(tag, profile, region)
             return 1
         ui.ok(f"Instance {result.instance_id} is up and KiroCrew is healthy.")
+    elif not result.instance_id and result.status == "CREATE_IN_PROGRESS":
+        tag = result.tag
+        ui.info(f"{result.stack_name} is still being created in AWS; waiting for it to finish…")
+        try:
+            _wait_for_creating_stack(tag, profile, region)
+        except KeyboardInterrupt:
+            _name_stack_still_creating(tag, profile, region)
+            raise
+        settled = _deploy_result_for_tag(tag, profile, region)
+        if settled is None or not settled.instance_id or settled.status in ec2._FAILED_STATES:
+            ui.fail(
+                f"{result.stack_name} did not finish creating "
+                f"({settled.status if settled else 'not found'})."
+            )
+            _name_stack_left_behind(tag, profile, region)
+            return 1
+        result = settled
+        ui.ok(f"Instance {result.instance_id} is up and Kiro Crew is healthy.")
     elif not result.instance_id:
         ui.warn("Previous cloud stack exists but the instance is not ready yet.")
         ui.detail("Check progress with: kirocrew cloud status")
@@ -952,6 +980,21 @@ def _name_stack_left_behind(tag: str, profile: str, region: str) -> None:
     ui.detail(f"Remove it with: kirocrew cloud destroy --tag {tag}{where}")
 
 
+def _name_stack_still_creating(tag: str, profile: str, region: str, rate: str = "") -> None:
+    """After a Ctrl+C, say the stack may still be creating and billing, and how to reach it.
+
+    Stopping the wait does not stop CloudFormation. *rate* is the hourly price when known.
+    """
+    print()
+    bills = (
+        f"it bills {rate} while its instance runs" if rate else "it bills while its instance runs"
+    )
+    ui.warn(f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; {bills}.")
+    where = _cli_scope(profile, region)
+    ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")
+    ui.detail(f"Remove it: kirocrew cloud destroy --tag {tag}{where}")
+
+
 def _record_launch(*, profile: str, region: str, tag: str) -> None:
     """Write the launch record, and never fail the command over it.
 
@@ -1159,7 +1202,7 @@ def _saved_launch_matches(cfg: LaunchState, profile: str, region: str) -> bool:
 
 
 def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
-    """True if a saved-tag stack is worth resuming (has an instance, not failed).
+    """True if a saved-tag stack is worth resuming (has an instance or is being created).
 
     A new launch saves ``last_tag`` before provisioning, so a launch that failed or was
     interrupted leaves it pointing at a ROLLBACK_COMPLETE / no-instance stack. Such a tag
@@ -1168,6 +1211,10 @@ def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
     """
     if result.status in ec2._FAILED_STATES:
         return False
+    # This installation's own launch, interrupted while AWS kept creating it: resume waits
+    # for it, so a rerun neither drops its pointer nor creates a second stack.
+    if result.status == "CREATE_IN_PROGRESS":
+        return True
     return bool(result.instance_id)
 
 

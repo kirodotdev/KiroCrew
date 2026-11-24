@@ -24,6 +24,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 import { api } from '../../api/client'
+import { i18next } from '../../i18n/all'
 import { namedCeiling } from '../../test/namedCeiling'
 import { PREVIEW_FLAG_PREFIX } from '../../utils/previewFlags'
 import {
@@ -500,6 +501,37 @@ describe('Decisions preview card', () => {
     // the main switch they already turned on.
     expect(pointRow('Risky tool-call notes').textContent).toContain('Needs your OK')
     expect(pointRow('Risky tool-call notes').getAttribute('aria-current')).toBeNull()
+  })
+
+  it('reads each point\'s hidden status as its own paragraph, worded by one catalog message', async () => {
+    // Browse mode reads the sr-only block as text. Japanese, because there a
+    // description and status glued with an English space differ from the catalog's.
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      stubGateway({ enabled: true })
+      renderSection()
+      await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(pointsOf(true).length))
+      const tabs = screen.getAllByRole('tab')
+      const described = tabs.map(tab => document.getElementById(tab.getAttribute('aria-describedby') as string))
+      const block = described[0]?.parentElement as HTMLElement
+      // One block element per point, each the row's own description target, so no two
+      // points share a text node.
+      expect(block.className).toBe('sr-only')
+      expect([...block.children]).toHaveLength(tabs.length)
+      expect(new Set([...block.children])).toEqual(new Set(described))
+      for (const el of block.children) expect(el.tagName).toBe('P')
+      for (const [i, tab] of tabs.entries()) {
+        expect(tab).toHaveAccessibleDescription(described[i]?.textContent as string)
+      }
+      expect(pointRow('スキルの自動選択')).toHaveAccessibleDescription(
+        'いま送ったメッセージがどのスキルを読み込むか、あるいはどれも合わないかを選びます。オン',
+      )
+      expect(pointRow('危険なツール呼び出しの注意')).toHaveAccessibleDescription(
+        'ツール呼び出しを自分で承認するセッションで、見直す価値のある呼び出しに印を付けます。呼び出しを止めることはありません。許可が必要',
+      )
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('says every point but the judge is off while consent is off, and lists them all', async () => {

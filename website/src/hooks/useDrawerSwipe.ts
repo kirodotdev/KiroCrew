@@ -4,6 +4,7 @@ import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold
 import { deepActiveElement } from '../utils/editableTarget'
 import { haptic } from '../lib/haptic'
 import { isModalLayer } from './modalLayer'
+import { pinchZoomed } from './useVisualViewport'
 
 /**
  * Finger-tracking open/close gesture for a mobile edge panel — the sessions
@@ -1161,6 +1162,8 @@ export function useDrawerSwipe(
       // it owned and stranded indefinitely.
       if (e.touches.length > 1) { abandon(); return }
       if (phase.current !== 'idle') return
+      // On a pinch-zoomed page a one-finger drag pans the zoomed view.
+      if (pinchZoomed()) return
       const touch = e.touches[0]
       if (!openRef.current) {
         const x0 = touch.clientX

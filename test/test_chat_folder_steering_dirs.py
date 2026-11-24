@@ -847,6 +847,8 @@ def test_walk_refuses_where_descriptor_relative_opens_are_unavailable(
     A by-name walk has a check-then-open race an agent can win with a junction, so the
     walk yields nothing and warns once. Kept here because it must run on Windows too.
     """
+    from pathlib import Path
+
     root = tmp_path / "standards"
     root.mkdir()
     (root / "own.md").write_text("Prefer small diffs.", encoding="utf-8")
@@ -854,13 +856,23 @@ def test_walk_refuses_where_descriptor_relative_opens_are_unavailable(
     listed: list[object] = []
     real_scandir = os.scandir
 
-    def _spy(arg, *a, **kw):
+    def _spy(arg=".", *a, **kw):
         listed.append(arg)
         return real_scandir(arg, *a, **kw)
 
-    monkeypatch.setattr(folder_steering.os, "scandir", _spy)
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.folder_steering"):
-        docs = collect_folder_steering([str(root)], project=None, home=tmp_path / "home")
+    # The worker's stdlib os, so a by-name listing through any route that reaches
+    # os.scandir is seen; other modules' and threads' scans land here too, so only
+    # this tree's are checked, after the spy is removed and the list stops growing.
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", _spy)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.folder_steering"):
+            docs = collect_folder_steering([str(root)], project=None, home=tmp_path / "home")
     assert docs == []
-    assert listed == []  # nothing was listed by name
+    named = [
+        a
+        for a in listed
+        if not isinstance(a, int)
+        and Path(os.path.realpath(os.fsdecode(a))).is_relative_to(root.resolve())
+    ]
+    assert named == []  # nothing was listed by name
     assert any("relative to a descriptor" in r.getMessage() for r in caplog.records)

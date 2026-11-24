@@ -695,7 +695,7 @@ Resources:
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
-          # sudo resets PATH to secure_path, which can resolve `node` to the distro
+          # sudo resets PATH to secure_path, which can resolve node to the distro
           # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
           # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
           export PATH="/usr/local/bin:\$PATH"
@@ -708,7 +708,7 @@ Resources:
           else
             echo "cloning ${KirocrewRepo}@${KirocrewRef}"
             rm -rf kirocrew
-            # `--` ends option parsing so the URL can't read as a git flag.
+            # The -- ends option parsing so the URL can't read as a git flag.
             git clone --depth 1 --branch "${KirocrewRef}" -- "${KirocrewRepo}" kirocrew
           fi
           cd kirocrew

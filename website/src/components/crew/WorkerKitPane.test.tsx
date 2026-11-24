@@ -135,7 +135,13 @@ describe('WorkerKitPane', () => {
     expect(current).toHaveTextContent('Terminal commands that only read still run, except git commands, which are refused too. Its file tools, including write, still work.')
     // The limit comes from an added agent, and the notice says how to lift it.
     expect(current).toHaveTextContent('This comes from blocked commands of an agent added to this bot')
-    expect(current).toHaveTextContent("To lift it, remove those blocked commands from this bot's config file.")
+    // ...by the control that lifts it, in the words its row shows, the config
+    // file only as a second way. This pane also shows outside the Abilities
+    // section (after an enroll), so it never says the control is above.
+    expect(current).toHaveTextContent("To lift it, press Remove on the terminal's blocked commands under Tool settings in this bot's Abilities.")
+    expect(current).toHaveTextContent("Removing them from this bot's config file also works.")
+    expect(current).not.toHaveTextContent('deniedCommands')
+    expect(current).not.toHaveTextContent('above')
     expect(current).not.toHaveTextContent('add the agent again')
     expect(within(within(current).getByTestId('worker-kit-unenforced-current-which')).getAllByRole('listitem', { hidden: true })).toHaveLength(2)
   })

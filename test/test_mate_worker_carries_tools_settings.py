@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_kas_deny_by_default import _set_switch
 from test_kas_spec_builtin_grant import _handle, _permission
 from test_tool_call_classification_kas import _kas_builtin_flow
 
@@ -133,10 +134,11 @@ def bot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return write
 
 
-def _worker_batch(tmp_path: Path) -> list[dict[str, Any]]:
+def _worker_batch(tmp_path: Path, base: dict[str, Any] = WORKER_BASE) -> list[dict[str, Any]]:
     """The batch a worker session registers: the Bot file read and merged
-    (``mate_worker_projection``), projected, and recorded as the KAS harness does."""
-    spec = mate_worker_projection(dict(WORKER_BASE), tmp_path, "worker-1")
+    (``mate_worker_projection``) onto *base*, projected, and recorded as the KAS
+    harness does."""
+    spec = mate_worker_projection(dict(base), tmp_path, "worker-1")
     batch = kas_agents.build_kas_custom_agents(tmp_path, WORKER, spec, session_key="worker-1")
     return with_unjudged_denies(batch, WORKER, spec)
 
@@ -265,6 +267,65 @@ def test_deny_by_default_refuses_touch_and_auto_allow_readonly_runs_ls(bot, work
     assert (echo.action, echo.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
 
 
+#: A worker whose own spec lists the shell in ``allowedTools``.
+SHELL_GRANTED_BASE = {**WORKER_BASE, "allowedTools": ["execute_bash"]}
+
+#: The ``kas_subagents`` preview never set, stored off and stored on.
+_PREVIEW_VALUES = pytest.mark.parametrize(
+    "value", [None, False, True], ids=["never-set", "off", "on"]
+)
+
+
+@_PREVIEW_VALUES
+def test_a_worker_that_lists_the_shell_reads_deny_by_default_as_the_preview_says(
+    bot, work, tmp_path, monkeypatch, value
+) -> None:
+    """As an ordinary KAS session of that agent: with the preview on the shell in
+    ``allowedTools`` does not lift ``denyByDefault``; otherwise it does, while every
+    deny travels. A worker that does not list the shell keeps the allowlist either way."""
+    _set_switch(monkeypatch, value)
+    held = value is True
+    bot(
+        {
+            "shell": {
+                "denyByDefault": True,
+                "allowedCommands": ["git status.*"],
+                "deniedCommands": ["touch .*"],
+            }
+        }
+    )
+    merged = mate_worker_projection(dict(SHELL_GRANTED_BASE), tmp_path, "worker-1")
+    assert merged["allowedTools"] == ["execute_bash"]
+    batch = _worker_batch(tmp_path, SHELL_GRANTED_BASE)
+    assert CREW_UNJUDGED_DENIES_KEY not in batch[0]
+    cp = _judge(_own_request(_shell("cp seed copy"), batch, work))
+    assert ((cp.action, cp.tier) == (TOOL_DENY, "spec-shell-allowlist")) is held
+    listed = _judge(_own_request(_shell("git status --short"), batch, work))
+    assert listed.action == TOOL_AUTO_APPROVE
+    plain = _judge(_own_request(_shell("cp seed copy"), _worker_batch(tmp_path), work))
+    assert (plain.action, plain.tier) == (TOOL_DENY, "spec-shell-allowlist")
+
+
+@_PREVIEW_VALUES
+def test_a_worker_that_lists_the_shell_keeps_its_hold_on_unjudged_denies(
+    bot, work, tmp_path, monkeypatch, value
+) -> None:
+    """The hold on every command that is not read-only depends on neither the grant
+    nor the preview."""
+    _set_switch(monkeypatch, value)
+    bot({"shell": {"deniedCommands": MIXED_DENIED}})
+    for base in (WORKER_BASE, SHELL_GRANTED_BASE):
+        batch = _worker_batch(tmp_path, base)
+        assert [item["entry"] for item in batch[0][CREW_UNJUDGED_DENIES_KEY]] == [
+            *MIXED_DENIED[:3],
+            *MIXED_DENIED[4:],
+        ]
+        rm = _judge(_own_request(_shell("rm -rf /tmp/x"), batch, work))
+        assert (rm.action, rm.tier) == (TOOL_DENY, "spec-unjudged-denies")
+        ls = _judge(_own_request(_shell(f"ls {work}"), batch, work))
+        assert ls.action == TOOL_AUTO_APPROVE
+
+
 def test_trusted_agents_land_as_a_subagent_allow_on_the_wire(bot, tmp_path) -> None:
     bot({"subagent": {"trustedAgents": ["gpu-coder"]}})
     params: dict[str, Any] = {}
@@ -287,6 +348,30 @@ def test_unjudged_denies_refuse_a_command_that_is_not_read_only(bot, work, tmp_p
     assert "Kiro Crew cannot check some of its deniedCommands" in rm.reason
     ls = _judge(_own_request(_shell(f"ls {work}"), batch, work))
     assert ls.action == TOOL_AUTO_APPROVE
+
+
+def test_removing_the_shell_settings_lifts_the_hold_on_the_next_session(
+    bot, work, tmp_path, monkeypatch
+) -> None:
+    """The Abilities section's Remove on the Bot's ``shell`` settings row lifts it."""
+    from kiro_crew import mate_capabilities
+
+    monkeypatch.setattr(mate_capabilities, "mate_agents_dir", paths.mate_agents_dir)
+    bot({"shell": {"deniedCommands": MIXED_DENIED}})
+    held = _judge(_own_request(_shell(f"touch {work}/t.txt"), _worker_batch(tmp_path), work))
+    assert held.tier == "spec-unjudged-denies"
+    _, spec = mate_capabilities._load_spec("pixel")
+    body = {
+        "revision": mate_capabilities._revision(spec),
+        "operations": [{"section": "toolsSettings", "id": "shell", "action": "remove"}],
+    }
+    preview = mate_capabilities.preview("pixel", body, {})
+    mate_capabilities.put("pixel", {**body, "preview_token": preview["preview_token"]}, {})
+
+    batch = _worker_batch(tmp_path)
+    assert CREW_UNJUDGED_DENIES_KEY not in batch[0]
+    touch = _judge(_own_request(_shell(f"touch {work}/t.txt"), batch, work))
+    assert touch.tier != "spec-unjudged-denies"
 
 
 @pytest.mark.parametrize(
@@ -506,9 +591,9 @@ def test_the_gate_has_no_result_a_trusted_session_must_hand_to_a_person() -> Non
 @pytest.mark.parametrize(
     "pattern",
     [
-        "(touch|mkdir).*" + GATE_JUDGED_MARK,
-        GATE_JUDGED_MARK + "(touch|mkdir).*",
-        "(touch|mkdir).* (past the first 64)",
+        "touch.*|mkdir.*" + GATE_JUDGED_MARK,
+        GATE_JUDGED_MARK + "touch.*|mkdir.*",
+        "touch.*|mkdir.* (past the first 64)",
     ],
 )
 def test_authored_notice_text_never_classifies_a_deny(bot, work, tmp_path, alias, pattern):
@@ -527,7 +612,7 @@ def test_authored_notice_text_never_classifies_a_deny(bot, work, tmp_path, alias
 def test_notice_renders_structured_denies_without_reclassifying_authored_text():
     from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
 
-    raw = "(touch|mkdir).*" + GATE_JUDGED_MARK
+    raw = "(touch.*|mkdir.*)+" + GATE_JUDGED_MARK
     lost = kas_agents.spec_keys_without_carrier(
         {"toolsSettings": {"shell": {"deniedCommands": [raw]}}},
         translates_tools_settings=True,
@@ -573,21 +658,21 @@ async def test_session_extras_attaches_unjudged_denies_only_to_the_worker(
     from kiro_crew import agent as agent_mod
     from kiro_crew.agent_sdk import kas_model_catalog
 
-    settings = {"shell": {"deniedCommands": ["(touch|mkdir).*"]}}
+    settings = {"shell": {"deniedCommands": ["touch.*|mkdir.*"]}}
     bot(settings)
     spec = {**WORKER_BASE, "name": agent}
     if agent != WORKER:
         spec["toolsSettings"] = settings
     (paths.kiro_agents_dir() / f"{agent}.json").write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: None)
-    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda: None)
+    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda *_a: None)
 
     extras = await KasHarness().session_extras(agent, work_dir=work, session_key="worker-1")
 
     own = next(entry for entry in extras.custom_agents if entry["id"] == agent)
     if agent == WORKER:
         record = own[CREW_UNJUDGED_DENIES_KEY]
-        assert [item["entry"] for item in record] == ["(touch|mkdir).*"]
+        assert [item["entry"] for item in record] == ["touch.*|mkdir.*"]
         assert record[0]["conditional"] is False
     else:
         assert CREW_UNJUDGED_DENIES_KEY not in own

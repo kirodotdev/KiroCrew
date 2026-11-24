@@ -107,6 +107,12 @@ from kiro_crew.dashboard.change_cards_records import (
 
 logger = logging.getLogger("kiro_crew.dashboard.change_cards")
 
+#: The outcomes :meth:`CardStore._refresh_verdict` decides for a record.
+_KEEP = "keep"
+_REVIEW = "review"
+_EXPIRE = "expire"
+_ABANDON = "abandon"
+
 
 def _store_unavailable() -> "CardError":
     return CardError(
@@ -369,6 +375,76 @@ class CardStore:
             out.append(self.public(rec))
         return out
 
+    def holds_open_card(self, slot_key: str) -> bool:
+        """Whether *slot_key* has a card :meth:`_refresh` would leave open.
+
+        That is an undismissed ``pending`` / ``failed`` / ``applying`` record that
+        :meth:`_refresh` at this moment would leave in that same status.
+
+        Changes nothing and never reads disk: an unloaded store answers ``False``.
+        """
+        if not self._loaded:
+            return False
+        now = self._clock()
+        return any(
+            rec["slot_key"] == slot_key and self._is_open(rec, now) for rec in self._cards.values()
+        )
+
+    def slots_with_open_cards(self) -> frozenset[str]:
+        """Every slot :meth:`holds_open_card` answers ``True`` for, in one pass."""
+        if not self._loaded:
+            return frozenset()
+        now = self._clock()
+        return frozenset(rec["slot_key"] for rec in self._cards.values() if self._is_open(rec, now))
+
+    @classmethod
+    def _is_open(cls, rec: dict[str, Any], now: float) -> bool:
+        if rec.get("dismissed"):
+            # :meth:`pending` hides a dismissed card whether or not it has expired,
+            # so a cleared one leaves nothing for the person to act on here either.
+            return False
+        if rec["status"] not in (STATUS_PENDING, STATUS_FAILED, STATUS_APPLYING):
+            return False
+        return cls._refresh_verdict(rec, now)[1] == _KEEP
+
+    @classmethod
+    def _refresh_verdict(cls, rec: dict[str, Any], now: float) -> tuple[bool, str]:
+        """What :meth:`_refresh` at *now* does to *rec*, decided without changing it.
+
+        The one copy of the rule: :meth:`_refresh` applies this verdict and
+        :meth:`_is_open` reads it, so the two cannot drift apart. The answer is
+        ``(clear_inflight, outcome)``. *clear_inflight* is True when a stale poll is
+        dropped. *outcome* is :data:`_KEEP` (the status stays), :data:`_REVIEW` (a
+        stale write goes to review), :data:`_EXPIRE`, or :data:`_ABANDON` (an
+        unfinished approval fails retryably).
+        """
+        inflight = rec.get("inflight")
+        clear_inflight = False
+        if inflight and now - float(inflight.get("started_at", 0)) > INFLIGHT_STALE_SECONDS:
+            if not cls._idempotent_step(rec, inflight):
+                # A write that has not reported back for this long may or may
+                # not have happened: never re-admitted, the same verdict a
+                # restart gives it (:meth:`_load`).
+                return False, _REVIEW
+            # A stale poll (a repeat GET) changed nothing: admit it again.
+            inflight = None
+            clear_inflight = True
+        if inflight or now < rec["expires_at"]:
+            return clear_inflight, _KEEP
+        status = rec["status"]
+        if status in (STATUS_PENDING, STATUS_FAILED):
+            return clear_inflight, _EXPIRE
+        if status == STATUS_APPLYING:
+            # An approval the person never finished (an OAuth poll) grants
+            # nothing, so it fails retryably. A multi-step plan whose browser
+            # vanished between two writes stays ``applying``: the next load
+            # continues from the step the gateway expects.
+            if any(s.get("repeat") for s in rec["plan"]["apply"]):
+                return clear_inflight, _ABANDON
+            if not rec["evidence"]:
+                return clear_inflight, _EXPIRE
+        return clear_inflight, _KEEP
+
     def last_finished_at(self, slot_key: str, statuses: "frozenset[str]") -> float:
         """When a card of *slot_key* last finished in one of *statuses*, else ``0.0``.
 
@@ -419,48 +495,28 @@ class CardStore:
         self._dirty()
 
     def _refresh(self, rec: dict[str, Any]) -> bool:
-        now = self._clock()
-        changed = False
-        inflight = rec.get("inflight")
-        if inflight and now - float(inflight.get("started_at", 0)) > INFLIGHT_STALE_SECONDS:
-            if not self._idempotent_step(rec, inflight):
-                # A write that has not reported back for this long may or may
-                # not have happened: never re-admitted, the same verdict a
-                # restart gives it (:meth:`_load`).
-                self.mark_needs_review(rec, CODE_INTERRUPTED, _INTERRUPTED_MESSAGE)
-                return True
-            # A stale poll (a repeat GET) changed nothing: admit it again.
+        clear_inflight, outcome = self._refresh_verdict(rec, self._clock())
+        if outcome == _REVIEW:
+            self.mark_needs_review(rec, CODE_INTERRUPTED, _INTERRUPTED_MESSAGE)
+            return True
+        if clear_inflight:
             rec["inflight"] = None
-            changed = True
-        if rec["status"] in (STATUS_PENDING, STATUS_FAILED) and now >= rec["expires_at"]:
-            if not rec.get("inflight"):
-                self._finish(rec, STATUS_EXPIRED)
-                return True
-        if (
-            rec["status"] == STATUS_APPLYING
-            and not rec.get("inflight")
-            and now >= rec["expires_at"]
-        ):
-            # An approval the person never finished (an OAuth poll) grants
-            # nothing, so it fails retryably. A multi-step plan whose browser
-            # vanished between two writes stays ``applying``: the next load
-            # continues from the step the gateway expects.
-            if any(s.get("repeat") for s in rec["plan"]["apply"]):
-                self._fail_now(
-                    rec,
-                    catalog.OP_APPLY,
-                    len(rec["evidence"]),
-                    "abandoned",
-                    "the approval was not finished",
-                    nothing_applied=True,
-                )
-                return True
-            if not rec["evidence"]:
-                self._finish(rec, STATUS_EXPIRED)
-                return True
-        if changed:
+        if outcome == _EXPIRE:
+            self._finish(rec, STATUS_EXPIRED)
+            return True
+        if outcome == _ABANDON:
+            self._fail_now(
+                rec,
+                catalog.OP_APPLY,
+                len(rec["evidence"]),
+                "abandoned",
+                "the approval was not finished",
+                nothing_applied=True,
+            )
+            return True
+        if clear_inflight:
             self._dirty()
-        return changed
+        return clear_inflight
 
     def sweep(self) -> list[dict[str, Any]]:
         """Expire and prune. Returns the public form of every card that changed."""
@@ -648,6 +704,30 @@ class CardStore:
             ):
                 return rec
         return None
+
+    def expire_made(
+        self, slot_key: str, kind: str, params: dict[str, Any]
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Expire *slot_key*'s waiting cards whose exact change is already made.
+
+        The agent already heard the change is made, so the expiry is marked
+        reported. Returns each card with its :meth:`snapshot` for :meth:`restore`.
+        """
+        self._ensure_loaded()
+        out = []
+        for rec in self._cards.values():
+            if (
+                rec["slot_key"] == slot_key
+                and rec["kind"] == kind
+                and rec["status"] in (STATUS_PENDING, STATUS_FAILED)
+                and not rec.get("inflight")
+                and rec["params"] == params
+            ):
+                snap = self.snapshot(rec)
+                self._finish(rec, STATUS_EXPIRED)
+                rec["reported_status"] = STATUS_EXPIRED
+                out.append((rec, snap))
+        return out
 
     def _apply_preview(
         self,
@@ -1106,6 +1186,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.change_card_mcp_server import (  # noqa: F401
+        KIND_MCP_SERVER,
+    )
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
     )

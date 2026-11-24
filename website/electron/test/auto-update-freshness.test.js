@@ -53,6 +53,9 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
     notifications: [],
     states: [],
     checks: 0,
+    // Reads of the feed by the pre-install gate (see readOffer in
+    // freshness-gate.js), which send no check.
+    reads: 0,
     downloads: 0,
     quits: 0,
     stops: 0,
@@ -65,6 +68,12 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
   // What the NEXT checkForUpdates() does — the seam that lets a test say "the
   // feed has moved on" / "the release was retracted" / "the feed is down".
   let onCheck = null;
+  // What the NEXT read of the feed is told, set by the same seams so a check and
+  // a read agree: `{ offered }` (a version, or null for no update) or `{ err }`.
+  // Unset, the updater reads as inactive: the one state in which
+  // electron-updater's checkForUpdates() resolves with no verdict, which is what
+  // an unset `onCheck` models.
+  let readAnswer = null;
   // Parks stopGateway. That await is the one gap between an install claiming
   // `installing` and dispatching the installer, so it is the window a concurrent
   // quit has to be tested against.
@@ -76,6 +85,14 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
       calls.checks += 1;
       if (onCheck) await onCheck();
     },
+    isUpdaterActive: () => readAnswer !== null,
+    getUpdateInfoAndProvider: async () => {
+      calls.reads += 1;
+      if (readAnswer.err) throw readAnswer.err;
+      return { info: { version: readAnswer.offered === null ? appVersion : readAnswer.offered } };
+    },
+    // allowDowngrade=true: any version but the running one is an update.
+    isUpdateAvailable: async (info) => info.version !== appVersion,
     downloadUpdate: async () => { calls.downloads += 1; },
     quitAndInstall: (...a) => calls.quitAndInstall.push(a),
     on: (ev, fn) => { handlers[ev] = fn; },
@@ -131,10 +148,19 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
     calls,
     emit,
     /** The feed answers this on the next check. */
-    feedServes: (version) => { onCheck = () => emit("update-available", { version }); },
-    feedSaysUpToDate: () => { onCheck = () => emit("update-not-available", {}); },
-    feedFails: (err) => { onCheck = () => { throw err; }; },
-    feedSilent: () => { onCheck = null; },
+    feedServes: (version) => {
+      onCheck = () => emit("update-available", { version });
+      readAnswer = { offered: version };
+    },
+    feedSaysUpToDate: () => {
+      onCheck = () => emit("update-not-available", {});
+      readAnswer = { offered: null };
+    },
+    feedFails: (err) => {
+      onCheck = () => { throw err; };
+      readAnswer = { err };
+    },
+    feedSilent: () => { onCheck = null; readAnswer = null; },
     /**
      * A check that hangs until the test lands it — the seam for an ABANDONED
      * check, where the freshness gate's bounded wait expires but the request
@@ -142,15 +168,28 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
      */
     feedDeferred: () => {
       let settle = null;
+      let read = null;
       autoUpdater.checkForUpdates = () => {
         calls.checks += 1;
         return new Promise((resolve, reject) => { settle = { resolve, reject }; });
       };
-      const land = (fn) => { fn(); settle.resolve(); };
+      // A read hangs the same way, and lands with the same answer, with no event.
+      readAnswer = {};
+      autoUpdater.getUpdateInfoAndProvider = () => {
+        calls.reads += 1;
+        return new Promise((resolve, reject) => { read = { resolve, reject }; });
+      };
+      const land = (fn, version) => {
+        if (read) read.resolve({ info: { version } });
+        if (settle) { fn(); settle.resolve(); }
+      };
       return {
-        serves: (version) => land(() => emit("update-available", { version })),
-        upToDate: () => land(() => emit("update-not-available", {})),
-        fails: (err) => { emit("error", err); settle.reject(err); },
+        serves: (version) => land(() => emit("update-available", { version }), version),
+        upToDate: () => land(() => emit("update-not-available", {}), appVersion),
+        fails: (err) => {
+          if (read) read.reject(err);
+          if (settle) { emit("error", err); settle.reject(err); }
+        },
         /**
          * The SAME failure with electron-updater's two signals reversed: the
          * promise rejects first and the `error` event follows a tick later.
@@ -257,9 +296,10 @@ test("a RETRACTED stage is not installed", async () => {
   await u.install();
 
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "a withdrawn build must not install");
-  assert.ok(
-    h.calls.states.some((s) => s.state === "not-available"),
-    "the renderer must be told the update went away",
+  assert.match(
+    h.calls.notifications.at(-1).body,
+    /withdrawn or superseded/i,
+    "the user must be told the update went away",
   );
 });
 
@@ -281,7 +321,9 @@ test("FAIL OPEN: an unreachable feed still installs the staged build", async () 
 test("FAIL OPEN: a feed that answers nothing still installs the staged build", async () => {
   // electron-updater resolving checkForUpdates() without emitting either
   // verdict is the shape every other test harness in this directory uses, so
-  // the gate must read it as "no evidence", not as "the stage is gone".
+  // the gate must read it as "no evidence", not as "the stage is gone". The
+  // library does that only for an updater it holds inactive (an unpackaged
+  // build), and there the read must not reach the network either.
   const h = makeHarness();
   const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
@@ -290,12 +332,13 @@ test("FAIL OPEN: a feed that answers nothing still installs the staged build", a
   await u.install();
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1);
+  assert.strictEqual(h.calls.reads, 0, "an inactive updater sends no request for the read");
 });
 
 test("FAIL OPEN: a feed that never answers does not leave the install button dead", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
-  h.deps.autoUpdater.checkForUpdates = () => new Promise(() => {}); // hangs forever
+  h.feedDeferred(); // never landed: the feed hangs forever
   const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
 
@@ -323,7 +366,7 @@ test("a second click during the freshness check does not dispatch a second insta
   await Promise.all([u.install(), u.install()]);
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1);
-  assert.strictEqual(h.calls.checks, 1, "the second click must not start a second check either");
+  assert.strictEqual(h.calls.reads, 1, "the second click must not ask the feed a second time either");
 });
 
 // --------------------------------------------------------------------------
@@ -431,7 +474,7 @@ test("a build published after the launch check is still caught by the install's 
   h.feedServes("1.2.0");
   await u.install();
 
-  assert.strictEqual(h.calls.checks, 2, "the install must verify rather than trust the earlier check");
+  assert.strictEqual(h.calls.reads, 1, "the install must verify rather than trust the earlier check");
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "the superseded stage must not install");
 });
 
@@ -510,6 +553,48 @@ test("install-on-quit still installs when the stage is the newest", async () => 
   assert.strictEqual(h.calls.quits, 0, "quitAndInstall owns the exit on this path");
 });
 
+test("the quit-time gate reads the feed: no check, no update event, and the stage is left as it was", async () => {
+  // A check would announce what it finds (a `found` for the newer build) and drop
+  // the stage it supersedes while the app is on its way out. The read only
+  // answers the gate; the next launch's check offers the newer build.
+  const h = makeHarness();
+  const u = initAutoUpdate(h.deps);
+  h.emit("update-downloaded", { version: "1.1.0" });
+  const before = h.calls.states.length;
+
+  h.feedServes("1.2.0");
+  h.fireQuit();
+  await flush();
+
+  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the superseded stage is not installed");
+  assert.strictEqual(h.calls.reads, 1, "the gate asks the feed once");
+  assert.strictEqual(h.calls.checks, 0, "and sends no check");
+  assert.deepStrictEqual(
+    h.calls.states.slice(before).map((s) => s.state),
+    ["installing"],
+    "nothing but the quit's own state reaches the renderer",
+  );
+  assert.strictEqual(u.isReady(), true, "the stage stays for the next launch to judge");
+});
+
+test("a stage the library itself would not offer again (minimum OS, staged rollout) is not installed", async () => {
+  // electron-updater's own rule decides whether the feed has an update, and it is
+  // more than a version comparison: it also weighs the build's minimum OS version
+  // and the staged-rollout share. A check of this feed reports
+  // update-not-available, which drops the stage; the read must agree.
+  const h = makeHarness();
+  initAutoUpdate(h.deps);
+  h.emit("update-downloaded", { version: "1.1.0" });
+  h.feedServes("1.1.0");
+  h.deps.autoUpdater.isUpdateAvailable = async () => false;
+
+  h.fireQuit();
+  await flush();
+
+  assert.strictEqual(h.calls.quitAndInstall.length, 0, "a build the library withholds must not install");
+  assert.strictEqual(h.calls.quits, 1, "the quit the user asked for still happens");
+});
+
 test("an installer failure on the quit path is reported as an install failure", async () => {
   // This path preventDefaults the quit and hands off, and nothing else notices if
   // the handoff is REFUSED: the exit failsafe arms only on
@@ -543,7 +628,7 @@ test("an installer failure on the quit path is reported as an install failure", 
 test("FAIL OPEN on quit: a feed that never answers must not hold the app open", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
-  h.deps.autoUpdater.checkForUpdates = () => new Promise(() => {}); // hangs forever
+  h.feedDeferred(); // never landed: the feed hangs forever
   initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
 
@@ -579,7 +664,9 @@ test("FAIL OPEN on quit: an unreachable feed still installs the staged build", a
 // then sends that caller straight on to install, so the request's outcome can
 // land AFTER the install is dispatched — the one thing the post-stopGateway
 // abort exists to stop. Aborting cannot be the answer (aborting is what
-// fail-open refuses to do), so the late outcome must be inert instead.
+// fail-open refuses to do), so the late outcome must be inert instead. The
+// gate's own read has no outcome to land, so the request here is a poll the
+// gate joined when the user quit.
 // --------------------------------------------------------------------------
 
 test("an abandoned check FAILING after the dispatch must not fire the gateway recovery", async (t) => {
@@ -591,6 +678,8 @@ test("an abandoned check FAILING after the dispatch must not fire the gateway re
   const feed = h.feedDeferred();
   const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   const installPromise = u.install();
   await flush();
@@ -624,6 +713,8 @@ test("an abandoned check finding a NEWER build after the dispatch changes nothin
   const feed = h.feedDeferred();
   const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   const installPromise = u.install();
   await flush();
@@ -647,6 +738,8 @@ test("an abandoned check reporting UP TO DATE after the dispatch does not pull t
   const feed = h.feedDeferred();
   const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   const installPromise = u.install();
   await flush();
@@ -667,8 +760,10 @@ test("FAIL OPEN on quit: an abandoned check's late discovery does not fetch as t
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness({ autoDownload: true });
   const feed = h.feedDeferred();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -722,8 +817,10 @@ test("a genuine installer failure on the QUIT path inside the abandoned window i
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
   h.feedDeferred(); // deliberately never landed: the request is still hanging
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -827,8 +924,10 @@ test("the abandoned check's own failure stays inert when the rejection lands bef
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
   const feed = h.feedDeferred();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -856,8 +955,10 @@ test("an installer refusal and the abandoned check's own failure in one tick are
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
   const feed = h.feedDeferred();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -888,8 +989,10 @@ test("a second failure after the abandoned check's own is reported, not sheltere
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
   const feed = h.feedDeferred();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -930,8 +1033,10 @@ test("a genuine install failure is reported even if the abandoned check answers 
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness();
   const feed = h.feedDeferred();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();
@@ -1091,7 +1196,7 @@ test("a channel switch during a Download wait that timed out still asks the new 
 
 
 
-test("an own freshness-check timeout with an unchanged channel still installs fail-open", async (t) => {
+test("an own freshness read timing out with an unchanged channel still installs fail-open", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const h = makeHarness({ autoDownload: false });
   const u = initAutoUpdate(h.deps);
@@ -1104,7 +1209,7 @@ test("an own freshness-check timeout with an unchanged channel still installs fa
   await click;
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "an unreachable current lane must remain fail-open");
-  assert.strictEqual(h.calls.checks, 1, "an unchanged channel must not queue another check");
+  assert.strictEqual(h.calls.checks, 0, "an unchanged channel must not queue a check");
   feed.upToDate();
   await flush();
 });
@@ -1341,12 +1446,15 @@ test("an install click during a quit-time install does not hand the installer a 
 
 test("a quit-path gate whose check fails like electron-updater keeps the installing state", async () => {
   // Offline: the library emits `error` and then rejects with the same object. The
-  // gate folds that into "unknown" and installs, so a "Couldn't check" state
-  // landing after `installing` would unmount the overlay during the swap.
+  // gate's own read emits nothing, but the poll it joins at the quit does, and a
+  // "Couldn't check" state landing after `installing` would unmount the overlay
+  // during the swap.
   const h = makeHarness();
-  initAutoUpdate(h.deps);
+  const u = initAutoUpdate(h.deps);
   h.emit("update-downloaded", { version: "1.1.0" });
   const feed = h.feedDeferred();
+  void u.check(); // a poll still in flight when the user quits: the gate joins it
+  await flush();
 
   h.fireQuit();
   await flush();

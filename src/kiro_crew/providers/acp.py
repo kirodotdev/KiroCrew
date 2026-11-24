@@ -152,6 +152,17 @@ class AcpProvider(LLMProvider):
     #: harness shared only for chats (``acp_lifecycle._chat_takes_shared_runtime``),
     #: consumed by the runtime start. None otherwise.
     _prejoined_chat_share: Any = None
+    #: Forwarded from the inner ``AcpSessionProvider`` after ``shutdown()``.
+    #: Set to True when a shared-KAS ``session/close`` was not confirmed (timeout
+    #: or refusal).  Read by ``discard_conversation(confirm_teardown=True)``
+    #: callers (bot app stop) so they can treat the unconfirmed case as a failure.
+    #: Declared here so ``getattr(session.provider, "_kas_shutdown_unconfirmed")``
+    #: on this outer wrapper is not a blind guess at a private attribute.
+    _kas_shutdown_unconfirmed: bool = False
+    #: Saved runtime for a later retry of the remote session/close.
+    _kas_unconfirmed_runtime: Any = None
+    #: Saved session_id for a later retry of the remote session/close.
+    _kas_unconfirmed_session_id: str | None = None
 
     reports_effort_support = True
     approval_withdrawable = True
@@ -298,6 +309,8 @@ class AcpProvider(LLMProvider):
         # conversation_log into the fresh session on the first prompt so the slot
         # is not context-free.
         self._history_replay_needed: bool = False
+        # The sid whose KAS load replayed no turn; get_or_create refuses its next prefetch.
+        self._resume_refused_sid: str = ""
         # Only the direct-dashboard Tool Search compatibility path owns the
         # dashboard runner's durable replay settlement contract. Generic
         # session/load recovery (including channel dispatchers) still requests
@@ -449,6 +462,12 @@ class AcpProvider(LLMProvider):
         if not callable(read):
             return ""
         value = read()
+        return value if isinstance(value, str) else ""
+
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Forward the client's answer (see ``LLMProvider.settings_withheld_reason``)."""
+        read = getattr(self._client, "settings_withheld_reason", None)
+        value = read(with_fix=with_fix) if callable(read) else ""
         return value if isinstance(value, str) else ""
 
     @property
@@ -902,7 +921,14 @@ class AcpProvider(LLMProvider):
         adapted provider is classified by its own declaration rather than by
         whichever internal shape it happens to expose.
         """
-        return self._client.backend in host_auth.backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file instead
+        # (``agent_sdk/kas_machine.py``), so a personal sign-out does not retire it.
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        runtime = getattr(self._client, "_runtime", None)
+        return self._client.backend in host_auth.backends_retired_by_host_logout() and not (
+            runs_machine_auth(runtime)
+        )
 
     @property
     def member_capabilities_supported(self) -> bool:

@@ -1270,13 +1270,15 @@ requeues from `admitted` is not read twice; counted in
 written when a Stop of a waiting run could not land its cancel, or a `parent_end`
 tombstone, written when the row's parent conversation ended), settled
 `cancelled`; a store that refuses either write holds the row out of every claim
-for that state (`hold_until_settled(id, state)`). An `admitted` row carrying the
+for that state (`hold_until_settled(id, state)`; a hold given a
+`guard=(only_from, generation)` retries the conditional `cancel` instead, and a
+guard that refuses releases it). An `admitted` row carrying the
 queued-stop marker is settled `cancelled` by the active pass, through the same
 verdict. It never applies a class verdict to a `queued` row, and it does NOT
 settle one on a plain `done` / `failed` / `cancelled`: a row comes back to
 `queued` after an earlier attempt (a dependency wake of a parked `retry_wait`
-row, this table's own lost-owner requeue), and that attempt's ending on disk is
-not this row's; the refusal marker is written only for a spawn refused before
+row, this table's own lost-owner requeue), and that attempt's ending on disk
+need not be this row's; the refusal marker is written only for a spawn refused before
 its row was claimed, and the queued-stop marker only for a run stopped before it
 started, so either can only be this row's own. A parent end ends every attempt of
 its row, because the conversation that owns the row is gone. A `queued` row whose
@@ -1285,9 +1287,11 @@ artifacts say nothing, or record only such an ending, is left as it was.
 One plain ending is acted on, for one state: a `cancelled` verdict on a
 `retry_wait` row (every write into that state clears the lease) whose CURRENT
 attempt recorded it, settled with
-`cancel(only_from={retry_wait}, generation=<read>)` and counted in
-`settled_cancelled`. That row is a run whose own cancel was lost after its start
-was given back (the stop's settle is a best-effort write), and `count_pending`
+`cancel(only_from={retry_wait, queued}, generation=<read>)` and counted in
+`settled_cancelled` (a dependency wake makes a parked row `queued` without a
+claim, and from either state only a claim or a cancel moves the generation).
+That row is a run whose own cancel was lost after its start was given back (the
+stop's settle is a best-effort write), and `count_pending`
 keeps counting it, so without this the parent's attached-children guard answers
 `409 slot_subagents_running` on every turn. The run folder is the row id's and a
 claim reads no tombstone, so a row claimed again runs over an earlier attempt's
@@ -1299,9 +1303,23 @@ registered run keeps it as `SubagentInfo._taskq_attempt` (a wait wake moves
 delivery acknowledgement), as `outcome` is. The pass reads the row's latest
 `claimed` event and asks `artifact_probe(row, attempt=<its generation>)`; the
 subagent probe then answers only from a tombstone naming that attempt. A
-tombstone from an earlier attempt or naming none, a row with no claim, a
-`failed` or `done` ending, and a store that refuses the read or the write
-(named in `report.errors`) leave the row as it was. The
+tombstone from an earlier attempt or naming none, a row with no claim, and a
+`failed` or `done` ending leave the row as it was. A store that refuses the
+`latest_events` read or the cancel write is named in `report.errors` either
+way, and the two failures are answered apart. A refused `latest_events` READ
+leaves the attempt unknown, so no hold can say whether the row owes its ending:
+the queued pass reports itself incomplete (it still walks every page) and
+dispatch is fenced as for a refused `queued_rows` page; the fence's re-run
+(`_fenced_pass`) retries such a row from the read that found it parked, before
+the pass. A refused cancel WRITE holds the row with the cancel's `only_from` /
+generation condition as the guard (`hold_until_settled(id, cancelled,
+guard=({retry_wait, queued}, <read generation>))`, counted in `held`): the
+hold's retry is that same conditional `cancel`, never the plain `transition`
+the other holds retry with. Either way a row the dependency coordinator woke
+meanwhile (rebuilt from its `dependency_wait` event, `retry_wait -> queued`
+under the same generation, a state the pass does not cancel from) is still that
+attempt and is cancelled; a row claimed again since -- running, or parked under
+a later generation -- is left uncancelled, and a hold on it released. The
 case the marker settle closes is a refusal recorded for a row the dispatcher never claimed
 whose own `failed` write was lost before the crash: without the pass the
 pump starts that row under an id whose tombstone already records an ending,

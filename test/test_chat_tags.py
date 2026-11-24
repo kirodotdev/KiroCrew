@@ -793,6 +793,27 @@ class TestTagVocabulary:
             assert live["name"] == "Keep"
 
     @pytest.mark.asyncio
+    async def test_a_null_name_keeps_the_tag_name(self, tmp_path, monkeypatch):
+        # ``str(None)`` must not become the tag's name; the folder route already
+        # treats an explicit null as "no rename".
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}", json={"name": None, "color": "#336699"}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "Old"
+            assert data["color"] == "#336699"
+            import json as _json
+
+            on_disk = _json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
+            assert next(t for t in on_disk if t["id"] == tag["id"])["name"] == "Old"
+
+    @pytest.mark.asyncio
     async def test_update_tag_unparseable_order_ignored(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

@@ -335,6 +335,36 @@ class TestDispatcher:
         await dispatcher.drain()
         assert len(sink.notes) == 1
 
+    @pytest.mark.asyncio
+    async def test_drain_returns_when_a_task_finished_in_the_same_loop_pass(
+        self, settings, monkeypatch
+    ):
+        # The commit is already refused, so the tracked task finishes in its first
+        # step. The drain task is queued right behind it, so it runs in the same loop
+        # pass: the task is done but its discard callback waits for the next pass.
+        # Gathering only finished tasks never yields, so a drain that does it would
+        # hold the loop; the wrapper fails it by name on its first such gather.
+        real_gather = asyncio.gather
+        gathers: list[int] = []
+
+        def counting_gather(*aws: Any, **kwargs: Any) -> Any:
+            gathers.append(len(aws))
+            if aws and all(asyncio.isfuture(aw) and aw.done() for aw in aws):
+                raise AssertionError("drain() re-gathered only finished tasks")
+            return real_gather(*aws, **kwargs)
+
+        loop = asyncio.get_running_loop()
+        commit = loop.create_future()
+        commit.set_result(False)
+        dispatcher = BridgeDispatcher(settings=lambda: settings, committed=lambda note: commit)
+        dispatcher.schedule(_note(key="k1"))
+        (started,) = dispatcher._tasks
+        monkeypatch.setattr(bridge_mod.asyncio, "gather", counting_gather)
+        drained = loop.create_task(dispatcher.drain())
+        await drained
+        assert started.done()
+        assert gathers == []  # nothing was running, so nothing was gathered
+
 
 class TestGatewayWiring:
     @pytest.mark.asyncio

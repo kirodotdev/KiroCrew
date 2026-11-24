@@ -454,6 +454,46 @@ test("unexpected child exits are visible but quit exits stay file-only", async (
   );
 });
 
+test("the caller hears every change to the gateway quitting would stop", async () => {
+  // main.js rebuilds the tray menu from this, so its quit item names the
+  // gateway exactly while a child this app spawned is alive.
+  let changes = 0;
+  const exited = harness({ onOwnedGatewayChange: () => { changes += 1; } });
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), false, "nothing spawned yet");
+  assert.strictEqual(await exited.supervisor.start(), true);
+  assert.ok(changes >= 1, "the spawn is announced");
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), true);
+  const beforeExit = changes;
+  exited.spawnCalls[0].child.exitCode = 1;
+  exited.spawnCalls[0].child.emit("exit", 1, null);
+  assert.ok(changes > beforeExit, "the exit is announced");
+  assert.strictEqual(exited.supervisor.stopsGatewayOnQuit(), false);
+
+  let failedChanges = 0;
+  const failed = harness({ onOwnedGatewayChange: () => { failedChanges += 1; } });
+  assert.strictEqual(await failed.supervisor.start(), true);
+  const beforeError = failedChanges;
+  failed.spawnCalls[0].child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }));
+  assert.ok(failedChanges > beforeError, "a spawn that never ran is announced too");
+  assert.strictEqual(failed.supervisor.stopsGatewayOnQuit(), false);
+
+  const throwing = harness({ onOwnedGatewayChange: () => { throw new Error("menu gone"); } });
+  assert.strictEqual(await throwing.supervisor.start(), true, "a failing listener never breaks the start");
+});
+
+test("stopping on quit announces the change, so the quit label is rebuilt", async () => {
+  let changes = 0;
+  const built = harness({ onOwnedGatewayChange: () => { changes += 1; } });
+  assert.strictEqual(await built.supervisor.start(), true);
+  // Marked exited without an `exit` event, as the respawn tests do: a live
+  // child's stop reaches the real shutdown request and process listing, which
+  // this harness cannot fake. The announcement is the stop's own.
+  built.spawnCalls[0].child.exitCode = 0;
+  const before = changes;
+  built.supervisor.stopOnQuit();
+  assert.ok(changes > before, "the stop clears the owned child and announces it");
+});
+
 test("Settings' Restart gateway is not offered before the main window connects to the gateway this app spawned", async () => {
   const mainWindow = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send() {} } };
   const { supervisor, spawnCalls } = harness({ mainWindow });

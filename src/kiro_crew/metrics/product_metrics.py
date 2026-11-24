@@ -105,6 +105,8 @@ _FEATURES = frozenset(
         "kirocrew.app.session_started",
         # Adds a turn's seconds; duration is app_duration_bucket.
         "kirocrew.app.run_time",
+        # Adds a turn's credits when the backend billed any.
+        "kirocrew.app.credits",
         "kirocrew.app.present",
         # Owner views only: sent through the owner-gated /api/telemetry/app-view.
         "kirocrew.app.opened",

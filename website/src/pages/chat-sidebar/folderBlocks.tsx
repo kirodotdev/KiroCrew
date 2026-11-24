@@ -40,10 +40,10 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 /** The folder block renderers for one shell render. */
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
-    disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
+    disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare, folderModeCompare,
     folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersHoldingSessions, foldersWithActiveSubtree, heldLane,
-    hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
+    hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isFolderFilteredOut, keepCrewWorkerShown,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, pinnedFolderAncestors, pinnedFolderSubtree, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCleanupRoot, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
@@ -99,10 +99,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     return sidebarRows.folderTree.rowsIn(folderId).find(r => r.key === key) ?? null
   }
 
-  // The pinned folder each folder above a pin names in its locked Hide item.
+  // The pinned folder each folder above a pin names in its locked Hide item, in
+  // the mode's order (not the unread-first one), as the filter menu names it.
   const pinnedDescendantOf = pinnedFolderAncestors.size === 0
     ? new Map<string, ChatFolder>()
-    : computeFirstPinnedDescendant(folders, folderCompare)
+    : computeFirstPinnedDescendant(folders, folderModeCompare)
 
   const toggleListFolderCollapse = (folder: ChatFolder, from: HTMLElement) => {
     if (folder.collapsed) disarmHold()
@@ -931,7 +932,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
      */
     const crewFold = foldCodeChannelCrews(allChildSlots, freshAll, staleAll, {
       narrowed: listNarrowed || slotFilter.trim() !== '', alsoShown: folderConductorSlot, expanded: conductorExpanded, signals: crewSignals,
-      keepShown: w => isActiveRow(w) || pinned.has(w.key),
+      keepShown: keepCrewWorkerShown,
     })
     const freshChildSlotsRaw = crewFold.fresh
     const staleChildSlots = crewFold.stale
@@ -946,7 +947,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       const { rows: workers, container: crewContainer } = heldLane(open, scopeName, `${container}:crew:${id}`)
       return (
         <CodeChannelCrewWorkers key={`code-channel-crew-${id}`} conductorId={id}>
-          {workers.map((w, i) => renderSessionRow(w, depth + 2, i < workers.length - 1 && !isActiveRow(w) && !isActiveRow(workers[i + 1]), scopeName, scopeName, crewContainer))}
+          {workers.map((w, i) => renderSessionRow(w, depth + 2, workers[i + 1] ?? null, scopeName, scopeName, crewContainer))}
         </CodeChannelCrewWorkers>
       )
     }
@@ -989,15 +990,13 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     const folderConductorNode = folderConductorSlot && (
       <div key={`folder-conductor-${folder.id}`} data-folder-conductor={folder.id} className="relative">
         <span aria-hidden="true" className="absolute left-0 inset-y-1 w-0.5 rounded-full bg-accent" />
-        {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true, crewViewOf(folderConductorSlot))}
+        {renderSessionRow(folderConductorSlot, depth + 1, null, treeChildScope, treeChildScope, treeChildContainer, undefined, true, crewViewOf(folderConductorSlot))}
         {crewWorkerNodes(folderConductorSlot, treeChildScope, treeChildContainer)}
       </div>
     )
     freshChildSlots.forEach((s, i) => {
-      const isActive = isActiveRow(s)
-      const nextIsActive = isActiveRow(freshChildSlots[i + 1])
-      const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
-        && !startsAutomaticSection(freshChildSlots, i + 1) && !childHeaders[i + 1]
+      const dividerNext = i < freshChildSlots.length - 1
+        && !startsAutomaticSection(freshChildSlots, i + 1) && !childHeaders[i + 1] ? freshChildSlots[i + 1] : null
       if (startsAutomaticSection(freshChildSlots, i)) {
         // Keyed by the row it precedes, as the Fragment lanes key theirs. A
         // frame with two pinned-to-unpinned boundaries then gives each divider
@@ -1007,7 +1006,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       const kindHeader = childHeaders[i]
       if (kindHeader) childNodes.push(<KindSectionHeader key={`kind-section-${kindHeader}-${folder.id}`} kind={kindHeader} />)
       const crew = crewViewOf(s)
-      childNodes.push(renderSessionRow(s, depth + 1, showDivider && !crew?.expanded, treeChildScope, treeChildScope, treeChildContainer, undefined, undefined, crew))
+      childNodes.push(renderSessionRow(s, depth + 1, crew?.expanded ? null : dividerNext, treeChildScope, treeChildScope, treeChildContainer, undefined, undefined, crew))
       const workerNodes = crew ? crewWorkerNodes(s, treeChildScope, treeChildContainer) : null
       if (workerNodes) childNodes.push(workerNodes)
     })

@@ -1,11 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider, useSelector } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
-import { useTipTrigger } from '../components/TipCard'
+import { loadCuratedTips, useTipTrigger } from '../components/TipCard'
 
 // Verifies the suppression chain end-to-end using the REAL reducer via
 // store.dispatch (the path actual WS events take). Mutating the store DIRECTLY
@@ -40,6 +40,10 @@ function Harness() {
   const { tip } = useTipTrigger(true, suppressed, 'slot-a')
   return <div data-testid="tip-out">{tip ? tip.title : 'none'}</div>
 }
+
+// The hook's tip fetch also loads the curated-tip copy. That real module load
+// does not reliably settle within fake-timer flushes, so it is loaded once first.
+beforeAll(async () => { await loadCuratedTips() })
 
 describe('tip suppression via REAL subagent dispatch (QA v5 S4 adjudication)', () => {
   beforeEach(() => {

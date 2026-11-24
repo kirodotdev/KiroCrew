@@ -20,7 +20,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import SK, SLOT, FakeState, _card_headers, _fake_auth
 
+from kiro_crew import agent as agent_mod
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew import mcp_discovery
 from kiro_crew import template_mcp_additions as additions
 from kiro_crew.dashboard.change_cards import CardStore
 from kiro_crew.dashboard.handlers import change_cards as routes
@@ -29,6 +31,8 @@ from kiro_crew.dashboard.handlers import template_server_request as tsr
 from kiro_crew.mate_capability_catalog import AdditionError as CatalogAdditionError
 
 AGENT = {"X-Test-Auth": "internal", "X-Session-Key": SK}
+#: The real caller lookup, which the ``env`` fixture replaces.
+_CALLER_TEMPLATE = tsr._caller_template
 
 #: The official registry's install plan for "io.example/fetch". Never sent by the agent.
 REGISTRY_ENTRY = {"command": "uvx", "args": ["mcp-server-fetch"]}
@@ -56,7 +60,7 @@ def env(tmp_path, monkeypatch):
     }
 
     monkeypatch.setattr(
-        tsr, "_caller_template", lambda state, slot_key, sk: (seen["template"], "", "")
+        tsr, "_caller_template", lambda state, slot_key, sk, backend: (seen["template"], "", "")
     )
 
     async def backend(state, sk):
@@ -205,6 +209,78 @@ def test_request_raises_a_card_the_owner_applies_and_undoes(env, tmp_path):
     assert env["applied"] == 2
 
 
+async def _resolve_any(name, source, registry_id, *, settings_hint):
+    return name, dict(GATEWAY_ENTRY), {"source": "gateway"}
+
+
+def _own_config(monkeypatch, declared, app_owned=()):
+    """The user's MCP config files declare *declared*; installed apps mint *app_owned*."""
+    monkeypatch.setattr(
+        mcp_discovery,
+        "_load_mcp_json_by_source",
+        lambda: {"kirocrew": {name: dict(GATEWAY_ENTRY) for name in declared}},
+    )
+    monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: dict.fromkeys(app_owned, True))
+
+
+def test_a_gateway_server_named_with_a_colon_is_applied_and_undone(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, ["docs:search"])
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        status, card = await _request(c, {"server": "docs:search", "source": "gateway"})
+        assert status == 200, card
+        step = card["plan"]["apply"][0]
+        applied = await c.post(step["path"], json=step["body"], headers=_card_headers(card))
+        assert applied.status == 200, await applied.text()
+        recorded = set(additions.read_additions("kirocrew-conductor"))
+        after = store.public(store.get(card["id"]))
+        undo = after["plan"]["undo"][0]
+        undone = await c.delete(undo["path"], headers=_card_headers(after, op="undo"))
+        return card, recorded, undo, undone.status
+
+    card, recorded, undo, undone = _run(store, go)
+    assert card["params"]["server"] == "docs:search"
+    assert recorded == {"docs:search"}
+    assert "/mcp-additions/docs%3Asearch?" in undo["path"]
+    assert undone == 200
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
+@pytest.mark.parametrize("server", ["docs/search", "@docs", ":docs", "docs:"])
+def test_a_template_server_name_outside_one_plain_segment_is_refused(
+    env, tmp_path, monkeypatch, server
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, [server])
+    status, body = _run(
+        CardStore(tmp_path / "c.json"),
+        lambda c: _request(c, {"server": server, "source": "gateway"}),
+    )
+    assert (status, body["code"]) == (400, "invalid_param"), body
+    assert "can't be added to an agent template" in body["error"]
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
+@pytest.mark.parametrize(
+    "declared, app_owned",
+    [([], ["music:player"]), (["music:player"], ["music:player"]), ([], [])],
+)
+def test_a_colon_server_an_app_mints_or_no_own_config_declares_is_refused(
+    env, tmp_path, monkeypatch, declared, app_owned
+):
+    monkeypatch.setattr(capability_catalog, "resolve_server", _resolve_any)
+    _own_config(monkeypatch, declared, app_owned)
+    status, body = _run(
+        CardStore(tmp_path / "c.json"),
+        lambda c: _request(c, {"server": "music:player", "source": "gateway"}),
+    )
+    assert (status, body["code"]) == (400, "app_server"), body
+    assert "can't be added to an agent template" in body["error"]
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
 def test_the_request_never_takes_a_launch_line_from_the_agent(env, tmp_path):
     store = CardStore(tmp_path / "c.json")
 
@@ -291,6 +367,31 @@ def test_an_unattended_turn_is_refused_with_its_reason(env, tmp_path, mark, code
     assert status == 403, body
     assert body["code"] == code
     assert body["error"] == tsr._CALLER_REFUSALS[code]
+    assert env["resolved"] == []
+
+
+@pytest.mark.parametrize(
+    "backend,worker,remedy",
+    [("codex", False, True), ("codex", True, False), ("kas", False, False)],
+)
+def test_only_a_bots_own_codex_chat_is_told_how_to_get_request_capabilities(
+    env, tmp_path, monkeypatch, backend, worker, remedy
+):
+    # On Codex a Bot's chat gets request_capabilities only through the kirocrew-core
+    # stub; a worker never mounts it, and KAS mounts it directly.
+    from kiro_crew import members
+    from kiro_crew.dashboard import mate_thread_wakes
+
+    monkeypatch.setattr(tsr, "_caller_template", _CALLER_TEMPLATE)
+    monkeypatch.setattr(mate_thread_wakes, "is_crewmate_thread", lambda slot: True)
+    monkeypatch.setattr(members, "is_crewmate_worker_session", lambda key: worker)
+    env["backend"] = backend
+    store = CardStore(tmp_path / "c.json")
+
+    status, body = _run(store, lambda c: _request(c))
+    assert (status, body["code"]) == (403, "crewmate_caller"), body
+    assert body["error"].startswith("a Bot asks for its worker's servers with request_capabilities")
+    assert ("Share for kirocrew-core" in body["error"]) is remedy
     assert env["resolved"] == []
 
 
@@ -457,7 +558,7 @@ def test_the_caller_template_is_the_one_its_session_runs_on(monkeypatch):
         "read_session_execution",
         lambda key: _Exec("kirocrew-worker"),
     )
-    assert tsr._caller_template(_state_with(slot), SLOT, SK) == (
+    assert tsr._caller_template(_state_with(slot), SLOT, SK, "") == (
         "kirocrew-worker",
         "",
         "",
@@ -472,7 +573,7 @@ def test_a_crewmate_is_sent_to_request_capabilities(monkeypatch):
     monkeypatch.setattr(members, "is_crewmate_worker_session", lambda key: False)
     monkeypatch.setattr(mate_worker, "is_mate_owned_agent", lambda name: name == "mate-file")
     monkeypatch.setattr(execution_context, "read_session_execution", lambda key: _Exec("mate-file"))
-    template, code, message = tsr._caller_template(_state_with(slot), SLOT, SK)
+    template, code, message = tsr._caller_template(_state_with(slot), SLOT, SK, "")
     assert (template, code) == ("", "crewmate_caller")
     assert "request_capabilities" in message
 

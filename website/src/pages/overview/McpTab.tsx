@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, Lock, ToggleLeft, ToggleRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -174,13 +174,15 @@ function disabledInConfigVariant(s: McpServer): 'muted' | 'err' | null {
  * This table has no control that writes the shared config (that switch is a
  * separate decision, and the line says it is planned), so the honest
  * affordance for "edit this file" is the path itself, one click away from a
- * terminal or editor. Rendered through `Trans`, so `children` is the path text
- * the catalog string wraps in `<file>...</file>`. The chip owns only its
+ * terminal or editor. Rendered through `Trans` as the catalog's `<file/>`
+ * slot; it shows `path` itself, never children, so `Trans` never parses the
+ * path. A slot child would also remount the chip on every render (react-i18next
+ * wraps a self-closing slot's children in a fresh component). The chip owns only its
  * "Copied" flash; a refusal is handed to `onFailed`, because the notice for it
  * belongs UNDER the sentence (see `DisabledWhereLine`), not mid-sentence where
  * the chip sits.
  */
-function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (report: ErrorReport | null) => void; children?: ReactNode }) {
+function CopyPathChip({ path, onFailed }: { path: string; onFailed: (report: ErrorReport | null) => void }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -223,7 +225,7 @@ function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (r
       data-testid="mcp-disabled-in-config-path"
       data-copied={copied ? 'true' : undefined}
     >
-      {children ?? path}
+      {path}
     </button>
   )
 }
@@ -241,7 +243,9 @@ function DisabledWhereLine({ whereKey, file, reason, text }: { whereKey: string;
   return (
     <div className="text-muted text-[12px]" data-testid="mcp-disabled-in-config-where" data-disabled-reason={reason ?? undefined}>
       {file
-        ? <Trans i18nKey={whereKey} values={{ file }} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
+        // The path is the chip's child, never a value: <Trans> parses its
+        // string as markup, so a value would be parsed with it.
+        ? <Trans i18nKey={whereKey} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
         : text}
       {copyFailed && (
         <ErrorNotice
@@ -813,6 +817,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      // Only a FAILED Retry is reset: resetting one still running would detach
+      // it from the row, and its failure would then never be shown.
+      if (resetFailures.isError) resetFailures.reset()
     },
     onError: () => {
       refetch()
@@ -847,6 +856,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       // would keep a stale failing badge or sign-in note the response no longer carries.
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
         prev?.map(x => (x.name === row.name ? row : x)))
+      // A fresh check of the row a Retry server failure was about makes that
+      // notice untrue; one about another row stays.
+      if (resetFailures.isError && resetFailures.variables === row.name) resetFailures.reset()
     },
   })
 
@@ -860,6 +872,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
+  // All off stages every listed row's Kiro Crew switch off, exactly as a click
+  // on each would, for one Apply. Inert switches are skipped (staged uninstall,
+  // disabled in the shared config, a built-in that is on). No All on: switching
+  // a fresh install on here is where the user confirms it.
+  const allOffTargets = sortedServers.filter(s => {
+    const p = pending[s.name]
+    if (p?.uninstall || disabledInSharedConfig(s)) return false
+    if (s.builtin === true && (s.presence || DEFAULT_PRESENCE).kirocrew) return false
+    return effectivePresence(s, p).kirocrew
+  })
+  const stageAllOff = () => {
+    for (const s of allOffTargets) toggleScope(s.name, 'kirocrew', false, s.presence || DEFAULT_PRESENCE)
+  }
   // Counted from the UNFILTERED list, like the header total it sits beside: the
   // count exists to say "these are here, not dropped", and a search that hides
   // them must not make the header agree that they are gone. Every disabled row
@@ -923,6 +948,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
           {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label={i18nT('pages.overview.mcpTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Btn onClick={stageAllOff} disabled={apply.isPending || allOffTargets.length === 0} title={i18nT('pages.overview.mcpTab.all_off_help')} data-testid="mcp-all-off"><ToggleLeft size={14} /> {i18nT('pages.overview.mcpTab.all_off')}</Btn>
           {/* `title` as well as `aria-label`: the sign-in guidance names this control
               by that string, and an icon-only button renders none of it — without a
               hover the reader cannot match the instruction to the button it means. */}
@@ -1032,9 +1058,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const whereKey = invalidValue
               ? (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_invalid_where' : 'pages.overview.mcpTab.disabled_in_config_invalid_where_unknown')
               : (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_where' : 'pages.overview.mcpTab.disabled_in_config_where_unknown')
-            // Plain-text twin for `title` attributes: the catalog wraps the path
-            // in `<file>` for `Trans`, which a string attribute must not carry.
-            const disabledInConfigWhereText = i18nT(whereKey, { file: s.disabledInFile ?? '' }).replace(/<\/?file>/g, '')
+            // Plain-text twin for `title` attributes: the catalog marks the path
+            // with a `<file/>` slot for `Trans`, which this fills with the path.
+            const disabledInConfigWhereText = i18nT(whereKey).replace(/<file\s*\/>/g, () => s.disabledInFile ?? '')
             const rowBorder = pendingUninstall
               ? 'border-l-2 border-[var(--danger)]'
               : (hasPendingScopeChange(s, p) || hasToolOverrides)
@@ -1303,6 +1329,20 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         {i18nT('pages.overview.mcpTab.agent_dropped_fix', {
                           page: i18nT('nav.mcp_servers'),
                         })}
+                      </span>
+                    </div>
+                  )}
+                  {s.ownEntryUnused && (
+                    /* The row is the shipped server; the user's own same-named
+                       entry never runs, and nothing else on screen says so. */
+                    <div className="text-warn text-[12px] break-words" data-testid="mcp-own-entry-unused">
+                      <AlertTriangle className="lucide-inline" />{' '}
+                      {i18nT('pages.overview.mcpTab.own_entry_unused', {
+                        file: s.ownEntryUnused.file,
+                        command: s.ownEntryUnused.command,
+                      })}
+                      <span className="block mt-0.5">
+                        {i18nT('pages.overview.mcpTab.own_entry_unused_fix')}
                       </span>
                     </div>
                   )}

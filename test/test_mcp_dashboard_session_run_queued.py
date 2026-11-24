@@ -112,7 +112,7 @@ def _hold(target, kind: str, monkeypatch) -> None:
     if kind == "edit":
         monkeypatch.setattr(queue_edit_hold, "_clock", lambda: 0.0)
         card = _person(target, "a card a person is editing")
-        _entry(target, card)[queue_edit_hold.EDIT_HOLD_KEY] = 100.0
+        _entry(target, card)[queue_edit_hold.EDIT_HOLD_KEY] = {"tab-1": 100.0}
     else:
         target._pending_discard_conversation_key = "conv-1"
         target._pending_discard_from_wake = False

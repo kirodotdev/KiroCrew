@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.acp import kas_wire
-from kiro_crew.acp._dispatch import parse_text_chunk, redact_text
+from kiro_crew.acp._dispatch import liveness_key, parse_text_chunk, redact_text
 from kiro_crew.acp.codex_subagent_wire import UPDATE_SUBAGENT_SPAWNED, UPDATE_SUBAGENT_STATE
 from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
@@ -57,6 +57,19 @@ NATIVE_CHILD_ROSTER_CAP = 4096
 #: Far above any real sub-agent name, so a clipped label means a hostile or
 #: broken payload rather than a long one.
 NATIVE_CHILD_LABEL_CAP = 512
+#: :attr:`AcpEvent.auto_reject_reason`: why the handle auto-rejected a child's request.
+AUTO_REJECT_STRANDED_BETWEEN_TURNS = "stranded_between_turns"
+AUTO_REJECT_MISSING_SECURITY_CONTEXT = "missing_security_context"
+#: The length a card shows of the task a KAS dispatch frame gave.
+NATIVE_CHILD_TASK_CAP = 2000
+#: How far past its display bound a KAS dispatch's shown string is kept on the row,
+#: and an asker's name on its request. The card cuts each for display
+#: (``dashboard.engine_subagent_cards.shown_cut``) and masks what that cut would
+#: split, which it can only tell by reading past the cut: this is how far it reads,
+#: the longest tail the stream redactor holds back for one credential. Kept as the
+#: engine sent it, so this module scans nothing and a session whose cards never show
+#: these strings pays for none of it.
+NATIVE_CHILD_SHOWN_LOOKAHEAD = 4096
 
 
 class NativeChildIds(Protocol):
@@ -145,6 +158,10 @@ def _handle_kas_subagent(self: AcpSessionHandle, update: dict) -> list[AcpEvent]
     is_parent = kiro.get(kas_wire.FIELD_KIND) == kas_wire.KIND_AGENT_SUBTASK
 
     if is_parent:
+        from kiro_crew.acp.kas_engine_child_grants import note_start_frame
+
+        # Which sub-agent this call starts, for the gate's reading of who is above it.
+        note_start_frame(self, update)
         subtask_id = str(agent_subtask_id)
         status = _bounded_label(update.get("status") or "in_progress")
         title = _bounded_label(update.get("title") or "")
@@ -162,6 +179,7 @@ def _handle_kas_subagent(self: AcpSessionHandle, update: dict) -> list[AcpEvent]
                 "agentName": name,
                 "initialQuery": title,
                 "status": {"type": status, "message": ""},
+                **_dispatch_details(update, status),
             }
         return [
             AcpEvent(
@@ -175,6 +193,66 @@ def _handle_kas_subagent(self: AcpSessionHandle, update: dict) -> list[AcpEvent]
     # through to parse_session_update (populates caches + renders tool
     # events). The caller prepends the activity prefix separately.
     return None
+
+
+def _dispatch_details(update: dict, status: str) -> dict[str, str]:
+    """What a KAS dispatch frame says beyond its title, for the roster row.
+
+    ``dispatch_call`` is the frame's ``toolCallId``; ``target`` and ``prompt`` are the
+    agent and the task the parent named
+    (``rawInput.name`` / ``rawInput.prompt``); ``failure`` is the engine's reason on
+    a ``failed`` frame (``rawOutput``, a string there). Each is kept only when the
+    frame holds it as a string, and bounded for storage like every other row field.
+    Nothing but a KAS engine turn's card reads them (``dashboard.engine_subagent_cards``).
+
+    ``target``, ``prompt`` and ``failure`` are shown, each cut to its display bound by
+    the card, never here: a cut made here would split a credential before anything
+    could tell it was one. So each is kept as the engine sent it, to its display bound
+    plus :data:`NATIVE_CHILD_SHOWN_LOOKAHEAD`, and nothing here scans it.
+    ``dispatch_call`` is an id a request is matched by and is never shown, so it is
+    kept as its liveness key: a cut would merge two long ids and miss the request.
+    """
+    details: dict[str, str] = {}
+    call = update.get("toolCallId")
+    if isinstance(call, str) and call:
+        # The id the dispatch's own approval request names, so its card can show the task.
+        details["dispatch_call"] = liveness_key(call)
+    raw = update.get("rawInput")
+    if isinstance(raw, dict):
+        if isinstance(raw.get("name"), str) and raw["name"]:
+            details["target"] = _kept_to_show(raw["name"], NATIVE_CHILD_LABEL_CAP)
+        if isinstance(raw.get("prompt"), str) and raw["prompt"]:
+            details["prompt"] = _kept_to_show(raw["prompt"], NATIVE_CHILD_TASK_CAP)
+    reason = update.get("rawOutput")
+    if status == "failed" and isinstance(reason, str) and reason:
+        details["failure"] = _kept_to_show(reason, NATIVE_CHILD_LABEL_CAP)
+    return details
+
+
+def _kept_to_show(text: str, shown: int) -> str:
+    """*text* as the engine sent it, kept for a card that shows *shown* characters of it."""
+    return text[: shown + NATIVE_CHILD_SHOWN_LOOKAHEAD]
+
+
+#: The longest asking sub-agent's name a permission card shows.
+REQUESTER_NAME_CAP = 80
+
+
+def kas_requesting_subagent(params: object) -> str:
+    """The sub-agent a KAS ``session/request_permission`` names as its asker, or ``""``.
+
+    ``_meta.kiro.requester.subagent.agentName``: a child's call carries it; the
+    parent's own call and the dispatch of a child name only the session. An engine
+    that does not report it gives ``""``, and the card stays as it was. Display only:
+    nothing decides on it. The card shows :data:`REQUESTER_NAME_CAP` characters of it
+    and makes that cut itself, so it is kept like the row's own display fields
+    (:func:`_dispatch_details`).
+    """
+    kiro = kas_wire.kiro_meta(params) if isinstance(params, dict) else None
+    requester = kiro.get("requester") if kiro is not None else None
+    child = requester.get("subagent") if isinstance(requester, dict) else None
+    name = child.get("agentName") if isinstance(child, dict) else None
+    return _kept_to_show(name, REQUESTER_NAME_CAP) if isinstance(name, str) else ""
 
 
 def _handle_kas_subagent_chunk(self: AcpSessionHandle, update: dict) -> list[AcpEvent] | None:

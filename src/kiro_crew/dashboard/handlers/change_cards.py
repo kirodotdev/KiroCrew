@@ -43,12 +43,17 @@ from aiohttp import web
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
-from kiro_crew.dashboard import chat_cards
+from kiro_crew.dashboard import chat_cards, full_chat_waits
 from kiro_crew.dashboard.change_cards import CardError, CardStore, card_store_for
 from kiro_crew.dashboard.handlers._bounded_read import (
     TIMED_OUT,
     bounded_read,
     timed_out_for_model,
+)
+from kiro_crew.dashboard.handlers.change_cards_closure import (  # noqa: F401 -- served here
+    _closed_on_disk,
+    _slot_is_open,
+    slot_closure_recorded,
 )
 from kiro_crew.sel import sel
 
@@ -150,6 +155,8 @@ async def _broadcast(state: Any, card: dict[str, Any]) -> int:
     # conversation learns the new status (and the crew log the outcome).
     await chat_cards.load_conversation_window(state, card)
     chat_cards.record_change_status(state, card)
+    # The slot list's ``needs_full_chat`` reads the store this change just moved.
+    full_chat_waits.push_slot_list(state)
     # A finished import card has no use for the file it was raised from.
     await _release_staged_copy(state, card)
     deliver = getattr(state, "deliver_ws_owners", None)
@@ -162,61 +169,15 @@ async def _broadcast(state: Any, card: dict[str, Any]) -> int:
         return 0
 
 
-def _slot_is_open(
-    state: Any, closed_meta_keys: "frozenset[str] | set[str]" = frozenset()
-) -> Callable[[str], bool]:
-    """The "this card's conversation is still open" predicate for retirement.
-
-    Retirement cancels a proposal nobody can confirm, so it must fire only on a
-    slot the user ACTUALLY closed -- never on one merely absent. Absence is not
-    closure: ``slot_exists`` cannot carry this because it reads false in the
-    window BEFORE the open-tab restore starts (``open_slots_restored`` False and
-    ``restoring_open_slots`` False both -- a tab the restore has not reached
-    yet), and a restore-budget skip is left out of ``unrestored_slot_keys``
-    entirely, so both would be read as closed and cancelled under the user.
-
-    Two gates, in order:
-
-    1. **Until the open-tab restore has run once** (``open_slots_restored`` is
-       not yet True) nothing is proven closed -- the live slot set is not yet
-       authoritative -- so every key reads OPEN and no card retires.
-
-    2. **After the restore** a key retires only on POSITIVE closure evidence:
-       an in-memory close tombstone (:func:`channel_slots.slot_closed_since` --
-       the slot was popped and :func:`note_slot_closed` recorded the instant),
-       or a persisted ``closed`` flag read off the loop by :func:`_settle` and
-       passed in as *closed_meta_keys*. A key with neither -- absent but never
-       recorded closed -- stays OPEN. There is NO fallback to ``get_slot`` or
-       bare ``slot_exists``: absence must never stand in as closure proof.
-    """
-    from kiro_crew.dashboard.channel_slots import slot_closed_since
-
-    def is_open(key: str) -> bool:
-        # Gate 1: the restore has not run, so the live set is not authoritative.
-        if not bool(getattr(state, "open_slots_restored", False)):
-            return True
-        # A reopened live slot wins over a close recorded before its reopening.
-        exists = getattr(state, "slot_exists", None)
-        if callable(exists) and exists(key):
-            return True
-        # Gate 2: open unless there is real evidence this slot was closed.
-        if key in closed_meta_keys:
-            return False
-        try:
-            if slot_closed_since(state, key, 0.0):
-                return False
-        except Exception:
-            logger.debug("close-tombstone read failed for %s", key, exc_info=True)
-        return True
-
-    return is_open
-
-
 async def _settle(request: web.Request) -> None:
     await _settle_app(request.app)
 
 
 async def _settle_app(app: web.Application) -> None:
+    await _settle_state(app["state"])
+
+
+async def _settle_state(state: Any) -> None:
     """Expire / prune, persist, then broadcast what changed. Raises :class:`CardError`.
 
     Persist-before-you-publish, for reads too: when the write fails, every
@@ -226,7 +187,6 @@ async def _settle_app(app: web.Application) -> None:
     follow from the clock and the open conversations, so the next settlement
     whose write succeeds derives them again and announces them then.
     """
-    state = app["state"]
     store = card_store_for(state)
     await store.warm()
     # Retirement cancels a proposal nobody can confirm, so it must fire ONLY on
@@ -249,63 +209,6 @@ async def _settle_app(app: web.Application) -> None:
         raise CardError(exc.status, exc.code, "the change cards could not be saved; try again")
     for card in changed:
         await _broadcast(state, card)
-
-
-async def _closed_on_disk(state: Any, store: CardStore) -> "frozenset[str]":
-    """Slot keys of pending cards whose session persists a ``closed`` flag.
-
-    Positive closure evidence read off the loop, so the synchronous retirement
-    sweep never blocks on disk and never treats a bare absence as closure. Empty
-    until the open-tab restore has run (``open_slots_restored``): before that the
-    live set is not authoritative, so nothing is proven closed and no read is
-    worth doing. Each candidate slot's metadata is read through
-    ``get_metadata_status`` -- never ``get_metadata`` -- so an unreadable or
-    absent record reports NOT-readable and is left OPEN, not retired.
-    """
-    if not bool(getattr(state, "open_slots_restored", False)):
-        return frozenset()
-    log = getattr(state, "conversation_log", None)
-    reader = getattr(log, "get_metadata_status", None)
-    if not callable(reader):
-        return frozenset()
-    keys = {
-        rec["slot_key"] for rec in store.pending(None) if rec.get("status") == cards.STATUS_PENDING
-    }
-    closed: set[str] = set()
-    for key in keys:
-        if await _persisted_close(reader, key):
-            closed.add(key)
-    return frozenset(closed)
-
-
-async def _persisted_close(reader: Callable[[str], Any], slot_key: str) -> bool:
-    """Whether *slot_key*'s session metadata, read off the loop, carries ``closed``.
-
-    An unreadable or absent record, and a read that raises, answer False: only a
-    record that was read and says closed counts as closure.
-    """
-    from kiro_crew.dashboard.chat_utils import drained_to_thread, slot_transcript_key
-
-    try:
-        meta, readable = await drained_to_thread(reader, slot_transcript_key(slot_key))
-    except Exception:
-        logger.debug("persisted-close read failed for %s", slot_key, exc_info=True)
-        return False
-    return bool(readable and meta and meta.get("closed"))
-
-
-async def slot_closure_recorded(state: Any, slot_key: str) -> bool:
-    """Whether *slot_key* has a readable persisted ``closed`` flag.
-
-    Only a close whose history save committed counts. An absent slot and an
-    in-memory close tombstone both answer False. Callers own the other gates:
-    the restore having run, and no live slot or runtime carrying the key.
-    """
-    log = getattr(state, "conversation_log", None)
-    reader = getattr(log, "get_metadata_status", None)
-    if not callable(reader):
-        return False
-    return await _persisted_close(reader, slot_key)
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
@@ -363,6 +266,24 @@ async def _publish_committed(request: web.Request, rec: dict[str, Any]) -> CardE
         return CardError(exc.status, exc.code, _UNRECORDED_MESSAGE)
     await _broadcast(request.app["state"], store.public(rec))
     return None
+
+
+async def _expire_made(state: Any, slot_key: str, kind: str, params: Any) -> None:
+    """Expire, save, then publish the slot's cards waiting on a change already made; best effort."""
+    store = card_store_for(state)
+    try:
+        await store.warm()
+        expired = store.expire_made(slot_key, kind, params)
+    except CardError:
+        return
+    try:
+        await store.flush(strict=True)
+    except CardError:
+        for rec, snap in expired:
+            store.restore(rec, snap)
+        return
+    for rec, _snap in expired:
+        await _broadcast(state, store.public(rec))
 
 
 #: What the card says when its route was cut off (it raised, or the gateway
@@ -673,75 +594,37 @@ async def propose_for_caller(
     the undo, run when the card is then not published, so nothing is claimed for a
     card nobody saw.
     """
+    from kiro_crew.dashboard.handlers.change_cards_propose import propose_in_slot
+
     try:
-        # An app's kind and an app's card key are never a chat caller's: see
-        # propose_app_card.
-        if kind in catalog.APP_ONLY_KINDS or slot_key.startswith(
-            (APP_SLOT_PREFIX, OWNER_SLOT_PREFIX)
-        ):
-            raise CardError(403, "app_only", "only the owner can propose this change")
-        params = catalog.validate_params(kind, params)
-        params = await cards.resolve_params(kind, params)
-        cards.check_param_text(params)
-        reason = cards.clean_reason(reason)
-        state = request.app["state"]
-        preview, before, context = await cards.build(kind, params, state=state, app=request.app)
-        await _settle(request)
-    except (CardError, catalog.CardCatalogError) as exc:
-        return _refusal(exc)
-    undo_claim: Callable[[], Awaitable[None]] | None = None
-    try:
-        if claim is not None:
-            undo_claim = await claim()
-        rec = _store(request).propose(
-            slot_key=slot_key,
-            session_key=sk,
+        body = await propose_in_slot(
+            request.app["state"],
+            slot_key,
+            sk,
             kind=kind,
             params=params,
             reason=reason,
-            preview=preview,
-            before=before,
-            context=context,
+            app=request.app,
+            claim=claim,
         )
     except (CardError, catalog.CardCatalogError) as exc:
-        if undo_claim is not None:
-            await undo_claim()
-        if isinstance(exc, CardError) and exc.code == "duplicate_card":
-            exc = await _show_waiting_card_again(request, slot_key, kind, params, exc)
         return _refusal(exc)
-    store = _store(request)
-    try:
-        await store.flush(strict=True)
-    except CardError as exc:
-        # Never shown, never in the transcript: the proposal did not happen.
-        store.discard(rec["id"])
-        if undo_claim is not None:
-            await undo_claim()
-        return _refusal(CardError(exc.status, exc.code, "the change card could not be saved"))
-    public = store.public(rec)
-    # The card is part of the conversation from here on: its row lands at this
-    # point of the transcript, before the frame that makes it live.
-    await chat_cards.load_conversation_window(request.app["state"], public)
-    chat_cards.record_change_proposed(request.app["state"], public)
-    delivered = await _broadcast(request.app["state"], public)
-    _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
-    return web.json_response({**public, "delivered_clients": delivered})
+    return web.json_response(body)
 
 
 async def _show_waiting_card_again(
-    request: web.Request, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
+    state: Any, slot_key: str, kind: str, params: dict[str, Any], exc: CardError
 ) -> CardError:
     """Draw the pending card a repeated proposal names again at the end of the chat.
 
     The repeat is still refused; its text says where the card now is only once the
     row was written. A card being applied stays where it is.
     """
-    store = _store(request)
+    store = card_store_for(state)
     same = store.open_duplicate(slot_key, kind, params)
     if same is None or same["status"] != cards.STATUS_PENDING:
         return exc
     public = store.public(same)
-    state = request.app["state"]
     await chat_cards.load_conversation_window(state, public)
     if not chat_cards.record_change_shown_again(state, public):
         return exc
@@ -1848,10 +1731,13 @@ async def _run_card_step(
         if unrecorded is not None:
             _audit(str(request.get("user") or "owner"), "cards.apply", "error", unrecorded.code)
             return _refusal(unrecorded)
-        return resp
-    # A poll: its verdict (an approval finishing the card, among others) is on
-    # disk before any tab hears of it, or the poll is answered 503 and re-run.
-    return await _published_or_refusal(request, rec, revert) or resp
+    elif refused := await _published_or_refusal(request, rec, revert):
+        # A poll: its verdict (an approval finishing the card, among others) is on
+        # disk before any tab hears of it, or the poll is answered 503 and re-run.
+        return refused
+    if op == catalog.OP_APPLY and rec["status"] == cards.STATUS_APPLIED:
+        await _expire_made(request.app["state"], rec["slot_key"], rec["kind"], rec["params"])
+    return resp
 
 
 async def _published_or_refusal(
@@ -1979,6 +1865,22 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
             card_member=str(params.get("name") or ""),
         ):
             request[mate_user_actions.REQ_CARD_OWN_WAKE] = True
+
+
+async def warm_after_start(state: Any) -> None:
+    """Load the persisted cards once at start, then show any still open on the slot list.
+
+    The slot list's ``needs_full_chat`` reads the store without loading it, so a
+    card left open across a restart would read as absent until a route warmed it.
+    """
+    store = card_store_for(state)
+    try:
+        await store.warm()
+    except Exception:
+        logger.debug("change cards: start-up warm failed; the first route retries", exc_info=True)
+        return
+    if store.slots_with_open_cards():
+        full_chat_waits.push_slot_list(state)
 
 
 def register_change_card_routes(app: web.Application) -> None:

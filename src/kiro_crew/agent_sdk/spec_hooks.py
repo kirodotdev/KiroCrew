@@ -81,9 +81,14 @@ from kiro_crew.agent_sdk.kas_project_hooks import (  # noqa: F401,E402 - re-expo
     kas_project_hooks_state,
 )
 
-# Re-exported for the modules that import these from spec_hooks; they live in a
-# sibling only to keep this module under its line cap. The sibling imports this
-# module's seams lazily, so the two load in either order.
+# Re-exported for the modules that import these from spec_hooks; they live in
+# siblings only to keep this module under its line cap. spec_hooks_reproject imports
+# this module's seams lazily, so the two load in either order.
+from kiro_crew.agent_sdk.spec_hooks_post_tool import (  # noqa: E402,F401
+    PostToolIdentity,
+    post_tool_hook_tool_id,
+    post_tool_identity,
+)
 from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
     ClaimToken,
     UnattendedClaim,
@@ -478,87 +483,6 @@ def envelope_named_tool_id(tool_id: str) -> bool:
     return parts is not None and parts[0] in ENVELOPE_NAMED_TOOL_BACKENDS
 
 
-def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: bool) -> str:
-    """The tool id a finished call's PostToolUse spec hooks match on, or "".
-
-    kiro-cli matches a postToolUse hook against its own tool name. KAS's tool-call
-    frame names no built-in tool (its ``_meta.kiro.toolId`` is set for a few
-    non-built-in ones only) and titles the call in prose, so the title alone
-    meets no tool matcher a spec writes. The call is named by what the turn
-    learned of it instead: the id its permission request stated
-    (*harness_tool_id*), else, for a call the frame classified as a shell
-    command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
-    kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
-
-    claude names its shell call the same way, as its frames carry no tool id. A codex
-    ``tool_call`` event carries its own id (``codex#exec_command``, ``codex#apply_patch``,
-    :func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), so the
-    fallback names only a codex call that event left unnamed; a codex MCP call is
-    kind ``execute`` too, but its MCP marker classifies it not shell.
-
-    "" on a backend whose harness runs the spec's hooks itself, and for a call
-    nothing names, which keeps the title matching it had.
-    """
-    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
-        return ""
-    if harness_tool_id:
-        return harness_tool_id
-    if not is_shell:
-        return ""
-    # circular import: see spec_hook_tool_names.
-    from kiro_crew.acp.harness_tool_names import ENVELOPE_NAMED_TOOL_BACKENDS
-    from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
-
-    # On Strands the shell verdict a card carries is the CLI's guess from the tool
-    # name, so only the id the gate envelope stated names the call.
-    if capabilities_of(provider).backend in ENVELOPE_NAMED_TOOL_BACKENDS:
-        return ""
-
-    shell_ids = KAS_TOOL_IDS_BY_KIRO_TOOL.get("execute_bash") or ()
-    return shell_ids[0] if shell_ids else ""
-
-
-class PostToolIdentity(NamedTuple):
-    """What a finished call's PostToolUse hooks are matched on, kept per call.
-
-    The harness id (:func:`post_tool_hook_tool_id`), and the call's canonical tool
-    name and trusted MCP server, so a spec matcher written ``@server/tool`` meets an
-    MCP call by those forms as it does on PreToolUse
-    (``hooks.pre_tool_match_names``).
-    """
-
-    tool_id: str = ""
-    tool_identity: str = ""
-    mcp_server: str = ""
-
-
-def post_tool_identity(
-    provider: object,
-    event: object,
-    *,
-    is_shell: bool,
-    earlier: PostToolIdentity | None = None,
-) -> PostToolIdentity | None:
-    """*event*'s :class:`PostToolIdentity`, or ``None`` where Crew fires no
-    PostToolUse spec hooks.
-
-    *event* is the call's ``tool_call`` frame or its permission request; a field
-    the event leaves empty keeps what *earlier* recorded for the same call.
-    """
-    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
-        return None
-    base = earlier or PostToolIdentity()
-    stated = getattr(event, "harness_tool_id", "") or ""
-    tool_id = post_tool_hook_tool_id(provider, harness_tool_id=stated, is_shell=is_shell)
-    identity = getattr(event, "tool_name", "") or ""
-    server = getattr(event, "mcp_server_name", "") or ""
-    return PostToolIdentity(
-        tool_id=tool_id or base.tool_id,
-        tool_identity=identity if isinstance(identity, str) and identity else base.tool_identity,
-        mcp_server=server if isinstance(server, str) and server else base.mcp_server,
-    )
-
-
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     """Warn about, and SEL-audit, a spec hook that will not run.
 
@@ -808,8 +732,7 @@ def _from_documents(
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _event_for_hook_trigger, normalize_spec_hooks
 
-    # The normalizer drops a document whose command is too long before this loop
-    # sees it, so name the hook and the fix here.
+    # The normalizer drops a too-long command before this loop: name the hook and fix here.
     for overlong in _overlong_commands({"hooks": hooks}):
         logger.warning(
             "agent %r: spec hook on %s does not run on this backend: %s",
@@ -818,16 +741,21 @@ def _from_documents(
             _overlong_reason(overlong.matcher, overlong.length, overlong.limit),
         )
     out: list[ScriptHook] = []
-    for index, doc in enumerate(normalize_spec_hooks(hooks, matcher_ok=_matcher_ok)):
-        if past_cap is not None and len(out) >= _MAX_SPEC_HOOKS:
-            past_cap.append(str(doc.get("trigger")))
-            continue
-        if len(out) > _MAX_SPEC_HOOKS:
-            break
+    index = -1
+    for doc in normalize_spec_hooks(hooks, matcher_ok=_matcher_ok):
         trigger = doc.get("trigger")
         raw_action = doc.get("action")
         action: dict = raw_action if isinstance(raw_action, dict) else {}
         command = action.get("command")
+        if trigger in ("PreCompact", "PostCompact"):  # unnumbered: policy names are by index
+            _reject(agent_id, trigger, command, "no Crew hook event can run this trigger or action")
+            continue
+        index += 1
+        if past_cap is not None and len(out) >= _MAX_SPEC_HOOKS:
+            past_cap.append(str(trigger))
+            continue
+        if len(out) > _MAX_SPEC_HOOKS:
+            break
         if doc.get("enabled") is False:
             _reject(agent_id, trigger, command, "hook is disabled")
             continue
@@ -844,20 +772,16 @@ def _from_documents(
         if event is None or action.get("type") != "command":
             _reject(agent_id, trigger, command, "no Crew hook event can run this trigger or action")
             continue
-        # The document's timeout is in seconds, clamped like a Hooks-page hook's.
         hook = _hook(
             agent_id,
             event,
             index,
             {"command": command, "matcher": doc.get("matcher")},
-            _normalize_hook_timeout(doc.get("timeout")),
+            _normalize_hook_timeout(doc.get("timeout")),  # seconds, clamped like Hooks-page hooks
         )
         if hook is not None:
-            # Pure side-count: a document that converts to a runnable hook while
-            # the kept list is already at the cap is recorded for the caller that
-            # asked (``cap_overflow``) and still appended, so the cap / break and
-            # what is kept are exactly as on the no-counter path. The spec-hook
-            # callers pass no list and ``_convert`` audits the overflow as before.
+            # Pure side-count: a runnable hook met at the cap goes in ``cap_overflow`` and is still
+            # appended, so cap, break and kept list match ``_convert``'s no-counter path.
             if cap_overflow is not None and len(out) >= _MAX_SPEC_HOOKS:
                 cap_overflow.append(index)
             out.append(hook)
@@ -1610,13 +1534,15 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
     since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
     or ``allowedPaths`` entry (``<key>.allowedCommands: <entry> (<reason>)``): the
-    other entries apply unless the list is named whole. A ``hooks.postToolUse[<m>]`` key
-    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect". The
-    entries past the bound Kiro Crew applies get their own sentence
-    (``kas_unread_commands.over_limit_notice``).
+    other entries apply unless the list is named whole or cut by the bound. A
+    ``hooks.postToolUse[<m>]`` key gets :func:`unmet_post_tool_matchers_sentence`
+    instead of "no effect". The entries past the bound Kiro Crew applies get their own sentence
+    (``kas_unread_commands.over_limit_notice``), and so do the read and write
+    ``allowedPaths`` past theirs (``kas_unread_commands.allowed_paths_notice``).
     A Bot's worker gets its own deny wording (``kas_tool_view.deny_sentences``).
     """
-    from kiro_crew.acp.kas_unread_commands import over_limit_notice, unreadable_paths_notice
+    from kiro_crew.acp.kas_deny_cli_forms import split_sent_as_cli
+    from kiro_crew.acp.kas_unread_commands import allowed_paths_notice, over_limit_notice
     from kiro_crew.agent_sdk.kas_tool_view import (
         allow_exclude_limit,
         deny_sentences,
@@ -1627,6 +1553,8 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    # A deny entry sent as kiro-cli sends it says what it refuses, never "no effect".
+    sent_as_cli, keys = split_sent_as_cli(agent, keys, agent == MATE_WORKER_AGENT)
     judged, deny_rest, keys = split_deny_notices(keys)
     over_limit, keys = over_limit_notice(agent, keys)
     unread = [key for key in keys if MARK in key]
@@ -1640,8 +1568,10 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         "Each allows nothing, so a command only it matches asks for approval, or is refused "
         f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
     )
-    unread_paths, keys = unreadable_paths_notice(agent, keys)
-    named = [text for text in (entries if unread else "", unread_paths, over_limit) if text]
+    unread_paths, keys = allowed_paths_notice(agent, keys)
+    named = [
+        text for text in (entries if unread else "", unread_paths, over_limit, *sent_as_cli) if text
+    ]
     if named and not keys and not judged and not deny_rest:
         return "ℹ️ " + " ".join(named)
     # Crew's own gate still refuses what a marked allowlist leaves out, so it is

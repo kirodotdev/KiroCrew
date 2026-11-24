@@ -17,6 +17,8 @@ from kiro_crew.secrets import SecretVault
 from kiro_crew.testing.links import make_dir_link
 
 _FIGMA = "https://mcp.figma.com/mcp"
+#: Where the ``kiro-path-tokens`` key shape was copied from.
+_PATH_TOKENS_SOURCE = "kiro-team/kiro-agent 66107e986181, first in 0.66.121"
 # sha256("https://mcp.figma.com/mcp|"): the input ``calculateConnectionHash`` in
 # @kiro/agent's acp-server.js (KAS 2.36.0 and 2.37.1) builds for a url entry with
 # no headers and no oauth, digested with node's crypto. A KAS upgrade that changes
@@ -63,6 +65,38 @@ async def test_a_stored_tokens_entry_is_present(tmp_path):
 
     assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is True
     assert mcp_grant_kas.kas_grant_presence("https://other.example/mcp", store_root=root) is False
+
+
+@pytest.mark.asyncio
+async def test_a_path_tokens_entry_is_a_sign_in_and_disconnect_removes_it(tmp_path, monkeypatch):
+    """KAS 0.66.121 stores a Kiro-callback-path browser sign-in as ``kiro-path-tokens``.
+
+    ``credential-storage-manager.ts`` keys it ``kiro.mcp.<connectionHash>.kiro-path-tokens``
+    with the same connection hash as ``tokens``, so the hash here is unchanged.
+    Source: ``_PATH_TOKENS_SOURCE``.
+    """
+    from kiro_crew.connections import mint_kas
+
+    digest = mcp_grant_kas.kas_connection_hash(_FIGMA)
+    store = kss.McpGrantStore(tmp_path)
+    await store.store(f"kiro.mcp.{digest}.kiro-path-client", "{}")
+    await store.store(f"kiro.mcp.{digest}.kiro-path-tokens", "{}")
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is True
+
+    monkeypatch.setattr(mint_kas, "data_home", lambda: tmp_path)
+    assert mint_kas.forget_kas_sign_in(_FIGMA) is True
+    assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is False
+    assert SecretVault(root).list_names() == []
+
+
+@pytest.mark.asyncio
+async def test_forget_kas_grant_removes_a_path_tokens_entry(tmp_path):
+    digest = mcp_grant_kas.kas_connection_hash(_FIGMA)
+    await kss.McpGrantStore(tmp_path).store(f"kiro.mcp.{digest}.kiro-path-tokens", "{}")
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    await mcp_grant_kas.forget_kas_grant(_FIGMA, store_root=root)
+    assert SecretVault(root).list_names() == []
 
 
 @pytest.mark.asyncio

@@ -1006,8 +1006,10 @@ def _start_recovery(binding: Binding, user: str, now: float, resources: str, pat
 
 async def drain_recoveries() -> None:
     """Wait for background archive recoveries (tests, shutdown)."""
-    while _recoveries:
-        await asyncio.gather(*list(_recoveries.values()), return_exceptions=True)
+    # Only the running recoveries: a finished one leaves the dict on a later loop
+    # pass, and gathering only finished tasks never yields (3.12+), so this would spin.
+    while pending := [task for task in _recoveries.values() if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _notify_kept(binding: Binding, path: str, reason: str) -> None:

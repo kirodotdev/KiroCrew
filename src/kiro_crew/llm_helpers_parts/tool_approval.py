@@ -898,7 +898,8 @@ async def _resolve_permission(
                 metadata={
                     "mechanism": (
                         "always_deny_hook" if tool_result.security_deny else "policy_deny"
-                    )
+                    ),
+                    **({"rule_id": tool_result.tier} if tool_result.tier else {}),
                 },
             )
             await _steer_host_deny(provider, event, tool_result.reason, cause=DENY_CAUSE_POLICY)

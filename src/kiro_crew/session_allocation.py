@@ -45,6 +45,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionClosingError,
     SessionEndingError,
 )
+from kiro_crew.session_idle_clock import turn_was_automated
 from kiro_crew.session_lifecycle import adopt_parked_queue
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
@@ -253,6 +254,10 @@ class SessionRegistryState:
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Per key, the sid a resume prefetch saw its KAS ``session/load`` refuse
+    #: (``AcpResumeNotRestored``): a later prefetch of that sid is refused before it
+    #: starts a process. In memory only; registering a session for the key drops it.
+    refused_resume_sids: dict[str, str] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -1304,6 +1309,9 @@ class SessionAllocationService:
                 # acquired. A run that never returns still goes stale and is
                 # reaped; a run working between tasks is not mistaken for one.
                 session.last_used = time.monotonic()
+                # Read in the releasing turn's own context, where its entry point
+                # declared who started it; the idle sweep picks the timeout from it.
+                session.last_turn_automated = turn_was_automated()
                 # Every surface ends a turn here, so this is the one point that
                 # sees a channel turn finish without knowing its transport
                 # (``on_session_released``). The observer only schedules work; a

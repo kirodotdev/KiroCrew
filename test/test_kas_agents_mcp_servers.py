@@ -13,11 +13,12 @@ shared ``_spec`` builder lives in ``kas_agents_helpers.py``.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
 import pytest
-from kas_agents_helpers import _spec
+from kas_agents_helpers import _spec, without_own_agents_deny
 
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
@@ -166,10 +167,10 @@ class TestMcpServersProjection:
         assert out["mcpServers"]["kirocrew-core"] == {"command": "x"}
 
     def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
-        """KAS starts an MCP child with a minimal environment of its own, so a
-        launcher's per-process value reaches the child only through a reference
-        to a name the edition relays. The credential-keyed literal beside it, and
-        a reference wrapped in literal text, do not."""
+        """A reference to a name the edition relays stays on the wire, so KAS
+        fills it in from its own environment, where a launcher's per-process value
+        lives. The credential-keyed literal beside it, and a reference wrapped in
+        literal text, do not."""
         out = to_client_custom_agent(
             "a",
             _spec(
@@ -1243,7 +1244,8 @@ class TestRuntimeSuppliesTheStubbedSet:
         from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 
         assert [
-            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+            {k: v for k, v in without_own_agents_deny(a).items() if k != CREW_SETTINGS_MCP_KEY}
+            for a in out.custom_agents
         ] == [{"id": "kirocrew"}]
 
 
@@ -1303,7 +1305,7 @@ class TestNativeManagedMcpIdentity:
         assert "env" not in unrelated["mcpServers"]["kirocrew-work"]
 
     def test_a_central_ceiling_puts_managed_stdio_children_in_cache_only_mode(self, monkeypatch):
-        """KAS gives managed children a minimal env; the gateway supplies the markers."""
+        """On KAS the gateway puts the markers on a managed child's entry itself."""
         from kiro_crew.platform import policy_distribution as pd
 
         monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
@@ -1355,7 +1357,7 @@ class TestHoistManagedServers:
         return to_client_custom_agent("kirocrew", spec, "p", session_key="subagent:k")
 
     #: What every managed element in the returned array carries.
-    _LEGACY = {"_meta": {"kiro": {"versionNegotiation": "legacy"}}}
+    _LEGACY = {"_meta": {"kiro": {"versionNegotiation": "legacy", "timeout": 120_000}}}
 
     def test_active_managed_stdio_entry_moves_into_the_array_as_an_acp_element(self):
         projected = self._projected()
@@ -1596,12 +1598,12 @@ class TestHoistManagedServers:
     @pytest.mark.parametrize(
         "entry",
         [
-            {"command": "kc", "timeout": 5},
             {"command": "kc", "type": "registry"},
             {"url": "https://example.invalid/mcp"},
+            {"url": "https://example.invalid/mcp", "timeout": 5},
             {"args": ["mcp"]},
         ],
-        ids=["timeout", "registry", "remote", "no-command"],
+        ids=["registry", "remote", "remote-timeout", "no-command"],
     )
     def test_a_restricted_or_unrepresentable_entry_keeps_the_block_path(self, monkeypatch, entry):
         # No ``disabled: true`` case: such an entry is never declared in the first
@@ -1620,6 +1622,63 @@ class TestHoistManagedServers:
         else:
             assert agents[0] is projected
             assert agents[0]["mcpServers"]["kirocrew-core"] == entry
+
+    def test_a_managed_entry_with_an_extra_key_is_hoisted_with_its_token(self, monkeypatch, caplog):
+        # Left in the block, kirocrew-core would get no token and refuse every
+        # call as identity_unattested; the timeout has no session-level slot.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = self._projected(
+            **{"kirocrew-core": {"command": "kc", "args": ["mcp"], "timeout": 4321}}
+        )
+        with caplog.at_level(logging.INFO, logger="kiro_crew.acp.kas_agents"):
+            agents, array = hoist_servers_for_session(
+                [projected], "kirocrew", [], session_token="tok-1"
+            )
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert "timeout" not in core
+        assert core["command"] == "/opt/kc"
+        assert {p["name"]: p["value"] for p in core["env"]}[STUB_SESSION_TOKEN_ENV] == "tok-1"
+        assert "kirocrew-core" not in agents[0]["mcpServers"]
+        (line,) = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+        assert "'kirocrew-core'" in line and "timeout" in line
+        assert "4321" not in line, "values are not logged"
+        # No token to gain: it keeps the block and its managed relaunch.
+        agents, array = hoist_servers_for_session([projected], "kirocrew", [])
+        assert [e["name"] for e in array] == []
+        assert agents[0]["mcpServers"]["kirocrew-core"]["command"] == "/opt/kc"
+        assert agents[0]["mcpServers"]["kirocrew-core"]["timeout"] == 4321
+
+    def test_a_user_server_with_the_same_extra_key_is_not_hoisted(self, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = self._projected(**{"my-server": {"command": "my-mcp", "timeout": 120}})
+        agents, array = hoist_servers_for_session(
+            [projected], "kirocrew", [], session_token="tok-1"
+        )
+        assert [e["name"] for e in array] == ["kirocrew-core"]
+        assert agents[0]["mcpServers"]["my-server"] == {"command": "my-mcp", "timeout": 120}
+        assert STUB_SESSION_TOKEN_ENV not in json.dumps(agents)
+
+    def test_an_extra_key_does_not_hand_the_token_to_another_program(self, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        evil = {"command": "/tmp/evil", "args": ["--exfil"], "timeout": 120}
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        _, array = hoist_servers_for_session(
+            [self._projected(**{"kirocrew-core": evil})], "kirocrew", [], session_token="tok-1"
+        )
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert (core["command"], core["args"]) == ("/opt/kc", ["mcp-core"])
+        assert "/tmp/evil" not in json.dumps(array)
+        # With no managed invocation to re-derive, it moves without the token.
+        self._managed(monkeypatch, None)
+        _, array = hoist_servers_for_session(
+            [self._projected(**{"kirocrew-core": evil})], "kirocrew", [], session_token="tok-1"
+        )
+        assert STUB_SESSION_TOKEN_ENV not in json.dumps(array)
 
     def test_no_agents_or_no_block_is_a_passthrough(self):
         array = [{"name": "x"}]
@@ -1674,7 +1733,7 @@ class TestHoistManagedServers:
         for element in by_name.values():
             assert element["_meta"]["kiro"]["versionNegotiation"] == "legacy"
         assert by_name["kirocrew-dashboard"]["_meta"] == {
-            "kiro": {"waitForReady": True, "versionNegotiation": "legacy"},
+            "kiro": {"waitForReady": True, "versionNegotiation": "legacy", "timeout": 120_000},
             "other": 1,
         }, "existing _meta keys survive the pin"
         assert member == before, "the caller's entry is copied, never mutated"
@@ -1689,6 +1748,34 @@ class TestHoistManagedServers:
         assert array[1] is user_remote, "a managed name with no command is not Crew's launch"
         assert "versionNegotiation" not in json.dumps(agents), "the block path carries no pin"
 
+    def test_a_pooled_stub_gets_its_servers_connect_timeout(self, tmp_path):
+        # KAS reads no top-level ``timeout`` on a session-level element: without
+        # one in ``_meta.kiro`` a pooled server's stub gets the engine's 60 s.
+        from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
+        from kiro_crew.mcp_gateway import STUB_MODULE
+
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        (settings / "cli.json").write_text(json.dumps({"mcp.initTimeout": 150_000}))
+        [stamped] = stamp_settings_mcp([self._projected()], "kirocrew", tmp_path)
+
+        def stub(name, **keys):
+            args = ["-m", STUB_MODULE, "--server", name, "--agent", "kirocrew"]
+            return {"name": name, "command": "/usr/bin/python3", "args": args, "env": [], **keys}
+
+        slow = stub("slow", timeout=200_000)  # flake-ok: server spec data, not a wait
+        _, array = hoist_servers_for_session(
+            [stamped], "kirocrew", [slow, stub("aliased", timeoutMs=90_000), stub("plain")]
+        )
+        timeouts = {e["name"]: e.get("_meta", {}).get("kiro", {}).get("timeout") for e in array}
+        assert timeouts == {
+            "kirocrew-core": 120_000,
+            "slow": 200_000,
+            "aliased": 90_000,
+            "plain": 150_000,
+        }, "its own timeout, else the default the agent block gets"
+        assert "_meta" not in slow, "the caller's entry is copied, never mutated"
+
     def test_the_non_kas_path_returns_its_array_unpinned(self):
         # The kiro backend sends no custom agents; its array must stay as built.
         array = [{"name": "kirocrew-core", "command": "kc", "args": [], "env": []}]
@@ -1700,9 +1787,9 @@ class TestHoistManagedServers:
 class TestUserServersStayInTheBlock:
     """A user-declared server is never hoisted, on session/new or session/load.
 
-    KAS launches agent-block servers on a cold session/load too, and only the
-    block carries ``timeout``: a session-level element has no slot for it, so a
-    hoisted server got KAS's 60 s instead of the 120 s the block is given.
+    KAS launches agent-block servers on a cold session/load too, and the block
+    carries a user server's ``timeout``: hoisted, it would get KAS's 60 s instead
+    of the 120 s the block is given.
     """
 
     def test_user_server_stays_and_managed_server_moves_with_its_token(self, monkeypatch):

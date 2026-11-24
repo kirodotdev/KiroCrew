@@ -862,3 +862,49 @@ def test_main_arms_the_relay_from_argv(monkeypatch):
         "_kiro/tools/didChange",
     ]
     assert fake._KAS_RELAY is True
+
+
+def test_opt_in_host_token_check_gates_a_relay_prompt_on_the_hosts_answer(monkeypatch):
+    """With the variable set the relay asks for the host's credential before a
+    prompt and serves it only on the expected token; unset, nothing is asked."""
+    buf = _capture(monkeypatch)
+    monkeypatch.setattr(fake, "_KAS_RELAY", True)
+
+    def _answer(result: Any) -> None:
+        fake._INBOX.put({"jsonrpc": "2.0", "id": fake._HOST_TOKEN_REQ_ID, "result": result})
+
+    def _turn(req_id: int) -> list[dict[str, Any]]:
+        buf.seek(0)
+        buf.truncate()
+        fake._handle(_prompt("hello", req_id=req_id))
+        return _messages(buf)
+
+    monkeypatch.delenv(fake.HOST_TOKEN_ENV, raising=False)
+    assert [m.get("method") for m in _turn(1)] == ["session/update", None]
+
+    monkeypatch.setenv(fake.HOST_TOKEN_ENV, "seeded-token")
+    _answer({"accessToken": "another-token"})
+    ask, refused = _turn(2)
+    assert ask == {
+        "jsonrpc": "2.0",
+        "id": fake._HOST_TOKEN_REQ_ID,
+        "method": fake.HOST_TOKEN_METHOD,
+        "params": {},
+    }
+    assert refused["id"] == 2
+    assert "another token" in refused["error"]["message"]
+    assert "another-token" not in refused["error"]["message"]
+
+    fake._INBOX.put({"jsonrpc": "2.0", "id": fake._HOST_TOKEN_REQ_ID, "error": {"code": -1}})
+    assert "refused" in _turn(3)[-1]["error"]["message"]
+
+    _answer({"accessToken": "seeded-token", "expiresAt": "2099-01-01T00:00:00+00:00"})
+    ask, chunk, done = _turn(4)
+    assert ask["method"] == fake.HOST_TOKEN_METHOD
+    assert chunk["params"]["update"]["content"]["text"] == fake.REPLY_TEXT
+    assert done == {"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "end_turn"}}
+
+    # A plain kiro-cli spawn never asks, whatever the variable says.
+    monkeypatch.setattr(fake, "_KAS_RELAY", False)
+    assert [m.get("method") for m in _turn(5)] == ["session/update", None]
+    assert fake._INBOX.empty()

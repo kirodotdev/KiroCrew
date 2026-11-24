@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kiro_crew.sandbox import REMEDY_APPARMOR_USERNS
+
 
 def _run_consent(
     tmp_path: Path,
@@ -37,6 +39,9 @@ def _run_consent(
     write_raises: bool = False,
     platform_allows: bool = False,
     prompts: list | None = None,
+    remedy: str = "",
+    sandbox_mode: str = "auto",
+    result: list | None = None,
 ) -> dict | None:
     """Drive ``_setup_sandbox_consent`` and return the resulting config dict.
 
@@ -58,6 +63,10 @@ def _run_consent(
     because the prompt is an ARGUMENT to ``_input_or_skip``, which is stubbed here
     and so never reaches stdout — asserting the question via ``capsys`` would pass
     whatever the step asked, including nothing at all.
+
+    ``remedy`` pins the probe's remedy token, so no test reads this process's real
+    last-probe state; ``sandbox_mode`` pins the effective ``agent.sandbox`` tier
+    instead of reading the real config; ``result`` collects the step's return value.
     """
     from kiro_crew import cli_setup
 
@@ -116,6 +125,9 @@ def _run_consent(
         return False
 
     monkeypatch.setattr(cli_setup, "unavailable_kind", lambda *a, **k: kind)
+    monkeypatch.setattr(cli_setup, "unavailable_remedy", lambda: remedy)
+    monkeypatch.setattr(cli_setup, "configured_sandbox_mode", lambda: sandbox_mode)
+    monkeypatch.setattr(cli_setup, "effective_sandbox_mode", lambda mode: mode)
     monkeypatch.setattr(cli_setup, "unsandboxed_exec_declared", _declared_stub)
     monkeypatch.setattr(
         cli_setup, "unsandboxed_exec_platform_default", lambda *a, **k: platform_allows
@@ -133,7 +145,9 @@ def _run_consent(
 
     monkeypatch.setattr(cli_setup, "_input_or_skip", _ask)
 
-    cli_setup._setup_sandbox_consent()
+    returned = cli_setup._setup_sandbox_consent()
+    if result is not None:
+        result.append(returned)
 
     if not cfg_file.exists():
         return None
@@ -174,9 +188,11 @@ class TestSetupSandboxConsent:
         assert "Sandbox" not in capsys.readouterr().out
 
     def test_explicit_yes_writes_the_opt_in(self, tmp_path, monkeypatch) -> None:
-        result = _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="y")
+        returned: list = []
+        result = _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="y", result=returned)
         assert result is not None
         assert result["agent"]["sandbox_allow_unsandboxed_exec"] is True
+        assert returned == [False]
 
     def test_yes_spelled_out_writes_the_opt_in(self, tmp_path, monkeypatch) -> None:
         result = _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="YES")
@@ -196,6 +212,52 @@ class TestSetupSandboxConsent:
     def test_declining_writes_nothing(self, tmp_path, monkeypatch) -> None:
         assert _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="n") is None
 
+    def test_apparmor_host_names_the_profile_fix_and_that_chat_cannot_run(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Stock Ubuntu 24.04 keeps the default: the chat agent is refused too, and
+        the profile install is the fix setup must name, not only the opt-in."""
+        returned: list = []
+        assert (
+            _run_consent(
+                tmp_path,
+                monkeypatch,
+                kind="no_backend",
+                answer="",
+                remedy=REMEDY_APPARMOR_USERNS,
+                result=returned,
+            )
+            is None
+        )
+        out = capsys.readouterr().out
+        assert "`kirocrew service install`" in out
+        assert "sudo" in out
+        assert "The chat agent is refused too" in out
+        assert "no agent can run on this host yet, chat included" in out
+        assert "MCP tooling stays disabled" not in out
+        assert returned == [True]
+
+    def test_sandbox_off_makes_no_claim_about_the_chat_agent(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """Under ``agent.sandbox: "off"`` the chat agent runs unconfined on this host,
+        so the step must not say it cannot run, nor have setup say so."""
+        returned: list = []
+        result = _run_consent(
+            tmp_path,
+            monkeypatch,
+            kind="no_backend",
+            answer="",
+            sandbox_mode="off",
+            result=returned,
+        )
+        assert result is None
+        out = capsys.readouterr().out
+        assert "MCP tooling stays disabled" in out
+        assert "chat agent" not in out
+        assert "no agent can run" not in out
+        assert returned == [False]
+
     def test_empty_answer_declines(self, tmp_path, monkeypatch) -> None:
         """``[y/N]`` — a bare Enter must not opt in."""
         assert _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="") is None
@@ -204,14 +266,13 @@ class TestSetupSandboxConsent:
         """``_input_or_skip`` returns None on EOF; that must stay fail-closed."""
         assert _run_consent(tmp_path, monkeypatch, kind="no_backend", answer=None) is None
 
-    def test_declining_names_the_config_key_and_path(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_declining_names_the_config_key_and_path(self, tmp_path, monkeypatch, capsys) -> None:
         """The remedy has to be actionable — that is the whole point of the step."""
         _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="n")
         out = capsys.readouterr().out
         assert "sandbox_allow_unsandboxed_exec=true" in out
         assert str(tmp_path / "config.json") in out
+        assert "service install" not in out
 
     def test_prompt_states_the_concrete_risk(self, tmp_path, monkeypatch, capsys) -> None:
         """A consent prompt that does not name what is exposed is not consent."""
@@ -251,9 +312,7 @@ class TestSetupSandboxConsentIsAudited:
 
     def test_grant_emits_a_sel_event_with_audit_or_deny(self, tmp_path, monkeypatch) -> None:
         audit: list = []
-        result = _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="y", audit=audit
-        )
+        result = _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="y", audit=audit)
         assert result is not None
         assert result["agent"]["sandbox_allow_unsandboxed_exec"] is True
         assert len(audit) == 1
@@ -265,9 +324,7 @@ class TestSetupSandboxConsentIsAudited:
 
     def test_audit_failure_refuses_the_grant(self, tmp_path, monkeypatch, capsys) -> None:
         """Audit-or-deny: an unwritable SEL log must not yield an unaudited grant."""
-        result = _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="y", sel_raises=True
-        )
+        result = _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="y", sel_raises=True)
         assert result is None
         assert "Refusing to grant unsandboxed execution unaudited" in capsys.readouterr().out
 
@@ -276,9 +333,7 @@ class TestSetupSandboxConsentIsAudited:
         _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="n", audit=audit)
         assert audit == []
 
-    def test_skip_when_backend_exists_emits_no_grant_event(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_skip_when_backend_exists_emits_no_grant_event(self, tmp_path, monkeypatch) -> None:
         audit: list = []
         _run_consent(tmp_path, monkeypatch, kind="", answer="y", audit=audit)
         assert audit == []
@@ -314,9 +369,7 @@ class TestSetupSandboxConsentRespectsTheOverlay:
         assert result is None
         assert "Sandbox" not in capsys.readouterr().out
 
-    def test_unrelated_overlay_does_not_suppress_the_prompt(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_unrelated_overlay_does_not_suppress_the_prompt(self, tmp_path, monkeypatch) -> None:
         result = _run_consent(
             tmp_path,
             monkeypatch,
@@ -347,9 +400,7 @@ class TestSetupSandboxConsentSurvivesAWriteFailure:
 class TestSetupSandboxConsentOnlyActsOnNoBackend:
     """A persistent opt-in may only be offered for a PERMANENT absence."""
 
-    def test_transient_probe_failure_offers_no_opt_in(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_transient_probe_failure_offers_no_opt_in(self, tmp_path, monkeypatch, capsys) -> None:
         """A momentary fork failure self-heals; it must not buy a permanent bypass."""
         result = _run_consent(tmp_path, monkeypatch, kind="transient", answer="y")
         assert result is None
@@ -359,25 +410,24 @@ class TestSetupSandboxConsentOnlyActsOnNoBackend:
         # this flag, so the remedy must not be named here.
         assert "unsandboxed_exec" not in out
 
-    def test_foreign_sandbox_offers_no_opt_in(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_foreign_sandbox_offers_no_opt_in(self, tmp_path, monkeypatch, capsys) -> None:
         """This host's sandbox works; the remedy is elsewhere, not this flag."""
         result = _run_consent(tmp_path, monkeypatch, kind="foreign_sandbox", answer="y")
         assert result is None
         assert "Sandbox" not in capsys.readouterr().out
 
-    def test_non_interactive_stdio_does_not_prompt(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_non_interactive_stdio_does_not_prompt(self, tmp_path, monkeypatch, capsys) -> None:
         """`kirocrew update` captures output; an unseen prompt would hang it."""
+        returned: list = []
         result = _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="y", tty=False
+            tmp_path, monkeypatch, kind="no_backend", answer="y", tty=False, result=returned
         )
         assert result is None
         out = capsys.readouterr().out
         assert "from a terminal" in out
         assert "Allow unsandboxed execution?" not in out
+        assert "the chat agent" in out
+        assert returned == [True]
 
 
 class TestSetupSandboxConsentOnADefaultAllowPlatform:
@@ -389,9 +439,7 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
     writes, and that a decline still writes nothing.
     """
 
-    def test_prompt_offers_the_refusal_not_the_grant(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_prompt_offers_the_refusal_not_the_grant(self, tmp_path, monkeypatch) -> None:
         """Asking "allow?" where it is already allowed would misdescribe the host."""
         prompts: list = []
         _run_consent(
@@ -406,9 +454,7 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         assert "Refuse unsandboxed execution on this host?" in prompts[0]
         assert "Allow unsandboxed execution?" not in prompts[0]
 
-    def test_the_other_direction_still_asks_to_allow(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_the_other_direction_still_asks_to_allow(self, tmp_path, monkeypatch) -> None:
         """The polarity is the platform's, not a rewrite: a fail-closed default must
         still ask for permission rather than offer a lockdown that already holds."""
         prompts: list = []
@@ -423,14 +469,10 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         assert len(prompts) == 1
         assert "Allow unsandboxed execution?" in prompts[0]
 
-    def test_prompt_states_the_same_concrete_risk(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_prompt_states_the_same_concrete_risk(self, tmp_path, monkeypatch, capsys) -> None:
         """A default that describes itself in softer words than the opt-in did is
         the silent change this branch exists to avoid."""
-        _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="n", platform_allows=True
-        )
+        _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="n", platform_allows=True)
         out = capsys.readouterr().out
         assert "~/.aws" in out
         assert "~/.ssh" in out
@@ -438,10 +480,17 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
 
     def test_explicit_yes_writes_the_lockdown(self, tmp_path, monkeypatch) -> None:
         """A yes here RESTRICTS, so it must persist false — not true."""
+        returned: list = []
         result = _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="y", platform_allows=True
+            tmp_path,
+            monkeypatch,
+            kind="no_backend",
+            answer="y",
+            platform_allows=True,
+            result=returned,
         )
         assert result == {"agent": {"sandbox_allow_unsandboxed_exec": False}}
+        assert returned == [False]
 
     def test_the_lockdown_is_acked_so_the_windows_adoption_keeps_it(
         self, tmp_path, monkeypatch
@@ -471,21 +520,15 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         )
         assert result is None
 
-    def test_declining_names_the_key_that_would_refuse(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_declining_names_the_key_that_would_refuse(self, tmp_path, monkeypatch, capsys) -> None:
         """The reader was just told they are unconfined; leaving without naming the
         opt-out would leave them no way to act on that."""
-        _run_consent(
-            tmp_path, monkeypatch, kind="no_backend", answer="n", platform_allows=True
-        )
+        _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="n", platform_allows=True)
         out = capsys.readouterr().out
         assert "sandbox_allow_unsandboxed_exec=false" in out
         assert str(tmp_path / "config.json") in out
 
-    def test_non_interactive_still_prints_the_notice(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_non_interactive_still_prints_the_notice(self, tmp_path, monkeypatch, capsys) -> None:
         """An unattended install is the case with NO consent behind it, so it is the
         one that most needs telling. It still must not ask."""
         result = _run_consent(
@@ -530,9 +573,7 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         )
         assert audit[0]["critical"] is False
 
-    def test_audit_failure_still_records_the_lockdown(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_audit_failure_still_records_the_lockdown(self, tmp_path, monkeypatch, capsys) -> None:
         """The write proceeds and the audit gap is reported, rather than the host
         being left unconfined because SEL is unwritable."""
         result = _run_consent(
@@ -581,9 +622,7 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         assert result == {"agent": {"sandbox_allow_unsandboxed_exec": False}}
         assert "Sandbox" not in capsys.readouterr().out
 
-    def test_transient_offers_nothing_here_either(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
+    def test_transient_offers_nothing_here_either(self, tmp_path, monkeypatch, capsys) -> None:
         """A self-healing probe failure is not a platform verdict, so no platform
         default applies to it."""
         result = _run_consent(

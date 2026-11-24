@@ -32,7 +32,6 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
     _jsonrpc_error_code,
-    _raise_acp_error,
     parse_slash_command,
     registration_rate_limited_error,
     registration_throttle_line,
@@ -561,8 +560,12 @@ async def _wait_for_response(
                     # rather than a malformed request. Nothing else branches
                     # on ``code``, so setting it cannot change any other
                     # path's outcome.
+                    # Under KAS machine mode a refused credential is the host token's.
+                    from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
                     try:
-                        _raise_acp_error(
+                        raise_turn_error(
+                            self._runtime,
                             msg.error,
                             self._advertised_model_ids(),
                             backend=self._runtime.acp_backend,

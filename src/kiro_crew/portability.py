@@ -38,6 +38,7 @@ from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.archive_config_vetting import config_document_refusal
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
@@ -98,6 +99,12 @@ from kiro_crew.portability_archive import (
     import_size_problem,
     logger,
     manifest_is_memory_only,
+)
+from kiro_crew.portability_export import (
+    MAX_RECORDED_APPS,
+    apps_not_set_up,
+    recorded_apps,
+    unbundled_apps,
 )
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
@@ -338,7 +345,12 @@ def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
                 atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
                 vetted[name] = (channels, dropped)
             else:
-                vetted[name] = _read_archive_object(src)
+                document = _read_archive_object(src)
+                if name in ("config.json", "config.local.json"):
+                    why = config_document_refusal(document)
+                    if why:
+                        raise _SettingsRefused(f"the archive's {name} is unsafe: {why}")
+                vetted[name] = document
             # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
             # from the source fstat), and the extractor creates every staged file at
             # the umask default -- typically group/world-readable. The config writer
@@ -877,15 +889,15 @@ def apply_import_zip(
             if size_problem is not None:
                 raise ValueError(size_problem)
             session_mtimes = _read_session_mtimes(zf)
+            top_manifest: object = None
             if not memory_only:
                 # The same one manifest the validator read decides the scope; a file
                 # elsewhere that happens to be named MANIFEST.json is content. With no
                 # manifest at all nothing declares memory only (the validator is what
                 # requires one); two at the top are still refused.
                 top = _top_manifest(infos, required=False)
-                memory_only = top is not None and manifest_is_memory_only(
-                    _read_member_json(zf, top)
-                )
+                top_manifest = None if top is None else _read_member_json(zf, top)
+                memory_only = top is not None and manifest_is_memory_only(top_manifest)
             if memory_only and mode != "merge":
                 raise ValueError("A memory-only import is merge only")
             for info in infos:
@@ -1197,6 +1209,16 @@ def apply_import_zip(
         summary["missing_agent_templates"] = missing
     if more:
         summary["missing_agent_templates_more"] = more
+    # No archive carries an app: name the ones the other machine had that this one
+    # has not set up. A memory-only import names none.
+    apps, apps_more, apps_unlisted = apps_not_set_up(None if memory_only else top_manifest)
+    if apps:
+        summary["missing_apps"] = apps
+    if apps_more:
+        summary["missing_apps_more"] = apps_more
+    if apps_unlisted:
+        # Past the archive's list, so nothing here checked them: counted, never named.
+        summary["missing_apps_unlisted"] = apps_unlisted
     return summary
 
 
@@ -1272,12 +1294,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
+        _named_apps,
         _open_contained_file,
         _open_verified,
         _plan_sessions,
         _session_candidates,
         _session_manifest_base,
         _SessionOrder,
+        _set_up_here,
         _sqlite_logical_size,
         _wal_checkpoint,
         _walk_contained,

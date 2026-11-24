@@ -1,7 +1,8 @@
 """A pinned adapter's live fixtures must have been captured at the pinned release.
 
 ``test/real_adapters/package.json`` pins the adapters the Real Adapter Contract
-lane installs, and Dependabot bumps it weekly. The lane's own contract tests
+lane installs, and Dependabot bumps it weekly; goose, a release binary, is pinned
+by ``test/real_adapters/goose.json`` instead. The lane's own contract tests
 re-measure the handshake on a bump, but the live captures under
 ``test/fixtures/acp_frames/<backend>/`` do not re-run: a feature that rests on one
 of them keeps standing on a release nobody runs any more, as ``codex/session-live``
@@ -40,6 +41,7 @@ import pytest
 from acp_frame_replay_harness import CORPUS, read_fixture
 from real_adapter_gate import (
     CODEX_ACP_PACKAGE,
+    GOOSE_PIN,
     OPENCODE_PACKAGE,
     PI_ACP_PACKAGE,
     PI_PACKAGE,
@@ -56,19 +58,22 @@ from kiro_crew.kiro_cli import (
 from kiro_crew.mcp_hot_reload import MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION
 
 COPILOT_PACKAGE = "@github/copilot"
+#: goose is not an npm package; ``_pin`` reads its release from ``goose.json``.
+GOOSE_PACKAGE = "goose"
 
 ROOT = Path(__file__).resolve().parent.parent
 
-#: Fixture directory -> (npm package pinned in the manifest, ``agentInfo.name``
-#: that release answers ``initialize`` with). The name is what ties a fixture to
-#: the pin: a capture of some other agent in the same directory is not measured
-#: against this package's version.
+#: Fixture directory -> (package pinned in the manifest or ``goose.json``,
+#: ``agentInfo.name`` that release answers ``initialize`` with). The name is what
+#: ties a fixture to the pin: a capture of some other agent in the same directory is
+#: not measured against this package's version.
 PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
     "codex": (CODEX_ACP_PACKAGE, "@agentclientprotocol/codex-acp"),
     "opencode": (OPENCODE_PACKAGE, "OpenCode"),
     "claude": ("@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
     "pi": (PI_ACP_PACKAGE, "pi-acp"),
     "copilot": (COPILOT_PACKAGE, "Copilot"),
+    "goose": (GOOSE_PACKAGE, "goose"),
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
@@ -89,6 +94,8 @@ def _pin(package: str) -> str:
     """
     if package == PI_ACP_PACKAGE:
         return f"{pinned_version(PI_ACP_PACKAGE)} (pi {pinned_version(PI_PACKAGE)})"
+    if package == GOOSE_PACKAGE:
+        return GOOSE_PIN["version"]
     return MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
 
 

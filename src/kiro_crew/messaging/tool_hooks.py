@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.hook_output import bounded_hook_output
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
     fire_tool_hooks,
@@ -57,9 +58,6 @@ if TYPE_CHECKING:
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, TurnSpecHooks
 
 logger = logging.getLogger(__name__)
-
-#: The longest tool output a PostToolUse hook is handed, as on the dashboard.
-_POST_TOOL_OUTPUT_CHARS = 2000
 
 #: The ``spec_origin`` of a hook from the user's standalone ``~/.kiro/hooks``
 #: files (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`).
@@ -154,11 +152,13 @@ class ChannelTurnHooks:
         if not call_id:
             return
         tool_name = str(getattr(event, "tool_name", "") or "")
-        if tool_name:
-            self._identity[call_id] = (
-                tool_name,
-                str(getattr(event, "mcp_server_name", "") or ""),
-            )
+        named_by = (tool_name, str(getattr(event, "mcp_server_name", "") or ""))
+        if tool_name and keep:
+            # The first name stands: a later request under the call's id names
+            # what that request asks about (``post_tool_identity``), not the call.
+            self._identity.setdefault(call_id, named_by)
+        elif tool_name:
+            self._identity[call_id] = named_by
         elif not keep:
             self._identity.pop(call_id, None)
         from kiro_crew.agent_sdk.spec_hooks import post_tool_identity  # deferred: see prepare
@@ -244,6 +244,23 @@ class ChannelTurnHooks:
             raw_tool_params=getattr(event, "raw_tool_params", None),
         )
 
+    async def on_child_result(self, event: Any) -> None:
+        """Fire ``PostToolUse`` for a native sub-agent's FINISHED call, as for the turn's own.
+
+        Only an activity event the session marked finished
+        (``acp.kas_child_finished``) carries the call's outcome, once per call; it
+        names the call and is then judged by :meth:`on_tool_result`.
+        """
+        # deferred: see prepare
+        from kiro_crew.agent_sdk.kas_child_finished import is_finished_child_call
+
+        if not is_finished_child_call(event, self._provider):
+            return
+        subject = str(getattr(event, "hook_subject", "") or "")
+        self._titles[str(event.tool_call_id)] = subject.removeprefix("Running: ")
+        self._name(event, is_shell=bool(getattr(event, "is_shell", False)), keep=True)
+        await self.on_tool_result(event)
+
     async def on_tool_result(self, event: Any) -> None:
         """Fire ``PostToolUse`` once per call, on its terminal result."""
         # deferred: see prepare
@@ -268,7 +285,7 @@ class ChannelTurnHooks:
             await store.fire(
                 HOOK_EVENT_POST_TOOL_USE,
                 tool_name=title,
-                tool_response={"output": output[:_POST_TOOL_OUTPUT_CHARS]},
+                tool_response=bounded_hook_output(output),
                 session_key=self.turn.session_key,
                 tool_match_names=match_names,
                 extra_hooks_tool_names=spec_names if self.observed.hooks else None,

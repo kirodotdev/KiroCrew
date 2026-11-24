@@ -157,6 +157,9 @@ def event_dict(event: AcpEvent) -> dict[str, Any]:
             continue
         if value == defaults.get(name):
             continue
+        if name == "offered_allow":
+            # The same classification the entry's ``recorded_options`` snapshots.
+            continue
         if value in (None, "", 0, 0.0, False, [], {}):
             continue
         if name == "tool_output_credentials":

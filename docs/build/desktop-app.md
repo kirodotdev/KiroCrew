@@ -76,6 +76,11 @@ The electron-builder configuration lives in
   `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  `rpm.fpm` defines `_build_id_links none`, so the rpm ships no
+  `/usr/lib/.build-id` links: Electron's binaries are identical in every app
+  on the same Electron, so any other Electron app's rpm (and the nightly rpm)
+  claims the same link paths and rpm refuses the second install, in-app
+  updates included, as a file conflict.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
   binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
   Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
@@ -984,6 +989,21 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+Settings > WakaTime's **Connect with WakaTime** rides the same gate.
+`window.wakatimeConnectAPI.openInBrowser()` takes no argument and invokes
+`wakatime:open-in-browser`, which runs the three checks above (a refusal rejects
+and opens nothing) and then hands one fixed URL to `shell.openExternal`: the
+window's own dashboard origin plus `/settings/overview?view=wakatime`, built in
+the main process. It answers `true` when the OS took the URL and `false`, with
+one log line, when it did not. The sign-in then finishes in the system browser,
+because the WakaTime callback needs the state cookie of the browser that
+started it ([wakatime-oauth-read-auth](../architecture/design-notes/wakatime-oauth-read-auth.md)).
+The window's navigation guard is unchanged. The Mochi panel's
+`mochi-panel:open-dashboard` is the precedent: a no-argument channel, so page
+content never names the URL the shell opens. With no bridge the panel shows its
+"open this dashboard in a web browser" note; on `false` or a refusal it shows the
+same text as an error notice.
+
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
 gateway off, or a non-loopback URL) does not ask in the first place. On every
@@ -991,7 +1011,7 @@ load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
 same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
 whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
-`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`wakatimeConnectAPI`, `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
@@ -1011,7 +1031,7 @@ that each is a whole port in 1..65535 other than the launch port, takes at most
 32 per window, and forwards each from this machine's `127.0.0.1` to the same
 port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
 the user to run by hand.
-The Windows titlebar menu rides the same ownership boundary, per action rather
+The in-app titlebar menu (Windows, and frameless Linux) rides the same ownership boundary, per action rather
 than per channel. `app-menu:items` and `app-menu:execute` in
 [`ipc-registrar.js`](../../website/electron/ipc-registrar.js) resolve whether the
 sender is the local dashboard through the three checks above — the fixed primary
@@ -1349,19 +1369,23 @@ the terminal route is named instead of the button).
 
 The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
 logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
-lazily, the first time the dashboard's crash notice asks for it. It reads the
-Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
-`.ips` diagnostic reports:
+lazily, the first time the dashboard's crash notice asks for it. A refused ask
+runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
+then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
+and, on macOS, the user's `.ips` diagnostic reports:
 
-- `crashes.log` records each new crash of this app, capped at 500 lines.
+- `crashes.log` records each new crash of this app, capped at 500 lines. A
+  snapshot Crashpad took of this app while it kept running (exception code `0`,
+  or `0x517a7ed` on Windows) is not a crash: it gets no line and no notice, and
+  is deleted.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
   once rather than on every launch, capped at 2000 keys.
 - At most 25 unseen artifacts are inspected per app session, and a dump that
   reads short or unreadable on three consecutive scans is aged out.
 - A minidump proven to belong to another process (a child that inherited the
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
-  Unreadable dumps, Electron-shaped strangers and this app's own dumps are
-  never deleted.
+  Unreadable dumps, Electron-shaped strangers and this app's own crash dumps
+  are never deleted.
 - Minidumps that reached `crashes-seen.json` without that check (every scan
   writes off unread a dump older than the launch that first armed the
   collector) are swept: each is opened once more,
@@ -1404,7 +1428,11 @@ search affordance — and the palette remains reachable through its keyboard
 shortcut even while hidden.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
-Linux retains the window manager's native frame and menu bar.
+A framed Linux window retains the window manager's native frame and menu bar. A
+frameless Linux window (a Wayland compositor that prefers client-side
+decorations) has no menu bar, so it shows the same hamburger menu, but only when
+the shell's preload sets `linuxAppMenu`; an older shell omits the flag and the
+trigger stays off.
 
 In macOS native fullscreen AppKit owns the top strip (pointing at it slides the
 menu bar down), so the dashboard pads the app frame (`data-testid="app-frame"`)
@@ -1663,7 +1691,11 @@ it), and `user-restart.js` (Settings → About's Restart gateway).
 - [`window-lifecycle.js`](../../website/electron/window-lifecycle.js) hides the
   app to the tray on window close, or quits through the same path as the Quit
   menu item when the user chose that (`closeAction` in the app's own config,
-  decided by [`close-action.js`](../../website/electron/close-action.js)), and
+  decided by [`close-action.js`](../../website/electron/close-action.js)), shows
+  a one-time notice on the first such hide and words the tray quit item so it
+  names the background sessions that stop with a gateway the app started,
+  rebuilt whenever the supervisor's spawned child starts or goes away (both in
+  [`close-hide-notice.js`](../../website/electron/close-hide-notice.js)), and
   creates or removes the tray icon to match `showTrayIcon` (decided by
   [`tray-icon.js`](../../website/electron/tray-icon.js), which keeps the icon on
   Windows and Linux while the close button hides the window), and hides a
@@ -2140,9 +2172,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   Then it probes whether a gateway is still running (a gateway that outlived the
   quit): this bundle's gateway, or, when that cannot be identified (Windows, a
   failed process lookup), anything listening on the launch port
-  (`gateway-probe.js`). If one is, nothing is applied, the arm stays,
-  and a notice names the `kirocrew stop --port <port>` command. A probe that
-  cannot answer defers the same way. If
+  (`gateway-probe.js`). If one is, nothing is applied and the arm stays. For
+  this bundle's gateway the notice names the `kirocrew stop --port <port>`
+  command; any other holder is named as unidentified, with no command, because
+  the app cannot tell what it is or whether that command would stop it. A probe
+  that cannot answer defers the same way. If
   that apply fails too, the arm is cleared, the installed version starts and
   the error is shown as an install error. The gateway the app hosts skips its
   own boot-time apply, so exactly one side applies and the app and gateway never
@@ -2161,7 +2195,17 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   requested before the quit, so a quit-time apply that is refused (governance,
   a newer feed, a gateway still running) still brings the app back; the feed
   lane asks for it explicitly on each of those stand-downs, because only
-  `quitAndInstall` honors its relaunch flag.
+  `quitAndInstall` honors its relaunch flag. The update modal and Settings →
+  About show Restart now only where that IPC would accept the window:
+  `updateAPI.canRelaunch()` (the `update:can-relaunch` IPC) runs the same
+  `assertLocalDashboard` check and answers a boolean, like
+  `gateway:can-restart`. `useInstallDispatch` asks it when the update arms and
+  again whenever the window regains focus or becomes visible, and only the
+  newest answer counts, so one transient `false` does not hide the action for
+  the rest of the session. Where it answers `false` (a gateway reached through
+  a port another process forwards, say), only "Install when I quit" is
+  offered. A shell without `canRelaunch` offers Restart now whenever
+  `relaunch` exists.
 - **Every apply is logged to `gateway-launch.log`.** `updateCommand` writes
   `[update] managed update command started (pid N)` when it spawns and
   `... ended: <outcome>, ran N ms, N bytes of output` when it ends, on quit and

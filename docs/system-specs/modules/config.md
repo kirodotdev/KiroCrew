@@ -109,7 +109,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | Owner | Owns |
 |---|---|
 | `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
-| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
+| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `usable_workspace_dir_from_entry` (the base workspace folder instead of one that is missing, sensitive, or exactly the filesystem root, the owner's home folder or the data home (`_is_broad_root`), for a cron fire and a Slack channel turn; a folder it keeps comes back as the realpath it judged, and one with a link that appeared on it since is refused), `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
 | `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
 | `config/write_provenance.py` | The record of the latest `config.json` / `config.local.json` inode this gateway process published (read from the staged descriptor, held open), vouched for from each file of the bounded run of its own saves that led to it, with its per-process nonce, read by the Linux launcher's pin (security.md). Written by `write_config_atomically`; logs under `kiro_crew.config.loader`. |
 | `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
@@ -212,8 +212,11 @@ that a running gateway picks it up at restart, while a `config.json` Apply reach
 watcher like a `kirocrew config set`, so only a restart-marked key waits for the restart. A
 heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
 channel, and acknowledges it once resolved; the scan and the note writes together are bounded
-so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
-through the leaf's endorsing writer, so its own saves take effect at once and are never
+so a stalled disk never holds the heartbeat. A leaf not yet announced counts only once two
+scans in a row list it (`config_pending._settled`; a heartbeat sync and the snapshot an Apply
+or Discard publishes are both scans): a save endorses its copy before the rename, so a scan
+between the two lists a file the next scan does not. Every Kiro Crew writer of these four
+files goes through the leaf's endorsing writer, so its own saves take effect at once and are never
 pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
 telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
 and restore and import (`endorse_installed`). `kirocrew config edit` endorses too: it stages a
@@ -246,7 +249,7 @@ inside that window does not keep serving the attempted values. The Settings list
 off the event loop. Why, and the threat it closes:
 [security](../modules/security.md).
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice. `agent.acp_backend` then resolves to its default; `agent.member_acp_backend` follows the resolved `agent.acp_backend` instead (`crewmate_inherited_backend`, `agent_sdk/backends_members.py`): Kiro CLI reads as KAS, and a harness outside `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩ `ACP_BACKENDS_MATE_WORKER_KIT` (the Crew bot's workers run on the same backend, `mate_worker.worker_kit_backend_refusal`) gives KAS with a once-per-harness warning (`_note_member_fallback`, [harness-parity](harness-parity.md) H3) and a bell note (`crewmate_harness_notice`). A stored `agent.member_acp_backend` is the legacy setting and still wins over `agent.acp_backend`; `member_acp_backend_declared()` tells the two apart for the Settings readout (`crewmate_harness.inherited_harness_source`). A stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice. `agent.acp_backend` then resolves to its default; `agent.member_acp_backend` follows the resolved `agent.acp_backend` instead (`crewmate_inherited_backend`, `agent_sdk/backends_members.py`): Kiro CLI reads as KAS, and a harness outside `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩ `ACP_BACKENDS_MATE_WORKER_KIT` (the Crew bot's workers run on the same backend, `mate_worker.worker_kit_backend_refusal`) gives KAS with a once-per-harness warning (`_note_member_fallback`, [harness-parity](harness-parity.md) H3) and a bell note (`crewmate_harness_notice`). A stored `agent.member_acp_backend` is the legacy setting and still wins over `agent.acp_backend`; `member_acp_backend_declared()` tells the two apart for the Settings readout (`crewmate_harness.inherited_harness_source`). A stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and one v3 start was not refused, and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot or for a pick saved while it runs (`_watch_saved_kiro_pick`), and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -514,6 +517,18 @@ so there is one source of truth for the location.
 
 Direct `config_dir()` callers keep the maintenance behaviour; a hot or async path
 should call `data_home()` instead.
+
+**A worker thread is handed its home, not left to read the variable.**
+`run_with_data_home(home, target, *args)` is a thread's entry: until `target(*args)`
+returns, `config_dir()`, `data_home()` and `peek_data_home()` answer *home* on that
+thread without reading `KIROCREW_HOME`. Other threads are unaffected, the pin never
+enters `config_dir()`'s process-wide memo, and `_valid_override_home()` (the "is an
+override in force" predicate) does not see it. The dispatcher resolves the home while
+its own override is in force (the metrics consent re-check, `metrics/provider.py`; the
+node compile-cache prewarm, `acp/node_compile_cache.py`; the crew-log eager fold worker,
+per home of each wake, `crew_log/eager.py`; its cold-cell prime, `crew_log/slot_prime.py`), so
+a test that clears the variable before the worker reads (`patch.dict`'s exit, an
+empty pin) cannot send that worker to the default home.
 
 ## Workspace Root
 
@@ -1655,8 +1670,9 @@ and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
 work goes to the one that owns it: `portability_archive.py` (what an archive holds,
 member names and limits both ways), `portability_templates.py` (agent templates, bundled
 on export and installed on import), `portability_export.py` (what an export reads: the
-walk, the SQLite backups, the session planner and writer) and `portability_vetting.py`
-(`validate_import_zip` and the staged cron and store checks). A patch of
+walk, the SQLite backups, the session planner and writer, the installed apps it
+names but leaves out, and, on import, the ones of those a machine has not set up) and
+`portability_vetting.py` (`validate_import_zip` and the staged cron and store checks). A patch of
 `portability.<name>` reaches every owner holding the name. The archive builders
 (`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
 which the facade re-exports and which reads these names as `portability.<name>`.
@@ -1714,7 +1730,9 @@ limits (`portability._in_rebuildable_dir`, read by both sides).
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
-component carries the same set.
+component carries the same set, and also `mcp.json`, the servers added on the
+MCP Servers page, which this export does not carry. A restore installs that file
+owner-only and names it when a merge keeps this install's copy.
 
 Every archive settings document is vetted before either mode applies one
 (`portability._vet_archive_settings`): a document that is not its reader's shape
@@ -2602,8 +2620,12 @@ The snapshot is only ever rebuilt off-loop:
   spec it skipped did not parse, in either directory: the same bytes fail the
   same way, while a failed read or listing can pass a moment later. So one
   unparseable spec keeps the memo on, and a transient failure is read again. A
-  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
-  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  key `agents_dir_revision` cannot prove (a symlinked spec, more than 64 entries
+  or 8 MiB younger than 2 s, on Windows more than 256 MiB of specs, since there
+  every entry is pinned on a digest of its bytes) scans every time. An entry it
+  must hash but cannot is logged at WARNING, naming the folder and the
+  entry, once until that folder next yields a revision; a spent byte budget is
+  not logged. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
   flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
@@ -2811,6 +2833,7 @@ Returns `~/.kiro/crew/` (nested under kiro-cli's `~/.kiro/` base). Overridden by
 `KIROCREW_HOME` env var (refuses system directories like `/`, `/usr`, `/System`,
 `/etc`). It creates the selected home and, on the default path, refreshes the
 recovery breadcrumb; it never reads or migrates a leftover `~/.kirocrew` tree.
+Inside `run_with_data_home(home, ...)` it returns *home* on that thread (see above).
 
 ### `config_path() -> Path`
 Returns `~/.kiro/crew/config.json` (or `$KIROCREW_HOME/config.json` if overridden).
@@ -2956,7 +2979,7 @@ name:
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
-  already sit in the file (owner-only, one link) is skipped, and
+  already sit in the file (this user's, mode `0600`, one link) is skipped, and
   `begin_managed_write` records no pending digest for bytes that reproduce the
   finalized one, so a rebuild that changes nothing keeps the file's inode. The
   sandbox pins this file for every spawn and refuses one whose pinned file was
@@ -3085,7 +3108,13 @@ that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
 violation mid-rotation) is retried on the very next cycle instead of being
 silently dropped the moment the file's mtime stops moving; a persistently bad
 file just pays a harmless repeated re-read (the undecodable warning still
-fires only once).
+fires only once). Boot's `load_credentials` and the per-key reader
+`read_env_file_credential` (a kiro-cli spawn's `KIRO_API_KEY` lookup among its
+callers) read an undecodable file of either kind the same way: the same
+warning, nothing loaded from it, and a non-definitive answer to a caller that
+asks. So such a file stops neither the gateway at boot, a session start, nor
+`kirocrew doctor`, while the in-place rewriters still refuse it, so they
+never overwrite a file they could not parse.
 
 The apply itself is the other way the cycle can fail, and it is treated the
 same way. `apply_env_credential_changes` is best-effort — a bad apply must not
@@ -3633,7 +3662,14 @@ platform the effective deadline is floored to 30 s by
 right after a daemon restart several backends cold-start at once and take 13-15 s, and a
 Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
 about to answer; a configured value already above the floor is unchanged, and the spawn
-gate's initialize watcher and its slow-init fraction read the same effective value);
+gate's initialize watcher and its slow-init fraction read the same effective value;
+a pool key whose spawns were reaped at that deadline gets a longer one on its next
+spawn, because a reaped backend is killed and its respawn starts cold again:
+`Admission.initialize_timeout_for` doubles the effective deadline for each reap in a
+row, up to `INIT_DEADLINE_STRETCH_CAP_SECS` (120 s), never lowers a configured value
+above that cap, and clears the count once a handshake for that key completes; the
+count is kept per SHA-256 digest of the key for at most `INIT_DEADLINE_REAP_KEYS_MAX`
+(256) keys, the key reaped longest ago forgotten first);
 `host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
 0) cap what the host budget admits across pooled, private and fallback
 backends, where `0` means derive from the available-memory sample the gateway
@@ -3768,6 +3804,7 @@ class AgentConfig:
 @dataclass
 class SessionConfig:
     timeout_secs: int = 3600       # 60 min idle timeout (DEFAULT_SESSION_TIMEOUT)
+    automated_idle_timeout_secs: int = 0  # idle timeout for a session whose last released turn declared a trigger other than user (session_idle_clock.idle_limit); used only when shorter than timeout_secs; 0 off. Load-time clamped to [SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX]; read at every sweep. See session.md "Idle cleanup".
     idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each session acquire (chat_turn.account_identity._retire_sessions_on_identity_change: the dashboard chat turn runs it, and SessionManager.get_or_create, open_task_session and try_acquire run it before every other acquire) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an acquire other than a dashboard chat turn touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
     empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
@@ -3915,7 +3952,7 @@ class DashboardConfig:
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order), "active-then-date" (running sessions first, then the rest, each part by last activity). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
@@ -4718,7 +4755,8 @@ in either layout, and its `before`/`after` anchors name folders.
 
 `DashboardConfig.session_sort` is the chat sidebar's session sort key: `date-desc`
 (last settled activity, newest first; the default) or `date-asc`, `created-desc` /
-`created-asc` (the slot's creation time) and `name-asc` / `name-desc` (the title).
+`created-asc` (the slot's creation time), `name-asc` / `name-desc` (the title),
+`manual` (below) and `active-then-date`.
 It is stored here rather than in the browser so a pick follows the person to every
 browser and the desktop app. Written only through the `PATCH /api/config/kirocrew`
 allowlist (`dashboard.session_sort`, enum `SESSION_SORT_MODES`). A carry-over PATCH
@@ -4759,6 +4797,16 @@ writes it: the one writer refuses a caller whose origin is not `dashboard` (an
 agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
 app or member principal; no MCP tool writes it. A build without `manual` reads
 the key as `date-desc` and never touches the second file.
+
+`active-then-date` draws the unpinned sessions the In progress filter chip
+matches (the agent's own turn, a live workflow, a running automation, working
+sub-agents) above the rest, each part in `date-desc` order. Under `date-desc` a
+long turn ranks by when it began, so newer idle chats pass it; here it stays on
+top until the turn ends, then drops back to its date position. The running rows
+draw without date headers, as pinned rows do; the rest keep the date headers and
+the stale-session collapse. A drag in this sort seeds `manual` with the order on
+screen, running rows first. The History pane reads the key as `date-desc`. A
+build without `active-then-date` reads it as `date-desc`.
 
 ### Interactive model picker visibility
 

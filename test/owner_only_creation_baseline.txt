@@ -8,10 +8,7 @@
 2 apps/marketplace_install.py
 2 config/paths.py
 1 dashboard/handlers/mcp.py
-1 dashboard/handlers/mcp_config_files.py
 1 dashboard/session_transfer_layers.py
-1 frontend.py
 1 platform/wheel_engine.py
 1 platform_owner_compat.py
-1 pod/runtime_boot.py
 1 secrets/migrate.py

@@ -29,9 +29,10 @@ from kiro_crew.eval.scenario import (
     ToolCall,
     Turn,
 )
-from kiro_crew.llm_helpers import _steer_host_deny
+from kiro_crew.llm_helpers import _steer_host_deny, provider_model_pin_refused
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -50,6 +51,18 @@ from kiro_crew.skills import SkillsLoader
 from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
+
+
+class ModelNotOffered(RuntimeError):
+    """A session refused, at start, the model the run asked for, so it would run on the default.
+
+    Scoring that session would credit the default with the named model's results,
+    so the run stops before the first turn instead.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(f"{model} is not a model this backend offers")
+
 
 #: What the model is told when the eval harness refuses a tool it does not know
 #: to be read-only. The eval SURFACE refuses the call -- nothing about the call
@@ -413,6 +426,11 @@ class EvalRunner:
     #: to the agent ``provider_kwargs`` runs the sessions as, so that agent's own
     #: governance profile applies; empty judges them as the default agent.
     gate_agent: str = ""
+    #: The model the run was asked for (``kirocrew eval --model``), or ``""`` for none
+    #: and for ``auto``. A scenario session that refuses it at start stops the run
+    #: (``ModelNotOffered``); a pin the caller did not ask for (the configured default,
+    #: a crew member's own, kiro-cli's inherited default) is not judged here.
+    requested_model: str = ""
 
     async def run_scenario(self, scenario: Scenario) -> ScenarioResult:
         """Run a single scenario with fresh state.
@@ -498,15 +516,18 @@ class EvalRunner:
                 vector_store=vector_store,
             )
 
-            # Constructed on a running loop, where construction-time sync
-            # skips itself; eval runs standalone with no gateway to own the
-            # sync, so run the explicit seam in a worker thread (mirrors
-            # gateway startup). The loader targets a scenario-local skills
-            # dir: eval must never write quarantines into the user's real
-            # skills home, and a self-contained dir keeps scenarios
+            # Built in a worker thread (the constructor resolves every
+            # `skills.extra_paths` root, which blocks on a slow or network
+            # mount) and without the builtin sync: eval runs standalone with no
+            # gateway to own it, so run the explicit seam in a worker thread
+            # too (mirrors gateway startup). The loader targets a scenario-local
+            # skills dir: eval must never write quarantines into the user's
+            # real skills home, and a self-contained dir keeps scenarios
             # reproducible across machines. A failed sync must not fail the
             # scenario before it runs.
-            skills = SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            skills = await asyncio.to_thread(
+                lambda: SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            )
             try:
                 await asyncio.to_thread(skills.sync_builtins)
             except Exception:
@@ -601,6 +622,11 @@ class EvalRunner:
         session_key = f"eval_{session_def.name}_{time.monotonic_ns()}"
         provider = factory(session_key, **self.provider_kwargs)
         await provider.start()
+        if self.requested_model and provider_model_pin_refused(provider):
+            # The session stays on the backend default and says nothing; every
+            # turn from here would be scored as the model that was asked for.
+            await provider.shutdown()
+            raise ModelNotOffered(self.requested_model)
 
         # Build memory context once for the first turn of non-first sessions
         memory_context = ""
@@ -680,7 +706,9 @@ class EvalRunner:
         chunks: list[str] = []
         calls = _TurnCalls()
 
-        async for event in provider.stream(turn_def.user):
+        # A scenario's later turns run on the same session, so a turn can open
+        # with the alternation placeholder (``drop_echo``).
+        async for event in drop_echo(provider.stream(turn_def.user)):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
             elif event.kind == EVENT_TOOL_CALL:

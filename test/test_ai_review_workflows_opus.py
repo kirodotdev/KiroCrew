@@ -29,6 +29,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from skill_script_helpers import skill_text
 
 PREPARE_PR_SKILL = (
     ROOT
@@ -52,7 +53,7 @@ PREPARE_PR_FINDINGS = (
 
 
 def _prepare_pr_skill() -> str:
-    return PREPARE_PR_SKILL.read_text(encoding="utf-8")
+    return skill_text(PREPARE_PR_SKILL)
 
 
 class TestPreparePrPreSubmitReview:

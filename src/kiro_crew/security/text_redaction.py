@@ -37,6 +37,8 @@ from .redaction_switch import credential_pass_bypassed
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .redaction_structured.compat import StreamRead
+
 
 def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     """Apply all redaction passes, reporting what each one removed.
@@ -331,6 +333,8 @@ class StreamRedactor:
         "_engine_tail",
         "_engine_pad",
         "_boundary",
+        "_armour_from",
+        "_armour_blocks",
     )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
@@ -346,6 +350,19 @@ class StreamRedactor:
         self._engine_tail = ""
         self._engine_pad = 0
         self._boundary = False
+        # Where the last committed private-key block's END line ends, and the blocks
+        # the detectors' last read ended, all in offsets from the buffer's start.
+        self._armour_from = 0
+        self._armour_blocks: tuple[tuple[int, int], ...] = ()
+
+    def _engine_read(self, boundary: bool = False) -> StreamRead | None:
+        """The detectors' hold on the buffer; keeps the private-key blocks it ended."""
+        read = _submodule(_SEAM).stream_read(
+            self._ctx, self._buf, boundary=boundary, armour_from=self._armour_from
+        )
+        if read is not None:
+            self._armour_blocks = read.armour_blocks
+        return read
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -353,7 +370,7 @@ class StreamRedactor:
         seam = _submodule(_SEAM)
         suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
         try:
-            with seam.look_behind(self._ctx, text):
+            with seam.look_behind(self._ctx, text, self._armour_from):
                 return self._redact(text)
         finally:
             redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
@@ -363,6 +380,14 @@ class StreamRedactor:
         """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
         keep = _submodule(_SEAM).stream_context_max()
         self._ctx = (self._ctx + raw)[-keep:]
+        # A block whose BEGIN left the buffer is decided: whole text resumes its
+        # private-key scan after the block's END line, so the stream does too.
+        k = len(raw)
+        for begin, end in self._armour_blocks:
+            if begin < k:
+                self._armour_from = max(self._armour_from, end)
+        self._armour_from = max(self._armour_from - k, -keep)
+        self._armour_blocks = tuple((b - k, e - k) for b, e in self._armour_blocks if b >= k)
 
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
@@ -527,7 +552,7 @@ class StreamRedactor:
 
         # A unit the detectors have not decided yet is held whole, and one decided
         # while still running is dropped to its end.
-        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf, boundary=self._boundary)
+        engine = self._engine_read(boundary=self._boundary)
         if engine is not None and engine.tail:
             commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
             self._buf = ""
@@ -685,10 +710,10 @@ class StreamRedactor:
             floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
             if floor_crossing is not None:
                 i = floor_crossing.end(1)
-            # The same holds for a complete AWS key-value pair the floor would
-            # split (a PEM hold can keep one buffered after its value ended):
-            # its tail would stream with no label left to redact it.
-            if aws_label_seen:
+            # The same holds for a complete AWS key-value pair or private-key
+            # body the floor would split (a PEM hold can keep one buffered after
+            # its value ended): its tail would stream with no anchor left to redact it.
+            if aws_label_seen or self._armour_blocks:
                 for start, end in _batch_spans(self._buf):
                     if start < i < end:
                         i = end
@@ -765,7 +790,7 @@ class StreamRedactor:
         """
         if self.discarding or not ends_plain_sentence(self._buf):
             return ""
-        read = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        read = self._engine_read()
         if read is not None and (read.undecided or read.tail):
             return ""
         run, self._buf = self._buf, ""
@@ -776,6 +801,8 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._armour_from = 0
+        self._armour_blocks = ()
 
     @property
     def held(self) -> str:

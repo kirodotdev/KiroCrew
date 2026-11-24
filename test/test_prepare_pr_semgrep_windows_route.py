@@ -7,6 +7,8 @@ how to run the same scan from Windows, at the SAME pin the SAST job installs.
 import re
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
 PREPARE = SKILLS / "kirocrew-prepare-pr" / "SKILL.md"
@@ -14,7 +16,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
 
 
 def _semgrep_step() -> str:
-    text = PREPARE.read_text(encoding="utf-8")
+    text = skill_text(PREPARE)
     anchor = "**Run the repository's semgrep rules on the diff**"
     start = text.index(anchor)
     return text[start : text.index("\n", start)]

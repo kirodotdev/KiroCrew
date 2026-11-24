@@ -24,7 +24,10 @@ import {
   SHORTCUT_OVERRIDES_EVENT,
   SHORTCUT_OVERRIDES_KEY,
   SHORTCUT_REGISTRY,
+  chordCode,
   chordMatchesEvent,
+  keyCapGlyph,
+  type LayoutMap,
   loadShortcutOverrides,
   matchShortcutEvent,
   resolveShortcuts,
@@ -491,11 +494,14 @@ export function jumpIndexForCode(code: string): number {
 }
 
 /** Badge label for the Nth (0-based) jump target: '1'–'9' then the letter
- *  sequence; null past the addressable range. */
-export function jumpLabelFor(index: number): string | null {
+ *  sequence, as `layout` (default: the page's) prints each key; null past the
+ *  addressable range. The legacy macOS Option jumps match by position (Option
+ *  changes the typed letter), so their letters are the glyphs on those keys. */
+export function jumpLabelFor(index: number, layout?: LayoutMap | null, positional = IS_MAC && !getCtrlDigitsEnabled()): string | null {
   if (index < 0) return null
-  if (index < 9) return String(index + 1)
-  return jumpLetters()[index - 9] ?? null
+  if (index < 9) return keyCapGlyph(String(index + 1), positional, layout)
+  const letter = jumpLetters()[index - 9]
+  return letter ? keyCapGlyph(letter, positional, layout).toLowerCase() : null
 }
 
 /** Map a KeyboardEvent.code to the display key the shortcuts modal shows. */
@@ -513,8 +519,9 @@ function _displayKeyForCode(code: string): string {
  * in the shortcuts modal AND makes the handler navigate to it. The core
  * registers none.
  *
- * The chord is identified solely by KeyboardEvent.code; the displayed key is
- * DERIVED from it (`_displayKeyForCode`) so the advertised chord can never
+ * The chord is identified solely by its code, which the handler reads for a
+ * letter key as the letter the layout types (`chordCode`); the displayed key
+ * is DERIVED from it (`_displayKeyForCode`) so the advertised chord can never
  * diverge from the handled one. A registration whose code collides with a core
  * panel chord, an already-registered extension, OR any Alt chord the handler
  * consumes before panel routing (`RESERVED_PANEL_CODES` — otherwise the panel
@@ -587,10 +594,11 @@ export function isSettingsChord(
  * Session-cycle chord: ⌘[ / ⌘] on macOS, Ctrl+[ / Ctrl+] on Windows-Linux —
  * step one session backwards/forwards through the sidebar order.
  *
- * Keyed by KeyboardEvent.code, so the chord is POSITIONAL: on layouts where the
- * bracket glyphs sit elsewhere (or need AltGr to type) the physical keys in the
- * US-QWERTY bracket positions still work, matching how every other chord in
- * this module is matched.
+ * Keyed by code, so the chord is POSITIONAL: on layouts where the bracket
+ * glyphs sit elsewhere (or need AltGr to type) the physical keys in the
+ * US-QWERTY bracket positions still work, as for every punctuation chord. The
+ * handler passes a key that types a Latin letter as that letter's code, so a
+ * bracket position typing `w` (Bépo) is the ⌘W / Ctrl+W it types.
  */
 const SESSION_STEP_BY_CODE: Record<string, number> = { BracketLeft: -1, BracketRight: 1 }
 
@@ -622,8 +630,9 @@ export function sessionCycleStep(
  * has to be the chord that actually fires, on every platform. On macOS
  * find-next is ⌘G, leaving ⌃G free.
  *
- * Keyed by KeyboardEvent.code, so the chord is POSITIONAL like every other in
- * this module. Exactly one primary modifier and no Alt/Shift, so it cannot fire
+ * Keyed by code, which the handler passes for a letter key as the letter the
+ * layout types (`chordCode`), so it is the key that types G. Exactly one
+ * primary modifier and no Alt/Shift, so it cannot fire
  * from ⌃⌘G / ⌃⌥G misses, and cannot shadow the Mac Ctrl+digit chat-jumps.
  *
  * Requiring `ctrlKey && !altKey` is also why 'KeyG' is NOT added to
@@ -675,7 +684,7 @@ export function formatShortcut(def: ShortcutDef): string {
   if (def.ctrl) parts.push(mac ? '\u2303' : 'Ctrl')
   if (def.alt) parts.push(mac ? '\u2325' : 'Alt')
   if (def.shift) parts.push(mac ? '\u21e7' : 'Shift')
-  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key === 'Escape' ? 'Esc' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : def.key.toUpperCase()
+  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === 'Escape' ? 'Esc' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : keyCapGlyph(def.key, !!def.alt && mac)
   parts.push(keyLabel)
   return parts.join(mac ? '' : ' + ')
 }
@@ -880,7 +889,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // jump never fires while typing. Digits keep firing in inputs (no
     // text-editing meaning, and that has been the behavior since #4727).
     // Check for that first, before the Alt-based gate.
-    const code = e.code
+    // A key that types a Latin letter is that letter's code for every code family
+    // below (chordCode): on Dvorak the key that types `c` is KeyC. Chrome's
+    // autofill keydown is a plain Event with neither code nor key.
+    const code = e.code ? chordCode(e.key, e.code) : e.code
+    const chordEvent = { code, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey }
     // Which registry shortcut this keystroke is, if any — primary or alias, with
     // the user's overrides applied. `code` FAMILIES (digit/letter jumps, MRU walk,
     // Alt+arrows, panel nav, the bracket cycle, the instance switcher) never match
@@ -946,7 +959,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // ⌘/Ctrl+bracket has no text-editing meaning). Handled BEFORE the Alt gate
     // because the chord carries no Alt. Skipped when the keystroke came from a
     // terminal, where Ctrl+[ is ESC and belongs to the PTY.
-    const step = sessionCycleStep(e)
+    const step = sessionCycleStep(chordEvent)
     if (step !== 0 && !isTerminalTarget(e.target)) {
       if (!enabled || disabled) return
       // Claim the keystroke: on macOS ⌘[ / ⌘] are the browser's Back/Forward.
@@ -968,7 +981,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     //
     // Routes to /chat as well as opening the tab, because the activity panel is
     // owned by the chat page — same reasoning as the bracket chords above.
-    if (isAgentMonitorChord(e) && !isTerminalTarget(e.target)) {
+    if (isAgentMonitorChord(chordEvent) && !isTerminalTarget(e.target)) {
       if (!enabled || disabled) return
       e.preventDefault()
       dispatch(openActivityToTab('subagents'))

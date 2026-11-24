@@ -31,8 +31,9 @@ The two proof shapes::
     pytest::<nodeid>     a unit-level test that FAILS while the defect is present
     cmd::<argv ...>      a command that exits NONZERO while the defect is present
 
-``cmd::`` is split with ``shlex`` and run WITHOUT a shell, so a pipe, a
-redirection or a substitution in a PoC is an argument rather than an operator.
+``cmd::`` is split with ``shlex`` (on Windows a backslash stays a path
+separator) and run WITHOUT a shell, so a pipe, a redirection or a substitution
+in a PoC is an argument rather than an operator.
 
 **Neither lane may read its verdict off an exit status alone**, and both for the
 same reason: a nonzero exit means "this did not succeed", which covers "the
@@ -269,6 +270,23 @@ def refusal_reason(poc: str) -> str | None:
     return None
 
 
+def split_command(body: str) -> list[str]:
+    """A ``cmd::`` body as the argv that runs; ``ValueError`` on unbalanced quoting.
+
+    ``shlex.split`` rules, except that on Windows a backslash is a path separator,
+    not an escape: a POSIX escape turns ``tests\\poc_probe.py`` into
+    ``testspoc_probe.py``, whose exit 2 on the missing file would confirm a proof
+    that never ran. The runner and the escape screen both split here, so the
+    screen judges the argv that runs.
+    """
+    lexer = shlex.shlex(body, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    if sys.platform == "win32":
+        lexer.escape = ""
+    return list(lexer)
+
+
 def _escaping_argument(body: str) -> str | None:
     """The first ``cmd::`` argument that points outside the worktree, if any.
 
@@ -279,7 +297,7 @@ def _escaping_argument(body: str) -> str | None:
     while reading as correct.
     """
     try:
-        arguments = shlex.split(body)
+        arguments = split_command(body)
     except ValueError:
         # Unbalanced quoting: poc_argv refuses it as an unreadable shape, so
         # there is nothing here to screen.
@@ -398,7 +416,7 @@ def poc_argv(poc: str, report_path: Path | None = None) -> tuple[list[str], str]
         argv.append(body)
         return argv, kind
     try:
-        argv = shlex.split(body)
+        argv = split_command(body)
     except ValueError:
         return None
     # ``python3`` is the documented canonical interpreter token in finding PoCs,

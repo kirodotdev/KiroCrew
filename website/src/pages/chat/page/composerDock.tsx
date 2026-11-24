@@ -105,20 +105,29 @@ export function useComposerAboveBand({
           failure can be seen at all. It is gated on a control
           actually existing, though: with no chips on screen a folder
           failure is not a session-control problem, and calling it one
-          would put an unexplained notice on every composer. */}
+          would put an unexplained notice on every composer.
+
+          This notice and the folder-order one below sit on the dock's
+          glass at the `thick` step, like the Read aloud bar: on their own
+          they are bare text or a translucent tint, which lets the
+          transcript scrolling under the dock show through their words.
+          This pane takes no hue: the red text on a red-mixed pane falls
+          below AA in some dark palettes. */}
       {(sessionControlsError
         || sessionControlStatusError
         || (chatFoldersError && sessionControls.length > 0)) && (
         <div className="pt-1.5" key="session-controls-error">
-          <ErrorNotice
-            title={i18nT('components.sessionControlHost.controls_unavailable')}
-            message={
-              (sessionControlsError || sessionControlStatusError || chatFoldersError)
-                ?.message
-            }
-            askAgent
-            variant="inline"
-          />
+          <Glass variant="chip" thickness="thick" radius={8} className="flex px-3 py-1.5">
+            <ErrorNotice
+              title={i18nT('components.sessionControlHost.controls_unavailable')}
+              message={
+                (sessionControlsError || sessionControlStatusError || chatFoldersError)
+                  ?.message
+              }
+              askAgent
+              variant="inline"
+            />
+          </Glass>
         </div>
       )}
       {/* In-flow tip inside the composer's own width wrapper: shares
@@ -170,16 +179,21 @@ export function useComposerAboveBand({
             not saved until Accept, and the hand-off navigates
             away and unmounts it -- so the line under the notice
             is the one phrase every surface uses for this failure
-            plus where the hand-off lives. */}
+            plus where the hand-off lives.
+            `nested`: the glass frames it, so it draws no box of its
+            own. Its top rule and padding are the pane's top edge,
+            which is why the pane pads only the other three sides.
+            Radius and inset match the suggestion card below it. */}
         {folderSortError !== null && !sidebarOnScreen && (
-          <ErrorNotice
-            title={i18nT('pages.chatSidebar.folder_order_unavailable')}
-            message={folderSortError}
-            messagePlacement="below"
-            footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail_picker_ask')}
-            className="mb-1.5"
-            testId="folder-suggestion-order-unavailable"
-          />
+          <Glass variant="chip" thickness="thick" radius={COMPOSER_RADIUS} className="glass-danger mb-1.5 px-4 pb-2.5">
+            <ErrorNotice
+              nested
+              title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+              message={folderSortError}
+              footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail_picker_ask')}
+              testId="folder-suggestion-order-unavailable"
+            />
+          </Glass>
         )}
             {/* Keyed by the suggestion's ts: a replacement card
                 remounts the component, so its dropdown re-prefills

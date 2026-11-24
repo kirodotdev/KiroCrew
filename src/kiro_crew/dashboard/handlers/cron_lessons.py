@@ -212,7 +212,13 @@ async def _prepare_member_lesson_store(store: str) -> web.Response | None:
 
 
 async def _surface_lesson_saved(
-    request: web.Request, state: DashboardState, sk: str, rule: str, outcome: str
+    request: web.Request,
+    state: DashboardState,
+    sk: str,
+    rule: str,
+    outcome: str,
+    key: str | None = None,
+    store: str = "",
 ) -> None:
     """Draw a lesson the AGENT just saved in the conversation it saved it from.
 
@@ -233,7 +239,7 @@ async def _surface_lesson_saved(
         if not slot_key:
             return
         await chat_cards.load_conversation_window(state, {"slot_key": slot_key})
-        chat_cards.record_lesson_saved(state, slot_key, rule, outcome)
+        chat_cards.record_lesson_saved(state, slot_key, rule, outcome, key=key, store=store)
     except Exception:
         logger.warning("could not draw a saved lesson in its conversation", exc_info=True)
 
@@ -562,6 +568,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         outcome = result.outcome.value
         reason = result.reason
         stored = result.stored
+        # The row this write landed on, so the chat's saved-lesson row can open it.
+        saved_key = result.key
         if origin is not None and origin.gate.loggable:
             await asyncio.to_thread(record_origin_gate, vs, origin.gate, session_key=sk)
         # Redacted through the SAME chain this handler already applies to a lesson's
@@ -748,6 +756,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # This store never answers ``deduped``, so there is no winner to name.
         winner = None
         winner_repo_scope = None
+        # JSONL rows have no semantic key to open.
+        saved_key = None
     # Refreshed unconditionally, and deliberately so. Gating the push on the
     # write having landed would be wrong: a DECLINING
     # outcome can still have mutated the store. ``write_lesson``'s second pass
@@ -786,7 +796,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             logger.debug("memory change announcement failed", exc_info=True)
     # One chat row per write that changed the store; the recorder drops every
     # other outcome, and a caller with no chat of its own draws nothing.
-    await _surface_lesson_saved(request, state, sk, rule, outcome)
+    await _surface_lesson_saved(request, state, sk, rule, outcome, saved_key, store=_lesson_silo)
     # ``ok`` answers the question the caller actually asked -- is the lesson I
     # submitted in the store -- so it stays true for a no-op re-submit (it is stored,
     # there was simply nothing to write) and turns false when a dedup rule or

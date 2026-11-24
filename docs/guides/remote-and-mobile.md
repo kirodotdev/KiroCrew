@@ -354,7 +354,10 @@ the same and the difference is the whole security story:
   action appears, Tailscale must be installed and signed in, MagicDNS must be on,
   and the current MagicDNS name must appear in Tailscale's `CertDomains`. On a
   new tailnet the card links to the Tailscale HTTPS settings for the one-time
-  administrator approval, then waits for **Re-check**.
+  administrator approval, then waits for **Re-check**. On a tailnet that
+  requires device approval, a signed-in machine waits for an admin to approve
+  it: the card says so and links to the Tailscale machines page instead of
+  asking you to sign in again.
 
   Once those prerequisites hold, click **Set up & show QR** once. The dashboard
   enables its daemon-derived origin, restarts through the gateway's formal
@@ -651,7 +654,10 @@ desktop-style command menu first.
 On a phone, Return starts a new line in the chat composers (the Chat page, a
 mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
 Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
-Return that sent would leave no way to write a second line. On a tablet or a
+Return that sent would leave no way to write a second line. This holds in a
+phone browser that draws the page at desktop width or names no phone in its
+user agent, such as an enterprise in-app browser: the phone's own screen size
+decides, not the page width or the user agent. On a tablet or a
 desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
 does.
 

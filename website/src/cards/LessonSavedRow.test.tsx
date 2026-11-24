@@ -13,7 +13,7 @@ import { store as reduxStore } from '../store'
 import '../api/client'
 import { i18nT } from '../i18n/t'
 import ConversationCard, { readLessonSavedRef } from './ConversationCard'
-import { LESSONS_ROUTE } from './LessonSavedRow'
+import { LESSONS_ROUTE, lessonsRoute } from './LessonSavedRow'
 import type { ChatMessage } from '../types'
 
 const SLOT = 'chat-1'
@@ -49,6 +49,30 @@ describe('reading the row', () => {
     expect(readLessonSavedRef({ role: 'notice', meta: { card: { surface: 'lesson', id: 'x', rule: 'r' } } })).toBeNull()
     expect(readLessonSavedRef(row({ rule: '' }))).toBeNull()
     expect(readLessonSavedRef(row({ id: '' }))).toBeNull()
+  })
+
+  it('keeps the saved lesson key only in its own shape', () => {
+    expect(readLessonSavedRef(row({ key: 'lesson.0123456789ab' }))?.key).toBe('lesson.0123456789ab')
+    for (const key of ['pref.theme', 'lesson.XYZ', 'lesson.0123456789ab&focus=x', 7]) {
+      expect(readLessonSavedRef(row({ key }))).not.toHaveProperty('key')
+    }
+  })
+
+  it('keeps only portable named stores and includes them in the lesson link', () => {
+    const store = 'member-reviewer-abc'
+    expect(readLessonSavedRef(row({ store }))?.store).toBe(store)
+    for (const invalid of [null, '', 7, '../other', 'two/stores', 'Uppercase', '-leading', 'trailing-', 'a'.repeat(81), 'con', 'lpt1']) {
+      expect(readLessonSavedRef(row({ store: invalid }))).not.toHaveProperty('store')
+    }
+    renderRow(row({ key: 'lesson.0123456789ab', store }))
+    expect(screen.getByTestId('lesson-saved-review')).toHaveAttribute('href', `${LESSONS_ROUTE}&lesson=lesson.0123456789ab&store=${store}`)
+    expect(lessonsRoute('lesson.0123456789ab', '')).toBe(`${LESSONS_ROUTE}&lesson=lesson.0123456789ab`)
+  })
+
+  it('links to the saved lesson when its key is known', () => {
+    renderRow(row({ key: 'lesson.0123456789ab' }))
+    expect(screen.getByTestId('lesson-saved-review')).toHaveAttribute('href', lessonsRoute('lesson.0123456789ab'))
+    expect(lessonsRoute('lesson.0123456789ab')).toBe(`${LESSONS_ROUTE}&lesson=lesson.0123456789ab`)
   })
 })
 

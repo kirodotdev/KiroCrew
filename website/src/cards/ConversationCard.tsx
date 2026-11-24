@@ -92,6 +92,9 @@ export function readSelfChangeRef(m: Pick<ChatMessage, 'role' | 'meta'>): SelfCh
   }
 }
 
+/** A semantic lesson key, the only shape the row's link may carry. */
+const LESSON_KEY = /^lesson\.[0-9a-f]{12,64}$/
+
 /** The row's saved-lesson reference, or null when the row is not one. */
 export function readLessonSavedRef(m: Pick<ChatMessage, 'role' | 'meta'>): LessonSavedRef | null {
   if (m.role !== CARD_ROLE) return null
@@ -102,7 +105,11 @@ export function readLessonSavedRef(m: Pick<ChatMessage, 'role' | 'meta'>): Lesso
   const id = str(c.id, 64)
   const rule = str(c.rule)
   if (!id || !rule) return null
-  return { surface: 'lesson', id, slot: str(c.slot, 256), rule, status: c.status === 'enriched' ? 'updated' : 'saved' }
+  const key = typeof c.key === 'string' && LESSON_KEY.test(c.key) ? c.key : undefined
+  // Mirror memory_stores.memory_store_name_defect's portable store-name shape.
+  const store = typeof c.store === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(c.store)
+    && !/^(?:con|nul|aux|prn|com[1-9]|lpt[1-9])$/.test(c.store) ? c.store : undefined
+  return { surface: 'lesson', id, slot: str(c.slot, 256), rule, status: c.status === 'enriched' ? 'updated' : 'saved', ...(key ? { key } : {}), ...(store ? { store } : {}) }
 }
 
 /** The row's card reference, or null when the row does not carry a usable one. */

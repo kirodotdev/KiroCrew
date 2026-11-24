@@ -18,6 +18,9 @@ the two cannot drift. Reading it from installed distribution metadata instead
 was tried and dropped: the metadata is generated from this same ``setup.cfg``,
 so it can never carry a NEWER pin than this map -- only an older one, from a
 stale editable install's ``.dist-info``.
+
+The managed-venv update also reads :data:`REQUIREMENTS`: it installs the new
+release with every extra whose distributions are all installed in the running tree.
 """
 
 from __future__ import annotations

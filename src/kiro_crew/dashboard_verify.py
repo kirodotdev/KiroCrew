@@ -115,7 +115,10 @@ limit, and :attr:`Verification.image` holds it or the reason there is none. Only
 that loaded the page and was judged ``passed`` or ``failed`` carries a picture: a skipped,
 timed-out or crashed run drew nothing worth showing, and a page whose script stopped at a
 library the run could not fetch would be shown without that library. The picture is of
-whatever the run was handed: the record for a snapshot of the page in force.
+whatever the run was handed: the record for a snapshot of the page in force. Right after
+the picture the run reads the whole page's rendered text with the frame's own marks
+(:func:`kiro_crew.dashboard_page_image.read_text`) into :attr:`Verification.text`, on
+every run that loaded the page and did not crash, the CDN-library skip included.
 
 Result
 ------
@@ -375,6 +378,8 @@ class Verification:
     #: The picture a ``capture=True`` run took, or why it has none; ``None`` when no
     #: picture was asked for or the run never got as far as one. Never on the wire.
     image: dashboard_page_image.PageImage | None = None
+    #: The page's rendered text a ``capture=True`` run read, or ``None``. Never on the wire.
+    text: dashboard_page_image.PageText | None = None
 
     def wire(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -817,6 +822,7 @@ class _Collector:
         self.crashed = False
         #: The picture of the settled page, when one was asked for and the page loaded.
         self.image: dashboard_page_image.PageImage | None = None
+        self.text: dashboard_page_image.PageText | None = None
         self._seen: set[tuple[str, str, int | None]] = set()
 
     def refuse(self, url: str, resource_type: str) -> None:
@@ -1141,6 +1147,7 @@ class _Run:
             # After the oversize count above, so the picture's own large reply is never
             # mistaken for a message the page made the browser send.
             collector.image = self._picture()
+            collector.text = self._read_text()
         return collector
 
     def _picture(self) -> dashboard_page_image.PageImage:
@@ -1164,6 +1171,17 @@ class _Run:
         finally:
             pipe.max_message_bytes = _MAX_MESSAGE_BYTES
         return dashboard_page_image.PageImage(reason=reason)
+
+    def _read_text(self) -> dashboard_page_image.PageText | None:
+        """The settled page's text, or ``None``: a failed read leaves the verdict alone."""
+        try:
+            return dashboard_page_image.read_text(
+                lambda params: self._pipe.call(
+                    "Runtime.evaluate", params, session=self._session, deadline=self._deadline
+                )
+            )
+        except (_TimedOut, _BrowserGone, _CdpError):
+            return None
 
 
 def _drive(
@@ -1286,6 +1304,7 @@ def _verdict(
     collector: _Collector, document: _Document, started: float, data: str = DATA_SYNTHETIC
 ) -> Verification:
     raws, missing = _split_missing_library(collector)
+    text = None if collector.crashed else collector.text
     errors = [
         PageError(raw.kind, raw.message, *document.locate(raw.line, raw.column)) for raw in raws
     ]
@@ -1327,6 +1346,7 @@ def _verdict(
                 notes=notes,
                 elapsed_ms=_ms_since(started),
                 data=data,
+                text=text,
             )
         notes += (
             f"Not listed above: {_undefined(missing)}, most likely because a script the page "
@@ -1343,6 +1363,7 @@ def _verdict(
         elapsed_ms=_ms_since(started),
         data=data,
         image=_image_to_keep(collector, missing),
+        text=text,
     )
 
 

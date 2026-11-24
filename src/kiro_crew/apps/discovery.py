@@ -6,6 +6,7 @@ Discovers builtins by scanning the filesystem: each subdirectory of
 
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,10 @@ from typing import Any
 from kiro_crew.apps.manifest import AppManifest
 
 logger = logging.getLogger(__name__)
+
+#: The last scan of the package's ``builtins/`` that read every manifest whole:
+#: ``((directory, inode, mtime), the apps it found)``.
+_package_scan: tuple[tuple[Path, int, int], list[dict[str, Any]]] | None = None
 
 
 def _get_builtins_dir() -> Path:
@@ -135,6 +140,12 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
     Returns list of app metadata dicts compatible with the existing
     register_builtin_apps() function signature.
 
+    The package's own directory (no ``builtins_dir``) is scanned once per process:
+    gateway boot asks for it from registration, the orphan check and the public-id
+    read. The scan is reused while that directory's inode and mtime hold, and a scan
+    that skipped a manifest or could not check one of its paths is not reused, so the
+    next call scans again. Each call gets its own copy.
+
     Args:
         builtins_dir: Override path to builtins directory (for testing).
                       Defaults to the package's builtins/ directory.
@@ -142,14 +153,32 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
     Returns:
         List of app metadata dicts, sorted by app name.
     """
-    if builtins_dir is None:
-        builtins_dir = _get_builtins_dir()
+    global _package_scan
+    if builtins_dir is not None:
+        return _scan_builtins(builtins_dir)[0]
+    builtins_dir = _get_builtins_dir()
+    try:
+        st = builtins_dir.stat()
+        stamp: tuple[Path, int, int] | None = (builtins_dir, st.st_ino, st.st_mtime_ns)
+    except OSError:
+        stamp = None
+    cached = _package_scan
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return copy.deepcopy(cached[1])
+    apps, whole = _scan_builtins(builtins_dir)
+    if stamp is not None and whole:
+        _package_scan = (stamp, copy.deepcopy(apps))
+    return apps
 
+
+def _scan_builtins(builtins_dir: Path) -> tuple[list[dict[str, Any]], bool]:
+    """The apps under *builtins_dir*, and whether every manifest there was read whole."""
     apps: list[dict[str, Any]] = []
     if not builtins_dir.is_dir():
         logger.debug("Builtins directory not found: %s", builtins_dir)
-        return apps
+        return apps, False
 
+    whole = True
     for entry in sorted(builtins_dir.iterdir()):
         if not entry.is_dir():
             continue
@@ -166,6 +195,7 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
             unchecked: list[str] = []
             errors = manifest.validate(app_root=entry, unchecked=unchecked)
             if errors:
+                whole = False
                 logger.warning(
                     "Skipping builtin %s: validation errors: %s",
                     entry.name,
@@ -173,6 +203,7 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
                 )
                 continue
             if unchecked:
+                whole = False
                 # The path screen did not answer, which is not a verdict on the
                 # shipped manifest. The builtin stays listed (and so is not read
                 # as orphaned); registration screens each path again and retries.
@@ -184,8 +215,10 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
             apps.append(_manifest_to_builtin_dict(manifest))
             logger.debug("Discovered builtin app: %s v%s", manifest.name, manifest.version)
         except ValueError as exc:
+            whole = False
             logger.warning("Failed to parse builtin manifest %s: %s", manifest_path, exc)
         except Exception:
+            whole = False
             logger.warning(
                 "Unexpected error loading builtin manifest: %s",
                 manifest_path,
@@ -193,4 +226,4 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
             )
 
     logger.info("Discovered %d builtin app(s) from %s", len(apps), builtins_dir)
-    return apps
+    return apps, whole

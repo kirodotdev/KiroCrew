@@ -79,8 +79,12 @@ def add_job(
     auto_pause_after_failures: int | None = None,
     alert_after_failures: int | None = None,
     person_owner: bool = False,
+    owner_grant: tuple[str, str] = ("", ""),
 ) -> CronJob:
     """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
+
+    ``owner_grant`` is ``(member_id, mode)`` of the Bot that made the job through
+    ``cron_add`` (``cron_service.owner_grant.creator_grant``); only that tool knows it.
 
     ``enabled=False`` creates the job already paused (``user_paused=True``,
     as :meth:`enable_job` does) in the FIRST persist, so no crash or
@@ -136,6 +140,7 @@ def add_job(
     # Only MCP ``cron_add`` knows this. A key, not a flag: a moved session_key voids it.
     if person_owner:
         job.person_owner_key = job.session_key
+    job.owner_member_id, job.owner_approval_mode = owner_grant
     self._persist_add_locked(job)
     self._arm_timer()
     logger.info("Added cron job '%s' (%s)", name, job.id)

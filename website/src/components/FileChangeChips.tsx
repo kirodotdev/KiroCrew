@@ -11,6 +11,7 @@ import {
   ROW_CSS_OPEN,
 } from './fileChangeChipsCss'
 import ErrorNotice from './ErrorNotice'
+import TruncatedText from './TruncatedText'
 import { countLines } from '../utils/diffLineCounts'
 import { normalizeWindowsPath } from '../utils/fileTokens'
 import { useDiffSplit } from '../hooks/useDiffSplit'
@@ -302,7 +303,7 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
           {name}
         </button>
       ) : (
-        <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+        <TruncatedText full={fc.path} className="min-w-0" data-fcc-filename>{name}</TruncatedText>
       )}
       <RowMetadata added={added} removed={removed} isArtifact={isArtifact} />
       {/* `min-w-[8ch]` replaces flex's `min-width:auto`, so without `shrink-0`
@@ -329,7 +330,7 @@ function TruncatedRow({ fc, isArtifact, onFileOpen }: {
         {onFileOpen ? (
           <button type="button" data-fcc-filename className="min-w-0 truncate text-left text-muted hover:text-accent cursor-pointer bg-transparent border-none p-0 font-mono text-[12px]" onClick={() => onFileOpen(fc.path)} title={fc.path} aria-label={i18nT('components.fileChangeChips.open_in_side_panel', { path: fc.path })}>{name}</button>
         ) : (
-          <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+          <TruncatedText full={fc.path} className="min-w-0" data-fcc-filename>{name}</TruncatedText>
         )}
         {isArtifact && <span data-fcc-artifact-badge className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium">{i18nT('components.fileChangeChips.artifact')}</span>}
         <span className="ml-auto shrink-0">{fc.content_omitted ? <DemotedTag fc={fc} /> : <TruncatedNotice fc={fc} />}</span>

@@ -407,8 +407,14 @@ and tab-smuggled forms the URL parser treats identically — which opens with a 
 but addresses another origin, where this build has no empty page to explain.
 
 **Panel shortcuts.** `registerPanelShortcut({ code, path, label })` identifies the
-chord solely by `KeyboardEvent.code`, and the displayed key is derived from that
-code, so the advertised chord can never diverge from the handled one. Beyond core
+chord solely by its `KeyboardEvent.code`, which the handler reads for a letter key
+as the letter the layout types (`KeyX` fires from the key that types `x`; a key
+typing no Latin letter, or a macOS Option chord, fires by position), and the
+displayed key is derived from that code, so the advertised chord can never diverge
+from the handled one. A chord matched by position is labelled with what the user's
+keyboard layout prints on that physical key (`navigator.keyboard.getLayoutMap()`,
+read once per page load in Chromium and Electron; elsewhere the label is the US
+glyph). Beyond core
 panel chords and prior registrations, it rejects any code in
 `RESERVED_PANEL_CODES`: the Alt chords the handler consumes before panel routing
 (shortcuts modal, settings, focus-input, MRU toggle, chat-jump digits, prev/next
@@ -589,7 +595,7 @@ mutation are served by a backend plugin the edition registers with
 `dashboard/handlers/source_providers.py`), under the same id. The
 two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
 both refuse the built-in ids (`github`, `gitlab`, `jira`, `bitbucket_server`,
-`gerrit`; the backend also refuses `linear`), so a descriptor can
+`gerrit`; the backend also refuses `linear` and `servicenow`), so a descriptor can
 never restyle a core provider and a payload provider id round-trips through both
 layers. A descriptor missing `parse`/`chipLabel`/`refLabel`/`capabilities`
 routes through `reportSeamCollision`.
@@ -830,11 +836,11 @@ the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
 deadline that also records a timed-out read in the error journal). The
 route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
-`jSharedCrewPreview`, `jMembers`, `jApps`, `jRelayViewer` and `jConfigPending`)
+`jSharedCrewPreview`, `jMembers`, `jApps`, `jRelayViewer`, `jConfigPending` and `jKasLoginRead`)
 are core-only and deliberately absent from `ApiTransport` above: each opts one
 specific benign denial on one core route out of the error journal (a disabled
 instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
-the slot-environment, Shared Crew preview, members roster and config-pending reads' 403 `owner_only`
+the slot-environment, Shared Crew preview, members roster, config-pending and Kiro sign-in reads' 403 `owner_only`
 for a caller that is not the dashboard owner, the app list's 403
 `relay_apps_teammate` for a teammate reaching the Crew through the relay, and the
 relay viewer's routine refusals of `GET /api/relay-viewer/crews`), which is not an edition's decision to make. None of them imports a

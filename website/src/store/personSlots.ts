@@ -1,11 +1,12 @@
-import { crewModeEnabled, crewModeView, liveMateThreads } from '../lib/crewMode'
+import { crewModeEnabled, crewModeView, mateThreadsHidingSessions } from '../lib/crewMode'
 import type { ChatSlot } from '../types'
 import { selectSlotsWithLiveLastTs } from './slotLastTs'
 
 /**
  * The person's own session list: every live slot except a Crew Mode root's
  * workers, which their root lists in its side panel, a live mate thread's
- * sessions its Bot does not show here, which its Sessions tab lists, and, with
+ * sessions, which its Sessions tab lists, unless Show Bot sessions in Sessions
+ * is on, and, with
  * `slack.show_in_session_list` off, conversations that started in Slack other
  * than the open one (`crewModeView`, `slackRowHidden`). The one
  * rule every place that lists sessions for the person reads: the chat sidebar
@@ -53,8 +54,8 @@ export function selectFoldersHoldingSessions(state: { dashboard: { slots: ChatSl
   return holding
 }
 
-/** The live mate threads of the full slot store, whose sessions leave the
- *  person's lists (`liveMateThreads`), for a list
+/** The live mate threads of the full slot store whose sessions leave the
+ *  person's lists (`mateThreadsHidingSessions`), for a list
  *  that `crewModeView` filters after the chat page left the mate threads out.
  *  Memoized on the raw rows, so a reader re-renders only when they change. */
 let mateThreadsOf: unknown = null
@@ -63,7 +64,7 @@ export function selectMateThreadsHidingSessions(state: { dashboard: { slots: Cha
   const slots = state.dashboard.slots
   if (slots !== mateThreadsOf) {
     mateThreadsOf = slots
-    mateThreads = liveMateThreads(slots)
+    mateThreads = mateThreadsHidingSessions(slots)
   }
   return mateThreads
 }

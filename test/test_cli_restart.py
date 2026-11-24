@@ -943,6 +943,14 @@ class TestRestart:
                 return_value=acknowledged,
             ),
             patch("kiro_crew.cli_server.lock_holder", **holder_kwargs),
+            # The restart's mode read binds its own ``lock_holder``; it sees the
+            # same holder, and that holder's argv is an ordinary gateway start.
+            patch("kiro_crew.cli_restart_headless.lock_holder", **holder_kwargs),
+            patch(
+                "kiro_crew.cli_restart_headless.platform_compat.process_argv",
+                return_value=["kirocrew", "gateway"],
+            ),
+            patch("kiro_crew.cli_restart_headless._recorded_gateway_pid", return_value=None),
             patch("kiro_crew.cli_server._is_kirocrew_process", return_value=kirocrew),
         ):
             yield

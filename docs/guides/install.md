@@ -173,7 +173,8 @@ On Linux (glibc 2.28+) and macOS 11+ the installer takes the platform wheel,
 which already carries the [built-in KAS engine](#first-run) this release pins,
 so there is nothing more to download. Anywhere else it takes the plain wheel and
 then runs the new `kirocrew kas install` to download the engine (about 55-70 MB
-for your platform). If that download fails, for example on a host with no access
+for your platform). On x86_64 Linux with glibc 2.26 or 2.27, such as Amazon
+Linux 2, that download is an Amazon Linux 2 build of the same engine. If that download fails, for example on a host with no access
 to the CDN, a first install exits 1 with the command to retry, and the gateway
 tries again when it starts; a re-run over an existing install, and an LTS install
 that is not signed in yet, keep exit 0. On a host that cannot run the engine at all (no build for its
@@ -318,7 +319,10 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install. The opt-in is not remembered. To compile a dependency
+managed-venv install, where an extra the update carries with no wheel for the
+host also fails the update; uninstall the package that has no wheel from the
+running install to stop carrying that extra.
+The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
 environment, while the gateway's automatic and approved updates run their build
@@ -350,7 +354,11 @@ reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
 checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
-when `origin` has none of them. After the reset the update rebuilds the
+when `origin` has none of them. A checkout detached exactly at a release tag can
+instead take `kirocrew update --release VERSION`, which fetches only the release
+tag of VERSION and moves to it, and does nothing when the checkout is already on
+that release or a newer one; this is what **Update** runs on a cloud crew from a
+release-build hub. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
 `logs/frontend-build.log` in the data home; on Windows no log is written, so
 that output is not kept. If the build fails, the update still installs the new
@@ -524,7 +532,9 @@ Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
 runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
-prints the exact command, already pointed at the right interpreter.
+prints the exact command, already pointed at the right interpreter. On a
+`cli.sh` managed-venv install, an update keeps every extra the running install
+has.
 
 | Extra | Adds | For |
 |-------|------|-----|
@@ -571,7 +581,7 @@ The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
 installs the next time you quit the app (by default closing the window only hides
-it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+it to the tray, and the first time it does a notification says so; quit with **Quit Kiro Crew** (**Quit Kiro Crew and Stop Background Sessions** while the app runs a gateway it started) from the tray or the menu bar, or turn off **Keep running in the background
 after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
@@ -1147,7 +1157,12 @@ path — `python -m kiro_crew`, a different venv's entry point, a re-created ven
 the profile has not been re-pointed at — stays unconfined, and `kirocrew doctor`
 reports the attachment as stale in the re-created-venv case. Prefer running the
 gateway as the service: it pins `ExecStart` to the attached path and restarts on
-boot.
+boot. On a Toolbox install `ExecStart` runs the Toolbox launcher
+`~/.toolbox/bin/kirocrew` instead, which starts the current version, so the
+service keeps starting after an update. That launcher execs the version's own
+`tools/kirocrew/<version>/bin/kirocrew` script, so on a Toolbox install the
+profile is attached to that script in every version folder
+(`tools/kirocrew/*/bin/kirocrew`), and to no other Toolbox tool's.
 
 ### The AppImage (desktop app) needs its own profile
 

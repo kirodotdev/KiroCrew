@@ -125,11 +125,15 @@ function manualOrderQueue(store: object): { tail: Promise<unknown> } {
   return queue
 }
 
-export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey }: {
+export function useManualSessionOrder({ localSlots, pinned, running, sortKey, setSortKey, frozen }: {
   localSlots: Slot[]
   pinned: ReadonlySet<string>
+  /** The sidebar's running set, which "In progress, then newest" draws first. */
+  running: ReadonlySet<string>
   sortKey: SortKey
   setSortKey: (key: SortKey) => void
+  /** While a drag is in flight. */
+  frozen: boolean
 }) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
@@ -143,12 +147,19 @@ export function useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey 
   const pending = useAppSelector(state => state.dashboard.pendingManualOrder ?? null)
   const manualOrder = pending ?? stored
   const manualRank = useMemo(() => new Map(manualOrder.map((key, index) => [key, index])), [manualOrder])
-  // The unpinned rows in the order they are drawn now, whatever the sort: a
-  // drop lands in this order, and a first drag seeds it.
-  const drawnOrder = useMemo(() => (sortKey === 'manual'
+  // The unpinned rows in the order they are drawn now, whatever the sort.
+  // Only "In progress, then newest" reads the running set, so only it re-sorts on it.
+  const runningFirst = sortKey === 'active-then-date' ? running : null
+  const liveDrawnOrder = useMemo(() => (sortKey === 'manual'
     ? manualDrawnOrder(localSlots, pinned, manualRank)
-    : localSlots.filter(slot => !pinned.has(slot.key)).sort((a, b) => compareBySort(a, b, sortKey)).map(slot => slot.key)),
-  [sortKey, localSlots, pinned, manualRank])
+    : localSlots.filter(slot => !pinned.has(slot.key))
+      .sort((a, b) => compareBySort(a, b, sortKey, slot => !!runningFirst?.has(slot.key))).map(slot => slot.key)),
+  [sortKey, localSlots, pinned, manualRank, runningFirst])
+  // A drop lands in, and a first drag seeds, the order drawn when the drag
+  // started: the row model holds the rows in it until the drag ends.
+  const heldDrawnOrder = useRef(liveDrawnOrder)
+  if (!frozen) heldDrawnOrder.current = liveDrawnOrder
+  const drawnOrder = heldDrawnOrder.current
   const drawnIndex = useMemo(() => new Map(drawnOrder.map((key, index) => [key, index])), [drawnOrder])
   const manualOrderError = useAppSelector(state => state.dashboard.manualOrderError ?? '')
   const setManualOrderErrorText = useCallback((message: string) => { dispatch(setManualOrderError(message)) }, [dispatch])

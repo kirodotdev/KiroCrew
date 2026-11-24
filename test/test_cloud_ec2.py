@@ -1057,10 +1057,10 @@ class TestDnsPreflight:
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
         with pytest.raises(aws.AWSError) as err:
-            ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
+            ec2.assert_download_hosts_resolvable("vpc-0123456789abcdef0", "dev", "us-east-1")
         msg = str(err.value)
         assert "prod.download.cli.kiro.dev is inside private zone kiro.dev" in msg
-        assert "--subnet" in msg  # the user needs a way forward, not just a diagnosis
+        assert "(the Subnet ID field, or `--subnet <subnet-id>`)" in msg[:400]  # kept by launch_job
 
 
 class TestDiscoverNetwork:
@@ -1155,7 +1155,7 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        with pytest.raises(aws.AWSError, match="internet egress"):
+        with pytest.raises(aws.AWSError, match="internet egress.*the Subnet ID field"):
             ec2.discover_network("dev", "us-east-1")
 
     def test_main_route_table_egress_covers_unassociated_subnet(self, monkeypatch):

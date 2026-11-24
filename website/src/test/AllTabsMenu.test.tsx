@@ -426,3 +426,46 @@ describe('AllTabsMenu scrolls the current row into view on open', () => {
     expect(scrollIntoView).not.toHaveBeenCalled()
   })
 })
+
+describe('AllTabsMenu footer', () => {
+  it('renders one action below the rows and runs it on select', async () => {
+    const footerSelect = vi.fn()
+    const { onSelect } = renderMenu({ footer: { label: 'Close all', onSelect: footerSelect, testId: 'footer-action' } })
+    openMenu()
+    const action = screen.getByRole('menuitem', { name: 'Close all' })
+    expect(action).toHaveAttribute('data-testid', 'footer-action')
+    // After every row, past a separator.
+    expect(rows().at(-1)!.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(action)
+    // Deferred past the menu's own close, so a dialog it opens keeps focus.
+    await waitFor(() => expect(footerSelect).toHaveBeenCalledOnce())
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('leaves focus on the dialog the action opens, then returns it to the trigger', async () => {
+    let close: () => void = () => {}
+    const dialog = document.createElement('button')
+    renderMenu({ footer: { label: 'Close all', onSelect: () => {
+      document.body.append(dialog)
+      dialog.focus()
+      return new Promise<void>(resolve => { close = resolve })
+    } } })
+    openMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all' }))
+    await waitFor(() => expect(document.activeElement).toBe(dialog))
+    // The closing menu's restore must not pull focus back behind the dialog.
+    // Radix queues that restore as a zero-delay task when the content
+    // unmounts, so once the menu is gone one more task has run it.
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(document.activeElement).toBe(dialog)
+    await act(async () => { dialog.remove(); close() })
+    await waitFor(() => expect(document.activeElement).toBe(trigger()))
+  })
+
+  it('renders no action without a footer', () => {
+    renderMenu()
+    openMenu()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+  })
+})

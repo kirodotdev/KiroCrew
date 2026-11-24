@@ -202,15 +202,18 @@ COMPONENTS: dict[str, ComponentSpec] = {
     # config.json: `config.local.json` is the overlay `config set --local` and
     # `save()` keep overlay-owned values in (so they exist NOWHERE else),
     # `ui-prefs.json` is the host backup of the browser-held Settings
-    # (`ui_prefs.py`), and `notification_settings.json` holds the Settings >
-    # Notifications mutes and priorities (`notifications/settings.py`). A bundle
-    # without them restores an install whose settings read as reset.
+    # (`ui_prefs.py`), `notification_settings.json` holds the Settings >
+    # Notifications mutes and priorities (`notifications/settings.py`), and `mcp.json`
+    # holds the servers added on the MCP Servers page
+    # (`dashboard/handlers/mcp_config_files.py`). A bundle without them restores an
+    # install whose settings read as reset.
     "config": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
         help=(
             "config.json, config.local.json, session_map.json, hooks.json, "
             "ui-prefs.json (dashboard browser settings), notification_settings.json "
-            "(notification mutes and priorities), project_dir, workspace_dir"
+            "(notification mutes and priorities), mcp.json (servers added on the MCP "
+            "Servers page), project_dir, workspace_dir"
         ),
         files=(
             "config.json",
@@ -219,6 +222,7 @@ COMPONENTS: dict[str, ComponentSpec] = {
             "hooks.json",
             "ui-prefs.json",
             "notification_settings.json",
+            "mcp.json",
             "project_dir",
             "workspace_dir",
         ),
@@ -371,6 +375,8 @@ _DERIVED_INDEXES: frozenset[str] = frozenset({"memory_index.db"})
 # Listed rather than derived, because "ends in .json" is not the property that matters:
 # what matters is that a consumer treats an unreadable file as empty instead of as an
 # error. A component file added here is validated before it can be installed.
+# `mcp.json` is not listed: it is hand-edited and its reader accepts comments
+# (`user_json.load_mcp_servers`), which this strict JSON check would refuse.
 COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
     {
         "crons.json",
@@ -381,6 +387,14 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
         "ui-prefs.json",
         "notification_settings.json",
     }
+)
+
+#: Those files whose stores read them through a helper that drops one leading UTF-8
+#: byte-order mark (`read_config_text`, `loads_user_json`, the hook store's `json.loads` of
+#: the raw bytes), so a restore accepts the mark there too. `crons.json` and `ui-prefs.json`
+#: keep it refused: their file readers read such a file as empty.
+_BOM_TOLERANT_JSON_OBJECTS: frozenset[str] = frozenset(
+    {"config.json", "config.local.json", "hooks.json", "notification_settings.json"}
 )
 
 
@@ -412,8 +426,15 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
         "hooks.json",
         "ui-prefs.json",
         "notification_settings.json",
+        "mcp.json",
     }
 )
+
+#: Files a MERGE deliberately never installs from the bundle, even when this install has
+#: no copy. Kept beside the component tables so the pre-flight validator and the merge
+#: driver cannot disagree about whether one of these files can reach a live consumer.
+_MERGE_NEVER_INSTALLS_FILES: frozenset[str] = frozenset({"config.local.json"})
+
 
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
@@ -421,6 +442,8 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
 #: later save fail -- so an installed one is held to the same reader the dashboard
 #: import uses. Keyed by file name; the value names the validator.
 _FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "config.json": "config_document",
+    "config.local.json": "config_document",
     "ui-prefs.json": "ui_prefs",
     "notification_settings.json": "notification_settings",
 }

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -435,7 +435,7 @@ def test_a_remote_ref_as_the_base_names_the_branch_to_pass(repo: Path) -> None:
 
 
 def _flat(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(skill_text(path).split())
 
 
 def test_skill_wires_the_check_at_every_body_write_and_gates_both_checks() -> None:
@@ -475,8 +475,9 @@ def test_skill_wires_the_check_at_every_body_write_and_gates_both_checks() -> No
 def test_skill_reads_the_register_before_the_first_body_write() -> None:
     """Phase 1 step 5 points at the Age 5 register BEFORE the first --check-body,
     and adds the two rules a recital-shaped body breaks."""
-    text = SKILL.read_text(encoding="utf-8")
-    step = text.index("5. **Reconcile code and description.**")
+    text = skill_text(SKILL)
+    # The core keeps a pointer under this step; the step itself is in references/.
+    step = text.rindex("5. **Reconcile code and description.**")
     first_check = text.index("diff_signals.py --check-body", step)
     register_pointer = text.index("read *Writing register: Age 5* below", step)
     assert register_pointer < first_check
@@ -489,8 +490,9 @@ def test_skill_reads_the_register_before_the_first_body_write() -> None:
 def test_skill_has_a_cold_reader_step_after_the_check_and_outside_local_review() -> None:
     """The only readability measure: one tool-less subagent reads What changed alone.
     It lives in the skill, not in local_review.py, which mirrors CI prompts byte-for-byte."""
-    text = SKILL.read_text(encoding="utf-8")
-    step = text.index("5. **Reconcile code and description.**")
+    text = skill_text(SKILL)
+    # The core keeps a pointer under this step; the step itself is in references/.
+    step = text.rindex("5. **Reconcile code and description.**")
     first_check = text.index("diff_signals.py --check-body", step)
     cold = text.index("**Cold reader.**", step)
     assert first_check < cold

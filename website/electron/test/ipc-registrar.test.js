@@ -29,6 +29,7 @@ const {
   lastCall,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 } = require("./ipc-registrar-test-helpers");
 
 test("the updater's handlers are the update:* channels the preload invokes", () => {
@@ -87,7 +88,11 @@ test("registerShell answers the preload's shell channels and is idempotent", () 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
-  assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
+  assert.match(GATEWAY_SOURCE, /fadeBootReveal\(ipcMain, webContents, timeoutMs\)/);
+  assert.match(
+    fs.readFileSync(path.join(__dirname, "..", "boot-reveal.js"), "utf8"),
+    /ipcMain\.on\("boot-complete", onComplete\)/,
+  );
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -785,13 +790,6 @@ test("dashboard:open-file hardens the launcher PATH across the native launch", a
 // three-gate local-dashboard check; the availability probe answers `false`
 // where the pick itself would be refused, and neither ever reaches the dialog
 // from a rejected sender.
-const PICK_REJECTIONS = [
-  ["wrong origin", {}, "https://remote.example/chat"],
-  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
-  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
-  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
-];
-
 test("dashboard:pick-folder is refused outside the local dashboard and opens no dialog", async () => {
   for (const [label, options, url] of PICK_REJECTIONS) {
     const h = harness({

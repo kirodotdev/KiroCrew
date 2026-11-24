@@ -397,7 +397,7 @@ def prefix_range(meta_str: str, prefix: str) -> tuple[int, int]:
     return _written_size(meta_str), _written_size(prefix)
 
 
-def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
+def read_prefix_range(path: Path, where: str | tuple[int | None, ...]) -> str | None:
     """The cached frozen prefix: its text, read back from *path* when cached as a range.
 
     *where* is the cache's prefix entry: the text itself (cached before a write,
@@ -408,7 +408,7 @@ def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
     """
     if isinstance(where, str):
         return where
-    offset, size = where
+    offset, size = where[0] or 0, where[1] or 0
     if size == 0:
         return ""
     if offset <= 0:
@@ -435,6 +435,235 @@ def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
     return text.replace("\r\n", "\n") if "\r" in text else text
 
 
+#: Chunk size for reading a frozen prefix that is checked or copied in Python.
+_PREFIX_CHUNK = 1 << 20
+
+
+def _span(where: tuple) -> tuple[int, int, int | None, int | None]:
+    """A cached range as ``(offset, size, crc, msgs)``; older 2-tuples carry neither."""
+    if len(where) >= 4:
+        return where[0], where[1], where[2], where[3]
+    return where[0], where[1], None, None
+
+
+class PrefixSource:
+    """The frozen prefix as a byte range of the transcript, copied when the save writes.
+
+    *crc* is the CRC-32 of those bytes and *msgs* the number of message rows in
+    them, when known. A copy that has to read the bytes fills *crc* in, so the
+    next save can recognise the same prefix in a file another writer touched.
+    *identity* is the file's identity when the range was checked; the copy
+    refuses a file that changed since.
+    """
+
+    __slots__ = ("path", "offset", "size", "crc", "msgs", "identity")
+
+    def __init__(self, path: Path, offset: int, size: int, crc: int | None, msgs: int | None):
+        self.path, self.offset, self.size, self.crc, self.msgs = path, offset, size, crc, msgs
+        self.identity = file_identity(path)
+
+    def span(self) -> tuple[int, int, int | None, int | None]:
+        """Where these bytes sit in the file as it is now."""
+        return (self.offset, self.size, self.crc, self.msgs)
+
+    def span_after(self, meta_str: str) -> tuple[int, int, int | None, int | None]:
+        """Where these bytes sit in a file that starts with *meta_str*."""
+        return (_written_size(meta_str), self.size, self.crc, self.msgs)
+
+    def copy_to(self, fd: int) -> None:
+        """Append the range to *fd* in chunks, checking it against its CRC when known.
+
+        Plain reads and writes, not ``os.copy_file_range``: measured on ext4,
+        the kernel copy made the save's fsync grow from about 60 ms to 340 ms
+        over five saves.
+        """
+        import zlib
+
+        with open(self.path, "rb") as src:
+            done, crc = 0, 0
+            src.seek(self.offset)
+            while done < self.size:
+                chunk = src.read(min(_PREFIX_CHUNK, self.size - done))
+                if not chunk:
+                    raise OSError("transcript ended inside its frozen prefix")
+                crc = zlib.crc32(chunk, crc)
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(fd, view) :]
+                done += len(chunk)
+            if self.crc is not None and crc != self.crc:
+                raise OSError("frozen prefix changed under the save")
+            self.crc = crc
+        if file_identity(self.path) != self.identity:
+            raise OSError("transcript changed while the save copied its frozen prefix")
+
+
+class StreamedPayload:
+    """``head + prefix bytes + tail``: a save whose frozen prefix is copied, not held."""
+
+    __slots__ = ("head", "prefix", "tail")
+
+    def __init__(self, head: str, prefix: PrefixSource, tail: str):
+        self.head, self.prefix, self.tail = head, prefix, tail
+
+
+def streaming_supported() -> bool:
+    """Whether a save may copy its prefix: text-mode writes add no ``\\r`` here."""
+    return os.linesep == "\n"
+
+
+def write_payload(
+    path: Path,
+    payload: str | StreamedPayload,
+    write: Callable[..., None],
+    *,
+    replace_budget_s: float | None,
+) -> None:
+    """Replace *path* with *payload* through *write* (``atomic_write``), synced."""
+    if isinstance(payload, str):
+        write(path, payload, fsync=True, replace_budget_s=replace_budget_s)
+        return
+
+    def finish(fd: int) -> None:
+        payload.prefix.copy_to(fd)
+        tail = memoryview(payload.tail.encode("utf-8"))
+        while tail:
+            tail = tail[os.write(fd, tail) :]
+        os.fsync(fd)
+
+    write(
+        path,
+        payload.head.encode("utf-8"),
+        replace_budget_s=replace_budget_s,
+        on_staged=finish,
+    )
+
+
+def _message_rows(lines: list[str]) -> int:
+    from kiro_crew.transcript_count import message_row
+
+    return sum(1 for line in lines if message_row(line) is not None)
+
+
+def _prefix_msgs(path: Path, region_start: int, region: bytes | str) -> int | None:
+    """Message rows before *region_start*, from the stored count minus *region*'s rows.
+
+    *region* is the file from *region_start* to its end. None when no stored
+    count matches the file as it is.
+    """
+    from kiro_crew.transcript_count import stamp_before_append
+
+    stored = stamp_before_append(path)
+    if stored is None or region_start <= 0:
+        return None
+    if isinstance(region, bytes):
+        try:
+            region = region.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    msgs = stored[2] - _message_rows(region.splitlines())
+    return msgs if msgs >= 0 else None
+
+
+def _cached_prefix_source(path: Path, where: tuple, size: int) -> PrefixSource | None:
+    """The cached range of an unchanged file, when its edges still fall on line ends."""
+    offset, psize, crc, msgs = _span(where)
+    if offset <= 0 or offset + psize > size:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset - 1)
+            before = fh.read(1)
+            if psize:
+                fh.seek(offset + psize - 1)
+                if fh.read(1) != b"\n":
+                    return None
+            region = fh.read() if msgs is None else b""
+    except OSError:
+        return None
+    if before != b"\n":
+        return None
+    if msgs is None:
+        msgs = _prefix_msgs(path, offset + psize, region)
+    return PrefixSource(path, offset, psize, crc, msgs)
+
+
+def _verified_prefix_source(path: Path, where: tuple, size: int) -> tuple[PrefixSource, str] | None:
+    """The cached prefix found again in a file another writer touched, plus the rest.
+
+    The prefix must follow the file's metadata line and match the CRC recorded
+    when the slot last wrote it; the text after it comes back decoded, as the
+    full read would split it. None sends the caller to the full read.
+    """
+    import zlib
+
+    _offset, psize, crc, msgs = _span(where)
+    if crc is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            head = fh.readline()
+            start = len(head)
+            if not head.endswith(b"\n") or b'"_type"' not in head or start + psize > size:
+                return None
+            got, left = 0, psize
+            while left:
+                chunk = fh.read(min(_PREFIX_CHUNK, left))
+                if not chunk:
+                    return None
+                got = zlib.crc32(chunk, got)
+                left -= len(chunk)
+                last = chunk[-1:]
+            if psize and last != b"\n":
+                return None
+            rest = fh.read()
+    except OSError:
+        return None
+    if got != crc:
+        return None
+    try:
+        text = rest.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if msgs is None:
+        msgs = _prefix_msgs(path, start + psize, text)
+    return PrefixSource(path, start, psize, crc, msgs), text
+
+
+def post_write_span(meta_str: str, frozen_prefix: str | tuple | PrefixSource) -> tuple:
+    """The cache entry for the frozen prefix of the file a save just wrote."""
+    if isinstance(frozen_prefix, PrefixSource):
+        return frozen_prefix.span_after(meta_str)
+    if isinstance(frozen_prefix, str):
+        offset, size = prefix_range(meta_str, frozen_prefix)
+        if not streaming_supported():
+            return (offset, size)
+        import zlib
+
+        # The CRC lets the next save find this prefix again after another
+        # writer rewrote the metadata line or appended rows.
+        return (offset, size, zlib.crc32(frozen_prefix.encode("utf-8")), None)
+    return frozen_prefix
+
+
+def store_count_after_write(path: Path, prefix: tuple | None, lines: list[str]) -> None:
+    """Store the message count of a file that is *prefix* followed by *lines*.
+
+    Only when the prefix's own count is known; otherwise the next count reads
+    the file, as before.
+    """
+    if prefix is None or isinstance(prefix, str):
+        return
+    msgs = _span(prefix)[3]
+    if msgs is None:
+        return
+    from kiro_crew.transcript_count import store_count
+
+    store_count(path, msgs + _message_rows(lines))
+
+
 def _frozen_prefix_and_foreign_appends(
     slot: _ChatSlot,
     path,
@@ -445,8 +674,15 @@ def _frozen_prefix_and_foreign_appends(
     bound_prefix: Callable[[list[str]], list[str]] | None = None,
     archive_dedup: Callable[[list[str]], object],
     retired_entries: list[dict] | None = None,
-) -> tuple[str, list[str], list[str]]:
+    stream: bool = False,
+) -> tuple[str | PrefixSource, list[str], list[str]]:
     """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
+
+    With *stream*, a prefix this slot wrote comes back as a
+    :class:`PrefixSource` (a byte range the write copies) instead of its text:
+    from the cache when the file is unchanged, or found again by its CRC after
+    another writer rewrote the metadata line or appended rows. Then only the
+    rows after the prefix are read and scanned.
 
     ``retired_entries`` are the serialized rows a rewrite removes on purpose
     (a Regenerate's previous reply). They take part in the identity scan as
@@ -547,10 +783,41 @@ def _frozen_prefix_and_foreign_appends(
         # an idle slot does not keep a copy of its older history in memory. The
         # range is read back here; a range that does not read back as whole
         # lines falls through to the full read below.
-        prefix = read_prefix_range(path, cache[3])
-        if prefix is not None:
+        source: str | PrefixSource | None
+        if stream and not isinstance(cache[3], str):
+            source = _cached_prefix_source(path, cache[3], size)
+        else:
+            source = read_prefix_range(path, cache[3])
+        if source is not None:
             carriers = [*window_entries, *(retired_entries or ())]
-            return (prefix, _drop_carried_foreign(list(cache[4]), carriers), [])
+            return (source, _drop_carried_foreign(list(cache[4]), carriers), [])
+    verified = (
+        _verified_prefix_source(path, cache[3], size)
+        if stream
+        and cache is not None
+        and cache[2] == disk_older
+        and not isinstance(cache[3], str)
+        and not any(_is_file_change_row(entry) for entry in window_entries)
+        else None
+    )
+    prefix: str | PrefixSource
+    if verified is not None:
+        # No window file-change rows means keep_rows equals keep_turns, no tighter
+        # than the prior bound. Equal disk_older and CRC keep the prefix unchanged.
+        prefix, rest = verified
+        region = rest.splitlines(keepends=True)
+        return _scan_foreign(
+            slot,
+            path,
+            mtime,
+            size,
+            disk_older,
+            window_entries,
+            prefix,
+            region,
+            archive_dedup=archive_dedup,
+            retired_entries=retired_entries,
+        )
     try:
         # Bytes, so a first line that is not UTF-8 (which the save is about to
         # rewrite as CORRUPT) does not raise here; the rows decode strictly.
@@ -580,6 +847,34 @@ def _frozen_prefix_and_foreign_appends(
         # lines so a subsequent fast path re-emits nothing extra.
         slot._frozen_prefix_cache = (mtime, size, disk_older, prefix, [])
         return (prefix, [], [])
+    return _scan_foreign(
+        slot,
+        path,
+        mtime,
+        size,
+        disk_older,
+        window_entries,
+        prefix,
+        body[disk_older:],
+        archive_dedup=archive_dedup,
+        retired_entries=retired_entries,
+    )
+
+
+def _scan_foreign(
+    slot: _ChatSlot,
+    path,
+    mtime: float,
+    size: int,
+    disk_older: int,
+    window_entries: list[dict],
+    prefix: str | PrefixSource,
+    region: list[str],
+    *,
+    archive_dedup: Callable[[list[str]], object],
+    retired_entries: list[dict] | None,
+) -> tuple[str | PrefixSource, list[str], list[str]]:
+    """The foreign-append scan over *region*, the on-disk lines after the prefix."""
     # Scan the on-disk window region for lines the in-memory window does not
     # carry — those are cross-process appends we must preserve. Identity is
     # id-first (``meta.mid``, the stable per-message id every window append
@@ -654,7 +949,7 @@ def _frozen_prefix_and_foreign_appends(
     disk_msgs: list[tuple[str, object, object, object, str | None]] = (
         []
     )  # (norm, ts, role, content, mid)
-    for ln in body[disk_older:]:
+    for ln in region:
         if not ln.strip():
             continue
         try:
@@ -831,7 +1126,13 @@ def _frozen_prefix_and_foreign_appends(
     # on disk is unchanged, so a subsequent save that re-reads the same
     # (mtime, size) must re-emit these same preserved foreign lines rather than
     # drop them — hence they are cached here, not just at the post-write site.
-    slot._frozen_prefix_cache = (mtime, size, disk_older, prefix, foreign)
+    slot._frozen_prefix_cache = (
+        mtime,
+        size,
+        disk_older,
+        prefix.span() if isinstance(prefix, PrefixSource) else prefix,
+        foreign,
+    )
     # Kept lines never fold back into the window, so every re-scan finds them
     # again; warn only about lines not reported before for this slot. Keyed by
     # line hash, not count, so a rotation that swaps lines still reports.
@@ -957,9 +1258,14 @@ def append_tail(path: Path, lines: list[str]) -> None:
     is truncated back, leaving the file as it was.
     """
     from kiro_crew.atomic_write import append_line
+    from kiro_crew.transcript_count import stamp_before_append, store_count
 
     if lines:
+        # A stored count that matched before the append stays exact after it.
+        before = stamp_before_append(path)
         append_line(path, "".join(lines)[:-1], fsync=True, check_tail=False)
+        if before is not None:
+            store_count(path, before[2] + _message_rows(lines))
 
 
 def compose_payload(
@@ -974,7 +1280,7 @@ def compose_payload(
     rewrite: bool,
     retired_rows: list[dict] | None = None,
     digests: list[bytes] | None = None,
-) -> tuple[str, str, list[str], Callable[[], None]]:
+) -> tuple[str | StreamedPayload, str | PrefixSource, list[str], Callable[[], None]]:
     """The file a full save writes: ``(payload, frozen_prefix, foreign_lines, drop_archives)``.
 
     Called under the transcript lock. Archives the ambiguous dedup drops, the rows
@@ -1067,6 +1373,7 @@ def compose_payload(
         window_entries,
         collect_foreign=not rewrite or retired_entries is not None,
         retired_entries=retired_entries,
+        stream=not rewrite and streaming_supported(),
         bound_prefix=(
             None
             if rewrite
@@ -1087,10 +1394,11 @@ def compose_payload(
     # case (indistinguishable from a distinct same-content message without
     # a stable per-message id), so ``archive_dedup`` archives it before the
     # atomic replace, and keeps it in ``foreign_lines`` when that fails.
-    payload = (
-        meta_str
-        + frozen_prefix
-        + "".join(_interleave_foreign_lines(window_entries, window_lines, foreign_lines))
+    tail = "".join(_interleave_foreign_lines(window_entries, window_lines, foreign_lines))
+    payload: str | StreamedPayload = (
+        StreamedPayload(meta_str, frozen_prefix, tail)
+        if isinstance(frozen_prefix, PrefixSource)
+        else meta_str + frozen_prefix + tail
     )
 
     # Refresh the slot's ordering floor from what is actually going to
@@ -1122,6 +1430,8 @@ def compose_payload(
         from kiro_crew.history_projection import _split_transcript_bytes
 
         old_lines = _split_transcript_bytes(path.read_bytes())
+        # A rewrite never streams its prefix (stream=not rewrite above).
+        assert isinstance(payload, str)
         new_lines = payload.splitlines(keepends=True)
         archived.append(_archive_dropped_lines(state, history_key, old_lines, new_lines))
 

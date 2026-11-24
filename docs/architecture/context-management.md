@@ -63,11 +63,11 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed; on a KAS session whose default agent mounts the engine's sub-agent tool, the `kas_subagents` feature preview, its one `spawn_sub_agents` sentence names that tool instead, read once per session like the browse gate: `_engine_subagent_gates`, `kas_engine_subagents.contract_names_engine_subagents`); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false`, or the session head holds this exact text |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
-| 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block` | Selected by `provider_type`; also in a minimal start and re-sent after compaction; left out of a full session start when the session head holds this exact text. Direct calls use active definitions, with qualified-name examples and recovery for legacy loaders that return only bare names. Loader inputs copy exact catalogue IDs; executor calls preserve the returned ID and never use the direct-call fallback |
+| 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block` | Selected by `provider_type`, one block per harness naming that harness's own loader: kiro-cli `tool_search` by `<server>::<tool>` id, Claude Code `ToolSearch` with `select:mcp__<server>__<tool>`, MiMo Code `mcp_tool_search`, a one-line no-loading note on every harness that lists its tools directly, and for KAS the text below; an unknown or absent label gets none. Prompts and skills point at this block instead of naming a loader. Also in a minimal start and re-sent after compaction; left out of a full session start when the session head holds this exact text. On KAS, direct calls use active definitions, with qualified-name examples and recovery for legacy loaders that return only bare names. Loader inputs copy exact catalogue IDs; executor calls preserve the returned ID and never use the direct-call fallback |
 | 4b | `[ACTIVE MODEL]` | `context_assembly/sections.py` → `active_model_block`, from the live provider's `served_model` (the accessor the dashboard's model label reads); the harness gate in `agent_sdk/served_model_identity.py` | goose sessions only (`crew_states_served_model`: goose's own system prompt names no model, kiro-cli's does), when the session reports a model; also in a minimal start and a slim resume, and restated every follow-up (§2). Without it a model asked which model it is answers from training priors |
 | 5 | `[CREW MEMBER OPERATING MODE]` | constant prose | member DM slot, and `_member_dispatch_held`: the live session's `member_dispatch_mounted` (whether its composer actually appended the session-control entry), falling back to `_member_backend_can_dispatch` only when no provider evidence reached the build |
 | 6 | `[MEMBER IDENTITY]` … | `_build_member_section` (see §5) | V1 member sessions |
@@ -151,8 +151,8 @@ and keeps its own reason. The load's own documents from
 outside the trees (`AGENTS.md`, `~/.claude/CLAUDE.md`), a tree link that
 resolves outside its tree, and every file of a tree whose root is itself a link
 (only the home or project anchor is resolved), and a tree file a Claude Code
-memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to, read
-`none`, because Claude Code loads `CLAUDE.md`
+memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to or
+imports with `@path`, read `none`, because Claude Code loads `CLAUDE.md`
 itself and removing Crew's copy would not hold. Folder steering takes no
 switch-off on any harness, because a harness may load a folder file itself (Codex
 and kiro-cli load the project `AGENTS.md`); those rows read `none` too, and a
@@ -339,7 +339,7 @@ Minimal-context calls, sessions without a Dashboard surface, and agents with
 `includeCrewContext: false` do not receive the hint. It shares the reply-format
 rules' envelope, so the engine is sent it when it is sent them (on a harness
 whose compaction Kiro Crew sees: once per engine conversation, and again when the
-text changes; on every other harness and in a member's chat: every message) and
+text changes; on every other harness: every message) and
 the current request remains at the recency edge.
 
 After the first turn `build_message` injects no transcript — the ACP session
@@ -355,7 +355,7 @@ it adds:
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
 | `[PROJECT]` | the slot's project dir | every turn, `project` group |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
-| `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the Bot block keyed by the session's own store key | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (conductor mode; not a Bot, `agent_kind != "member"`), not a Bot DM, and whose page has been ADOPTED (a Bot's block rides in its member section instead) |
+| `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the Bot block keyed by the session's own store key: the page line (and, on a board page, the board lines), no field-write lines (no `kirocrew-panel`) | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (conductor mode; not a Bot, `agent_kind != "member"`), not a Bot DM, and whose page has been ADOPTED (a Bot's block rides in its member section instead) |
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[MCP SERVERS]` | `context_assembly/mcp_servers.py` → `turn_block`, from the session's MCP report (`SessionMcpReport.not_ready`) through the gateway's `mcp_states_for_session` | the session has a server it cannot use: every turn while one is still connecting (the turn can wait for it with `mcp_server_wait`), once per change for settled states (failed, needs a sign-in, switched off, left out by a registry), and once, by name, a server an earlier block listed that the report now holds as connected (never one that only stopped being listed). A rebuilt window (a new conversation, the first turn after a compaction) is told again, since what the old window was told is not in it. Names only, screened and fenced, up to 256 on the still-starting row (every name the session's report holds) and twelve on a settled one, then a count; never a failure reason. A session whose report left servers out at its bound gets one more row, once per count: how many servers are not tracked, and that one of them may be the server the request needs. Not in a minimal context, and not for a sub-agent child, whose spawn names its servers |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
@@ -367,7 +367,7 @@ it adds:
 | `[CURRENT USER] <name>` | the sender's display name (for example WeCom `allowed_users[].name`) | a channel turn that carries a display name |
 | `[Task checklist — automatic recovery]` | `todo_recovery_prompt`, prepended to the message by `dashboard/chat_turn/prompt_assembly.py`; task text inside the untrusted TODO fence | a cold start without provider history, or a recovery still pending; it settles on the provider's first event. Never on a harness that keeps its checklist itself (`SessionCapabilities.keeps_own_checklist`, claude), which has no `todo_list` tool |
 | `[Task checklist — person edited]` | `todo_sync_prompt`, prepended the same way | a warm turn with person edits not yet stated to the agent; marked stated on the provider's first event. Never on a harness that keeps its checklist itself, as above |
-| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions, in every built message. At the wire, on a harness whose compaction Kiro Crew sees (kiro, kas, codex, claude) and a turn with no member essentials: once per engine conversation, and again after anything that can drop it. Everywhere else: every message |
+| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions, in every built message. At the wire, on a harness whose compaction Kiro Crew sees (kiro, kas, codex, claude), a chat with a crew member included: once per engine conversation, and again after anything that can drop it. Everywhere else: every message |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
 
 The guidance paragraphs sit **before** the request header on purpose: trailing
@@ -379,9 +379,9 @@ Crew sees the harness's compaction.** Every built message carries the block, as
 it always did: the builder's output does not change, so everything that reads
 the built message (the user-span bookkeeping, the context extents below, a
 caller's own prefixes, logs) reads what it read before. The engine replays its
-own history, so a second copy only grows the context. On a turn with no member
-essentials, `build_message` binds the block as the provider's delivery envelope
-(`EssentialDelivery.bind`, the send-once writer the essentials already use, see
+own history, so a second copy only grows the context. `build_message` binds the
+block as the provider's delivery envelope in its own slot (`EssentialDelivery.bind`
+with `slot=RULES_SLOT`, the send-once writer a member's essentials use in theirs, see
 [providers](../system-specs/modules/providers.md)), and the provider takes the
 block out of the prompt at the wire while this conversation has acknowledged
 it. There is no second record of what was sent: the delivery is the one place
@@ -397,6 +397,13 @@ after the client is ready.
 | a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
 | the rules' text changed | another digest |
 | a compaction in a turn the agent started by itself | the bind is forced (below) |
+
+In a chat with a crew member the two slots are acknowledged apart and voided
+together: a failed turn, a clear, a compaction or another conversation drops
+both, and a forced bind
+drops only its own slot, so re-sending the member's essentials on a resume of
+the same conversation does not re-send the rules, as it would not in a chat with
+no member.
 
 The bind is forced for one event only, the one the delivery cannot see: a
 compaction in a turn the agent started by itself. Kiro Crew reads that turn with
@@ -414,10 +421,6 @@ taken out safely:
   (`LLMProvider.reports_compaction`). opencode, goose and pi compact on their
   own with no frame this client reads; copilot, strands and deepseek have no
   capture of one.
-- **A member's turn.** The delivery holds one envelope and the member's
-  essentials take it, so a chat with a crew member is unchanged from before
-  (a member turn whose essentials came out empty binds nothing either). A
-  second envelope slot is the follow-up that would cover it.
 - **Any path that does not send the built message through the provider's
   stream**, or that changes the block's text on the way.
 
@@ -450,6 +453,13 @@ The mechanism, when on:
   turn cannot use: `computer-use` while the session's Computer Use reading (the
   one its agent prompt's block is rendered from) is off. Matches are then
   truncated to `max_triggered`, highest score first.
+- The session's skill scope then narrows the matches in `build_message`: its
+  pinned scope (`skill_scope_pin.py`) when it has one, else the agent's `skill://`
+  mapping from `agent_skill_globs`. That lookup names the turn's session, so a
+  Bot's worker reads the mapping in its session's merged spec, as its session-start
+  skill directory does. Both lookups are strict, as `skill_search`'s are, so a
+  scope that cannot be resolved admits no triggered skill. A scope with no globs
+  narrows nothing, and a turn with no match looks up no scope.
 - The message matched is the person's own request, so a sub-agent completion the
   gateway injects into a channel or `cron:` parent passes `""` (`slack/gateway_runtime/subagent_injection.py`). The dashboard passes it as
   `skill_trigger_text`, without the context it prepends (sub-agent notices,

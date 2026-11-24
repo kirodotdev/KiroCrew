@@ -28,7 +28,7 @@ if TYPE_CHECKING:
         _run_git_bounded,
         _sel,
         _slot_project_snapshot,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         is_sensitive_resolved_path,
         path_contains_sensitive,
         pinned_fs,
@@ -617,7 +617,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
         )
 
     base = await asyncio.to_thread(lambda: os.path.realpath(os.path.expanduser(project)))
-    if await asyncio.to_thread(is_sensitive_path, base):
+    if await asyncio.to_thread(is_sensitive_canonical_path, base):
         _sel().log_api_access(
             caller=caller,
             operation="project_tree",
@@ -731,7 +731,7 @@ def _project_tree_subdir(base: str, raw: str) -> tuple[str, str, tuple[int, int]
         inside = os.path.commonpath([real, base]) == base and real != base
     except ValueError:
         inside = False
-    if not inside or is_sensitive_path(real):
+    if not inside or is_sensitive_canonical_path(real):
         return refused
     if not os.path.isdir(real):
         return (base, "", None, "dir_not_found")

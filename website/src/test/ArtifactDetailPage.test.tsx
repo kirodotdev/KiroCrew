@@ -414,6 +414,17 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByRole('button', { description: /Cancel/ })).toBeInTheDocument()
   })
 
+  it('names the save chord the keyboard has in the Save hover', async () => {
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown', content: '# Doc' }))
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
+    // The test DOM (happy-dom) reports a non-Mac platform, where Ctrl+S is the chord that saves.
+    expect(await screen.findByRole('button', { description: /^Save to Live/ }))
+      .toHaveAccessibleDescription('Save to Live (Ctrl+S) — updates the live state without versioning')
+  })
+
   it('cron-source warning banner shows when editing a cron-generated artifact', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', source: 'cron', content: '# auto-generated' }),
@@ -606,6 +617,29 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText(/→ v2/)).toBeNull()
   })
 
+  it('shows a stored actor and an unknown event type exactly as stored (#22834)', async () => {
+    // `by` and an unknown `type` are stored text: <Trans> must never parse
+    // them as markup or fill their placeholders.
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1] })
+    vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({
+      slug: 'cr-queue',
+      events: [
+        { ts: '2026-05-25T22:00:00.000Z', type: 'created', by: '<i>x</i> {{action}}', version: 1 },
+        { ts: '2026-05-25T22:10:00.000Z', type: '<b>odd</b> {{name}}', by: 'agent', version: 1 },
+      ],
+    })
+    renderRoute()
+    await waitFor(() => {
+      const actorRow = screen.getByText('<i>x</i> {{action}}').parentElement
+      expect(actorRow).toHaveTextContent('Created by <i>x</i> {{action}}')
+      expect(actorRow!.querySelector('i')).toBeNull()
+      const oddRow = screen.getByText('<b>odd</b> {{name}}').parentElement
+      expect(oddRow).toHaveTextContent('<b>odd</b> {{name}} by agent')
+      expect(oddRow!.querySelector('b')).toBeNull()
+    })
+  })
+
   it('edit mode keeps Save and Cancel in the row and offers Snapshot from More', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
     // appear together in edit mode under the explicit-snapshot model. We can't
@@ -624,7 +658,7 @@ describe('ArtifactDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { description: /Save to Live \(Cmd\+S\) — updates the live state/i }),
+        screen.getByRole('button', { description: /Save to Live \(Ctrl\+S\) — updates the live state/i }),
       ).toBeInTheDocument(),
     )
     // Snapshot moved into the "More" menu; Save and Cancel stay in the row.

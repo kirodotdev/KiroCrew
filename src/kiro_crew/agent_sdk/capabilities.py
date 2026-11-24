@@ -54,6 +54,8 @@ from dataclasses import dataclass
 
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -65,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
+    ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
     ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
@@ -76,6 +79,17 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_
 #: that has not declared another falls back to. Named so a consumer can ask
 #: "is this the native namespace?" without spelling the literal.
 MODEL_NAMESPACE_ACP = "acp"
+
+#: The namespace of claude-agent-acp's ids, the only one besides ``acp`` that the
+#: model registry carries ids for (``model_registry.json`` ``providers``).
+MODEL_NAMESPACE_CLAUDE_CODE = "claude_code"
+
+#: The backends whose transcripts the dashboard's Session Activity parse reads:
+#: kiro-cli's ``cli`` session directory and the KAS records. Read only to answer
+#: ``SessionCapabilities.writes_crew_readable_transcript``. shortcut: kept private
+#: here rather than as a registered ``ACP_BACKENDS_*`` set, because registering one
+#: edits ``agent_sdk/backends.py``; move it there once that file is free.
+_CREW_READABLE_TRANSCRIPT_BACKENDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 
 @dataclass(frozen=True)
@@ -253,6 +267,40 @@ class SessionCapabilities:
     #: failed call carries the bare tool name, a worse title than the first.
     refines_tool_call_titles: bool
 
+    #: Whether a permission request raised while a native sub-agent's card is open
+    #: is that sub-agent's, not the parent's own
+    #: (:data:`ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD`), so the dashboard's
+    #: native-crew auto-approve rung may answer it.
+    #:
+    #: True for kiro-cli and KAS. False everywhere else, an unknown backend
+    #: included: there the rung is skipped and the request takes the normal gate.
+    permission_requests_name_child: bool
+
+    #: Whether a session of this backend leaves a transcript the dashboard's
+    #: Session Activity parse reads: kiro-cli's ``cli`` session directory or the
+    #: KAS records (:data:`_CREW_READABLE_TRANSCRIPT_BACKENDS`). A backend that answers False
+    #: has its sessions counted from the per-turn usage rows instead, so a new
+    #: backend is counted rather than missed.
+    writes_crew_readable_transcript: bool
+
+    #: Whether a chat may switch steering files off one by one and have Crew's
+    #: steering load leave them out (:mod:`kiro_crew.steering_off`): the context
+    #: list offers the switch and the load honours it.
+    #:
+    #: True for claude, whose chats take their steering through Crew's load and
+    #: whose list offers the switch. False everywhere else, an unknown backend
+    #: included: there the list offers no switch and the load sends every file.
+    honors_chat_steering_off: bool
+
+    #: Whether a session of the default agent gets Kiro Crew's own persona prompt
+    #: in its ``[AGENT SYSTEM PROMPT]`` block, written for this harness (the
+    #: ``kiro-cli`` transport name respelled), because the harness loads no Crew
+    #: agent spec that would carry it.
+    #:
+    #: True for claude. False everywhere else, an unknown backend included: there
+    #: the default agent's block comes from its spec as before.
+    crew_sends_persona_prompt: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -284,6 +332,10 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
         refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
+        permission_requests_name_child=backend in ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
+        writes_crew_readable_transcript=backend in _CREW_READABLE_TRANSCRIPT_BACKENDS,
+        honors_chat_steering_off=is_claude_backend_name(backend),
+        crew_sends_persona_prompt=is_claude_backend_name(backend),
     )
 
 
@@ -318,6 +370,10 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_remote_mcp_oauth=False,
     native_workflows=False,
     refines_tool_call_titles=False,
+    permission_requests_name_child=False,
+    writes_crew_readable_transcript=False,
+    honors_chat_steering_off=False,
+    crew_sends_persona_prompt=False,
 )
 
 
@@ -352,6 +408,7 @@ def capture_prompt_timeout(provider: object, deadline: float) -> float | None:
 
 __all__ = [
     "MODEL_NAMESPACE_ACP",
+    "MODEL_NAMESPACE_CLAUDE_CODE",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",

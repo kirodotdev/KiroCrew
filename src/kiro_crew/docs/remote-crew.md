@@ -91,6 +91,17 @@ launcher registers that record for you, and the task runs no gateway to reach.
    (`ec2-user` by default — an Ubuntu image usually needs `ubuntu` here).
    Only the profile **name** is stored; credentials come from the AWS CLI's own
    chain.
+
+   For an instance that an Auto Scaling group replaces from time to time, the
+   target can say where to find the current id instead: `asg:<group name>` (the
+   group's one `InService` instance) or `param:<parameter name>` (an SSM
+   parameter whose value is the id). The hub looks it up with the crew's own
+   profile and region each time it builds the tunnel, and never saves the
+   answer, so the next reconnect reaches the replacement on its own. The lookup
+   needs `autoscaling:DescribeAutoScalingGroups` or `ssm:GetParameter`. While the
+   group has no `InService` instance, or more than one (for a moment during a
+   rolling replacement), the crew does not connect: **Connect** says why, and a
+   crew whose tunnel dropped keeps retrying on its own for up to an hour.
 3. Click **Connect**. The hub opens the tunnel and mints the token.
 
 The registry file (`~/.kiro/crew/instances.json`) holds connection coordinates
@@ -630,7 +641,8 @@ reports the first broken link, which is usually the whole answer.
 | `ssh_unreachable` / `ssm_unreachable` | The hub cannot reach the machine at all. Check the host alias and your key, or that the SSM agent is online. |
 | `ssh_unreachable` or a connect error that names a refused `session-manager-plugin` | The host's `ProxyCommand` runs the plugin, and the hub will not run the installed copy, for example one that AWS's macOS package left owned by another account. Apply the fix the message names, then reconnect. Each connect checks the plugin again, so no restart is needed. |
 | `ssh_client_missing` | The machine running Kiro Crew has no usable `ssh`, so nothing reached the remote host. Install the OpenSSH client (on Windows, the optional OpenSSH Client feature) or put `ssh` on the gateway's PATH, then reconnect. |
-| `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
+| `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id, or name its group with `asg:` (see [Adding an instance](#adding-an-instance)); for an `asg:` or `param:` crew, wait until the new instance's agent registers, or update the parameter. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
+| `ssm_target_unresolved` | The crew's `asg:` or `param:` target did not name exactly one instance: the reason says whether the group or parameter is missing, the group has no or several `InService` instances, the parameter holds something other than an instance id, or the read was refused (the profile needs `autoscaling:DescribeAutoScalingGroups` or `ssm:GetParameter`). |
 | `ssm_access_denied` | Your AWS profile was refused `ssm:SendCommand` on the instance. Add the three SSM permissions under [SSH or SSM](#ssh-or-ssm-which-transport) to the profile's IAM policy. |
 | `ssm_user_unknown` | The **Remote user** does not exist on the instance (Ubuntu images use `ubuntu`, not `ec2-user`). Set **Remote user** in **Edit settings**. |
 | `remote_wrong_port` | A Kiro Crew gateway answers on the instance, on another port than the one you configured. Set **Remote port** to the port the reason names. |

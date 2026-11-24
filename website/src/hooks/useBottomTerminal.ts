@@ -627,6 +627,9 @@ export function useBottomTerminalOpen(): boolean {
  *  which has to decide about focus BEFORE the panel unmounts. */
 export function isBottomTerminalOpen(): boolean { return state.open }
 
+/** The dock tab on screen now, or null while the panel is closed. */
+export function shownTabId(): string | null { return state.open ? state.activeId : null }
+
 /** Selector for just the `fullscreen` flag. A primitive so the Object.is check
  *  skips re-renders on unrelated state changes, same as the open selector. */
 function getFullscreenSnapshot(): boolean { return state.fullscreen }

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import cli_help, platform_compat
 from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices
+from kiro_crew.sel_filter import FIELD_KEYS
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -141,6 +142,20 @@ def register_restore_parser(sub: _Commands) -> None:
     )
 
 
+class _StoreGiven(argparse.Action):
+    """Store the value and note that the flag was typed."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace.limit_given = True
+
+
 def register_security_parser(sub: _Commands) -> None:
     sec_parser = cli_help.add_command(sub, "security")
 
@@ -149,8 +164,14 @@ def register_security_parser(sub: _Commands) -> None:
     sec_sub.add_parser("deny-list", help="Show active deny patterns")
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
     sel_parser.add_argument(
-        "-n", "--limit", type=positive_int, default=20, help="Number of entries (default: 20)"
+        "-n",
+        "--limit",
+        type=positive_int,
+        default=20,
+        action=_StoreGiven,
+        help="Number of entries (default: 20; an export holds every match unless -n is given)",
     )
+    sel_parser.set_defaults(limit_given=False)
     # A count alone cannot express "what happened around 14:05" — on a busy log
     # 6000 entries reach only 15 minutes back, so answering a question about a
     # two-hour-old event means pulling ~90k entries and filtering by hand.
@@ -161,6 +182,22 @@ def register_security_parser(sub: _Commands) -> None:
     )
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
+    # Each filter keeps a row only when its own field equals the value exactly.
+    for _name, _key in FIELD_KEYS.items():
+        _field = _key.replace("_", " ")
+        sel_parser.add_argument(
+            f"--{_name}", default="", help=f"Only entries whose {_field} is this"
+        )
+    sel_parser.add_argument(
+        "--format",
+        default="text",
+        help="text (default), jsonl or csv; jsonl and csv write every matching entry, oldest first",
+    )
+    sel_parser.add_argument(
+        "--out",
+        default="",
+        help="Write a jsonl or csv export to this new file, with FILE.manifest.json beside it",
+    )
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
 

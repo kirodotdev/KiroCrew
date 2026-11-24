@@ -12,7 +12,7 @@ const path = require("path");
 const Module = require("module");
 
 const PRELOAD = path.join(__dirname, "..", "preload.js");
-const LOCAL_ONLY = ["remoteCrewSetupAPI", "crashReportsAPI", "wslAPI", "fileOpenAPI", "folderPickAPI", "externalTerminalAPI", "relayCrewAPI"];
+const LOCAL_ONLY = ["remoteCrewSetupAPI", "crashReportsAPI", "wslAPI", "fileOpenAPI", "folderPickAPI", "externalTerminalAPI", "relayCrewAPI", "wakatimeConnectAPI"];
 
 function loadPreload(answer) {
   const exposed = {};
@@ -50,6 +50,7 @@ test("a remote-crew window gets no local-only bridge; a local window keeps them"
     assert.equal(bridge in unanswered, false, `${bridge} must be withheld unless the shell answers local`);
     assert.equal(typeof local[bridge], "object", `${bridge} must stay exposed to the local dashboard`);
   }
+  assert.equal(local.wakatimeConnectAPI.openInBrowser.length, 0, "openInBrowser takes no argument");
   assert.equal("clearPaneHttpCache" in remote.electronAPI, false);
   assert.equal(typeof local.electronAPI.clearPaneHttpCache, "function");
   assert.equal("notifyPolicyGoverned" in remote.updateAPI, false);

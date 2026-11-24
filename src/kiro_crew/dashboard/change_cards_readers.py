@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew.change_card_mcp_server import KIND_MCP_SERVER
 from kiro_crew.dashboard.change_cards_records import (
     CardError,
     _jsonable,
@@ -463,6 +464,11 @@ def comparable_state(kind: str, state: Any) -> Any:
         # flipped since is no conflict for the goal, and the card's own Heartbeat
         # step is a compare-and-set of its own (``expected`` on the schedules route).
         return {k: v for k, v in state.items() if k != "heartbeat"}
+    if kind == catalog.KIND_CREWMATE_CHECK_INS and isinstance(state, dict):
+        # The Heartbeat's active hours are not a field this card sets (the
+        # Schedules tab owns them), so a window moved between preview, apply and
+        # Undo is no conflict; the card still states the bound they give.
+        return {k: v for k, v in state.items() if k != catalog.HEARTBEAT_HOURS_KEY}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -646,7 +652,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
     The member id is part of the compared snapshot: a crewmate deleted and made
     again under the same name between preview and apply reads as a change.
     """
-    from kiro_crew import member_goals
+    from kiro_crew import member_goals, member_goals_hours
     from kiro_crew import members as members_mod
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -675,11 +681,18 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         out["heartbeat"] = {
             "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
             "interval": rec["schedules"].get("interval"),
+            "hours": list(member_goals_hours.active_hours(rec["schedules"])),
             "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
         }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
+        # Beside the fields the card may set: the window the Heartbeat already
+        # runs in, so the card's daily bound is the one its schedule will fire.
+        # The card never writes it, so it is neither in ``schedules`` (the fields
+        # its Undo puts back) nor in what the conflict checks compare
+        # (:func:`comparable_state`).
+        out[catalog.HEARTBEAT_HOURS_KEY] = list(member_goals_hours.active_hours(rec["schedules"]))
     else:
         out["has_goal"] = member_goals.has_goal(rec)
         # Only the ids: which goals exist and their numbers. A goal's wording
@@ -761,6 +774,10 @@ def _sync_read_state(
         name = ev0.get("name") or _derive_install_name(p["id"])
         exists = bool(name) and _mcp_exists(name)
         return {"name": name, "exists": exists, "scopes": _mcp_scopes(name) if name else {}}
+    if kind == KIND_MCP_SERVER:
+        from kiro_crew.dashboard.handlers.request_server_page import server_state
+
+        return server_state(p["server"])
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},
@@ -1196,7 +1213,7 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
         registry = await asyncio.to_thread(_get_registry)
         provider = registry.get(params["provider"])
-        if provider is None or not provider.is_available():
+        if provider is None or not await asyncio.to_thread(provider.is_available):
             return {}
         detail = await asyncio.wait_for(provider.fetch_detail(params["id"]), timeout=8)
     except Exception:

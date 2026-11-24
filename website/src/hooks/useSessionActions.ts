@@ -62,6 +62,12 @@ const pinMutationTails = new Map<string, Promise<unknown>>()
 // slot, so an older failed mutation never overwrites a newer selection.
 const muteMutationTails = new Map<string, Promise<unknown>>()
 const muteMutationSeq = new Map<string, number>()
+// The PATCH that writes each flag. Looked up on `api` at call time, so a test spy on it applies.
+const MUTE_FLAG_WRITES: Record<MuteFlag, (key: string, value: boolean) => Promise<unknown>> = {
+  muted: (key, value) => api.setSlotMuted(key, value),
+  mutes_opened: (key, value) => api.setSlotMutesOpened(key, value),
+  source_links_off: (key, value) => api.setSlotSourceLinksOff(key, value),
+}
 
 /** Resolves once every pin write already sent has settled, whatever its outcome.
  *  The pinned-order queue waits on it, so a reorder never reaches the gateway
@@ -114,6 +120,8 @@ export interface SessionActions {
   toggleMutesOpened: (slotKey: string) => void
   /** Toggle the per-row mute of this session. */
   toggleMuted: (slotKey: string) => void
+  /** Turn this session's PR and Issue chips off, or back on. */
+  toggleSourceLinksOff: (slotKey: string) => void
   /** Copy the session's share link. Resolves whether the link reached the
    *  clipboard, so the menu can confirm it or say that it did not. */
   copyLink: (slotKey: string) => Promise<boolean>
@@ -338,7 +346,7 @@ export function useSessionActions(mode?: string, opts?: {
     },
   })
 
-  // One optimistic toggle for both user-owned mute flags, serialized per flag
+  // One optimistic toggle for every user-owned per-session flag, serialized per flag
   // and slot. The authoritative value arrives as a `slot_patch` frame (or a
   // full list on an older gateway), so a success schedules no re-read. PATCHes
   // for one flag on one slot are chained in invocation order so a delayed older
@@ -350,7 +358,7 @@ export function useSessionActions(mode?: string, opts?: {
       const prior = muteMutationTails.get(chain) ?? Promise.resolve()
       const next = prior
         .catch(() => undefined)
-        .then(() => (flag === 'muted' ? api.setSlotMuted(key, value) : api.setSlotMutesOpened(key, value)))
+        .then(() => MUTE_FLAG_WRITES[flag](key, value))
       muteMutationTails.set(chain, next)
       // Drop the tail once it settles if it is still the latest (bounded map).
       void next.catch(() => undefined).finally(() => {
@@ -487,6 +495,7 @@ export function useSessionActions(mode?: string, opts?: {
   }, [muteFlagMutate])
   const toggleMutesOpened = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'mutes_opened'), [toggleMuteFlag])
   const toggleMuted = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'muted'), [toggleMuteFlag])
+  const toggleSourceLinksOff = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'source_links_off'), [toggleMuteFlag])
 
   const copyLink = useCallback((slotKey: string) => {
     const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
@@ -520,5 +529,5 @@ export function useSessionActions(mode?: string, opts?: {
     void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
   }, [dispatch])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, toggleSourceLinksOff, copyLink, move, reload, close }
 }

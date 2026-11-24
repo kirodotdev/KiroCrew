@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   Globe,
+  Hourglass,
   LockKeyhole,
   LogIn,
   Play,
@@ -78,6 +79,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   install: Download,
   start_daemon: Play,
   sign_in: LogIn,
+  approve_device: Hourglass,
   enable_magicdns: Globe,
   enable_https: LockKeyhole,
   trust_off: ShieldCheck,
@@ -97,6 +99,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_title',
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
+  approve_device: 'components.tailnetMobile.approve_device_title',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_title',
   enable_https: 'components.tailnetMobile.enable_https_title',
   trust_off: 'components.tailnetMobile.trust_off_title',
@@ -113,6 +116,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_body',
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
+  approve_device: 'components.tailnetMobile.approve_device_body',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_body',
   enable_https: 'components.tailnetMobile.enable_https_body',
   trust_off: 'components.tailnetMobile.trust_off_body',
@@ -159,12 +163,13 @@ const INVITE_EXPANDED_LS_KEY = 'mc-tailnet-mobile-invite-expanded'
 
 /** Steps the dashboard can finish without sending the operator elsewhere.
  *
- * Tailscale installation, daemon startup, sign-in, MagicDNS, and tailnet-wide
- * HTTPS consent remain explicit prerequisites because the gateway cannot safely
- * complete them on a user's behalf. Once those are satisfied, these three steps
- * are one operation from the operator's point of view: trust the daemon-derived
- * name, restart through the formal single-flight path, publish through Tailscale
- * Serve, and mint the QR after the replacement gateway proves readiness.
+ * Tailscale installation, daemon startup, sign-in, device approval, MagicDNS,
+ * and tailnet-wide HTTPS consent remain explicit prerequisites because the
+ * gateway cannot safely complete them on a user's behalf. Once those are
+ * satisfied, these three steps are one operation from the operator's point
+ * of view: trust the daemon-derived name, restart through the formal
+ * single-flight path, publish through Tailscale Serve, and mint the QR after
+ * the replacement gateway proves readiness.
  */
 const ONE_CLICK_SETUP_STEPS = new Set<TailnetMobileStep>([
   'trust_off',
@@ -347,7 +352,7 @@ export function TailnetMobileCard() {
         accept(await api.tailnetMobile())
         const previousBootId = current.boot_id
         setSetupRestarting(true)
-        await api.restartGateway()
+        await api.restartGateway({ keepTab: true })
         current = await waitForRestartedGateway(previousBootId, accept)
         setSetupRestarting(false)
       }
@@ -359,7 +364,7 @@ export function TailnetMobileCard() {
         if (current.step === 'restart_gateway') {
           const previousBootId = current.boot_id
           setSetupRestarting(true)
-          await api.restartGateway()
+          await api.restartGateway({ keepTab: true })
           current = await waitForRestartedGateway(previousBootId, accept)
           setSetupRestarting(false)
         }
@@ -731,6 +736,18 @@ export function TailnetMobileCard() {
                   ? 'components.tailnetMobile.open_https_admin'
                   : 'components.tailnetMobile.open_dns_admin',
               )}
+            </a>
+          ) : null}
+
+          {step === 'approve_device' ? (
+            <a
+              className="mt-2 inline-flex items-center gap-1 text-accent"
+              href="https://login.tailscale.com/admin/machines"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="lucide-inline" />
+              {i18nT('components.tailnetMobile.open_machines_admin')}
             </a>
           ) : null}
         </div>

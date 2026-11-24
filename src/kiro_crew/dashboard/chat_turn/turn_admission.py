@@ -729,6 +729,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             from kiro_crew.dashboard.member_rebind_notice import surface_rebind_notice
 
             await surface_rebind_notice(state, slot, session_key, loaded_cfg, bindings)
+            if bindings.selection_kind == "member":
+                # A chat running a Bot keeps its own harness; it says so once
+                # when the Bot's own chat runs another.
+                from kiro_crew.dashboard.member_harness_notice import surface_harness_notice
+
+                await surface_harness_notice(
+                    state, slot, session_key, loaded_cfg, execution_context
+                )
         elif bindings.selection_kind == "member":
             execution_context = resolve_member_execution(
                 loaded_cfg,
@@ -1145,6 +1153,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # claim consumed the one-shot resume, so every later exit owes it.
             turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            if is_new:
+                # A Bot chat that just started on a harness without its app tools
+                # gets its one notice here, where the slot is in hand.
+                from kiro_crew.bot_chat_app_tools import deliver_harness_notice
+
+                await deliver_harness_notice(slot, session_key)
             break
         except SessionBusyError:
             if _wait_if_busy or _claim:

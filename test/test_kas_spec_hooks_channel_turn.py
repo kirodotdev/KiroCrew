@@ -281,7 +281,7 @@ async def test_an_allowed_call_runs_and_its_post_tool_use_meets_execute_bash(
     # The `execute_bash` matcher met the call; its stdin names it as kiro-cli's
     # V2 engine does (`spec_hooks.kiro_cli_hook_payload`).
     assert post_event["tool_name"] == "shell"
-    assert post_event["tool_response"] == {"output": "ran"}
+    assert post_event["tool_response"] == {"output": "ran", "truncated": False, "output_length": 3}
     assert post_event["session_key"] == _SESSION
 
 
@@ -328,6 +328,72 @@ async def test_a_hooks_page_post_tool_use_matcher_meets_the_calls_canonical_name
     provider = _Provider(_shell_call(finished=True), tmp_path)
     await _driver(provider).run("run touch")
     assert provider.approved == ["r1"]
+    assert runs.commands(spec=False) == [(HOOK_EVENT_POST_TOOL_USE, "watch")]
+
+
+@pytest.mark.asyncio
+async def test_a_later_consent_round_does_not_rename_the_finished_call(tmp_path, runs, store, wire):
+    """KAS asks once per consent round, each under the call's id, and the second
+    names the directory the command reads. The finished command still meets
+    ``execute_bash``: the spec's hook and the Hooks page's alike."""
+    _write_spec(_SPEC_HOOKS)
+    store.create(
+        {
+            "name": "store-post",
+            "event": HOOK_EVENT_POST_TOOL_USE,
+            "matcher": "execute_bash",
+            "command": "watch",
+        }
+    )
+    events = _shell_call(finished=True)
+    events.insert(
+        2,
+        LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="List Directory",
+            request_id="r2",
+            tool_call_id="t1",
+            is_shell=True,
+            harness_tool_id="list_directory",
+            tool_name="list_directory",
+        ),
+    )
+    provider = _Provider(events, tmp_path)
+    await _driver(provider).run("run touch")
+    assert provider.approved == ["r1", "r2"]
+    assert runs.commands(spec=True) == [
+        (HOOK_EVENT_PRE_TOOL_USE, "guard"),
+        (HOOK_EVENT_POST_TOOL_USE, "post"),
+    ]
+    assert runs.commands(spec=False) == [(HOOK_EVENT_POST_TOOL_USE, "watch")]
+
+
+@pytest.mark.asyncio
+async def test_on_kiro_cli_a_later_request_does_not_rename_the_call_for_the_hooks_page(
+    tmp_path, runs, store, wire
+):
+    """Crew learns no spec identity on kiro-cli, so a Hooks-page matcher meets the
+    tool name the harness wrote: the first request's, whatever a later one names."""
+    _write_spec({})
+    store.create(
+        {"name": "watch", "event": HOOK_EVENT_POST_TOOL_USE, "matcher": "shell", "command": "watch"}
+    )
+    request = {"kind": EVENT_PERMISSION_REQUEST, "tool_call_id": "t1"}
+    events = [
+        LLMEvent(kind=EVENT_TOOL_CALL, title="echo hi", tool_call_id="t1"),
+        LLMEvent(title="echo hi", request_id="r1", tool_name="shell", **request),
+        LLMEvent(title="List Directory", request_id="r2", tool_name="fs_read", **request),
+        LLMEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id="t1",
+            tool_output="hi",
+            tool_final=True,
+            tool_status="completed",
+        ),
+        LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+    ]
+    provider = _Provider(events, tmp_path, backend=ACP_BACKEND_KIRO)
+    await _driver(provider).run("say hi")
     assert runs.commands(spec=False) == [(HOOK_EVENT_POST_TOOL_USE, "watch")]
 
 

@@ -10,7 +10,7 @@ and reprs name.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -31,8 +31,10 @@ from kiro_crew.acp import runtime_spawn_launch as _rt_launch
 from kiro_crew.acp import runtime_tree_kill as _rt_tree
 from kiro_crew.acp import runtime_wire as _rt_wire
 from kiro_crew.acp.client import CLIENT_NAME
+from kiro_crew.acp.frame_payload_sharing import RepeatedPayloads
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
+from kiro_crew.acp.kas_mcp_lazy_sign_in import LazySignInFlows
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
@@ -278,6 +280,7 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
+    _follow_shared_model_picker = _rt_reader._follow_shared_model_picker
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
     set_remote_workspace = _rt_remote.set_remote_workspace
@@ -397,6 +400,10 @@ class AcpRuntime:
         # Whether THIS process is Crew's own KAS engine bundle (no kiro-cli),
         # copied from the spawn plan. The turn gates read it for a live session.
         self._kas_engine_bundle = False
+        # The KAS machine-mode settings THIS process was started under
+        # (``agent_sdk/kas_machine.py``), copied from the spawn plan; None for Crew's own
+        # sign-in. A live session's turn gate reads it.
+        self._kas_machine_auth: Any = None
         # Answers this process's ``_kiro/secret/*`` requests when its handshake
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
@@ -500,6 +507,8 @@ class AcpRuntime:
         # frame arrives (``_fold_mcp_frame``); the session's handle holds the
         # same object.
         self._session_mcp_reports: dict[str, McpSessionReport] = {}
+        # The session each mid-session MCP sign-in's link went to (kas_mcp_lazy_sign_in).
+        self._mcp_lazy_sign_in_flows: LazySignInFlows = OrderedDict()
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
         # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn
@@ -620,6 +629,9 @@ class AcpRuntime:
         # before answering. The reader loop counts them; load_session reads the
         # count to tell a restored conversation from a freshly created record.
         self._load_replay_frames: dict[str, int] = {}
+        # The engine's re-sent catalogs, one copy shared by every queued frame
+        # (``frame_payload_sharing``).
+        self._repeated_payloads = RepeatedPayloads()
         # Session ids the engine holds a parked copy of: loaded to make the
         # start agent the stored mode, not yet confirmed freed
         # (``runtime_session_load._park_in_start_agent``).
@@ -687,6 +699,10 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The PIDs the last kill could not show gone, re-checked by a later evict.
+        self._unreaped_pids: tuple[int, ...] = ()
+        # The Windows tree cleanup a kill left pending, retired once drained.
+        self._windows_cleanup_receipt: object | None = None
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own
@@ -757,6 +773,9 @@ class AcpRuntime:
         # (``RuntimeOwnership.release``): set by a shared codex placement, whose
         # departed sessions leave their MCP fleet running; False everywhere else.
         self.chat_closes_on_departure = False
+        # Whether a subagent session has left this process (``AcpSessionProvider``'s
+        # subagent teardown); the subagent sharing decision reads it.
+        self.subagent_departed = False
         # The server path from kiro-cli's ``failed to canonicalize KAS server path``
         # line, latched by ``_drain_stderr`` before the first session is ready
         # (whatever ``recording_allowed`` says) and cleared by a revive.
@@ -1055,7 +1074,13 @@ class AcpRuntime:
         declares the same capability under the same name -- letting that sweep
         ask both families one question instead of probing private attributes.
         """
-        return self._acp_backend in backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file, not that store, so a
+        # personal sign-out or switch does not retire it (``agent_sdk/kas_machine.py``).
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        return self._acp_backend in backends_retired_by_host_logout() and not runs_machine_auth(
+            self
+        )
 
     @property
     def supports_image_prompt(self) -> bool:

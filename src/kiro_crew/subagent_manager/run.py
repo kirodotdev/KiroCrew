@@ -246,6 +246,7 @@ class RunEventCoordinator(ManagerComponent):
     _write_state_off_loop_impl = _run_records._write_state_off_loop_impl
     _write_finished_result_off_loop_impl = _run_records._write_finished_result_off_loop_impl
     _start_result_file_impl = _run_records._start_result_file_impl
+    _append_result_chunk_impl = _run_records._append_result_chunk_impl
     _drain_state_writer_impl = _run_records._drain_state_writer_impl
     _hold_for_detached_writer_impl = _run_records._hold_for_detached_writer_impl
     _cap_unclaimed_result_impl = _run_records._cap_unclaimed_result_impl
@@ -269,6 +270,7 @@ class RunEventCoordinator(ManagerComponent):
     _yield_for_stop_recovery_impl = _run_yields._yield_for_stop_recovery_impl
     _await_lane_resume_impl = _run_yields._await_lane_resume_impl
     _withdraw_resume = _run_yields._withdraw_resume
+    _release_dead_runtime_waits = _run_yields._release_dead_runtime_waits
     _yield_for_dependency_impl = _run_yields._yield_for_dependency_impl
     _yield_for_infra_retry_impl = _run_yields._yield_for_infra_retry_impl
     ensure_running_marked = _run_yields.ensure_running_marked
@@ -774,6 +776,29 @@ class RunEventCoordinator(ManagerComponent):
         overflow = await self._manager._admission.taskq_chip_overflow_async(parent_session_key)
         return None if overflow is None else in_window + overflow
 
+    async def _crew_tools_withheld_reason(self, info: SubagentInfo, client: LLMProvider) -> str:
+        """Why this run's session holds none of Crew's MCP tools, or ``""`` when it does.
+
+        A claude session whose folder's ``.claude`` settings file Crew cannot govern
+        gets no ``mcpServers`` array at all, and only the client's own warning in the
+        gateway log says why. This is the session's answer (``settings_withheld_reason``,
+        a file read, so off the loop): the fact alone, without the remedy the chat
+        notice adds, because it reaches this run's prompt and its parent's, and the
+        remedy is the person's to apply. It adds no log line of its own.
+        Best-effort: a read that fails says nothing rather than failing the run.
+        """
+        read = getattr(client, "settings_withheld_reason", None)
+        if not callable(read):
+            return ""
+        try:
+            reason = await asyncio.to_thread(read)
+        except Exception:
+            _logging.getLogger(__name__).debug(
+                "Subagent %s: settings-withheld reason unreadable", info.id, exc_info=True
+            )
+            return ""
+        return reason if isinstance(reason, str) else ""
+
     def _warn_unusable_mcp_servers(self, info: SubagentInfo, client: LLMProvider) -> str:
         """Log ONE warning naming the MCP servers this run's session cannot use,
         and return the same line for the run's own prompt (``""`` when clean).
@@ -812,6 +837,11 @@ class RunEventCoordinator(ManagerComponent):
         Not an ``*_impl`` method: it is called through ``self`` from
         ``_run_inner_impl``, so it keeps this module's own globals.
         """
+        if info.crew_tools_withheld:
+            # Every Crew server is missing for that one reason, which the client's
+            # own warning already logged, and the report would call each one "not
+            # configured". The prompt says it instead (``_spawn_mcp_notice``).
+            return ""
         log = _logging.getLogger(__name__)
         try:
             report = client.mcp_session_report() if client is not None else None
@@ -830,7 +860,7 @@ class RunEventCoordinator(ManagerComponent):
         )
         return names_only
 
-    def _spawn_mcp_notice(self, summary: str) -> str:
+    def _spawn_mcp_notice(self, summary: str, withheld: str = "") -> str:
         """The block a spawn's own first turn carries when its servers are broken.
 
         The operator's log cannot stop the hunting, because the run never reads
@@ -855,9 +885,22 @@ class RunEventCoordinator(ManagerComponent):
         takes that away. The failure reasons never reach here at all -- see
         ``_warn_unusable_mcp_servers``.
 
+        *withheld* is the session's reason for holding none of Crew's servers
+        (``_crew_tools_withheld_reason``): Crew's own words, so unfenced.
+
         Empty in, empty out, so the caller concatenates unconditionally and a
         healthy spawn's prompt is byte-for-byte what it was.
         """
+        if withheld:
+            # Imported here: not an ``_impl``, so this module's namespace, where the
+            # facade's names are only type hints.
+            from ..subagent import CREW_OWN_TOOLS
+
+            return (
+                f"[Kiro Crew] None of {CREW_OWN_TOOLS} are in this session, because "
+                f"{withheld}. Do not go looking for them: say in your result that they "
+                "were unavailable and continue with the tools you do have.\n\n"
+            )
         if not summary:
             return ""
         nonce = _secrets.token_hex(4)

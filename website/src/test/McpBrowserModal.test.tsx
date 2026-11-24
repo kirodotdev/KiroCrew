@@ -176,20 +176,21 @@ describe('McpBrowserModal', () => {
     expect(screen.getByText('Searching: official, capability')).toBeInTheDocument()
   })
 
-  it('keeps partial results visible with an incomplete-results notice and whole-search Retry', async () => {
+  it('keeps partial results visible, names the provider that did not answer, and retries the whole search', async () => {
     mockApi.mcpDiscover.mockResolvedValue({
       results: [officialServer()],
       providers: ['official', 'capability'],
       provider_outcomes: [
-        { name: 'official', status: 'ok' },
-        { name: 'capability', status: 'timeout' },
+        { name: 'official', display_name: 'MCP Registry', status: 'ok' },
+        { name: 'capability', display_name: 'Packages', status: 'timeout' },
       ],
     })
     renderModal()
     await search('widgets')
 
     const notice = await screen.findByTestId('mcp-browser-provider-warning')
-    expect(notice).toHaveTextContent('1 of 2 providers did not answer — results may be incomplete.')
+    expect(notice).toHaveTextContent('Packages did not answer.')
+    expect(notice).not.toHaveTextContent('MCP Registry')
     expect(screen.getByText('Widgets MCP')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -201,7 +202,7 @@ describe('McpBrowserModal', () => {
       results: [],
       providers: ['official', 'capability'],
       provider_outcomes: [
-        { name: 'official', status: 'timeout' },
+        { name: 'official', display_name: 'MCP Registry', status: 'timeout' },
         { name: 'capability', status: 'error' },
       ],
     })
@@ -210,7 +211,32 @@ describe('McpBrowserModal', () => {
 
     const notice = await screen.findByTestId('mcp-browser-provider-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent('2 of 2 providers did not answer — results may be incomplete.')
+    // An outcome without a display name (an older gateway) falls back to its name.
+    expect(notice).toHaveTextContent('MCP Registry did not answer. capability did not answer.')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText(/No servers found for/)).not.toBeInTheDocument()
+  })
+
+  it('says which catalog it could not search and why, instead of "No servers found"', async () => {
+    mockApi.mcpDiscover.mockResolvedValue({
+      results: [],
+      providers: [],
+      provider_outcomes: [
+        {
+          name: 'capability',
+          display_name: 'Packages',
+          status: 'unavailable',
+          message: 'The package CLI is not installed. Install it, then search again.',
+        },
+      ],
+    })
+    renderModal()
+    await search('chorus')
+
+    const notice = await screen.findByTestId('mcp-browser-provider-error')
+    expect(notice).toHaveTextContent(
+      'Could not search Packages: The package CLI is not installed. Install it, then search again.',
+    )
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(screen.queryByText(/No servers found for/)).not.toBeInTheDocument()
   })
@@ -255,6 +281,10 @@ describe('McpBrowserModal', () => {
     fireEvent.click(installBtn)
 
     await waitFor(() => expect(screen.getAllByText('Name in use').length).toBeGreaterThan(0))
+    const notice = await screen.findByTestId('mcp-browser-detail-conflict')
+    expect(notice.querySelector('span.whitespace-pre-wrap')?.textContent).toBe(
+      'A server named “widgets” already exists with a different configuration. Manage it from the installed servers table.',
+    )
     // No overwrite path for MCP conflicts — the row must not re-offer Install.
     expect(screen.queryByRole('button', { name: /Overwrite/ })).not.toBeInTheDocument()
   })

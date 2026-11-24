@@ -419,10 +419,12 @@ class TaskStore:
         #: index above is: the hold is read on the dispatch path, under
         #: ``_lock``, and written at boot and on release.
         self._settle_holds: dict[str, str] = {}
+        #: A guarded hold's ``(only_from, generation)`` (:meth:`hold_until_settled`).
+        self._settle_guards: dict[str, tuple[frozenset[str], int]] = {}
         self._settle_holds_lock = threading.Lock()
         #: Set while the boot reconcile's queued pass is INCOMPLETE -- its read of
-        #: the queued rows raised :class:`TaskStoreUnavailable` -- to the callable
-        #: that re-runs the pass. A queued row the pass never read may owe the
+        #: the queued rows or of a parked row's attempt raised :class:`TaskStoreUnavailable`
+        #: -- to the callable that re-runs it. A row the pass could not read may owe the
         #: terminal write ``_settle_holds`` exists for, so until the re-run
         #: returns True no row is published (:meth:`dispatch_open`). Guarded by
         #: ``_settle_holds_lock``, the dispatch path's lock for both.
@@ -550,7 +552,9 @@ class TaskStore:
         with self._unstarted_lock:
             return task_id in self._unstarted_ids
 
-    def hold_until_settled(self, task_id: str, state: str) -> None:
+    def hold_until_settled(
+        self, task_id: str, state: str, *, guard: tuple[frozenset[str], int] | None = None
+    ) -> None:
         """Keep *task_id* out of every claim until its terminal *state* write lands.
 
         Called for a row whose ending was published and whose terminal write
@@ -562,26 +566,32 @@ class TaskStore:
         is that ending: ``failed`` for a refusal, ``cancelled`` for a stop. Each
         dispatch read retries the write before it reads
         (:meth:`_release_settled_holds`); the hold ends when one lands, or when
-        the row is found already settled.
+        the row is found already settled. A *guard* ``(only_from, generation)``
+        makes the retry that conditional :meth:`cancel`, for a stop decided
+        from a read: a row that moved on since releases the hold uncancelled.
         """
         with self._settle_holds_lock:
             self._settle_holds[task_id] = state
+            if guard is None:
+                self._settle_guards.pop(task_id, None)
+            else:
+                self._settle_guards[task_id] = guard
 
     def fence_dispatch(self, until: Callable[[], bool]) -> None:
         """Publish no ``subagent`` row until *until* returns True; retried at each dispatch read.
 
         The boot reconcile calls this when its queued pass could not read the
-        queued rows: the rows it never examined may owe a terminal write, and a
-        hold needs the row's id, so the kind's whole dispatch is fenced instead
-        until the pass has run to completion. Only ``subagent`` rows are fenced:
-        the refusal marker that pass settles on is written for a refused spawn
-        alone, so no other kind can owe it. Logged when it engages and when it
-        lifts, so an operator can see why no sub-agent starts.
+        queued rows, or a parked row's attempt: such a row may owe a terminal
+        write, and a hold needs its id and attempt, so the kind's whole dispatch
+        is fenced instead until the pass has run to completion. Only ``subagent``
+        rows are fenced: the markers that pass settles on are written by a
+        sub-agent spawn or run alone, so no other kind can owe them. Logged when it
+        engages and lifts, so an operator can see why no sub-agent starts.
         """
         with self._settle_holds_lock:
             self._dispatch_fence = until
         logger.warning(
-            "taskq dispatch fenced: the boot queued pass could not read the queued rows; "
+            "taskq dispatch fenced: the boot queued pass could not read every queued row; "
             "no subagent row is published until a dispatch read completes it"
         )
 
@@ -611,21 +621,29 @@ class TaskStore:
 
         Called at the head of each dispatch read, OUTSIDE ``_lock``: the writes
         take it themselves. A write that lands, or finds nothing left to settle
-        (the row is already terminal, or gone), releases the hold; the first
-        write the store refuses ends the pass with the rest still held, since
-        the store is the thing that is down.
+        (the row is already terminal or gone, or moved on past its guard),
+        releases the hold; the first write the store refuses ends the pass with
+        the rest still held, since the store is the thing that is down.
         """
         with self._settle_holds_lock:
             pending = sorted(self._settle_holds.items())
+            guards = dict(self._settle_guards)
         if not pending:
             return []
         for task_id, state in pending:
+            guard = guards.get(task_id)
             try:
-                self.transition(task_id, state, detail={"reconciled": "artifact"})
+                if guard is None:
+                    self.transition(task_id, state, detail={"reconciled": "artifact"})
+                else:
+                    gate, gen = guard
+                    reason = "reconciled: tombstone"
+                    self.cancel(task_id, reason=reason, only_from=gate, generation=gen)
             except TaskStoreUnavailable:
                 break
             with self._settle_holds_lock:
                 self._settle_holds.pop(task_id, None)
+                self._settle_guards.pop(task_id, None)
         return self.held_until_settled()
 
     def _open_connection(self) -> sqlite3.Connection:
@@ -1013,6 +1031,8 @@ class TaskStore:
             raise TaskStoreUnavailable(
                 f"task claim of {task_id} fenced: the boot queued pass has not completed"
             )
+        if task_id in self.held_until_settled():  # the fence's re-run can hold it
+            return None
         with self._lock:
             conn = self._c()
             try:

@@ -50,7 +50,7 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.governance import parse_policy
-from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant
+from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant, SpecParentLimits
 
 _HOME = Path.home()
 
@@ -207,6 +207,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
             identity_trusted=True,
             kas_builtin_ids=True,
             spec_unjudged_denies=(r".*rm\s+-r(f)?\s+~($|\s|/).*",),
+        ),
+    ),
+    Scenario(
+        "spec-parent-limits",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="make clean",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_parent_limits=(SpecParentLimits(agent="boss", shell_allowlist=("git status",)),),
         ),
     ),
     Scenario(
@@ -540,6 +553,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("spec-write-allowlist", "deny_policy"),
         ("spec-denies", "deny_policy"),
         ("spec-unjudged-denies", "deny_policy"),
+        ("spec-parent-limits", "deny_policy"),
         ("app-own-server", "grant"),
         ("app-own-tools", "grant"),
         ("app-browser-sites", "grant"),
@@ -778,6 +792,7 @@ _DENY_UNDER_GRANT = (
                     "spec-write-allowlist",
                     "spec-denies",
                     "spec-unjudged-denies",
+                    "spec-parent-limits",
                 )
             )
         )
@@ -822,6 +837,7 @@ def test_every_deny_beats_every_grant(scenario: Scenario, grant: str) -> None:
             command="make build",
             spec_shell_allowlist=None,
             spec_unjudged_denies=(),
+            spec_parent_limits=(),
         )
         assert (
             HookManager().judge(granted).tier == "spec-builtin-grant"

@@ -26,6 +26,8 @@ _SCHEMA_VERSION = 2
 _MAX_SLUG_LENGTH = 64
 _DEFAULT_SEARCH_LIMIT = 3
 _MIN_PREFIX_MATCH_LENGTH = 3
+#: A lineage revision is a small counter; a longer digit run reads as no lineage.
+_MAX_LINEAGE_REVISION_DIGITS = 9
 SOURCE_FORMAT_PYTHON = "python"
 SOURCE_FORMAT_TASK_PLAN = "task-plan"
 SOURCE_FORMATS = frozenset({SOURCE_FORMAT_PYTHON, SOURCE_FORMAT_TASK_PLAN})
@@ -100,8 +102,12 @@ def declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not isinstance(reference, str) or "@" not in reference:
         return None
     workflow_id, revision_text = reference.rsplit("@", 1)
-    # isascii(): "²".isdigit() is True, but int("²") raises ValueError.
+    # isascii(): "²".isdigit() is True, but int("²") raises ValueError. The length
+    # bound keeps a runaway digit run from reaching int(), which refuses past 4,300
+    # digits; no stored revision has anywhere near nine digits.
     if not (revision_text.isascii() and revision_text.isdigit()):
+        return None
+    if len(revision_text) > _MAX_LINEAGE_REVISION_DIGITS:
         return None
     revision = int(revision_text)
     return {"workflow_id": workflow_id, "revision": revision}

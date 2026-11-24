@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.crew_log.projection_workers import _RELAY_PREFIX
-from kiro_crew.history_files import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER
+from kiro_crew.history_files import ARCHIVE_DIR_NAME, archive_segment_stem
 from kiro_crew.jsonl_util import UnreadableRecord, strict_records
 from kiro_crew.session_summary import is_injected_text
 
@@ -72,12 +72,9 @@ def transcript_has_person_message(conversation_log: Any, key: str) -> bool:
         if _file_has_person_row(path):
             return True
     archive = path.parent / ARCHIVE_DIR_NAME
-    prefix = f"{path.stem}{ARCHIVE_SEGMENT_DELIMITER}"
     try:
         with os.scandir(archive) as entries:
-            segments = sorted(
-                e.name for e in entries if e.name.startswith(prefix) and e.name.endswith(".jsonl")
-            )
+            segments = sorted(e.name for e in entries if archive_segment_stem(e.name) == path.stem)
     except FileNotFoundError:
         return False
     return any(_file_has_person_row(archive / name) for name in segments)

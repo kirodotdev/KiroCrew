@@ -263,11 +263,9 @@ def test_envelope_strings_are_redacted():
 def test_a_secret_the_sanitizer_joins_is_caught_on_the_way_out():
     """A control character between two halves hides the key from the first pass; the
     sanitizer seam removes it, and the pass over the finished body still catches it."""
-    hidden = TOKEN[:12] + "\u202e" + TOKEN[12:]
+    hidden = TOKEN[:12] + "\x07" + TOKEN[12:]
     assert redact_via_context(hidden) == hidden, "the fixture must slip the first pass"
-    snap = _snapshot(
-        FieldRead(fields={"headline": hidden}), clean=lambda s: s.replace("\u202e", "")
-    )
+    snap = _snapshot(FieldRead(fields={"headline": hidden}), clean=lambda s: s.replace("\x07", ""))
     _assert_clean(snap)
 
 

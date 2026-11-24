@@ -4,13 +4,17 @@
 the owner (:mod:`kiro_crew.slack.shared_access`). These routes are how the owner
 turns it on, off, and edits the list:
 
-* ``GET /api/slack/shared-access`` -- the switch and each listed id with the name
-  Slack gives it and whether Slack confirmed it.
+* ``GET /api/slack/shared-access`` -- the switch, ``verify_with_slack``, and each
+  listed id with whether it is admitted and why: ``listed`` (on the list, Slack
+  not asked, the default) or, with ``verify_with_slack`` on, the name Slack gives
+  it and whether Slack confirmed it.
 * ``PUT /api/slack/shared-access`` -- ``{"enabled": bool}``. Turning it on also
   needs ``"confirm": true``, which the page sends only after its warning dialog.
-* ``POST /api/slack/shared-access/users`` -- ``{"user_id": "U..."}``. Refused
-  unless Slack confirms the id now (same workspace as the bot, a person, not
-  deactivated, not the owner).
+* ``POST /api/slack/shared-access/users`` -- ``{"user_id": "U..."}`` or
+  ``{"email": "..."}`` (looked up with ``users.lookupByEmail``; the list keeps the
+  member id). Refused while no owner id is saved, for the owner's own id and, with
+  ``verify_with_slack`` on, unless Slack confirms the id now (same workspace as the
+  bot, a person, not deactivated).
 * ``DELETE /api/slack/shared-access/users/{user_id}``.
 
 Every route is the dashboard owner's (``require_owner_dashboard_request``). Writes
@@ -42,13 +46,6 @@ def _deny(caller: str, operation: str, msg: str, *, code: str, status: int = 400
         caller=caller, operation=operation, outcome="denied", source="dashboard", error=msg
     )
     return web.json_response({"error": msg, "code": code}, status=status)
-
-
-async def _owner_refusal(request: web.Request, operation: str) -> web.Response | None:
-    """The shared owner gate: ``None`` for the dashboard owner, else its refusal."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
 
 
 def _write_refusal(request: web.Request) -> str:
@@ -90,22 +87,27 @@ async def api_shared_access_get(request: web.Request) -> web.Response:
     Reads the live config Slack admits on, not the saved file: after a write the
     gateway did not apply (409 ``not_applied``), the page shows who still has access.
     """
-    gate_refusal = await _owner_refusal(request, "slack.shared_access.read")
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, "slack.shared_access.read")
     if gate_refusal is not None:
         return gate_refusal
     shared = _live_shared()
+    verify = shared.verify_with_slack
     token, owner_id = await _slack_identity()
     client = _web_client(token)
     gate = asyncio.Semaphore(_LOOKUP_CONCURRENCY)
 
     async def _one(user_id: str) -> dict[str, Any]:
         async with gate:
-            return _user_view(await shared_access.lookup(client, user_id, owner_id=owner_id))
+            verdict = await shared_access.lookup(client, user_id, owner_id=owner_id, verify=verify)
+            return _user_view(verdict)
 
     users = await asyncio.gather(*(_one(uid) for uid in shared.user_ids))
     return web.json_response(
         {
             "enabled": shared.enabled,
+            "verify_with_slack": verify,
             "users": list(users),
             "read_only": bool(_write_refusal(request)),
         }
@@ -134,6 +136,9 @@ async def _commit(mutate_shared: Any) -> dict[str, Any]:
             "enabled": current.get("enabled") is True,
             "user_ids": shared_user_ids(current.get("user_ids")),
         }
+        # Kept as the owner wrote it: an edit here never drops it.
+        if "verify_with_slack" in current:
+            section["verify_with_slack"] = current.get("verify_with_slack") is True
         mutate_shared(section)
         slack["shared_access"] = section
         doc["slack"] = slack
@@ -195,7 +200,9 @@ async def api_shared_access_put(request: web.Request) -> web.Response:
     """PUT /api/slack/shared-access -- turn shared access on or off."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.switch"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)
@@ -212,6 +219,10 @@ async def api_shared_access_put(request: web.Request) -> web.Response:
         return _deny(caller, op, "turning shared access on needs confirm", code="confirm_required")
 
     def _set(section: dict) -> None:
+        # Turned on with the key unnamed: store the default, so the next load does
+        # not take this for an install that predates the key (it would write true).
+        if enabled and not section["enabled"] and "verify_with_slack" not in section:
+            section["verify_with_slack"] = False
         section["enabled"] = enabled
 
     stored = await _commit(_set)
@@ -231,7 +242,9 @@ async def api_shared_access_add(request: web.Request) -> web.Response:
     """POST /api/slack/shared-access/users -- add one Slack user, once Slack confirms it."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.add"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)
@@ -241,18 +254,43 @@ async def api_shared_access_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny(caller, op, "invalid JSON", code="invalid_json")
-    raw = body.get("user_id") if isinstance(body, dict) else None
+    fields = body if isinstance(body, dict) else {}
+    raw = fields.get("user_id")
     user_id = raw.strip() if isinstance(raw, str) else ""
-    if not is_slack_user_id(user_id):
+    raw_email = fields.get("email")
+    email = raw_email.strip() if isinstance(raw_email, str) else ""
+    if bool(user_id) == bool(email) or (user_id and not is_slack_user_id(user_id)):
         return _deny(
             caller,
             op,
-            "user_id must be a Slack member ID (starts with U or W)",
+            "send one of user_id (a Slack member ID, starts with U or W) or email",
             code=shared_access.REASON_MALFORMED,
         )
+    if email and not shared_access.is_email(email):
+        return _deny(
+            caller, op, "email is not an email address", code=shared_access.REASON_MALFORMED
+        )
     token, owner_id = await _slack_identity()
+    # Without a saved owner id the owner's own id would pass as someone else's.
+    if not owner_id:
+        return _deny(
+            caller,
+            op,
+            "save the owner Slack member ID first",
+            code=shared_access.REASON_OWNER_UNSET,
+        )
+    client = _web_client(token)
+    if email:
+        # The audit names the member id Slack returns, never the email.
+        user_id, reason = await shared_access.find_by_email(client, email)
+        if not user_id:
+            return _deny(caller, op, "Slack did not find that email", code=reason)
     verdict = await shared_access.lookup(
-        _web_client(token), user_id, owner_id=owner_id, refresh=True
+        client,
+        user_id,
+        owner_id=owner_id,
+        verify=_live_shared().verify_with_slack,
+        refresh=True,
     )
     if not verdict.ok:
         return _deny(caller, op, f"Slack did not confirm {user_id}", code=verdict.reason)
@@ -273,7 +311,9 @@ async def api_shared_access_remove(request: web.Request) -> web.Response:
     """DELETE /api/slack/shared-access/users/{user_id} -- applies to the next event."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.remove"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)

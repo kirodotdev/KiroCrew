@@ -449,10 +449,6 @@ class AppMemoryProvider(BlockingProvider):
             self._caps, self._caps_at = caps, time.monotonic()
         return caps
 
-    def cached_capabilities(self) -> Capabilities | None:
-        with self._lock:
-            return self._caps
-
     def blocking_health(self) -> Health:
         started = time.monotonic()
         health = health_from_wire(self._call("health", {}, OP_DEADLINES["health"]))
@@ -654,10 +650,3 @@ class AppMemoryProvider(BlockingProvider):
             "errors": errors,
             "last_error": next((o for _, _, o in reversed(calls) if o != "ok"), None),
         }
-
-
-def item_list_from_wire(raw: object) -> list[MemoryItem]:
-    """A bare list of wire items (the import reads JSONL lines through this)."""
-    if not isinstance(raw, list):
-        raise ProviderInvalidResponse("items must be a list")
-    return [item_from_wire(entry) for entry in raw]

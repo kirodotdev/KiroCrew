@@ -1,21 +1,23 @@
 /** Dormant-session collapse: the persisted threshold, per-container expansion, the
  *  exemption for rows that just moved or lost focus, and the bridge that pre-expands when a narrow
  *  clears. */
-import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
+import { useState, useCallback, useContext, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { safeSetItem } from '../../utils/safeStorage'
 import { STALE_COLLAPSE_TICK_MS, splitStaleSlots } from '../staleCollapse'
 import { readStoredStaleCollapse, STALE_COLLAPSE_LS_KEY } from './persistence'
 import type { Slot } from './types'
 import { isPeerRow, localSlotFolder } from './rowIdentity'
-import { lastActivityEpoch, type SortKey } from '../chat/sessionOrder'
+import { lastActivityEpoch, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
+import { RowStatusContext, useRowStatusSelect, type RowStatus } from './rowStatus'
 
 /** The dormant-collapse threshold, expanded containers, move exemptions and exempt rows. */
-export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCounts, unreadSet }: {
+export function useStaleCollapse({ pinned, localSlots, runningSet, subagentCounts, unreadSet }: {
   pinned: Set<string>
-  activeSlot: string | null
+  /** The local rows, to read the open session's age. */
+  localSlots: readonly Slot[]
   runningSet: Set<string>
   subagentCounts: Record<string, number>
-  unreadSet: Set<string>
+  unreadSet: ReadonlySet<string>
 }) {
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
@@ -42,6 +44,20 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
   // heartbeat prunes only entries a full interval old — a bare clear could
   // strip a move made milliseconds before the tick fired.
   const [staleRecentlyMoved, setStaleRecentlyMoved] = useState<ReadonlyMap<string, number>>(new Map())
+  // The open session, read from the row-status store only while its age would
+  // collapse it (idle past the threshold and not pinned); null otherwise. A chat
+  // switch between two recent sessions therefore changes nothing here, and the
+  // sidebar does not re-render for it. A recent or pinned row needs neither the
+  // focus exemption nor the left-row entry below: its age never collapses it.
+  const selectAgedOpenSlot = useCallback((st: RowStatus): string | null => {
+    const key = st.activeSlot
+    if (!key || staleCollapseMs <= 0 || pinned.has(key)) return null
+    const slot = localSlots.find(s => s.key === key && !isPeerRow(s))
+    const ts = slot ? lastActivityEpoch(slot) * 1000 : 0
+    return ts > 0 && Date.now() - ts > staleCollapseMs ? key : null
+  }, [localSlots, pinned, staleCollapseMs])
+  const activeSlot = useRowStatusSelect(selectAgedOpenSlot)
+  const rowStatus = useContext(RowStatusContext)
   // The row the user just LEFT by focusing another session gets the same
   // entry: losing focus must not drop it behind an expander and shift every
   // row below it. Recorded during render (React's adjust-state-on-prop-change
@@ -85,7 +101,10 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
     // peer key can collide with a local one. Its own `running` flag, read off
     // the proxied payload, is the only signal that travels with it.
     if (isPeerRow(s)) return s.running === true
-    return pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
+    // The open session, whatever its age: `activeSlot` re-renders the list when an
+    // aged one opens or closes; the live read answers for a recent one, which no
+    // render collapses but a reveal asks about.
+    return pinned.has(s.key) || s.key === activeSlot || s.key === rowStatus.get().activeSlot || runningSet.has(s.key)
       || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
       || !!s.needs_input || unreadSet.has(s.key)
       // Read-time expiry: an entry only counts while younger than one heartbeat
@@ -93,7 +112,7 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
       // (the timer is gated on the feature being on; the writer is not).
       || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS
   },
-  [pinned, activeSlot, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
+  [pinned, activeSlot, rowStatus, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
   return {
     staleCollapseMs, setStaleCollapseMs, staleExpanded, setStaleExpanded, setStaleRecentlyMoved,
     isStaleExempt,
@@ -173,7 +192,7 @@ export function useStaleNarrowBridge({ listNarrowed, filteredSlots, staleCollaps
     // collapse is inert anyway, and holding the capture for a LATER sort
     // switch would mean expanding containers from an arbitrarily old list.
     staleNarrowBridgeRef.current = null
-    if (!shown?.length || staleCollapseMs <= 0 || sortKey !== 'date-desc') return
+    if (!shown?.length || staleCollapseMs <= 0 || !staleCollapseApplies(sortKey)) return
     const { stale } = splitStaleSlots(
       shown, staleCollapseMs, Date.now(),
       s => lastActivityEpoch(s) * 1000, isStaleExempt,

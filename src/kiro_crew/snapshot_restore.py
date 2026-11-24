@@ -46,12 +46,14 @@ from kiro_crew.snapshot_archive import (
     _safe_name,
 )
 from kiro_crew.snapshot_components import (
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
@@ -65,7 +67,7 @@ from kiro_crew.snapshot_components import (
     is_product_tree_database,
     safe_tree_root,
 )
-from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 
 host_local_installable: ContextVar[frozenset[str]] = ContextVar(
     "host_local_installable", default=frozenset()
@@ -191,7 +193,7 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
 
         try:
             _, dropped = notification_settings.parse_imported_settings(
-                src.read_text(encoding="utf-8")
+                strip_utf8_bom(src.read_text(encoding="utf-8"))
             )
         except (
             notification_settings.ChannelSettingsError,
@@ -205,6 +207,21 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
                 "saved mutes or priorities."
             ) from e
         _refuse_dropped_entries(label, dropped)
+        return
+    if validator == "config_document":
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
         return
     raise AssertionError(f"no validator named {validator!r}")
 
@@ -496,9 +513,12 @@ def _read_at(dir_fd: int, name: str) -> bytes:
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
-#: hold channel tokens, so a restored copy must not inherit a looser directory ACL
-#: on Windows, or the umask default on POSIX, from the copy that installed it.
-_OWNER_ONLY_SETTINGS_FILES = frozenset({"config.json", "config.local.json", "ui-prefs.json"})
+#: hold channel tokens and an MCP server's ``env`` and ``headers`` in ``mcp.json`` hold
+#: credentials, so a restored copy must not inherit a looser directory ACL on Windows,
+#: or the umask default on POSIX, from the copy that installed it.
+_OWNER_ONLY_SETTINGS_FILES = frozenset(
+    {"config.json", "config.local.json", "ui-prefs.json", "mcp.json"}
+)
 
 
 def _lock_down_restored(path: Path, component: str) -> None:
@@ -615,6 +635,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":
@@ -722,10 +744,14 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     nothing, so refusing would only fail every other component of the restore.
 
     Only structure is checked, not schema: field-level checks would duplicate each
-    consumer's validation and refuse bundles those consumers accept.
+    consumer's validation and refuse bundles those consumers accept. For the same reason
+    a leading byte-order mark is accepted where the file's readers accept one.
     """
     try:
-        parsed = json.loads(src.read_text(encoding="utf-8"))
+        text = src.read_text(encoding="utf-8")
+        if src.name in _BOM_TOLERANT_JSON_OBJECTS:
+            text = strip_utf8_bom(text)
+        parsed = json.loads(text)
     except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return

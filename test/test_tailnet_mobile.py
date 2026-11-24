@@ -274,13 +274,15 @@ class TestProbeDistinguishesCauses:
             p = tailnet.probe_daemon()
         assert p.https_enabled is True
 
-    def test_explicit_empty_cert_domains_reports_https_disabled(self) -> None:
+    # A present ``null`` is how the daemon sends an empty list.
+    @pytest.mark.parametrize("cert_domains", [[], None])
+    def test_explicit_empty_cert_domains_reports_https_disabled(self, cert_domains: object) -> None:
         with (
             patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
             patch.object(
                 tailnet,
                 "_run_json_detail",
-                return_value=({"BackendState": "Running", "CertDomains": []}, False),
+                return_value=({"BackendState": "Running", "CertDomains": cert_domains}, False),
             ),
             patch.object(tailnet, "self_dns_name", return_value=_HOST),
         ):

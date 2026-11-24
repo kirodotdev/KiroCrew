@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from skill_script_helpers import skill_text
 
 from kiro_crew import agent, conductor_patrol, crewmate_prompts
 from kiro_crew.mcp_dashboard import TABLE
@@ -24,7 +25,7 @@ WORKER_DEBATE = GOAL_SKILL.parent / "references" / "worker-debate.md"
 
 
 def _flat(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(skill_text(path).split())
 
 
 def _flat_text(text: str) -> str:

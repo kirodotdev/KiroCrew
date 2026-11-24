@@ -323,14 +323,14 @@ def test_an_ineligible_crew_is_skipped(recorded, crews, over):
 
 def test_a_stalling_crew_probe_is_skipped(recorded, crews, monkeypatch):
     """A crew whose headroom probe never returns is skipped; ineligibility is
-    decided by the probe stub returning None, not by a wall-clock race."""
+    decided by the probe stub returning _UNREAD, not by a wall-clock race."""
     crews.add("a", mem=99)
     crews.add("b", mem=4)
     real_candidate = placement._candidate
 
     async def _candidate_stub(state, mgr, row, mem_gb, disk_gb, requires):
         if getattr(row, "id", "") == "a":
-            return None  # simulates _candidate timing out on a stalled probe
+            return placement._UNREAD  # simulates _candidate timing out on a stalled probe
         return await real_candidate(state, mgr, row, mem_gb, disk_gb, requires)
 
     monkeypatch.setattr(placement, "_candidate", _candidate_stub)
@@ -342,8 +342,8 @@ def test_a_stalling_crew_probe_is_skipped(recorded, crews, monkeypatch):
     assert crews.creates == ["b"]
 
 
-def test_candidate_returns_none_when_probe_stalls(crews, monkeypatch):
-    """_candidate returns None and the stall Event is cancelled when the probe
+def test_candidate_reads_a_stalled_probe_as_unread(crews, monkeypatch):
+    """_candidate returns _UNREAD and the stall Event is cancelled when the probe
     takes longer than PROBE_TIMEOUT_S.
 
     Only crew 'a' is probed here, so PROBE_TIMEOUT_S applies to that one probe
@@ -358,7 +358,7 @@ def test_candidate_returns_none_when_probe_stalls(crews, monkeypatch):
         state = _state(crews)
         row = next(r for r in state.instances_registry.list() if r.id == "a")
         result = await placement._candidate(state, crews, row, 2.0, 10.0)
-        assert result is None
+        assert result == placement._UNREAD
         assert crews.probe_cancelled, "wait_for must have cancelled the stalled probe"
 
     asyncio.run(go())
@@ -582,6 +582,15 @@ def test_parse_requires_keeps_order_drops_repeats_and_reads_empty_as_nothing():
     assert not placement.parse_requires({})
 
 
+@pytest.mark.parametrize("name", ["-gpu", "_gpu"])
+def test_a_name_starting_with_a_separator_is_refused_naming_the_first_character_rule(name):
+    with pytest.raises(routes.CrewCallError) as exc:
+        placement.parse_requires({"tags": [name]})
+    assert exc.value.status == 400 and exc.value.code == placement.REQUIRES_INVALID
+    assert "starting with a letter or digit" in exc.value.message
+    assert placement.parse_requires({"tags": ["gpu"]}).tags == ("gpu",)
+
+
 def test_a_crew_without_the_login_is_skipped_however_much_room_it_has(recorded, crews):
     crews.add("a", headroom=_room(mem_free_gb=99.0, logins={"gh": "expired"}))
     crews.add("b", headroom=_room(mem_free_gb=8.0, logins={"gh": "valid"}, tags=["gpu"]))
@@ -621,6 +630,30 @@ def test_no_qualifying_crew_is_refused_naming_what_each_lacked(recorded, crews, 
 
     _run(crews, 1, body)
     assert crews.creates == []  # no blind pick
+
+
+@pytest.mark.parametrize(
+    "unread",
+    [{"headroom_status": 404}, {"version": "0.0.1"}],
+    ids=["headroom-404", "version-mismatch"],
+)
+def test_a_crew_that_could_not_be_read_is_named_in_the_refusal(recorded, crews, unread):
+    crews.add("a", headroom=_room(tags=["cpu"]))
+    crews.add("b", headroom=_room(tags=["gpu"]), **unread)
+    crews.add("c", state="disconnected", headroom=_room(tags=["gpu"]))
+
+    async def body(state, items):
+        with pytest.raises(routes.CrewCallError) as exc:
+            await _place_with(state, items[0], {"tags": ["gpu"]})
+        assert exc.value.code == placement.CREW_REQUIREMENTS_UNMET
+        assert exc.value.status == 503
+        assert "(a lacks tag gpu; b could not be checked)" in exc.value.message
+        assert "c could not be checked" not in exc.value.message  # not connected
+        item = work_ledger.read_work_item(CONDUCTOR, items[0])
+        assert item is not None and item.state == "open" and not item.worker_instance_id
+
+    _run(crews, 1, body)
+    assert crews.creates == []
 
 
 def test_a_qualifying_crew_with_no_room_answers_no_room_not_requirements(recorded, crews):

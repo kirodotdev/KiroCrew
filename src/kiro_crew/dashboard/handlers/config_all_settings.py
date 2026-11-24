@@ -38,7 +38,7 @@ WHY_OWNED = "owned"  # another step changes it together with other settings
 WHY_MARKER = "marker"  # Kiro Crew sets it itself as a step is finished
 WHY_ALIAS = "alias"  # read from another setting, so a write here changes nothing
 WHY_TEXT = "text"  # free text such as a path, address or command
-WHY_LOCKED = "locked"  # an organization's policy sets it
+WHY_LOCKED = "locked"  # this edition sets it; no policy term reaches it
 WHY_COMPOUND = "compound"  # several values that must change together
 
 #: Keys the page shows but never changes, each with the reason it shows. A key
@@ -80,6 +80,8 @@ READONLY_REASONS: dict[str, str] = {
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
     "agent.kas_refuse_plain_http_mcp_headers": WHY_SIGN_IN,
+    # Which credential Crew's engine runs on (machine mode reads a host token file).
+    "agent.kas_auth": WHY_SIGN_IN,
     "agent.mcp_registry_mode": WHY_SIGN_IN,
     "dashboard.sso_login_flags": WHY_SIGN_IN,
     "dashboard.qr_session_until_restart": WHY_SIGN_IN,

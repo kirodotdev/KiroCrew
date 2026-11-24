@@ -38,7 +38,6 @@ from kiro_crew.platform.defaults import (
     DefaultCapabilityManager,
     DefaultCloudInstancePolicyProvider,
     DefaultCredentialPolicy,
-    DefaultDashboardContributor,
     DefaultDeniedRuleProvider,
     DefaultEmbeddingSource,
     DefaultExternalAccessPolicy,
@@ -55,7 +54,6 @@ from kiro_crew.platform.defaults import (
     DefaultPromptSourceProvider,
     DefaultProviderRegistry,
     DefaultPublishRegistry,
-    DefaultRemoteProvisionerProvider,
     DefaultSandboxPolicy,
     DefaultSkillDiscoveryProvider,
     DefaultSlackEnterpriseGate,
@@ -373,6 +371,13 @@ def build_default_context(
     the standalone load does not consult a bundled resource here.
     """
     governance = load_security_policy()
+    # circular import: the lane's provider module subclasses this package's defaults, so it is
+    # read here, at composition, rather than while ``kiro_crew.platform`` initialises.
+    from kiro_crew.managed_env.provider import (
+        ManagedEnvDashboardContributor,
+        ManagedEnvProvisionerProvider,
+    )
+
     return PlatformContext(
         contract_version=CONTRACT_VERSION,
         profile=profile,
@@ -405,10 +410,13 @@ def build_default_context(
         memory_files=DefaultMemoryFilesProvider(),
         tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
-        dashboard=DefaultDashboardContributor(),
+        # The default contributor plus the managed-environment lane, which mounts its
+        # routes always and stays inert (404, no sign-in profile) while the crew_client
+        # preview is off.
+        dashboard=ManagedEnvDashboardContributor(),
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
-        remote_provisioners=DefaultRemoteProvisionerProvider(),
+        remote_provisioners=ManagedEnvProvisionerProvider(),
         cloud_instance_policy=DefaultCloudInstancePolicyProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
         browser_credentials=DefaultBrowserCredentialProvider(),
@@ -655,7 +663,10 @@ def apply_kas_cli_floor(
     (``acp.kas_engine_refusal``). With no stored pick at stake nothing is started:
     a refusal on record for this kiro-cli is a gap the same way, so a defaulted or
     chosen KAS falls back before the first chat, and otherwise the help probe
-    alone confirms and a later refusal at a KAS start withdraws it. Neither gap
+    alone confirms and a later refusal at a KAS start withdraws it. That help
+    verdict is what the panel's Kiro CLI row and a Bot's Kiro CLI pin read; a pick
+    saved while the gateway runs moves only after the gateway runs this check
+    again with *kiro_selected* (``process_entry._watch_saved_kiro_pick``). Neither gap
     marks anything for a KAS whose next spawn takes the bundle route chosen
     automatically (``agent_sdk.kas_bundle.kas_route``, asked only before marking):
     that spawn never runs kiro-cli. A Kiro CLI pick is not asked, as the route
@@ -708,21 +719,25 @@ def apply_kas_cli_floor(
     offers_kas, reason = kas_engine_verdict()
     start_unknown = False
     from_help = True
+    start_proved = False
     if offers_kas:
         # The help lists v3 even where kiro-cli then refuses to run it. The user's
         # own pick moves only on proof the engine runs here (one start per kiro-cli
         # install, kept in the data home); without a pick, a refusal already on
         # record for this kiro-cli is enough, and nothing is started for it.
         started, refusal = kas_engine_start_verdict(start=kiro_pick)
+        start_proved = started is True
         if kiro_pick or started is False:
             offers_kas, reason = started, refusal
             start_unknown = started is None
             from_help = False
     if offers_kas:
-        # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
-        # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
-        # process, so the verdict is recorded whatever the boot backend was.
-        confirm_kiro_cli_offers_kas()
+        # Positive evidence only, recorded whatever the boot backend was: the panel's
+        # Kiro CLI row and a Bot's Kiro CLI pin read the help verdict. A stored pick
+        # moves to the KAS path (``KIRO_SELECTION_BACKEND``) only on a start that was
+        # not refused, so a pick saved later in this process without one on record
+        # keeps the v2 launch until the gateway runs this check for it.
+        confirm_kiro_cli_offers_kas(started=start_proved)
         if kiro_pick:
             agent.acp_backend = kiro_cli_pick_backend()
         return None

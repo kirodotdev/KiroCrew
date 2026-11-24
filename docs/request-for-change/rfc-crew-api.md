@@ -6,7 +6,7 @@ created: 2026-10-31
 last-audited: 2026-11-20
 audited-at: c157748343
 doc-pr:
-implementation-prs: [34104, 39564, 39921, 39962]
+implementation-prs: [34104, 39564, 39921, 39962, 39574]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route accepts the token yet. The rest is not built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), and one `/v1` route serves the token: a valid one sent from this machine reaches `GET /v1/models` and is answered 403 on every other Crew API path, by the route's row in the scope table (`crew_api_auth.judge_app_credential`). [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner and for a local app credential. An app credential gets `200` with `{"object": "list", "data": []}` until a route lets an app run a Bot in its grant or an agent; its list comes only from the grant, without reading the owner's catalog. `POST /v1/responses` is served for the machine owner (`src/kiro_crew/dashboard/crew_api_responses.py`): one turn in a new conversation, answered as JSON or, with `stream: true`, as the stream events of the subset. A stopped turn ends its stream with `response.incomplete`, and the `Response` inside it carries `status: cancelled`, the status the JSON answer gives. Every other field of [the Responses subset](#33-the-responses-subset) that needs more than that (`background`, `conversation`, `previous_response_id`, tools, the phase 2 fields) answers 422 `capability_unavailable`, the `Idempotency-Key` header is not read, and a turn that fair admission refuses is answered 200 with `status: failed`. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -354,7 +354,7 @@ concurrency or wake limit was hit).
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
 | 403 | `permission_error` | `entitlement_required` | The app lacks the entitlement this capability needs; the body's `entitlement` names it. Checked before the scope |
 | 403 | `permission_error` | `insufficient_scope` | Missing scope. The user can grant it on the consent page |
-| 403 | `permission_error` | `owner_only` | A delegated or embed credential called an Owner endpoint |
+| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`POST /v1/responses`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
 | 403 | `permission_error` | `approval_requires_first_party` | A delegated credential tried to answer an approval |
 | 403 | `permission_error` | `tool_not_registered` | A tool in the request is not in the grant's manifest |
 | 403 | `permission_error` | `connector_definition_changed` | The app's manifest changed its tools or permissions and the user has not consented again. The grant is paused with `pause.by: reconsent` and returns only this code |
@@ -610,9 +610,10 @@ after the app asks. So `GET /oauth/authorize` never grants by itself:
 1. The first call records a grant request and answers that it waits: 202 with `request_id`,
    `user_code`, `expires_at` and `interval` for a program that accepts `application/json`, else a
    page that reloads.
-2. The owner approves or denies the request. With a dashboard this is the consent page; without
-   one it is an Owner route. The owner can narrow the requested scopes, never widen them. An app
-   credential cannot answer a request.
+2. The owner approves or denies the request through the Owner route
+   `POST /v1/crew/owner/grant-requests/{request_id}/decision`, with or without a dashboard. A
+   consent page in the dashboard is planned; no page answers a request today. The owner can
+   narrow the requested scopes, never widen them. An app credential cannot answer a request.
 3. The app asks again with `request_id` and the same parameters, no sooner than `interval`
    seconds. Once the owner answered, the gateway redirects to the app's loopback `redirect_uri`
    with a one-time code, or with `error=access_denied`.
@@ -631,11 +632,52 @@ accepted by a maintainer):
    and its code have expired, or for as long as the grant it led to exists; after that it is 404.
 2. A `GrantRequest` also carries `decided_at`, `decided_by` (the kind of caller, never a token),
    `granted_scopes` (only when approved) and `grant_id` (set once the app redeemed its code).
-   `requested_bots` is left out: `GET /oauth/authorize` has no parameter for a Bot range yet.
+   It carries `requested_bots` too: the Bot ids the app asked to use. The app sends the
+   repeated query parameter `bots` to `GET /oauth/authorize`, one Bot per occurrence,
+   for example `bots=dr.%20eggbot&bots=helper`. The app is expected to send the exact model
+   `id` from `GET /v1/models`, with no splitting. Values follow
+   `kiro_crew.members.is_dispatchable_member_name` and its `MEMBER_NAME_MAX_CHARS` length
+   limit; duplicates are refused with `invalid_request`. Asking checks format only and
+   never checks existence, so its answer does not disclose which Bots exist. Malformed
+   `bots` gives 400 `invalid_request` even with an invalid `scope`. Asking again requires
+   the same `bots` values in the same order. `MAX_REQUESTED_BOTS` is the chosen bound
+   for one request and one decision, set equal to `crew_teams.TEAM_MEMBERS_MAX` (500),
+   the largest Bot list the product keeps elsewhere. The request must fit aiohttp's
+   8190-byte request line. The decision body must fit 4 KiB (`_BODY_MAX`); a `bots` list
+   that does not fit gives 400 `invalid_request`, and the owner gives a shorter list.
+   The `bots` JSON array in the owner's
+   `POST /v1/crew/owner/grant-requests/{request_id}/decision` request body follows the same
+   name, length, duplicate and count rules. After the body's size, `decision` and `scopes`
+   form (each 400 `invalid_request`), the handler checks the request before any Bot check
+   (404 `not_found` if unknown or expired; 409 `grant_request_already_resolved` if answered),
+   then checks that the array is a subset of `requested_bots`, then reads the Bot roster.
+   Each name must be a Bot in that read. When an approval gives at least one Bot,
+   unreadable configuration or a degraded Bot roster gives 503 `instance_unavailable`
+   without recording a decision; an approval that gives none, and a deny, do not read
+   the roster. After a whole config file cannot be read or parsed, this refusal lasts
+   until the gateway restarts, even if the file is repaired, because the whole-config
+   degraded marker stays for the life of the process. A single `agents` entry dropped
+   by validation marks the roster degraded for that load, so even healthy Bots cannot
+   be approved from that read.
+   The request carries `granted_bots`, and the grant stores them as `bots` with
+   `mode: selected`. An app that omits the query parameter asks for no Bot; an approval
+   that omits the body field gives no Bot. Explicit `null` gives 400 `invalid_request`
+   ("bots must be a list of strings"). A deny ignores `bots`. Unlike `scopes`, a Bot is
+   never given by default. Records without Bot fields read as none. The grants list
+   returns the owner's recorded Bot selection; no route enforces it yet.
 3. `DELETE /v1/crew/owner/grants/{id}`, already in this RFC, is served for grants made through
    local authorization. Every token under the grant is refused from the next request. A second
    call answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside
    issuer, so nothing is sent over the control channel.
+4. `GET /v1/crew/owner/grants`, already in this RFC, is served for grants made through local
+   authorization (amendment, 2026-11-24; proposed, to be accepted by a maintainer). It lists the
+   grants that work now, oldest first, paged with `after` and `limit`. A revoked or expired grant
+   is not listed, under any `status`. An `after` that names no grant in the list, one revoked
+   since the last page included, is 400 `invalid_request`; the caller starts again from the
+   first page. A row carries `id`, `kind` (`local`), `namespace`,
+   `client_id`, `app.name` (as the app reported it), `scopes`, `bots` (the owner's recorded
+   selection), `status`, `created_at` and `expires_at`, and no token. Usage and quota are
+   not kept for such a grant and are left out.
 
 ### 9. Versioning and compatibility
 

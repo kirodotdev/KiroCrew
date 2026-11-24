@@ -22,7 +22,7 @@ import importlib as _importlib
 import logging
 import os
 import re
-import shutil
+import shutil  # noqa: F401 -- tests reach shutil through this module
 import stat
 import sys as _sys
 import threading
@@ -67,6 +67,7 @@ from kiro_crew.memory_recall import recall_terms  # noqa: F401
 from kiro_crew.metrics.provider import get_recorder  # noqa: F401
 from kiro_crew.platform_compat import (  # noqa: F401
     PinnedDirectory,
+    _clear_readonly_and_retry,
     ensure_owner_rwx_dirs,
     file_lock,
     is_link_or_junction,
@@ -280,7 +281,7 @@ logger = logging.getLogger(__name__)
 #   os.rename -- create's rollback, via remove_dir_verified's stage-aside
 #   os.rmdir  -- create's rollback, both the staged-aside directory and the
 #                reclaim when the leaf open loses a race to the mkdir
-# delete's own removal is still a by-name shutil.rmtree, the residual documented
+# delete's own removal is still a by-name ``rmtree_force``, the residual documented
 # there -- os.rmdir is here for the ROLLBACK, not for that. update additionally
 # needs a descriptor-relative rename for atomic_write's publish, which is that
 # module's own probe and is asked at the call site. Where this is False (Windows)
@@ -292,6 +293,15 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {
     os.rename,
     os.rmdir,
 }.issubset(os.supports_dir_fd)
+
+
+def _unlink_clearing_readonly(path: str, stuck: list[str]) -> bool:
+    """Unlink *path*, clearing read-only as rmtree_force does; False (in *stuck*) if it stays."""
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        _clear_readonly_and_retry(os.unlink, path, exc, failed=stuck)
+    return not os.path.lexists(path)
 
 
 # ── $skill inline trigger ──
@@ -459,23 +469,8 @@ class SkillsLoader:
         # construction-time value stays as the fallback for a loader built from an
         # explicitly injected config, before any snapshot exists.
         self._max_triggered = cfg.skills.max_triggered
-        self._extra_paths: list[Path] = []
-        self._configured_extra_paths: list[Path] = []
-        for p in cfg.skills.extra_paths:
-            try:
-                resolved = Path(p).expanduser().resolve()
-            except (OSError, RuntimeError, ValueError):
-                # ``~nosuchuser`` (no such home) or an embedded NUL: one bad
-                # entry is skipped, never the whole loader.
-                logger.warning("Skipping unresolvable extra skill path: %r", p)
-                continue
-            if is_sensitive_path(str(resolved)):
-                logger.warning("Skipping sensitive extra skill path: %s", p)
-            elif resolved.is_dir():
-                self._extra_paths.append(resolved)
-                self._configured_extra_paths.append(resolved)
-            else:
-                logger.debug("Extra skill path does not exist: %s", p)
+        self._extra_paths: list[Path] = self._screen_extra_paths(cfg)
+        self._configured_extra_paths: list[Path] = list(self._extra_paths)
 
         # Edition-contributed skill paths (CPP seam). A companion returns extra
         # SKILL.md source roots via McpToolingProvider.extra_skills(); the public
@@ -834,16 +829,21 @@ class SkillsLoader:
         skill_dir = self._dir / name
         if not skill_dir.is_dir():
             return False
+        # rmtree_force clears a read-only entry a plain rmtree stops at (Windows
+        # attribute, POSIX read-only directory) and never raises, so a folder that
+        # still stays is raised below rather than reported as deleted.
+        subdirs: list[str] = []
+        files: list[str] = []
         if _DIR_FD_SUPPORTED:
             # A recursive descriptor-relative delete is out of proportion for a
             # skill dir, so the residual guarded here is narrower: pin the parent,
             # answer "is this name a real directory?" from a descriptor-relative
             # lstat, and only then rmtree. The is_dir() above FOLLOWS a link, so a
-            # symlinked skill dir reaches this point; shutil.rmtree then refuses it
-            # with an OSError the caller would surface as a 500 instead of the
-            # not-found the by-name floor gives. A directory swapped for a link
-            # after this check is the remaining window -- recorded, and the by-name
-            # floor below carries the same posture.
+            # symlinked skill dir reaches this point; without the lstat the removal
+            # would fail on it and raise an OSError the caller would surface as a 500
+            # instead of the not-found the by-name floor gives. A directory swapped
+            # for a link after this check is the remaining window -- recorded, and
+            # the by-name floor below carries the same posture.
             try:
                 parent_fd = pinned_fs.open_dir_pinned(skill_dir.parent, what="skill directory")
             except pinned_fs.PinnedPathRefusal:
@@ -868,8 +868,30 @@ class SkillsLoader:
             (skill_dir / "SKILL.md").is_dir() and not is_link_or_junction(skill_dir / "SKILL.md")
         ):
             return False
-        shutil.rmtree(skill_dir)
+        else:
+            # rmtree_force goes on past an entry that stays. On this floor (Windows)
+            # that is a file another process holds open, which a retry gets past once
+            # the holder lets go, so the other entries go before SKILL.md: such a
+            # delete fails with SKILL.md in place and the skill stays listed. POSIX
+            # unlinks an open file, so the pinned branch keeps one removal, rooted at
+            # the skill folder.
+            with os.scandir(skill_dir) as entries:
+                for e in entries:
+                    if e.is_dir(follow_symlinks=False) and not is_link_or_junction(e.path):
+                        subdirs.append(e.path)
+                    elif e.is_file(follow_symlinks=False) and os.path.normcase(
+                        e.name
+                    ) != os.path.normcase("SKILL.md"):
+                        files.append(e.path)
+        stuck: list[str] = []
+        gone = (
+            all(rmtree_force(d, failures=stuck) for d in subdirs)
+            and all(_unlink_clearing_readonly(f, stuck) for f in files)
+            and rmtree_force(skill_dir, failures=stuck)
+        )
         self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now
+        if not gone:
+            raise OSError(f"Cannot remove skill {name!r}: {(stuck or [str(skill_dir)])[0]} stays")
         logger.info("Deleted skill: %s", name)
         return True
 

@@ -49,6 +49,7 @@ from typing import Any, Iterator, Mapping, overload
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
+from kiro_crew.mcp_cleanup import mcp_entry_names_launch
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ TRUST_KEYS: frozenset[str] = frozenset(
 )
 
 _TEMPLATE_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
-_SERVER_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+_SERVER_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}[A-Za-z0-9]|[A-Za-z0-9])\Z")
 _TEXT_MAX = 256
 _ARG_MAX = 4096
 _ARGS_MAX = 128
@@ -592,23 +593,20 @@ MERGED_MARK = "x-kirocrew-card-addition"
 
 
 def page_launched_names(*scopes: Mapping[str, Any]) -> frozenset[str]:
-    """The server names an MCP page scope LAUNCHES: an entry with a ``command`` or ``url``.
+    """The server names an MCP page scope LAUNCHES (``mcp_cleanup.mcp_entry_names_launch``).
 
     A page toggle writes a stub such as ``{}`` or ``{"disabledTools": [...]}`` for a
     server it lists, including one a card added. A stub launches nothing, so it is
     not the page owning that server: counting it would keep a card-added server
     mounted after its Undo, and the page's own grant would then approve its tools.
     """
-    names: set[str] = set()
-    for scope in scopes:
-        if not isinstance(scope, Mapping):
-            continue
-        for name, entry in scope.items():
-            if isinstance(entry, Mapping) and any(
-                isinstance(entry.get(key), str) and entry.get(key) for key in ("command", "url")
-            ):
-                names.add(name)
-    return frozenset(names)
+    return frozenset(
+        name
+        for scope in scopes
+        if isinstance(scope, Mapping)
+        for name, entry in scope.items()
+        if mcp_entry_names_launch(entry)
+    )
 
 
 def reconcile_default_spec(

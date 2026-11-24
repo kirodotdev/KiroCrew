@@ -121,6 +121,58 @@ async function chooseWriter() {
 }
 
 describe('private member memory lifecycle', () => {
+  it('lands on a saved lesson in its own store without replacing the saved filter', async () => {
+    const key = 'lesson.0123456789ab'
+    const savedFilter = JSON.stringify({ q: 'previous search', kind: 'episode' })
+    sessionStorage.setItem(`kirocrew:memory-records-filter:${MEMBER_STORE}`, savedFilter)
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+    const target = { kind: 'directive', id: key, key, value_json: JSON.stringify({ rule: 'The saved member lesson' }), text: 'The saved member lesson', revision: 'a'.repeat(64) }
+    api.memoryRecords.mockImplementation(async (store: string, query: { q: string; kind: string }) => {
+      const entries = store === MEMBER_STORE && query.q === key && query.kind === 'directive' ? [target] : []
+      return { entries, total: entries.length, has_more: false }
+    })
+    try {
+      const { unmount } = renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" focusLessonKey={key} />)
+      expect(await screen.findByText(target.text)).toBeVisible()
+      expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue(key)
+      expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50)
+      expect(api.memoryRecords.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
+      const focused = screen.getByText(target.text).closest('[data-memory-focus="true"]')!
+      expect(focused).not.toBeNull()
+      expect(focused.className).toContain('ring-accent')
+      await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
+      expect(scroll.mock.instances[0]).toBe(focused)
+      expect(sessionStorage.getItem(`kirocrew:memory-records-filter:${MEMBER_STORE}`)).toBe(savedFilter)
+      unmount()
+      renderWithProviders(<MemoryTab refreshTrigger={0} focusLessonKey={key} />)
+      await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: 'previous search', kind: 'episode' }, 0, 50))
+      expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('previous search')
+      expect(document.querySelector('[data-memory-focus]')).toBeNull()
+    } finally { scroll.mockRestore() }
+  })
+  it('clears the saved lesson search when navigating to another store', async () => {
+    const { default: OverviewPage } = await import('../pages/OverviewPage')
+    const key = 'lesson.0123456789ab'
+    const route = `/settings/overview?view=memory&focus=lessons&lesson=${key}&store=${MEMBER_STORE}`
+    window.history.replaceState({}, '', route)
+    renderWithProviders(<><OverviewPage /><RouteLocation /></>, { route })
+
+    await screen.findByRole('heading', { name: 'Memory for reviewer' })
+    expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue(key)
+    await waitFor(() => expect(api.memoryRecords).toHaveBeenCalledWith(MEMBER_STORE, { q: key, kind: 'directive' }, 0, 50))
+    await chooseWriter()
+
+    await screen.findByRole('heading', { name: 'Memory for writer' })
+    const destination = new URL(screen.getByTestId('route-location').textContent!, window.location.origin)
+    expect(destination.searchParams.get('store')).toBe(OTHER_STORE)
+    expect(destination.searchParams.has('lesson')).toBe(false)
+    expect(destination.searchParams.get('focus')).toBe('lessons')
+    expect(screen.getByRole('textbox', { name: 'Search memory' })).toHaveValue('')
+    expect(await screen.findByText(FACT.value_json)).toBeVisible()
+    expect(api.memoryRecords).toHaveBeenCalledWith(OTHER_STORE, { q: '', kind: 'all' }, 0, 50)
+    expect(api.memoryRecords.mock.calls.filter(([store]) => store === OTHER_STORE).every(([, query]) => query.q !== key)).toBe(true)
+  })
+
   it('labels a named legacy store as usable Memory V1 without presenting private V2 actions', async () => {
     window.history.replaceState({}, '', `/settings/overview?view=memory&store=${LEGACY_STORE}`)
     renderWithProviders(<MemoryTab refreshTrigger={0} />)

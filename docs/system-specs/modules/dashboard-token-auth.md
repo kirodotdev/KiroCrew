@@ -40,7 +40,8 @@ Portability export and import use direct fetches rather than the API client's
 transport. Their error branches pass the response status and parsed refusal to
 `noteStaleOwnerResponse`, raising the existing re-authentication prompt only for
 `401 stale_session_reauth`. Inline refusals remain visible; generic 401 and owner-only
-403 responses do not raise that prompt. The non-owner-gated import preview is unchanged.
+403 responses do not raise that prompt. The import preview runs the same owner gate
+but goes through the API client's transport, so its refusal stays inline.
 
 The browser half of refresh and re-authentication is split by responsibility
 across a few frontend owners. None of them authorizes anything: authorization
@@ -203,7 +204,7 @@ goes to the owner of its responsibility:
 |---|---|
 | `token_auth_paths.py` | Requests that skip token auth (static assets, self-authenticating webhooks, CSRF exemptions, the SPA shell and app-window paths), and the refusal and auth-log helpers |
 | `token_auth_tokens.py` | Minting, validating, pinning and revoking session tokens; app secrets; the per-process token state |
-| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes |
+| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes; the refusal body when it reaches past them, worded by `app_scope_refusal.py` (not a facade owner) |
 | `token_auth_callers.py` | Unix-socket peer verification, and attributing a request to its app, cron job, sub-agent or member |
 
 #### Token Format
@@ -217,6 +218,18 @@ goes to the owner of its responsibility:
 `generate_token` always emits these six claims: `nonce` makes each token distinct,
 and `gen` is the revocation generation `validate_token` compares against the persisted
 value. `app`, `prompt`, `peer_key` and the scoping claims below are added only when set.
+
+A token that carries a `prompt` is capped at `LINK_TOKEN_MAX_CHARS` (3,000)
+characters. The prompt is signed into the URL as ASCII-escaped JSON, so a long or
+non-ASCII message makes a long link, and Slack splits a message line at about
+4,000 bytes. A cut link fails its signature, so it signs nobody in, and a channel
+challenge link never opens its window. When the token would pass the cap,
+`generate_token` drops the `prompt` claim and logs a warning; the other claims
+stay. The dashboard still reconnects to the signed `session_key`, or creates a
+session and links it to the signed `channel` + `thread_ts`. It skips prompt
+prefill and auto-send when no prompt is present; the message is still in the
+chat it came from (`test_token_auth_link_prompt_size.py`). A token with neither
+a prompt nor Slack context does not route a session.
 
 `kind` is `"session"` only on a token minted as a session: the middleware's
 link→session exchange and the refresh rotation pass `generate_token(...,
@@ -473,6 +486,158 @@ Request flow:
 8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the relay branch (right after `admit_relay_caller`), the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
 
+#### Crew API paths: the `Authorization` header
+
+On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completions`;
+`crew_api_errors.is_crew_api_path`) step 3 reads the credential differently
+(`dashboard/crew_api_auth.py`):
+
+1. A `?token=` in the URL is refused with a 401 before anything is validated, valid
+   or not and whatever else the request carries. A URL is kept in access logs, shell
+   history and proxies, so a credential must not travel in one.
+2. An `Authorization: Bearer` header, when the request sends one, is the credential. It is
+   judged by `crew_api_auth.verify_bearer`, the one place a bearer credential is
+   verified. Today it accepts what the session cookie carries: a token this gateway
+   signed with `kind=session` (or an app token), checked for signature, `session_exp`,
+   the revocation counter and the logout list. A one-time link is refused as not a
+   session. A `Bearer` header with no credential is refused, and a cookie sent
+   beside a refused header is not read.
+3. With no `Bearer` header the session cookie is read as on any other path, which
+   is how the dashboard's own page calls `/v1/crew/owner/bots`. A header of another
+   scheme (`Basic`, which a proxy in front of the dashboard may add) is no
+   credential here and is not read.
+4. A bearer that is not a session is then asked whether it is an **app credential**:
+   the access token local authorization issued for a grant the owner approved
+   (`crew_api_auth.judge_app_credential`, which calls `LocalAuthorization.verify`:
+   signature, expiry, and a grant that is still active and names the same
+   `client_id`). The order of the checks is the credential's kind, its validity, where
+   the request came from, then the tier:
+   - One that does not verify is not an app credential and gets the 401 of step 2.
+   - A verified one that did not come straight from this machine (a forwarding header,
+     a peer that is not loopback, or a request the relay delivered) gets that same
+     401, byte for byte: only the audit row says why. Local authorization issues the
+     credential to a program on this machine, and its four routes answer only such a
+     request.
+   - A verified one from this machine is a known caller, and the answer comes from
+     the row of the route it matched in `crew_api_scopes.ROUTES`. The table has one
+     row per operation of the Crew API spec, keyed by method and path pattern: the
+     API tier (`api_tier`, Public or Owner), the scopes of which any one is enough,
+     and the entitlements the operation names. `test_crew_api_scopes.py` holds the
+     whole table equal to `x-crew-tier`, `x-crew-scope` and `x-crew-entitlement` in
+     `crew-public.yaml` and `crew-owner.yaml`. `crew_api_scopes.refusal_for` reads it in
+     this order, and the first that applies is the answer:
+
+     | Case | Answer | Audit `error` |
+     |---|---|---|
+     | The pattern is in `OWNER_ONLY_PUBLIC_ROUTES` and no key of `APP_SERVED_ROUTES` names it (`app_owner_only_routes()`): read before the table, whatever the row says | `403 owner_only` | `owner_only` |
+     | No row: a path with no route, or a route the spec does not have | `403 owner_only` | `owner_only:no-row` |
+     | The row's tier is Owner | `403 owner_only` | `owner_only` |
+     | The row names an entitlement (no app credential carries one yet) | `403 entitlement_required`; the body's `entitlement` is the first one the spec lists | `entitlement_required` |
+     | The row's scope is `embed` | `403 approval_requires_first_party` | `approval_requires_first_party` |
+     | The credential holds none of the row's scopes | `403 insufficient_scope`, the message names them | `insufficient_scope` |
+     | The row admits it (its scope is `any`, or the credential holds one) and the route is not in `APP_SERVED_ROUTES` | `403 owner_only` | `owner_only:no-app-route` |
+     | The row admits it and the route is in `APP_SERVED_ROUTES` | The request goes to the handler | none; the row's `outcome` is `allowed` |
+
+     Only an `owner_only` answer carries `X-Auth-Required: true`: signing in again
+     cures no missing scope or entitlement.
+
+     `crew_api_auth.APP_SERVED_ROUTES` lists the routes that serve an app credential,
+     by their key in the table. It holds `GET /v1/models`, which serves an app
+     credential with an empty list until a grant carries a Bot range or a route
+     lets an app run an agent. The app list comes only from `models_for_grant`;
+     it reads no owner catalog. This is the one
+     point where token auth lets an app credential through: it publishes the actor
+     and calls the handler, and runs none of the later steps, which judge a session
+     (the peer pin, the link exchange, the installed-app allowlist). A route joins
+     the list in the change that makes its handler call
+     `crew_api_scopes.require_scope` first, with its own route's key, so a route
+     registered under the wrong row is refused. `crew_api_owner.owner_route` makes
+     that call for a route that passes it `app_route`. It decides from what token auth set
+     on the request and never from what is absent: a verified app credential
+     (`request["crew_api_credential"]`) is judged by the table; a first-party
+     session (`request["is_dashboard_user"] is True` with `request["app"] == ""`)
+     passes to the route's own gate; any other request, one with neither marker
+     included, is `403 owner_only`.
+
+     This table is not `route_access.ROUTES`, which labels every gateway route with
+     an action name and a stability tier and is read by no request.
+
+   Before either answer, token auth publishes the caller on the request: `request["user"]`
+   is `app:<grant id>`, `request["app"]` is `local-grant:<grant id>` and
+   `request["is_dashboard_user"]` is `False`. Both values are built from the grant id
+   the gateway made. An installed app's name holds no `:`, so neither can be one, and
+   any non-empty `request["app"]` fails every owner gate. The `client_id` is the calling
+   program's own choice: it is written to the audit row only, as printable ASCII of at
+   most 64 characters, and never becomes part of an identity. Each refusal writes one
+   `crew_api.app_credential` row (`denied`, with `not-direct-local` or the audit
+   `error` of the table above);
+   the credential itself is never logged. This is the only place an app credential is
+   recognised, and it sits inside the bearer branch, which only a Crew API path
+   enters: on `/api/*`, the WebSocket and the frozen `POST /v1/chat/completions`
+   the header is not read, so the credential opens nothing there.
+
+Every 401 on a Crew API path ends its message with one fixed sentence,
+`crew_api_errors.CREDENTIAL_HINT`: on this machine, `kirocrew token --bearer`
+prints a credential for the owner. It names no port and no value and is the same
+for every caller.
+
+A bearer request then runs the same checks as a cookie request: forwarded-peer
+resolution with its allowlist denials (`tailnet login not allowed` for a login outside
+`allowed_logins`, and for an unattributed forwarded peer while the allowlist is
+unreadable) and the Shared Crew `forwarded_peer_refusal`, the peer-pin check, the
+app-scope check, the audit row and actor publication. A non-empty `Bearer` header on a
+Crew API path counts as a presented credential for the forwarded-peer gate, as `?token=`
+and the `mc_token_`/`mc_refresh_` cookies do, so a request with no credential still
+resolves no identity. On the direct tailnet listener an app token in a Crew API bearer
+runs the token flow, as an app token in the cookie does, so the app keeps its scope.
+Every token auth branch reads the bearer through `crew_api_auth.crew_api_bearer`. A
+bearer request is never exchanged, and no cookie is set on its response. `/api/*`
+routes do not read the `Authorization` header.
+
+A reverse proxy in front of the gateway that adds its own `Authorization: Bearer`
+header to every request breaks the dashboard's cookie call to `/v1/crew/owner/bots`:
+the proxy's header is the credential, it fails verification, and the cookie sent
+beside it is not read. Only a header of another scheme steps aside for the cookie.
+Pinned by `test_crew_api_bearer.py` and, for the direct listener,
+`test_shared_crew_tailnet_direct.py`.
+
+A client with no cookie jar gets a session from `GET /api/token/local?kind=session`
+(`kirocrew token --bearer`). The parameter changes the token's kind: the three
+gates of that route (loopback or a same-principal unix peer, `X-Local-Secret`, the
+local-owner process check) are the same, the lifetime is the same `ttl`, and the
+token is never registered as a link, so it is refused in a `?token=`
+(`test_local_token_session_kind.py`). One caller passes those gates and is still
+refused this kind: a process the provenance check attributes to an app backend
+gets `403` with `code: session_kind_refused_for_app`, a `denied` SEL row
+(`session-kind-app-backend app=<name>`), and no token is signed. Its link mint is
+unchanged. A host process could already get that session by opening its link once
+and reading the cookie. Only a credential presented as a
+Crew API bearer takes a first-use pin: on its first authenticated request,
+`_check_pin(..., bearer=True)` binds an unbound bearer through `bind_token_peer` to
+the same peer key as a link exchange, the verified tailnet identity or
+`ip:<request.remote>` (including loopback). The pin expires at the token's signed
+`session_exp`; another peer is refused with the same error as for an exchanged
+cookie. An app credential sent as a bearer is pinned only to a verified peer and
+otherwise keeps its existing address semantics. A session presented as a cookie,
+including cookie fallback and mixed internal routes, is unchanged: an unbound cookie
+is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
+roaming after a gateway restart empties the in-memory bindings
+(`test_local_session_cookie_first_use_stays_unbound`).
+
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`) registers through
+`crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
+maps each such path to its audit operation; the route passes that
+operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
+also passes `app_route`, so a verified app credential from local authorization is
+judged by the route's row in place of the owner gate. The app is served an empty
+list until a grant carries a Bot range or a route lets an app run an agent;
+`models_for_grant` builds that list without reading the owner's catalog. Any other
+caller, an installed app's token included, gets
+`403 owner_only`, including a valid app credential whose API allowlist excludes
+the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
+permission errors have the Crew API error shape and no `WWW-Authenticate` header;
+an invalid credential still gets `401 invalid_token` with the Bearer challenge.
+
 #### SSM listener: a Crew invite instead of a token
 
 A request whose LOCAL socket is the loopback SSM port (`ssm_gate.SsmGate.owns`;
@@ -613,6 +778,21 @@ If `index()` cannot read the static bundle, its `FileNotFoundError` fallback
 body (`_DASHBOARD_HTML_NOT_FOUND` in `handlers/core.py`) is likewise static and
 secret-free, honoring the same unauthenticated cold-start contract.
 
+On a `gateway --headless` app, `start_dashboard` sets `HEADLESS_KEY` before
+constructing the middleware chain. Token auth and the LTS gate both receive
+`spa_shell_handler=None`, so neither sign-in fallback serves the dashboard.
+The final, non-API branch of `_deny` returns 403 JSON
+`{"error": reason, "code": code or "forbidden"}` with `X-Auth-Required: true`
+instead of the sign-in page. The `/api/` and Crew API branches are unchanged.
+SSM refusals likewise return JSON on a headless app without changing their
+status, headers or admission checks. A headless gateway starts no direct tailnet
+listener, so the direct-tailnet refusal page never answers it; the closed LTS gate already
+returns 403 JSON `lts_gate_closed` when it has no shell callback.
+An ordinary gateway and the reduced `--slack-only` server keep their existing
+sign-in responses. App windows, artifact and sandbox documents, vendor OAuth
+completion pages and local authorization's plain-text waiting page are separate
+from the dashboard and retain their own handlers.
+
 **One predicate, no drift:** `_is_spa_shell_request` in `token_auth_paths.py` is the
 single source of truth for "paths that are never the SPA shell". It combines
 three exclusions:
@@ -744,11 +924,12 @@ published, even when the file cannot be read
 
 #### App-token scope confinement (CWE-269)
 
-**Who can mint one.** `validate_app_secret` first requires the owner-enable marker `<crew-home>/host-exec-grants/<name>` (`apps/host_exec_grants.py`), which only an owner-authenticated action writes (`enable_app`, a first owner `POST /api/apps/register`) and every disabling write and uninstall revoke. The directory is a top-level crew-home leaf, sealed read-only in the sandbox, pre-created and no-follow, so no record written under the agent-writable `apps/<name>/` can mint a token for an app the owner did not enable. Only then is the secret compared with the gateway's own record, `member-records/app-secrets/<name>` (`read_app_secret`), which every sandbox masks; the agent-readable `apps/<name>/` holds no secret. An `apps/<name>/.app_secret` an older version left is never read, and a read never replaces it. Only the places where the app gets what the secret grants do: the backend spawn (`replace_legacy_app_secret`, delivered as `KIROCREW_PROXY_SECRET`), the load of an app's in-process hooks (`hooks_integration._prepare_hook_load`), and an owner registration (returned in its response). Code that runs in the gateway process holds no secret: its `AppContext.app_token()` mints the same app token behind the same owner-enable marker (`issue_in_process_app_token`), audited as `app_token_exchange` with source `app_context`. The app-scope check re-reads the marker on every request (off the event loop), so a disable ends an existing token's API grants at once. An app enabled before the marker existed cannot mint until the owner enables it again.
+**Who can mint one.** `validate_app_secret` first requires the owner-enable marker `<crew-home>/host-exec-grants/<name>` (`apps/host_exec_grants.py`), which only an owner-authenticated action writes (`enable_app`, a first owner `POST /api/apps/register`, and the next owner registration of a self-managed record carried over from a release that kept the secret in the app's folder) and every disabling write and uninstall revoke. The directory is a top-level crew-home leaf, sealed read-only in the sandbox, pre-created and no-follow, so no record written under the agent-writable `apps/<name>/` can mint a token for an app the owner did not enable. Only then is the secret compared with the gateway's own record, `member-records/app-secrets/<name>` (`read_app_secret`), which every sandbox masks; the agent-readable `apps/<name>/` holds no secret. An `apps/<name>/.app_secret` an older version left is never read, and a read never replaces it. Only the places where the app gets what the secret grants do: the backend spawn (`replace_legacy_app_secret`, delivered as `KIROCREW_PROXY_SECRET`), the load of an app's in-process hooks (`hooks_integration._prepare_hook_load`), and an owner registration (returned in its response). Code that runs in the gateway process holds no secret: its `AppContext.app_token()` mints the same app token behind the same owner-enable marker (`issue_in_process_app_token`), audited as `app_token_exchange` with source `app_context`. The app-scope check re-reads the marker on every request (off the event loop), so a disable ends an existing token's API grants at once. An app enabled before the marker existed cannot mint until the owner enables it again. A self-managed app registered by a release that kept its secret in the app's folder gets the marker from its next owner registration instead, when its record has no stored secret, the upgrade's one-time import sealed its grant set, no owner disable stands, and governance permits the app. A record planted after the upgrade under a name with no sealed set does not qualify, and neither does one this route registered, which has a stored secret.
 
 An **app token** (payload carries a non-empty `app` claim, minted by the `X-App-Secret` exchange at `POST /api/apps/<name>/token`) must not have the same reach as a dashboard-user token. `_enforce_app_scope(request, app_name, path)` applies least privilege, **deny-by-default**:
 
 - An app token may access **only** (1) its **own namespace** — `/apps/<name>/...` and `/api/apps/<name>/...`, matched on a path boundary so app `foo` cannot reach app `foo-bar` — and (2) the API path prefixes the app declared in its manifest `permissions.api` allowlist (`_app_api_allowlist`, cached ~30s; any load failure returns an empty tuple → confined to its own namespace only; entries an update added stay out until the owner approves them, see `approved-grants.json` in app-kit-platform §13). Everything else is a 403 with an `app_scope_check` SEL audit event.
+- On an `/api/` path the 403 body says why and what clears it (`app_scope_refusal.py`): `code` is `app_disabled` when the owner-enable marker is gone (the prime and the allowlist read both record it, and it outranks every other cause), `app_permission_not_approved` when a declared entry the owner has not approved covers the path, `app_permission_not_declared` when no declared entry covers it, and `app_permission_unavailable` when the grant could not be read or an update is swapping the app's files. `error` holds the cause and the steps in text the app can log; for the first three codes that includes the app's page (`/apps/detail/<name>`) where the owner clicks "Enable" or "Approve new permissions", and `pending_approval` lists the held-back entries that cover the path. The wording reads only what the allowlist read stored beside its entry under the same timestamp (`_app_grant_facts`, filled by `_read_grant_facts` through `apps.manager.held_back_app_grants`), so the refusal path reads no disk, and a failure there never changes the allowlist. Any other path keeps `_deny`'s sign-in page with its fixed reason, because that page quotes the reason unescaped.
 - It is enforced in **every** middleware branch that admits a token (the normal cookie/query-param flow and the cross-app `/apps/<other>/api` reverse-proxy re-check) — otherwise an app token could reach a mixed internal path (e.g. `/api/chat`, `/api/spawn`) with no app identity set and be mistaken for the dashboard user (privilege escalation).
 - It is a **no-op for dashboard-user tokens** (empty `app` claim), which bypass the gate entirely.
 
@@ -855,7 +1036,7 @@ app.middlewares[:] = [
         internal_paths=_STRICT_INTERNAL_API_PATHS,
         mixed_internal_paths=_mixed_internal_api_paths(),
         local_only=local_only,
-        spa_shell_handler=handlers.index,
+        spa_shell_handler=None if app.get(HEADLESS_KEY, False) else handlers.index,
         ...,
     ),
     sel_audit_middleware,
@@ -863,7 +1044,7 @@ app.middlewares[:] = [
     slot_ownership_middleware,
     spa_fallback,
 ]
-_insert_lts_gate(app, spa_shell_handler=handlers.index)  # nothing in an oss build
+_insert_lts_gate(app, spa_shell_handler=None if app.get(HEADLESS_KEY, False) else handlers.index)  # nothing in an oss build
 # appended before runner.setup(): _workflow_ready, then _crewmate_prune_gate
 site = web.SockSite(runner, _dashboard_sock)
 # _dashboard_sock: _reserve_dashboard_port(bind_address_for(local_only), port)
@@ -1304,6 +1485,7 @@ already names where to sign in.
 | Messaging link generated | `slack.dashboard_token`, `telegram.dashboard_token`, `teams.dashboard_token`, or `webex.dashboard_token` | `ok` | `ttl=<seconds>` |
 | Request accepted | `dashboard.token_auth` | `ok` | request path |
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
+| `?token=` refused, session cookie beside it authenticated instead | `dashboard.token_auth` | `query_token_rejected` | the link's refusal reason (`token expired`, `invalid signature`, `token superseded`, ...); the token itself is never logged. The request proceeds on the cookie, which grants nothing a cookie-only request would not: no exchange, no new cookie, and no `on_token_consumed` call, so a Slack challenge link refused this way opens no window. Written by the main flow and by both internal-path cookie branches (`_log_query_token_refused`); `_extract_and_validate_token` only returns the refusal reason, so each caller names the caller through `_audit_uid`, the verified peer login when a tailnet peer resolved, like the request's other rows. The request's own row follows it: `ok`, or `denied` when the cookie's peer pin does not match. |
 | Internal-route request granted (loopback `X-Internal-Secret`, or an agent-socket capability) | `internal_auth`, `source=token_auth` | `granted` | request path; caller is the peer address (empty on a unix socket, the dashboard's or the agent socket), or the verified tailnet login; `error` is `agent socket capability` for an agent-socket grant. The grant branch writes no `dashboard.token_auth` row with caller `internal` beside it, because that row would carry no fact this one lacks. An agent-socket request also carries the agent-socket gate's own `dashboard.token_auth` `granted` row (caller `agent-ipc`), which the same middleware writes earlier. The internal arm's secret refusals (no secret configured, a wrong or empty secret, a delegated caller whose record is gone) each write both an `internal_auth` and a `dashboard.token_auth` `denied` row. |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |
 

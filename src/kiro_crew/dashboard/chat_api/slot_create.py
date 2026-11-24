@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
-        is_sensitive_canonical_path,
         logger,
         members_mod,
         owner_start_priority,
@@ -75,8 +74,8 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_not_found,
         tags_write_lock,
+        usable_default_project,
         validate_folder_tag_ids,
-        voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
     )
     from kiro_crew.remote_dispatch_mailbox import MailboxRequest
@@ -152,19 +151,7 @@ async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> 
     cfg_proj = cfg.dashboard.default_project if cfg else ""
 
     def resolve() -> str:
-        if isinstance(cfg_proj, str) and cfg_proj:
-            resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-            # *resolved* is canonical, so the canonical gate judges it: it answers
-            # inline off the loop, where a resolver stall cannot read as a match.
-            # A configured default that overlaps the data home would be refused
-            # at spawn anyway, so it is skipped here like a sensitive path.
-            if (
-                os.path.isdir(resolved)
-                and not is_sensitive_canonical_path(resolved)
-                and voice_runtime_workspace_conflict(resolved) is None
-            ):
-                return resolved
-        return default_project_dir(workspace)
+        return usable_default_project(cfg_proj) or default_project_dir(workspace)
 
     # Off the loop: every branch, the workspace fallback included, touches the
     # disk or reloads config.
@@ -934,8 +921,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # failing the turn. The folder's un-hide and claim are writes, so
             # they run once nothing later can refuse the create (below);
             # this only reads whether the folder is there.
+            # An agent-socket call carries no secret but is marked internal_auth.
             claim_folder = (
-                folder_id != previous_folder and request.headers.get("X-Internal-Secret") is None
+                folder_id != previous_folder
+                and request.headers.get("X-Internal-Secret") is None
+                and request.get("internal_auth") is not True
             )
             if not await state.read_folders(
                 lambda folders: any(f["id"] == folder_id for f in folders)

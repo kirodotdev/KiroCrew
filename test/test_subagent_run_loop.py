@@ -23,7 +23,7 @@ from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 # Bound on draining the held usage-row task; it ends on its own once its
 # worker-thread append returns.
@@ -38,6 +38,7 @@ class TestSubagentPostToolUseHook:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
     async def test_post_tool_use_fires_on_tool_result(self) -> None:
         """PostToolUse hook is called with tool_name + tool_response after EVENT_TOOL_RESULT."""
         from kiro_crew.providers.base import (
@@ -104,23 +105,32 @@ class TestSubagentPostToolUseHook:
             f"PostToolUse should receive cached tool_name with 'Running: ' "
             f"stripped, got {kwargs['tool_name']!r}"
         )
-        assert kwargs["tool_response"] == {"output": "hello world"}
+        assert kwargs["tool_response"] == {
+            "output": "hello world",
+            "truncated": False,
+            "output_length": len("hello world"),
+        }
         # The child's own key, for per-session attribution, beside the
         # parent's key that marks the event as a subagent's.
         assert kwargs["session_key"] == "subagent:t01"
         assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
-    async def test_post_tool_use_truncates_long_output(self) -> None:
-        """PostToolUse output is capped at 2000 chars to bound hook payload size."""
+    @pytest.mark.usefixtures("close_subagent_managers")
+    @pytest.mark.parametrize("head", ["", "key: {secret}\n"])
+    async def test_post_tool_use_truncates_long_output(self, head: str) -> None:
+        """PostToolUse output is capped at 2000 chars of the redacted output, whose length it reports."""
+        from redaction_structured_cases import github_classic
+
         from kiro_crew.providers.base import (
             EVENT_TOOL_CALL,
             EVENT_TOOL_RESULT,
             LLMEvent,
         )
-        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent import SubagentInfo, SubagentManager, _redact
 
-        long_output = "x" * 5000
+        long_output = head.format(secret=github_classic(seed=38)) + "x" * 5000
+        redacted = _redact(long_output)
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(
@@ -168,9 +178,12 @@ class TestSubagentPostToolUseHook:
             if c.args and c.args[0] == "PostToolUse"
         ]
         assert len(post_calls) == 1
-        output = post_calls[0].kwargs["tool_response"]["output"]
+        response = post_calls[0].kwargs["tool_response"]
+        output = response["output"]
         assert len(output) == 2000
-        assert output == "x" * 2000
+        assert output == redacted[:2000]
+        assert response["truncated"] is True
+        assert response["output_length"] == len(redacted)
 
     @pytest.mark.asyncio
     async def test_post_tool_use_no_hook_store_is_noop(self) -> None:
@@ -216,7 +229,8 @@ class TestSubagentPostToolUseHook:
         assert not info.error
 
     @pytest.mark.asyncio
-    async def test_post_tool_use_hook_exception_is_swallowed(self) -> None:
+    @pytest.mark.usefixtures("close_subagent_managers")
+    async def test_post_tool_use_hook_exception_is_swallowed(self, caplog) -> None:
         """Hook errors are caught and don't break the subagent stream."""
         from kiro_crew.providers.base import (
             EVENT_COMPLETE,
@@ -255,7 +269,11 @@ class TestSubagentPostToolUseHook:
         )
         manager._log_spawned(info)
 
-        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            caplog.at_level("WARNING", logger="kiro_crew.subagent"),
+        ):
             await manager._run_inner(info, "subagent:t04")
 
         post_calls = [
@@ -266,6 +284,63 @@ class TestSubagentPostToolUseHook:
         assert [c.kwargs["tool_name"] for c in post_calls] == ["X"]
         assert info.done is True
         assert not info.error
+        # The raise is a warning an operator sees, not a DEBUG line.
+        raised = [
+            r for r in caplog.records if r.getMessage() == "PostToolUse hook error in subagent"
+        ]
+        assert [r.levelname for r in raised] == ["WARNING"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
+    @pytest.mark.parametrize(("exit_code", "warned"), [(3, True), (0, False)])
+    async def test_a_failed_post_tool_use_hook_logs_one_warning(
+        self, caplog, exit_code: int, warned: bool
+    ) -> None:
+        """A hook that exits non-zero with an empty stderr still names itself in a WARNING."""
+        from kiro_crew.hooks import ScriptHookResult
+        from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
+            yield LLMEvent(kind=EVENT_TOOL_CALL, title="X", tool_call_id="t-5")
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="t-5", tool_output="ok", tool_final=True
+            )
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.hooks.auto_approve_subagent_tools = True
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        manager.hook_store = MagicMock()
+        result = ScriptHookResult(
+            hook_id="h1", hook_name="h", event="PostToolUse", exit_code=exit_code, stderr=""
+        )
+
+        async def _fire(event, *_a, **_kw):  # type: ignore[no-untyped-def]
+            return [result] if event == "PostToolUse" else []
+
+        manager.hook_store.fire = AsyncMock(side_effect=_fire)
+        info = SubagentInfo(
+            execution_context=execution_for_store(""), id="t05", task="test", parent_session_key=""
+        )
+        manager._log_spawned(info)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            caplog.at_level("WARNING", logger="kiro_crew.subagent"),
+        ):
+            await manager._run_inner(info, "subagent:t05")
+
+        hook_warnings = [
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("Hook ")
+        ]
+        expected = ["Hook h (PostToolUse) failed: exited with code 3"] if warned else []
+        assert hook_warnings == expected
 
 
 class TestSubagentParallelToolAttribution:
@@ -469,6 +544,75 @@ class TestSubagentUsageRow:
         assert accounting.total.cache_creation_tokens == 4
         assert accounting.total.cost_usd == pytest.approx(0.03)
 
+    def test_a_dollar_billed_settle_puts_the_cost_on_the_record(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-dollars", task="bill in dollars")
+        accounting = _RunCreditAccounting(info)
+        accounting.begin(MagicMock())
+        accounting.settle(
+            AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+        )
+
+        assert info.credits == 0.0
+        assert getattr(info, "cost_usd", None) == pytest.approx(0.0123)
+
+    def test_a_continued_run_starts_from_its_recorded_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-continued", task="continue")
+        info.cost_usd = 0.5
+        accounting = _RunCreditAccounting(info)
+        assert accounting.total.cost_usd == pytest.approx(0.5)
+
+        accounting.begin(MagicMock())
+        accounting.settle(AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(cost_usd=0.25)))
+
+        assert info.cost_usd == pytest.approx(0.75)
+
+    @pytest.mark.asyncio
+    async def test_the_done_frame_carries_a_dollar_billed_runs_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+
+        async def _complete_stream(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _complete_stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        done_payloads: list[dict[str, object]] = []
+
+        async def track_event(etype: str, _info: object, extra: dict) -> None:
+            if etype == "subagent_done":
+                done_payloads.append(extra)
+
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+            on_event=track_event,
+            on_done=AsyncMock(),
+            is_yolo=lambda: True,
+        )
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async", AsyncMock()),
+        ):
+            info = manager.spawn("bill in dollars")
+            assert info is not None
+            await manager._tasks[info.id]
+
+        assert len(done_payloads) == 1
+        assert done_payloads[0]["credits"] == 0.0
+        assert done_payloads[0].get("cost_usd") == pytest.approx(0.0123)
+
     @pytest.mark.parametrize("credits", [True, -1.0, float("nan"), float("inf")])
     def test_credit_accounting_rejects_invalid_provider_credits(self, credits: object) -> None:
         from kiro_crew.acp.types import AcpEvent, TurnUsage
@@ -659,6 +803,82 @@ class TestSubagentUsageRow:
         assert credits_at_readmission == [0.75]
         assert len(attempts) == (2 if ending == "complete" else 1)
         assert info.credits == pytest.approx(1.25 if ending == "complete" else 0.75)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "nothing-streamed",
+            "text-streamed",
+            "subagent-streamed",
+            "co-tenant-roster",
+            "stop-hook-continuation",
+        ],
+    )
+    async def test_a_probed_prompt_that_streamed_nothing_is_sent_again(self, case) -> None:
+        """The agent may not hold a prompt it never answered, so a stale_recover
+        before any output re-sends the prompt that was probed (the run's own, or
+        a Stop hook's continuation). After output, a native sub-agent's report
+        included, it nudges; a co-tenant's fanned-out roster is not this run's."""
+        from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER, AcpEvent
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_SUBAGENT_LIST, EVENT_TEXT_CHUNK
+        from kiro_crew.subagent import SubagentInfo
+
+        provider = MagicMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.last_infra_error = None
+        prompts: list[str] = []
+        continued = case == "stop-hook-continuation"
+        probed = 2 if continued else 1
+
+        async def stream(*args, **kwargs):
+            prompts.append(args[0])
+            if len(prompts) == probed:
+                if case == "text-streamed":
+                    yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
+                if case in ("subagent-streamed", "co-tenant-roster"):
+                    yield AcpEvent(
+                        kind=EVENT_SUBAGENT_LIST,
+                        subagents=[{"sessionId": "child-1"}],
+                        runtime_global=case == "co-tenant-roster",
+                    )
+                yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_STALE_RECOVER)
+                return
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        provider.stream = stream
+        sessions = _mock_sessions()
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto_spawn())
+        info = SubagentInfo(
+            id="stalerecover",
+            task="answer the question",
+            execution_context=execution_for_store(""),
+        )
+        manager._log_spawned(info)
+        nudge = "continue the interrupted work"
+        hook_next = ["check the answer once more"] if continued else []
+
+        async def stop_continuation(*_a, **_k):
+            return hook_next.pop() if hook_next else None
+
+        with (
+            patch.object(manager, "_yield_for_stop_recovery", new=AsyncMock(return_value=nudge)),
+            patch.object(manager, "hook_store", new=MagicMock()),
+            patch(
+                "kiro_crew.subagent_manager.stop_hooks.child_stop_continuation",
+                new=stop_continuation,
+            ),
+        ):
+            await manager._run_inner(info, "subagent:stalerecover")
+
+        assert len(prompts) == probed + 1
+        assert prompts[probed - 1] != nudge
+        if continued:
+            assert prompts[1] == "check the answer once more"
+        streamed = case in ("text-streamed", "subagent-streamed")
+        assert prompts[probed] == (nudge if streamed else prompts[probed - 1])
 
     @pytest.mark.asyncio
     async def test_turn_limit_preserves_credits_before_tombstoning(self) -> None:

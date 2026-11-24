@@ -45,6 +45,9 @@ READING_TTL_SECS = 300.0
 
 _lock = threading.Lock()
 _shared: OrderedDict[str, tuple[bool, bool, float]] = OrderedDict()
+#: Whether the same reading said the channel is private (``is_private``), for a
+#: Conductor thread's room check. Kept and dropped with its ``_shared`` entry.
+_private: dict[str, bool] = {}
 _refreshing: set[str] = set()
 
 
@@ -62,11 +65,16 @@ def note_channel_info(info: Any) -> None:
     with _lock:
         if not isinstance(shared, bool) or not isinstance(archived, bool):
             _shared.pop(channel_id, None)
+            _private.pop(channel_id, None)
             return
         _shared[channel_id] = (shared, archived, time.monotonic())
+        # ``is_private`` reads False when Slack left it out, so "not private" is
+        # all a False here can vouch for: a room check reads it as "refuse".
+        _private[channel_id] = getattr(info, "is_private", False) is True
         _shared.move_to_end(channel_id)
         while len(_shared) > MAX_CHANNELS:
-            _shared.popitem(last=False)
+            dropped, _entry = _shared.popitem(last=False)
+            _private.pop(dropped, None)
 
 
 def channel_shared(channel_id: str) -> bool | None:
@@ -93,16 +101,30 @@ def channel_archived(channel_id: str) -> bool | None:
     return archived
 
 
+def channel_private(channel_id: str) -> bool | None:
+    """``True`` Slack said private, ``False`` not confirmed private, ``None`` unknown or stale."""
+    with _lock:
+        entry = _shared.get(channel_id)
+        private = _private.get(channel_id)
+    if entry is None or private is None:
+        return None
+    if time.monotonic() - entry[2] > READING_TTL_SECS:
+        return None
+    return private
+
+
 def forget(channel_id: str) -> None:
     """Drop the reading for *channel_id* (it reads "unknown" until the next one)."""
     with _lock:
         _shared.pop(channel_id, None)
+        _private.pop(channel_id, None)
 
 
 def clear() -> None:
     """Forget every reading (tests)."""
     with _lock:
         _shared.clear()
+        _private.clear()
         _refreshing.clear()
 
 

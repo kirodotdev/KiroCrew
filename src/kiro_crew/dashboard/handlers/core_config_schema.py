@@ -196,6 +196,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
+    "agent.role_models.optimizer": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+        "validate_fn": _validate_role_model,
+    },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
     # to the backend's availability-aware routing; a concrete id is tried first
     # with "auto" as the final fallthrough; "" disables the feature. Same
@@ -224,6 +230,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.role_efforts.background": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.role_efforts.subagent_light": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    "agent.role_efforts.optimizer": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
     # every value here still ends: the timed ones are capped at the SafetyOverride
@@ -419,6 +426,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
+    "dashboard.warm_task_brief": {"type": "bool"},
     # Reply threads on crewmate chat messages. Read live by
     # ``dashboard/chat_threads.py`` (routes) and ``dashboard/ws.py`` (the
     # thread frame); off by default, and the Settings toggle under Crewmates is
@@ -529,6 +537,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # destination crew). It only orders the menu: nothing is sent until the
     # person clicks. Capped like a folder's default_destination_crew.
     "instances.default_destination": {"type": "str", "max_len": MAX_CREW_REF_LEN},
+    # Settings → Remote Crew → Crews kept loaded: 0 is automatic; an explicit
+    # value is honoured exactly, with no tighter maximum than the PATCH default.
+    "instances.warm_set_cap": {"type": "int", "min": 0},
     # Skills: opt in to automatic skill generation (Settings → Skills). Both
     # default OFF/ON respectively in SkillsConfig; generated candidates still
     # require approval unless approval_required is turned off (scripts always

@@ -390,6 +390,28 @@ async def switch_slot_agent(
     in-turn ``/agent <name>`` command. Answers the route's own responses, so a
     non-HTTP caller reads ``status`` and the JSON ``error``/``code`` body.
     """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.session_control_parts.caller_access import code_channel_binding_of
+    from kiro_crew.slack import conductor_thread
+
+    bound = code_channel_binding_of(state, slot)
+    if getattr(bound, "thread", False) is True and agent_name not in crew_mode.conductor_agents():
+        # A Conductor thread's session keeps a conductor for good: the dispatch
+        # exemption keys on the thread's binding, so a non-conductor would inherit
+        # it. Moving to another conductor (the Crew Mode migration after
+        # ``agent.crew_mode_agent`` changes) keeps the thread what it is.
+        sel().log_api_access(
+            caller=caller.remote,
+            operation="chat.slot_agent",
+            outcome="denied",
+            source="conductor_thread",
+            resources=f"slot={slot.key}",
+            error="conductor thread agent is locked",
+        )
+        return web.json_response(
+            {"error": conductor_thread.LOCKED_TEXT, "code": "conductor_thread_agent_locked"},
+            status=409,
+        )
     if slot.mode == members_mod.DM_SLOT_MODE and not members_mod.is_dispatchable_member_name(
         slot.agent
     ):

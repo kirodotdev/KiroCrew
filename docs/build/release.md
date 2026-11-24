@@ -247,7 +247,12 @@ code.
      not a build failure: the pinned artifact stays downloadable under its own
      version prefix, which is also why a hotfix rebuild of an older tag keeps
      working after upstream releases. See [desktop-app](desktop-app.md) "Bundled
-     kiro-cli".
+     kiro-cli". Whether or not you bump the kiro-cli pin, compare the trigger
+     alias table of the engine the newest kiro-cli release runs with
+     Kiro Crew's, as the paragraph after "Bumping:" in
+     `src/kiro_crew/acp/kas_pin.py` describes, and open an issue for any
+     difference no open issue already tracks: that engine can be newer than
+     the pin, and a spelling Kiro Crew lacks is a spec hook it refuses.
    - *VC++ runtime pin (read by the same `BUNDLE_KIRO_CLI=1` Windows build)*:
      `packaging/vc-runtime-pin.json` pins the Microsoft Visual C++
      redistributable whose `vcruntime140*.dll` and `msvcp140*.dll` are staged
@@ -686,7 +691,14 @@ the same name the fresh path wrote into its own gated artifact. On `release.yml`
 the two single-arch callers are required lanes beside the universal one:
 `record-promotion`, `github-release` and `record-stable-promotion` all wait on
 all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
-with the matching `*-mac.zip`.
+with the matching `*-mac.zip`. `nightly.yml` splits each of its three calls in
+two with the `stage` input: `sign-and-notarize*` (`stage: prepare`: `sign` and
+`notarize`, nothing public) starts as soon as `build-desktop` is done, and
+`publish-macos*` (`stage: publish`: `blockmap` and `publish`, reading the same
+run's gated artifact) waits for it and for the nightly's publish gates. That
+takes signing and Apple notarization off the back of the macOS test suite.
+`release.yml` and `release-lts.yml` leave `stage` empty and run the four jobs
+as one call.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
@@ -1037,7 +1049,12 @@ event-emitting check, stored in `this.updateInfoAndProvider`, and
 `getUpdateInfoAndProvider()`, the read that emits nothing, never sets it. That is why
 the click's freshness gate in `runtime/update/feed-lane.js` runs a real
 `checkForUpdates()` rather than a read; when that test fails, re-read that gate before
-the bump lands. The version range stays a caret on purpose: `npm ci` builds
+the bump lands. The pre-install gate in `runtime/update/freshness-gate.js` is the one
+that reads: `isUpdaterActive()`, then `getUpdateInfoAndProvider()` judged by
+`isUpdateAvailable()`, the rule `doCheckForUpdates()` decides with.
+`electron-updater-error-identity.test.js` also asserts that none of the three emits an
+event and that a check still decides with that rule; when that test fails, re-read the
+pre-install gate. The version range stays a caret on purpose: `npm ci` builds
 from `package-lock.json`, so resolution is already exact in CI, and the canary is
 the general guard for both premises rather than a frozen version number.
 
@@ -1191,17 +1208,17 @@ always applies the NEWEST build.** A download can sit staged for hours while
 newer releases publish, and installing it then applies a superseded build the
 user must immediately update again. The quit-time install therefore calls
 `verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
-It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
-and reads the verdict back out of the existing handlers, so the direction gate
-and the retraction path make the decision rather than a second copy of that
-rule. Four outcomes:
+It reads the feed without a check: electron-updater's own fetch and its own
+"is there an update" rule (the version, the build's minimum OS version and the
+staged-rollout share), with no update event and nothing touched, judged by the
+same function the `update-available` handler uses, so the direction gate decides
+rather than a second copy of that rule. A check already in flight is waited for
+instead, and its handlers' verdict is read back out of the stage. Four outcomes:
 
 - `latest` — the feed still serves the staged version, so the install proceeds.
 - `superseded` — a newer build published, or the release was retracted. The
-  install is REFUSED and the newer build pursued instead. On the manual path the
-  card moves to what the feed now serves (the newer build's `found` or
-  `downloading`, or "up to date" for a retraction) with no separate notice; the
-  quit path explains the refusal in a native notification (below).
+  install is REFUSED and the quit explains why in a native notification (below);
+  the next launch's check offers what the feed serves then.
 - `channel-changed` — the stage came from a channel this install no longer
   follows, or the check that judged it was sent to one. Every stage and every
   offer records the channel whose feed served it, so the install is REFUSED
@@ -1214,15 +1231,14 @@ rule. Four outcomes:
 - `unknown` — **fail open.** The feed was unreachable, or answered nothing
   within 8s. Bytes the user already downloaded must not become uninstallable
   because the network went away, so the stage installs, exactly as an install
-  without the gate would. A check the gate stops waiting for is marked
-  abandoned, so its late answer or failure cannot touch the stage or the
-  dispatch.
+  without the gate would. A read the gate stops waiting for has nothing to land,
+  and a check it stops waiting for is marked abandoned, so its late answer or
+  failure cannot touch the stage or the dispatch.
 
-The gate's own re-check is kept off the renderer: its `checking`, a failure
-it folds into `unknown`, and a restated `downloaded` for a stage that is still
-the newest are not pushed, so the ready card stays up during the wait and, on the
-quit path, the `installing` overlay emitted before the gate stays up through the
-gateway stop.
+The gate's read reaches the renderer not at all, and a check it waits for is kept
+off it: that check's failure, folded into `unknown`, and a restated `downloaded`
+for a stage that is still the newest are not pushed, so on the quit path the
+`installing` overlay emitted before the gate stays up through the gateway stop.
 
 **A Download click re-checks the feed the same way before it spends the
 transfer.** With auto-download off, a `found` card can wait hours for its click,

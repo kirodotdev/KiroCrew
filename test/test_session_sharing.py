@@ -17,6 +17,7 @@ import pytest
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -812,6 +813,56 @@ class TestSessionSharingMultiAgent:
         calls = sessions.get_subagent_runtime.await_args_list
         assert calls[0].args[0] == "dashboard:slot1"
         assert calls[1].args[0] == "dashboard:slot1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host", ["parent", "companion"])
+    @pytest.mark.parametrize(
+        ("backend", "second_shares"), [(ACP_BACKEND_CODEX, False), (ACP_BACKEND_KIRO, True)]
+    )
+    async def test_a_codex_process_takes_no_subagent_once_one_has_left_it(
+        self, host, backend, second_shares
+    ):
+        """codex's ``session/close`` leaves the closed session's MCP fleet running.
+
+        So once a subagent has left a codex process, the parent's next subagent
+        gets a process of its own instead of adding another fleet there. On the
+        parent's own process and on a companion alike; kiro-cli keeps sharing.
+        """
+        sessions = _mock_sessions(sharing_eligible=True)
+        runtime = sessions.get_subagent_runtime.return_value
+        runtime.acp_backend = backend
+        runtime.subagent_departed = False
+        if host == "parent":
+            parent_client = MagicMock(spec=AcpSessionProvider)
+            parent_client._runtime = runtime
+            sessions.get_provider.return_value = MagicMock(client=parent_client)
+        else:
+            sessions._subagent_runtimes = {"dashboard:slot1": runtime}
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+        # The second spawn follows the first inside the stagger window, which would
+        # queue it and return a placeholder that never completes.
+        manager._spawn_stagger_secs = 0.0
+
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            first = manager.spawn("task A", parent_session_key="dashboard:slot1")
+            await _wait_until_done(first)
+            handle = runtime.create_session.return_value
+            await _wait_until_awaited(handle.destroy, "handle.destroy")
+            second = manager.spawn("task B", parent_session_key="dashboard:slot1")
+            await _wait_until_done(second)
+
+        assert first._session_sharing is True
+        assert second._session_sharing is second_shares
+        assert runtime.create_session.await_count == (2 if second_shares else 1)
+        assert sessions.get_or_create.await_count == (0 if second_shares else 1)
 
     @pytest.mark.asyncio
     async def test_two_subagents_different_parents_get_separate_runtimes(self):

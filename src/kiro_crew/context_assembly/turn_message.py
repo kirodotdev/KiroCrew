@@ -188,7 +188,7 @@ def build_message(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew import session_head as _session_head
     from kiro_crew.agent_sdk import context_provider_of
-    from kiro_crew.essential_delivery import EssentialDelivery
+    from kiro_crew.essential_delivery import RULES_SLOT, EssentialDelivery
 
     # Before any blocking step: a build its cancelled turn left running on the
     # worker must not read after the session's next turn has.
@@ -404,9 +404,9 @@ def build_message(
                 project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
-                is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=not slim_resume,
+                provider_type=provider_type,
             )
         )
         # Not when the harness holds this exact text as the agent's own prompt
@@ -927,13 +927,32 @@ def build_message(
         # a sub-agent with no project); its mapping only narrows the triggered
         # set, which, like scoped_skills, reads from *project* alone.
         template_root = project or template_dir
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
-        if pinned is not None:
-            mapped = pinned
-        elif agent:
-            mapped = ctx.agent_skill_globs(agent, project_dir=template_root)
-        else:
-            mapped = []
+        mapped: list[str] = []
+        if triggered:
+            from kiro_crew.agent_discovery import SkillScopeResolutionError
+
+            try:
+                # Strict, as skill_search is: a scope that cannot be read
+                # admits no triggered skill rather than every one.
+                pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root, strict=True)
+                if pinned is not None:
+                    mapped = pinned
+                elif agent:
+                    # The session key names a Bot's worker's crewmate, whose
+                    # merged spec holds the worker's mapping.
+                    mapped = ctx.agent_skill_globs(
+                        agent,
+                        project_dir=template_root,
+                        strict=True,
+                        session_key=session_key or "",
+                    )
+            except SkillScopeResolutionError as exc:
+                logger.warning(
+                    "Triggered skills dropped: the skill scope of agent %r cannot be resolved: %s",
+                    agent,
+                    exc,
+                )
+                triggered = []
         if mapped:
             allowed = _mapped_trigger_keys(self.skills, project, mapped)
             triggered = [key for key in triggered if key in allowed]
@@ -1223,11 +1242,10 @@ def build_message(
                 _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
             ),
         )
-    elif (
+    if (
         delivery is not None
         and context_provider is not None
         and _rules_block
-        and not _private_owner
         # H6, ``is True``: only a provider that says so. One that does not say,
         # and any stand-in whose attributes answer truthy to everything, is
         # "not known" and keeps the block on every message.
@@ -1239,12 +1257,8 @@ def build_message(
         # this conversation has acknowledged it, and goes out again after
         # anything the delivery knows can drop it (a start, a clear, a
         # compaction, an agent switch, a cancel, a failed turn, another
-        # conversation). The delivery holds one envelope, so a member turn, whose
-        # essentials take it, keeps the block on every message.
-        # shortcut: a member turn whose essentials came out empty binds nothing,
-        # so a rules envelope an earlier turn with no owner had acknowledged on
-        # the same provider would still be taken out of it; upgrade with a
-        # second envelope slot in the delivery.
+        # conversation). It has its own slot, beside a member's essentials, so a
+        # member turn is sent it once per conversation too.
         try:
             delivery.bind(
                 _rules_block.translate(ctx._MULTIBYTE_TABLE),
@@ -1257,6 +1271,7 @@ def build_message(
                 # re-injection flag. The flag is also set for compactions the
                 # delivery did see, where it finds nothing left to void.
                 force=needs_reinjection,
+                slot=RULES_SLOT,
             )
         except Exception:  # noqa: BLE001 - a saving must never fail the build
             # Nothing was bound (the provider could not name its conversation),

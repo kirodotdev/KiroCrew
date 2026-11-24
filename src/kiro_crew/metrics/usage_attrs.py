@@ -135,6 +135,11 @@ def set_current_trigger(value: str) -> contextvars.Token:
     return _CURRENT_TRIGGER.set(trigger_source(value))
 
 
+def reset_current_trigger(token: contextvars.Token) -> None:
+    """Put back the trigger *token* replaced (from ``set_current_trigger``)."""
+    _CURRENT_TRIGGER.reset(token)
+
+
 def current_trigger() -> str | None:
     """The trigger the running turn declared, or ``None`` when none did."""
     return _CURRENT_TRIGGER.get()

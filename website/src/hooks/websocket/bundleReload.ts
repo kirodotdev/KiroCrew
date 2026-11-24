@@ -4,18 +4,20 @@
  *  A status frame is stored unless it proves the bundle stale. Two
  *  independent signals: the `dashboard` status frame's `version` and
  *  served-bundle hash moving between pushes, which reaches every open tab;
- *  and the per-tab restart latch an in-app update arms on its `restarting`
- *  step, which the next reconnect consumes, so the tab that watched the
- *  update reloads at once, before any status frame arrives. */
+ *  and the per-tab restart latch an in-app update (or a plain restart, unless
+ *  the tab that asked waits through it) arms on its `restarting` step, which
+ *  the next reconnect consumes, so the tab that watched the update reloads at
+ *  once, before any status frame arrives. */
 import { useMemo, useRef } from 'react'
 import type { AppDispatch, RootState } from '../../store'
 import { sseStatus, setUpdateProgress } from '../../store/dashboardSlice'
 import { noteSignInCommand } from '../../api/signInCommand'
 import type { StatusData } from '../../types'
 import type { FrameData } from './frames'
-import { UPDATE_RESTART_LATCH_TTL_MS, clearGatewayRestart, noteGatewayRestart } from '../../lib/gatewayRestart'
+import { UPDATE_RESTART_LATCH_TTL_MS, clearGatewayRestart, noteGatewayRestart, takeRestartKeepsTab } from '../../lib/gatewayRestart'
 
-/** sessionStorage key latched when an in-app update reaches its `restarting`
+/** sessionStorage key latched when an in-app update, or a plain restart the
+ *  tab that asked for it does not wait through, reaches its `restarting`
  *  step. The gateway then execs itself and the socket drops; on the next
  *  successful reconnect the latch tells this tab to reload — the signal the
  *  version comparison cannot give when a git checkout rebuilds the SAME
@@ -51,7 +53,9 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   // tab's bundle must be reloaded (a same-version rebuild moves
   // neither `version` nor anything else the tab compares).
   if (prog.step === 'restarting') {
-    try { sessionStorage.setItem(UPDATE_RESTART_LATCH_KEY, String(Date.now())) } catch { /* best effort */ }
+    if (!takeRestartKeepsTab()) {
+      try { sessionStorage.setItem(UPDATE_RESTART_LATCH_KEY, String(Date.now())) } catch { /* best effort */ }
+    }
     noteGatewayRestart()
   } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
     // A failure AFTER `restarting` was pushed (invalid exe path) means

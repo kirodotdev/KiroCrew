@@ -240,3 +240,18 @@ class TestCrossReferences:
         from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
         assert "connections.md" in TIP_DOC_ALLOWLIST
+
+
+class TestWhereAServerIsAdded:
+    """A hand-added server goes on MCP Servers; Settings → Connections has no add control."""
+
+    def test_a_hand_added_server_is_sent_to_the_mcp_servers_page(self, flat: str) -> None:
+        intro = flat.split("## The vendor catalogue", 1)[0]
+        adding = flat.split("## Adding your own MCP server", 1)[1].split("### ", 1)[0]
+        for name, part in (("the intro", intro), ("'Adding your own MCP server'", adding)):
+            assert "**MCP Servers**" in part, f"connections.md: {name} does not name MCP Servers"
+            assert "on the same page" not in part, f"connections.md: {name} says 'the same page'"
+        assert "`/mcp`" in adding, "connections.md: 'Adding your own MCP server' omits `/mcp`"
+        assert "This page is the place to add" not in adding
+        app = (_REPO / "website/src/App.tsx").read_text(encoding="utf-8")
+        assert '<Route path="/mcp"' in app, "the dashboard no longer routes /mcp"

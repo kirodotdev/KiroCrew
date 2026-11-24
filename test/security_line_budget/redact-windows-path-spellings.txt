@@ -1,0 +1,4 @@
++15
+redaction._LOCAL_PATH_RE gains the Windows host-path spellings with no drive-letter colon
+(Cygwin /cygdrive/c/, MSYS /c/<root>/, and UNC \\host\share, which covers WSL and \\?\UNC)
+and names its POSIX roots once so the MSYS branch can reuse them.

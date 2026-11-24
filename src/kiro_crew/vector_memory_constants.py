@@ -93,6 +93,44 @@ _INJECTION_PATTERNS = [
 ]
 
 
+# Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt): characters that
+# render as nothing, such as U+200B ZERO WIDTH SPACE, U+00AD SOFT HYPHEN or a
+# variation selector. Written out because the stdlib has no lookup for the property.
+# Matches a whole run of them.
+_DEFAULT_IGNORABLE_RE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+    r"\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
+    r"\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]+"
+)
+
+# An invisible character can sit inside a word ("ig\u200bnore") or be the only
+# thing between two words ("you\u200bare\u200bnow"). Neither removing it nor
+# reading it as a space suits both, so each run of them becomes one WORD JOINER
+# and the patterns are rewritten to let it stand between two letters of a word
+# or count as whitespace. Words fused without one ("forgetAll") stay unmatched.
+_INVISIBLE_MARK = "\u2060"
+_INJECTION_PATTERNS_INVISIBLE = [
+    re.compile(
+        # After a letter, or a letter made optional ("instructions?"), and
+        # before a letter or a colon; never after an escape such as ``\s``.
+        re.sub(
+            r"((?<=[A-Za-z])(?<!\\[A-Za-z])|(?<=[A-Za-z]\?))(?=[A-Za-z:])",
+            _INVISIBLE_MARK + "?",
+            p.pattern,
+        ).replace(r"\s", "[\\s" + _INVISIBLE_MARK + "]"),
+        p.flags,
+    )
+    for p in _INJECTION_PATTERNS
+]
+
+
 def _contains_injection(text: str) -> bool:
-    """Check if text contains known prompt injection patterns."""
-    return any(p.search(text) for p in _INJECTION_PATTERNS)
+    """Check if text contains known prompt injection patterns.
+
+    Invisible characters are read as the patterns' own gaps, so a directive
+    cannot hide from them behind characters a reader never sees.
+    """
+    if not _DEFAULT_IGNORABLE_RE.search(text):
+        return any(p.search(text) for p in _INJECTION_PATTERNS)
+    marked = _DEFAULT_IGNORABLE_RE.sub(_INVISIBLE_MARK, text)
+    return any(p.search(marked) for p in _INJECTION_PATTERNS_INVISIBLE)

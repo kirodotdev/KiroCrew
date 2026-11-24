@@ -43,7 +43,9 @@ be cut, and the last :data:`~.stream.TAIL` characters, so a partial anchor is
 never committed. A unit decided while still running (a private-key block with no
 END past its bound) is replaced and the stream drops input to that unit's end
 (:func:`discard_run`). Each committed window is read after the raw text that
-preceded it (:func:`look_behind`), as the whole text reads it.
+preceded it (:func:`look_behind`), as the whole text reads it. A read that fails
+while the detectors can still load holds the whole buffer, never a cut chosen
+without them.
 """
 
 from __future__ import annotations
@@ -110,7 +112,9 @@ def old_rule(rule_id: str) -> str:
 # ── Detectors ──
 
 #: Set once a load fails, so a broken table costs one failed import per process
-#: rather than one per call; every plan then fails closed.
+#: rather than one per call; every plan then fails closed. A ``RecursionError``
+#: or ``MemoryError`` does not set it: that is the caller's exhausted stack or
+#: heap at that one call, not the table.
 _LOAD_FAILED = False
 
 #: Serializes the first load. Redaction's first call can come from two threads
@@ -148,25 +152,34 @@ def _load() -> None:
 
             table.TABLE  # noqa: B018 - built at import; a bad row raises there
             engine.scan  # noqa: B018
+        except (RecursionError, MemoryError):
+            # The caller's stack or heap ran out at this call, which says
+            # nothing about the table: this plan fails closed, the next one
+            # loads again. A table whose own import recursed without end
+            # would be retried, and fail closed, on every plan.
+            raise
         except Exception:
             _LOAD_FAILED = True
             raise
 
 
-#: ``(context, window)`` a stream sets while it redacts one committed window.
-_LOOK_BEHIND: ContextVar[tuple[str, str] | None] = ContextVar(
+#: ``(context, window, armour_from)`` a stream sets while it redacts one committed window.
+_LOOK_BEHIND: ContextVar[tuple[str, str, int] | None] = ContextVar(
     "kirocrew_structured_look_behind", default=None
 )
 
 
 @contextlib.contextmanager
-def look_behind(context: str, window: str) -> Iterator[None]:
+def look_behind(context: str, window: str, armour_from: int = 0) -> Iterator[None]:
     """Read ``window`` after ``context`` (raw text already emitted) while inside.
 
     Only a plan over exactly ``window`` uses it; a plan over any other text (a
     URL the outbound check reads, a rewritten copy) reads that text alone.
+    ``armour_from`` (an offset in ``window``, negative inside ``context``) is where
+    the last committed private-key block's END line ends: the scan for private-key
+    blocks starts there, as whole text resumes it.
     """
-    token = _LOOK_BEHIND.set((context, window) if context else None)
+    token = _LOOK_BEHIND.set((context, window, armour_from) if context else None)
     try:
         yield
     finally:
@@ -183,18 +196,27 @@ class _Read:
     open_from: int | None
     base: int
     replace_open_from: int | None = None
+    armour_blocks: tuple[tuple[int, int], ...] = ()
 
 
 def _read(text: str, final: bool = True) -> _Read:
     from kiro_crew.security.redaction_structured.engine import resolve, scan
 
-    pair = _LOOK_BEHIND.get()
-    context = pair[0] if pair is not None and pair[1] == text else ""
+    look = _LOOK_BEHIND.get()
+    context, armour_from = (look[0], look[2]) if look is not None and look[1] == text else ("", 0)
     base = len(context)
     window = context + text
-    result = scan(window, final=final, origin=base)
+    result = scan(window, final=final, origin=base, armour_from=max(0, base + armour_from))
     hits = [h for h in result.hits if h.start >= base]
-    return _Read(window, hits, resolve(hits), result.open_from, base, result.replace_open_from)
+    return _Read(
+        window,
+        hits,
+        resolve(hits),
+        result.open_from,
+        base,
+        result.replace_open_from,
+        result.armour_blocks,
+    )
 
 
 def _secrets_of(read: _Read) -> list[Hit]:
@@ -364,6 +386,9 @@ class StreamRead:
     tail: str = ""
     undecided: bool = False
     tag: str = redaction.REDACTED_CREDENTIAL_TAG
+    #: ``(BEGIN, END line end)`` of each private-key block that ended, in buffer
+    #: offsets: once a BEGIN is committed, its end is the stream's next ``armour_from``.
+    armour_blocks: tuple[tuple[int, int], ...] = ()
 
 
 #: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
@@ -389,11 +414,20 @@ def _tail_cut(buf: str, base: int, cut: int) -> int:
     return max(cut, base + blank + 1)
 
 
-def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead | None:
+def stream_read(
+    context: str, buf: str, *, boundary: bool = False, armour_from: int = 0
+) -> StreamRead | None:
     """The detectors' hold on ``buf`` read after ``context``.
 
-    None when the detectors cannot load: the batch plan fails closed on the same
-    error, so there is nothing to hold for.
+    None only once a load has failed for good (``_LOAD_FAILED``): every later batch
+    plan fails closed over its whole window, so there is nothing to hold for. Any
+    other failure to read (a ``RecursionError`` or ``MemoryError`` that left the
+    detectors loadable, or an error inside the read itself) holds the whole buffer
+    as undecided: the next batch plan may succeed, and a cut chosen without the
+    detectors could split a credential and stream its unanchored tail as written.
+    shortcut: while reads keep failing, nothing with no credential anchor is
+    committed until a read succeeds or the stream flushes (whose batch plan fails
+    closed on a failure); bound the hold if a read can fail for a whole long turn.
 
     With ``boundary`` (a display boundary: a tool call, a prompt, the turn's end)
     the fixed :data:`~.stream.TAIL` hold is skipped; every unit still undecided and
@@ -409,11 +443,14 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
         from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
         from kiro_crew.security.redaction_structured.stream import TAIL
 
-        with look_behind(context, buf):
+        with look_behind(context, buf, armour_from):
             read = _read(buf, final=False)
     except Exception:
-        return None
+        if _LOAD_FAILED:
+            return None
+        return StreamRead(0, undecided=True)
     base, open_from = read.base, read.replace_open_from
+    blocks = tuple((begin - base, end - base) for begin, end in read.armour_blocks)
     # An Identifier-value hit (a structure reading that is not structural).
     resolved = [
         h
@@ -423,7 +460,12 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
-        return StreamRead(tail_hit.start - base, tail_hit.tail, tag=_tag(tail_hit.rule_id))
+        return StreamRead(
+            tail_hit.start - base,
+            tail_hit.tail,
+            tag=_tag(tail_hit.rule_id),
+            armour_blocks=blocks,
+        )
     cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
     if open_from is not None:
@@ -439,7 +481,7 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
             if first < cut < h.end:
                 cut = max(base, first)
                 moved = undecided = True
-    return StreamRead(cut - base, undecided=undecided)
+    return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks)
 
 
 def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:

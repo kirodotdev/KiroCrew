@@ -13,7 +13,9 @@ it speaks about, and:
   sends every such call to Crew instead of answering it from ``allowedTools``;
 - Crew's own approval gates never approve such a call without a person
   (:func:`held_for`): an ``auto`` cron, Trust, YOLO, a trusted pattern or a hook
-  grant sends it to the approval card instead, and a surface with no card refuses it.
+  grant sends it to the approval card instead, and a surface with no card refuses it;
+- under a held ``subagent`` limit, Crew's own spawn admission starts none of the
+  Bot's sub-agents on its own either (:func:`held_spawn_limits`).
 
 Nothing clears a hold: picking the Bot's approval mode does not, since an ``auto``
 cron's approval does not depend on that mode. Every other call behaves as before.
@@ -104,10 +106,21 @@ def _hook_capability(event: Any, entry: Any) -> str:
     if matcher.startswith("@builtin"):
         # ``@builtin`` covers every built-in tool, ``@builtin/<tool>`` that one.
         tool = matcher.partition("/")[2]
-        return (_capability_of_tool(tool) or ANY) if tool else ANY
+        return _tool_capability(tool) if tool else ANY
     if matcher.startswith("@") or "/" in matcher:
         return "mcp"
-    return _capability_of_tool(matcher) or ANY
+    return _tool_capability(matcher)
+
+
+def _tool_capability(name: str) -> str:
+    """The capability of tool *name*; ``tool:<name>`` for a known tool no capability names.
+
+    That name is kiro-cli's own (``useAws`` gives ``tool:use_aws``). Any other name
+    (a glob, a tag, a case variant, one Crew does not know) covers every call.
+    """
+    from kiro_crew.mate_held_scope import named_tool
+
+    return _capability_of_tool(name) or named_tool(name) or ANY
 
 
 def _bundle_beside_rules(perms: Any) -> bool:
@@ -121,23 +134,30 @@ def _bundle_beside_rules(perms: Any) -> bool:
     )
 
 
-def _pieces(policy: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    """Each restriction in *policy*, as ``(capability, the policy holding it alone)``."""
-    out: list[tuple[str, dict[str, Any]]] = []
+def _pieces(policy: dict[str, Any]) -> list[tuple[str, dict[str, Any], list[str] | None]]:
+    """Each restriction in *policy*, as ``(capability, the policy holding it alone, paths)``.
+
+    *paths* are the paths a read or write limit names alone
+    (``mate_held_scope.rule_paths``), ``None`` for one that covers every such call.
+    """
+    from kiro_crew.mate_held_scope import rule_paths, settings_paths
+    from kiro_crew.mate_restriction_carry import _GRANT_ONLY_SETTINGS
+
+    out: list[tuple[str, dict[str, Any], list[str] | None]] = []
     hooks = policy.get("hooks")
     if isinstance(hooks, dict):
         for event, entries in hooks.items():
             for entry in entries if isinstance(entries, list) else [entries]:
-                out.append((_hook_capability(event, entry), {"hooks": {event: [entry]}}))
+                out.append((_hook_capability(event, entry), {"hooks": {event: [entry]}}, None))
     elif isinstance(hooks, list):
         # The list form names each entry's event inside it (``trigger``, or ``event``).
         for entry in hooks:
             event = (
                 (entry.get("trigger") or entry.get("event")) if isinstance(entry, dict) else None
             )
-            out.append((_hook_capability(event, entry), {"hooks": [entry]}))
+            out.append((_hook_capability(event, entry), {"hooks": [entry]}, None))
     elif "hooks" in policy:
-        out.append((ANY, {"hooks": hooks}))
+        out.append((ANY, {"hooks": hooks}, None))
     perms = policy.get("permissions")
     if isinstance(perms, dict) and _bundle_beside_rules(perms):
         # A named bundle (``policies``) only expands into ``allow`` rules on KAS's
@@ -149,15 +169,20 @@ def _pieces(policy: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         for rule in perms["rules"]:
             cap = rule.get("capability") if isinstance(rule, dict) else None
             cap = cap if isinstance(cap, str) and cap in _KNOWN else ANY
-            out.append((cap, {"permissions": {"rules": [rule]}}))
+            out.append((cap, {"permissions": {"rules": [rule]}}, rule_paths(cap, rule)))
     elif "permissions" in policy:
-        out.append((ANY, {"permissions": perms}))
+        out.append((ANY, {"permissions": perms}, None))
     settings = policy.get("toolsSettings")
     if isinstance(settings, dict):
         for tool, entry in settings.items():
-            out.append((_capability_of_tool(str(tool)) or ANY, {"toolsSettings": {tool: entry}}))
+            # Not narrowed to ``tool:<name>`` as a hook is: a setting limits what the
+            # tool reaches, and a harness with no such tool (KAS, Claude) reaches it
+            # through the shell, so ``use_aws`` settings keep every call held.
+            cap = _capability_of_tool(str(tool)) or ANY
+            paths = settings_paths(cap, entry, _GRANT_ONLY_SETTINGS)
+            out.append((cap, {"toolsSettings": {tool: entry}}, paths))
     elif "toolsSettings" in policy:
-        out.append((ANY, {"toolsSettings": settings}))
+        out.append((ANY, {"toolsSettings": settings}, None))
     return out
 
 
@@ -238,8 +263,8 @@ def split_policy(
             else:
                 # No ask, and no allow: the call still asks at Crew's gate.
                 logger.warning("held Bot rules: an ask on %s could not be written", capability)
-        held: list[dict[str, str]] = []
-        for capability, piece in pieces:
+        held: list[dict[str, Any]] = []
+        for capability, piece, paths in pieces:
             trial = copy_json_document(out)
             try:
                 layer_policy(trial, piece)
@@ -248,7 +273,7 @@ def split_policy(
             if applies and trial is not None and _lands(base, trial, piece):
                 out = trial
                 continue
-            held.extend({"text": t, "capability": capability} for t in _phrases(base, piece))
+            held.extend(_held_rule(t, capability, paths) for t in _phrases(base, piece))
         if not applies:
             return out, held
         held_caps = {h["capability"] for h in held}
@@ -269,6 +294,28 @@ def split_policy(
 
 def _ask(capability: str) -> dict[str, str]:
     return {"capability": capability, "effect": "ask"}
+
+
+def held_scopes(base: dict[str, Any], policy: dict[str, Any]) -> dict[str, dict[str, Any] | None]:
+    """Each restriction text of *policy* -> the held rule :func:`split_policy` records for it.
+
+    A text two restrictions of different reach share maps to ``None``: which one a
+    recorded rule came from cannot be told.
+    """
+    out: dict[str, dict[str, Any] | None] = {}
+    for capability, piece, paths in _pieces(policy):
+        for text in _phrases(base, piece):
+            rule = _held_rule(text, capability, paths)
+            out[text] = rule if out.get(text, rule) == rule else None
+    return out
+
+
+def _held_rule(text: str, capability: str, paths: list[str] | None) -> dict[str, Any]:
+    """One recorded held limit; ``paths`` only when it covers those paths alone."""
+    rule: dict[str, Any] = {"text": text, "capability": capability}
+    if paths:
+        rule["paths"] = list(paths)
+    return rule
 
 
 def record_held(name: str, member_id: str, held: list[dict[str, str]]) -> None:
@@ -342,10 +389,35 @@ def _member_of(agent: str) -> str:
     return str(getattr(binding, "member_id", "") or "")
 
 
+def event_tool_names(event: Any) -> set[str]:
+    """The built-in tool names the harness itself stamped on *event*, in every spelling.
+
+    kiro-cli's ``toolName``, KAS's ``toolId``, claude's built-in; never the model's
+    title. A qualified id (``claude#WebFetch``) is read under the kiro-cli names it
+    maps to. Empty for an MCP call (it is named by its server) or one with no name.
+    """
+    from kiro_crew.agent_sdk.spec_hooks import spec_hook_tool_names
+    from kiro_crew.hooks import ToolCall
+    from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES
+
+    call = ToolCall.from_event(event)
+    if call.mcp_server:
+        return set()
+    harness_id = str(getattr(event, "harness_tool_id", "") or "")
+    stamped = (
+        call.mcp_tool,
+        *(spec_hook_tool_names(harness_id) or (harness_id,)),
+        str(getattr(event, "harness_builtin_tool", "") or ""),
+    )
+    names: set[str] = set()
+    for name in filter(None, stamped):
+        names.update((name, KIRO_TOOL_ALIASES.get(name, name)))
+    return names
+
+
 def event_capabilities(event: Any) -> set[str]:
     """The capabilities a permission request *event* speaks about; empty when unknown."""
     from kiro_crew.hooks import ToolCall
-    from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES
 
     call = ToolCall.from_event(event)
     caps: set[str] = set()
@@ -356,22 +428,10 @@ def event_capabilities(event: Any) -> set[str]:
         caps.add("mcp")
         told = True
     else:
-        # The tool the harness itself stamped (kiro-cli's ``toolName``, KAS's
-        # ``toolId``, claude's built-in), never the model's title. A qualified
-        # id (``claude#WebFetch``) is read under the kiro-cli names it maps to.
-        from kiro_crew.agent_sdk.spec_hooks import spec_hook_tool_names
-
-        harness_id = str(getattr(event, "harness_tool_id", "") or "")
-        stamped = (
-            call.mcp_tool,
-            *(spec_hook_tool_names(harness_id) or (harness_id,)),
-            str(getattr(event, "harness_builtin_tool", "") or ""),
-        )
-        for name in filter(None, stamped):
-            for spelling in (name, KIRO_TOOL_ALIASES.get(name, name)):
-                if _capability_of_tool(spelling):
-                    caps.add(_capability_of_tool(spelling))
-                    told = True
+        for spelling in event_tool_names(event):
+            if _capability_of_tool(spelling):
+                caps.add(_capability_of_tool(spelling))
+                told = True
     if call.kind in _KIND_CAPABILITY:
         caps.add(_KIND_CAPABILITY[call.kind])
     if call.kind == "fetch" and not told:
@@ -585,7 +645,7 @@ def _pre_approves_held(spec: dict[str, Any] | None, caps: set[str]) -> bool:
 
     settings = spec.get("toolsSettings")
     for tool, entry in settings.items() if isinstance(settings, dict) else ():
-        held = ANY in caps or (_capability_of_tool(str(tool)) or ANY) in caps
+        held = ANY in caps or _tool_capability(str(tool)) in caps
         if held and isinstance(entry, dict) and set(entry) & _GRANT_ONLY_SETTINGS:
             return True
     return False
@@ -617,12 +677,18 @@ def _ref_capability(ref: str) -> str:
     """
     if any(c in ref for c in "*?["):
         return ANY
+    from kiro_crew.mate_held_scope import named_tool
+
     if ref.startswith("@builtin"):
         tool = ref.partition("/")[2]
         return (_capability_of_tool(tool) or ANY) if tool else ANY
     if ref.startswith("@"):
         return "mcp"
-    return _capability_of_tool(ref)
+    # A known tool no capability names is matched by its kiro-cli name
+    # (``tool:use_aws`` for ``useAws`` too): a limit held for that tool strips
+    # its pre-approval in every spelling, and any limit of unknown
+    # capability (``ANY``) still strips every one.
+    return _capability_of_tool(ref) or named_tool(ref)
 
 
 def strip_held_approvals(spec: dict[str, Any], member_id: str, name: str = "") -> dict[str, Any]:
@@ -787,13 +853,8 @@ def held_for(event: Any, *, session_key: str = "", agent: str = "") -> list[str]
         return []
     try:
         caps = event_capabilities(event)
-        return [
-            str(r.get("text") or "")
-            for r in rules
-            if isinstance(r, dict)
-            and r.get("capability") != NO_CALL
-            and (r.get("capability") == ANY or not caps or r.get("capability") in caps)
-        ]
+        names = event_tool_names(event)
+        return [str(r.get("text") or "") for r in rules if _covers(r, caps, names, event)]
     except Exception:  # noqa: BLE001 - on doubt, the Bot's limits hold
         logger.warning("held Bot rules: a call could not be matched; holding it", exc_info=True)
         held = [
@@ -802,6 +863,61 @@ def held_for(event: Any, *, session_key: str = "", agent: str = "") -> list[str]
             if not (isinstance(r, dict) and r.get("capability") == NO_CALL)
         ]
         return held or [UNREADABLE]
+
+
+def _covers(rule: Any, caps: set[str], names: set[str], event: Any) -> bool:
+    """Whether held *rule* covers a call of *caps*, named *names* (``mate_held_scope``).
+
+    A call whose capability cannot be told falls under every rule. A ``tool:<name>``
+    rule covers that tool's calls; a rule with ``paths`` covers the calls of its
+    capability that touch one of them, or whose target cannot be told.
+    """
+    from kiro_crew.mate_held_scope import TOOL_PREFIX, covers_paths, covers_tool
+
+    if not isinstance(rule, dict):
+        return False
+    capability = str(rule.get("capability") or ANY)
+    if capability == NO_CALL:
+        return False
+    if capability == ANY or (not caps and not names):
+        return True
+    if capability.startswith(TOOL_PREFIX):
+        return covers_tool(capability, names)
+    if not caps:
+        # A tool whose capability cannot be told: under every capability's limit.
+        return True
+    if capability not in caps:
+        return False
+    paths = rule.get("paths")
+    if isinstance(paths, list) and paths and all(isinstance(p, str) and p for p in paths):
+        return covers_paths(paths, event)
+    return True
+
+
+def held_spawn_limits(session_key: str, agent: str = "") -> list[str]:
+    """The held ``subagent`` limits of the Bot behind *session_key*, as their texts.
+
+    *agent* is the session's live agent, which names the Bot of a session that
+    records none (a channel's), as at the tool gates. Crew's own spawn admission
+    reads it for the PARENT session: under one, no auto-approve rung starts a
+    sub-agent on its own, and the spawn's prompt is marked held (:func:`held_call`)
+    so only a person answers it. Only capability
+    ``subagent``: a limit of unknown capability, and a ledger that cannot be
+    read, already strip every pre-approval from the worker spec built under
+    them, so a spawn tool asks at the tool gate. Blocking file I/O; never raises.
+    """
+    if not session_key:
+        return []
+    try:
+        rules = _bot_rules(session_key, agent)
+    except Exception:  # noqa: BLE001 - the gate never breaks on this record
+        logger.warning("held Bot rules: could not be read for a spawn", exc_info=True)
+        return []
+    return [
+        str(r.get("text") or "")
+        for r in rules
+        if isinstance(r, dict) and r.get("capability") == "subagent"
+    ]
 
 
 def held_sentence(held: list[dict[str, str]], *, kiro_cli: bool = False) -> str:
@@ -851,6 +967,27 @@ def owe_held_notice(name: str, held: list[dict[str, str]], *, kiro_cli: bool = F
     from kiro_crew.mate_upgrade_notice import mark_policy_owed
 
     mark_policy_owed(name, held_sentence(held, kiro_cli=kiro_cli), held=asks_for(held), fresh=True)
+
+
+#: The most characters of held limit text a card notice quotes.
+_NOTICE_TEXT_CAP = 300
+
+
+def card_notice(held: list[str]) -> str:
+    """The line an approval card shows when held limits *held* (their texts) made it ask.
+
+    It names the limits, so a person under Trust can tell why this call asks. It
+    points to no list: no dashboard surface shows held limits yet. The stored text
+    came from the old agent's file and may name a secret: the surface that shows it
+    redacts it first.
+    """
+    quoted = "; ".join(dict.fromkeys(t for t in held if t)) or UNREADABLE
+    if len(quoted) > _NOTICE_TEXT_CAP:
+        quoted = quoted[: _NOTICE_TEXT_CAP - 1] + "…"
+    return (
+        "Auto-approve not applied: this bot kept a limit from its old settings that "
+        f"asks you each time ({quoted})."
+    )
 
 
 #: Set while an unattended turn's approver is asked about a held call

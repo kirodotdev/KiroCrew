@@ -8,6 +8,10 @@ copy. A run held before a tool call stays held until the text after it shows
 where the run ends, unless it is one plain word ending a sentence, which goes
 out before the tool card or approval prompt. After a ``wait``, once the joined text is cleared, the run
 goes back to the end of the message it ended, in that message's own blocks.
+
+The ``[OPTIONS: ...]`` hold is settled the same way: a marker line split across edits
+is withheld whole, and a hold still open at a ``wait`` is settled on the message the
+wait ends instead of being carried to the next one.
 """
 
 from __future__ import annotations
@@ -618,3 +622,58 @@ def test_the_last_word_of_a_sentence_stays_on_the_message_a_wait_ends():
     assert _messages(slack) == ["Checking now.", "Results are in."]
     # Nothing was held across the wait, so no message is edited afterwards.
     assert _updates(slack) == []
+
+
+def test_a_wrapped_marker_line_split_across_edits_is_withheld_whole(monkeypatch):
+    # Each chunk is its own edit, so the wrapper would go out before the marker
+    # behind it arrived unless its line is held.
+    monkeypatch.setattr(slack_handler, "_EDIT_INTERVAL", 0.0)
+    slack, _sessions = _run(
+        [_text("Pick one:\n"), _text("**[OPTIONS: Retry"), _text(" | Abort]**")]
+    )
+
+    assert "".join(text for _ts, text in _appends(slack)) == "Pick one:\n"
+
+
+def test_a_marker_in_the_chunk_that_opens_the_stream_is_withheld():
+    slack, _sessions = _run([_text("Pick one:\n[OPTIONS: Retry | Abort]")])
+
+    assert "".join(text for _ts, text in _appends(slack)) == "Pick one:\n"
+    assert "options_choice_0" in json.dumps(slack.actions, default=str)
+
+
+def test_where_an_edit_falls_does_not_change_what_streams(monkeypatch):
+    # After an edit the buffer is empty, so only the stream's memory of whether
+    # its text ends a line tells this mid-line wrapper from a line-leading one.
+    monkeypatch.setattr(slack_handler, "_EDIT_INTERVAL", 0.0)
+    marker = "**[OPTIONS: Retry | Abort]**"
+    whole, _sessions = _run([_text("Hi.\n"), _text(f"Pick one {marker}")])
+    split, _sessions = _run([_text("Hi.\n"), _text("Pick one "), _text(marker)])
+
+    assert "".join(text for _ts, text in _appends(split)) == "".join(
+        text for _ts, text in _appends(whole)
+    )
+
+
+def test_the_message_after_a_wait_opens_on_a_new_line():
+    slack = _StoredSlack()
+    _run_on(slack, [_text("Checking."), _wait_call(), _text("**[OPTIONS: Retry | Abort]**")])
+
+    assert _messages(slack) == ["Checking."]
+
+
+@pytest.mark.parametrize(
+    ("before", "first"),
+    [
+        (["Waiting on CI ", "[OPTIONS: none yet."], "Waiting on CI [OPTIONS: none yet."),
+        (["Pick one:\n", "[OPTIONS: Retry | Abort]Thanks."], "Pick one:\nThanks.\n"),
+    ],
+    ids=["open-head", "glued-tail"],
+)
+@pytest.mark.parametrize("after", ["Results are in.", ""], ids=["text-follows", "turn-ends"])
+def test_an_options_hold_open_at_a_wait_is_settled_on_the_message_it_ends(before, first, after):
+    slack = _StoredSlack()
+    events = [*map(_text, before), _wait_call(), *([_text(after)] if after else [])]
+    _run_on(slack, events)
+
+    assert _messages(slack) == [first, *([after] if after else [])]

@@ -55,7 +55,9 @@ class WorkerStatus:
         The bound session's own turns drive the status (the core's hooks); between
         them it follows the workers: ``suspended`` while one waits on you (or the
         conductor's last turn left it waiting), ``processing`` while one runs, and
-        back to what the conductor's turn end showed once none does.
+        back to what the conductor's turn end showed once none does. With none
+        running, a busy status Slack was last given is moved to ``active`` even
+        when the watch holds no record of setting it.
         """
         from kiro_crew.slack.code_channels import status as channel_status
         from kiro_crew.slack.code_channels.board.model import WAITING_ON_YOU
@@ -110,6 +112,26 @@ class WorkerStatus:
                 self._status_failures.pop(key, None)
             elif self._status_gave_up(key):
                 self._working.pop(key, None)
+        elif (
+            not want
+            and channel_status.after_turn(record.channel_id) == "active"
+            and channel_status.owes_clear(record.channel_id)
+        ):
+            # Nothing runs, the conductor's last turn ended at ``active`` (none is
+            # running: its start clears that), and the watch holds no status of
+            # its own, yet Slack was last told this channel is busy. The watch let
+            # its record go while the conductor's slot held a task that fired no
+            # turn hooks (a wake that ended at the dispatch gates), or Slack did
+            # not take the turn end's ``active``. Cleared here, else "Working..."
+            # and its Stop stay for Slack's hour. Bounded like a hand-back; the
+            # next conductor turn (or a pass that sees one) resets the count.
+            tries = self._status_failures.get(key, 0)
+            if tries >= _status_retries():
+                return
+            if await channel_status.clear_stranded(record.channel_id, record.session_key):
+                self._status_failures.pop(key, None)
+            else:
+                self._status_failures[key] = tries + 1
 
     async def _drain_worker_status(self) -> None:
         """With the feature off, clear the statuses the watcher set; nothing new is sent."""

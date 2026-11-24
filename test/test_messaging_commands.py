@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import threading
 import time
 from collections.abc import Iterator
@@ -27,6 +28,7 @@ import pytest
 from taskrunner_switch_helpers import turn_task_runner_off
 
 import kiro_crew.messaging.commands as commands
+from kiro_crew import cron_inflight
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import (
@@ -299,6 +301,47 @@ class TestRunYoloCommand:
         assert reply == "🔴 YOLO OFF — tools ask for approval again."
         assert grant.is_active() is False
         assert audit.rows[0]["resources"] == "yolo_off"
+
+    def test_off_is_confirmed_only_once_its_record_is_off_the_disk(
+        self, grant: Any, audit: _Sel, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import kept_grants
+
+        grant.activate("test")
+        active_at_sync: list[bool] = []
+
+        async def _settled() -> bool:
+            active_at_sync.append(grant.is_active())
+            return True
+
+        monkeypatch.setattr(kept_grants, "settle", _settled, raising=False)
+        reply = asyncio.run(
+            run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+        )
+        # Synced after the off, before the reply that confirms it.
+        assert active_at_sync == [False]
+        assert reply == "🔴 YOLO OFF — tools ask for approval again."
+
+    def test_off_the_disk_did_not_save_is_not_confirmed_for_good(
+        self, grant: Any, audit: _Sel, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kiro_crew import kept_grants
+
+        grant.activate("test")
+
+        def _refused(path: Any, *, best_effort: bool = False) -> None:
+            # As the real helper: a best-effort sync swallows the error.
+            if not best_effort:
+                raise OSError(errno.EIO, "I/O error")
+
+        monkeypatch.setattr(kept_grants, "kept_dir", lambda home=None: tmp_path)
+        monkeypatch.setattr(kept_grants, "fsync_dir", _refused)
+        reply = asyncio.run(
+            run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+        )
+        # Off in memory, and the answer says the disk may not keep it off.
+        assert grant.is_active() is False
+        assert reply == "🔴 YOLO OFF — tools ask for approval again.\n⚠️ " + kept_grants.NOT_SAVED
 
     def test_renew_on_an_inactive_grant_names_the_channels_own_command(
         self, grant: Any, audit: _Sel
@@ -785,6 +828,20 @@ class TestCron:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1", message=f"post {_TOKEN}")]
         assert _TOKEN not in (await cron_command_reply("cron list", svc) or "")
+
+    @pytest.mark.asyncio
+    async def test_a_job_with_a_live_run_marker_is_listed_as_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cron_inflight.write_marker(tmp_path, "j1", "nightly digest", 1_700_000_000.0, run="r1")
+        svc = MagicMock()
+        svc.list_jobs.return_value = [_job("j1"), _job("j2")]
+        lines = (await cron_command_reply("cron list", svc) or "").splitlines()
+        busy = next(line for line in lines if "`j1`" in line)
+        idle = next(line for line in lines if "`j2`" in line)
+        assert "✓ [running since 22:13 UTC] | ⏭" in busy
+        assert "running since" not in idle
 
     @pytest.mark.parametrize(
         "verb,enabled,mark",

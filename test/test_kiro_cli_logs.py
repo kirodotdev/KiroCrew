@@ -20,6 +20,7 @@ is attributable to the code rather than to the fixture:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -719,6 +720,37 @@ def test_a_cut_window_keeps_records_from_the_first_event(tmp_path, monkeypatch):
     assert "KEPTRECORD0199" in out, "whole records after the boundary must survive"
 
 
+def test_a_cut_window_of_json_events_keeps_records_and_honours_since(tmp_path, monkeypatch):
+    """A kiro-cli 3.x ``mcp.log`` line is one JSON event, and it starts a record.
+
+    Its ``timestamp`` field is what both the boundary trim and ``since`` read, so a
+    cut window of such lines keeps its newest records instead of only the note.
+    """
+    body = "".join(
+        json.dumps(
+            {
+                "timestamp": f"2026-11-23T02:{i // 60:02d}:{i % 60:02d}.000Z",
+                "level": "INFO",
+                "message": f"JSONRECORD{i:04d} mcp.callTool.ok",
+            }
+        )
+        + "\n"
+        for i in range(300)
+    )
+    _source(monkeypatch, tmp_path, body)
+    monkeypatch.setattr(diagnostics, "_MAX_LOG_READ_BYTES", 4096)
+
+    out = diagnostics.read_kiro_cli_logs()
+
+    assert "truncated" in out, "the cut must still be announced"
+    assert "JSONRECORD0280" in out and "JSONRECORD0299" in out, "JSON events were trimmed away"
+
+    out = diagnostics.read_kiro_cli_logs(since="2026-11-23T02:04:50")
+
+    assert "JSONRECORD0280" not in out, "since did not read the event's timestamp field"
+    assert "JSONRECORD0299" in out
+
+
 def test_an_untruncated_window_is_not_trimmed(tmp_path, monkeypatch):
     """Nothing was cut, so the first line is real output and must be kept.
 
@@ -762,18 +794,108 @@ def test_a_numeric_frame_line_is_not_a_record_boundary(tmp_path, monkeypatch):
     assert payload not in out, "a numeric JSON line was treated as a record boundary"
 
 
-def test_starts_a_record_accepts_real_records_and_rejects_frame_lines():
+def test_record_timestamp_accepts_real_records_and_rejects_frame_lines():
     """The predicate's two directions, stated as a unit test.
 
     Both ISO variants the module's `since` semantics describe are records; a JSON
     number, a quoted key and an indented continuation are not.
     """
-    assert diagnostics._starts_a_record("2026-09-06T16:00:00.123Z ERROR boot failed\n")
-    assert diagnostics._starts_a_record("2026-09-06 16:00:00 ERROR boot failed\n")
-    assert not diagnostics._starts_a_record("      1000000,\n")
-    assert not diagnostics._starts_a_record("      1234-5,\n")
-    assert not diagnostics._starts_a_record('    "query": "text"\n')
-    assert not diagnostics._starts_a_record("  continuation of an event\n")
+    assert diagnostics._record_timestamp("2026-09-06T16:00:00.123Z ERROR boot failed\n")
+    assert diagnostics._record_timestamp("2026-09-06 16:00:00 ERROR boot failed\n")
+    assert not diagnostics._record_timestamp("      1000000,\n")
+    assert not diagnostics._record_timestamp("      1234-5,\n")
+    assert not diagnostics._record_timestamp('    "query": "text"\n')
+    assert not diagnostics._record_timestamp("  continuation of an event\n")
+
+
+def _cut_frame_with(inner: str, payload: str) -> str:
+    """An oversized pretty-printed frame whose argument lines include ``inner``.
+
+    The envelope sits at the top and falls outside a 3000-byte cut, so only the
+    padding, ``inner``, the ``payload`` after it and a closing column-0 record are
+    left in the window.
+    """
+    return (
+        '{\n  "jsonrpc": "2.0",\n  "method": "tools/call",\n  "params": {\n'
+        + "".join(f'    "pad{i}": "{"x" * 80}",\n' for i in range(200))
+        + inner
+        + f'    "query": "{payload}"\n  }}\n}}\n'
+        + "2026-11-23T10:00:05 NEXTRECORD after the frame\n"
+    )
+
+
+def test_an_indented_json_event_line_is_not_a_record_boundary(tmp_path, monkeypatch):
+    """A nested object carrying an ISO ``timestamp`` is part of the frame, not an event.
+
+    A 3.x JSON event starts at column 0. Read with its indent stripped, an indented
+    one-line object inside a frame's params parses as an event and ends the trim
+    inside the frame, returning the argument text after it.
+    """
+    payload = "SESSION-B-ARGUMENT-AFTER-NESTED-TIMESTAMP"
+    inner = (
+        '    "context": {\n'
+        '      "timestamp": "2026-11-23T10:00:00Z",\n'
+        '      "kind": "note"\n'
+        "    },\n"
+        '    "events": [\n'
+        '      {"timestamp": "2026-11-23T10:00:00Z", "kind": "note"}\n'
+        "    ],\n"
+    )
+    _source(monkeypatch, tmp_path, _cut_frame_with(inner, payload))
+    monkeypatch.setattr(diagnostics, "_MAX_LOG_READ_BYTES", 3000)
+
+    out = diagnostics.read_kiro_cli_logs()
+
+    assert payload not in out, "an indented JSON object was treated as a record boundary"
+    assert '"kind": "note"' not in out, "frame lines before the next record were returned"
+    assert "NEXTRECORD" in out, "the next column-0 record must still be returned"
+
+
+def test_an_indented_date_led_line_is_not_a_record_boundary(tmp_path, monkeypatch):
+    """A frame line that starts with an ISO date after its indent continues the frame."""
+    payload = "SESSION-B-ARGUMENT-AFTER-INDENTED-DATE"
+    inner = "      2026-11-23T10:00:00 text inside a string value\n"
+    _source(monkeypatch, tmp_path, _cut_frame_with(inner, payload))
+    monkeypatch.setattr(diagnostics, "_MAX_LOG_READ_BYTES", 3000)
+
+    out = diagnostics.read_kiro_cli_logs()
+
+    assert payload not in out, "an indented date-led line was treated as a record boundary"
+    assert "text inside a string value" not in out
+    assert "NEXTRECORD" in out, "the next column-0 record must still be returned"
+
+
+def test_record_timestamp_is_judged_at_column_zero():
+    """A record starts at column 0; the same text indented continues a record."""
+    event = '{"timestamp": "2026-11-23T10:00:00Z", "level": "INFO"}\n'
+    assert diagnostics._record_timestamp(event) == "2026-11-23T10:00:00Z"
+    assert diagnostics._record_timestamp(event.replace("\n", "\r\n")) == "2026-11-23T10:00:00Z"
+    assert diagnostics._record_timestamp("2026-11-23T10:00:00 ERROR boot failed\r\n")
+    assert diagnostics._record_timestamp("      " + event) is None
+    assert diagnostics._record_timestamp("\t2026-11-23T10:00:00 quoted text\n") is None
+    assert diagnostics._record_timestamp("      2026-11-23T10:00:00 quoted text\n") is None
+    # `_filter_since` reads the same predicate, so an indented date inherits the verdict.
+    log = "2026-11-23T09:00:00 old record\n  2026-11-23T11:00:00 quoted in it\n"
+    assert diagnostics._filter_since(log, "2026-11-23T10") == ""
+
+
+def test_filter_since_keeps_its_results_on_a_normal_log():
+    """Column-0 records set the verdict; every indented line inherits it."""
+    log = (
+        "2026-11-23T09:00:00 old record\n"
+        "  old continuation\n"
+        '{"timestamp": "2026-11-23T10:30:00Z", "message": "new json event"}\n'
+        "  new continuation\n"
+        "2026-11-23T11:00:00 new text record\n"
+    )
+
+    out = diagnostics._filter_since(log, "2026-11-23T10")
+
+    assert out == (
+        '{"timestamp": "2026-11-23T10:30:00Z", "message": "new json event"}\n'
+        "  new continuation\n"
+        "2026-11-23T11:00:00 new text record\n"
+    )
 
 
 def test_session_transcripts_are_not_read(tmp_path, monkeypatch):

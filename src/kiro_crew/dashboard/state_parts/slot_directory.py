@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import re
@@ -29,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.sections_defaults import DEFAULT_MAX_PER_CREATOR
 from kiro_crew.config.sections_limits import MAX_PER_CREATOR_MAX, MAX_PER_CREATOR_MIN
+from kiro_crew.dashboard.full_chat_waits import needs_full_chat
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -391,6 +393,18 @@ def native_subagent_snapshots(
             }
             # The label and model a card's frames carry, when it has them.
             base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
+            # A KAS engine sub-agent's card (``dashboard.engine_subagent_cards``) stays
+            # marked: what its replayed frame carries beyond every native card's.
+            if info.get("engine"):
+                extras: dict[str, object] = {"engine": True}
+                # The turn the card belongs to, so the page groups one turn's cards.
+                if info.get("engine_turn"):
+                    extras["engine_turn"] = str(info["engine_turn"])
+                # When it started on the gateway's clock, which a replayed done frame
+                # otherwise lacks, so the batch's duration reads the same after a reload.
+                if isinstance(info.get("started"), (int, float)):
+                    extras["started"] = float(info["started"])
+                base["frame_extras"] = extras
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:
@@ -689,6 +703,7 @@ def get_or_create_slot(
     slot._on_card_event = self.notify_dashboard_card
     slot._on_question_retired = self._broadcast_question_retired
     slot._coordinator_approvals = self.pending_coordinator_approvals
+    slot._full_chat_waits = functools.partial(needs_full_chat, self)
     slot._linked_session_busy = self.linked_session_busy
     slot._app = app
     # ``origin`` must be declared by the layer that actually knows it, and
@@ -737,6 +752,11 @@ def get_or_create_slot(
         self._restricted_keys.add(f"dashboard:{name}")
     if ephemeral:
         self._ephemeral_keys.add(f"dashboard:{name}")
+    # A new slot starts with approve-for-me off: a person turns it on for this
+    # slot, not for an earlier one that held the same name.
+    from kiro_crew.dashboard.approve_for_me import approve_for_me_keys
+
+    approve_for_me_keys(self).discard(f"dashboard:{name}")
     # Hydrate only a complete, genuine Slack link. Other transports still
     # write their namespaced origin id through the legacy channel field;
     # those are projected separately via ``links`` and must never make the

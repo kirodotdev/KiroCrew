@@ -187,6 +187,12 @@ Each session can operate in one of three memory modes:
 | **Incognito** | ✅ | ❌ | ❌ | Sensitive tasks — reads context but blocks learn_add and consolidation |
 | **Temporary** | ❌ | ❌ | ❌ | Isolated experiments — no memory interaction at all |
 
+A fork can be more private than the chat it comes from: a reply's **More** menu
+offers **Fork as incognito** and **Fork as temporary**, listing only the modes
+stricter than the chat's own. The new chat keeps the conversation up to that
+reply, and nothing done in it reaches memory or lessons. A fork is never less
+private than its chat.
+
 For new dashboard chats, choose the default under **Settings → Chat → Sessions →
 Default Memory Mode**. The choice is stored as
 `dashboard.default_memory_mode`. An explicit Incognito or Temporary choice still
@@ -368,6 +374,12 @@ scheduled jobs.
   exits 1. The `markdown` collection is never imported, and a private Bot (V2)
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
+- `kirocrew memory import-text <file> [--store <name>] [--yes | --dry-run]` — save what
+  another assistant wrote about you: one fact per line or bullet (200 per run, file up to
+  256 KiB). It lists facts the default store, or the named one, does not hold and you have
+  not forgotten, and saves the numbers you confirm (`--yes`: all; no terminal: none). It
+  never replaces a stored fact and makes no network or model call. `--store` is checked
+  like `memory import --store`: a private Bot (V2) store is refused.
 
 ## Comparing Memory Providers
 

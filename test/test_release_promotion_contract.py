@@ -432,7 +432,8 @@ def test_file_publishers_verify_manifest_and_prior_provenance() -> None:
 
 def test_macos_promotion_skips_transformations_and_verifies_final_bytes() -> None:
     jobs = _workflow(MAC)["jobs"]
-    assert jobs["sign"]["if"] == "${{ !inputs.promote }}"
+    # Promotion skips signing; so does the publish half of a split nightly call.
+    assert jobs["sign"]["if"] == "${{ !inputs.promote && inputs.stage != 'publish' }}"
     publish_if = jobs["publish"]["if"]
     assert "always()" in publish_if
     assert "needs.notarize.result == 'success'" in publish_if

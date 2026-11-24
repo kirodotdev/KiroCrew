@@ -253,28 +253,6 @@ def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) ->
     return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
 
 
-def _command_lines(text: str) -> "list[str]":
-    """*text* without its heredoc bodies (data unless fed to a shell, see
-    :func:`_heredoc_payloads`), cut at each live newline, a comment cut off."""
-    text = _without_bodies(text)
-    lines: list[str] = []
-    pos = 0
-    while pos <= len(text):
-        rest, cut, end = text[pos:], len(text), len(text)
-        for step in _shell._iter_shell_chars(rest):
-            at = step.offset
-            if step.active and step.char == "#" and _shell._opens_comment(rest, at):
-                newline = rest.find("\n", at)
-                cut, end = pos + at, len(text) if newline < 0 else pos + newline
-                break
-            if step.active and step.char == "\n":
-                cut = end = pos + at
-                break
-        lines.append(text[pos:cut])
-        pos = end + 1
-    return lines
-
-
 def _without_bodies(text: str) -> str:
     """*text* with each heredoc body and the tag line that closed it cut out."""
     commands = _commands.read_commands(text, heredocs=True) if "<<" in text else []
@@ -439,38 +417,37 @@ def _literal_shell_script(tokens: "list[str]") -> "str | None":
 
 
 def _command_tokens(text: str, pipelines: bool = False) -> "list[list[str]]":
-    """Dequoted argv of each command the shared reader finds in each line, read every
-    way so each reading only adds payloads; a command stopped at ``<<`` runs to the
-    line's end (a herestring is a payload). With *pipelines*, a pipeline whose later stage
+    """Dequoted argv of each command the shared reader finds in *text*, read every way
+    so each reading only adds payloads. The reader alone cuts lines, comments and
+    heredoc bodies, so a ``#`` or ``<<`` inside ``${…}`` / ``$[…]`` ends nothing (the
+    untracked reading still runs). With *pipelines*, a pipeline whose later stage
     is a shell reading its script from the pipe is also read as its ``echo`` / ``printf``
     stages and its shells joined, so the text printed into that shell is a payload
     (``echo '<script>' | sh``)."""
     out: list[list[str]] = []
-    for line in _command_lines(text):
-        for part in dict.fromkeys((line, _shell._fold_line_continuations(line))):
-            for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
-                for track in (True, False) if "${" in plain or "$[" in plain else (True,):
-                    commands = _commands.read_commands(plain, track)
-                    for cmd in commands:
-                        words = " ".join(plain[word.start : word.end] for word in cmd.argv)
-                        if cmd.separator == "<<":  # the read stops there; the line runs on
-                            words = plain[cmd.steps[0].start if cmd.steps else 0 :]
-                        out.append(_shell._shell_tokens(words))
-                        if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
-                            out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
-                    groups = _commands.pipelines(commands) if pipelines and "|" in plain else []
-                    if groups:  # a quoted substitution body's commands split no stage
-                        flat = _commands.read_commands(plain, track, nested=False)
-                        groups += _commands.pipelines(flat) if len(flat) < len(commands) else []
-                    for pipe in groups:
-                        if not any(_runs_shell(c) and not _stdin_redirect(c)[0] for c in pipe[1:]):
-                            continue  # no later stage is a shell reading its script from the pipe
-                        # the shell reads what a stage prints: ``echo`` / ``printf`` their own
-                        # words, a filter its input (``sed 's/^/rm -rf -- /'`` wipes no ``/``)
-                        kept = [c for c in pipe if _runs_shell(c) or _program(c) in _PRINTERS]
-                        argvs = [" ".join(plain[w.start : w.end] for w in c.argv) for c in kept]
-                        if len(argvs := [argv for argv in argvs if argv]) > 1:
-                            out.append(_shell._shell_tokens(" | ".join(argvs)))
+    for part in dict.fromkeys((text, _shell._fold_line_continuations(text))):
+        for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
+            for track in (True, False) if "${" in plain or "$[" in plain else (True,):
+                commands = _commands.read_commands(plain, track, heredocs=True)
+                for cmd in commands:
+                    out.append(
+                        _shell._shell_tokens(" ".join(plain[w.start : w.end] for w in cmd.argv))
+                    )
+                    if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
+                        out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
+                groups = _commands.pipelines(commands) if pipelines and "|" in plain else []
+                if groups:  # a quoted substitution body's commands split no stage
+                    flat = _commands.read_commands(plain, track, nested=False, heredocs=True)
+                    groups += _commands.pipelines(flat) if len(flat) < len(commands) else []
+                for pipe in groups:
+                    if not any(_runs_shell(c) and not _stdin_redirect(c)[0] for c in pipe[1:]):
+                        continue  # no later stage is a shell reading its script from the pipe
+                    # the shell reads what a stage prints: ``echo`` / ``printf`` their own
+                    # words, a filter its input (``sed 's/^/rm -rf -- /'`` wipes no ``/``)
+                    kept = [c for c in pipe if _runs_shell(c) or _program(c) in _PRINTERS]
+                    argvs = [" ".join(plain[w.start : w.end] for w in c.argv) for c in kept]
+                    if len(argvs := [argv for argv in argvs if argv]) > 1:
+                        out.append(_shell._shell_tokens(" | ".join(argvs)))
     return out
 
 

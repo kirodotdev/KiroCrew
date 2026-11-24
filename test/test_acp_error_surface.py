@@ -587,6 +587,61 @@ class TestTransientMarkerCoupling:
         ok = dict(error, data="ValidationException: Invalid model ID: glm-5")
         assert "does not have access" not in _format_acp_error(ok, served)
 
+    def test_kas_invalid_model_error_is_terminal_without_a_served_list(self):
+        """KAS answers a model the account is not served with the capacity
+        sentence plus ``data.errorType: "InvalidModelError"``. It advertises no
+        served list, so the token alone must make the verdict terminal and the
+        message name the model; otherwise the turn is retried as a throttle and
+        the rate-limit fallback moves it onto ``auto`` with a "throttled" notice.
+        """
+        from kiro_crew.acp.client import _format_acp_error, _is_transient_raw_error
+
+        error = {
+            "code": -32000,
+            "message": (
+                "The model 'claude-nonexistent-9' is not available. Please select a "
+                "different model and try again. (Request ID: 78d0559a)"
+            ),
+            "data": {
+                "errorType": "InvalidModelError",
+                "retryErrorType": "CLIENT_ERROR",
+                "requestId": "78d0559a",
+            },
+        }
+        assert _is_transient_raw_error(error, []) is False
+        assert _is_transient_raw_error(error, None) is False
+        formatted = _format_acp_error(error, [])
+        assert "'claude-nonexistent-9' is not available on your account" in formatted
+        assert "Retrying will not help" in formatted
+        assert "Available to you" not in formatted
+        # The same sentence without the token keeps the capacity-blip verdict.
+        blip = dict(error, data=error["message"])
+        assert _is_transient_raw_error(blip, []) is True
+        assert "unavailable on the backend right now" in _format_acp_error(blip, [])
+        # A served list that names the model outranks the token: the backend also
+        # answers it for a served model whose config has not reached the region
+        # yet, which clears on its own, so that frame keeps the retry.
+        assert _is_transient_raw_error(error, ["claude-nonexistent-9", "auto"]) is True
+        assert "Retrying will not help" not in _format_acp_error(
+            error, ["claude-nonexistent-9", "auto"]
+        )
+        # The row carries the entitlement kind, so the card offers the picker and
+        # Settings actions: the verdict is stamped on the error, not re-derived from
+        # the served list, which on KAS is empty ("unknowable").
+        from kiro_crew.acp.client import _raise_acp_error
+        from kiro_crew.dashboard.chat_runner import _model_unentitled_meta
+        from kiro_crew.dashboard.chat_utils import MODEL_UNENTITLED_KIND
+
+        with pytest.raises(AcpError) as raised:
+            _raise_acp_error(error, [], backend="kas")
+        assert raised.value.unentitled is True
+        assert _model_unentitled_meta(raised.value) == {"kind": MODEL_UNENTITLED_KIND}
+        for frame, served in ((blip, []), (error, ["claude-nonexistent-9", "auto"])):
+            with pytest.raises(AcpError) as raised:
+                _raise_acp_error(frame, served, backend="kas")
+            assert raised.value.unentitled is False
+            assert _model_unentitled_meta(raised.value) is None
+
     def test_capacity_blip_drops_the_auto_step_where_auto_is_not_served(self):
         """The two capacity-blip messages share the "(2) set agent.model to
         'auto'" remedy. On a partition whose served list lacks ``auto`` that

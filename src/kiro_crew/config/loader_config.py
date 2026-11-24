@@ -37,7 +37,6 @@ from kiro_crew.config.loader_builders import (
 from kiro_crew.config.loader_credentials import (
     _JIRA_TOKEN_RE,
     CREDENTIAL_KEYS,
-    EnvFileWideEncodingError,
     _shadow_checked_env_keys,
     _warned_env_keys,
     adopt_env_owned_keys_from_reexec,
@@ -1311,7 +1310,9 @@ class KiroCrewConfig:
             enforce_env_permissions(ep)
             try:
                 env_text = read_env_text(ep)
-            except EnvFileWideEncodingError as exc:
+            except UnicodeDecodeError as exc:
+                # A UTF-16/UTF-32 save, or a byte invalid in the active encoding:
+                # empty with one warning, as the live watcher reads it.
                 warn_undecodable_env(ep, exc)
                 env_text = ""
             creds.update(parse_env_lines(env_text))

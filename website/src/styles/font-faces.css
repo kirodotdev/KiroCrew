@@ -13,7 +13,11 @@
    mattering — this works regardless of what follows, including the terminal
    `sans-serif`/`monospace` generic, which is what a plain appended tail could not
    guarantee (on macOS `-apple-system` resolves Han from the OS cascade before any
-   appended family is reached).
+   appended family is reached). Order still decides one thing: a default-ignorable
+   such as U+200B is shaped with the character before it unless an earlier face in
+   the stack draws it, and an alias has no space glyph to draw it with, so the
+   rich-text composer lists the Latin face ahead of the script aliases
+   (chat-transcript.css).
 
    Each alias declares a REAL 400 and 700 face rather than one face spanning
    100-900. Weight matching happens *within* the selected family, so a single

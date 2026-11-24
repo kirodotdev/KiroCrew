@@ -4,7 +4,8 @@ import { SettingsSection, SettingsCard, SettingsToggle, SettingsButtonGroup } fr
 import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
-import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
+import { chordReachable, formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
+import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
@@ -23,7 +24,7 @@ function SearchEverywhereConfig() {
   // While recording, surface `custom` as the active preset even though nothing
   // is persisted yet, so the picker reflects the pending choice.
   const activeMode = recording ? 'custom' : config.mode
-  const customCaps = config.mode === 'custom' && config.custom ? formatChordKeys(config.custom) : []
+  const customCaps = config.mode === 'custom' && config.custom && chordReachable(config.custom) ? formatChordKeys(config.custom) : []
 
   return (
     <>
@@ -77,7 +78,7 @@ function PanelToggleConfig() {
       {PANEL_TOGGLE_IDS.filter(id => !TERMINAL_PANEL_TOGGLE_IDS.has(id) || terminalEnabled).map(id => {
         const chord = bindings[id]
         const recording = recordingId === id
-        const caps = chord ? formatChordKeys(chord) : []
+        const caps = chord && chordReachable(chord) ? formatChordKeys(chord) : []
         return (
           <div key={id}>
             <div className="flex items-center justify-between gap-2">
@@ -135,6 +136,7 @@ function PanelToggleConfig() {
  * discoverable, permanent home in Settings.
  */
 export function ShortcutsPanel() {
+  useKeyboardLayout()
   const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const globalHotkey = useGlobalHotkey()
 

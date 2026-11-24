@@ -656,6 +656,32 @@ describe('SchedulePage job detail dialog', () => {
     expect(await screen.findByDisplayValue('Linked job')).toBeInTheDocument()
   })
 
+  it('?job=<id>&tab=logs opens that job on its run log', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ id: 'job-7', name: 'Linked job' })] })
+
+    renderWithProviders(<SchedulePage />, { route: '/schedule?job=job-7&tab=logs' })
+    const dialog = await screen.findByRole('dialog')
+    // The Logs view replaces the form, so the name field is not on screen.
+    await waitFor(() => expect(within(dialog).queryByDisplayValue('Linked job')).not.toBeInTheDocument())
+    expect(within(dialog).getByRole('button', { name: /Save/ })).toBeDisabled()
+  })
+
+  it('labels a job Kiro Crew paused after failures apart from one the user paused', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [
+      mkJob({ id: 'auto', name: 'Auto stopped', enabled: false, user_paused: false, last_status: 'error', consecutive_failures: 5 }),
+      mkJob({ id: 'mine', name: 'Paused by me', enabled: false, user_paused: true, last_status: 'error', consecutive_failures: 1 }),
+    ] })
+
+    renderWithProviders(<SchedulePage />)
+    const autoRow = (await screen.findByText('Auto stopped')).closest('tr')!
+    expect(within(autoRow).getByText('Paused after 5 failures')).toBeInTheDocument()
+    const mineRow = screen.getByText('Paused by me').closest('tr')!
+    expect(within(mineRow).getByText('Paused')).toBeInTheDocument()
+    expect(within(mineRow).queryByText(/Paused after/)).not.toBeInTheDocument()
+  })
+
   it('?job=<unknown id> lands on the list with no dialog', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })

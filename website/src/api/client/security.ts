@@ -72,6 +72,8 @@ export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
   locked_by_policy: boolean
+  /** True when no policy term can lift that lock (LTS, no enterprise term). */
+  locked_by_edition?: boolean
 }
 
 /** One `(server, tool, field)` MCP message-body field. */

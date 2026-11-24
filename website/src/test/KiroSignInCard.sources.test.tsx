@@ -445,7 +445,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch account' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
-    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account'))
+    await waitFor(() => expect(api.kasLoginPoll).toHaveBeenCalledWith('switch-account', undefined))
     kasLoginStatus.mockResolvedValueOnce(SIGNED_IN).mockResolvedValue({
       ...SIGNED_IN, expires_at: '2099-01-02T00:00:00Z',
     })
