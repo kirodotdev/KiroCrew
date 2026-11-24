@@ -225,6 +225,20 @@ def _chat_sharing_preview_on() -> bool:
         return False
 
 
+def _relay_engine_version_or_unknown(cli: tuple[int, int, int] | None) -> str:
+    """The engine kiro-cli *cli*'s relay runs (``chat_runtime_sharing.relay_engine_version``),
+    ``""`` when unread. Blocking (reads kiro-cli's engine extract); never raises,
+    so a failed read never fails the spawn."""
+    if cli is None:
+        return ""
+    try:
+        from kiro_crew.acp import chat_runtime_sharing
+
+        return chat_runtime_sharing.relay_engine_version(cli) or ""
+    except Exception:  # noqa: BLE001 - an unreadable extract is an unknown engine
+        return ""
+
+
 def _bundle_route_selected() -> bool:
     """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop.
 
@@ -779,6 +793,9 @@ class KasHarness(MembershipHarness):
     #: knows it: its own bundle's. ``""`` on the relay, whose ``initialize``
     #: names no engine version.
     bundle_engine_version = ""
+    #: The engine a relay spawn runs, read from kiro-cli's unpacked engine
+    #: (``chat_runtime_sharing.relay_engine_version``); ``""`` when unread.
+    relay_engine_version = ""
     #: :func:`~kiro_crew.acp.client_turn_control.untested_version_issue` for the
     #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
     #: whose engine is the pinned one (``acp/kas_pin.py``).
@@ -822,6 +839,7 @@ class KasHarness(MembershipHarness):
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
+        self.relay_engine_version = ""
         self.untested_version_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
@@ -926,6 +944,9 @@ class KasHarness(MembershipHarness):
         # The binary this relay spawns, read as the route reads it, so a kiro-cli
         # found only through PATH is warned about too.
         spawned_version = await asyncio.to_thread(resolved_kiro_cli_version, kas_bin)
+        self.relay_engine_version = await asyncio.to_thread(
+            _relay_engine_version_or_unknown, spawned_version
+        )
         self.untested_version_notice = (
             untested_version_issue(ACP_BACKEND_KIRO, ".".join(map(str, spawned_version)))
             if spawned_version is not None
@@ -1224,6 +1245,7 @@ class KasHarness(MembershipHarness):
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
+        handle.kas_relay_engine_version = self.relay_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
 
     async def session_extras(
