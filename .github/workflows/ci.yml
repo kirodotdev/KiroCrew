@@ -6006,11 +6006,37 @@ jobs:
             exit 1
           }
 
+      - name: Check the Crew API contract on a real gateway
+        # Linux only: the contract does not differ by OS, and the step above is
+        # what proves each OS boots. One gateway serves every case, so this adds
+        # one boot. See test/e2e/crew_api_contract_spec.py.
+        if: runner.os == 'Linux'
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_HARNESS_READY_TIMEOUT: "60"
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov -p no:cacheprovider --timeout=420 \
+            test/e2e/test_crew_api_contract.py \
+            | tee crew-api-contract.log
+          # `pytest` exits 0 on a fully skipped module. The case count grows with
+          # every operation, so the canary is "some passed and none skipped"
+          # rather than an exact number.
+          grep -qE '(^|[^0-9])[1-9][0-9]* passed' crew-api-contract.log \
+            && ! grep -qE '(^|[^0-9])[1-9][0-9]* skipped' crew-api-contract.log || {
+            echo "::error::the Crew API contract cases did not all run (none passed, or some were skipped)"
+            exit 1
+          }
+
       - name: Upload the boot-matrix log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-boot-matrix-${{ matrix.os }}
-          path: boot-matrix.log
+          path: |
+            boot-matrix.log
+            crew-api-contract.log
           if-no-files-found: ignore
           retention-days: 7
