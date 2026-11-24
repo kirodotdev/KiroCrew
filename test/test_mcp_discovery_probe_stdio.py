@@ -580,6 +580,29 @@ class TestProbeStdioProtocolVersion:
         assert (result.status, result.error) == ("error", "boom")
         assert [m["params"]["protocolVersion"] for m in inits] == ["2025-06-18"]
 
+    def test_an_answered_error_is_marked_refused(self, monkeypatch) -> None:
+        """The server started and answered, so the quarantine must not count it."""
+        signed_out = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32001, "message": "proxy HTTP 307 Temporary Redirect"},
+        }
+
+        result, _ = self._run(monkeypatch, [json.dumps(signed_out).encode() + b"\n"])
+
+        assert result.status == "error"
+        assert result.probe_mode == "refused"
+
+    def test_a_tools_list_error_is_marked_refused(self, monkeypatch) -> None:
+        ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}
+        denied = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32001, "message": "sign in"}}
+        lines = [json.dumps(m).encode() + b"\n" for m in (ok, denied)]
+
+        result, _ = self._run(monkeypatch, lines)
+
+        assert (result.status, result.error) == ("error", "tools/list: sign in")
+        assert result.probe_mode == "refused"
+
 
 def _make_stream(lines: list[bytes]) -> asyncio.StreamReader:
     """Build a StreamReader pre-fed with ``lines`` and an EOF marker."""

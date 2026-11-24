@@ -87,11 +87,18 @@ def _quarantine_verdicts(rows: list[dict[str, Any]]) -> list[tuple[str, str, str
     the count: no handshake was attempted, so there is no outcome either way.
     This is the same rule that excludes ``needs_auth`` -- only a status that
     actually reports a handshake attempt may move the counter.
+
+    A ``refused`` row is dropped too. The server started and answered the
+    handshake with an error, such as an upstream sign-in that expired. The
+    quarantine exists to stop re-spawning a server that wedges, and this one
+    exits at once; counting it left a server excluded after its user signed in
+    again, since an excluded server is never probed back to ``ok``. Its row still
+    shows the error, and the next pass re-probes it.
     """
     return [
         (str(r.get("name") or ""), str(r.get("status") or ""), str(r.get("error") or ""))
         for r in rows
-        if str(r.get("name") or "") and str(r.get("probeMode") or "") != "declared"
+        if str(r.get("name") or "") and str(r.get("probeMode") or "") not in ("declared", "refused")
     ]
 
 
