@@ -1242,6 +1242,21 @@ class TestStreamRedactor:
         assert "Zq8vLm2" not in out and "Kd9pRt4wXy" not in out
         assert out == redact(text)
 
+    def test_word_start_agrees_with_a_walk_back_one_character_at_a_time(self) -> None:
+        """The windowed search finds the same word start as checking each character
+        with ``ends_word``, across blanks of every kind, CJK, a folded letter, and
+        runs longer than the first window."""
+        from kiro_crew.security.redaction_structured.compat import ends_word, word_start
+
+        def walk(buf: str, pos: int) -> int:
+            while pos > 0 and not ends_word(buf[pos - 1]):
+                pos -= 1
+            return pos
+
+        buf = "a" * 200 + "\x1c" + "ſ" * 70 + "b\tc\x0bd密e\u3000f" + "\u212a" * 130 + "g\x85h"
+        for pos in range(len(buf) + 1):
+            assert word_start(buf, pos) == walk(buf, pos), pos
+
     def test_a_value_ending_in_cjk_keeps_its_closing_quote_in_the_window(self) -> None:
         """A word ends after the value's last CJK character, right before its
         closing quote. The match is held until that quote goes out with it, so
