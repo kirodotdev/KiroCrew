@@ -74,7 +74,7 @@ async def decide(
     # threads), so it skips ``routing._stop_bound``'s: its Stop fences the stopped
     # turn's dispatch itself (stop_helpers.stop_channel).
     # shortcut: Slack writes a thread admitted before the Stop are not fenced; key the
-    # fence by thread when part C's board writes need it (#41908).
+    # fence by thread when part C's board writes need it.
     await stop_helpers.stop_channel(
         orch, binding, sender_id, channel, source=OPERATION, say_idle=True
     )
