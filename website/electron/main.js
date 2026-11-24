@@ -532,10 +532,14 @@ if (!app.requestSingleInstanceLock()) {
   // when no listener is attached.
   deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
   installDeepLinks({ app, handler: deepLinks, log: glog });
+  // The close notice's click waits for the same ack (close-hide-notice.js).
   installNavigateReady({
     app,
     ipcMain,
-    handler: deepLinks,
+    handler: {
+      navigateReady: () => { deepLinks.navigateReady(); windows?.closeHideNavigation.navigateReady(); },
+      navigationStarted: () => { deepLinks.navigationStarted(); windows?.closeHideNavigation.navigationStarted(); },
+    },
     isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
   });
   // On Windows and Linux the URL that launched THIS instance is in its own
@@ -608,6 +612,9 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  // The tray's quit label depends on a gateway this app started: re-read it on
+  // every spawn, exit, stop or switch to a remote gateway.
+  onOwnedGatewayChange: () => windows?.refreshTrayMenu(),
   currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
@@ -630,6 +637,7 @@ windows = createWindowLifecycle({
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
   isQuitting: () => isQuitting,
   requestQuit,
+  stopsGatewayOnQuit: () => gateway.stopsGatewayOnQuit(),
   connectWindow: (...args) => gateway.connect(...args),
   syncTunnel: () => gateway.syncTunnel(),
   downloadExpectations,
