@@ -308,8 +308,9 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
               That takes the pushed `meta.json` sidecar -- #6987. */}
           <Trans
             i18nKey="apps.awsControl.console.library_remove_confirm_slug"
-            values={{ folder: `artifacts/${slug}/` }}
-            components={{ folder: <code className="text-[11px] text-text" /> }}
+            // The folder is the chip's child, never a value: <Trans> parses
+            // its string as markup, so a value would be parsed with it.
+            components={{ folder: <code className="text-[11px] text-text">{`artifacts/${slug}/`}</code> }}
           />
         </span>
       </>

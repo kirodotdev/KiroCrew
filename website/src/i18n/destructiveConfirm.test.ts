@@ -216,10 +216,6 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
   'pages.schedulePage.late_save_unconfirmed':
     'not a confirmation prompt: a non-interactive notice that a save sent from the closed '
     + 'job dialog was never confirmed; it offers no destructive action',
-  'apps.awsControl.console.library_remove_confirm_slug':
-    'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
-    + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '
-    + 'double-decorate a path whose own slashes are the delimiter a reader checks',
   'apps.mochi.approval.inline_ask':
     'the {{tool}} operand renders as a styled <code> chip via renderAroundTool, '
     + 'so glyph quotes would double-decorate it (#5725)',
@@ -240,11 +236,6 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
     + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '
     + 'next to it -- a brand name in glyph quotes would read as a user-supplied label',
-  'pages.settings.securityPanel.trustedRegistries.grant_confirm_repo':
-    'the {{repo}} operand is the credential-free clone URL the operator configured, '
-    + 'rendered on its own monospace line after a label, so the line already delimits '
-    + 'it and glyph quotes would double-decorate a URL whose own scheme and slashes are '
-    + 'the shape a reader checks',
 }
 
 function placeholdersIn(value: string): string[] {

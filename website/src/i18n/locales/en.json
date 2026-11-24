@@ -7327,7 +7327,7 @@
       "more_actions": "More actions",
       "created_at_value": "Created {{date}}",
       "updated_at_value": "Updated {{date}}",
-      "action_by_actor": "<0>{{action}}</0> by {{name}}",
+      "action_by_actor": "<0/> by <1/>",
       "content_copied_from_version": "content copied from v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
