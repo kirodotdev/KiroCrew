@@ -182,45 +182,38 @@ def _is_kill_by_name_program(token: str) -> bool:
 
 #: An operator expansion (``${w%/}``, ``${!x}``) or a substitution can rewrite a value.
 _VALUE_REWRITE_RE = re.compile(r"\$\{(?![a-z_][a-z0-9_]*\})|\$\(|`", re.IGNORECASE)
-#: Words that bind a variable by name (``declare -n r=w``) or re-read text as a command.
-_REBINDING_WORDS = frozenset({"declare", "typeset", "local", "eval"})
-#: Reserved words that precede a command, so the word after one is its program.
-_COMMAND_PREFIX_WORDS = frozenset({"do", "then", "else", "elif", "!", "{", "time"})
+#: What a directory loop's body may run: each moves, links or prints a path, and none
+#: executes, evaluates or stores an argument (``printf -v``, ``eval`` and ``sh`` are out).
+_DIR_LOOP_BODY_PROGRAMS = frozenset(
+    {"ln", "cp", "mv", "mkdir", "rm", "rmdir", "touch", "chmod", "chown", "echo"}
+)
 
 
 def _for_list_directory_globs(tokens: "list[str]", text: str) -> "frozenset[int]":
-    """Indexes of ``for NAME in`` list words ending in ``/`` whose value stays data.
+    """Indexes of list words ending in ``/`` when the frame is ONE plain ``for`` loop.
 
     Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
-    Its value can still become a program (``${w%/} -f``, a bare ``$w``, or printed
-    text piped into a shell), so the exemption needs a command *text* with no pipe or
-    output redirect, a frame that rewrites no value, and data-consumer ``$NAME`` uses.
+    Its value could still become a program, so the shape is fixed: the frame is
+    exactly ``for NAME in WORDS; do CMD; ...; done``, each CMD's program is in
+    ``_DIR_LOOP_BODY_PROGRAMS``, no word holds an operator before its end, and the
+    *text* has no pipe, output redirect, substitution or operator expansion.
     """
-    rewrites = any(_VALUE_REWRITE_RE.search(t) for t in tokens)
-    if "|" in text or ">" in text or rewrites or _REBINDING_WORDS.intersection(tokens):
+    if "|" in text or ">" in text or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
         return frozenset()
-    programs = _argv_programs(["" if t in _COMMAND_PREFIX_WORDS else t for t in tokens])
-    disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
-    found: set[int] = set()
-    for k in range(len(tokens) - 2):
-        name = tokens[k + 1]
-        if tokens[k] != "for" or tokens[k + 2] != "in" or not name.isidentifier():
-            continue
-        ref = re.compile(r"\$\{?" + name + r"(?![a-z0-9_])", re.IGNORECASE)
-        if not all(
-            _data_consumer_exempt(j, word, programs, tokens, command_disqualified=disqualified)
-            for j, word in enumerate(tokens)
-            if ref.search(word)
+    if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
+        return frozenset()
+    if not tokens[1].isidentifier() or "do" not in tokens:
+        return frozenset()
+    if any(c in t.rstrip(";") for t in tokens for c in ";&\n"):
+        return frozenset()
+    do = tokens.index("do")
+    starts = [do + 1] + [j + 1 for j in range(do + 1, len(tokens) - 1) if tokens[j].endswith(";")]
+    for j in starts:
+        if tokens[j] != ";" and _shell_normalizer._program_basename(tokens[j]) not in (
+            _DIR_LOOP_BODY_PROGRAMS | {"done"}
         ):
-            continue
-        for j in range(k + 3, len(tokens)):
-            if tokens[j] == "do":
-                break
-            if tokens[j].rstrip(";&|").endswith("/"):
-                found.add(j)
-            if _ends_argv(tokens[j]):
-                break
-    return frozenset(found)
+            return frozenset()
+    return frozenset(j for j in range(3, do) if tokens[j].rstrip(";").endswith("/"))
 
 
 # ``env -S`` splits its argument into a command and execs it.

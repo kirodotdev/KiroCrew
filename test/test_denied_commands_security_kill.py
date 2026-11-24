@@ -729,6 +729,17 @@ class TestSelfProtectionKillTargetScoping:
                 _RULE_KILL,
             ),
             (f"for w in /usr/bin/p*ll/; do echo $w {_NAME}; done > /tmp/x.sh", _RULE_KILL),
+            # `for` is only an echo argument; the glued word after `;` is the program.
+            (
+                f'function p*ll/ {{ /usr/bin/p?ill "$@"; }}; echo for w in x;p*ll/ -f {_NAME}',
+                _RULE_KILL,
+            ),
+            (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # A body program that stores its output (`printf -v`) and then runs it.
+            (
+                f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
+                _RULE_KILL,
+            ),
         ],
     )
     def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
