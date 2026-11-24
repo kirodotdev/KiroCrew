@@ -626,14 +626,7 @@ def rewrite_agents(
     # and ``config.loader`` imports this module's path helpers at import time.
     from kiro_crew.agent_discovery import read_agent_spec_strict
 
-    # A server the gateway saw ask for the chat's roots works on the project
-    # folder, so it is never wrapped again: each chat launches its own copy. A
-    # probe pass (launch resolution) still sees it, so its launch can be shown.
-    from kiro_crew.mcp_gateway.folder_use import roots_requesting
-
     stub_set = stub_servers or frozenset()
-    if not getattr(approvals, "probe", False):
-        stub_set = stub_set - roots_requesting(socket_path)
 
     # An install upgraded from an older release can still carry a settings
     # overlay at ``<overlay_dir>/../settings/mcp.json``; this pass never

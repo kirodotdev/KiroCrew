@@ -153,7 +153,6 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
   if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
-  if (code === 'cwd_roots') return 'pages.mcpManagement.stub_error_cwd_roots'
   return 'pages.mcpManagement.stub_failed'
 }
 
@@ -396,7 +395,6 @@ export function detailsWhyKey(
 ): string {
   switch (state) {
     case 'no_stub':
-      if (s.cwd_roots === true) return 'pages.mcpManagement.why_roots'
       return s.denylisted ? 'pages.mcpManagement.why_credentials' : 'pages.mcpManagement.why_no_stdio'
     case 'needs_reapproval':
       if (refusal && !launchIsApprovable(refusal)) return 'pages.mcpManagement.approval_not_approvable_here'
@@ -444,8 +442,7 @@ export function autoShareCandidates(
 
 /**
  * Whether sharing this server first needs the operator to say it can be shared
- * across chats. A server a declared fact clears (`cwd_proven`: Kiro Crew's own,
- * or one the edition lists) is never asked. A row from a
+ * across chats. Kiro Crew's own servers are never asked. A row from a
  * gateway that sends no answer field at all reads as not needing one, since that
  * gateway does not ask.
  */

@@ -8138,8 +8138,6 @@
       "why_shared": "All new chats use one copy.",
       "why_credentials": "Hands out credentials, so each chat keeps its own copy.",
       "why_no_stdio": "It has no stdio pipe, so each chat connects on its own.",
-      "why_roots": "It asked a chat for its project folder, so each chat runs its own copy.",
-      "stub_error_cwd_roots": "{{name}} asked a chat for its project folder, so each chat runs its own copy.",
       "hero_title": "Share MCP servers across chats",
       "share_switch_label": "Turn on MCP server sharing",
       "share_diagram_label": "Sharing off: each chat runs its own copy of a server. Sharing on: all chats use one copy.",

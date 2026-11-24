@@ -642,7 +642,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     """
     from kiro_crew.config.integration_sections import effective_cwd_answer
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
-    from kiro_crew.mcp_gateway import folder_use
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
         pool_identity_env_keys,
@@ -664,7 +664,6 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
     probe_current, probeable = await asyncio.to_thread(_probe_view)
-    folder_free = await asyncio.to_thread(folder_use.edition_folder_free)
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -676,10 +675,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # operator's choice. The UI needs both — one disables the control, the
         # other sets it — and collapsing them would make an unstubbable server
         # look like one the operator declined.
-        # A server seen asking for the chat's roots works on the project
-        # folder, so it cannot share either (``folder_use``).
-        asked_roots = folder_use.asks_for_roots(observed, name)
-        can_stub = is_stdio and not denylisted and not asked_roots
+        can_stub = is_stdio and not denylisted
         # ``stub_servers`` is the only thing that produces a stub, so it is the
         # only thing this row may report. ``entry_poolable`` is still returned
         # below as information — a spec-level ``poolable: true`` does not opt a
@@ -740,18 +736,15 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 # The operator's answer to "share this server across chats?"
-                # (null when unanswered), whether a declared fact answers it so it
-                # is never asked (``cwd_proven``), and whether the gateway saw it
-                # ask for roots (``cwd_roots``), which outranks both. A ``not_used``
-                # answer given for a different launch than the one this name
-                # declares now reads as unanswered, so the page asks.
+                # (null when unanswered), and whether it is never asked.
+                # A ``not_used`` answer given for a different launch than the one
+                # this name declares now reads as unanswered, so the page asks.
                 "cwd_use": effective_cwd_answer(
                     (getattr(gw_cfg, "cwd_use", None) or {}).get(name),
                     (getattr(gw_cfg, "cwd_use_launch", None) or {}).get(name),
                     declared_launch(row),
                 ),
-                "cwd_proven": folder_use.folder_free_source(name, folder_free) is not None,
-                "cwd_roots": asked_roots,
+                "cwd_proven": name in KIROCREW_BIN_MCP_SERVERS,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,

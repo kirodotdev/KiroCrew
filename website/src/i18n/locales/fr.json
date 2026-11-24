@@ -17843,8 +17843,6 @@
       "why_shared": "Tous les nouveaux chats utilisent une seule copie.",
       "why_credentials": "Il distribue des identifiants, donc chaque chat garde sa propre copie.",
       "why_no_stdio": "Il n’a pas de canal stdio, donc chaque chat se connecte de son côté.",
-      "why_roots": "Il a demandé à un chat le dossier de son projet, donc chaque chat lance sa propre copie.",
-      "stub_error_cwd_roots": "{{name}} a demandé à un chat le dossier de son projet, donc chaque chat lance sa propre copie.",
       "hero_title": "Partager les serveurs MCP entre les chats",
       "share_switch_label": "Activer le partage des serveurs MCP",
       "share_diagram_label": "Partage désactivé : chaque chat lance sa propre copie d’un serveur. Partage activé : tous les chats utilisent une seule copie.",

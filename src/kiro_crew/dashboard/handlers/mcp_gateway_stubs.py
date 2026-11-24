@@ -38,7 +38,7 @@ from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
 )
 from kiro_crew.dashboard.handlers.mcp_probe import _probe_currency
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.mcp_gateway import folder_use, hazards, launch_resolve
+from kiro_crew.mcp_gateway import hazards, launch_resolve
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
     display_launches,
@@ -327,11 +327,9 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     operator's answer to "share this server across chats?" in
     ``mcp_gateway.cwd_use``; sent without ``stub`` it records only that. A
     routed backend runs in one fixed folder outside the project, so ``stub: true``
-    is refused (``cwd_unconfirmed``) for a server no fact clears
-    (``mcp_gateway.folder_use``: Kiro Crew's own, the edition's list) and is not
-    answered ``not_used``, and refused (``cwd_roots``) for one the gateway saw ask
-    for roots, whatever it was answered. This route is the only writer of the
-    launch approvals the rewriter needs before it wraps a server.
+    is refused (``cwd_unconfirmed``) for a server that is not Kiro Crew's own and
+    is not answered ``not_used``, and this route is the only writer of the launch
+    approvals the rewriter needs before it wraps a server.
 
     ``expected_entry`` optionally constrains an approval to the command, args and
     env shown on an ``mcp.server`` card. The card middleware binds this field to
@@ -357,7 +355,6 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import (  # noqa: F811
         ConfigReadError,
         ConfigWriteRefused,
-        KiroCrewConfig,
         config_path,
         update_config_locked,
     )
@@ -510,26 +507,6 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     # would otherwise observe it runs at the next gateway start, and an agent
     # can edit ``mcp.json`` or a spec in between. Before any write, so a name
     # with nothing to approve changes nothing.
-    # A server the gateway saw ask for the chat's roots works on the project
-    # folder, so it stays in each chat whatever was answered (``folder_use``).
-    # Checked before the launch is resolved, so nothing is approved for it.
-    asked_roots: frozenset[str] = frozenset()
-    if stub:
-        asked_roots = await asyncio.to_thread(
-            folder_use.roots_requesting, KiroCrewConfig.load().mcp_gateway.socket_path
-        )
-        if not resolve_eligibility and any(n in asked_roots for n in names):
-            _log_stub_rejection("cwd_roots")
-            return web.json_response(
-                {
-                    "error": (
-                        "this server asked a chat for its project folder, so each "
-                        "chat runs its own copy. Nothing was changed."
-                    ),
-                    "code": "cwd_roots",
-                },
-                status=409,
-            )
     launches: dict[str, list[Any]] = {}
     if stub:
         try:
@@ -717,11 +694,6 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         probe_current = (
             await asyncio.to_thread(_probe_currency) if resolve_eligibility and stub else {}
         )
-        # The edition's folder-free list (``folder_use``), the fact besides Kiro
-        # Crew's own servers that clears a server without an answer.
-        folder_free: frozenset[str] = frozenset()
-        if stub:
-            folder_free = await asyncio.to_thread(folder_use.edition_folder_free)
 
         # Carries the compare-and-set outcome out of the mutate callback. Raising
         # through ``update_config_locked`` would abort the write, which is the
@@ -764,23 +736,18 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 merged = _deep_merge(section, overlay)
                 answers = _resolve_cwd_use(merged)
                 bindings = _resolve_cwd_use_launch(merged)
-                # A server seen asking for roots works on the folder whatever was
-                # answered or declared. The single form refused it before the
-                # launch was resolved; the batch skips it here.
-                roots = [n for n in written if n in asked_roots]
                 unconfirmed = [
                     n
                     for n in written
-                    if n not in roots
-                    and folder_use.folder_free_source(n, folder_free) is None
+                    if n not in KIROCREW_BIN_MCP_SERVERS
                     and effective_cwd_answer(answers.get(n), bindings.get(n), current_launch.get(n))
                     != _CWD_NOT_USED
                 ]
                 if unconfirmed and not resolve_eligibility:
                     refused["code"] = "cwd_unconfirmed"
                     return None
-                written = [n for n in written if n not in unconfirmed and n not in roots]
-                resolved["cwd_skipped"] = [{"name": n, "reason": "cwd_roots"} for n in roots] + [
+                written = [n for n in written if n not in unconfirmed]
+                resolved["cwd_skipped"] = [
                     {"name": n, "reason": "cwd_unconfirmed"} for n in unconfirmed
                 ]
             if resolve_eligibility and stub:
@@ -915,6 +882,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+
         # Turning a stub on approves the launches resolved above for the names written.
         decided = list(resolved.get("eligible") or [])
         if stub and decided:

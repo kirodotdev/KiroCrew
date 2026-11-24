@@ -1518,9 +1518,8 @@ class TestBackendRecordsHazards:
     def test_both_observation_sites_call_the_recorder(self) -> None:
         """Ratchet: the hazard sites must stay wired to the ledger.
 
-        Four sites: the unattributable notification drop, the unroutable
-        server->client request recycle, the unsubscribed resources/updated drop,
-        and a ``roots/list`` request (``mcp_gateway.folder_use``).
+        Three sites: the unattributable notification drop, the unroutable
+        server->client request recycle, and the unsubscribed resources/updated drop.
         Checked on source, since an end-to-end frame needs a misbehaving shared server.
         """
         import importlib
@@ -1534,7 +1533,6 @@ class TestBackendRecordsHazards:
             _Path(importlib.import_module(name).__file__ or "").read_text(encoding="utf-8")
             for name in (backend_mod.__name__, *backend_mod._BACKEND_OWNERS)
         )
-        assert src.count("self._record_hazard(") == 4, "expected exactly four hazard sites"
+        assert src.count("self._record_hazard(") == 3, "expected exactly three hazard sites"
         assert "hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION" in src
         assert "hazards.HAZARD_UNROUTABLE_SERVER_REQUEST" in src
-        assert "hazards.HAZARD_ROOTS_REQUESTED, any_client=True" in src

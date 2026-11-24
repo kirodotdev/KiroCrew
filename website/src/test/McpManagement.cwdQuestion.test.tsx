@@ -9,8 +9,6 @@
 //   asks once; "Keep one per chat" takes it off sharing in the same request
 // - Kiro Crew's own servers and servers already answered "No" are never asked
 // - the bulk share never offers a server that waits for the answer
-// - a server the gateway saw ask for roots has no switch, is never asked, and
-//   its Details say why
 //
 // Every label is read from the catalog, so a wording change never breaks a test.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -21,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type McpManagedServer } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { McpManagement } from '../pages/settings/McpManagement'
-import { autoShareCandidates, detailsWhyKey, needsCwdAnswer, rowState } from '../pages/settings/mcpManagementModel'
+import { autoShareCandidates, needsCwdAnswer } from '../pages/settings/mcpManagementModel'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
@@ -206,17 +204,5 @@ describe('the working-folder question', () => {
     const { cwd_use: _omit, ...older } = server()
     void _omit
     expect(needsCwdAnswer(older as McpManagedServer)).toBe(false)
-  })
-
-  it('draws no switch and asks nothing for a server seen asking for roots', async () => {
-    serve({ can_stub: false, cwd_roots: true })
-
-    mount()
-    await screen.findByText('alpha-mcp', {}, { timeout: 5000 })
-
-    expect(screen.queryByRole('switch', { name: `${M('share_toggle')} alpha-mcp` })).toBeNull()
-    expect(screen.queryByRole('dialog')).toBeNull()
-    const row = server({ can_stub: false, cwd_roots: true }) as McpManagedServer
-    expect(detailsWhyKey(row, rowState(row, true))).toBe('pages.mcpManagement.why_roots')
   })
 })
