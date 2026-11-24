@@ -5738,6 +5738,7 @@
       "failed_to_load_registry": "Failed to load registry",
       "failed_to_uninstall": "Failed to uninstall {{name}}",
       "failed_to_update": "Failed to update: {{names}}",
+      "discover_apps": "Discover apps",
       "find_apps_in_the_discover_tab_or_install_from_a": "Find apps on the Discover page, or install from a local path via Sources there.",
       "keep_dependency": "Keep dependency {{name}}",
       "kirocrew_registry": "{{productName}} registry",
@@ -10195,6 +10196,8 @@
         "task_runner": "Show Task Runner",
         "task_runner_hint": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
         "task_runner_save_failed": "Could not save the Task Runner setting. Try again.",
+        "show_discover": "Show Discover in the sidebar",
+        "show_discover_hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library.",
         "channels": "Show Channels",
         "channels_hint": "Off takes Channels off the left rail and out of Search Everywhere. Nothing is deleted or stopped: your channels and the agents working in them are kept.",
         "channels_save_failed": "Could not save the Channels setting. Try again."

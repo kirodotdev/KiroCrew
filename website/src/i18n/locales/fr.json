@@ -12940,6 +12940,7 @@
       "failed_to_load_registry": "Échec du chargement du registre",
       "failed_to_uninstall": "Échec de la désinstallation de {{name}}",
       "failed_to_update": "Échec de la mise à jour : {{names}}",
+      "discover_apps": "Découvrir des apps",
       "find_apps_in_the_discover_tab_or_install_from_a": "Trouvez des apps sur la page Découvrir, ou installez depuis un chemin local via Sources sur cette page.",
       "keep_app_data": "Conserver les données de l'application",
       "keep_dependency": "Conserver la dépendance {{name}}",
@@ -21368,6 +21369,8 @@
         "task_runner": "Afficher Task Runner",
         "task_runner_hint": "Désactivé, Task Runner disparaît de la barre latérale gauche et de Rechercher partout, et les nouvelles exécutions de tâches sont arrêtées. Rien n’est supprimé : tes plans, les exécutions passées et celles en cours sont conservés.",
         "task_runner_save_failed": "Impossible d'enregistrer le réglage Task Runner. Réessaie.",
+        "show_discover": "Afficher Découvrir dans la barre latérale",
+        "show_discover_hint": "Désactivé, Découvrir disparaît de la barre latérale gauche dans ce navigateur uniquement. Ouvre-le avec Découvrir des apps sur la page Bibliothèque ou depuis Rechercher partout. Tant qu’il est désactivé, le nombre de mises à jour d’apps s’affiche sur Bibliothèque.",
         "channels": "Afficher Canaux",
         "channels_hint": "Désactivé, Canaux disparaît de la barre latérale gauche et de Rechercher partout. Rien n’est supprimé ni arrêté : tes canaux et les agents qui y travaillent sont conservés.",
         "channels_save_failed": "Impossible d'enregistrer le réglage Canaux. Réessaie."

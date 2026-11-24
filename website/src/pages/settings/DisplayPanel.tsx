@@ -57,6 +57,8 @@ import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { STANDALONE_REOPEN_KEY, isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { toggleAppNavHidden, useAppNavHidden } from '../../lib/appNavHidden'
+import { BUILTIN_SURFACE_NAV } from '../../surfaces/surfaceData'
 import { REVERSE_TRACKPAD_SWIPE_KEY, shellNaturalScrolling } from '../../lib/scrollTouch'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { TouchLayoutSetting } from './TouchLayoutSetting'
@@ -167,6 +169,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // "Show search in the top bar", on by default. useAppShell reads the same key
   // to draw the header, and usePersistedBool keeps the two readers in step.
   const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
+  // "Show Discover in the sidebar", on by default: Discover's nav id in this
+  // browser's sidebar hidden set (lib/appNavHidden.ts) means off.
+  const discoverHidden = useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
   // "Reopen where I left off", off by default and offered only in the installed
   // app (#29497 decision). lib/standaloneLastRoute.ts reads the same key.
   const [reopenLastPage, setReopenLastPage] = usePersistedBool(STANDALONE_REOPEN_KEY, false)
@@ -885,6 +890,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               on this panel that navigation would discard. */}
           <ErrorNotice message={milestonesError} variant="inline" />
           <TaskRunnerSetting />
+          {/* Per browser, unlike its neighbours: off takes only the Discover row
+              off the rails, and Search Everywhere still lists Discover. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_discover')}
+            hint={i18nT('pages.settings.displayPanel.show_discover_hint')}
+            checked={!discoverHidden}
+            onChange={on => { if (on === discoverHidden) toggleAppNavHidden(BUILTIN_SURFACE_NAV.apps.navId) }}
+          />
           <ChannelsSetting />
         </SettingsCard>
       </SettingsSection>

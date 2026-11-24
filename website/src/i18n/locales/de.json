@@ -12656,6 +12656,7 @@
       "failed_to_load_registry": "Registry konnte nicht geladen werden",
       "failed_to_uninstall": "{{name}} konnte nicht deinstalliert werden",
       "failed_to_update": "Aktualisierung fehlgeschlagen: {{names}}",
+      "discover_apps": "Apps entdecken",
       "find_apps_in_the_discover_tab_or_install_from_a": "Finde Apps auf der Entdecken-Seite oder installiere sie dort über Quellen von einem lokalen Pfad.",
       "keep_app_data": "App-Daten behalten",
       "keep_dependency": "Abhängigkeit {{name}} behalten",
@@ -20817,6 +20818,8 @@
         "task_runner": "Task Runner anzeigen",
         "task_runner_hint": "Ausgeschaltet verschwindet Task Runner aus der linken Leiste und aus „Überall suchen“, und neue Aufgabenläufe werden gestoppt. Nichts wird gelöscht: Deine Pläne, frühere Läufe und laufende Läufe bleiben erhalten.",
         "task_runner_save_failed": "Die Einstellung für Task Runner konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "show_discover": "Entdecken in der Seitenleiste anzeigen",
+        "show_discover_hint": "Ausgeschaltet verschwindet Entdecken nur in diesem Browser aus der linken Leiste. Öffne es mit „Apps entdecken“ auf der Bibliothek-Seite oder über „Überall suchen“. Solange es aus ist, steht die Zahl der App-Aktualisierungen an Bibliothek.",
         "channels": "Kanäle anzeigen",
         "channels_hint": "Ausgeschaltet verschwinden Kanäle aus der linken Leiste und aus „Überall suchen“. Nichts wird gelöscht oder gestoppt: Deine Kanäle und die Agenten, die darin arbeiten, bleiben erhalten.",
         "channels_save_failed": "Die Einstellung für Kanäle konnte nicht gespeichert werden. Versuch es noch einmal."
