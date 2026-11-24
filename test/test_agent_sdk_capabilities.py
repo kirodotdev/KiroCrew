@@ -90,6 +90,7 @@ CAPABILITY_FIELDS = (
     "refines_tool_call_titles",
     "permission_requests_name_child",
     "writes_crew_readable_transcript",
+    "honors_chat_steering_off",
 )
 
 
