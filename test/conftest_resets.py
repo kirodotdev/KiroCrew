@@ -1229,8 +1229,6 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
             module._SESSION_BACKEND_PICKS.clear()
-        # The thread-born mark beside them (``members_parts.worker_conducts``), fed
-        # by ``session_create`` and the slot metadata reader the same way.
         marks = sys.modules.get("kiro_crew.members_parts.worker_conducts")
         if marks is not None:
             marks._THREAD_BORN_WORKER_SLOTS.clear()
