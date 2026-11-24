@@ -7937,7 +7937,9 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
   own case-sensitive lookup. The two compaction triggers, `PreCompact` and
   `PostCompact` (and their camelCase spellings), come from the same table in the
   pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
-  that bundle are the ones to re-read when adding a name
+  that bundle are the ones to re-read when adding a name. The bundle's
+  `PermissionRequest` and `permissionRequest` rows are left out on purpose
+  (`docs/decisions/2026-11-24-a-spec-hook-may-not-use-the-permissionrequest-trigger.md`)
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
