@@ -609,6 +609,52 @@ class TestChannelCommand:
         await _slash("!channel agent off", slack, sessions)
         assert "default" in _texts(slack)
 
+    @pytest.mark.asyncio
+    async def test_agent_subcommand_pins_a_bot(
+        self, slack, sessions, owner, agents_dir, monkeypatch
+    ):
+        """A Bot is a ``config.agents`` record with no spec file of its own name."""
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["research"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Research Bot"
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+        await _slash("!channel agent research-bot", slack, sessions)
+        assert "Unknown agent" in _texts(slack)
+        assert "`research` (Research Bot)" in _texts(slack)
+
+        slack.actions.clear()
+        await _slash("!channel agent Research", slack, sessions)
+        assert "Agent for this channel: *research*" in _texts(slack)
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == "research"
+
+    @pytest.mark.asyncio
+    async def test_agent_subcommand_takes_a_multi_word_bot_name(
+        self, slack, sessions, owner, agents_dir, monkeypatch
+    ):
+        """The whole remainder names the Bot, not only its first word."""
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Research"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        cfg.agents["research"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Research Bot"
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+        await _slash("!channel agent Research Bot", slack, sessions)
+        assert "Agent for this channel: *research*" in _texts(slack)
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert saved["slack"]["channels"]["C1"]["agent"] == "research"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # maybe_handle_keyword_command

@@ -34,7 +34,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
-| `!channel agent <name/off>` | Set per-channel agent override |
+| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
