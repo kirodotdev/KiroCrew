@@ -6432,7 +6432,9 @@ same entry again adds the launches seen then. The writer and the gate read the
 definitions of the agent that actually serves the session (on the gate, the
 call's `resolved_agent`), never the slot's alias, which can name another spec;
 the MCP tool list toggle has no session and binds the configured default
-template's (`tool_grant_launch_audit.grant_agent`). A bound grant matches its
+template's (`tool_grant_launch_audit.grant_agent`); a session served by another
+agent that defines the same server name with a different launch asks on that
+grant every time, which is intended. A bound grant matches its
 identity case-sensitively and approves a call only when every definition of the
 server the calling session can see has a launch id in its binding; a changed,
 added or unidentifiable launch, no definition at all, or a settings file that
