@@ -877,9 +877,7 @@ async def test_a_running_view_is_ended_via_ack_when_the_app_is_disabled(grant) -
         assert hub.get(view_key) is None, "view must be ended after app is disabled (ack path)"
 
 
-async def test_view_refusal_is_recorded_in_sel(
-    grant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_view_refusal_is_recorded_in_sel(grant, monkeypatch: pytest.MonkeyPatch) -> None:
     """A revoked view grant writes a denied SEL record before returning the error.
 
     One-line change that turns this test red: remove the ``browser_live._audit``
@@ -939,7 +937,9 @@ async def test_keepalive_revocation_writes_one_sel_record(
         grant["verbs"] = ()
 
         # Trigger a keepalive heartbeat, which runs set_visible -> revocation.
-        await _post(client, "/api/browser/live/visibility", {"session_key": view_key, "visible": True})
+        await _post(
+            client, "/api/browser/live/visibility", {"session_key": view_key, "visible": True}
+        )
 
     # Exactly one revocation record from the keepalive path.
     revoked = [r for r in logged if r.get("error") == "view_grant_revoked"]
