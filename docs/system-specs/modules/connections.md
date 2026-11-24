@@ -1500,7 +1500,11 @@ allow id (`accept`) is sent; an id the frame never offered reads to KAS as a ref
 offered allow-always alone is answered with the canonical allow-once instead (`RECORDED_ALWAYS_ONLY`). On every
 approval, a canonical `allow_once` / `allow_always` that no recorded id replaced is sent as the id the frame offered
 for that kind (claude-agent-acp's `allow-once`), since that adapter refuses an id it never offered
-(`offered_allow_id`, see the ACP client spec). The agent spec keeps the provider's client
+(`offered_allow_id`, see the ACP client spec). A KAS Tool Search
+call arrives as `{"tool_id", "arguments"}`, and its approval binds only the inner `arguments`, which are what the bridge
+forwards (`crew_oauth_proxy._call_arguments`). That happens only when `tool_id` names this exact server and tool, as
+`<server>::<tool>` or as the resource-v2 loader's `tool::<server>::<tool>` (`session_directive.deferred_tool_ids`). Any
+other envelope binds its whole shape, which no forwarded call matches. The agent spec keeps the provider's client
 secret unless chats run on KAS or no kiro-cli session can start
 (`crew_oauth.strips_spec_secret`). goose names the server in
 `_meta.goose.toolCall`, and its `rawInput` is the arguments it sends. DeepSeek

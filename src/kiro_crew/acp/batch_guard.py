@@ -91,6 +91,7 @@ from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_A
 from kiro_crew.security import argv_rules as _argv_rules
 from kiro_crew.security import shell_commands as _shell_commands
 from kiro_crew.security import shell_normalizer as _shell
+from kiro_crew.session_directive import deferred_tool_ids
 
 logger = logging.getLogger(__name__)
 
@@ -594,7 +595,7 @@ def _mcp_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
             if raw.get("tool") == tool and raw.get("server") in (server, f"@{server}"):
                 return inner
         elif keys == {"tool_id", "arguments"}:
-            if raw.get("tool_id") == f"{server}::{tool}":
+            if raw.get("tool_id") in deferred_tool_ids(server, tool):
                 return inner
     return raw
 

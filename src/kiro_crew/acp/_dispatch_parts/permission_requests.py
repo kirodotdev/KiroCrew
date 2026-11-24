@@ -98,7 +98,7 @@ def _workspace_call_arguments(
     if not isinstance(params, dict) or "tool_id" not in params:
         return params, True
     inner = session_directive.deferred_call_arguments(params)
-    if inner is not None and params["tool_id"] == f"{server}::{tool}":
+    if inner is not None and params["tool_id"] in session_directive.deferred_tool_ids(server, tool):
         return inner, True
     return params, False
 

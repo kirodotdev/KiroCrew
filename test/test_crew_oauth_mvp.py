@@ -902,16 +902,21 @@ def test_only_setup_and_listing_pass_without_an_approval():
         assert refused and errors[0]["id"] == 9
 
 
-def test_a_tool_search_envelope_binds_the_inner_arguments():
+@pytest.mark.parametrize("tool_id", ["github::get_me", "tool::github::get_me"])
+def test_a_tool_search_envelope_binds_the_inner_arguments(tool_id):
+    # ``tool::<server>::<tool>`` is the resource-v2 loader's spelling of the same call.
     _register()
-    envelope = {"tool_id": "github::get_me", "arguments": {"a": 1}}
+    envelope = {"tool_id": tool_id, "arguments": {"a": 1}}
     crew_oauth_proxy.note_approval(SESSION, _event(raw_tool_params=envelope))
     assert crew_oauth_proxy.consume_approval(SESSION, "github", "get_me", {"a": 1})
 
 
-def test_an_envelope_naming_another_tool_is_not_unwrapped():
+@pytest.mark.parametrize(
+    "tool_id", ["github::delete_repo", "tool::github::delete_repo", "x::github::get_me"]
+)
+def test_an_envelope_naming_another_tool_is_not_unwrapped(tool_id):
     _register()
-    envelope = {"tool_id": "github::delete_repo", "arguments": {"a": 1}}
+    envelope = {"tool_id": tool_id, "arguments": {"a": 1}}
     crew_oauth_proxy.note_approval(SESSION, _event(raw_tool_params=envelope))
     assert not crew_oauth_proxy.consume_approval(SESSION, "github", "get_me", {"a": 1})
 

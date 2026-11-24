@@ -180,9 +180,10 @@ def _call_arguments(raw: Any, server: str, tool: str) -> Any:
     """The arguments the bridge will send for this approved call.
 
     KAS Tool Search invokes a deferred tool as
-    ``{"tool_id": "<server>::<tool>", "arguments": {...}}``; the ``tools/call`` the
-    bridge forwards carries only the inner ``arguments``. The envelope is unwrapped
-    only when its ``tool_id`` names this exact server and tool. codex-acp states
+    ``{"tool_id": "<server>::<tool>", "arguments": {...}}`` (``tool::<server>::<tool>``
+    under a resource-v2 loader); the ``tools/call`` the bridge forwards carries only
+    the inner ``arguments``. The envelope is unwrapped only when its ``tool_id``
+    names this exact server and tool. codex-acp states
     an MCP call as ``{"server", "tool", "arguments"}`` (``createMcpRawInput``),
     unwrapped the same way only when both names match.
     """
