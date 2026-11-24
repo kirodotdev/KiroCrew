@@ -43,7 +43,12 @@ def _stop(state: Any, binding: Any, monkeypatch: pytest.MonkeyPatch) -> list[str
 
     monkeypatch.setattr(routing, "_dashboard_state", lambda: state)
     orch = SimpleNamespace(slack=SimpleNamespace(post_message=post_message))
-    asyncio.run(routing._stop_bound(orch, binding, OWNER, binding.channel_id, source="test.stop"))
+    # The thread's real Stop path (thread_stop_gate.decide calls this directly).
+    asyncio.run(
+        stop_helpers.stop_channel(
+            orch, binding, OWNER, binding.channel_id, source="test.stop", say_idle=True
+        )
+    )
     return posts
 
 
@@ -56,9 +61,9 @@ def test_the_stopped_turn_dispatches_nothing_more(tmp_path, monkeypatch) -> None
     binding = store.thread_bindings()[0]
     _stop(state, binding, monkeypatch)
 
-    # The same turn, still unwinding: refused by the exemption's author clause.
+    # The same turn, still unwinding: refused by the exemption.
     exc = _refused(state, slot)
-    assert "not on record" in exc.message
+    assert "was stopped" in exc.message
 
 
 def test_the_owners_next_message_dispatches_again(tmp_path, monkeypatch) -> None:
@@ -70,10 +75,29 @@ def test_the_owners_next_message_dispatches_again(tmp_path, monkeypatch) -> None
     assert _create(state, slot)["target"]
 
 
+def test_a_stop_keeps_the_record_of_a_non_owner_who_drove_the_thread(tmp_path, monkeypatch) -> None:
+    """Stop only removes work: it never forgets who drove the conversation, so a
+    non-owner's text still in the model's context keeps dispatch refused."""
+    state = _state(tmp_path, monkeypatch)
+    slot, store = _thread(state, tmp_path)
+    _owner_turn(slot)
+    cce.note_channel_sender(slot, "U0OTHERMEM1")
+    _stop(state, store.thread_bindings()[0], monkeypatch)
+    cce.note_channel_sender(slot, OWNER)  # the owner writes again: the fence lifts
+    exc = _refused(state, slot)
+    assert "someone other than the owner" in exc.message
+
+
 def test_the_fence_ends_with_the_turn() -> None:
     """Only the running turn is narrowed: the turn runner clears the flag at the
     turn's end and the next turn's start, so a new dashboard turn is not narrowed."""
-    slot = SimpleNamespace(key="chat-x", _turn_channel_narrowed=False)
+    cce.forget_senders()
+    class _Slot:  # a plain class: a dashboard slot is weak-referenceable
+        key = "chat-x"
+        _turn_channel_narrowed = False
+
+    slot = _Slot()
     stop_helpers.fence_thread_dispatch(slot)
     assert slot._turn_channel_narrowed is True
-    assert cce._sender_refusal(slot)  # narrowed, no author on record
+    assert "was stopped" in cce._sender_refusal(slot)
+    cce.forget_senders()

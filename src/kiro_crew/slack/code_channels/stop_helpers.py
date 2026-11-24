@@ -351,23 +351,18 @@ def fence_thread_dispatch(slot: Any) -> None:
     A code channel's Stop does this through its channel-wide stop fence, which the
     dispatch exemption reads (``surface.channel_stopped``); that fence is keyed by
     the channel and a thread's turns never record their start in it. A thread's
-    Stop instead narrows the conductor's running turn to channel authority
-    (``_turn_channel_narrowed``, which the turn runner resets at the turn's end
-    and the next turn's start) and drops its recorded Slack authors, so the
-    exemption's author clause refuses every ``session_create`` and ``send`` the
-    unwinding turn still makes: a stopped worker is not started again from it,
-    and no new worker is born after the Stop's sweeps. The owner's next message
-    records the owner again; a new dashboard turn starts un-narrowed.
-
-    shortcut: reaches into the exemption's author record; give it a per-slot
-    ``forget_sender(slot)`` when that module is next edited.
+    Stop instead marks the slot stopped in the exemption (``fence_stopped_turn``) and
+    narrows the running turn to channel authority (``_turn_channel_narrowed``, which
+    the turn runner resets at the turn's end), so the exemption refuses every
+    ``session_create`` and ``send`` the unwinding turn still makes: a stopped worker
+    is not started again from it, and no new worker is born after the Stop's sweeps.
+    The recorded Slack authors are left as they are. The owner's next message in the
+    thread lifts the mark; a new dashboard turn is not narrowed.
     """
     from kiro_crew.dashboard.session_control_parts import code_channel_exemption as cce
 
     slot._turn_channel_narrowed = True
-    key = str(getattr(slot, "key", "") or "")
-    with cce._senders_lock:
-        cce._senders.pop(key, None)
+    cce.fence_stopped_turn(slot)
 
 
 async def _stop_channel_session(

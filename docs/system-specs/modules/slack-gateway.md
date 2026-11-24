@@ -3185,9 +3185,9 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   in a live thread passes `_route_message`'s activation-off and mention drops
   (`thread_stop_gate.is_owner_stop`), since Stop only removes work. The owner stops the conductor, its recorded workers and their sub-agents
   (`stop_helpers.stop_channel`, replying in the thread) and fences the stopped turn's dispatch
-  (`stop_helpers.fence_thread_dispatch`: the turn is narrowed and its recorded Slack authors
-  dropped, so the exemption refuses its further `create` and `send` until the owner writes
-  again); anyone else gets nothing, and with the
+  (`stop_helpers.fence_thread_dispatch`: the turn is narrowed and the slot is marked stopped in the
+  exemption, which refuses its further `create` and `send` until the owner writes in the thread
+  again; the recorded Slack authors are kept); anyone else gets nothing, and with the
   switch off it still stops a conductor that is running. `resume.resume_after_restart` walks
   live thread bindings too, keyed by room id (`channel:anchor`): one automatic resume per
   interrupted turn, then a held notice with an owner-only Resume, both posted in the thread;
