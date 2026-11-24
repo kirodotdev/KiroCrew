@@ -96,6 +96,49 @@ no mark, a mark on an operation no route serves, or an `x-crew-available-to` tha
 not the callers the lists name. A change that opens a served route to apps changes
 `x-crew-available-to` in the same change.
 
+An available operation whose spec describes more than the gateway serves also carries
+`x-crew-not-served-yet`. Today two operations carry it: `POST /v1/responses`, which the
+test below checks in full, and `GET /v1/models`, for its response headers, which the
+same test file checks. Both checks send the request as the owner; neither sends one
+with an app credential. No test compares the other available operations with their
+handlers field by field.
+
+```yaml
+      x-crew-not-served-yet:
+        request-body:
+        - background
+        - tool_choice=none
+        request-headers:
+        - Idempotency-Key
+        response-headers:
+        - X-Crew-Quota-Limit
+```
+
+- `request-body` names the request fields the route answers
+  `422 capability_unavailable`, each by its path in the request body: a field
+  (`background`), one value of a field (`tool_choice=none`), or a field of an array
+  item (`input[].content[].type=input_image`). A name covers every path under it.
+- `request-headers` names the request headers the route does not act on.
+- `response-headers` names the response headers the route does not send.
+- Each list is sorted.
+
+`test/test_crew_api_not_served_yet.py` builds one request per field and variant from
+the request schema in the spec, sends each to the route, and fails when a field the
+mark names is served or a field it does not name is refused
+`422 capability_unavailable`. A change that makes `POST /v1/responses` serve a field
+takes its name out of `x-crew-not-served-yet` in the same change; a change that makes
+it refuse one adds the name. The test's failure names the path to add or remove.
+
+The reference pages under `docs/reference/crew-api/` are generated from the spec. A
+change to either spec file regenerates them in the same change:
+
+```bash
+python scripts/generate_crew_api_reference.py
+```
+
+`test/test_crew_api_reference.py` fails while a committed page differs from what the
+spec renders.
+
 ## The baseline
 
 `.github/route-access-baseline.txt` lists the routes that had no entry when the
