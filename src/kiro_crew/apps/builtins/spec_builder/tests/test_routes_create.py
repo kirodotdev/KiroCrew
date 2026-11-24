@@ -740,8 +740,8 @@ async def test_create_cleanup_puts_a_still_running_orphan_back_without_a_deleted
 ):
     """A tag deleted while the real teardown holds the orphan out of ``_slots`` stays off it.
 
-    A tag delete strips the slots in ``_slots`` and in the close-in-flight registry
-    (#26159). The put-back after the teardown would otherwise restore the deleted id.
+    A tag delete strips the slots in ``_slots`` and in the close-in-flight registry.
+    Without the registry, the put-back after the teardown restores the deleted id.
     """
     from unittest import mock
 
