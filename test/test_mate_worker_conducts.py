@@ -714,7 +714,6 @@ class TestTheContextBlockFollowsTheMount:
             project=None,
             mode="",
             session_key=WORKER,
-            is_cc=False,
             private_owner=False,
             session_start=True,
             member_dispatch_mounted=mounted,
