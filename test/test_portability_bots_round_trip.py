@@ -144,9 +144,12 @@ async def test_s1_replace_into_a_fresh_home_keeps_the_bot_whole(homes, tmp_path)
     atlas, board, archive = await _source(homes, tmp_path)
     names = set(archive_members(archive))
     assert not any(n.startswith(("member-records/", "crew-panels/")) for n in names), names
-    assert f"members/{atlas.slug}/dashboard/instance.json" in names
+    assert f"bot-members/{atlas.slug}/dashboard/instance.json" in names
     assert any(n.startswith(f"bot-artifacts/{board.package}/") for n in names)
     assert not any(n.startswith("artifacts/") for n in names), names
+    # `members` is a whole-tree snapshot component: an earlier release's Replace
+    # would clear its whole members/ for a tree the archive carried there.
+    assert not any(n.startswith("members/") for n in names), names
     homes.use("b")
 
     summary = apply_import_zip(archive, mode="replace")
@@ -666,8 +669,8 @@ async def test_a_replace_onto_a_fresh_install_brings_the_archives_first_crewmate
     # mate (kept), which arrives whole with its chat, dashboard, briefing and binding.
     mate_a, board, archive = await _used_mate(homes, tmp_path)
     members = archive_members(archive)
-    assert f"members/{mate_a.slug}/dashboard/instance.json" in members
-    assert f"members/{mate_a.slug}/briefing.md" in members
+    assert f"bot-members/{mate_a.slug}/dashboard/instance.json" in members
+    assert f"bot-members/{mate_a.slug}/briefing.md" in members
 
     mc = homes.use("b")
     mate_b = boot_first_crewmate()
@@ -1358,7 +1361,7 @@ async def test_s5_no_archive_member_becomes_a_crewmate_file(homes, tmp_path) -> 
             "mates/agents/Atlas.json": grants,
             "mates/agents/Stray.json": grants,
             "kiro/mates/agents/Stray.json": grants,
-            f"members/{atlas.slug}/Atlas.json": grants,
+            f"bot-members/{atlas.slug}/Atlas.json": grants,
         },
         edit={"config.json": _escaping_names},
     )
@@ -1405,7 +1408,7 @@ async def test_s6_previous_release_archive_imports_and_says_dashboards_were_not_
     old = rewrite_archive(
         archive,
         tmp_path / "old.zip",
-        drop=lambda rel: rel.startswith(("members/", "bot-artifacts/")),
+        drop=lambda rel: rel.startswith(("bot-members/", "bot-artifacts/")),
         edit={"MANIFEST.json": _previous_release},
     )
     assert "bot_stores" not in json.loads(archive_members(old)["MANIFEST.json"])

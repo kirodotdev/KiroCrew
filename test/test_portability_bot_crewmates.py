@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import requires_symlinks
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
@@ -184,6 +185,7 @@ def test_a_file_another_data_home_owns_is_never_own_or_free(
     assert path.read_bytes() == minimal
 
 
+@requires_symlinks
 def test_a_link_another_data_home_owns_is_foreign_too(kiro: Path) -> None:
     path = mate_config.mate_config_path("ada")
     path.parent.mkdir(parents=True)

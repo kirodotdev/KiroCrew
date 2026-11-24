@@ -123,7 +123,7 @@ class _Import:
         mc = data_home()
         snap = mc / "import-staging" / f"work{self.count}" / "snap"
         snap.mkdir(parents=True)
-        shutil.copytree(src.home / "members", snap / "members")
+        shutil.copytree(src.home / "members", snap / "bot-members")
         shutil.copytree(src.home / "artifacts", snap / BOT_ARTIFACTS_DIR)
         return snap
 
@@ -139,8 +139,21 @@ def world(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> tuple[_Sour
     return src, dst
 
 
-def _run(snap: Path, mc: Path, owned_slugs: frozenset[str] | None = None) -> dict[str, PartOutcome]:
-    rows = stores.install_bot_stores(snap, mc, [BOT], allow_unpinned=False, owned_slugs=owned_slugs)
+#: Where directories cannot pin (Windows) the import runs by name with consent, as
+#: ``apply_import_zip`` does; read at import, before a test patches the probe away.
+UNPINNED_OK = not pinned_fs.supports_pinned_tree_walk()
+
+
+def _run(
+    snap: Path,
+    mc: Path,
+    owned_slugs: frozenset[str] | None = None,
+    *,
+    allow_unpinned: bool = UNPINNED_OK,
+) -> dict[str, PartOutcome]:
+    rows = stores.install_bot_stores(
+        snap, mc, [BOT], allow_unpinned=allow_unpinned, owned_slugs=owned_slugs
+    )
     assert [r.part for r in rows] == ["dashboard", "briefing"]
     assert all(r.bot == BOT.name for r in rows)
     return {r.part: r for r in rows}
@@ -198,7 +211,7 @@ def test_dashboard_installed_and_page_snapshot_matches_pin(world: tuple[_Source,
 def test_archive_host_state_and_history_are_not_installed(world: tuple[_Source, _Import]) -> None:
     src, dst = world
     snap = dst.snap_from(src)
-    (snap / "members" / SLUG / "dashboard" / "preview.json").write_text("{}", encoding="utf-8")
+    (snap / "bot-members" / SLUG / "dashboard" / "preview.json").write_text("{}", encoding="utf-8")
     _run(snap, dst.mc)
     member = dst.mc / "members" / SLUG
     assert not (member / "activity.jsonl").exists()
@@ -339,7 +352,7 @@ def test_artifact_copy_failure_publishes_neither_store(
 def test_error_state_record_is_unpublished(world: tuple[_Source, _Import]) -> None:
     src, dst = world
     snap = dst.snap_from(src)
-    (snap / "members" / SLUG / "dashboard" / "instance.json").write_text(
+    (snap / "bot-members" / SLUG / "dashboard" / "instance.json").write_text(
         json.dumps({"schema": 99}), encoding="utf-8"
     )
     rows = _run(snap, dst.mc)
@@ -356,7 +369,7 @@ def test_package_slug_failing_the_store_validator_builds_no_artifact_path(
 ) -> None:
     src, dst = world
     snap = dst.snap_from(src)
-    record_path = snap / "members" / SLUG / "dashboard" / "instance.json"
+    record_path = snap / "bot-members" / SLUG / "dashboard" / "instance.json"
     raw = json.loads(record_path.read_text(encoding="utf-8"))
     raw["package"]["slug"] = "../escape"
     record_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -384,7 +397,7 @@ def test_missing_pinned_version_file_is_artifact_missing(world: tuple[_Source, _
 def test_archive_without_bot_stores_reports_none(world: tuple[_Source, _Import]) -> None:
     src, dst = world
     snap = dst.snap_from(src)
-    shutil.rmtree(snap / "members")
+    shutil.rmtree(snap / "bot-members")
     rows = _run(snap, dst.mc)
     assert rows == {
         "dashboard": PartOutcome(BOT.name, "dashboard", "none"),
@@ -400,10 +413,10 @@ def test_linked_archive_dashboard_is_not_followed(
     src, dst = world
     snap = dst.snap_from(src)
     outside = tmp_path / "outside-dashboard"
-    shutil.move(str(snap / "members" / SLUG / "dashboard"), str(outside))
-    os.symlink(outside, snap / "members" / SLUG / "dashboard", target_is_directory=True)
-    (snap / "members" / SLUG / "briefing.md").unlink()
-    (snap / "members" / SLUG / "welcome_claimed.json").unlink()
+    shutil.move(str(snap / "bot-members" / SLUG / "dashboard"), str(outside))
+    os.symlink(outside, snap / "bot-members" / SLUG / "dashboard", target_is_directory=True)
+    (snap / "bot-members" / SLUG / "briefing.md").unlink()
+    (snap / "bot-members" / SLUG / "welcome_claimed.json").unlink()
     rows = _run(snap, dst.mc)
     assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "none")
     assert not os.path.lexists(dst.mc / "members" / SLUG / "dashboard")
@@ -417,7 +430,7 @@ def test_linked_file_inside_archive_dashboard_is_not_copied(
     snap = dst.snap_from(src)
     secret = tmp_path / "secret.json"
     secret.write_text('{"secret": true}', encoding="utf-8")
-    history = snap / "members" / SLUG / "dashboard" / "history.json"
+    history = snap / "bot-members" / SLUG / "dashboard" / "history.json"
     history.unlink()
     os.symlink(secret, history)
     rows = _run(snap, dst.mc)
@@ -431,7 +444,7 @@ def test_unpinnable_platform_without_permission_installs_nothing(
     src, dst = world
     snap = dst.snap_from(src)
     _floor_monkeypatch.setattr(stores.pinned_fs, "supports_pinned_tree_walk", lambda: False)
-    rows = _run(snap, dst.mc)
+    rows = _run(snap, dst.mc, allow_unpinned=False)
     assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "not_restored", "write_failed")
     assert rows["briefing"] == PartOutcome(BOT.name, "briefing", "not_restored", "write_failed")
     assert not (dst.mc / "members").exists()
@@ -567,7 +580,7 @@ def test_a_kept_record_brings_back_no_second_bound_package(
     src, dst = world
     snap = dst.snap_from(src)
     live = dst.mc / "members" / SLUG / "dashboard"
-    shutil.copytree(snap / "members" / SLUG / "dashboard", live)
+    shutil.copytree(snap / "bot-members" / SLUG / "dashboard", live)
     here = _save_other_package(dst.mc, f"crewmate:{SLUG}")
     rows = _run(snap, dst.mc, owned_slugs=frozenset({SLUG}))
     # The kept record pins a package that is not here and cannot be brought back:
@@ -686,7 +699,7 @@ def test_the_bound_dashboards_are_listed_once_per_import(
     src = _Source(tmp_path / "src-home", _floor_monkeypatch)
     dst = _Import(tmp_path / "dst-home", _floor_monkeypatch)
     snap = dst.snap_from(src)
-    shutil.copytree(snap / "members" / SLUG, snap / "members" / "bea")
+    shutil.copytree(snap / "bot-members" / SLUG, snap / "bot-members" / "bea")
     _save_other_package(dst.mc, "crewmate:other")
     listed: list[str] = []
     real_list = ArtifactStore.list
@@ -705,7 +718,7 @@ def test_the_bound_dashboards_are_listed_once_per_import(
         slot_key="dashboard:member:bea",
         kiro_agent="Bea",
     )
-    rows = stores.install_bot_stores(snap, dst.mc, [BOT, bea], allow_unpinned=False)
+    rows = stores.install_bot_stores(snap, dst.mc, [BOT, bea], allow_unpinned=UNPINNED_OK)
     assert [r.part for r in rows].count("dashboard") == 2
     assert listed == [dp.DASHBOARD_KIND]
 
@@ -1151,8 +1164,11 @@ def test_a_removal_never_takes_a_file_that_replaced_the_created_one(
     def swap_then_fail(data: bytes, staged: Path, root: Path, parts: Any) -> tuple[int, int]:
         if parts[-1] == "welcome_claimed.json":
             # Someone replaced the briefing this import created before the rollback.
-            (member / "briefing.md").unlink()
-            (member / "briefing.md").write_bytes(b"theirs")
+            # Written aside first, so the new file never reuses the freed inode (an
+            # unlink then create can, and the rollback keys on (st_dev, st_ino)).
+            theirs = member / ".theirs"
+            theirs.write_bytes(b"theirs")
+            os.replace(theirs, member / "briefing.md")
             raise OSError(28, "No space left on device")
         return real_publish(data, staged, root, parts)
 
@@ -1174,7 +1190,7 @@ def test_a_store_file_the_pinned_copy_refuses_installs_no_store(
     # the cap copies nothing, and the dashboard is not published.
     src, dst = world
     snap = dst.snap_from(src)
-    history = snap / "members" / SLUG / "dashboard" / "history.json"
+    history = snap / "bot-members" / SLUG / "dashboard" / "history.json"
     assert history.is_file()
     if hostile == "hard_link":
         os.link(history, tmp_path / "second-name")

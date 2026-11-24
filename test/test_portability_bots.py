@@ -347,7 +347,6 @@ class TestOrder:
         assert set(portability_bots.INSTANCE_REPLACE_COMPONENTS) == set(COMPONENTS) - {
             "artifacts",
             "uploads",
-            "members",
         }
 
     def test_claims_are_read_before_the_replace_strip(

@@ -121,7 +121,7 @@ class TestCarriedStores:
 
         zip_bytes, manifest = create_export_zip()
 
-        assert _under(_names(zip_bytes), "members/atlas") == CARRIED
+        assert _under(_names(zip_bytes), "bot-members/atlas") == CARRIED
         assert manifest["contents"]["bot_store_files"] == len(CARRIED)
         assert manifest["bot_stores"] == 1
 
@@ -145,7 +145,9 @@ class TestCarriedStores:
 
         files = list(portability_bot_export.iter_bot_store_files(str(mc), [("Atlas", "atlas")]))
         try:
-            assert {rel.as_posix() for rel, _fd in files} == {f"members/atlas/{r}" for r in CARRIED}
+            assert {rel.as_posix() for rel, _fd in files} == {
+                f"bot-members/atlas/{r}" for r in CARRIED
+            }
         finally:
             for _rel, fd in files:
                 os.close(fd)
@@ -163,7 +165,7 @@ class TestCarriedStores:
 
         names = _names(create_export_zip()[0])
 
-        assert _under(names, "members/stray") == set()
+        assert _under(names, "bot-members/stray") == set()
 
     def test_the_pinned_package_rides_minus_export_drops(self, patched_config_dir, mates_dir):
         mc = patched_config_dir
@@ -246,7 +248,7 @@ class TestCarriedStores:
         names = _names(create_export_zip()[0])
 
         assert not [n for n in names if "artifacts/" in n]
-        assert _under(names, "members/atlas") == CARRIED
+        assert _under(names, "bot-members/atlas") == CARRIED
 
     def test_nothing_under_member_records_crew_panels_or_the_kiro_home(
         self, patched_config_dir, mates_dir
@@ -280,7 +282,7 @@ class TestCarriedStores:
 
         zip_bytes, manifest = create_export_zip()
 
-        assert _under(_names(zip_bytes), "members/atlas") == set()
+        assert _under(_names(zip_bytes), "bot-members/atlas") == set()
         assert manifest["contents"]["bot_store_files"] == 0
 
     def test_a_linked_pinned_package_is_not_followed(self, patched_config_dir, mates_dir, tmp_path):
@@ -453,7 +455,7 @@ class TestManifestLists:
         manifest = portability.stream_export_zip(chunks.append, plan)
 
         names = _names(b"".join(chunks))
-        assert _under(names, "members/atlas") == CARRIED
+        assert _under(names, "bot-members/atlas") == CARRIED
         assert manifest["contents"]["bot_store_files"] == len(CARRIED) + 3
 
 

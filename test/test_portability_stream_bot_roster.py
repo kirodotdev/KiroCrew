@@ -78,7 +78,7 @@ def test_a_streaming_export_reads_the_roster_once(
     assert (counts.rosters, counts.fields) == (1, 1)
     with zipfile.ZipFile(io.BytesIO(b"".join(chunks))) as zf:
         names = {n.split("/", 1)[1] for n in zf.namelist()}
-    assert {"members/atlas/briefing.md", "members/atlas/dashboard/instance.json"} <= names
+    assert {"bot-members/atlas/briefing.md", "bot-members/atlas/dashboard/instance.json"} <= names
     assert manifest["contents"]["bot_store_files"] == 2
 
 

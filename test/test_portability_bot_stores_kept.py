@@ -42,7 +42,7 @@ def world(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> tuple[_Sour
 
 def _keep_record_and_package(snap: Path, mc: Path, package: str) -> None:
     """Put this Bot's record and the package it pins in place, with no page snapshot."""
-    shutil.copytree(snap / "members" / SLUG / "dashboard", mc / "members" / SLUG / "dashboard")
+    shutil.copytree(snap / "bot-members" / SLUG / "dashboard", mc / "members" / SLUG / "dashboard")
     shutil.copytree(snap / BOT_ARTIFACTS_DIR / package, mc / "artifacts" / package)
 
 
@@ -110,7 +110,9 @@ def test_a_kept_record_whose_package_is_refused_by_the_index_is_not_whole(
     # the package is not brought back, so the part is not whole and says why.
     src, dst = world
     snap = dst.snap_from(src)
-    shutil.copytree(snap / "members" / SLUG / "dashboard", dst.mc / "members" / SLUG / "dashboard")
+    shutil.copytree(
+        snap / "bot-members" / SLUG / "dashboard", dst.mc / "members" / SLUG / "dashboard"
+    )
     _floor_monkeypatch.setattr(
         dp,
         "scan_bound_dashboards",

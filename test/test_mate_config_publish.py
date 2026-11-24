@@ -19,6 +19,13 @@ import kiro_crew.config.paths as paths_mod
 from kiro_crew import mate_config, platform_compat
 
 
+#: Windows publishes with ``os.rename`` (its own tests below); the link and
+#: exclusive-create fallbacks and POSIX modes run everywhere else.
+posix_publish_only = pytest.mark.skipif(
+    platform_compat.IS_WINDOWS, reason="Windows publishes a Bot file with os.rename"
+)
+
+
 @pytest.fixture
 def kiro(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home = tmp_path / "kiro"
@@ -132,6 +139,7 @@ def _no_hard_links(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "link", no_link)
 
 
+@posix_publish_only
 def test_without_hard_links_the_publish_is_an_exclusive_create(
     kiro: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,6 +173,7 @@ def test_without_hard_links_an_entry_that_appears_before_the_publish_is_kept(
     assert [p.name for p in target.parent.iterdir()] == [target.name]
 
 
+@posix_publish_only
 def test_without_hard_links_a_link_planted_at_the_name_is_never_followed(
     kiro: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -184,6 +193,7 @@ def test_without_hard_links_a_link_planted_at_the_name_is_never_followed(
     assert target.is_symlink() and not outside.exists()
 
 
+@posix_publish_only
 def test_a_link_error_other_than_no_hard_links_is_not_turned_into_a_create(
     kiro: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -201,6 +211,7 @@ def test_a_link_error_other_than_no_hard_links_is_not_turned_into_a_create(
     assert not os.path.lexists(mate_config.mate_config_path("Ana"))
 
 
+@posix_publish_only
 def test_the_exclusive_create_is_the_shared_pinned_one(
     kiro: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -222,6 +233,7 @@ def test_the_exclusive_create_is_the_shared_pinned_one(
     assert json.loads(path.read_text(encoding="utf-8")) == mate_config.minimal_mate_spec("Ana")
 
 
+@posix_publish_only
 def test_an_exclusive_create_that_fails_mid_write_leaves_no_file(
     kiro: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

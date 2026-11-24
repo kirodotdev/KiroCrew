@@ -60,13 +60,11 @@ from kiro_crew.snapshot import COMPONENTS
 logger = logging.getLogger("kiro_crew.portability")
 
 #: The snapshot components an instance Replace restores: every one except the artifact
-#: library, the uploads and the Bots' folders. An instance export carries only the
-#: artifacts the roster's dashboards pin and each Bot's allowlisted ``members/<slug>/``
-#: files, and a whole-tree component the archive carries is removed and refilled, so
-#: passing any of them would erase every other artifact, upload or Bot folder here.
-#: The Bot stores step installs those files add-only instead.
+#: library and the uploads. An instance export carries only the artifacts the roster's
+#: dashboards pin, and a whole-tree component the archive carries is removed and
+#: refilled, so passing either would erase every other artifact or upload here.
 INSTANCE_REPLACE_COMPONENTS: tuple[str, ...] = tuple(
-    name for name in COMPONENTS if name not in ("artifacts", "uploads", "members")
+    name for name in COMPONENTS if name not in ("artifacts", "uploads")
 )
 
 #: Most Bot rows a summary lists; ``bots_more`` counts the rest.

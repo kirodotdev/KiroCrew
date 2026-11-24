@@ -11,8 +11,9 @@ The archive carries a pinned package under ``bot-artifacts/<package>/``
 (:data:`BOT_ARTIFACTS_DIR`), never under ``artifacts/``: ``artifacts`` is a snapshot
 component, and an importer that does not know Bot stores clears and refills a
 component tree the archive carries on Replace, which would erase every other
-artifact on its install. ``members/`` is no component, so no importer copies or
-clears it.
+artifact on its install. For the same reason a Bot's folder files go under
+``bot-members/<slug>/`` (:data:`BOT_MEMBERS_DIR`), never under ``members/``, which is
+a whole-tree snapshot component too.
 
 What it never enumerates: ``member-records/`` (DM bindings, rules and goals),
 ``crew-panels/`` (the gateway-owned page snapshots) and anything under the Kiro home
@@ -39,6 +40,7 @@ from kiro_crew import platform_compat
 from kiro_crew.members import MEMBERS_DIR_NAME
 from kiro_crew.portability_bot_types import (
     BOT_ARTIFACTS_DIR,
+    BOT_MEMBERS_DIR,
     CARRIED_MEMBER_SINGLE_FILES,
     MAX_CREWMATE_FILE_BYTES,
     MAX_RECORD_BYTES,
@@ -270,8 +272,9 @@ def iter_bot_store_files(
     ``welcome_claimed.json`` opened by name), then every regular file under
     ``artifacts/<P>/`` that ``portability._keep_for_export`` admits, where ``P`` is
     the package that Bot's ``dashboard/instance.json`` pins. *arcrel* is the archive
-    path: a member file keeps its data-home path, a package file is renamed to
-    ``bot-artifacts/<P>/...`` (:data:`BOT_ARTIFACTS_DIR`). Every open pins the
+    path: a member file is renamed to ``bot-members/<slug>/...``
+    (:data:`BOT_MEMBERS_DIR`), a package file to ``bot-artifacts/<P>/...``
+    (:data:`BOT_ARTIFACTS_DIR`). Every open pins the
     ancestors and refuses a link (``portability._walk_contained`` and
     ``_open_contained_file``), so a linked ``members/<slug>`` or ``artifacts/<P>`` is
     refused rather than followed and every descriptor is containment-checked against
@@ -294,7 +297,7 @@ def iter_bot_store_files(
         for rel, fd in _member_store_files(mc_real, slug):
             if rel.parts[2:] == ("dashboard", "instance.json"):
                 package = _pinned_package(fd)
-            yield rel, fd
+            yield PurePath(BOT_MEMBERS_DIR, *rel.parts[1:]), fd
         if not package or package in carried_packages:
             continue
         carried_packages.add(package)

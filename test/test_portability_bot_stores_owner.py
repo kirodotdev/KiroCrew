@@ -22,6 +22,7 @@ from test_portability_bot_stores import (  # noqa: F401 - _catalog is an autouse
     BOT,
     HELD,
     SLUG,
+    UNPINNED_OK,
     _catalog,
     _crafted_v2,
     _Import,
@@ -82,7 +83,7 @@ def _drop_pages() -> None:
 
 
 def _keep_record(snap: Path, mc: Path) -> None:
-    shutil.copytree(snap / "members" / SLUG / "dashboard", mc / "members" / SLUG / "dashboard")
+    shutil.copytree(snap / "bot-members" / SLUG / "dashboard", mc / "members" / SLUG / "dashboard")
 
 
 def test_a_package_here_rebound_to_another_bot_keeps_the_record_out(
@@ -386,11 +387,13 @@ def test_two_archive_bots_pinning_one_package_end_the_same_in_either_order(
     # whether this Bot's record published it first or not.
     src, dst = world
     snap = dst.snap_from(src)
-    shutil.copytree(snap / "members" / SLUG / "dashboard", snap / "members" / "bea" / "dashboard")
+    shutil.copytree(
+        snap / "bot-members" / SLUG / "dashboard", snap / "bot-members" / "bea" / "dashboard"
+    )
     bots = [BEA, BOT] if bea_first else [BOT, BEA]
     rows = {
         (r.bot, r.part): r
-        for r in stores.install_bot_stores(snap, dst.mc, bots, allow_unpinned=False)
+        for r in stores.install_bot_stores(snap, dst.mc, bots, allow_unpinned=UNPINNED_OK)
     }
     assert rows[(BOT.name, "dashboard")] == PartOutcome(BOT.name, "dashboard", "restored")
     assert rows[("Bea", "dashboard")] == PartOutcome("Bea", "dashboard", "not_restored", HELD)

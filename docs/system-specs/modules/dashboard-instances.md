@@ -390,7 +390,8 @@ previews only: a session's page has no person route.
 ## An imported dashboard rebuilds its page, or says it did not
 
 An instance export carries a Bot's `members/<slug>/dashboard/instance.json`, `history.json` and
-`versions/<n>.json` and the artifact package the record pins, but never the
+`versions/<n>.json` (under the archive tree `bot-members/<slug>/`) and the artifact package
+the record pins (under `bot-artifacts/<P>/`), but never the
 gateway-owned page snapshot `crew-panels/<slug>.dashboard-page.<digest>.json`. The
 import (`portability_bot_stores.install_bot_stores`) installs the dashboard directory
 add-only, and only when this install has none: a Bot that already has a dashboard

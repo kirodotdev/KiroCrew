@@ -3,7 +3,9 @@
 Three stores per Bot ride an instance export: the dashboard record directory
 ``members/<slug>/dashboard/``, the dashboard artifact directory its record pins
 (archive ``bot-artifacts/<P>/``, published to the data home's ``artifacts/<P>/``),
-and the single files ``briefing.md`` and ``welcome_claimed.json``.
+and the single files ``briefing.md`` and ``welcome_claimed.json``. The record and
+the single files ride under the archive's ``bot-members/<slug>/``
+(``BOT_MEMBERS_DIR``) and install to the data home's ``members/<slug>/``.
 The archive is untrusted, so every store is installed the same careful way:
 
 1. built in a stage directory inside the import's private extraction directory,
@@ -88,6 +90,7 @@ from kiro_crew.members import BRIEFING_FILE_NAME, MEMBERS_DIR_NAME
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.portability_bot_types import (
     BOT_ARTIFACTS_DIR,
+    BOT_MEMBERS_DIR,
     MAX_RECORD_BYTES,
     ImportedBot,
     PartOutcome,
@@ -1080,7 +1083,7 @@ def _stage_dashboard(
     """
     from kiro_crew.artifacts import slug_is_well_formed
 
-    src_dash = PurePath(snap.name, MEMBERS_DIR_NAME, bot.slug, "dashboard")
+    src_dash = PurePath(snap.name, BOT_MEMBERS_DIR, bot.slug, "dashboard")
     admitted = [
         key
         for key in _list_files(snap.parent, src_dash)
@@ -1217,7 +1220,7 @@ def _install_briefing(
         try:
             staged = PurePath("briefing", name)
             _copy_file(
-                snap.parent, PurePath(snap.name, MEMBERS_DIR_NAME, slug, name), stage, staged
+                snap.parent, PurePath(snap.name, BOT_MEMBERS_DIR, slug, name), stage, staged
             )
             pending.append((dest, stage / staged, _read_staged(stage / staged, MAX_FILE_BYTES)))
             _ensure_real_dir(mc, dest[:-1])
@@ -1243,9 +1246,9 @@ def _install_briefing(
 
 def _carried(snap: Path, slug: str) -> tuple[bool, list[str]]:
     """Whether the archive carries *slug*'s dashboard, and which briefing files."""
-    if not safe_path_component(slug) or _entry_kind(snap / MEMBERS_DIR_NAME, slug) != "dir":
+    if not safe_path_component(slug) or _entry_kind(snap / BOT_MEMBERS_DIR, slug) != "dir":
         return False, []
-    src_member = snap / MEMBERS_DIR_NAME / slug
+    src_member = snap / BOT_MEMBERS_DIR / slug
     has_dash = _entry_kind(src_member, "dashboard") == "dir"
     return has_dash, [n for n in BRIEFING_FILES if _entry_kind(src_member, n) == "file"]
 

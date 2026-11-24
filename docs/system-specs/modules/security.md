@@ -1125,8 +1125,9 @@ vetted on the way in. What the code does
   made its Replace clear and refill this install's whole `artifacts/` tree.
 - **`members/<slug>/` is carried through the allowlist `carried_member_file` only**:
   `members/<slug>/dashboard/instance.json`, `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json`,
-  `briefing.md` and `welcome_claimed.json`. The directory is the Bot's own
-  agent-writable space, so everything else stays behind. `activity.jsonl` is excluded
+  `briefing.md` and `welcome_claimed.json`, archived under `bot-members/<slug>/`, never
+  `members/`, which an earlier release's Replace clears as a whole tree. The directory
+  is the Bot's own agent-writable space, so everything else stays behind. `activity.jsonl` is excluded
   because on a fresh install it has no fenced fold marker and would be read as
   trusted history the Bot wrote itself; `welcome_owed.json`, `create_request.json`,
   `dm.json`, `members/<slug>/dashboard/preview.json` and lock files are host state.

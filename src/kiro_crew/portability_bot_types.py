@@ -90,6 +90,13 @@ NOTICES: tuple[str, ...] = ("starting_abilities_only", "rules_not_carried", "goa
 #: importer that does not know Bot stores clears and refills on Replace.
 BOT_ARTIFACTS_DIR = "bot-artifacts"
 
+#: The archive tree an instance export carries a Bot's allowlisted folder files under
+#: (``bot-members/<slug>/``); the import installs them add-only to the data home's
+#: ``members/<slug>/``. Never ``members/``: that is a whole-tree snapshot component,
+#: so an earlier release's Replace would clear this install's whole ``members/`` and
+#: refill it with only the carried subset.
+BOT_MEMBERS_DIR = "bot-members"
+
 #: Largest dashboard ``instance.json`` read to learn which package it pins: the
 #: export reading the source's and the import reading the staged one share it, so
 #: a record the import accepts is never one the export dropped its package for.

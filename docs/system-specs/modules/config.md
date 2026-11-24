@@ -1803,7 +1803,10 @@ pinned walk:
   `portability_bot_types.carried_member_file` admits (the export opens each of
   `CARRIED_MEMBER_SINGLE_FILES` by name and lists only `dashboard/versions/`): `members/<slug>/dashboard/instance.json`,
   `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json` (`n` all digits),
-  `briefing.md` and `welcome_claimed.json`;
+  `briefing.md` and `welcome_claimed.json`, written into the archive under the top-level
+  tree `bot-members/<slug>/` (`portability_bot_types.BOT_MEMBERS_DIR`), never
+  `members/<slug>/`: `members` is a whole-tree snapshot component, so an earlier
+  release's Replace would clear its whole `members/` for a tree the archive carried there;
 - every regular file under the data home's `artifacts/<P>/` that `_keep_for_export`
   admits, written into the archive under the top-level tree `bot-artifacts/<P>/`
   (`portability_bot_types.BOT_ARTIFACTS_DIR`), never `artifacts/<P>/`, where `P`
@@ -1839,10 +1842,9 @@ summary are byte-identical to one built without the Bot work.
   them first, and this install's own Bots as they were before the import (name to
   `member_id`, `memory_store` and slug).
 - **Replace** passes `portability_bots.INSTANCE_REPLACE_COMPONENTS` (every
-  `snapshot_components.COMPONENTS` name except `artifacts`, `uploads` and `members`)
-  to `_do_replace`, so an instance import never clears this install's `artifacts/`,
-  `uploads/` or `members/`; each Bot's `members/<slug>/` files install add-only through
-  the Bot stores step.
+  `snapshot_components.COMPONENTS` name except `artifacts` and `uploads`) to
+  `_do_replace`, so an instance import never clears this install's `artifacts/` or
+  `uploads/`.
 - **Merge into an install that has `config.json`** keeps that config (see above), so
   the archive's Bots are added by `portability_bot_roster.merge_roster`, which runs
   AFTER the named-store merge and takes the set of stores that merge created here
