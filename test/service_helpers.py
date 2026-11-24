@@ -10,11 +10,13 @@ use this module and keep their own isolation.
 
 A PLAIN module, not a ``conftest.py``: each suite imports what it uses by name.
 
-Each of those ten suites imports the four autouse fixtures, so they apply to every
+Each of those ten suites imports the five autouse fixtures, so they apply to every
 test in it (their docstrings' "this module" and "here" mean the importing suite).
 They are what keeps a service test off the host running it: ``SUDO_USER`` cleared,
 the system scope's overrides file and both scopes' unit files pointed under
-``tmp_path``, and ``restart()``'s settle window walked on a fake clock. The suites
+``tmp_path``, a POSIX ``$PATH`` on Windows, and ``restart()``'s settle window walked
+on a fake clock. The SELinux and launchd-domain suites import
+``_posix_installer_path`` alone. The suites
 that run the real ``install()`` also import ``_booted_with_systemd``, which answers
 its first question, whether systemd booted this host, from ``tmp_path`` too.
 
