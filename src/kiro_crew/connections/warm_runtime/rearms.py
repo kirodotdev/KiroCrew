@@ -51,6 +51,12 @@ async def _rearm_dead_warm_mint(generation: int) -> list[str]:
     except Exception:  # noqa: BLE001 -- the cold path remains available to every Connect
         logger.debug("warm mint re-arm candidate scan failed", exc_info=True)
         return []
+    if candidates:
+        from kiro_crew.connections.mint_kas import kiro_cli_sign_in_providers
+
+        # The page warm's filter (api_connections_premint): a provider whose Connect signs
+        # in on the KAS engine never adopts a warm kiro-cli URL, so warming it is wasted.
+        candidates = await asyncio.to_thread(kiro_cli_sign_in_providers, candidates)
     if not candidates:
         logger.info(
             "Shared mint generation %d died; no confirmed-unconnected providers need re-arm",
@@ -152,6 +158,11 @@ async def _rearm_invalidated_provider(slug: str) -> list[str]:
         logger.debug("warm mint invalidation re-arm candidate scan failed", exc_info=True)
         return []
     provider = next((item for item in candidates if item["slug"] == slug), None)
+    if provider is not None:
+        from kiro_crew.connections.mint_kas import kiro_cli_sign_in_providers
+
+        # As the page warm skips it: its Connect signs in on the KAS engine instead.
+        provider = next(iter(await asyncio.to_thread(kiro_cli_sign_in_providers, [provider])), None)
     if provider is None:
         logger.debug("Not re-arming %s after invalidation: it is not a warm candidate", slug)
         return []
