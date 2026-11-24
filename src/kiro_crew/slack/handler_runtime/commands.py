@@ -444,16 +444,23 @@ async def _bang_voice(
             metadata={"user": user_id, "channel": channel},
         )
         await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
+    elif arg == "global" and val.lower() not in ("", "on", "off"):
+        await slack.post_message(
+            channel, "Use `!voice global on`, `!voice global off` or `!voice global`.", reply_ts
+        )
     elif arg == "global":
         written: list[bool] = []
 
         def _apply(data: dict) -> dict:
-            # Toggled from the file's value under the write lock, so two
-            # overlapping commands flip twice rather than write the same value.
+            # `on`/`off` set the value; a bare `global` flips the file's value
+            # under the write lock, so two overlapping toggles flip twice.
             vr = data.get("voice_reply")
             if not isinstance(vr, dict):
                 vr = data["voice_reply"] = {}
-            vr["enabled"] = not bool(vr.get("enabled", False))
+            if val:
+                vr["enabled"] = val.lower() == "on"
+            else:
+                vr["enabled"] = not bool(vr.get("enabled", False))
             written.append(vr["enabled"])
             return data
 
@@ -463,7 +470,7 @@ async def _bang_voice(
         try:
             await run_config_write(update_config_locked, config_path(), mutate=_apply)
         except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
-            logger.warning("Refusing to toggle global voice: %s", exc)
+            logger.warning("Refusing to change global voice: %s", exc)
             await slack.post_message(
                 channel,
                 f"\u274c Voice global unchanged: the config was not saved ({exc}).",
@@ -528,6 +535,8 @@ async def _bang_voice(
             f"\U0001f50a Voice: *{'ON' if on else 'OFF'}*\n"
             f"\u2022 Voice: *{v}* | Engine: *{e}*\n"
             f"\u2022 Speed: *{r}* | Pitch: *{p}*\n"
+            "`!voice global on|off` voice in every thread (saved); "
+            "while it is off, `!voice on|off` this thread\n"
             "`!voice <name>` `!voice engine <neural|generative|long-form>` "
             "`!voice speed <80%>` `!voice pitch <+10%>`",
             reply_ts,

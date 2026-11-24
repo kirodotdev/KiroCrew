@@ -37,15 +37,18 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel agent <name/off>` | Set per-channel agent override |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
+| `!voice global on/off` | On: voice replies in every thread. Off: only in threads that ran `!voice on` (or set a voice, engine, speed or pitch), plus replies to voice memos if you set `voice_reply.auto_reply_to_voice` to `true`. Saved, so a restart keeps it; bare `!voice global` toggles it |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 | `!restart` | Same as `/kirocrew restart` |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
 `slack.allowed_users` in config has no effect.
 
-The `!` commands still work. `!yolo`, `!voice`, `!agent`, `!ta`, `!dashboard` and
-`!restart` are deprecated in favour of their `/kirocrew` slash commands below, and
-each use posts a short note naming the slash form.
+The `!` commands still work. `!yolo`, `!agent`, `!ta`, `!dashboard` and `!restart`
+are deprecated in favour of their `/kirocrew` slash commands below, and each use
+posts a short note naming the slash form. `!voice` is not: `!voice on/off` acts on
+the thread it is typed in, which a slash command cannot name, and `!voice global
+on/off` works when the `/kirocrew` command is turned off.
 
 ## Commands for All Allowed Users
 

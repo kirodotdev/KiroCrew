@@ -256,6 +256,24 @@ class TestVoiceCommand:
         assert h._vc.global_enabled is False
 
     @pytest.mark.asyncio
+    async def test_global_on_and_off_set_the_saved_value(self, slack, sessions, owner):
+        await _slash("!voice global off", slack, sessions)
+        assert h._vc.global_enabled is False
+        assert json.loads(h.config_path().read_text())["voice_reply"]["enabled"] is False
+        await _slash("!voice global on", slack, sessions)
+        await _slash("!voice global on", slack, sessions)
+        assert h._vc.global_enabled is True
+        await _slash("!voice global of", slack, sessions)
+        assert h._vc.global_enabled is True
+        assert json.loads(h.config_path().read_text())["voice_reply"]["enabled"] is True
+        assert "Use `!voice global on`" in _texts(slack)
+
+    @pytest.mark.asyncio
+    async def test_voice_posts_no_deprecation_note(self, slack, sessions, owner):
+        await _slash("!voice off", slack, sessions)
+        assert "deprecated" not in _texts(slack)
+
+    @pytest.mark.asyncio
     async def test_invalid_engine_rejected(self, slack, sessions, owner):
         await _slash("!voice engine ploly", slack, sessions)
         assert "Invalid engine" in _texts(slack)
