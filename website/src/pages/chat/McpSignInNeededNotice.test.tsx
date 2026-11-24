@@ -153,6 +153,8 @@ describe('McpSignInNeededNotice', () => {
       act(() => { h.seen[0].onOutcome('refused', 'busy') })
       // Through the shared error surface, with the reason first.
       expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toContain('busy. It did not go out. Try again.')
+      // The row holds no unsaved input, so the notice offers the agent hand-off.
+      expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toContain('Ask the agent')
       expect(buttons()[0].disabled).toBe(false)
     } finally {
       h.stop()

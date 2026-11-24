@@ -140,12 +140,12 @@ export default memo(function McpSignInNeededNotice({
   return (
     <>
       <NoticeCard content={content} tone="warn" body={body} action={action} />
-      {/* No hand-off: the fix is to press again, not to ask the agent. */}
+      {/* The row holds no unsaved input (the chat box keeps its draft per chat), so each notice hands off. */}
       {failedName && failed?.state === 'failed' && (
         <ErrorNotice
           message={withReason(failed.reason, i18nT('components.grillCard.send_failed'))}
           variant="inline"
-          askAgent={false}
+          askAgent
           onDismiss={() => setPresses(cur => { const next = { ...cur }; delete next[failedName]; return next })}
           testId="mcp-sign-in-needed-failed"
         />
@@ -154,7 +154,7 @@ export default memo(function McpSignInNeededNotice({
         <ErrorNotice
           message={i18nT('components.grillCard.unconfirmed')}
           variant="inline"
-          askAgent={false}
+          askAgent
           testId="mcp-sign-in-needed-unconfirmed"
         />
       )}
@@ -162,7 +162,7 @@ export default memo(function McpSignInNeededNotice({
         <ErrorNotice
           message={i18nT('components.grillCard.not_sent')}
           variant="inline"
-          askAgent={false}
+          askAgent
           onDismiss={() => setUnhandled(false)}
           testId="mcp-sign-in-needed-unhandled"
         />
