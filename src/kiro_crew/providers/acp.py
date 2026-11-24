@@ -198,6 +198,7 @@ class AcpProvider(LLMProvider):
         disposable_work_dir: bool = False,
         side_read_only: bool = False,
         include_memory: bool = True,
+        clear_effort_overlay: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -357,11 +358,19 @@ class AcpProvider(LLMProvider):
         # a repository can track at any size. ``start()`` recovers the levels the
         # overlay holds and writes the effort and Tool Search keys, off the loop.
         self._effort_overlay_recovered = False
+        # A Default the slot recorded with no live clear: the first start removes
+        # this model's level from that file (``_clear_default_overlay_entry``).
+        self._effort_overlay_clear_pending = bool(clear_effort_overlay)
 
     @property
     def client(self) -> AcpClient:
         """Expose underlying client for backward compat (e.g. is_ready check)."""
         return self._client
+
+    @property
+    def effort_overlay_clear_pending(self) -> bool:
+        """True while a recorded Default's overlay clear has not landed; the slot keeps its mark."""
+        return self._effort_overlay_clear_pending
 
     @property
     def work_scratch_dir(self) -> Path | None:
@@ -1492,6 +1501,7 @@ class AcpProvider(LLMProvider):
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
     _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
+    _clear_default_overlay_entry = _acp_cli_overlay._clear_default_overlay_entry
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
@@ -1505,6 +1515,7 @@ class AcpProvider(LLMProvider):
     reapply_live_effort = _acp_model_effort.reapply_live_effort
     set_model = _acp_model_effort.set_model
     clear_effort = _acp_model_effort.clear_effort
+    forget_effort = _acp_model_effort.forget_effort
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
     ultracode_enabled = _acp_model_effort.ultracode_enabled
     set_ultracode = _acp_model_effort.set_ultracode

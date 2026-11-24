@@ -1083,6 +1083,9 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif extra_factory_kwargs.get("clear_effort_overlay"):
+        # A pooled kiro-cli child already read the level a recorded Default must drop.
+        pool_decision = "bypass_effort"
     elif _memory_policy.warm_pool_requires_cold_start(owner):
         pool_decision = "bypass_restricted_context"
     elif await _session_runs_remotely(key):

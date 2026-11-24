@@ -33,6 +33,9 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "agent",
         "model",
         "reasoning_effort",
+        # Slot-owned so absence clears it: a carried-forward mark would clear the
+        # model's workspace effort on every later start, not once.
+        "effort_overlay_clear",
         "autocompact_pct",
         "turn_timeout_secs",
         # Source-link dismissals: the slot save is authoritative (it rebuilds the

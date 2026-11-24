@@ -109,6 +109,9 @@ async def _clear_open(state: DashboardState, slot: _ChatSlot, fields: set[str], 
             slot.reasoning_effort or (pending is not None and pending.reasoning_effort is not None)
         ):
             restart = restart or slot.reasoning_effort not in ("", agent.reasoning_effort or "")
+            # The level the chat's spawn wrote stays in the workspace cli.json, so
+            # its next spawn clears it (``effort_overlay_mark``).
+            slot._effort_overlay_clear = slot._effort_overlay_clear or bool(slot.reasoning_effort)
             slot.reasoning_effort = ""
             slot._effort_pick_gen += 1
             cleared = True
@@ -228,6 +231,15 @@ async def _follow(
         if binding is None or binding["member"] != name or binding["slot_key"] in state._slots:
             return
         key = members_mod.member_thread_session_alias(slug, binding.get("memory_store", ""))
+        if "reasoning_effort" in picked:
+            # Before the clear below, so only a line that held a level is marked.
+            await asyncio.to_thread(
+                log.update_metadata_if,
+                key,
+                {"effort_overlay_clear": True},
+                lambda meta: bool(meta.get("reasoning_effort")),
+                require_existing=True,
+            )
         await asyncio.to_thread(
             log.update_metadata_if,
             key,

@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         relay_archive_refusal,
         resolve_effective_model,
         sel,
+        set_effort_overlay_clear_mark,
         slot_not_found,
     )
 
@@ -416,6 +417,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
         _updated_live: bool | None = False
+        # Whether ``clear_effort`` handled the workspace overlay for a Default.
+        # A Default committed without it marks the slot for its next spawn.
+        _live_cleared = False
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
             # change_effort issues session/set_config_option and its response wait
@@ -425,9 +429,28 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # turn instead of pushing now or resetting (effort is a cheap knob).
             if provider.has_active_turn():
                 logger.info("Slot %s deferred live effort push: turn active", name)
+                if not effort:
+                    # Default does now what a respawn reads, with no RPC under the
+                    # turn: the stored levels and the model's workspace cli.json
+                    # entry go, so neither this provider's respawn nor a reset
+                    # successor brings the old level back.
+                    if not await provider.forget_effort():
+                        return web.json_response(
+                            {
+                                "error": "the workspace effort overlay is locked by another writer",
+                                "code": "effort_overlay_busy",
+                            },
+                            status=409,
+                        )
+                    state.sessions.record_effort_override(session_key, "")
                 # This path's success point: the override is recorded on the
-                # slot now and pushed to the live session next turn.
+                # slot now and pushed to the live session next turn. A rebind
+                # during the await above leaves the Default to the new binding's
+                # next spawn.
                 slot.reasoning_effort = effort
+                set_effort_overlay_clear_mark(
+                    slot, not effort and effective_session_key(slot) != session_key
+                )
                 normalized = normalize_legacy_model()
                 state.push_slots_update()
                 return web.json_response(
@@ -439,6 +462,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # adapter's ``default`` live). A push the session cannot take live,
             # or one that failed, leaves _updated_live False for the reset below.
             outcome = await _push_live_effort(provider, effort, name)
+            _live_cleared = not effort and outcome in ("applied", "not_applied")
             if outcome == "refused":
                 # A fixed sentence: the exception text can carry agent-authored
                 # words, a path or a host. The push's log line keeps the detail.
@@ -490,6 +514,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # override. Commit the slot value (it is what the new binding's
             # next cold start reads) and report the rebind as a warning.
             slot.reasoning_effort = effort
+            set_effort_overlay_clear_mark(slot, not effort)
             normalized = normalize_legacy_model()
             state.push_slots_update()
             return web.json_response(
@@ -549,7 +574,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # would make the acting tab keep the OLD store value for a
             # switch that actually happened.
             prior_effort = slot.reasoning_effort
+            prior_mark = slot._effort_overlay_clear
             slot.reasoning_effort = effort
+            set_effort_overlay_clear_mark(slot, not effort and not _live_cleared)
             teardown_incomplete = False
             reset_ok = True
             try:
@@ -582,6 +609,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # then let the raise escape as a 500.
                 if slot.reasoning_effort == effort:
                     slot.reasoning_effort = prior_effort
+                    set_effort_overlay_clear_mark(slot, prior_mark)
                 slot._dirty = True
                 state.push_slots_update()
                 raise
@@ -599,6 +627,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 if isinstance(busy_provider, LLMProvider):
                     if busy_provider.has_active_turn():
                         slot.reasoning_effort = prior_effort
+                        set_effort_overlay_clear_mark(slot, prior_mark)
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -617,6 +646,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     except Exception:
                         if slot.reasoning_effort == effort:
                             slot.reasoning_effort = prior_effort
+                            set_effort_overlay_clear_mark(slot, prior_mark)
                         slot._dirty = True
                         state.push_slots_update()
                         raise
@@ -630,6 +660,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         and state.sessions.get_provider(session_key) is not None
                     ):
                         slot.reasoning_effort = prior_effort
+                        set_effort_overlay_clear_mark(slot, prior_mark)
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -642,6 +673,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # (that session was idle and already unbound); roll back and
                 # let the retry resolve the current binding.
                 slot.reasoning_effort = prior_effort
+                set_effort_overlay_clear_mark(slot, prior_mark)
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -666,9 +698,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         "warning": _TEARDOWN_INCOMPLETE_WARNING,
                     }
                 )
-        # Live-update and deferral paths commit here (the reset path already
-        # committed before its reset, and assigning again is a no-op).
+        # Live-update and not-effort-capable paths commit here. The reset
+        # path commits before its reset, and assigning again is a no-op.
         slot.reasoning_effort = effort
+        if _updated_live:
+            set_effort_overlay_clear_mark(slot, not effort and not _live_cleared)
         normalized = normalize_legacy_model()
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})

@@ -96,6 +96,7 @@ async def start(self: AcpProvider) -> None:
     # shared with sibling threads and processes, and an acquire on the loop
     # thread makes one attempt and never waits, so a brief overlap would refuse
     # the write.
+    await self._clear_default_overlay_entry()
     await self._recover_effort_overlay()
     # Re-apply the overlay on every (re)start to cover resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)

@@ -247,6 +247,7 @@ def build_acp_provider(
     disposable_work_dir: bool = False,
     side_read_only: bool = False,
     include_memory: bool = True,
+    clear_effort_overlay: bool = False,
 ) -> "AcpProvider":
     """Construct an ``AcpProvider`` from already-resolved session parameters.
 
@@ -305,6 +306,7 @@ def build_acp_provider(
         disposable_work_dir=disposable_work_dir,
         side_read_only=side_read_only,
         include_memory=include_memory,
+        clear_effort_overlay=clear_effort_overlay,
     )
 
 

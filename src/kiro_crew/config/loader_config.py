@@ -1538,6 +1538,10 @@ class KiroCrewConfig:
             # same reason: swallowed, its claude session would load and write
             # Claude Code's auto-memory.
             include_memory: bool = True,
+            # A Default the dashboard slot recorded with no live clear. NAMED for
+            # the same reason: swallowed, the start would read back the level the
+            # slot's earlier pick left in the workspace cli.json.
+            clear_effort_overlay: bool = False,
             **_kwargs: object,
         ):  # return type inferred from build_acp_provider (SDK boundary: config may not name AcpProvider)
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -1730,6 +1734,7 @@ class KiroCrewConfig:
                 on_gate_queued=on_gate_queued,
                 side_read_only=side_read_only,
                 include_memory=include_memory,
+                clear_effort_overlay=clear_effort_overlay,
                 # Only a work dir DERIVED from a one-run key is the provider's
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).
