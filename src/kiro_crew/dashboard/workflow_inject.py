@@ -236,8 +236,11 @@ def inject_workflow_result(
                 from kiro_crew.dashboard.slot_persistence.metadata_values import (
                     _mark_source_links_off_unread,
                 )
+                from kiro_crew.dashboard.tracked_changes import mark_tracked_changes_unread
 
                 _mark_source_links_off_unread(slot)
+                # So is its tracked-changes list, with the same carry-forward.
+                mark_tracked_changes_unread(slot)
                 note_crew_log_class(state, slot)
                 from kiro_crew.dashboard.transcript_binding import bind_transcript
 
@@ -483,11 +486,15 @@ async def inject_bound_workflow_result(
                     _mark_source_links_off_unread,
                     _restore_source_links_off,
                 )
+                from kiro_crew.dashboard.tracked_changes import mark_tracked_changes_unread
 
                 if limit_readable:
                     _restore_source_links_off(slot, limit_meta)
                 else:
                     _mark_source_links_off_unread(slot)
+                # The tracked changes stay on disk: this binder does not read the
+                # line's tombstones, which the list is only shown beside.
+                mark_tracked_changes_unread(slot)
             on_injected = None
         delivered = dict(snapshot)
         delivered["memory_mode"] = execution.memory_mode

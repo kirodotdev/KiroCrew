@@ -614,20 +614,21 @@ def surface_channel_session(
     seed_turn_timeout_from_disk(
         state, slot, _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
     )
-    # Restore the dismissed source-link tombstones, mirroring the persistence
-    # loaders: this surfacing path applies metadata by hand rather than going
-    # through _rehydrate_slot_from_history, so without it an unlinked chip
-    # reappears when the channel session is re-surfaced and the next save erases
-    # the persisted tombstone. Local import for the same circular-import reason
-    # as _validate_autocompact_pct above.
+    # Restore the dismissed tombstones and the tracked changes as the persistence
+    # loaders do: this path applies metadata by hand, so without it an unlinked chip
+    # reappears on a re-surface and the next save erases what the line holds. Local
+    # imports for the circular-import reason given above.
+    from kiro_crew.dashboard import tracked_changes as tcm
     from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
     from kiro_crew.dashboard.slot_persistence import metadata_values as mv
 
     _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
-    if meta:  # the chips-off switch too; a line this pass did not observe stays on disk
+    if meta:  # the chips-off switch and the list too; an unobserved line stays on disk
         mv._restore_source_links_off(slot, meta)
+        tcm.restore_tracked_changes(slot, meta)
     else:
         mv._mark_source_links_off_unread(slot)
+        tcm.mark_tracked_changes_unread(slot)
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):

@@ -43,6 +43,10 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # carries the on-disk set back verbatim — without this a popped alias's
         # rows-only handover would overwrite the replacement slot's own dismissals.
         "dismissed_source_links",
+        # The session's stored pull/merge requests (``dashboard/tracked_changes.py``).
+        # Owned so a ``/clear`` that empties the list clears it on disk, and deferred
+        # by a rows-only save like the dismissals beside it.
+        "tracked_changes",
         "mode",
         "workspace",
         # Slot-owned so ABSENCE can retract it. A crew rebound from a named

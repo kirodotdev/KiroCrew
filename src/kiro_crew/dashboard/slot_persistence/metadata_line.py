@@ -582,6 +582,9 @@ def merge_empty_window(
         merged_closed_at: float | None = None
         if closed:
             merged_closed_at = closed_at if closed_at is not None else time.time()
+        from kiro_crew.dashboard.tracked_changes import tracked_changes_fold
+
+        tracked = tracked_changes_fold(slot, meta, merge=True)
         folds = cp._metadata_codec.SaveFolds(
             memory_mode=mode,
             closed=closed,
@@ -594,6 +597,7 @@ def merge_empty_window(
             # the queue.
             queued_prompts=queue_snapshot,
             dismissed_source_links=_merge_dismissed_line(slot, meta),
+            tracked_changes=tracked,
             # Held /note lines: a MERGE writer, so it unions with the on-disk
             # hold and never shrinks it. A live-state mirror here could race a
             # turn-end flush that just delivered rows into a window this
@@ -995,6 +999,9 @@ def build_full_line(
     # (SLOT_OWNED_META_KEYS), where an absent field means "cleared"; every
     # other key is another layer's durable state, carried below after the
     # slot fields so an inherited value can never shadow the slot's own state.
+    from kiro_crew.dashboard.tracked_changes import tracked_changes_fold
+
+    tracked = tracked_changes_fold(slot, existing_meta, merge=False)
     meta_line = cp._metadata_codec.encode(
         slot,
         folds=cp._metadata_codec.SaveFolds(
@@ -1005,6 +1012,7 @@ def build_full_line(
             closed_at=closed_at,
             closed_id=closed_id,
             dismissed_source_links=dismissed,
+            tracked_changes=tracked,
             deferred_notes=surviving_hold,
             queued_prompts=_durable_queue,
             last_user_at=_latest_human_ts,

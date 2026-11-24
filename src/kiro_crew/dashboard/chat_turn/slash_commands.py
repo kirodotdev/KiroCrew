@@ -207,12 +207,18 @@ async def _answer_slash_for_harness(
             # a kept pill would be rebuilt into the fresh one at its cold start.
             if slot.set_todo(None):
                 state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
+            # So do the tracked changes.
+            from kiro_crew.dashboard.tracked_changes import drop_on_clear
+
+            drop_on_clear(slot)
             text = (
                 "Conversation cleared. Earlier messages stay visible, but the agent "
                 "no longer remembers them."
             )
         else:
             discard_key = slot._pending_discard_conversation_key
+            # Whatever holds the discard, its landing is this clear running.
+            slot._pending_discard_drops_tracked = discard_key is not None
             if (
                 discard_key is not None
                 and _a_completion_is_queued(slot)

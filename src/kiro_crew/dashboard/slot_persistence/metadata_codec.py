@@ -200,6 +200,9 @@ class SaveFolds:
     closed_at: object = None
     closed_id: str = ""
     dismissed_source_links: list[str] | None = None
+    # The tracked-changes list, as ``tracked_changes.tracked_changes_fold``
+    # decided it against the line on disk. ``None`` leaves the key off the line.
+    tracked_changes: list[dict] | None = None
     deferred_notes: list[dict] = field(default_factory=list)
     queued_prompts: list[dict] = field(default_factory=list)
     last_user_at: str = ""
@@ -473,6 +476,22 @@ def _read_dismissed_source_links(r: _Read) -> None:
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
     cp._restore_dismissed_source_links(r.slot, r.meta.get("dismissed_source_links"))
+
+
+def _read_tracked_changes(r: _Read) -> None:
+    from kiro_crew.dashboard.tracked_changes import restore_tracked_changes
+
+    restore_tracked_changes(r.slot, r.meta)
+
+
+def _folded(name: str) -> Writer:
+    """A writer for a value the save folded against the disk; ``None`` leaves it off."""
+
+    def write(slot: Any, folds: SaveFolds) -> object:
+        value = getattr(folds, name)
+        return value if value is not None else OMIT
+
+    return write
 
 
 def _read_mode(r: _Read) -> None:
@@ -1061,6 +1080,14 @@ FIELDS: tuple[Field, ...] = (
         read=_read_dismissed_source_links,
     ),
     Field(
+        "tracked_changes",
+        _ALL,
+        attr="_tracked_changes",
+        line=_folded("tracked_changes"),
+        merge=_folded("tracked_changes"),
+        read=_read_tracked_changes,
+    ),
+    Field(
         "workspace",
         _ALL,
         attr="workspace",
@@ -1592,6 +1619,7 @@ LINE_ORDER: tuple[str, ...] = (
     "autocompact_pct",
     "turn_timeout_secs",
     "dismissed_source_links",
+    "tracked_changes",
     "mode",
     "workspace",
     "memory_store",
@@ -1696,6 +1724,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "closed_at",
     "closed_id",
     "dismissed_source_links",
+    "tracked_changes",
     "deferred_notes",
 )
 

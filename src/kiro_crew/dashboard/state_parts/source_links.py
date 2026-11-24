@@ -8,7 +8,8 @@ Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_dismissed_hydrated``, ``_dismissed_source_links``, ``_dismissed_txn_depth``,
 ``_dismissed_txn_pending``, ``_projection``, ``_source_links_cache``,
-``_source_links_off_hydrated``, ``_source_links_revision``, ``source_links_off``.
+``_source_links_off_hydrated``, ``_source_links_revision``, ``_tracked_changes``,
+``_tracked_hydrated``, ``source_links_off``.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
@@ -296,6 +297,14 @@ def init_source_links_fields(self: _ChatSlot) -> None:
     # the stored ``source_links_off`` back instead of this slot's default, so a
     # stored True survives until a readable read restores it.
     self._source_links_off_hydrated = True
+    # The pull and merge requests this session works on, keyed by serialized
+    # identity, persisted as the line's ``tracked_changes`` (``dashboard/tracked_changes.py``).
+    # Nothing renders it yet.
+    self._tracked_changes = {}
+    # False marks a slot re-bound to a transcript whose list it has not read back:
+    # its saves carry the stored list forward and writes are refused until a
+    # readable read restores it.
+    self._tracked_hydrated = True
 
 
 def invalidate_source_links(self: _ChatSlot) -> None:

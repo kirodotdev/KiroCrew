@@ -37,6 +37,15 @@ from kiro_crew.history import SLOT_OWNED_META_KEYS, transcript_stem
 
 K1 = source_ref_identity_key(("github", "github.com", "o", "r", 1, "", "change", ""))
 K2 = source_ref_identity_key(("github", "github.com", "o", "r", 2, "", "change", ""))
+#: A tracked change, as ``tracked_changes`` stores it: keyed by the identity its URL parses to.
+TRACKED = {
+    K1: {
+        "identity": K1,
+        "url": "https://github.com/o/r/pull/1",
+        "sources": [{"kind": "created", "ref": "tc-1"}],
+        "added_at": "2026-01-01T00:00:01+00:00",
+    }
+}
 PROMPT = {
     "role": "user",
     "content": "the opener",
@@ -58,6 +67,7 @@ _POPULATED: dict = {
     "autocompact_pct": 44.0,
     "turn_timeout_secs": 28800,
     "_dismissed_source_links": {K1, K2},
+    "_tracked_changes": TRACKED,
     "workspace": "ws",
     "memory_store": "silo",
     "agent_kind": "member",
@@ -276,6 +286,7 @@ def _slot_folds(slot) -> codec.SaveFolds:
         memory_mode=slot.memory_mode,
         created_at=slot.created_at,
         dismissed_source_links=sorted(slot._dismissed_source_links) or None,
+        tracked_changes=list(slot._tracked_changes.values()) or None,
         deferred_notes=serialize_deferred_notes(slot._deferred_notes[:]),
         queued_prompts=slot.durable_queue_entries(),
         channel_folder_filed=slot._channel_folder_filed,
@@ -432,6 +443,7 @@ def _full_folds(slot) -> codec.SaveFolds:
         closed_at=1767225600.0,
         closed_id="close-1",
         dismissed_source_links=[K1],
+        tracked_changes=list(TRACKED.values()),
         deferred_notes=[{"id": "n-1", "content": "held", "session": "dashboard:src"}],
         queued_prompts=list(_QUEUE),
         last_user_at="2026-01-01T00:00:05",
