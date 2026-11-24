@@ -1300,6 +1300,10 @@ class KasHarness(MembershipHarness):
         handle.kas_relay_engine_version = self.relay_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
         handle.kas_engine_fallback_notice = self.engine_fallback_notice
+        # A Bot's own chat: its app snapshot follows the native session id.
+        from kiro_crew.acp.harness.kas_bot_chat import bind_bot_chat_snapshot
+
+        bind_bot_chat_snapshot(handle)
 
     async def session_extras(
         self,
@@ -1452,6 +1456,15 @@ class KasHarness(MembershipHarness):
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             else:
+                from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+                if carries_app_tools(agent, session_key, ACP_BACKEND_KAS):
+                    # A Bot's own chat: the shared conductor plus the app servers its
+                    # owner turned on for THIS Bot (``bot_chat_app_tools``), per
+                    # session. Added before the held limits so they cover these too.
+                    from kiro_crew.bot_chat_app_tools import conductor_session_spec
+
+                    spec = conductor_session_spec(spec, session_key)
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
                 from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
@@ -1584,6 +1597,14 @@ class KasHarness(MembershipHarness):
                 governance_app=governance_app,
                 scope_muted=scope_muted,
             )
+            from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+            if carries_app_tools(agent, session_key, ACP_BACKEND_KAS):
+                # A Bot's own chat: settle its app-server record from what this
+                # projection really declares, after every withholding above.
+                from kiro_crew.acp.harness.kas_bot_chat import settle_bot_chat_projection
+
+                custom_agents = settle_bot_chat_projection(session_key, custom_agents)
             if agent == MATE_WORKER_AGENT:
                 # A Bot's worker: the `deniedCommands` entries nobody can judge
                 # hold its shell at the gate, whatever its Bot's Permissions.

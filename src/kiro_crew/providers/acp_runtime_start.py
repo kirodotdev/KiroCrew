@@ -52,9 +52,14 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
-from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored, answer_lost
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.session_provider_shared import (
+    RuntimeTreeGone,
+    note_unconfirmed_teardown,
+    teardown_confirmed,
+)
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -72,6 +77,7 @@ from kiro_crew.agent_sdk.tool_gate import (
     label_for,
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
+from kiro_crew.bot_chat_ending_fence import runtime_close_leaves_servers
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
@@ -270,6 +276,39 @@ def _choices_file_may_exist(session_key: str | None = None) -> bool:
     except OSError:
         return True
     return True
+
+
+def _keep_abandoned_close(
+    provider: AcpProvider, runtime: Any, session_id: str | None, error: object = None
+) -> None:
+    """After a failed start left a shared runtime (``ChatSharePlacement.abandon``),
+    the eviction's own answer decides: a close the host did not confirm stays this
+    provider's unconfirmed close, kept for the retry. On a host whose close leaves
+    the session's servers running (codex) a close answer proves nothing: the close
+    is kept under the runtime's tree until that tree is confirmed dead, as
+    ``shutdown_shared`` keeps it. A Bot chat's start that failed with no session
+    id because the host's answer was lost (*error*, ``answer_lost``: a frame too
+    large, the runtime's death) may have left a session nobody can name: it is
+    kept under the runtime's tree. A refusal, from the host or from this side
+    before anything was sent, left none."""
+    key = provider._owning_session_key()
+    if not session_id:
+        if key and answer_lost(error) and _bot_chat_with_apps(key):
+            note_unconfirmed_teardown(provider, RuntimeTreeGone(runtime), None, session_key=key)
+        return
+    if runtime_close_leaves_servers(runtime):
+        if not teardown_confirmed(runtime, session_id, killed=True):
+            note_unconfirmed_teardown(
+                provider, RuntimeTreeGone(runtime), session_id, session_key=key
+            )
+    elif not teardown_confirmed(runtime, session_id, killed=False):
+        note_unconfirmed_teardown(provider, runtime, session_id, session_key=key)
+
+
+def _bot_chat_with_apps(key: str) -> bool:
+    from kiro_crew.bot_chat_app_tools import session_has_app_mount
+
+    return session_has_app_mount(key)
 
 
 async def _start_kiro_runtime(self: AcpProvider) -> None:
@@ -1583,8 +1622,26 @@ async def _start_kiro_runtime_impl(
                 # the lease released, and the runtime killed only when this
                 # start held its last lease.
                 await share.abandon(runtime, getattr(handle, "session_id", None))
+                _keep_abandoned_close(self, runtime, getattr(handle, "session_id", None), setup_exc)
             else:
-                await runtime.kill(expected=True, reason="failed session setup cleanup")
+                killed = False
+                try:
+                    await runtime.kill(expected=True, reason="failed session setup cleanup")
+                    killed = True
+                finally:
+                    # The placeholder ``_client`` this start never replaced launched
+                    # nothing; this runtime did, and the app servers its session
+                    # started may outlive the failure. Unless its whole tree is
+                    # confirmed dead, keep it as this provider's unconfirmed close
+                    # with the runtime as the retry handle, which the provider's
+                    # shutdown then reports (``_settle_shutdown_confirmation``).
+                    if not (killed and teardown_confirmed(runtime, None, killed=True)):
+                        note_unconfirmed_teardown(
+                            self,
+                            runtime,
+                            getattr(handle, "session_id", None),
+                            session_key=self._owning_session_key(),
+                        )
         except Exception:
             logger.debug(
                 "Cleanup kill of runtime after failed session setup failed",

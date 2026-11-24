@@ -396,7 +396,15 @@ def native_subagent_snapshots(
             # A KAS engine sub-agent's card (``dashboard.engine_subagent_cards``) stays
             # marked: what its replayed frame carries beyond every native card's.
             if info.get("engine"):
-                base["frame_extras"] = {"engine": True}
+                extras: dict[str, object] = {"engine": True}
+                # The turn the card belongs to, so the page groups one turn's cards.
+                if info.get("engine_turn"):
+                    extras["engine_turn"] = str(info["engine_turn"])
+                # When it started on the gateway's clock, which a replayed done frame
+                # otherwise lacks, so the batch's duration reads the same after a reload.
+                if isinstance(info.get("started"), (int, float)):
+                    extras["started"] = float(info["started"])
+                base["frame_extras"] = extras
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:

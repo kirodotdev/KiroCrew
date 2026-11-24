@@ -56,6 +56,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # and every permissions.browser verb.
     "app_browser_sdk",
     "artifact_deploy",
+    "bot_chat_app_tools",
     "bridge_approvals",
     "chat_runtime_sharing",
     # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,

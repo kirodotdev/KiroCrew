@@ -12841,7 +12841,9 @@
       "browser_sites_add_failed": "No se pudo volver a añadir el sitio: {{error}}",
       "browser_sites_turn_on_title": "¿Volver a activar este sitio?",
       "browser_sites_add_back_title": "¿Volver a añadir este sitio?",
-      "browser_sites_restore_risk": "Después, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes."
+      "browser_sites_restore_risk": "Después, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes.",
+      "bots_scope_tools": "Permite a un Bot que marques para esta app usar sus herramientas en su propio chat. Otros Bots no cambian.",
+      "bots_scope_tools_preview_off": "Antes de activar <preview>Herramientas de apps en chats de Bots</preview> en Vistas previas de funciones, los Bots marcados no recibirán las herramientas de esta app."
     },
     "appPage": {
       "loading_app": "Cargando la app…",
@@ -12942,7 +12944,32 @@
       "open_app_details": "Abrir los detalles de {{name}}",
       "refresh_store": "Actualizar la tienda",
       "refreshing_store": "Actualizando la tienda…",
-      "store_catalog_unreachable": "No se pudo acceder al catálogo oficial de apps, así que la tienda muestra su lista sin conexión. Comprueba que el gateway pueda acceder a internet y vuelve a actualizar."
+      "store_catalog_unreachable": "No se pudo acceder al catálogo oficial de apps, así que la tienda muestra su lista sin conexión. Comprueba que el gateway pueda acceder a internet y vuelve a actualizar.",
+      "bot_chat_stop_incomplete": "{{slugs}} siguen usando las herramientas de {{name}}. Reinicia {{productName}} para detener estos chats de bot.",
+      "uninstall_bot_chat_stop_failed": "{{name}} está desinstalada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "uninstall_bot_chat_stop_failed_many": "{{name}} está desinstalada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "uninstall_bot_chat_stop_failed_one": "{{name}} está desinstalada, pero el bot \"{{slugs}}\" todavía tiene sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "uninstall_bot_chat_stop_failed_other": "{{name}} está desinstalada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "disable_bot_chat_stop_failed": "{{name}} está desactivada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "disable_bot_chat_stop_failed_many": "{{name}} está desactivada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "disable_bot_chat_stop_failed_one": "{{name}} está desactivada, pero el bot \"{{slugs}}\" todavía tiene sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "disable_bot_chat_stop_failed_other": "{{name}} está desactivada, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_many": "{{name}} ya no es de confianza, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_one": "{{name}} ya no es de confianza, pero el bot \"{{slugs}}\" todavía tiene sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "bot_chat_stop_incomplete_revoked_other": "{{name}} ya no es de confianza, pero los bots \"{{slugs}}\" todavía tienen sus herramientas. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "bot_chat_stop_retry_many": "Quitar las herramientas de {{name}} de los bots \"{{bots}}\"",
+      "bot_chat_stop_retry_all_many": "Quitar las herramientas de las apps no confiables de los bots \"{{bots}}\"",
+      "bot_chat_stop_retry_one": "Quitar las herramientas de {{name}} del bot \"{{bots}}\"",
+      "bot_chat_stop_retry_all_one": "Quitar las herramientas de las apps no confiables del bot \"{{bots}}\"",
+      "bot_chat_stop_retry_other": "Quitar las herramientas de {{name}} de los bots \"{{bots}}\"",
+      "bot_chat_stop_retry_all_other": "Quitar las herramientas de las apps no confiables de los bots \"{{bots}}\"",
+      "bot_chat_stop_retrying": "Quitando…",
+      "blanket_bot_chat_stop_failed_many": "La confianza en todas las apps de terceros está desactivada, pero los bots \"{{slugs}}\" todavía tienen herramientas de apps que ya no son de confianza. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "blanket_bot_chat_stop_failed_one": "La confianza en todas las apps de terceros está desactivada, pero el bot \"{{slugs}}\" todavía tiene herramientas de apps que ya no son de confianza. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "blanket_bot_chat_stop_failed_other": "La confianza en todas las apps de terceros está desactivada, pero los bots \"{{slugs}}\" todavía tienen herramientas de apps que ya no son de confianza. Quítalas con el botón de abajo o reinicia {{productName}}.",
+      "bot_chat_stop_retry_hint": "El historial del chat se conserva.",
+      "bot_chat_stop_unknown_bot": "un bot",
+      "restart_gateway_link": "Abrir la configuración del sistema para reiniciar {{productName}}"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mes",
@@ -13626,11 +13653,15 @@
         "engine_no_output": "(sin salida)"
       },
       "engineSubagentRecord": {
-        "title": "Subagentes en este turno: {{n}}",
         "end_completed": "Completado",
         "end_failed": "Fallido",
         "end_not_reported": "El motor no informó del final",
-        "more_children": "Otros subagentes no listados: {{n}}"
+        "more_children": "Otros subagentes no listados: {{n}}",
+        "took": "Tardó {{duration}}",
+        "duration_title": "Desde que empezó el primer subagente hasta que terminó el último",
+        "ran_title": "Cuánto tiempo se ejecutó este subagente",
+        "turn_credits": "{{credits}} créditos, todo el turno",
+        "turn_credits_title": "Créditos de todo el turno, subagentes incluidos. El motor no informa de los créditos de un solo subagente."
       },
       "assistantMessage": {
         "share_load_failed": "No se pudo cargar el cuadro de compartir",
@@ -17074,7 +17105,10 @@
         "remote_dispatch_desc_summary": "Ejecuta tareas de Conductor mode en máquinas conectadas.",
         "remote_dispatch_save_failed": "No se pudo guardar el despacho remoto. Inténtalo de nuevo.",
         "remote_dispatch_load_failed": "No se pudo leer el ajuste de despacho remoto.",
-        "remote_dispatch_connect": "Conecta máquinas en <0>Settings › Remote Crew</0>."
+        "remote_dispatch_connect": "Conecta máquinas en <0>Settings › Remote Crew</0>.",
+        "bot_chat_app_tools": "Herramientas de apps en chats de Bots",
+        "bot_chat_app_tools_desc": "Para detener un solo bot, desmárcalo en la página de la app.",
+        "bot_chat_app_tools_desc_summary": "Permite que las apps que autorices añadan sus herramientas al chat de un Bot. Cada llamada sigue la configuración de aprobación del propio Bot."
       },
       "kasBundleCard": {
         "installed": "Motor integrado {{version}}",
@@ -21947,7 +21981,8 @@
           "allow_all_confirm_body": "Confiar en todas las aplicaciones de terceros permite que cualquier aplicación que instales ejecute su propio código dentro de {{productName}}, con el mismo acceso que tiene {{productName}} — tus archivos, tus credenciales guardadas e Internet. Confiar en una aplicación cada vez es más seguro.",
           "allow_all_confirm_ack": "Entiendo que cada aplicación de terceros que instale podrá ejecutar su propio código con el acceso de {{productName}}.",
           "ineffective_label": "Guardado pero sin efecto",
-          "ineffective_description": "Estos nombres se guardaron como de confianza, pero {{productName}} no los acepta, así que las aplicaciones siguen bloqueadas. Quítalos para limpiar la lista."
+          "ineffective_description": "Estos nombres se guardaron como de confianza, pero {{productName}} no los acepta, así que las aplicaciones siguen bloqueadas. Quítalos para limpiar la lista.",
+          "bot_chats_not_stopped": "{{message}} Chats de Bot que no se pudieron detener: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "El cambio no se aplicó: {{detail}}",

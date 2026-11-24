@@ -368,6 +368,7 @@ def _projection(*, zero_tools: bool):
         channel_id,
         permission_surface_owned,
         session_control_mounted=None,
+        harness_state=None,
     ):
         assert permission_surface_owned is False
         return _MirroredSessionMcp(

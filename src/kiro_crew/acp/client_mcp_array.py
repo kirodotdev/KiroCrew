@@ -73,6 +73,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_discovery import spec_is_toolless as spec_is_toolless
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
 )
@@ -405,7 +406,9 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             self._pi_worker_stub_names = (
                 frozenset(stubbed) if self._agent == MATE_WORKER_AGENT else frozenset()
             )
-        return _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        final = _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        _record_bot_chat_mounts(self, final)
+        return final
     # Recorded BEFORE the projection reads the governed flag, and beside the
     # array it authorizes: the session/new envelope reads this record, so an
     # array delivered under the exclusion always ships with it.
@@ -510,6 +513,10 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             "changed after they were written, or the re-seed was declined). The worker "
             "runs without MCP tools; the next start reads the file again.",
         )
+        from kiro_crew.bot_chat_app_tools import mark_seed_lag_reproject
+
+        mark_seed_lag_reproject(self._session_key or "")
+        _record_bot_chat_mounts(self, [])
         return []
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
@@ -533,7 +540,43 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # only the spec's grants, prompt and skill mapping, none of which the array or
         # the withholds above are built from.
         self._session_agent_spec = project(False).agent_spec
-    return _with_own_ipc_pickups(self, composed)
+    final = _with_own_ipc_pickups(self, composed)
+    _record_bot_chat_mounts(self, final)
+    return final
+
+
+def _record_bot_chat_mounts(client: AcpClient, servers: list[dict[str, Any]]) -> None:
+    """Settle a Bot chat's app-server record from the array this session is handed
+    (``bot_chat_app_tools.record_mounted``), after every withholding above."""
+    from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+    key = client._session_key or ""
+    if not carries_app_tools(client._agent, key, client._acp_backend):
+        return
+    from kiro_crew.bot_chat_app_tools import (
+        check_and_filter_projection,
+        mounted_names,
+        record_mounted,
+    )
+    from kiro_crew.providers.mirrors.codex import codex_name
+
+    # codex registers each server under its whitespace-folded name.
+    spelled = codex_name if client._acp_backend == ACP_BACKEND_CODEX else str
+    # Strip any entry whose revocation generation advanced since the projection.
+    servers_dict = {e["name"]: e for e in servers if isinstance(e, dict) and e.get("name")}
+    # For codex: pass codex_name as name_transform so the sidecar lookup can match
+    # whitespace-folded aliases to the original form stored by conductor_session_spec.
+    name_xform = codex_name if client._acp_backend == ACP_BACKEND_CODEX else None
+    servers_dict = check_and_filter_projection(key, servers_dict, name_transform=name_xform)
+    servers[:] = list(servers_dict.values())
+    voided_apps = record_mounted(key, mounted_names(servers_dict), spelled)
+    if voided_apps:
+        servers_dict = {
+            a: e
+            for a, e in servers_dict.items()
+            if ":" not in a or a.split(":")[0] not in voided_apps
+        }
+        servers[:] = list(servers_dict.values())
 
 
 def _with_own_ipc_pickups(client: AcpClient, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -647,6 +690,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     mounted = _predicted_dispatch_mount(self)
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
+        from kiro_crew.bot_chat_app_tools import carries_app_tools
         from kiro_crew.mate_spec_policy import applies_spec_policy
 
         def project(session_control_mounted: bool | None) -> SessionMcpProjection:
@@ -659,6 +703,9 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
                 spec_policy_honoured=applies_spec_policy(self.backend),
                 # What this start mounts for a crewmate's worker, so its kit follows it.
                 session_control_mounted=session_control_mounted,
+                bot_app_tools_carried=carries_app_tools(
+                    self._agent, self._session_key or "", self.backend
+                ),
             )
 
         projection = project(mounted)

@@ -39,15 +39,19 @@ export function useAppActions({
   const navigate = useNavigate()
   const location = useLocation()
   const [error, setError] = useState('')
-  // A notice handed over by the page we left (an uninstall's warnings), read on
-  // every navigation so a page that is already open shows it too. Router state,
-  // so no URL can forge it; cleared once shown so a reload or Back drops it.
-  const handedNotice = (location.state as { appNotice?: unknown } | null)?.appNotice
+  // Notices handed over by the page we left: an uninstall's warnings
+  // (`appNotice`, shown here) and a Bot-chat stop that did not finish (`botStop`,
+  // which LibraryPage reads on its first render). Read on every navigation so a
+  // page that is already open shows them too. Router state, so no URL can forge
+  // them. Both are taken out of the history entry in one replace, other fields
+  // kept, so a reload or Back does not show either again.
   useEffect(() => {
-    if (typeof handedNotice !== 'string' || handedNotice === '') return
-    setError(handedNotice)
-    navigate(location.pathname + location.search, { replace: true, state: null })
-  }, [handedNotice, navigate, location.pathname, location.search])
+    const state = location.state
+    if (!state || typeof state !== 'object' || !('appNotice' in state || 'botStop' in state)) return
+    const { appNotice, botStop: _botStop, ...kept } = state as Record<string, unknown>
+    if (typeof appNotice === 'string' && appNotice !== '') setError(appNotice)
+    navigate(location.pathname + location.search, { replace: true, state: Object.keys(kept).length ? kept : null })
+  }, [location.state, navigate, location.pathname, location.search])
   const [dismissedQueryError, setDismissedQueryError] = useState(false)
 
   // A NEW query failure re-arms the banner after an earlier dismissal.

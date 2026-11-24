@@ -66,7 +66,7 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
-from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored, host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
@@ -85,6 +85,13 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
+from kiro_crew.bot_chat_ending_fence import (
+    abandoned_start,
+    capture_start_snapshot,
+    close_pending,
+    current_start_key,
+    runtime_session_start,
+)
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import StartPriority
@@ -96,6 +103,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.runtime")
 
 
+@runtime_session_start
 async def load_session(
     self: AcpRuntime,
     session_file: str,
@@ -213,6 +221,19 @@ async def load_session(
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
     if not self._can_load_session:
         raise AcpRuntimeError("Backend does not advertise session/load support")
+    # A Bot chat's load (``current_start_key``) first waits out a close of an
+    # abandoned load of this id still in flight, so its teardown cannot end the
+    # session this load restores; any other load runs as it does without them.
+    bot_start = bool(current_start_key())
+    abandoned = _PENDING_ABANDONED_CLOSES.get((id(self), resume_sid)) if bot_start else None
+    if abandoned is not None:
+        await asyncio.wait({abandoned})
+    if bot_start and close_pending(self, resume_sid):
+        # Its close retry would end the session this load restores: the caller
+        # starts a fresh session with history replay instead.
+        raise AcpResumeNotRestored(
+            f"session/load of {resume_sid} refused: a Bot-chat close of it is still pending"
+        )
     agent = await self._source_agent(agent)
     # The effective agent, checked before anything is acquired, as create_session()
     # does: a resume that names no agent inherits the spawn agent.
@@ -290,6 +311,7 @@ async def load_session(
                 harness_state is not None and self._harness.permission_surface_owned(harness_state)
             ),
             session_control_mounted=bool(member_session_key) and not member_withheld,
+            harness_state=harness_state,
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
     crew_bridged: list[str] = []
@@ -567,14 +589,16 @@ async def load_session(
         # staging in _reader_loop, closed by _finish_session_init; see
         # docs/system-specs/modules/acp-client.md "loading a session
         # triggers MCP re-initialization") — so it gets the same budget.
+        capture_start_snapshot(session_key)  # this load's own app snapshot
         request_sent_at = time.time()
-        if harness_state is None:
+        if harness_state is None and not current_start_key():
             resp = await self._send_and_await(restore_method, load_params, timeout=budget)
         else:
-            # A per-session host's load is kept to its end: a load abandoned while
-            # the adapter works on it (a cancel, a timeout) would leave a session
-            # resident with no owner on a process other chats keep alive, so it is
-            # closed once the request settles (``_close_abandoned_load``).
+            # A per-session host's load, and a Bot chat's, is kept to its end: a load
+            # abandoned while the adapter works on it (a cancel, a timeout) would
+            # leave a session resident with no owner on a process other chats keep
+            # alive, so it is closed once the request settles (``_close_abandoned_load``),
+            # and a Bot chat's start is held until that close is confirmed.
             load_task = asyncio.ensure_future(
                 self._send_and_await(restore_method, load_params, timeout=budget)
             )
@@ -1107,32 +1131,42 @@ def _abandon_load(runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any
     key = (id(runtime), resume_sid)
     barrier: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     _PENDING_ABANDONED_CLOSES[key] = barrier
+    # The chat's start lasts, and the session stays on its record, until the load's
+    # own outcome settles it (``abandoned_start``).
+    finish = abandoned_start(runtime, f"load:{resume_sid}:{id(load)}")
+    bot_start = bool(current_start_key())
 
-    def _release(_t: Any = None) -> None:
+    def _release(*outcome: Any) -> None:
+        finish(*outcome)
         if _PENDING_ABANDONED_CLOSES.get(key) is barrier:
             del _PENDING_ABANDONED_CLOSES[key]
         if not barrier.done():
             barrier.set_result(None)
 
     def _settled(fut: asyncio.Future[Any]) -> None:
-        close = _close_abandoned_load(runtime, resume_sid, fut)
+        close = _close_abandoned_load(runtime, resume_sid, fut, bot_start)
         if close is None:
-            _release()
+            exc = None if fut.cancelled() else fut.exception()
+            # Only the host's own refusal restored nothing; anything else stays kept.
+            _release("", host_refused(exc))
         else:
-            close.add_done_callback(_release)
+            close.add_done_callback(lambda _t: _release(resume_sid))
 
     load.add_done_callback(_settled)
 
 
 def _close_abandoned_load(
-    runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any]
+    runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any], bot_start: bool = False
 ) -> asyncio.Task[Any] | None:
     """Close the session a ``session/load`` its caller left restored, once it settles.
 
     A load that failed restored nothing; one that answered, or ran out of time while
     the adapter may still be loading, may have left the session resident, and no
-    handle will ever own it. Teardown is ``terminate_session``, which closes only
-    this session (``session/close``) and releases any per-session state recorded.
+    handle will ever own it. Teardown closes only this session: on KAS through
+    ``evict_session``, which keeps the stored conversation (its teardown verb would
+    delete it), elsewhere through ``terminate_session``, which also releases any
+    per-session state recorded. A load that is not a Bot chat's closes through
+    ``terminate_session`` on every host, as it does without the Bot's app tools.
     The close task, or None when nothing is closed.
     """
     if load.cancelled():
@@ -1144,7 +1178,14 @@ def _close_abandoned_load(
         # A session of this id is registered: not the abandoned load's, which
         # registered nothing, so closing the id would end that session.
         return None
-    task = asyncio.ensure_future(runtime.terminate_session(resume_sid))
+    from kiro_crew.acp.session_handle_lifecycle import _teardown_deletes_record
+
+    close = (
+        runtime.evict_session
+        if bot_start and _teardown_deletes_record(runtime.acp_backend)
+        else runtime.terminate_session
+    )
+    task = asyncio.ensure_future(close(resume_sid))
     _ABANDONED_LOAD_CLOSES.add(task)
     task.add_done_callback(_ABANDONED_LOAD_CLOSES.discard)
     return task

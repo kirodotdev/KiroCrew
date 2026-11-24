@@ -2027,17 +2027,48 @@ one entry per marked card with `agent`, `task` (cut to `RECORD_TASK_MAX`), `end`
 (`completed` or `failed` as the engine's terminal status said, kept on the card as
 `engine_end`; `not_reported` when the turn ended first and Kiro Crew closed the card),
 `reason` (the engine's own failure text, on `failed` only), `tools` (the newest
-`RECORD_TOOLS_MAX` tool titles) and `tool_count`; at most `RECORD_CHILDREN_MAX`
-entries, `more` counting the rest. Every value is one the card already shows; the task
-is cut shorter by `cut_unsplit`.
-No time, credits, model or output is kept. A turn with no marked card stores nothing,
+`RECORD_TOOLS_MAX` tool titles), `tool_count`, and `started_at` / `ended_at` (epoch
+seconds: when the card opened and closed on the gateway's clock, kept only when both
+are known and in order); at most `RECORD_CHILDREN_MAX` entries, `more` counting the
+rest. Beside the list it keeps the whole batch's figures, unlisted children
+included: `ends` (how many completed, failed, or were not reported) and a
+record-level `started_at` / `ended_at` (first start, last end; a card still open
+when the record is made, as on a turn whose engine died, counts to that moment),
+which the card's counts and duration read. The record also takes `turn_credits`, the footer's own `turn_stats.credits` when
+positive: the whole turn's, sub-agents included. Every other value is one the card
+already shows; the task is cut shorter by `cut_unsplit`.
+The engine reports no credits, usage, model or time for one child (no field on any
+child frame of `test/fixtures/kas_native_subagents/two-helpers-turn.jsonl`; its one
+`promptTurnSummaries` entry lists the children's tool calls), so no entry carries a
+credit, model or time figure of its own, and no output is kept. A turn with no marked card stores nothing,
 so a chat with the switch off or on any other harness writes no new key; a turn with
 no footer stores no record. Nothing but the transcript reads the key: the reply draws
-it as a closed "Sub-agents in this turn" disclosure (`pages/chat/EngineSubagentRecord.tsx`,
-on both transcript hosts), with the task as plain text and a failed child's reason
-in the shared `ErrorNotice`, with no hand-off: the row sits under a reply in hosts
-whose composer draft is unsaved. Tests:
-`test_engine_subagent_record.py`, `website/src/test/EngineSubagentRecord.test.tsx`.
+it as the card a `spawn_run` wave's completion is drawn as
+(`SubagentCompletionCard.CompletionCardFrame`, from `pages/chat/EngineSubagentRecord.tsx`,
+on both transcript hosts): "N of N subagents finished" when the engine reported every
+end, else how many it reported; success and failure counts; the batch's duration from
+the first start to the last end; the turn's credits, labelled as the whole turn's;
+Panel where the host has a side panel; and Show details over one row per child (its
+end, agent, how long it ran, task as plain text, a failed child's reason in the shared
+`ErrorNotice` with no hand-off, since the row sits under a reply in hosts whose
+composer draft is unsaved, and its tool titles). It opens on a failure, as the
+completion card does. While the turn runs, ChatPage draws the same card at the foot
+of the transcript (`EngineSubagentLiveCard`) from the store's cards marked `engine`
+that carry this turn's `engine_turn`, with a spinning glyph and a ticking duration
+while any child runs; a turn with no marked card draws nothing there. `engine_turn`
+is a random key made once per turn (`engine_subagent_cards.engine_turn_key`), on
+every spawn, done and replayed frame of the turn's engine cards and on the record as
+`turn`: the live card takes it from a card still open (a turn's end closes them all,
+so an open card is this turn's), keeps it while the turn runs and the slot's `turn_gen:turn`
+identity stays the same (a queued successor turn starts with no idle in between), a replayed done frame of an engine card also carries its gateway `started`
+so the duration reads the same after a reload, and the live card and
+the reply's card share it as their framer-motion `layoutId`, so the card moves under
+the reply as one element. A page opened after every child of a running turn ended
+sees no open card and draws the record only at the turn's end. The duration and
+credit chips sit in a wrapping row under the card's header, which does not wrap. Tests:
+`test_engine_subagent_record.py`, `test_engine_subagent_record_timing.py`,
+`website/src/test/EngineSubagentRecord.test.tsx`,
+`website/src/test/EngineSubagentBatchCard.test.tsx`.
 
 **Approval cards of an engine turn, display only.** A dispatch's approval request
 names the call (`toolCall.toolCallId`) and not the task, so the KAS roster row also
@@ -3544,7 +3575,7 @@ The REST listing's app bound gates on the presence of the caller's app CLAIM, ne
 
 The record lives in its own top-level `panel-dismissals/` leaf of the data home, OUTSIDE the run folder, and deliberately NOT under `trust/`. A dismissal is an OWNER decision about what the panel hides, which makes it the same class of record as `crew-panels`, `crew-teams` and `tag-grants` — and each of those is its own top-level leaf precisely because `trust/` is a declared sandbox READ-WRITE exception (in-sandbox `verify_session_pid` reads `trust/sel_hmac.key` and the in-sandbox MCP servers append to the audit log). A record under `trust/` stays writable by a sandboxed command that builds the path at runtime, which command matching cannot catch because it has no literal path to match; the cleanup identities that live there are not a precedent for adding records to it. So the leaf is registered in four places, and because nothing in the code fails when one is missing, each is pinned by name in `TestTheDismissalStoreIsRegisteredEverywhereItMustBe`: `paths._CREW_SECRET_LEAVES` for the file gate, `sandbox._CREW_HIDDEN_LEAVES` for the bind mask, `_CREW_PRECREATE_HIDDEN_DIR_LEAVES` because the directory is created on the first dismissal and the mask loop SKIPS a name that does not exist, and `_CREW_NO_ALIAS_LEAVES` because a symlink would attach the mask to the target and leave the name writable. `state.json` and `tombstone.json`, by contrast, are agent-writable, so a marker kept in there would let a run hide its own card from every later rebuild. The write goes through `atomic_write(..., restrict_to_owner=True)` so the lockdown lands on the temp file before the payload and before the rename. The run FOLDER is deliberately left in place rather than deleted — `spawn_continue` reseeds its session map from that folder's `state.json`, so removing it to hide a card would also destroy a conversation the user can still continue, and would take the result text and the prune bookkeeping with it. The reader fails OPEN: an unreadable record yields no id, so a filesystem fault resurrects a dismissed card, which the user can dismiss again, rather than hiding a run nobody dismissed. Records are reclaimed with their folder at both removal sites (`delete_agent_folder` and `prune_stale_tombstones`), and `prune_orphan_panel_dismissals` sweeps once per prune cycle for a folder that left by some other route.
 
-Native subagents (kiro-cli's, KAS's, Claude Code's Agent tool on the claude backend, and Codex's native subagents on the codex harness) run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields, and a KAS engine sub-agent's frames carry `engine: true` (above, *What the dashboard shows for a KAS engine sub-agent*). `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. `DELETE /api/spawn/native:<id>` stops a running card, which is still in `_native_cards`; every completion path unregisters a card from there, so a finished one is dismissed instead: `DashboardState.dismiss_native_subagent` marks its slot's terminal record `dismissed`, the replay skips it, the dismissal is audited under `spawn.dismiss`, and the answer is `{"ok": true, "cancelled": false, "dismissed": true}`. Like the persisted-run dismissal, it refuses an app token, or a request with no app claim, with `403 app_token_forbidden`. The record is marked rather than removed because while the parent turn runs the tracker is the roster reconciler's own dict, and a removed session id that a later `list_update` still lists would be drawn as a new card. An id no slot holds as a finished card answers 404, and a native card from an earlier turn is one: the next turn's start drops that turn's records. Nothing can draw such a card again, so the Subagents panel's "Dismiss done" treats a 404 as already cleared and shows its warning only for any other refusal, such as the `503 dismissal_unwritable` of a persisted run whose dismissal did not land. The client treats `done`, `error` and `stopped` as monotonic terminal states, so a stale running snapshot interleaved after a live completion or stop cannot demote the card. The one exception is a `stopped` card that approval reconciliation retired because no process was found: a snapshot naming that run proves it launched, so it may revive the card.
+Native subagents (kiro-cli's, KAS's, Claude Code's Agent tool on the claude backend, and Codex's native subagents on the codex harness) run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields, and a KAS engine sub-agent's frames carry `engine: true` and `engine_turn` (above, *What the dashboard shows for a KAS engine sub-agent*). `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. `DELETE /api/spawn/native:<id>` stops a running card, which is still in `_native_cards`; every completion path unregisters a card from there, so a finished one is dismissed instead: `DashboardState.dismiss_native_subagent` marks its slot's terminal record `dismissed`, the replay skips it, the dismissal is audited under `spawn.dismiss`, and the answer is `{"ok": true, "cancelled": false, "dismissed": true}`. Like the persisted-run dismissal, it refuses an app token, or a request with no app claim, with `403 app_token_forbidden`. The record is marked rather than removed because while the parent turn runs the tracker is the roster reconciler's own dict, and a removed session id that a later `list_update` still lists would be drawn as a new card. An id no slot holds as a finished card answers 404, and a native card from an earlier turn is one: the next turn's start drops that turn's records. Nothing can draw such a card again, so the Subagents panel's "Dismiss done" treats a 404 as already cleared and shows its warning only for any other refusal, such as the `503 dismissal_unwritable` of a persisted run whose dismissal did not land. The client treats `done`, `error` and `stopped` as monotonic terminal states, so a stale running snapshot interleaved after a live completion or stop cannot demote the card. The one exception is a `stopped` card that approval reconciliation retired because no process was found: a snapshot naming that run proves it launched, so it may revive the card.
 
 Claude Code's Workflow agents are native subagents too; a Workflow agent's card outlives the turn while its run lasts (below, under *MCP Tool: `spawn_sub_agents`*).
 

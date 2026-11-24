@@ -607,13 +607,15 @@ def test_a_replayed_card_keeps_the_engine_mark_running_and_finished() -> None:
     state._slots = {slot.key: slot}
     _sync(state, slot, _roster(_dispatch("in_progress")), engine=True)
     [running] = DashboardState.native_subagent_snapshots(state)
-    assert running["frame_extras"] == {"engine": True}
+    assert running["frame_extras"]["engine"] is True
     assert running["done"] is False
     assert running["task"] == PROMPT
 
     _sync(state, slot, _roster(_dispatch("completed", rawOutput="one")), engine=True)
     [done] = DashboardState.native_subagent_snapshots(state)
-    assert done["frame_extras"] == {"engine": True}
+    assert done["frame_extras"]["engine"] is True
+    # The gateway start rides on the replayed done frame (``state_parts.slot_directory``).
+    assert done["frame_extras"]["started"] == running["started"]
     assert done["done"] is True
 
 

@@ -2467,6 +2467,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.app-tools-in-bot-chats",
+    "label": "App tools in bot chats",
+    "labelKey": "pages.developer.featurePreviewsTab.bot_chat_app_tools",
+    "description": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting.",
+    "hint": "To stop one bot, untick it on the app's page.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.artifact-deploy",
     "label": "Artifact Deploy",
     "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
