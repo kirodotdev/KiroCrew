@@ -1333,8 +1333,9 @@ and `message_deleted` cannot disagree.
     session-directive marker (`QuotedDirectiveFilter`, its held line handed on before a
     tool call, an approval prompt and the turn's end), then accumulate response text;
     the turn's first text is held while it could still be the backend's alternation
-    placeholder and dropped when it is ([messaging](messaging.md), "Redaction and
-    protocol framing")
+    placeholder and dropped when it is, and each prompt, a timed-out call's
+    continuation included, streams through `alternation_echo.drop_echo`
+    ([messaging](messaging.md), "Redaction and protocol framing")
 13. On `thinking_chunk` event: accumulate thinking separately
 14. On `tool_call` event: show its task card and set the thread status to "is using <tool>"
 15. On `permission_request` event: auto-approve or post Block Kit buttons
