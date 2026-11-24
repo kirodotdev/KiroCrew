@@ -25,6 +25,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -171,9 +172,9 @@ class TestUpdateEndpoint:
                 f"/api/agents/{seeded_agent}", json={"worker_conducts": turn_on}
             )
             assert resp.status == 200
-            # The reload runs as a task the route leaves behind: wait for it, bounded.
+            # The reload runs as a task the route leaves behind: await its signal.
             pending = tuple(getattr(state, "_crewmate_reload_tasks", ()))
-            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+            await await_until(asyncio.gather(*pending), what="the worker reload tasks")
         assert notices == [
             "Session reloaded so it picks up this Bot's changed worker setting. "
             "The conversation is kept."
