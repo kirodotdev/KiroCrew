@@ -30,7 +30,7 @@ from kiro_crew.dashboard.handlers.workflows import (
     api_workflow_definitions,
 )
 from kiro_crew.testing.wait import LoopHop
-from kiro_crew.workflows.library import WorkflowDefinitionLibrary, command_ref
+from kiro_crew.workflows.library import WorkflowDefinitionLibrary, command_ref, declared_lineage
 from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
@@ -52,7 +52,7 @@ def _service(library: WorkflowDefinitionLibrary) -> WorkflowService:
     return WorkflowService(sessions=_NoSessions(), persist=False, definition_library=library)
 
 
-def _adapted_from(parent_id: str, revision: int = 1) -> str:
+def _adapted_from(parent_id: str, revision: int | str = 1) -> str:
     return SOURCE_V1.replace(
         '"description": "Investigate a project failure"',
         f'"description": "Adapted", "adapted_from": "{parent_id}@{revision}"',
@@ -556,6 +556,49 @@ async def test_a_run_adapted_from_a_removed_workflow_still_promotes(tmp_path) ->
 
     assert promoted["ok"] is True, promoted
     assert promoted["definition"]["derived_from"] == {"workflow_id": parent["id"], "revision": 1}
+
+
+@pytest.mark.parametrize(
+    ("reference", "expected"),
+    [
+        ("wf_x@3", {"workflow_id": "wf_x", "revision": 3}),
+        ("wf_x@" + "9" * 9, {"workflow_id": "wf_x", "revision": 10**9 - 1}),
+        ("wf_x@\u00b2", None),
+        ("wf_x@\u0663", None),
+        ("wf_x@", None),
+        ("wf_x", None),
+        ("wf_x@" + "9" * 10, None),
+        ("wf_x@" + "9" * 4400, None),
+    ],
+    ids=[
+        "small",
+        "nine-digits",
+        "superscript",
+        "arabic-indic",
+        "empty",
+        "no-revision",
+        "ten-digits",
+        "4400-digits",
+    ],
+)
+async def test_a_revision_beyond_any_counter_reads_as_no_lineage(reference, expected) -> None:
+    assert declared_lineage({"adapted_from": reference}) == expected
+
+
+async def test_a_run_with_a_runaway_adapted_from_revision_still_promotes(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(source=SOURCE_V1, name="Debug Project")
+    svc = _service(library)
+    started = await svc.start(_adapted_from(parent["id"], "9" * 4400), name="Adapted")
+    handle = svc.registry.get(started["run_id"])
+    assert handle is not None
+    if handle.task is not None:
+        await handle.task
+
+    promoted = await svc.promote_run_definition(started["run_id"], name="Saved adaptation")
+
+    assert promoted["ok"] is True, promoted
+    assert promoted["definition"].get("derived_from") is None
 
 
 async def test_removed_workflow_no_longer_lists_runs_or_seeds_authoring(tmp_path) -> None:
