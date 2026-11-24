@@ -28,9 +28,9 @@ Before gathering details, decide where the report belongs. Take the first case
 that fits:
 
 1. **A security vulnerability.** Do not draft it, search for it or file it.
-   Give the user the security policy and tell them to report it privately by
-   the email address that file lists, with the `[SECURITY]` subject prefix —
-   never in a public issue:
+   Give the user the security policy and tell them to report it privately
+   through one of the routes that file lists (the AWS Vulnerability Disclosure
+   Program on HackerOne, or email) — never in a public issue:
 
    ```
    https://github.com/kirodotdev/KiroCrew/blob/main/SECURITY.md
