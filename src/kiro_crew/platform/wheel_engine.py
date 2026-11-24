@@ -42,6 +42,8 @@ import base64
 import contextlib
 import hashlib
 import importlib as _importlib
+import importlib.metadata as _metadata
+import itertools
 import json
 import logging
 import os
@@ -55,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import asset_downloader  # noqa: F401 - re-export
+from kiro_crew import extras as _extras
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
@@ -68,6 +71,7 @@ from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     try_acquire_lock,
     try_acquire_lock_or_raise,
 )
+from kiro_crew.release_channel import distribution_name
 from kiro_crew.subprocess_utf8 import utf8_stdout
 
 # isort: split
@@ -648,8 +652,13 @@ def build_shadow_venv(
     stable_link: Path | None = None,
     *,
     ctx: _BuildContext = _NO_CONTEXT,
+    extras: tuple[str, ...] = (),
 ) -> None:
     """Build a FRESH venv at *shadow_dir* and install *wheel_path* into it.
+
+    *extras* are installed with the wheel, in the same pip command (see
+    :func:`_carried_extras`), so a carried extra with no wheel for this host
+    fails the update like any other dependency.
 
     The interpreter is this process's own Python: the update replaces Kiro
     Crew's code, not the interpreter, so the shadow tree is built on the same
@@ -765,9 +774,10 @@ def build_shadow_venv(
     # sdist in the shadow tree (the gateway host is not required to have a C
     # toolchain, and a half-built tree is what the sentinel cleanup exists for).
     policy = _pip_binary_policy()
+    target = f"{wheel_path}[{','.join(sorted(extras))}]" if extras else str(wheel_path)
     try:
         _run(
-            shadow_pip + ["install", "--quiet"] + policy + [str(wheel_path)],
+            shadow_pip + ["install", "--quiet"] + policy + [target],
             _PIP_INSTALL_TIMEOUT_SECS,
             "pip install into the shadow venv",
             ctx=ctx,
@@ -783,7 +793,56 @@ def build_shadow_venv(
         missing = _no_wheel_packages(str(exc)) if policy else []
         if not missing:
             raise
-        raise WheelUpdateError(_no_wheel_message(missing) + f" (pip said: {exc})") from exc
+        raise WheelUpdateError(
+            _no_wheel_message(missing)
+            + _carried_extra_hint(missing, extras)
+            + f" (pip said: {exc})"
+        ) from exc
+
+
+def _dist_name(requirement: str) -> str:
+    """The normalized distribution name a PEP 508 *requirement* starts with."""
+    name = "".join(itertools.takewhile(lambda c: c.isalnum() or c in "-_.", requirement))
+    return name.lower().replace("_", "-").replace(".", "-")
+
+
+def _carried_extras() -> tuple[str, ...]:
+    """The declared extras whose every distribution is installed in THIS tree.
+
+    The update runs in the old release's process, so this reads the tree being
+    replaced. No version check: the new wheel's own pins decide.
+    """
+    carried = []
+    for extra, requirements in _extras.REQUIREMENTS.items():
+        try:
+            for requirement in requirements:
+                _metadata.distribution(_dist_name(requirement))
+        except _metadata.PackageNotFoundError:
+            continue
+        carried.append(extra)
+    return tuple(sorted(carried))
+
+
+def _carried_extra_hint(missing: list[str], extras: tuple[str, ...]) -> str:
+    """The way out when a package pip could not find belongs to a carried extra
+    and is not one the release requires without any extra, which no uninstall drops."""
+    try:
+        requires = _metadata.requires(distribution_name()) or []
+    except _metadata.PackageNotFoundError:
+        requires = []
+    base = {_dist_name(r) for r in requires if "extra" not in r.partition(";")[2]}
+    names = {_dist_name(m) for m in missing} - base
+    owned = {e: {_dist_name(r) for r in _extras.requirements_for_extra(e)} for e in extras}
+    owners = sorted(e for e, packages in owned.items() if names & packages)
+    if not owners:
+        return ""
+    # Only what pip could not find: an extra's other packages may back another extra.
+    packages = ", ".join(sorted(names & set().union(*(owned[e] for e in owners))))
+    return (
+        f". The update carries the optional extra {', '.join(owners)} because the running "
+        f"install has it; to update without compiling, uninstall {packages} from the "
+        "running install and the update stops carrying it"
+    )
 
 
 _NO_WHEEL_RE = re.compile(r"No matching distribution found for ([^\s]+)")
@@ -1381,7 +1440,13 @@ def _apply_locked(
         found_before = _dir_identity(shadow_dir)
         progress(f"Building the new environment at {shadow_dir}…")
         try:
-            build_shadow_venv(wheel_path, shadow_dir, stable_link=layout.stable_link, ctx=ctx)
+            build_shadow_venv(
+                wheel_path,
+                shadow_dir,
+                stable_link=layout.stable_link,
+                ctx=ctx,
+                extras=_carried_extras(),
+            )
             progress("Verifying the new environment…")
             verify_shadow_venv(shadow_dir, version, ctx=ctx)
             if install_engine is not None:
