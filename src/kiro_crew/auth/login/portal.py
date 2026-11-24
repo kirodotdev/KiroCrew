@@ -21,6 +21,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import logging
 import secrets
 import socket
@@ -51,16 +52,27 @@ _T = TypeVar("_T")
 
 # The tab's answer once the code exchange has run. Fixed words: the exchange error
 # can carry the auth service's response body, which never reaches the page.
-_SIGNED_IN_PAGE = "Login complete. You can close this window."
+_SIGNED_IN_PAGE = (
+    "Login complete. You can close this window and go back to the Kiro Crew dashboard."
+)
 _EXCHANGE_FAILED_PAGE = (
     "Sign-in could not finish: the sign-in service did not complete it. Go back to "
-    "the dashboard and finish signing in with the code shown there."
+    "the Kiro Crew dashboard and finish signing in with the code shown there."
 )
 # A hit after the first outcome, and a tab of a sign-in a newer one replaced.
-_FINISHED_PAGE = "This sign-in has already finished. Go back to the dashboard to see the result."
+_FINISHED_PAGE = (
+    "This sign-in has already finished. Go back to the Kiro Crew dashboard to see the result."
+)
 _REPLACED_PAGE = (
     "This sign-in was replaced by a newer one. You can close this window and finish "
-    "signing in from the dashboard."
+    "signing in from the Kiro Crew dashboard."
+)
+# Every page the tab lands on is titled, so the tab does not read as an untitled page.
+_PAGE_HEAD = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    "<meta name='color-scheme' content='light dark'><title>Kiro Crew sign-in</title>"
+    "<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36em;margin:3em auto;"
+    "padding:0 1em}</style></head><body>"
 )
 
 # Close tasks of signed-in listeners still answering late tabs (held against GC).
@@ -149,6 +161,12 @@ def build_auth_url(port: int, state: str, challenge: str) -> str:
         f"&redirect_uri={urllib.parse.quote(redirect_base, safe='')}"
         f"&redirect_from=kirocli"
     )
+
+
+def _page(text: str, status: int = 200) -> web.Response:
+    """The tab's answer: *text* on the titled sign-in page."""
+    body = f"{_PAGE_HEAD}<p>{html.escape(text)}</p></body></html>"
+    return web.Response(status=status, text=body, content_type="text/html")
 
 
 def rebuild_redirect_uri(port: int, callback_path: str, login_option: str) -> str:
@@ -242,19 +260,19 @@ async def wait_for_callback(
             text = _EXCHANGE_FAILED_PAGE
         else:
             text = _SIGNED_IN_PAGE
-        return web.Response(text=text, content_type="text/html")
+        return _page(text)
 
     async def _handle(request: web.Request) -> web.Response:
         nonlocal reason
         # First terminal outcome wins; a later hit (a refresh, a second tab) is told so.
         if result.done():
-            return web.Response(text=_FINISHED_PAGE, content_type="text/html")
+            return _page(_FINISHED_PAGE)
         query = request.query
         state = query.get("state", "")
         if state and not hmac.compare_digest(state.encode(), expected_state.encode()):
             # An older sign-in's tab, back on this reused port: its code is never
             # exchanged, and this sign-in keeps waiting for its own tab.
-            return web.Response(text=_REPLACED_PAGE, content_type="text/html")
+            return _page(_REPLACED_PAGE)
         error = query.get("error")
         if error:
             reason = _PORTAL_ERROR_REASONS.get(error, "")
@@ -274,8 +292,7 @@ async def wait_for_callback(
         if result.exception() is None:
             return await _exchange_page(result.result())
         failed = f"Login failed: {reason}." if reason else "Login failed."
-        text = f"{failed} You can close this window and retry from the dashboard."
-        return web.Response(text=text, content_type="text/html")
+        return _page(f"{failed} You can close this window and retry from the Kiro Crew dashboard.")
 
     async def _unexpected_path(request: web.Request) -> web.Response:
         # The token exchange must echo the exact redirect path, so a near-miss
@@ -293,14 +310,11 @@ async def wait_for_callback(
                     "which is not a callback address this computer listens on"
                 )
             )
-        return web.Response(
+        return _page(
+            "Sign-in could not finish here: the browser came back to an address this "
+            "computer does not handle. Go back to the Kiro Crew dashboard and finish "
+            "signing in with the code shown there.",
             status=404,
-            text=(
-                "Sign-in could not finish here: the browser came back to an address "
-                "this computer does not handle. Go back to the dashboard and finish "
-                "signing in with the code shown there."
-            ),
-            content_type="text/html",
         )
 
     app = web.Application()

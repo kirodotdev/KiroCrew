@@ -917,6 +917,9 @@ class AcpSessionHandle:
         # The engine version when Crew knows it, i.e. its own bundle's
         # (``KasHarness.bundle_engine_version``); "" on the relay.
         self.kas_bundle_engine_version: str = ""
+        # The engine version a relay KAS runs, read from kiro-cli's unpacked
+        # engine (``KasHarness.relay_engine_version``); "" when unread.
+        self.kas_relay_engine_version: str = ""
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""

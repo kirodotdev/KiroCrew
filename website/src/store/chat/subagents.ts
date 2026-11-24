@@ -823,7 +823,7 @@ export const subagentReducers = {
       if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
     }
   },
-  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
+  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; cost_usd?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     confirmReplayed(state, action.payload.id)
     const subs = action.payload.slot !== state.activeSlot
@@ -845,6 +845,9 @@ export const subagentReducers = {
     const credits = typeof action.payload.credits === 'number' && Number.isFinite(action.payload.credits)
       ? Math.max(0, action.payload.credits)
       : undefined
+    const costUsd = typeof action.payload.cost_usd === 'number' && Number.isFinite(action.payload.cost_usd)
+      ? Math.max(0, action.payload.cost_usd)
+      : undefined
     const doneStatus = terminalStatus(action.payload)
     if (a) {
       // Every field below is written only when it moves: a reconnect replays
@@ -859,6 +862,7 @@ export const subagentReducers = {
       if (a.stalledAt !== undefined) a.stalledAt = undefined
       a.elapsed = action.payload.elapsed
       if (credits !== undefined) a.credits = credits
+      if (costUsd !== undefined) a.costUsd = costUsd
       const error = doneStatus === 'stopped' ? undefined : action.payload.error
       // The wire sends no error as null; the card may hold it as undefined.
       if ((a.error ?? undefined) !== (error ?? undefined)) a.error = error
@@ -908,6 +912,7 @@ export const subagentReducers = {
         startedAt: Date.now() - action.payload.elapsed * 1000,
         elapsed: action.payload.elapsed,
         credits,
+        costUsd,
         error: doneStatus === 'stopped' ? undefined : action.payload.error,
         result: isNative ? action.payload.result : undefined,
       }

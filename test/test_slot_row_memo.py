@@ -532,3 +532,49 @@ def test_the_unread_times_follow_the_live_badge_rule(tail: dict, want: tuple) ->
         retry_kind="transient_retry",
     )
     assert (summary.last_reply_ts, summary.last_unread_ts, summary.unread_failed) == want
+
+
+_PLACEHOLDER = (
+    "(No assistant response was recorded for the preceding turn. This placeholder "
+    "was inserted automatically to preserve message alternation \u2014 it is not a "
+    "reply the assistant produced.)"
+)
+
+
+@pytest.mark.parametrize(
+    ("rows", "want"),
+    [
+        (
+            [
+                {"role": "user", "content": "hi", "ts": "1"},
+                {"role": "assistant", "content": "real reply", "ts": "2"},
+                {"role": "assistant", "content": _PLACEHOLDER, "ts": "4"},
+            ],
+            ("real reply", "assistant", "2", "2"),
+        ),
+        (
+            [
+                {"role": "assistant", "content": "real reply", "ts": "2"},
+                {"role": "user", "content": "two", "ts": "3"},
+                {"role": "assistant", "content": _PLACEHOLDER, "ts": "4"},
+            ],
+            ("two", "user", "2", "2"),
+        ),
+    ],
+    ids=["after-the-reply", "the-turn-s-only-reply"],
+)
+def test_a_stored_placeholder_row_gives_the_sidebar_the_older_rows(rows, want) -> None:
+    summary = slot_row_memo.summarize_rows(
+        rows,
+        transient_roles=frozenset(),
+        redact=str,
+        parse_options=lambda text: [],
+        strip_options=str,
+        is_system_notice=is_system_notice,
+        last_message_preview=str,
+        retry_kind="transient_retry",
+    )
+    got = (summary.last_msg, summary.last_conv_role, summary.last_reply_ts, summary.last_unread_ts)
+    assert got == want
+    # The unread watermark the client clears with still covers every row.
+    assert summary.last_ts == "4"

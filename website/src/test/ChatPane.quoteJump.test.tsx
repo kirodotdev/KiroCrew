@@ -172,7 +172,7 @@ afterEach(() => {
   globalThis.cancelAnimationFrame = originalCancel
 })
 
-const sentCard = (container: HTMLElement) => container.querySelector('[data-testid="quote-card-sent"]') as HTMLElement
+const sentCard = (container: HTMLElement) => container.querySelector('[data-testid="quote-card-sent-jump"]') as HTMLElement
 const replyRow = (rows: HTMLElement[]) => rows[1]
 const ringed = (rows: HTMLElement[]) => within(replyRow(rows)).getByText('the quoted reply').closest('.animate-msg-highlight')
 

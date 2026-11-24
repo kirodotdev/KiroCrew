@@ -90,10 +90,12 @@ wherever a conductor runs, rather than discovering the refusal from a worker tha
 cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
-five kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
+six kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
 pull request has merged), `edition_check` (a check an installed edition
 provides through `kirocrew acceptance-check`, for work that lands where the
-evaluator cannot read it itself), `file` (a path exists), or `human_approval`
+evaluator cannot read it itself), `git_commit` (a local branch, named by an
+absolute repository path, has a commit past a base sha), `file` (a path
+exists), or `human_approval`
 (you accept it — legitimate for a design review,
 and never machine-evaluated). There is deliberately no "run this command" kind,
 so "the tests pass" is expressed as `pr_checks` on the pull request that carries
@@ -255,10 +257,12 @@ The same posture again wakes nobody, and `ample` wakes nobody until a worse
 posture was seen. While it stays `tight`, one more wake comes each time free
 memory falls another 1 GB, or the worst temp root another 2 points of free space,
 below the reading at the last posture wake (under `critical`, 0.5 GB and 1 point);
-a recovery wakes nobody and becomes the new reference:
+a recovery wakes nobody and leaves that reading where it is, so memory that
+recovers and falls back wakes it at most once while disk space holds, not on
+every fall:
 `[work-ledger wake] host posture still tight and worse (memory 2.9 GB free, was 4.0 GB at the last wake)`.
-These share the posture's hourly wake budget, so a value that flaps cannot keep
-waking it. A worker bound to an open item also wakes it when its process tree
+These share the posture's hourly wake budget of 12, one per 300-second patrol
+tick. A worker bound to an open item also wakes it when its process tree
 first holds a quarter of host memory (again only after it drops below a fifth),
 or, while the host is `tight` or `critical`, grows 2 GB since the last wake about it:
 `[work-ledger wake] worker it_1a2b3c4d grew to 16.2 GB (27% of RAM; +3.1 GB since the last wake)`.

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
-        _IDENTITY_NAME_MAX,
         _SLACK_SECTION_TEXT_LIMIT,
         _TRUNCATION_MARKER,
         LLMEvent,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
         escape_mrkdwn,
         is_allowed_user,
         logger,
+        mcp_identity_line,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -92,9 +92,13 @@ class _LinkedApproval:
     :func:`_linked_trust_grantable`). It defaults to False so an entry built
     without it -- and therefore every path that never established the proof --
     cannot grant Trust.
+
+    ``requester`` is the shared user whose Slack message opened the turn that asked
+    (:mod:`kiro_crew.slack.turn_requester`); they may answer this prompt too, never
+    with Trust. Empty: only the owner may answer it.
     """
 
-    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future")
+    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future", "requester")
 
     def __init__(
         self,
@@ -103,12 +107,14 @@ class _LinkedApproval:
         trust_grantable: bool = False,
         slot_key: str = "",
         future: asyncio.Future[str] | None = None,
+        requester: str = "",
     ) -> None:
         self.request_id = request_id
         self.session_key = session_key
         self.trust_grantable = trust_grantable
         self.slot_key = slot_key
         self.future = future
+        self.requester = requester
 
 
 class _LinkedApprovalEvent:
@@ -274,6 +280,7 @@ async def post_linked_approval(
     slot_key: str = "",
     future: asyncio.Future[str] | None = None,
     channel_trust: bool = False,
+    requester: str = "",
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
@@ -281,7 +288,8 @@ async def post_linked_approval(
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
     *slot_key* and *future* are the slot that asked and the future it parked on:
-    the click settles that future and no other.
+    the click settles that future and no other. *requester* is the shared user who
+    may answer it besides the owner (``""``: the owner alone).
     ``thread_ts=None`` posts top-level: a Slack Code channel's own session
     replies in the channel itself, so its prompts go there too.
 
@@ -350,7 +358,7 @@ async def post_linked_approval(
         )
         return None
     _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable, slot_key, future
+        request_id, session_key, trust_grantable, slot_key, future, requester
     )
     return approval_ts
 
@@ -363,20 +371,12 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
 def mcp_identity_text(server: str, tool: str) -> str:
     """The mrkdwn line naming the MCP server and tool a card asks about, or ``""``.
 
-    Both names are the trusted ``_meta.kiro`` identity (:func:`trusted_mcp_identity`),
-    not the title: ``email_send`` on a card does not say which server sends the mail,
-    and the model chooses the title. Scrubbed like every other string the card posts,
-    then bounded and escaped, so a name cannot carry a ``<!channel>``. Every Slack
-    approval card draws its identity line here, the transport card too.
+    The channel-neutral :func:`kiro_crew.messaging.renderer.mcp_identity_line` with
+    Slack's styling: each name bold and mrkdwn-escaped after the shared scrub and
+    bound, so a name cannot carry a ``<!channel>``. Every Slack approval card draws
+    its identity line here, the transport card too.
     """
-    if not server.strip():
-        return ""
-    shown: list[str] = []
-    for name in (server.strip(), tool.strip() or "unnamed tool"):
-        name, _ = redact_exfiltration_urls(name)
-        name, _ = redact_credentials(name)
-        shown.append(escape_mrkdwn(name[:_IDENTITY_NAME_MAX]))
-    return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
+    return mcp_identity_line(server, tool, lambda name: f"*{escape_mrkdwn(name)}*")
 
 
 def _build_approval_blocks(

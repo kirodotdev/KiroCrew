@@ -11,7 +11,9 @@ nothing could break the loop.
 This module is that record. ``write_marker`` drops one small JSON file per
 running job under ``<cron dir>/cron-running/`` when the run starts executing,
 named by the job id AND a per-run token, and ``clear_marker`` removes that
-run's file when the run ends by any path that runs ``finally``. The token is
+run's file when the run ends by any path that runs ``finally``. A run that
+waits out jitter first writes the same file with ``phase: "jitter"`` before the
+wait, so a hard exit in the wait still leaves the claimed run on disk. The token is
 what keeps a run's teardown from touching a newer run's evidence: a cancelled
 run's finalizer can arrive after a replacement run of the same job has been
 accepted and has written its own marker, and a clear by job id alone would
@@ -23,9 +25,11 @@ PID and keeps one marker per job -- the newest start, the run actually in
 flight when a stale finalizer's file is still beside it; the cron service's
 boot-time breaker pauses the job it names; ``doctor`` prints it.
 
-Every function here is synchronous filesystem I/O and is called off the event
-loop (``asyncio.to_thread`` from the run task, a worker from ``start()``, the
-doctor CLI). Writes are best-effort: a marker failure must never fail a run.
+Every function here but :func:`running_note` is synchronous filesystem I/O and
+is called off the event loop (``asyncio.to_thread`` from the run task and a
+channel's ``cron list``, a worker from ``start()``, the ``cron_list`` tool's
+gateway worker, the CLI). Writes are best-effort: a marker failure must never
+fail a run.
 
 **These files are evidence the breaker acts on, so this module owns every byte
 that reaches them and refuses anything it did not write.** The directory is on
@@ -63,6 +67,9 @@ logger = logging.getLogger(__name__)
 #: Directory (under the cron store's base directory) holding one file per
 #: running job.
 RUNNING_DIR_NAME = "cron-running"
+#: The ``phase`` of a marker written before the run's jitter wait. The run has
+#: executed nothing yet; the marker is rewritten as ``"running"`` once it does.
+JITTER_PHASE = "jitter"
 _MARKER_SUFFIX = ".json"
 #: A marker is never read past this size: it is written by this module and
 #: holds a handful of short fields, so anything larger is not a marker.
@@ -153,6 +160,9 @@ class RunningMarker:
     #: identity is readable.
     pid_domain: str
     pid_start: str | None = None
+    #: ``"running"``, or :data:`JITTER_PHASE` for a run still in its jitter
+    #: wait. A marker without the field was written while the run executed.
+    phase: str = "running"
     #: There is no run-token field: the token that keys a marker to its run is
     #: carried by the file NAME alone (see :func:`marker_path`), which is where
     #: :func:`clear_marker` needs it and :attr:`run_token` reads it.
@@ -243,8 +253,10 @@ def write_marker(
     started_at: float | None = None,
     *,
     run: str,
+    phase: str = "running",
 ) -> None:
-    """Record that *job_id* is executing in this process. Best-effort.
+    """Record that *job_id* is executing in this process, or with ``phase``
+    :data:`JITTER_PHASE` that its claimed run is waiting out jitter. Best-effort.
 
     ``run`` is the run's own token (see :func:`marker_path`): the run task
     mints one per run, so its ``clear_marker`` removes this file and no other
@@ -267,6 +279,7 @@ def write_marker(
             "pid": os.getpid(),
             "pid_domain": pid_domain,
             "pid_start": pid_start,
+            "phase": phase,
         }
         atomic_write(path, json.dumps(payload), restrict_to_owner=True)
     except Exception:
@@ -320,10 +333,21 @@ def _marker_from(data: dict[str, Any], path: Path) -> RunningMarker:
         path=path,
         pid_domain=str(data["pid_domain"]),
         pid_start=str(start) if start is not None else None,
+        phase=str(data.get("phase") or "running"),
     )
 
 
 def read_markers(base_dir: Path) -> list[RunningMarker]:
+    """Every readable marker of a run that is executing, oldest start first.
+
+    A run still in its jitter wait has run nothing, so its marker is left out:
+    it cannot have stalled the loop, and neither ``kirocrew cron list`` nor
+    ``kirocrew restart`` counts it as running. :func:`abandoned_markers` keeps it.
+    """
+    return [m for m in _all_markers(base_dir) if m.phase != JITTER_PHASE]
+
+
+def _all_markers(base_dir: Path) -> list[RunningMarker]:
     """Every readable marker, oldest start first. Unparseable files are skipped."""
     d = _readable_running_dir(base_dir)
     if d is None:
@@ -340,8 +364,31 @@ def read_markers(base_dir: Path) -> list[RunningMarker]:
 
 
 def abandoned_markers(base_dir: Path) -> list[RunningMarker]:
-    """Markers whose owning process is gone: runs cut short by a hard exit."""
-    return [m for m in read_markers(base_dir) if m.owner_alive() is False]
+    """Markers whose owning process is gone: runs cut short by a hard exit,
+    executing or still in their jitter wait."""
+    return [m for m in _all_markers(base_dir) if m.owner_alive() is False]
+
+
+def running_since_by_job(base_dir: Path) -> dict[str, float]:
+    """Start time of each job whose run is in flight, keyed by job id.
+
+    Only a marker whose writer is confirmed alive here counts, so one a crashed
+    gateway left behind marks nothing; for a job with two, the newest start wins.
+    """
+    since: dict[str, float] = {}
+    try:
+        markers = read_markers(base_dir)
+    except Exception:  # noqa: BLE001 - an unreadable marker dir marks nothing
+        return since
+    for m in markers:
+        if m.owner_alive() is True:
+            since[m.job_id] = max(m.started_at, since.get(m.job_id, 0.0))
+    return since
+
+
+def running_note(started_at: float) -> str:
+    """The ``[running since HH:MM UTC]`` note every cron listing shows for a run in flight."""
+    return f"[running since {time.strftime('%H:%M UTC', time.gmtime(started_at))}]"
 
 
 def claim_path(base_dir: Path) -> Path:

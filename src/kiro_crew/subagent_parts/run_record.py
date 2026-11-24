@@ -437,6 +437,8 @@ class SubagentInfo:
     # consumed credits before failing. Providers that do not bill in credits
     # report zero through the shared TurnUsage contract.
     credits: float = 0.0
+    # The run's summed dollar cost, from the same attempts; zero on a credit-billed harness.
+    cost_usd: float = 0.0
     # Shared with terminal reporters so a reap need not wait for a cancelled
     # consumer's state-write drain before settling the active attempt.
     _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
@@ -760,10 +762,13 @@ class SubagentInfo:
     _rowless_ended: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
-    # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).
-    # None while the run holds its slot.
+    # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why),
+    # or by the reaper sweep when the run's own runtime handle reads dead
+    # (``_runtime_gone`` is the (event, handle) pair it set, so only that wait
+    # honours it). None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    _runtime_gone: Any = None
     # True while a dependency park's report is on the store's writer thread, the
     # window before ``yield_slot`` sets ``_slot_released``. The pump's live-waiter
     # snapshot (``taskq_sweep_pass``) counts it, so a wake that lands in that

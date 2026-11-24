@@ -86,6 +86,7 @@ transcripts.
 | Command | Description |
 |---------|-------------|
 | `kirocrew service install` | Install and start as system service (sudo on Linux) |
+| `kirocrew service install --headless` | Same, with no dashboard and loopback only; a later `service install` keeps it, `--no-headless` drops it |
 | `kirocrew service uninstall` | Stop and remove system service (Linux: both system and per-user unit, each scope reported) |
 | `kirocrew service status` | Show service status (systemctl/launchctl; Linux: system and per-user unit, each named) |
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
@@ -213,6 +214,7 @@ A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.re
 | `kirocrew memory import file.json` | Import memory from JSON |
 | `kirocrew memory import --store <name> file.json` | Import into a named store instead |
 | `kirocrew memory import-text notes.md` | Offer the facts in a text or Markdown file and save the ones you confirm |
+| `kirocrew memory import-text --store <name> notes.md` | Offer and save them into a named store instead |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
 | `kirocrew memory backup [--keep N]` | Back up active memory stores now |
 | `kirocrew memory backups [--store <name>]` | List memory backups, newest first |

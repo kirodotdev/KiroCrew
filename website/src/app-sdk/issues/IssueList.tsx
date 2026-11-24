@@ -66,7 +66,12 @@ function useTypedFilter(initial: string, commit: (value: string) => void): [stri
   ]
 }
 
-function FilterBar({ filters, onChange }: { filters: Filters; onChange: FilterUpdate }) {
+/** ServiceNow records have no labels, and the route refuses a labels filter for them. */
+const NO_LABELS: ReadonlySet<IssueSearchRequest['provider']> = new Set(['servicenow'])
+/** Providers whose `raw` query is ANDed with the structured filters rather than replacing them. */
+const RAW_ANDS_FILTERS: ReadonlySet<IssueSearchRequest['provider']> = new Set(['servicenow'])
+
+function FilterBar({ filters, onChange, withLabels }: { filters: Filters; onChange: FilterUpdate; withLabels: boolean }) {
   const [text, setText] = useTypedFilter(filters.text ?? '', v => onChange(prev => ({ ...prev, text: v.trim() || undefined })))
   const [assignee, setAssignee, showAssignee] = useTypedFilter(filters.assignee ?? '', v => onChange(prev => ({ ...prev, assignee: v.trim() || undefined })))
   const [labels, setLabels] = useTypedFilter((filters.labels ?? []).join(', '), v => onChange(prev => ({ ...prev, labels: splitLabels(v) })))
@@ -98,9 +103,11 @@ function FilterBar({ filters, onChange }: { filters: Filters; onChange: FilterUp
         {mine ? <UserCheck size={13} aria-hidden="true" /> : <User size={13} aria-hidden="true" />}
         {i18nT('appSdk.issues.assigned_to_me')}
       </button>
-      <input className={`${input} flex-[1_1_6rem]`} value={labels}
-        aria-label={i18nT('appSdk.issues.filter_labels')}
-        placeholder={i18nT('appSdk.issues.filter_labels_placeholder')} onChange={e => setLabels(e.target.value)} />
+      {withLabels && (
+        <input className={`${input} flex-[1_1_6rem]`} value={labels}
+          aria-label={i18nT('appSdk.issues.filter_labels')}
+          placeholder={i18nT('appSdk.issues.filter_labels_placeholder')} onChange={e => setLabels(e.target.value)} />
+      )}
     </div>
   )
 }
@@ -145,8 +152,8 @@ export default function IssueList({ query, view = 'condensed', showFilters = fal
     <div className="flex min-w-0 flex-col gap-2" data-testid="app-issue-list">
       {/* Keyed by the app's query so a new one resets what the boxes hold. */}
       {/* A raw query replaces the structured filters at the route, so the bar
-          would show choices that change nothing. */}
-      {showFilters && !query.raw && <FilterBar key={queryKey} filters={filters} onChange={setFilters} />}
+          would show choices that change nothing; ServiceNow ANDs them instead. */}
+      {showFilters && (!query.raw || RAW_ANDS_FILTERS.has(query.provider)) && <FilterBar key={queryKey} filters={filters} onChange={setFilters} withLabels={!NO_LABELS.has(query.provider)} />}
       {isLoading ? <ListSkeleton view={view} /> : failure && issues.length === 0 ? (
         <div className="flex flex-col items-start gap-1.5">
           <ErrorNotice variant="inline" testId="app-issue-list-error" message={failure.message || i18nT('appSdk.issues.load_failed')} askAgent />

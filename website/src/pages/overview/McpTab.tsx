@@ -868,6 +868,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
+  // All off stages every listed row's Kiro Crew switch off, exactly as a click
+  // on each would, for one Apply. Inert switches are skipped (staged uninstall,
+  // disabled in the shared config, a built-in that is on). No All on: switching
+  // a fresh install on here is where the user confirms it.
+  const allOffTargets = sortedServers.filter(s => {
+    const p = pending[s.name]
+    if (p?.uninstall || disabledInSharedConfig(s)) return false
+    if (s.builtin === true && (s.presence || DEFAULT_PRESENCE).kirocrew) return false
+    return effectivePresence(s, p).kirocrew
+  })
+  const stageAllOff = () => {
+    for (const s of allOffTargets) toggleScope(s.name, 'kirocrew', false, s.presence || DEFAULT_PRESENCE)
+  }
   // Counted from the UNFILTERED list, like the header total it sits beside: the
   // count exists to say "these are here, not dropped", and a search that hides
   // them must not make the header agree that they are gone. Every disabled row
@@ -931,6 +944,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
           {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label={i18nT('pages.overview.mcpTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Btn onClick={stageAllOff} disabled={apply.isPending || allOffTargets.length === 0} title={i18nT('pages.overview.mcpTab.all_off_help')} data-testid="mcp-all-off"><ToggleLeft size={14} /> {i18nT('pages.overview.mcpTab.all_off')}</Btn>
           {/* `title` as well as `aria-label`: the sign-in guidance names this control
               by that string, and an icon-only button renders none of it — without a
               hover the reader cannot match the instruction to the button it means. */}

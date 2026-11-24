@@ -19,7 +19,9 @@ ends.
 
 A single operator's Crew never locks: the holder is compared as a person, so
 the operator's own tabs, and the operator's machine-local bootstrap subjects
-(:func:`~kiro_crew.shared_crew.crew_mode.operator_ids`), are one holder.
+(:func:`~kiro_crew.shared_crew.crew_mode.operator_ids`), are one holder. The
+gateway's owner id is read at each comparison: a reconnect can set it while the
+gateway runs, and a tab signed in after that is still the operator.
 
 Another collaborator may take the lease over
 (:meth:`TypingLeaseRegistry.take_over`, ``POST
@@ -147,7 +149,7 @@ class TypingLeaseRegistry:
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
-        owner_id: str = "",
+        owner_id: Callable[[], str] = lambda: "",
         max_leases: int = MAX_LEASES,
     ) -> None:
         self._idle = float(idle_seconds)
@@ -182,7 +184,7 @@ class TypingLeaseRegistry:
                 lease = _Lease(holder=principal)
                 self._leases[session_key] = lease
                 ended[session_key] = ""
-            elif not same_person(lease.holder, principal, owner_id=self._owner_id):
+            elif not same_person(lease.holder, principal, owner_id=self._owner_id()):
                 return LeaseChange(ended)
             else:
                 # The taker's own tab now drafts: it stands for them, so the
@@ -205,7 +207,7 @@ class TypingLeaseRegistry:
         with self._lock:
             ended = self._expire_locked(now)
             lease = self._leases.get(session_key)
-            if lease is None or same_person(lease.holder, principal, owner_id=self._owner_id):
+            if lease is None or same_person(lease.holder, principal, owner_id=self._owner_id()):
                 return LeaseChange(ended)
             self._leases[session_key] = _Lease(
                 holder=principal, drafting={conn_id: now}, renewed_wall=self._wall()
@@ -227,7 +229,9 @@ class TypingLeaseRegistry:
         with self._lock:
             ended = self._expire_locked(now)
             lease = self._leases.get(session_key)
-            if lease is not None and same_person(lease.holder, principal, owner_id=self._owner_id):
+            if lease is not None and same_person(
+                lease.holder, principal, owner_id=self._owner_id()
+            ):
                 del self._leases[session_key]
                 ended[session_key] = END_SENT
             return LeaseChange(ended)
@@ -247,7 +251,7 @@ class TypingLeaseRegistry:
     def blocks(self, session_key: str, principal: Principal) -> Principal | None:
         """The holder when the lease refuses a send by *principal*, else None."""
         holder = self.holder(session_key)
-        if holder is None or same_person(holder, principal, owner_id=self._owner_id):
+        if holder is None or same_person(holder, principal, owner_id=self._owner_id()):
             return None
         return holder
 
@@ -303,7 +307,7 @@ class TypingLeaseRegistry:
     # -- internals -------------------------------------------------------------
 
     def _person_ids(self, principal: Principal) -> list[str]:
-        return sorted(_lease_ids(principal, self._owner_id) | {principal.id})
+        return sorted(_lease_ids(principal, self._owner_id()) | {principal.id})
 
     def _drop_conn(self, conn_id: str, reason: str, *, only: str = "") -> LeaseChange:
         now = self._clock()
@@ -356,7 +360,7 @@ def typing_lease_for(state: Any) -> TypingLeaseRegistry:
     if not isinstance(registry, TypingLeaseRegistry):
         registry = TypingLeaseRegistry(
             idle_seconds=_configured_idle_seconds(),
-            owner_id=str(getattr(state, "owner_id", "") or ""),
+            owner_id=lambda: str(getattr(state, "owner_id", "") or ""),
         )
         state._shared_crew_typing_lease = registry
     return registry

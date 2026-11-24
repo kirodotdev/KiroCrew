@@ -283,8 +283,9 @@ describe('SlackPanel read-only session', () => {
     expect(screen.getByText('xoxb-••••aaaa')).toBeInTheDocument()
     // The app-level credential is unset, so its read-only row says so.
     expect(screen.getByText('(not set)')).toBeInTheDocument()
-    // An empty allowlist under read-only renders the placeholder, not an editor.
-    expect(screen.getByText('(none)')).toBeInTheDocument()
+    // An empty list under read-only renders the placeholder, not an editor:
+    // the enterprise allowlist and the tracked channels.
+    expect(screen.getAllByText('(none)')).toHaveLength(2)
     expect(screen.queryByRole('button', { name: 'Add' })).not.toBeInTheDocument()
   })
 
@@ -323,14 +324,18 @@ describe('SlackPanel enterprise allowlist editor', () => {
   function tagInput() {
     return screen.getByPlaceholderText('E0123ABC456')
   }
+  /** This editor's Add button; the tracked-channels editor has its own. */
+  function addBtn() {
+    return within(tagInput().closest('[data-setting-label]') as HTMLElement).getByRole('button', { name: 'Add' })
+  }
 
   it('adds an org on click and keeps Add disabled while the draft is blank', async () => {
     seed()
     await hydrated()
 
-    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
+    expect(addBtn()).toBeDisabled()
     fireEvent.change(tagInput(), { target: { value: ' T000TWO ' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(addBtn())
 
     expect(screen.getByText('T000TWO')).toBeInTheDocument()
     expect(tagInput()).toHaveValue('')
@@ -363,7 +368,7 @@ describe('SlackPanel enterprise allowlist editor', () => {
     expect(screen.getAllByText(/^E000ONE$/)).toHaveLength(1)
 
     fireEvent.change(tagInput(), { target: { value: 'E000ONE' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(addBtn())
     expect(screen.getAllByText(/^E000ONE$/)).toHaveLength(1)
     expect(tagInput()).toHaveValue('')
   })
@@ -378,6 +383,58 @@ describe('SlackPanel enterprise allowlist editor', () => {
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
     expect(save.mock.calls[0][0]).toMatchObject({ allowed_enterprise_ids: ['T000TWO'] })
+  })
+})
+
+describe('SlackPanel tracked channels editor', () => {
+  function trackInput() {
+    return screen.getByPlaceholderText('C0123ABC456')
+  }
+  function trackRow() {
+    return trackInput().closest('[data-setting-label]') as HTMLElement
+  }
+
+  it('lists the stored channels under Tracked channels', async () => {
+    seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    expect(trackRow()).toHaveAttribute('data-setting-label', 'Tracked channels')
+    expect(within(trackRow()).getByText('C000KEEP')).toBeInTheDocument()
+  })
+
+  it('saves only what was added and removed, so a channel added in Slack meanwhile stays', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP', 'C000GONE'] })
+    await hydrated()
+
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Remove C000GONE' }))
+    fireEvent.change(trackInput(), { target: { value: 'G000PRIV' } })
+    fireEvent.click(within(trackRow()).getByRole('button', { name: 'Add' }))
+
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      tracking_channels_add: ['G000PRIV'],
+      tracking_channels_remove: ['C000GONE'],
+    })
+  })
+
+  it('sends no tracking edit when the list was not touched', async () => {
+    const { save } = seed({ tracking_channels: ['C000KEEP'] })
+    await hydrated()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('tracking_channels_add')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('tracking_channels_remove')
+  })
+
+  it('refuses an ID that is not a channel (a DM or a person)', async () => {
+    seed()
+    await hydrated()
+    fireEvent.change(trackInput(), { target: { value: 'D000DM' } })
+    fireEvent.keyDown(trackInput(), { key: 'Enter' })
+    expect(await within(trackRow()).findByRole('alert', undefined, { timeout: 5_000 })).toHaveTextContent(
+      'is not a valid ID',
+    )
+    expect(within(trackRow()).queryByText('D000DM')).not.toBeInTheDocument()
   })
 })
 
@@ -969,6 +1026,24 @@ describe('SlackPanel setup wizard', () => {
     expect(wizard()).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url)
     await openWizard()
+  })
+
+  it('keeps the command the wizard saved at Create in a later Save Slack settings', async () => {
+    const { save } = seed({ connected: false, configured: false, bot_token_set: false })
+    vi.mocked(api.getSlackManifest).mockResolvedValue({ ...MANIFEST, alias: 'jdoe', command: 'kirocrew-jdoe' })
+    await hydrated()
+    const shown = await openWizard()
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
+    const created = screen.getByRole('button', { name: /I created the app/ })
+    await waitFor(() => expect(created).toBeEnabled())
+    fireEvent.click(created)
+    await waitFor(() => expect(shown).toHaveAttribute('data-step', 'bot_token'))
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0][0]).toEqual({ command: 'kirocrew-jdoe' })
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(save.mock.calls[1][0]).toMatchObject({ command: 'kirocrew-jdoe' })
   })
 
   it('stays open after Slack connects, so the test step is reachable', async () => {

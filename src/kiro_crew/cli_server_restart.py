@@ -830,8 +830,8 @@ def _print_running_cron_runs() -> None:
     desktop app's), and then nothing was signalled. The source is the in-flight
     marker a run writes once its payload starts (``cron_inflight``), kept to
     markers whose writer is alive here: one a crashed gateway left names no run
-    that is still going. A run still in its jitter wait has started nothing and
-    writes no marker. Best-effort: nothing readable prints nothing.
+    that is still going. A run still in its jitter wait has started nothing, and
+    ``read_markers`` leaves its marker out. Best-effort: nothing readable prints nothing.
     """
     from kiro_crew import cron_inflight
 
@@ -954,7 +954,15 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} via=service",
             )
             print("✅ Restarted kirocrew service.")
-            _print_token_url(port)
+            # The line printed follows the start command the manager has
+            # loaded. One that cannot be read is said to be unknown.
+            headless = service_controller.restarted_headless(report)
+            if headless is None:
+                print(f"   mode: {service_controller.MODE_UNKNOWN}")
+            if headless:
+                print_client_access(port)
+            else:
+                _print_token_url(port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED

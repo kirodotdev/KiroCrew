@@ -63,6 +63,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+from kiro_crew.acp.session_handle_native_children import AUTO_REJECT_MISSING_SECURITY_CONTEXT
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
@@ -1022,17 +1023,16 @@ async def _dispatch_events(
                         "without verifiable security context",
                         cause=DENY_CAUSE_SURFACE_POLICY,
                     )
+                    # Backend-controlled title: bound before redaction and
+                    # cap the display, consistent with the drain notice and
+                    # the [:4096] pre-redaction bounds.
+                    _shown = redact_text(str(_perm_event.title or "<unknown tool>")[:4096])[:120]
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_ACTIVITY,
                         sub_session_id=_perm_event.sub_session_id,
-                        # Backend-controlled title: bound before redaction
-                        # and cap the display, consistent with the drain
-                        # notice and the [:4096] pre-redaction bounds.
-                        text=(
-                            "Blocked: permission auto-rejected (missing security "
-                            "context): "
-                            f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
-                        ),
+                        text=f"Blocked: permission auto-rejected (missing security context): {_shown}",
+                        title=_shown,
+                        auto_reject_reason=AUTO_REJECT_MISSING_SECURITY_CONTEXT,
                     )
                     continue
                 # Pending until approve_tool or reject_tool takes it: an ask

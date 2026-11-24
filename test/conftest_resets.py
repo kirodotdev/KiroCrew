@@ -58,14 +58,20 @@ def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
     ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
     while it is critical. A runner short of memory would then stall every test that
     starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
-    pacing passes its own reader to ``BootPacer``.
+    pacing passes its own reader to ``BootPacer``. Every tick also asks
+    ``memory_hold.read_admission`` and is held while memory is critical, so that
+    reader admits here too; a test about the hold sets its own.
     """
-    from kiro_crew.autonudge_service import boot_pacer
+    from kiro_crew.autonudge_service import boot_pacer, memory_hold
 
     async def _ample() -> str:
         return "ample"
 
+    async def _admitted() -> tuple[bool, str]:
+        return True, ""
+
     _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+    _floor_monkeypatch.setattr(memory_hold, "read_admission", _admitted)
 
 
 @per_test_guard
@@ -876,6 +882,30 @@ def _fresh_hardlink_spec_warnings():
 
 
 @per_test_guard
+def _fresh_unhashable_agents_dir_warnings():
+    """Start each test with no agents folder already warned about for an unhashable entry.
+
+    ``agent_discovery_parts.dir_revision._AGENTS_DIR_UNHASHABLE_LOGGED`` holds the
+    folders whose WARNING this process wrote; one an earlier test on the same worker
+    left there would silence this test's record. Cleared in place before and after,
+    only when already imported, and read with ``getattr`` so a tree without the set
+    (``prove.py``'s revert of the fix) still runs its tests.
+    """
+
+    def clear():
+        dir_revision = sys.modules.get("kiro_crew.agent_discovery_parts.dir_revision")
+        warned = getattr(dir_revision, "_AGENTS_DIR_UNHASHABLE_LOGGED", None)
+        if warned is not None:
+            warned.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_cjk_segmenter():
     """Forget session search's registered Chinese segmenter around each test.
 
@@ -1318,6 +1348,49 @@ def _reset_subagent_not_due_memo():
 
 
 @per_test_guard
+def _reset_waiting_sends():
+    """Start each test with no dashboard send recorded as waiting in fair admission.
+
+    Each entry holds an admission bound to that test's own admission service, so an
+    entry one test left would let a later test's Stop on the same slot key cancel
+    work in the earlier test's service.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.shared_crew.admission_entry")
+        # hasattr: prove.py runs the tests on a tree with this map reverted away.
+        if module is not None and hasattr(module, "_WAITING_SENDS"):
+            module._WAITING_SENDS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_app_scope_grant_facts():
+    """Start each test with no app grant facts stored for a scope refusal's wording.
+
+    The entries hold what one test's manifest, install record and clock said about
+    an app. Tests reuse app names, so an entry one test left could word the next
+    test's refusal.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.token_auth_app_scope")
+        if module is not None:
+            module._app_grant_facts.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_persisted_truncation_reports():
     """Start each test with no truncated spawn listing already reported.
 
@@ -1354,6 +1427,32 @@ def _reset_chromium_opt_in_record():
         record = getattr(module, "_CHROMIUM_OPT_IN_RETRY_AT", None)
         if record is not None:
             record.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_code_channel_owner_only_notices():
+    """Start each test with no remembered code-channel owner-only notice, and no
+    channel remembered as being opened.
+
+    ``shared_refusal._noticed`` throttles the notice per person and channel on the
+    clock, and tests reuse both ids, so a notice one test sent could silence the
+    next test's. ``routing._opening`` lets a channel's unmentioned messages through
+    while it is opened, so one a test left would admit the next test's.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.slack.code_channels.shared_refusal")
+        if module is not None:
+            module._noticed.clear()
+        routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
+        if routing is not None:
+            routing._opening.clear()
 
     clear()
     try:

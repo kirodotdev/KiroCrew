@@ -413,6 +413,11 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 LINK_WINDOW_SECS = 300  # 5 minutes
 # Maximum session TTL — cookie cannot exceed this
 MAX_SESSION_TTL_SECS = 20 * 3600  # 20 hours
+#: Longest token :func:`generate_token` mints with a ``prompt`` claim. Slack splits
+#: a message line at about 4,000 bytes, which cuts a longer link: the cut token
+#: fails its signature and the link signs nobody in. 3,000 leaves room for the
+#: dashboard origin and the message text around the link.
+LINK_TOKEN_MAX_CHARS = 3000
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -581,6 +586,20 @@ def generate_token(
                 payload_dict[k] = v
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
+    # A signature is 43 characters plus the dot.
+    token_len = len(encoded_payload) + 44
+    if prompt and token_len > LINK_TOKEN_MAX_CHARS:
+        # A link this long is cut when it is posted, and a cut link signs nobody
+        # in. Drop the prompt rather than shorten it: a cut-down message sent as
+        # the person's first turn says something they did not write.
+        del payload_dict["prompt"]
+        logger.warning(
+            "link prompt dropped: the token would be %d characters (cap %d)",
+            token_len,
+            LINK_TOKEN_MAX_CHARS,
+        )
+        payload = json.dumps(payload_dict, separators=(",", ":")).encode()
+        encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
     return f"{encoded_payload}.{signature}"
 

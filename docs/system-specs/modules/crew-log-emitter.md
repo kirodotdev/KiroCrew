@@ -748,8 +748,17 @@ arriving after that last look starts a pass of its own.
 shutdown thread, and the entries buffered behind it are left alone rather than written
 out of order. A False return means exactly that -- some entries did not land and the
 log's tail is short by them -- and the warning names the buffered count, how many
-sessions are still owed a `write/dropped` marker, and whether a batch was in flight, so
-the gap is attributable rather than silent.
+entries the batch in flight claimed and had not attempted, how many sessions are still
+owed a `write/dropped` marker, and whether a batch was in flight, so the gap is
+attributable rather than silent. The claimed count is the one an `os._exit` right after the
+drain loses: those entries are out of the buffer, so a buffered count alone reads zero
+while every one of them is still unwritten. It is exact only up to the one write each
+batch in flight has under way. A group commit stays claimed while its one `commit` runs,
+and its bytes may already be written (a commit stuck in its `fsync`) and still reach the
+file after the exit, so the count can exceed the loss by that group. A single entry's
+claim is released as its attempt starts, so one stuck before its `write()` is lost without
+being counted. `dropped_writes()` does not count the claimed entries: the writer has not
+given up on them, and they still land when their write completes before the process exits.
 
 The owed-marker count reads every place a session's loss debt lives. It sits in the
 pending-loss map, or parked, while no marker job exists for that session; once one is built the debt

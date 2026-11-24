@@ -61,6 +61,7 @@ import { fmtDateFields, fmtElapsed } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
+import { formatCost } from '../../utils/formatCost'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -353,6 +354,11 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const terminalCredits = isDone && typeof a.credits === 'number' && Number.isFinite(a.credits) && a.credits > 0
     ? a.credits
     : null
+  // A dollar-billed harness reports zero credits and a cost; the card shows
+  // that cost the way the chat's own turn line does.
+  const terminalCost = isDone && typeof a.costUsd === 'number' && Number.isFinite(a.costUsd) && a.costUsd > 0
+    ? a.costUsd
+    : null
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -481,11 +487,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         <div className="px-3 pt-1 pb-2">
           {isDone && !isNative && !retired && (
             <div data-testid="subagent-credit-usage" className="text-[12px] text-muted font-mono tabular-nums break-words mb-2">
-              {terminalCredits === null
-                ? i18nT('pages.chat.activityViewer.credits_not_reported')
-                : i18nT('pages.chat.activityViewer.credits_used', {
+              {terminalCredits !== null
+                ? i18nT('pages.chat.activityViewer.credits_used', {
                     credits: fmtCredits(terminalCredits),
-                  })}
+                  })
+                : terminalCost !== null
+                  ? i18nT('pages.chat.activityViewer.cost_used', { cost: formatCost(terminalCost) })
+                  : i18nT('pages.chat.activityViewer.credits_not_reported')}
             </div>
           )}
           {a.task && <>

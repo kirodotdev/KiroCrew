@@ -19,7 +19,7 @@
  * reports so `WarmSwap` reveals the impl the way it does on screen. Controls
  * inside a hidden warm-up box are not counted: a reader cannot reach them.
  */
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -506,8 +506,13 @@ new mode 100755
       expect(cls, cls).toContain('min-w-0')
       expect(cls, cls).not.toContain('shrink-0')
     }
-    // Truncated text keeps its whole wording reachable as the item's tooltip.
-    expect(row.querySelector('[data-change-note]')).toHaveAttribute('title', 'now executable')
+    // Truncated text keeps its whole wording reachable: the note in the shared
+    // bubble on keyboard focus, never only in a native title.
+    const note = row.querySelector('[data-change-note]')!
+    expect(note).toHaveAttribute('title', '')
+    expect(note).toHaveAttribute('tabindex', '0')
+    fireEvent.focus(note)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('now executable')
     expect(row.querySelector('[data-label]')).toHaveAttribute('title', 'No highlighting — plain view')
   })
 

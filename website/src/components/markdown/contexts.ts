@@ -49,6 +49,16 @@ export const CompactImagesCtx = createContext<boolean>(false)
 export const ReadOnlyCodeCtx = createContext<boolean>(false)
 
 /**
+ * When true, the subtree is a copy of another row's text (the sent quote
+ * card), so nothing in it may load or mount: widget blocks render nothing and
+ * images render as their alt text. The original row's per-row checks
+ * (`meta.link_blocks`) do not travel with the copy. The renderer's own block
+ * parser still decides what a widget is, so a tag inside code stays text.
+ * Default false.
+ */
+export const QuotedContentCtx = createContext<boolean>(false)
+
+/**
  * A per-message token appended to local image URLs.
  *
  * `/api/file-raw?path=…` addresses a file by PATH, so every impression of a file

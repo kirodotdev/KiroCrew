@@ -1,7 +1,7 @@
 /** Drop targets, sortable wrappers and drag previews rendered inside the sidebar's
  *  DndContext. */
 import { useDndContext, useDroppable } from '@dnd-kit/core'
-import { useRef, useState, useCallback, useLayoutEffect } from 'react'
+import { createContext, useContext, useRef, useState, useCallback, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EyeOff, Repeat, MessagesSquare, CornerDownRight, Columns2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
@@ -37,6 +37,27 @@ import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
  * handler refuses independently, so this is the visible half of a guard that does
  * not depend on the UI being reached.
  */
+/** The chat area a dragged session can land on (the open chat's composer, or the
+ *  Split View panes), or null when it takes no drop. A context rather than a
+ *  sidebar prop: it appears when the first chat opens, and as a prop it would
+ *  re-render the whole sidebar for a target only a session drag reads. */
+export const ChatDropTargetContext = createContext<HTMLElement | null>(null)
+
+/** The drag's targets in the chat area while a session is dragged: one per pane in
+ *  Split View (`onShow`), otherwise the open chat's composer. */
+export function ChatDropZones({ draggedKey, onShow, takesReference, refusal }: {
+  draggedKey: string
+  onShow: Parameters<typeof SplitPaneDropZones>[0]['onShow'] | undefined
+  /** A drop on the composer stages a session reference. */
+  takesReference: boolean
+  refusal: SessionRefBlockReason | null
+}) {
+  const host = useContext(ChatDropTargetContext)
+  if (!host) return null
+  if (onShow) return <SplitPaneDropZones host={host} draggedKey={draggedKey} onShow={onShow} />
+  return takesReference ? createPortal(<ChatPaneDropZone refusal={refusal} />, host) : null
+}
+
 export function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason | null }) {
   const refused = refusal !== null
   const { setNodeRef, isOver } = useDroppable({ id: 'chat-pane-ref', data: { type: CHAT_PANE_DROP_TYPE } })

@@ -11,7 +11,7 @@ import re
 import string
 from collections.abc import Iterator
 from pathlib import PurePosixPath
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 from kiro_crew.dashboard.source_providers import contract, hosts, plugins
 from kiro_crew.dashboard.source_providers.contract import RepoRef, SourceRef
@@ -270,6 +270,69 @@ def _linear_ref(path: str) -> SourceRef:
     return SourceRef("linear", url, LINEAR_HOST, workspace, team, number, kind="issue")
 
 
+# ServiceNow: one instance is ``<name>.service-now.com``, and a record's classic
+# form is ``https://<instance>/<table>.do?sys_id=<sys_id>``. Only the tables
+# below are read, and a record is named by its 32-hex sys_id, so each spelling
+# of one record normalizes to one URL.
+SERVICENOW_HOST_SUFFIX = ".service-now.com"
+#: The tables a ServiceNow read may name. Every one extends ``task``, so
+#: ``active``, ``number``, ``assigned_to`` and ``opened_by`` mean the same on each.
+SERVICENOW_TABLES = ("incident", "problem", "change_request", "sc_req_item", "sc_task")
+_SERVICENOW_LABEL_CHARS = frozenset(string.ascii_lowercase + string.digits + "-")
+_SERVICENOW_LABEL_MAX_CHARS = 63
+_SERVICENOW_SYS_ID_CHARS = frozenset(string.hexdigits.lower())
+_SERVICENOW_SYS_ID_LENGTH = 32
+_SERVICENOW_URL_HINT = (
+    "Expected a ServiceNow record URL like "
+    "https://<instance>.service-now.com/incident.do?sys_id=<sys_id>."
+)
+
+
+def is_servicenow_host(host: str) -> bool:
+    """``<name>.service-now.com``: one lower-case DNS label, no port or userinfo."""
+    label = host.removesuffix(SERVICENOW_HOST_SUFFIX)
+    return (
+        label != host
+        and 0 < len(label) <= _SERVICENOW_LABEL_MAX_CHARS
+        and set(label) <= _SERVICENOW_LABEL_CHARS
+        and not label.startswith("-")
+        and not label.endswith("-")
+    )
+
+
+def is_servicenow_sys_id(value: str) -> bool:
+    """A lower-case 32-hex ServiceNow ``sys_id``."""
+    return len(value) == _SERVICENOW_SYS_ID_LENGTH and set(value) <= _SERVICENOW_SYS_ID_CHARS
+
+
+def servicenow_record_url(host: str, table: str, sys_id: str) -> str:
+    """The canonical URL of one record, from a validated host, table and sys_id."""
+    return f"https://{host}/{table}.do?sys_id={sys_id}"
+
+
+def _servicenow_ref(host: str, path: str, query: str) -> SourceRef:
+    """Build a ServiceNow ``SourceRef``: ``owner`` is the table, ``repo`` the sys_id.
+
+    ``number`` is 0: the URL names the record by sys_id, not by its number.
+    """
+    table = path.removeprefix("/").removesuffix(".do")
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        raise ValueError(_SERVICENOW_URL_HINT) from None
+    if (
+        path != f"/{table}.do"
+        or table not in SERVICENOW_TABLES
+        or len(pairs) != 1
+        or pairs[0][0] != "sys_id"
+        or not is_servicenow_sys_id(pairs[0][1].lower())
+    ):
+        raise ValueError(_SERVICENOW_URL_HINT)
+    sys_id = pairs[0][1].lower()
+    url = servicenow_record_url(host, table, sys_id)
+    return SourceRef("servicenow", url, host, table, sys_id, 0, kind="issue")
+
+
 # Bitbucket Server keeps a pull request at
 # ``<context>/projects/KEY/repos/SLUG/pull-requests/N``, optionally followed by
 # the UI tab the link was copied from. Split on "/" and matched from the end, so
@@ -488,6 +551,12 @@ def parse_source_url(raw_url: str) -> SourceRef:
     if host and (is_cloud_jira or candidate in hosts._allowed_jira_hosts()):
         return _jira_ref(candidate, path)
 
+    # ServiceNow: the suffix is ServiceNow-operated, so it names the product the
+    # way ``*.atlassian.net`` does. Which instance a read may reach is decided
+    # by the stored credential's own instance (``servicenow``), not here.
+    if is_servicenow_host(host) and parsed.port in (None, 443):
+        return _servicenow_ref(host, path, parsed.query)
+
     # Registered providers are consulted LAST, so no edition plugin can reinterpret
     # a built-in host or an operator-allowlisted one, and the three built-in
     # grammars keep exactly the precedence they had. The scheme/userinfo/length
@@ -503,7 +572,8 @@ def parse_source_url(raw_url: str) -> SourceRef:
         "dashboard.gitlab_hosts, pull requests on a Bitbucket Server host listed "
         "in dashboard.bitbucket_server_hosts, changes on a Gerrit host listed in "
         "dashboard.gerrit_hosts, Jira issues on *.atlassian.net or a host "
-        "listed in dashboard.jira_hosts, and Linear issues on linear.app are supported."
+        "listed in dashboard.jira_hosts, Linear issues on linear.app, and ServiceNow "
+        "records on *.service-now.com are supported."
     )
 
 

@@ -34,7 +34,6 @@ not read here.
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
 import threading
@@ -44,6 +43,7 @@ from urllib.parse import urlsplit
 
 from kiro_crew.browser_harness.op_classes import CLASS_ACT, CLASS_READ, host_trust_class
 from kiro_crew.trust_patterns import HOST_TRUST_KEY_PREFIX as KEY_PREFIX
+from kiro_crew.trust_patterns import exact_trust_pattern
 
 #: The longest host a key names: a DNS name's 253 characters (an address literal is shorter).
 _MAX_HOST = 253
@@ -173,8 +173,8 @@ def grant_pattern(key: str) -> str:
     class.
     """
     if is_host_key(key) and key.endswith(f":{CLASS_ACT}"):
-        return glob.escape(key[: -len(CLASS_ACT)]) + "*"
-    return glob.escape(key)
+        return exact_trust_pattern(key[: -len(CLASS_ACT)]) + "*"
+    return exact_trust_pattern(key)
 
 
 def browser_session_key(session_key: str) -> str:

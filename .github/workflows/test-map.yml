@@ -9,6 +9,12 @@ name: Test Map
 # that would save and whether it would have missed a failing test. Only that
 # evidence can move it out of shadow.
 #
+# The `map` job publishes one artifact, `test-selection`: the map with every
+# table `scripts/ci_test_map.py bundle` builds beside it, or nothing. A
+# reader may take it only from a successful `schedule` or `workflow_dispatch`
+# run of this workflow on `main` of this repository: a run on any other branch,
+# event or repository can carry an artifact of the same name.
+#
 # Not coverage contexts (`--cov-context=test`): coverage writes its SQLite data
 # at every context switch, inside the test, so the tests that patch
 # `sqlite3.connect` break coverage and crash their xdist worker, and the
@@ -120,6 +126,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # `bundle` reads the last 2000 first-parent commits for the co-change
+          # table and needs the commit before them: with fewer it leaves the
+          # table out, and `check` below then fails the job.
+          fetch-depth: 2001
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -131,19 +141,23 @@ jobs:
           pattern: test-map-shard-*
           path: parts
 
-      # Stdlib only: the builder needs no install.
-      - name: Build the map
+      # Stdlib only: the builder needs no install. `shell: bash` adds pipefail,
+      # so a command that fails ahead of `tee` fails the step.
+      - name: Build the selection bundle
+        shell: bash
         run: |
           count=$(find parts -mindepth 1 -maxdepth 1 -type d -name 'test-map-shard-*' | wc -l)
           [ "$count" -eq 8 ] || { echo "::error::expected 8 shard part sets, found $count"; exit 1; }
           python scripts/ci_test_map.py build --parts parts --out test-map.json --commit "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-          gzip -9 -k test-map.json
-          echo "map gzip: $(stat -c %s test-map.json.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/ci_test_map.py bundle --map test-map.json --out test-selection.json.gz | tee -a "$GITHUB_STEP_SUMMARY"
+          python scripts/ci_test_map.py check --bundle test-selection.json.gz | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload the map
+      # The one file a reader fetches. A bundle that failed `check` is never
+      # uploaded, so a successful run always holds every table.
+      - name: Upload the selection bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-map
-          path: test-map.json.gz
+          name: test-selection
+          path: test-selection.json.gz
           if-no-files-found: error
           retention-days: 30

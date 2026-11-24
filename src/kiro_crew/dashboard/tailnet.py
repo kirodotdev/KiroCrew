@@ -420,7 +420,7 @@ def tailnet_origin() -> str | None:
 #: not-signed-in half is listed because that is the one an operator fixes by
 #: signing in, and treating an unknown future value as "signed in" would send
 #: them to the wrong remedy.
-_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState", "NeedsMachineAuth"})
+_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState"})
 
 
 @dataclass(frozen=True)
@@ -440,6 +440,9 @@ class DaemonProbe:
     * ``stopped=True`` — the daemon answers but Tailscale is stopped
       (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
     * ``logged_in=False`` — signed out; sign in.
+    * ``needs_approval=True`` — signed in, but the tailnet requires device
+      approval and an admin has not approved this machine; another sign-in
+      cannot help. ``logged_in`` stays ``False``: nothing on the tailnet works yet.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
     * ``https_enabled=False`` — the tailnet has not granted certificate
       provisioning for this machine's MagicDNS name yet.
@@ -482,6 +485,8 @@ class DaemonProbe:
     #: report any unmet requirement. ``False`` is reserved for an explicit
     #: ``CertDomains`` (``null`` or a list) that does not contain this host.
     https_enabled: bool | None = None
+    #: ``BackendState "NeedsMachineAuth"``.
+    needs_approval: bool = False
 
 
 def _count_peers(status: dict) -> tuple[int, int]:
@@ -547,6 +552,18 @@ def probe_daemon() -> DaemonProbe:
             logged_in=True,
             detail="Tailscale is stopped, so this machine is not connected to its tailnet.",
             stopped=True,
+        )
+    if backend_state == "NeedsMachineAuth":
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=False,
+            detail=(
+                "This machine is signed in to Tailscale and is waiting for an admin "
+                "to approve it."
+            ),
+            needs_approval=True,
         )
     logged_in = not (
         isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN

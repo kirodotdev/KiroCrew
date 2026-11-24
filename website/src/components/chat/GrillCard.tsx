@@ -89,10 +89,11 @@ function composeSend(text: string, files: string[], slot: string | undefined, on
 const OUTCOME: Record<ComposeSendOutcome, CardResult> = { sent: 'sent', refused: 'failed', indeterminate: 'unconfirmed' }
 
 // Grows with what is written (`field-sizing`), up to a cap, then scrolls.
-const FIELD = 'w-full min-w-0 [field-sizing:content] max-h-60 resize-y rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
+const FIELD = 'w-full min-w-0 [field-sizing:content] max-h-60 resize-y disabled:resize-none rounded-md border border-border bg-bg px-2 py-1 text-[13px] leading-5 text-text focus-ring-accent disabled:opacity-70'
 /** Pictures that go out as image references (`IMG_EXT`); HEIC/HEIF upload as JPEG. */
 const PICTURE_TYPES = '.png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif'
-/** The composer's own per-send cap on files. */
+/** The composer's cap on files in one upload batch (`useChatPaneUploads.ts`),
+ *  applied here to all of the card's pictures together. */
 const MAX_FILES = 20
 const baseName = (p: string) => p.split(/[\\/]/).pop() || p
 const LABEL = 'text-[11px] leading-4 font-semibold text-muted'

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
@@ -1474,7 +1476,12 @@ async def drain_init(
     report has been seen, the drain allows up to ``duration`` more and exits
     after ``idle_exit`` seconds of silence, so warm sessions — whose
     registration frames were staged during session/new — arm immediately and
-    pay no extra latency. ``config_option_update`` frames refresh cached
+    pay no extra latency. The session's MCP report arms the shortcut too, once
+    no server it declares is still starting
+    (:meth:`McpSessionReport.still_starting`), whether a ``_kiro.dev/mcp/*``
+    frame or a ``_kiro/mcp/status`` snapshot carried the report: KAS reports
+    readiness in ``_kiro/mcp/status``, which no drain action names, so without
+    this its sessions wait out the whole ceiling. ``config_option_update`` frames refresh cached
     configOptions; OAuth requests remain drainable via
     ``pop_pending_oauth_requests``; everything else is logged/discarded.
     Best-effort — never raises.
@@ -1483,8 +1490,9 @@ async def drain_init(
     that initialized during ``session/new``. For a session whose mode was
     then SWITCHED via ``set_mode``, that is the PRE-switch agent's roster,
     and the switched-to agent's own servers may still be booting. Those
-    frames are still drained and processed normally; they just neither arm
-    the idle shortcut nor enter the report.
+    frames are still drained and processed normally; they just do not arm
+    the idle shortcut. The reader has already folded them into the report,
+    and the caller's ``McpSessionReport.forget_reported`` drops them there.
 
     The COUNT is the caller's to measure, and it must be read before the
     ``set_mode`` request goes out — the only moment "already queued" and
@@ -1511,8 +1519,16 @@ async def drain_init(
     # the CALLER rather than a qsize() read here, because by the time this
     # runs the active agent's own registrations may already have landed.
     stale_frames = max(0, stale_report_frames)
+    # A mode switch has already dropped what reported before the switch was
+    # requested (``McpSessionReport.forget_reported``). A declared list cut at
+    # its cap names only some servers, so it cannot say they all reported.
+    report = self._mcp_report
+    declared = report.declared if not report.declared_omitted else ()
     drained = 0
     while True:
+        if not reported and declared and not report.still_starting(declared):
+            reported = True
+            deadline = time.monotonic() + duration
         now = time.monotonic()
         limit = deadline if reported else hard_deadline
         if now >= limit:

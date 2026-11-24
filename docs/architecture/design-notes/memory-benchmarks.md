@@ -357,7 +357,10 @@ policy.
 smallest and most tempting variant, and its haystack contains *only* evidence
 sessions — verified `set(gold_sessions) == set(all_sessions)` for 500/500 instances.
 Recall against it is trivially 1.0. `corpus_has_distractors()` refuses the run and
-names `longmemeval_s` as the fix.
+names `longmemeval_s` as the fix. The guard skips `unanswerable` queries as
+`BenchQuery.scorable_retrieval` does, so it counts and judges exactly the queries
+retrieval scores: a distractor that only an unscored query sees cannot make an
+evidence-only corpus pass.
 
 **Dedup can eat gold, and does not work the way its config suggests.**
 `write_episodic` rejects any text whose lowercased first 80 characters already

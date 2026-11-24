@@ -86,8 +86,19 @@ set -euo pipefail
 APPEAR_BUDGET="${APPEAR_BUDGET:-180}"
 STALL_BUDGET="${STALL_BUDGET:-720}"
 TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"
-# Seconds between listing reads once the run is listed and still pending.
-POLL_INTERVAL=30
+# Seconds between listing reads once the run is listed and still pending. Each
+# read is one call against the repository's shared REST quota, paid by every CI
+# run for as long as its gate run takes, so the interval is the barrier's whole
+# steady-state cost. The price of a longer one is that a finished gate is seen
+# up to one interval after it concludes.
+POLL_INTERVAL=60
+# The same wait when this file runs as the probe (see "The probe switch"). The
+# barrier proves a supersession and then waits CANCEL_WAIT for the cancel; the
+# probe finds the same proof up to one of its own intervals later, and the
+# cancel it sends may take LAND_BUDGET (cancel-superseded-run.sh) to land. So
+# CANCEL_WAIT has to cover this interval plus LAND_BUDGET, and the probe keeps
+# the shorter wait. Only a push to main runs the probe.
+PROBE_POLL_INTERVAL=30
 # A failed read is retried after 10s, doubling to this cap, so an API outage is
 # not hammered for the STALL budget it may last.
 READ_RETRY_CAP=60
@@ -105,6 +116,9 @@ nap() { ${AWAIT_FG_SLEEP:-sleep} "$1"; }
 CANCEL_WAIT=150
 SUPERSEDE_SLACK=60
 SUPERSEDED_FILE="${SUPERSEDED_FILE:-}"
+if [ -n "$SUPERSEDED_FILE" ]; then
+  POLL_INTERVAL="$PROBE_POLL_INTERVAL"
+fi
 
 # A cancelled gate on a push to main that was SUPERSEDED, not judged.
 #
@@ -560,12 +574,21 @@ while :; do
   # repository's shared REST quota. It is clamped to the time left before the
   # deadline, so the budget is checked at the deadline rather than up to one
   # interval past it, which keeps TOTAL_BUDGET plus CANCEL_WAIT inside the job's
-  # timeout-minutes. The start-up race keeps a 10s wait, a failed read backs off
-  # from 10s, and the cancel wait makes no API call.
+  # timeout-minutes. It is clamped the same way to the STALL budget while the
+  # jobs read there is still owed, so a gate whose status lags its green jobs is
+  # released at that budget and not up to one interval after it. The start-up
+  # race keeps a 10s wait, a failed read backs off from 10s, and the cancel wait
+  # makes no API call.
+  wait="$POLL_INTERVAL"
   left=$(( deadline - elapsed ))
-  if [ "$left" -gt 0 ] && [ "$left" -lt "$POLL_INTERVAL" ]; then
-    nap "$left"
-  else
-    nap "$POLL_INTERVAL"
+  if [ "$left" -gt 0 ] && [ "$left" -lt "$wait" ]; then
+    wait="$left"
   fi
+  if [ "$stall_checked" = false ]; then
+    left=$(( STALL_BUDGET - elapsed ))
+    if [ "$left" -gt 0 ] && [ "$left" -lt "$wait" ]; then
+      wait="$left"
+    fi
+  fi
+  nap "$wait"
 done

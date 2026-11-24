@@ -27,8 +27,10 @@ channel's own grant (the creator-mode cascade), which answers their waiting
 prompts, and their cards say so in place.
 
 **Who may answer.** The owner, under the gates every code-channel control
-applies (:func:`.approval_picker.authorize`); anyone else is told so
-ephemerally and nothing changes. Every decision writes one SEL row
+applies (:func:`.approval_picker.authorize`), and for Approve / Reject the
+shared user who opened the channel (:func:`.shared_refusal.opener_admitted`);
+Trust this channel stays the owner's. Anyone else is told so ephemerally and
+nothing changes. Every decision writes one SEL row
 (:data:`OPERATION`).
 
 **Answered elsewhere.** When the approval is decided in the dashboard, times
@@ -576,7 +578,10 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
     from kiro_crew.slack.code_channels.binding import channel_session
 
     channel_slot_seen = channel_session(state, binding)
-    refusal = await authorize(orch, binding, user, team, resources)
+    # The channel's opener answers Approve / Reject like the owner; Trust this
+    # channel changes the channel's mode, which stays the owner's.
+    admit_opener = action_id != TRUST_ACTION_ID
+    refusal = await authorize(orch, binding, user, team, resources, admit_opener=admit_opener)
     if refusal is not None:
         await _ephemeral(channel, user, refusal)
         return True
@@ -584,14 +589,29 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
     # session may have landed meanwhile, so the answer is checked again here,
     # with nothing awaited before it is given.
     from kiro_crew.slack.code_channels import agent_picker
+    from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
+    from kiro_crew.slack.handler import is_owner
 
+    # The opener is judged on the binding stored NOW (never the one read before the
+    # awaits): one dropped, revoked, archived or rebound meanwhile admits nobody.
+    current = store().get_binding(channel)
+    opener_ok = (
+        admit_opener
+        and current is not None
+        and current.session_key == binding.session_key
+        and not current.archived_at
+        and opener_admitted(current, user)
+    )
     if (
         not _channel_open(binding, orch)
+        # Still the owner or (Approve / Reject) the channel's opener, asked again
+        # here: a person removed from shared access during the awaits answers nothing.
+        or not (is_owner(user) or opener_ok)
         # An answer that runs something (Approve, Trust) re-runs the owner
         # gates; a Reject only takes it away.
         or (
             action_id != REJECT_ACTION_ID
-            and not agent_picker._sync_gates(orch, binding, user, team)
+            and not agent_picker._sync_gates(orch, binding, user, team, admit_opener=admit_opener)
         )
         # The per-channel policy holds for a Reject too: nothing is answered
         # from a channel it refuses (the prompt keeps waiting in the dashboard).

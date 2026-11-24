@@ -225,24 +225,39 @@ jobs:
           # The values are compared as SHELL STRINGS, never interpolated into the
           # jq program: a fork controls its own branch name, and this lane runs
           # privileged.
-          if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-                        --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
-            echo "::error::could not list open PRs; the query itself failed on all 6 attempts"
-            exit 1
+          # Ask for this head's own branch before walking every open PR:
+          # `head=<owner>:<ref>` is the list endpoint's own filter, so the answer is
+          # one page instead of one request per hundred open PRs. The filter only
+          # narrows what the match below reads; the match still decides. The owner
+          # and the branch name are the fork's to choose, so they are URL-encoded
+          # as one value and never spliced into the query. A filtered answer with
+          # no match falls through to the full walk, which also finds a PR whose
+          # head label differs from its head repository's owner.
+          head_filter=""
+          if [ -n "$WR_HEAD_REPO" ] && [ -n "$WR_HEAD_BRANCH" ]; then
+            head_filter="&head=$(jq -rn --arg v "${WR_HEAD_REPO%%/*}:$WR_HEAD_BRANCH" '$v | @uri')"
           fi
-          matches=""
-          n=0
-          while IFS="$(printf '\t')" read -r num sha repo ref; do
-            [ -n "$num" ] || continue
-            if [ "$sha" = "$head_sha" ] \
-               && [ "$repo" = "$WR_HEAD_REPO" ] \
-               && [ "$ref" = "$WR_HEAD_BRANCH" ]; then
-              matches="$matches $num"
-              n=$((n + 1))
+          for head_param in "$head_filter" ""; do
+            if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open${head_param}&per_page=100" --paginate \
+                          --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
+              echo "::error::could not list open PRs; the query itself failed on all 6 attempts"
+              exit 1
             fi
-          done <<ROWS
-          $rows
-          ROWS
+            matches=""
+            n=0
+            while IFS="$(printf '\t')" read -r num sha repo ref; do
+              [ -n "$num" ] || continue
+              if [ "$sha" = "$head_sha" ] \
+                 && [ "$repo" = "$WR_HEAD_REPO" ] \
+                 && [ "$ref" = "$WR_HEAD_BRANCH" ]; then
+                matches="$matches $num"
+                n=$((n + 1))
+              fi
+            done <<< "$rows"
+            [ "$n" -eq 0 ] || break
+            [ -n "$head_param" ] || break
+            echo "No open PR matched this head on its own branch's page; walking every open PR."
+          done
           if [ "$n" -eq 0 ]; then
             echo "::error::no open PR matches head $head_sha on \
           $WR_HEAD_REPO branch $WR_HEAD_BRANCH; failing closed"

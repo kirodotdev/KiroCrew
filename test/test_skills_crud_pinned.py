@@ -20,6 +20,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -557,6 +558,91 @@ def test_delete_still_removes_a_skill_whose_skill_md_is_a_link(
     assert loader.delete_skill("linked-md") is True
     assert not skill_dir.exists()
     assert target.read_text(encoding="utf-8") == "shared"
+
+
+_root_ignores_modes = pytest.mark.skipif(
+    sys.platform != "win32" and os.geteuid() == 0, reason="root ignores read-only modes"
+)
+
+
+@_root_ignores_modes
+@pytest.mark.parametrize(
+    "pinned", [pytest.param(True, marks=needs_pinned_walk), pytest.param(False)]
+)
+def test_delete_removes_a_skill_holding_read_only_entries(loader, monkeypatch, pinned):
+    """A read-only file (Windows) or directory (POSIX) inside the skill does not keep it."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+    assert loader.create_skill("ro", "x") is True
+    scripts = loader._dir / "ro" / "scripts"
+    scripts.mkdir()
+    (scripts / "tool.py").write_text("print(1)\n", encoding="utf-8")
+    os.chmod(scripts / "tool.py", stat.S_IREAD)
+    os.chmod(scripts, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        assert loader.delete_skill("ro") is True
+        assert not (loader._dir / "ro").exists()
+    finally:
+        if scripts.exists():
+            os.chmod(scripts, stat.S_IRWXU)
+
+
+@_root_ignores_modes
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+def test_a_by_name_delete_that_cannot_finish_keeps_the_skill_for_a_retry(loader, monkeypatch):
+    """On the by-name floor a subfolder entry that stays fails the delete before SKILL.md.
+
+    Windows keeps such an entry when another process holds a file open; a folder
+    nobody may list is the POSIX stand-in, since no retry can empty it either.
+    """
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+    assert loader.create_skill("held", "x") is True
+    locked = loader._dir / "held" / "scripts" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "tool.py").write_text("print(1)\n", encoding="utf-8")
+    os.chmod(locked, 0)
+    try:
+        for _attempt in range(2):
+            with pytest.raises(OSError, match="Cannot remove skill 'held'"):
+                loader.delete_skill("held")
+            assert (loader._dir / "held" / "SKILL.md").read_text(encoding="utf-8") == "x"
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    # Once the entry can go, the same delete finishes.
+    assert loader.delete_skill("held") is True
+    assert not (loader._dir / "held").exists()
+
+
+def test_a_held_top_level_file_keeps_the_skill_for_a_retry(loader, monkeypatch):
+    """On the by-name floor (Windows) a top-level file held open fails the delete before SKILL.md.
+
+    A refused unlink stands in for the held file: Windows refuses it until the
+    holder lets go, whatever its read-only attribute.
+    """
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", False)
+    assert loader.create_skill("held", "x") is True
+    (loader._dir / "held" / "data.log").write_text("open\n", encoding="utf-8")
+    real_unlink = os.unlink
+
+    def held_unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "data.log":
+            raise PermissionError(errno.EACCES, "held open by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", held_unlink)
+    with pytest.raises(OSError, match="Cannot remove skill 'held'"):
+        loader.delete_skill("held")
+    assert (loader._dir / "held" / "SKILL.md").read_text(encoding="utf-8") == "x"
+    assert "held" in [s["name"] for s in loader.list_skills()]
+    # Once the holder lets go, the same delete finishes.
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    assert loader.delete_skill("held") is True
+    assert not (loader._dir / "held").exists()
 
 
 def test_delete_refuses_a_symlinked_skill_dir(loader, tmp_path):

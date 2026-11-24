@@ -192,6 +192,7 @@ class _RunCreditAccounting:
 
     def __post_init__(self) -> None:
         self.total.credits = self._valid_credits(self.info.credits) or 0.0
+        self.total.cost_usd = self._valid_credits(self.info.cost_usd) or 0.0
 
     @staticmethod
     def _valid_credits(value: object) -> float | None:
@@ -222,6 +223,7 @@ class _RunCreditAccounting:
             return
         self.total = _sum_usage(self.total, usage)
         self.info.credits = self._valid_credits(self.total.credits) or 0.0
+        self.info.cost_usd = self._valid_credits(self.total.cost_usd) or 0.0
 
     def live_credits(self) -> float:
         """Settled credits plus what the attempt in flight has billed so far."""

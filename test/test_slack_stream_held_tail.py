@@ -635,6 +635,13 @@ def test_a_wrapped_marker_line_split_across_edits_is_withheld_whole(monkeypatch)
     assert "".join(text for _ts, text in _appends(slack)) == "Pick one:\n"
 
 
+def test_a_marker_in_the_chunk_that_opens_the_stream_is_withheld():
+    slack, _sessions = _run([_text("Pick one:\n[OPTIONS: Retry | Abort]")])
+
+    assert "".join(text for _ts, text in _appends(slack)) == "Pick one:\n"
+    assert "options_choice_0" in json.dumps(slack.actions, default=str)
+
+
 def test_where_an_edit_falls_does_not_change_what_streams(monkeypatch):
     # After an edit the buffer is empty, so only the stream's memory of whether
     # its text ends a line tells this mid-line wrapper from a line-leading one.
@@ -665,7 +672,6 @@ def test_the_message_after_a_wait_opens_on_a_new_line():
 )
 @pytest.mark.parametrize("after", ["Results are in.", ""], ids=["text-follows", "turn-ends"])
 def test_an_options_hold_open_at_a_wait_is_settled_on_the_message_it_ends(before, first, after):
-    # The stream opens on the first chunk, so the filter holds from the second on.
     slack = _StoredSlack()
     events = [*map(_text, before), _wait_call(), *([_text(after)] if after else [])]
     _run_on(slack, events)

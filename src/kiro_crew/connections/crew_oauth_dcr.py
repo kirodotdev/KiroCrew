@@ -784,8 +784,20 @@ async def _route(request: Any) -> tuple[Any, str]:
     return web.Response(status=400, text=_STALE), ""
 
 
+def titled_page(answer: Any) -> Any:
+    """*answer*'s fixed text as the titled, uncached page the consent tab shows."""
+    from aiohttp import web
+
+    return web.Response(
+        status=answer.status,
+        text=_PAGE.format(html.escape(answer.text or "")),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 async def _loopback_route(request: Any) -> Any:
-    return (await _route(request))[0]
+    return titled_page((await _route(request))[0])
 
 
 async def gateway_callback(request: Any) -> Any:
@@ -794,17 +806,10 @@ async def gateway_callback(request: Any) -> Any:
     Token auth lets it through (the redirect carries no Crew credential); the
     pending ``state`` is the only admission. The page is fixed text, never input.
     """
-    from aiohttp import web
-
     answer, slug = await _route(request)
     outcome = "ok" if answer.status == 200 else "refused"
     _audit("connections_crew_oauth_callback", outcome, slug or "unknown")
-    return web.Response(
-        status=answer.status,
-        text=_PAGE.format(html.escape(answer.text or "")),
-        content_type="text/html",
-        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
-    )
+    return titled_page(answer)
 
 
 async def listen(state: str, handler: Handler, *, slug: str = "", loopback: bool = True) -> int:

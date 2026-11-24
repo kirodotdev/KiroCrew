@@ -28,6 +28,7 @@ Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -47,6 +48,7 @@ from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
     KIRO_CLI_BIN,
     KIRO_CLI_SUBCMD,
+    _exit_origin,
     _KiroExecutableTrustError,
     _launch_tools,
     _resolve_kiro_bin_for_spawn,
@@ -55,6 +57,7 @@ from kiro_crew.acp.client_spawn_env import (
 )
 from kiro_crew.acp.client_timeouts import (
     _ACP_RESPAWN_BACKOFF_S,
+    _INIT_EXIT_REAP_SECS,
     _INIT_TIMEOUT,
     _SCOPE_ADMISSION_RESERVE,
     _SCOPE_ADMISSION_TIMEOUT,
@@ -67,6 +70,7 @@ from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.scope_not_admitted import AcpScopeNotAdmitted
 from kiro_crew.acp.session_mcp import refuse_contested_agent_spec
 from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
+from kiro_crew.acp.stderr_tail import safe_stderr_tail
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
@@ -832,9 +836,49 @@ async def _initialize_session(self: AcpClient) -> None:
     # 1. Initialize, once systemd has admitted the spawn's scope. Inside the try, so
     # a start that ends at admission discards the launch MCP config as well.
     try:
-        budget = await self._admit_scope()
-        init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-        init_resp = await self._wait_for_response(init_id, timeout=budget)
+        try:
+            budget = await self._admit_scope()
+            init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
+            init_resp = await self._wait_for_response(init_id, timeout=budget)
+        except AcpError as exc:
+            # A child that exits on its own during the scope admission wait or while
+            # ``initialize`` is in flight (a bad shebang, a missing runtime, a crash at
+            # start) has said why on stderr. It ends as a non-transient error carrying
+            # that tail, which a chat shows once, instead of the death it retries
+            # behind "Connection lost". An error frame with a JSON-RPC code, a kill this
+            # client sent, an admission timeout and a pipe that broke with the child
+            # still running keep their error.
+            process = self._process
+            if (
+                process is None
+                or self._kill_sent is not None
+                or exc.code is not None
+                or isinstance(exc, AcpScopeNotAdmitted)
+            ):
+                raise
+            if process.returncode is None and isinstance(exc, AcpProcessDied):
+                # The write can meet the closed pipe before the child is reaped.
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(process.wait(), _INIT_EXIT_REAP_SECS)
+            if process.returncode is None:
+                raise
+            await self._settle_stderr()
+            # A teardown closes the pipes before it signals the child, so its kill
+            # can land during the two waits above.
+            if self._kill_sent is not None or self._process is not process:
+                raise
+            tail = (
+                safe_stderr_tail(self._stderr_lines, "; ")
+                if self.memory_mode == "persistent"
+                else ""
+            )
+            detail = f" — {tail}" if tail else ""
+            code = process.returncode
+            origin = _exit_origin(code, self._kill_sent)
+            raise AcpError(
+                f"the agent exited during initialize (code={code}{origin}){detail}",
+                transient=False,
+            ) from exc
     finally:
         # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
         # the file deleted right after the initialize answer, the stdio server it

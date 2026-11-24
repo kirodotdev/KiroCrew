@@ -429,7 +429,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_bot_grants import (  # noqa: F401
         _not_installed,
-        _owner_denial,
         _view,
     )
     from kiro_crew.apps.routes_enable import (  # noqa: F401

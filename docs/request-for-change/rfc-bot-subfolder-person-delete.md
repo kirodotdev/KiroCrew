@@ -92,10 +92,12 @@ hold:
 
 - the caller is the person's browser: no effective app
   (`_effective_request_app`), no member principal
-  (`MEMBER_CHAT_PRINCIPAL_KEY`), and no internal secret
-  (`request_origin(...)[0] == "dashboard"`). The last test keeps out an agent
-  in the person's own session: it reaches this route through the
-  `chat_folder_delete` MCP tool, on the internal transport;
+  (`MEMBER_CHAT_PRINCIPAL_KEY`), and no internal admission
+  (`request_origin(...)[0] == "dashboard"`: no `X-Internal-Secret` header and
+  `request["internal_auth"]` not set). The last test keeps out an agent in the
+  person's own session: it reaches this route through the `chat_folder_delete`
+  MCP tool, on the internal transport, or over the agent socket, which carries
+  no secret and is admitted by token auth setting `internal_auth`;
 - it has no child folder and no live session, checked inside the
   folder-store callback that removes the row, the same check the existing
   `if_empty` branch runs in `_remove_if_empty`;

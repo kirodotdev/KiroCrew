@@ -86,7 +86,7 @@ omit the policy.
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the built-in `aws_ec2` lane backed by `RealLaunchEngine`, **plus a conditional `aws_fargate` lane** backed by `FargateLaunchEngine` that is offered only when `cloud.json` carries a complete `fargate` block, and a conditional `microvm` lane backed by `MicroVmLaunchEngine` offered only when its `microvm` block is complete; id == kind by design for all three) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels, confirm_before_launch}` plus a `LaunchEngine` per id (`confirm_before_launch` carries what the operator must see and confirm before that lane may launch -- `POST /api/cloud/launch` requires `confirm_recipient` to equal it, so the requirement is derived from the row rather than hard-coded to one id, and a lane with nothing to confirm leaves it empty); the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
 | `cloud_instance_policy` | adapter | `DefaultCloudInstancePolicyProvider` (empty `CloudInstancePolicy`: nothing attached, boundary unchanged) | managed policies an organization requires on every EC2 crew's instance role, plus the `Allow` statements its permissions boundary needs so they are not capped away. Read and validated only by `cloud/host_policy.py`; a descriptor that fails validation refuses the launch, and so does a launch account that holds no policy at one of the ARNs. See `cloud.md` § Security model |
 | `feedback` | adapter | `DefaultFeedbackTrackerProvider` (`report_issue_url()` → `None`) | the edition's issue tracker behind **Report a Problem** and `kirocrew doctor`. **REPLACE-capable** like `tips`: a supplied URL takes over from the public pre-filled GitHub bug-report link rather than being appended to it, because that link's query string is GitHub's form. The backend half of the dashboard's `setFeedbackTracker` seam (`website/docs/extension-seams.md` § "Feedback tracker"): the frontend-built links live there; this one is built by the gateway because it carries the bundle's facts |
-| `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome; an optional `complete_sign_in` may finish a sign-in page an agent navigation landed on ([browser](browser.md) § Credentials) |
+| `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome; optional `sign_in_hosts` and `sign_in_for_origin` sign one site in when its page is sent to the edition's sign-in host ([browser](browser.md) § Credentials) |
 | `speech` | adapter | `DefaultSpeechProviderRegistry` (no STT or TTS providers, `default_stt()` / `default_tts()` → `None`) | edition-registered speech-to-text and text-to-speech providers and the edition's default choice. **ADD-only**: a registered name joins the built-in `stt.provider` / `voice_reply.provider` sets and can never shadow a built-in, a retired STT name or `off` (boot raises `PlatformCompositionError`). The edition default applies only to an absent key; a stored value always wins. Validation, defaults, STT/TTS dispatch, live dictation and the capability lists route through it (pluggable speech providers RFC, [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982)) |
 | `acceptance_checks` | adapter | `DefaultAcceptanceCheckProvider` (`run_acceptance_check()` → exit 2, no report) | the edition's checks behind `kirocrew acceptance-check`, the goal conductor's `edition_check` ([Acceptance check command](#acceptance-check-command-edition_check)) |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
@@ -1755,20 +1755,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   cookie writes one SEL row (provider, count, domains). Read through
   `current_context()`; a `PlatformCompositionError` fails the browser start, any
   other lookup error means no provider. v1 addition.
-- `BrowserCredentialProvider.complete_sign_in(target, url) -> Optional[str]` —
-  OPTIONAL, not a Protocol member: read with `getattr(provider, "complete_sign_in",
-  None)`; missing, non-callable or raising means no completion, and the Default has
-  none, so the public browser never opens a completion URL (the browser budgets
-  still carry the sign-in allowance; [browser](browser.md) § Credentials). WIRED: `browser_harness.sign_in`,
-  after an agent `navigate` committed on an `https` page whose host is in BOTH
-  `domains()` and `browser.credentials.domains`, on Kiro's Chromium with the opt-in
-  on, at most once per op, in a worker thread bounded at 15 s; `target.reason` is
-  `sign_in`. It answers `None` (from memory, for a page it does not recognise) or a
-  single-use `https` URL on one of its domains that finishes the sign-in; the
-  gateway opens it in the same tab only past the browser's URL gate and both domain
-  lists, and the agent, the live card and the SEL see hosts and an outcome code,
-  never the URL ([browser](browser.md) § Credentials, "Finishing a sign-in"). v1
-  addition, no `CONTRACT_VERSION` bump.
+- `BrowserCredentialProvider.sign_in_hosts() -> Sequence[str]` and
+  `sign_in_for_origin(target, origin, sign_in_url, *, site_cookies) -> Mapping` —
+  OPTIONAL, not Protocol members: read with `getattr`; both must be callable and
+  `sign_in_hosts()` must name at least one exact host, else nothing is intercepted.
+  The Default has neither, so the public browser never intercepts. WIRED:
+  `browser_harness.sign_in_guard`, on Kiro's Chromium with the opt-in on, on the
+  relay's own session of each agent tab. `sign_in_hosts()` answers from memory;
+  `sign_in_for_origin` runs in a worker thread bounded at 15 s, `target.reason`
+  `navigate` or `renew`, and answers `{"ok": True, "cookies": [...]}` (the site's
+  own cookies for that one origin) or `{"ok": False, "reason": <code>, "message":
+  ...}` with a reason from a fixed generic set (`not_signed_in`,
+  `device_check_failed`, `signer_missing`, `signer_timeout`, `refused`, `other`).
+  The agent, the live card and the SEL see the host, the outcome and the code,
+  never a URL or value ([browser](browser.md) § Credentials, "Signing one origin
+  in"). v1 addition, no `CONTRACT_VERSION` bump. No other sign-in seam exists.
 
 **`McpToolingProvider` is intentionally scoped to MCP tooling only** —
 `extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. Agent

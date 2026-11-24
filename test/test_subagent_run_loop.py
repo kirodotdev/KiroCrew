@@ -23,7 +23,7 @@ from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 # Bound on draining the held usage-row task; it ends on its own once its
 # worker-thread append returns.
@@ -38,6 +38,7 @@ class TestSubagentPostToolUseHook:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
     async def test_post_tool_use_fires_on_tool_result(self) -> None:
         """PostToolUse hook is called with tool_name + tool_response after EVENT_TOOL_RESULT."""
         from kiro_crew.providers.base import (
@@ -104,23 +105,32 @@ class TestSubagentPostToolUseHook:
             f"PostToolUse should receive cached tool_name with 'Running: ' "
             f"stripped, got {kwargs['tool_name']!r}"
         )
-        assert kwargs["tool_response"] == {"output": "hello world"}
+        assert kwargs["tool_response"] == {
+            "output": "hello world",
+            "truncated": False,
+            "output_length": len("hello world"),
+        }
         # The child's own key, for per-session attribution, beside the
         # parent's key that marks the event as a subagent's.
         assert kwargs["session_key"] == "subagent:t01"
         assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
-    async def test_post_tool_use_truncates_long_output(self) -> None:
-        """PostToolUse output is capped at 2000 chars to bound hook payload size."""
+    @pytest.mark.usefixtures("close_subagent_managers")
+    @pytest.mark.parametrize("head", ["", "key: {secret}\n"])
+    async def test_post_tool_use_truncates_long_output(self, head: str) -> None:
+        """PostToolUse output is capped at 2000 chars of the redacted output, whose length it reports."""
+        from redaction_structured_cases import github_classic
+
         from kiro_crew.providers.base import (
             EVENT_TOOL_CALL,
             EVENT_TOOL_RESULT,
             LLMEvent,
         )
-        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent import SubagentInfo, SubagentManager, _redact
 
-        long_output = "x" * 5000
+        long_output = head.format(secret=github_classic(seed=38)) + "x" * 5000
+        redacted = _redact(long_output)
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(
@@ -168,9 +178,12 @@ class TestSubagentPostToolUseHook:
             if c.args and c.args[0] == "PostToolUse"
         ]
         assert len(post_calls) == 1
-        output = post_calls[0].kwargs["tool_response"]["output"]
+        response = post_calls[0].kwargs["tool_response"]
+        output = response["output"]
         assert len(output) == 2000
-        assert output == "x" * 2000
+        assert output == redacted[:2000]
+        assert response["truncated"] is True
+        assert response["output_length"] == len(redacted)
 
     @pytest.mark.asyncio
     async def test_post_tool_use_no_hook_store_is_noop(self) -> None:
@@ -530,6 +543,75 @@ class TestSubagentUsageRow:
         assert accounting.total.cache_read_tokens == 3
         assert accounting.total.cache_creation_tokens == 4
         assert accounting.total.cost_usd == pytest.approx(0.03)
+
+    def test_a_dollar_billed_settle_puts_the_cost_on_the_record(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-dollars", task="bill in dollars")
+        accounting = _RunCreditAccounting(info)
+        accounting.begin(MagicMock())
+        accounting.settle(
+            AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+        )
+
+        assert info.credits == 0.0
+        assert getattr(info, "cost_usd", None) == pytest.approx(0.0123)
+
+    def test_a_continued_run_starts_from_its_recorded_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-continued", task="continue")
+        info.cost_usd = 0.5
+        accounting = _RunCreditAccounting(info)
+        assert accounting.total.cost_usd == pytest.approx(0.5)
+
+        accounting.begin(MagicMock())
+        accounting.settle(AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(cost_usd=0.25)))
+
+        assert info.cost_usd == pytest.approx(0.75)
+
+    @pytest.mark.asyncio
+    async def test_the_done_frame_carries_a_dollar_billed_runs_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+
+        async def _complete_stream(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _complete_stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        done_payloads: list[dict[str, object]] = []
+
+        async def track_event(etype: str, _info: object, extra: dict) -> None:
+            if etype == "subagent_done":
+                done_payloads.append(extra)
+
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+            on_event=track_event,
+            on_done=AsyncMock(),
+            is_yolo=lambda: True,
+        )
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async", AsyncMock()),
+        ):
+            info = manager.spawn("bill in dollars")
+            assert info is not None
+            await manager._tasks[info.id]
+
+        assert len(done_payloads) == 1
+        assert done_payloads[0]["credits"] == 0.0
+        assert done_payloads[0].get("cost_usd") == pytest.approx(0.0123)
 
     @pytest.mark.parametrize("credits", [True, -1.0, float("nan"), float("inf")])
     def test_credit_accounting_rejects_invalid_provider_credits(self, credits: object) -> None:

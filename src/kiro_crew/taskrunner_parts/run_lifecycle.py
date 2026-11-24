@@ -41,12 +41,16 @@ from kiro_crew.taskrunner_parts.run_inputs import (
     _read_spec_text,
     _resolve_workspace_dir,
 )
+from kiro_crew.taskrunner_parts.run_reporting import decompose_recording_refusal
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
 from kiro_crew.taskrunner_parts.run_steps import _MonotonicAge
 from kiro_crew.workflow_memory import capture_admission_execution
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
+
+#: ``run.error`` of a run whose spec decomposed into no tasks.
+_NO_PLAN = "Failed to decompose spec into tasks"
 
 
 # The facade's logger: records keep the name ``kiro_crew.taskrunner``.
@@ -206,14 +210,16 @@ async def run(
                     "YAML spec %s is not in workflow format; falling back to LLM decomposition",
                     spec_path.name,
                 )
-                run.tasks = await self._decompose(
-                    spec_content, run.work_dir, task_id, agent=run.agent
+                run.tasks = await decompose_recording_refusal(
+                    self, run, _NO_PLAN, spec_content, run.work_dir, task_id, agent=run.agent
                 )
         else:
-            run.tasks = await self._decompose(spec_content, run.work_dir, task_id, agent=run.agent)
+            run.tasks = await decompose_recording_refusal(
+                self, run, _NO_PLAN, spec_content, run.work_dir, task_id, agent=run.agent
+            )
         if not run.tasks:
             run.status = "failed"
-            run.error = "Failed to decompose spec into tasks"
+            run.error = _NO_PLAN
             await self._notify("Error: Task failed", run.error, run=run)
             return run
         await self._workflow_set_plan(run)

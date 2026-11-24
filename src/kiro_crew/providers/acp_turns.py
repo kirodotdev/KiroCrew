@@ -163,6 +163,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         message_id=e.message_id,
         runtime_global=e.runtime_global,
         sub_session_id=e.sub_session_id,
+        # Dropping this leaves the dashboard's auto-rejected notice in English.
+        auto_reject_reason=e.auto_reject_reason,
         is_shell=e.is_shell,
         # The harness's own tool id for a permission request. Dropping it
         # leaves every KAS call unnamed, so no tool-scoped spec hook fires.

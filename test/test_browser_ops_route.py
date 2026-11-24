@@ -283,14 +283,16 @@ async def test_a_navigate_runs_through_the_sign_in_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The route hands a navigate's task to ``browser_harness.sign_in`` with its own
-    supervisor, so an edition's ``complete_sign_in`` is reachable from the agent's op."""
+    supervisor, so an edition's per-origin sign-in is reachable from the agent's op."""
     from kiro_crew.browser_harness import sign_in
 
     sup = _Supervisor()
     _install(monkeypatch, sup)
     seen: list[tuple[str, Any]] = []
 
-    async def _wrapped(op: str, args: dict[str, Any], ctx: Any, supervisor: Any) -> dict[str, Any]:
+    async def _wrapped(
+        op: str, args: dict[str, Any], ctx: Any, supervisor: Any, caller_key: str = ""
+    ) -> dict[str, Any]:
         seen.append((op, supervisor))
         return {"ok": True, "url": "https://example.com/", "title": "", "sign_in": {"outcome": "x"}}
 

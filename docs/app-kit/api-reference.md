@@ -920,11 +920,12 @@ window's side panel, which an app page does not have.
 ## Issue Search
 
 `POST /api/source/issues` lists or searches the issues of one GitHub repository
-(`owner/repo`), GitLab project (`group/sub/project`), Jira project (`PROJ`) or Linear
-team (`ENG`), through the gateway's own `gh`/`glab` sign-in, the Jira API token in
-`dashboard.jira_auth` (the one the Issues panel reads Jira with), or a Linear personal
-API key stored in Settings > Secrets as `LINEAR_API_KEY` (without one, the answer is a
-503 `provider_error` that says to add it). It answers the owner's dashboard session only: an app token is
+(`owner/repo`), GitLab project (`group/sub/project`), Jira project (`PROJ`), Linear
+team (`ENG`) or ServiceNow table (`incident`), through the gateway's own `gh`/`glab`
+sign-in, the Jira API token in `dashboard.jira_auth` (the one the Issues panel reads
+Jira with), a Linear personal API key stored in Settings > Secrets as `LINEAR_API_KEY`,
+or a ServiceNow API key (see [ServiceNow](#servicenow); without a stored key, either
+answer is a 503 `provider_error` that says to add it). It answers the owner's dashboard session only: an app token is
 refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
 app page, `useAppApi()` allows the path only when the manifest declares
 `/api/source/issues` in `permissions.api`. The grant is separate from
@@ -937,10 +938,10 @@ The request and response types are `IssueSearchRequest` and `IssueSearchResponse
 
 | Field | Meaning |
 |---|---|
-| `provider`, `scope` | Required. `github`, `gitlab`, `jira` or `linear` |
-| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet). Omitted for Linear |
-| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center. A Linear person is `me`, an email address or a display name |
-| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`), Jira JQL or a Linear `IssueFilter` JSON object (`{"priority":{"eq":1}}`). Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY`. A Linear filter may use `or`/`and`, and is ANDed under the team, so nothing in it can reach another team |
+| `provider`, `scope` | Required. `github`, `gitlab`, `jira`, `linear` or `servicenow` |
+| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet). Omitted for Linear. Required for ServiceNow: the instance its stored key belongs to |
+| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center. A Linear person is `me`, an email address or a display name, and a ServiceNow one `me` (the user the stored API key runs as), a user name or an email address. ServiceNow refuses `labels` (400): its records have none |
+| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`), Jira JQL or a Linear `IssueFilter` JSON object (`{"priority":{"eq":1}}`). Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY`. A Linear filter may use `or`/`and`, and is ANDed under the team, so nothing in it can reach another team. A ServiceNow encoded query is ANDed after the structured filters instead of replacing them (see [ServiceNow](#servicenow)) |
 | `sort`, `order`, `limit`, `cursor`, `refresh` | `updated`/`created`, `desc`/`asc`, 1 to 100 (25), the previous page's `nextCursor`, and a cache bypass (results are kept 30 seconds) |
 
 Each `IssueSummary` carries a url built from the validated scope, a display `key`,
@@ -951,12 +952,55 @@ report one (Jira Cloud and Linear never do); GitHub search and Linear stop at a
 search API returns no count, and a Linear `commentCount` is `0` because its list API
 reports none.
 
+### ServiceNow
+
+The gateway reads ServiceNow's Table API itself, read-only, with an inbound REST API
+key (ServiceNow's Washington DC release and later) sent as the `x-sn-apikey` header.
+The owner stores the key in Settings > Secrets as `SERVICENOW_API_KEY` and the
+instance it belongs to as `SERVICENOW_INSTANCE` (`acme.service-now.com`, or that host
+after `https://`). Both are vault-only: never read from `.env` or the environment,
+never logged or returned. No other sign-in is supported. An access policy on the
+instance can limit the key to the Table API and `GET`.
+
+- **One instance.** `host` must be a `<name>.service-now.com` host (no port, path or
+  userinfo; letter case and a trailing dot are ignored), and exactly the stored
+  `SERVICENOW_INSTANCE`. Any other host is refused (400) before any call, so an app
+  cannot send the key to another instance, and a redirect is never followed. Only
+  standard `*.service-now.com` instance domains are supported: a custom domain in
+  front of an instance, or another ServiceNow cloud's domain, is refused.
+- **One table.** `scope` is `incident`, `problem`, `change_request`, `sc_req_item` or
+  `sc_task`; anything else is refused. The gateway fixes the field list, ordering
+  (`sort`, `order`) and paging.
+- **`raw`** is an encoded query, ANDed after the structured filters (including the
+  default `state: 'open'`; send `state: 'all'` for closed records too). Each term is
+  `<field><operator><value>` with a lower-case column of the table itself (no
+  dot-walking, which would filter on another table's records) and one of
+  `=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE` (or `NOTLIKE`), `STARTSWITH`, `ENDSWITH`, `IN`,
+  `NOT IN`, `ISEMPTY`, `ISNOTEMPTY`, `BETWEEN`. It cannot use `^OR` (use `IN`),
+  `^NQ`, `^EQ`, `ORDERBY`, `GROUPBY`, related-list or sub-queries, `DYNAMIC`, a
+  `javascript:` value, `%`, or an empty term; a field starting with `or`, `nq`,
+  `eq`, `ir_` or `goto` (such as `order`) is refused for the same reason.
+- **Rows.** `key` is the record number (`INC0010001`) and `number` its digits;
+  `title` is `short_description`; open or closed is `active`, which means the same
+  on all five tables, and `statusLabel` is the `state` display value; `priority`
+  is its display value; `assignees` is `assigned_to`, `author` is `opened_by`;
+  `excerpt` is from `description`. `labels` is always `[]`, `commentCount` is `0`
+  (the Table API reports none) and `total` comes from `X-Total-Count`. The `url` is
+  `https://<instance>/<table>.do?sys_id=<sys_id>`, built by the gateway.
+- **One record.** `POST /api/source/issue` reads that same URL form. Other forms
+  (`nav_to.do?uri=...`, `/now/nav/ui/classic/...`, Workspace and Service Portal
+  links, extra query parameters) are not supported. Its comments section is empty
+  and listed in `partialSections`: comments and work notes are not read.
+- **Errors** are the gateway's own text, never ServiceNow's.
+- **Validation.** This provider is tested against a mocked Table API only, not
+  yet against a live instance.
+
 ## Issue List
 
 `useIssues`, `IssueList` and `IssueCard` show the issues [Issue Search](#issue-search)
 returns, through one query (`IssueSearchRequest`) and one result shape
-(`IssueSummary`). The views draw all four providers the route serves (GitHub, GitLab,
-Jira and Linear) from that shape. They need
+(`IssueSummary`). The views draw all five providers the route serves (GitHub, GitLab,
+Jira, Linear and ServiceNow) from that shape. They need
 `APP_SDK_LEVEL >= 6` and `/api/source/issues` in your manifest's `permissions.api`.
 Without the declaration, or outside an app, the components render a refusal naming
 the path and send nothing; the hook reports an `AppApiPermissionError`. Declaring
@@ -990,15 +1034,16 @@ page.
 |---|---|---|---|
 | `query` | `IssueSearchRequest` | yes | What to list; a new query replaces the filter bar's edits |
 | `view` | `'condensed' \| 'expanded'` | no | One row per issue (default) or one card |
-| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters |
+| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters, except on ServiceNow, where `raw` is ANDed with them; the labels box is left out for ServiceNow |
 | `onSelect` | `(issue: IssueSummary) => void` | no | Makes each row a button; without it a row links out |
 | `emptyText` | `string` | no | Replaces the empty-state text |
 
 `IssueCard` takes `issue`, `view` and `onSelect` and renders one issue on its own.
-The condensed row shows the provider mark, the key (`#4821`, `CREW-142`), the title,
+The condensed row shows the provider mark (a neutral link mark for ServiceNow, which
+has no bundled logo), the key (`#4821`, `CREW-142`), the title,
 up to two labels (hidden when narrow), the provider's `statusLabel` and the updated
 time. The expanded card adds the project, a three-line excerpt, priority, every
-label, the first assignee, the author, the comment count (left out for Jira and Linear, whose searches return none) and linked-change count, and an
+label, the first assignee, the author, the comment count (left out for Jira, Linear and ServiceNow, whose searches return none) and linked-change count, and an
 **Open in &lt;provider&gt;** link. Every provider string is rendered as text, links
 open only `http(s)` urls in a new tab with `rel="noopener noreferrer"`, and an avatar
 loads only from an `http(s)` url.
@@ -1874,6 +1919,21 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `operation` is namespaced the same way, so two apps cannot collide on a bare
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
+
+**From a spawned backend.** A backend process does not run your hooks and never holds
+the log's signing key, so it asks the gateway to write the row:
+`POST /api/apps/<name>/_sel` with your app token (from `POST /api/apps/<name>/token`)
+and a JSON body of exactly `{"method": "log_api_access", "kwargs": {...}}`. `kwargs`
+takes `operation` and `outcome` (both required strings), and optionally `resources`
+and `error` (strings) and `critical` (a boolean); any other field, including
+`caller`, `source` or `session_key`, is a 400. The gateway writes the row as
+`app:<name>` with source `app`, and prefixes `operation` with `<name>.` when it does
+not already start with it. The route is in your own namespace, so it needs no
+`permissions.api` entry, and a token for another app gets `403 app_token_required`.
+A success is `204` with no body. A refusal is a fixed `{"error", "code"}` that never
+echoes your body: `sel_invalid_body` (400, a wrong shape or an `operation` over 200
+characters), `sel_body_too_large` (413, over 16 KiB), `sel_rate_limited` (429, past
+50 rows a second with a burst of 200, per app) or `sel_write_failed` (500).
 
 ### Background agents (`ctx.spawn`)
 
@@ -3059,7 +3119,7 @@ await mc.send_message("slot-1", "hello")
 
 The standalone package exports `KiroCrewClient`, `KiroCrewError`, `ErrorCode`,
 `WsClient`, `WsEvent` and `GATEWAY_CONFIG_KEYS`. It does not export
-`AppManifest`, `AppLifecycle`, `GatewayManager` or proxy-auth helpers. Validate
+`AppManifest`, `AppLifecycleSDK`, `GatewayManager` or proxy-auth helpers. Validate
 manifests through the main package's install path, manage the Gateway with the `kirocrew` CLI, and use
 `kiro_crew.apps.proxy_auth` only from a backend that can import the main package.
 
@@ -3091,6 +3151,33 @@ try:
 except KiroCrewError as e:
     print(e.code, str(e), e.status)
 ```
+
+### Permission refusals
+
+An app token may call its own namespace (`/apps/<name>/...` and
+`/api/apps/<name>/...`), `/api/ws`, `/api/notifications/push`, and the `/api/`
+paths its approved `permissions.api` entries cover. Any other `/api/` path answers
+403 with a body that names the cause and the fix, so `str(e)` is enough to act on:
+
+| `code` | Cause | Fix |
+|--------|-------|-----|
+| `app_disabled` | The app is turned off, or was uninstalled, while its token is still valid. None of its entries apply. | The owner opens the app's page (`/apps/detail/<name>`) and clicks **Enable**. |
+| `app_permission_not_approved` | The installed version declares an entry that covers the path, but the owner has not approved it yet. An update that adds an entry leaves it this way. | The owner opens the app's page (`/apps/detail/<name>`) and clicks **Approve new permissions**. The call works within 30 seconds of the approval. |
+| `app_permission_not_declared` | No entry in the installed `app.json` covers the path. | Add the path, or a pattern covering it, to `permissions.api`, install that version (`kirocrew app update <name>`, or register the new manifest again for an app that registers itself), then have the owner approve the new entry. |
+| `app_permission_unavailable` | The app's permissions could not be read, or an update of the app is in progress. | Retry. If it persists, check the app with `kirocrew app info <name>`. |
+
+```json
+{
+  "error": "App \"Ledger Lens\" cannot call /api/memory/search yet. Its installed version asks for the new API permission \"/api/memory/*\", which the dashboard owner has not approved. To fix this, the dashboard owner opens the app's page (Apps, Library, then Details on Ledger Lens, or /apps/detail/ledger-lens) and clicks \"Approve new permissions\". ...",
+  "code": "app_permission_not_approved",
+  "pending_approval": ["/api/memory/*"]
+}
+```
+
+`pending_approval` lists the held-back entries that cover the path and is empty
+for the other two codes. A route can also refuse an app token for its own reasons
+after this check passes, for example `403 owner_only`; a `permissions.api` entry
+does not change those.
 
 ---
 

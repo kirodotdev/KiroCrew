@@ -17,8 +17,9 @@ from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
-    require_owner_dashboard_request,
+    require_owner_for_dashboard_caller,
 )
+from kiro_crew.dashboard.host_sandbox_refusal import plan_error_text
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_ownership import TASK_REVIEW_SLOT_PREFIX, task_review_session_key
 from kiro_crew.dashboard.state import DashboardState
@@ -32,6 +33,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.turn_gate import TurnRefused
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
@@ -150,22 +152,6 @@ def _sel():
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
 
     return _pkg.sel()
-
-
-async def _require_taskrunner_owner(request: web.Request, operation: str) -> web.Response | None:
-    """Owner gate for the mutating task-runner routes, or ``None`` to proceed.
-
-    Owner identity is a property of a dashboard-user request: ``app == ""`` is
-    the class ``is_owner_dashboard_request`` can rule on at all. The other two
-    caller classes keep the control that already governs them -- an
-    ``X-Internal-Secret`` loopback process (the ``task_run`` MCP tool) reaches
-    here with ``app`` ABSENT, and an app token (an app whose manifest declares
-    ``/api/taskrunner``) is confined to its manifest's declared paths by
-    ``_enforce_app_scope``.
-    """
-    if request.get("app") != "":
-        return None
-    return await require_owner_dashboard_request(request, operation)
 
 
 async def _task_runner_disabled() -> web.Response | None:
@@ -457,7 +443,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     Body: ``{"spec": "path/to/file.md"}`` or ``{"spec": "__inline__:# Task content..."}``
     Inline specs are written to a temp file in the work directory.
     """
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.start")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.start")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -626,7 +612,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
 
 async def api_taskrunner_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/cancel — cancel a specific or all running tasks."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.cancel")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.cancel")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -662,7 +648,7 @@ async def api_taskrunner_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_pause(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/pause — pause a running task (resumable via execute)."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.pause")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.pause")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -709,7 +695,7 @@ async def api_taskrunner_pause(request: web.Request) -> web.Response:
 
 async def api_taskrunner_delete(request: web.Request) -> web.Response:
     """DELETE /api/taskrunner/{task_id} — remove a finished run."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.delete")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.delete")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -740,7 +726,7 @@ def parse_run_name(value: object) -> tuple[str | None, str | None]:
 
 async def api_taskrunner_rename(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/name — rename a task run."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.rename")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.rename")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -766,7 +752,7 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
 
 async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/tasks/{index} — edit a pending task in-place."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_task")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.update_task")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -834,7 +820,7 @@ async def _admit_existing_run(
 
 async def api_taskrunner_retry(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/retry — retry from a specific step."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.retry")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.retry")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -938,7 +924,7 @@ async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
 
 async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/to-chat — open task results in a chat slot."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.to_chat")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.to_chat")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1051,7 +1037,7 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
 
 async def api_taskrunner_plan(request: web.Request) -> web.Response:
     """POST /api/taskrunner/plan — decompose input into a plan without executing."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.plan")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.plan")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1118,9 +1104,8 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     except asyncio.CancelledError:
         return web.json_response({"error": "Planning was cancelled."}, status=400)
     except (FileNotFoundError, PermissionError, FileTooLargeError, ValueError) as exc:
-        # A descriptor-gate refusal or an oversize spec is the caller's problem to
-        # see, not a bare 500: the message names what was withheld.
-        return web.json_response({"error": str(exc)}, status=400)
+        # The caller's to see, not a 500; host detail goes to the machine owner alone.
+        return web.json_response({"error": plan_error_text(request, exc)}, status=400)
     finally:
         state.task_runner._plan_task = None
     return web.json_response(
@@ -1150,7 +1135,7 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_plan_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/plan/cancel — cancel running plan decomposition."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.plan_cancel")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.plan_cancel")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1172,7 +1157,7 @@ async def api_taskrunner_plan_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     """PUT /api/taskrunner/{task_id}/plan — update steps on a planned run."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_plan")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.update_plan")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1216,7 +1201,7 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/execute — execute a planned run."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.execute")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.execute")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1288,7 +1273,7 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/from-chat — create or update a plan from chat-provided steps."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.from_chat")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.from_chat")
     if owner_denied is not None:
         return owner_denied
     from kiro_crew.taskrunner import Project  # noqa: F811
@@ -1487,8 +1472,9 @@ async def _run_refine(
         state._refine_error = str(exc)
         state._refine_status = "error"
     finally:
-        # kiro-cli's [STEERING steer-…] ack is protocol: drop it before any await below.
-        state._refine_text = strip_steering_markers(state._refine_text)
+        # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+        # protocol: drop them before any await below.
+        state._refine_text = strip_quoted_markers(strip_steering_markers(state._refine_text))
         state._refine_answer_future = None  # type: ignore[attr-defined]
         state._refine_session_key = ""  # type: ignore[attr-defined]
         try:
@@ -1515,7 +1501,7 @@ async def _run_refine(
 
 async def api_taskrunner_refine(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine — start background spec generation from user input."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.refine")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1576,7 +1562,7 @@ async def api_taskrunner_refine_status(request: web.Request) -> web.Response:
 
 async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/cancel — cancel running refine."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine_cancel")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.refine_cancel")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
@@ -1587,7 +1573,7 @@ async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/answer — answer a clarifying question."""
-    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine_answer")
+    owner_denied = await require_owner_for_dashboard_caller(request, "taskrunner.refine_answer")
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]

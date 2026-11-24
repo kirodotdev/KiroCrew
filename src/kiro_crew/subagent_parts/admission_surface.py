@@ -320,6 +320,8 @@ def spawn(
     _execution_context: dict | None = None,
     _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
     _parent_project_dirs: "list[str] | None" = None,
+    _parent_held_spawn: "tuple[str, ...] | None" = None,
+    _parent_live_agent: str = "",
     _agent_check: "AgentCheck | None" = None,
     _recovering_row: bool = False,
     _stop_before_memory_read: bool = False,
@@ -369,6 +371,8 @@ def spawn(
         _execution_context=_execution_context,
         _parent_spawn_policy=_parent_spawn_policy,
         _parent_project_dirs=_parent_project_dirs,
+        _parent_held_spawn=_parent_held_spawn,
+        _parent_live_agent=_parent_live_agent,
         _agent_check=_agent_check,
         _recovering_row=_recovering_row,
         _stop_before_memory_read=_stop_before_memory_read,
@@ -625,6 +629,15 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
             str(kwargs.get("parent_session_key") or ""),
             kwargs.get("_parent_project_dirs"),
         )
+    if kwargs.get("_parent_held_spawn") is None and kwargs.get("parent_session_key"):
+        from kiro_crew.mate_held_rules import held_spawn_limits
+
+        # The moved Bot's held sub-agent limits, read off the loop like the
+        # declaration above, so the gate never reads them on the loop.
+        parent = str(kwargs["parent_session_key"])
+        kwargs["_parent_held_spawn"] = tuple(
+            await asyncio.to_thread(held_spawn_limits, parent, self._sessions.get_agent(parent))
+        )
     if kwargs.get("_agent_check") is None:
         # The agent-directory scan, off the loop: the gate consumes this
         # answer instead of walking the directory on the loop itself.
@@ -644,6 +657,7 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
     # durable path does (taskq.waits, W3).
     policy = {
         "_parent_spawn_policy": kwargs.get("_parent_spawn_policy"),
+        "_parent_held_spawn": kwargs.get("_parent_held_spawn"),
         "_agent_check": kwargs.get("_agent_check"),
         "_child_registration": False,
     }
@@ -736,6 +750,7 @@ async def _spawn_async_accepted(
         _window_hint=window_hint,
         _child_registration=False,  # the W3 branch runs awaited, below
         _agent_check=kwargs.get("_agent_check"),
+        _parent_held_spawn=kwargs.get("_parent_held_spawn"),
     )
     # The read's re-entry re-runs the policy gates on this committed row
     # (a refusal there fails it); the parent's declaration ``spawn_async``
@@ -916,8 +931,10 @@ def _after_dispatch(
     return self._admission._after_dispatch_impl(params, drained, refill=refill)
 
 
-async def _spawn_with_approval(self: SubagentManager, info: SubagentInfo) -> None:
-    return await self._admission._spawn_with_approval_impl(info)
+async def _spawn_with_approval(
+    self: SubagentManager, info: SubagentInfo, held: tuple[str, ...] = ()
+) -> None:
+    return await self._admission._spawn_with_approval_impl(info, held)
 
 
 def _log_spawned(self: SubagentManager, info: SubagentInfo) -> None:

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import crew_mode
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import chat_runner  # noqa: F401  (composes tool_approval's names)
@@ -287,7 +288,7 @@ def _decide(
         "_fire": AsyncMock(return_value=[]),
     }
     if backend:
-        names["capabilities_of"] = lambda c: SimpleNamespace(backend=backend)
+        names["capabilities_of"] = lambda c: capabilities_for(backend)
     if deny:
         state.context_builder.hooks.on_tool_call = lambda *a, **k: ToolHookResult(
             action=TOOL_DENY, reason="no"

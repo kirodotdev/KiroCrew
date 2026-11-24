@@ -165,8 +165,8 @@ export function useSignedLinkAnchor({
     const token = takeUrlToken()
     if (!token) { tokenConsumingRef.current = false; return }
     const prompt = extractPromptFromToken(token)
-    if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs, msgTs } = extractSlackContextFromToken(token)
+    if (!prompt && !sessionKey && !(channel && threadTs)) { tokenConsumingRef.current = false; return }
     // Backend session keys are history keys (dashboard:chat-…); the frontend
     // slot key is the bare form.
     const targetSlot = sessionKey ? sessionKey.replace(/^dashboard:/, '') : null
@@ -227,11 +227,16 @@ export function useSignedLinkAnchor({
       if (slotKey) {
         newSessionRef.current = false
         dispatch(switchSlot(slotKey))
-        safeSetSessionItem(
-          PREFILL_STORAGE_KEY,
-          JSON.stringify({ slotKey, prompt, ts: Date.now() }),
-        )
+        if (prompt) {
+          safeSetSessionItem(
+            PREFILL_STORAGE_KEY,
+            JSON.stringify({ slotKey, prompt, ts: Date.now() }),
+          )
+        }
       }
+      // A long link can omit its prompt while keeping the Slack session route.
+      // Leave the target's draft intact and do not send a replacement message.
+      if (!prompt) return
       // While the switch to `slotKey` has not committed yet, the composer still
       // belongs to the old session and a write here would persist the prompt
       // into ITS draft. The slot-change effect restores the prompt from the

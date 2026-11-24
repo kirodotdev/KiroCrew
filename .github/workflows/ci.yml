@@ -724,6 +724,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1094,6 +1095,9 @@ jobs:
             fi
           fi
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -1327,6 +1331,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # No uv and no dependency install: every gate below is stdlib-only, so
       # setup-python is the whole toolchain this job needs. The one backend step
       # that DOES need the installed dev group -- the pip-audit dependency
@@ -1436,6 +1441,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -1545,6 +1551,8 @@ jobs:
           echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+      - if: steps.scope.outputs.backend == 'true'
+        uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.scope.outputs.backend == 'true'
         with:
@@ -1706,6 +1714,9 @@ jobs:
           # compare a change with its base. At depth 1 it compares nothing.
           fetch-depth: 2
 
+      - uses: ./.github/actions/seed-python-tool-cache
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -2065,6 +2076,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -2269,11 +2281,14 @@ jobs:
           # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
           # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
           # 16,111 MiB; at 6 it peaked at 9,858-11,234 MiB (runs 44434126975,
-          # 44440752272). So one worker per 2 GiB after 2 GiB for the host,
-          # capped at the core count: 6 on the 16 GiB fleet runner, 4 on a
-          # 4-core hosted runner. The step prints its peak memory after the run.
+          # 44440752272). At 8, shard 7 on an AWS c6i.2xlarge (8 vCPU,
+          # 16 GiB, the fleet runner's size) ran in a median 846 s against
+          # 921 s at 6, 5 rounds each, at a 12,109 MiB median peak. So one
+          # worker per 1.5 GiB after 2 GiB for the host, capped at the core
+          # count: 8 on the 16 GiB fleet runner, 4 on a 4-core hosted runner.
+          # The step prints its peak memory after the run.
           mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 1536 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
@@ -2832,6 +2847,7 @@ jobs:
 
       - uses: ./.github/actions/setup-windows-tests
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3295,6 +3311,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3421,6 +3438,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -3699,7 +3717,8 @@ jobs:
       # maps every spelling onto it. A measured file outside this list stops
       # `coverage xml` and `coverage report` with "No source for code", so a
       # list that falls behind turns this job red and can never shrink what
-      # is measured. test/test_ci_coverage_sparse_checkout.py holds the list
+      # is measured. The seed action is listed because the job runs it from
+      # the tree. test/test_ci_coverage_sparse_checkout.py holds the list
       # against the `--cov` targets and setup.cfg.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3709,8 +3728,10 @@ jobs:
             /setup.cfg
             /pyproject.toml
             /scripts/ci/coverage_chunked_report.py
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -4014,7 +4035,8 @@ jobs:
       # and pyproject.toml is here for setup-uv, which hashes it for its cache
       # key and warns when its glob matches nothing. A missing script exits 2,
       # and a missing baseline reads as an empty one, which holds every
-      # baselined file to the floor it is recorded as being under.
+      # baselined file to the floor it is recorded as being under. The seed
+      # action is listed because the job runs it from the tree.
       # test/test_ci_coverage_sparse_checkout.py holds the list against the
       # paths this job runs and the script's imports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4024,8 +4046,10 @@ jobs:
             /scripts/check_per_file_coverage.py
             /.github/coverage-baselines/
             /pyproject.toml
+            /.github/actions/seed-python-tool-cache/
           sparse-checkout-cone-mode: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The gate parses the Cobertura reports through defusedxml rather than the
       # stdlib parser, which resolves external entities -- and on a fork PR the
       # report is produced by contributor-controlled code. Installed here because
@@ -4360,6 +4384,7 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
+      - uses: ./.github/actions/seed-python-tool-cache
       # The Python goldens that run the REAL generator (test_find_ui_auto.py's
       # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
       # skip wherever node or website/node_modules is missing, which is every
@@ -4549,6 +4574,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -4582,6 +4608,7 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5318,6 +5345,7 @@ jobs:
       # against the same remote, through the shared diff-base resolver script.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5729,6 +5757,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -5873,6 +5902,7 @@ jobs:
       - uses: ./.github/actions/setup-windows-tests
         if: runner.os == 'Windows'
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

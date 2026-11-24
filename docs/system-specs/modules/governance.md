@@ -114,8 +114,14 @@ can reorder strictness or redefine matching):
   `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
   so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
   stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
-  at all there. A pattern rooted without a drive (`/data/**`) still never
-  meets an item, which `abspath` gives a drive. POSIX is unchanged.
+  at all there. A pattern rooted without a drive (`/data/**`) meets no local
+  drive path, which `abspath` always gives a drive, while a remote-workspace
+  target still meets it (below): on Windows such a rule binds guest files only.
+  A pattern whose first segment is a wildcard (`/**`, `/*`) can also meet a
+  local UNC path (`\\host\share\...`), since either separator matches.
+  `ScopedRuleset.from_dict` logs one WARNING for each such entry when the
+  policy loads ("Filesystem + egress at the host gate" below). POSIX is
+  unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
@@ -623,7 +629,10 @@ in an oss build). One fetch is the Kiro control plane's
   (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
   segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
   (`enterprise_policy_translate._non_canonical`, plain string checks); any other
-  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
+  shape refuses a deny and is dropped from an allow. A `/`-rooted path is
+  canonical on every gateway OS, so a Windows gateway neither refuses nor drops
+  it: there it binds remote-workspace targets and no local drive path ("Path
+  matcher" above). The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
@@ -2800,6 +2809,12 @@ reads is checked: `allow` in allow mode, `deny` in deny mode. The warning names
 the dead entry and its reason and offers no replacement host. It warns rather than
 raising: refusing the document would turn one stale entry into a boot failure on
 upgrade for a policy that loads today.
+On a Windows gateway the same loader reports a `path` entry in the list the mode
+reads whose expansion starts with exactly one separator (`/data/**`): it meets no
+path on a drive letter, so the scope permits (deny mode) or refuses (allow mode)
+the local path it names, while a remote-workspace target still meets it ("Path
+matcher" above). A drive, a `//` or `\\` share prefix, a `~` or `$VAR`
+that expands to a drive, and an unrooted glob stay silent, and matching is unchanged.
 
 `on_tool_call(..., tool_kind=, raw_params=)` carries these from the ACP event
 (`AcpEvent.tool_kind` / `.raw_tool_params`); the call sites thread them

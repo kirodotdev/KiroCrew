@@ -21,7 +21,6 @@ commands like ``kirocrew --help``.
 
 from __future__ import annotations
 
-import errno
 import logging
 import os
 import platform
@@ -34,6 +33,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir
+from kiro_crew.owner_only_files import _is_link_unsupported
 
 logger = logging.getLogger(__name__)
 
@@ -219,47 +219,6 @@ from kiro_crew.hidden_leaf_staging import (  # noqa: E402,F401
 # an unbounded hang.
 _CREATE_MAX_ATTEMPTS = 50
 _CREATE_BACKOFF_SECONDS = 0.02
-
-#: Errors that mean the FILESYSTEM has no hard links, as opposed to a link that
-#: failed for a reason retrying could fix. Only these may send the publish onto
-#: the in-place fallback, because that fallback creates the destination empty and
-#: so carries the truncation window this module exists to close: a transient
-#: refusal must never be mistaken for a missing filesystem feature. POSIX
-#: specifies EPERM for "the filesystem does not support links"; the *NOTSUP pair
-#: and ENOSYS are the explicit spellings.
-#:
-#: Deliberately EXCLUDED: EACCES (a Windows sharing violation while another
-#: handle holds the path -- transient, and the one this most needs to keep out),
-#: ENOSPC, EDQUOT, EIO and EROFS. Each of those exhausts the retry budget and
-#: degrades to an ephemeral secret with the destination untouched. EXDEV is
-#: excluded too, for the opposite reason: the staged file lives in a SUBDIRECTORY of the
-#: key's own parent (see :data:`_AUTH_STORE_STAGING_LEAF`), so it and the destination are
-#: always on one filesystem and a cross-device link cannot arise. Listing it would only
-#: suggest the staging path is allowed to leave that filesystem.
-_LINK_UNSUPPORTED_ERRNOS = frozenset(
-    {
-        getattr(errno, name)
-        for name in ("EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS")
-        if hasattr(errno, name)
-    }
-)
-
-#: Windows reports a hard link on FAT/exFAT through a Win32 code whose errno
-#: translation is not one of the POSIX names above, so match it directly:
-#: ERROR_INVALID_FUNCTION (1) and ERROR_NOT_SUPPORTED (50).
-_LINK_UNSUPPORTED_WINERRORS = frozenset({1, 50})
-
-
-def _is_link_unsupported(exc: OSError) -> bool:
-    """Whether *exc* says this filesystem cannot hard-link at all.
-
-    False for anything a retry might clear, which keeps a transient failure from
-    routing the key through the in-place create -- see
-    :data:`_LINK_UNSUPPORTED_ERRNOS` for why that distinction is the whole point.
-    """
-    if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
-        return True
-    return getattr(exc, "winerror", None) in _LINK_UNSUPPORTED_WINERRORS
 
 
 def _enforce_owner_only(key_path: Path) -> None:

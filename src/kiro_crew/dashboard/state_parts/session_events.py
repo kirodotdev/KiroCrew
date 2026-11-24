@@ -21,6 +21,10 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
+from kiro_crew.dashboard.state_parts.injected_turns import (
+    SESSION_RESTARTED_NOTICE_PREFIX,
+    session_restarted_notice,
+)
 from kiro_crew.dashboard.state_parts.transcript_rows import _compaction_keep_record
 from kiro_crew.messaging.link import (
     UNBIND_REASON_DASHBOARD_UNLINK,
@@ -685,7 +689,8 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
     """Register the dashboard's recycle-notification callback.
 
     Fired when the watchdog recycles a session (e.g. RSS threshold). Posts a
-    notice into the slot so the user understands why their session reset. Also
+    notice into the slot so the user understands why their session reset, and
+    queues a note for the agent's next prompt that its background work ended. Also
     subscribes the stuck-turn hook and the RSS hold, which post their own notices.
     """
 
@@ -726,6 +731,16 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
                     "msg msg-a",
                     meta={"kind": "compaction", "notice": "session_recycled"},
                 )
+                # The row reaches the person only. A natively resumed session
+                # replays the harness's own transcript, where a background
+                # command or sub-agent still reads as started, so the agent kept
+                # reporting it as running. The next prompt drains this queue.
+                # One note is enough until then, and the queue is only appended
+                # to: a channel turn's settle matches the notices it copied by
+                # position (``queue_drain.read_tab_notices``).
+                pending = slot._pending_subagent_failures
+                if not any(n.startswith(SESSION_RESTARTED_NOTICE_PREFIX) for n in pending):
+                    pending.append(session_restarted_notice(reason))
         except Exception:
             logging.getLogger("kiro_crew.dashboard.state").exception(
                 "Failed to append recycle notice to slot %s", slot_key

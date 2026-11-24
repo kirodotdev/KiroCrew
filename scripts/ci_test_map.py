@@ -16,6 +16,9 @@ to the test files that touched it.
     build   merge the plugin's `part-*.json` files into the map
     bundle  add the co-change history and the guard tier to a map and write
             the gzip selection file the scorer reads (below)
+    check   describe a bundle file in one line (commit, build time, size, rows
+            per table) and exit 1 when it lacks a table: `test-map.yml`
+            publishes a bundle only after this passes
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -49,10 +52,15 @@ The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
                                                # last N first-parent commits
     "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
 
-and two tables no reader on main takes yet (`scripts/ci_test_os_tables.py`):
+two tables the verdict's `windows` block is chosen from
+(`scripts/ci_test_os_tables.py`, `scripts/ci_test_selection_windows.py`):
 
     "os_sensitive": {src file: "W1" | "W2"},
     "windows_targeting": [test file, ...]
+
+and when the `bundle` command wrote the file, which says how old those tables are:
+
+    "built_at": ISO 8601 time, UTC
 
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
@@ -112,6 +120,7 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -561,6 +570,7 @@ def bundle(
 def _cmd_bundle(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     doc, absent = bundle(load_map(Path(args.map)), root, args.ref, args.commits)
+    doc["built_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     data = gzip.compress(text.encode("utf-8"), mtime=0)
     Path(args.out).write_bytes(data)
@@ -569,6 +579,26 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
     for table, why in sorted(absent.items()):
         print(f"::warning::{table} left out: {why}")
     return 0
+
+
+def bundle_rows(doc: Mapping[str, Any]) -> dict[str, int]:
+    """Rows in each table of a bundle; a table that is absent or empty has none."""
+    tables = {name: doc.get(name) for name in ("tests", "files", *BUNDLE_TABLES)}
+    return {n: len(t) if isinstance(t, (dict, list)) else 0 for n, t in tables.items()}
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    path = Path(args.bundle)
+    doc = load_map(path)
+    rows = bundle_rows(doc)
+    counts = ", ".join(f"{name} {count}" for name, count in rows.items())
+    built = f", built_at {doc['built_at']}" if "built_at" in doc else ""
+    size = path.stat().st_size
+    print(f"bundle: commit `{doc.get('commit', '')}`{built}, {size} bytes, rows: {counts}")
+    missing = [name for name in BUNDLE_TABLES if not rows[name]]
+    for name in missing:
+        print(f"::error::the bundle has no {name} table")
+    return 1 if missing else 0
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -645,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
     pack.add_argument(
         "--commits", type=int, default=CO_CHANGE_COMMITS, help="first-parent commits to read"
     )
+    check = sub.add_parser("check", help="describe a bundle; exit 1 when a table is missing")
+    check.add_argument("--bundle", required=True, help="gzip JSON bundle to read")
     pick = sub.add_parser("select", help="print the test files a diff would run")
     pick.add_argument("--map", required=True, help="map or bundle, plain or gzip")
     pick.add_argument("--base")
@@ -658,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = {
         "build": _cmd_build,
         "bundle": _cmd_bundle,
+        "check": _cmd_check,
         "select": _cmd_select,
         "guard-tier": _cmd_guard_tier,
         "core": _cmd_core,

@@ -60,6 +60,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.
     ("POST", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.change", UNSTABLE),
+    # Owner gate (handlers/connections_app_manifest.py); writes nothing.
+    ("GET", "/api/connections/app-manifests"): RouteAccess(
+        "connections.app_manifests.read", UNSTABLE
+    ),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
@@ -67,6 +71,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
+    # Owner gate, then the machine owner alone (crew_api_responses).
+    # Contract test: test_crew_api_responses.py.
+    ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
     # Owner dashboard only (apps/dashboard_proxy_routes.py): 403 for an app token, and a
     # delegated (via_app) token is refused because no READ_ALLOW row names these paths.
     ("GET", "/api/apps/{name}/dashboard-proxy"): RouteAccess("apps.dashboard_proxy.read", UNSTABLE),

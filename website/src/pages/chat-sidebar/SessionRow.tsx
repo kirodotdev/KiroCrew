@@ -51,6 +51,7 @@ import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
+import { useRowStatus } from './rowStatus'
 import { SessionStatusLinksLine } from './SessionLinksLine'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
@@ -310,11 +311,15 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
+    slot: s, dividerNext, scope, navScope, holdContainer, crewWindowCovers, isOut, isPinned, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // From the row-status store: only a row whose answer flips re-renders on a chat switch.
+  const { isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, isUnread, nextIsActive } = useRowStatus(s, dividerNext)
+  // No divider touches the open row: its highlight separates it.
+  const showDivider = dividerNext !== null && !isActive && !nextIsActive
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.

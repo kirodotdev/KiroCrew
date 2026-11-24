@@ -816,6 +816,12 @@ async def apply_approval_mode(
         policy = "auto" if trust_reaches_subagents(slot) or yolo else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
+    from kiro_crew import kept_grants
+
+    if not await kept_grants.settle():  # the answer waits for the disk
+        state.notify(
+            "safety", "An approval-mode change may not be saved to disk", kept_grants.NOT_SAVED
+        )
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
 

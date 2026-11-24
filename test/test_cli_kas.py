@@ -41,6 +41,17 @@ from kiro_crew.agent_sdk import kas_bundle
 _PIN = cli_kas.KAS_PIN_VERSION
 
 
+@pytest.fixture(autouse=True)
+def _normal_host_pin(_floor_monkeypatch):
+    """These tests drive the CLI flow, not the host's pin choice: hold it to the
+    normal pin whatever the runner's glibc is, both where the CLI reads it and
+    where ``pinned_version()`` does (the AL2 choice has its own test)."""
+    from kiro_crew.acp import kas_pin
+
+    _floor_monkeypatch.setattr(cli_kas, "host_pin_version", lambda: _PIN)
+    _floor_monkeypatch.setattr(kas_pin, "host_pin_version", lambda *a, **k: _PIN)
+
+
 def _set_route(monkeypatch, *, bundle: bool, reason: str = "") -> None:
     """Pin the route `_report_installed` reads (the predicate doctor shares)."""
     from kiro_crew.acp.kas_route import KasRoute
@@ -99,7 +110,7 @@ def local_source(tmp_path, monkeypatch):
     src.mkdir()
     raw = json.dumps(_manifest_doc()).encode()
     (src / kas_bundle.KAS_BUNDLE_MANIFEST_NAME).write_bytes(raw)
-    monkeypatch.setattr(cli_kas, "KAS_PIN_MANIFEST_SHA256", hashlib.sha256(raw).hexdigest())
+    monkeypatch.setitem(cli_kas.KAS_PIN_MANIFESTS, _PIN, hashlib.sha256(raw).hexdigest())
     return src
 
 
@@ -265,7 +276,7 @@ class TestInstallFromDir:
     def test_a_manifest_that_does_not_hash_to_the_pin_is_refused_without_unpinned(
         self, cfg, local_source, monkeypatch, capsys
     ):
-        monkeypatch.setattr(cli_kas, "KAS_PIN_MANIFEST_SHA256", "f" * 64)
+        monkeypatch.setitem(cli_kas.KAS_PIN_MANIFESTS, _PIN, "f" * 64)
         monkeypatch.setattr(
             kas_bundle, "install_bundle", lambda *a, **k: pytest.fail("install_bundle reached")
         )
@@ -331,10 +342,29 @@ class TestInstallFromUrl:
         assert seen == {
             "base": "https://kas.test",
             "version": _PIN,
-            "sha256": cli_kas.KAS_PIN_MANIFEST_SHA256,
+            "sha256": cli_kas.KAS_PIN_MANIFESTS[_PIN],
             "source": f"https://kas.test/kas/{_PIN}/manifest.json",
         }
         assert f"Fetching manifest for KAS {_PIN} from https://kas.test" in capsys.readouterr().out
+
+    def test_a_host_on_the_al2_pin_fetches_it_and_refuses_the_normal_pin_unpinned(
+        self, cfg, host, tmp_path, monkeypatch, capsys
+    ):
+        """On a host whose pin is the AL2 one, the default install fetches that pin
+        with its own digest, and naming the normal pin is "another version"."""
+        al2 = cli_kas.KAS_PIN_AL2_VERSION
+        monkeypatch.setattr(cli_kas, "host_pin_version", lambda: al2)
+        seen: dict = {}
+
+        def fake_fetch(base, *, version, sha256):
+            seen.update(version=version, sha256=sha256)
+            raise kas_bundle.KasBundleError("stop here")
+
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", fake_fetch)
+        assert cli_kas.kas_cmd(self._args()) == 1
+        assert seen == {"version": al2, "sha256": cli_kas.KAS_PIN_MANIFESTS[al2]}
+        assert cli_kas.kas_cmd(self._args(version=_PIN)) == 1
+        assert f"this release pins KAS {al2}; pass --unpinned" in capsys.readouterr().err
 
     def test_url_flag_and_unpinned_drop_the_digest(self, cfg, host, tmp_path, monkeypatch):
         seen: dict = {}
@@ -370,7 +400,7 @@ class TestOldGlibcRefusedFirst:
         from kiro_crew.acp import kas_bundle as acp_kas_bundle
 
         monkeypatch.setattr(acp_kas_bundle, "_host_os", lambda _system: "linux")
-        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 17))
         monkeypatch.setattr(kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched"))
         monkeypatch.setattr(
             kas_bundle, "install_bundle", lambda *a, **k: pytest.fail("install_bundle reached")
@@ -394,7 +424,7 @@ class TestOldGlibcRefusedFirst:
         assert cli_kas.kas_cmd(args) == cli_kas.HOST_UNSUPPORTED_EXIT
         out, err = capsys.readouterr()
         assert "Fetching" not in out and "Installing" not in out
-        assert "❌ this host's glibc (2.26) is older than KAS requires" in err
+        assert "❌ this host's glibc (2.17) is older than KAS requires" in err
 
 
 class TestInstallWhenAlreadyInstalled:

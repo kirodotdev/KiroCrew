@@ -1,8 +1,8 @@
-"""Snapshot and restore name the account that ran them, on Windows as on POSIX.
+"""Snapshot, restore and export name the account that ran them, on Windows as on POSIX.
 
-The SEL row ``_audit`` writes and the bundle's ``MANIFEST.json`` both record who ran the
-command. Windows sets ``USERNAME`` and leaves ``USER`` unset, so a read of ``USER`` alone
-names nobody there.
+The SEL row ``_audit`` writes, the bundle's ``MANIFEST.json`` and the export archive's
+manifest all record who ran the command. Windows sets ``USERNAME`` and leaves ``USER``
+unset, so a read of ``USER`` alone names nobody there.
 """
 
 from __future__ import annotations
@@ -12,16 +12,20 @@ import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import portability_helpers
 import pytest
 import snapshot_helpers
 from snapshot_helpers import unpinnable_argv
 from test_snapshot import _setup_fake_kirocrew
 
+from kiro_crew import portability
 from kiro_crew import sel as sel_mod
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_build
 
 _no_gateway = snapshot_helpers._no_gateway
+fake_kirocrew_home = portability_helpers.fake_kirocrew_home
+patched_config_dir = portability_helpers.patched_config_dir
 
 #: Every variable ``getpass.getuser`` reads, cleared so the host's own login never leaks in.
 _ACCOUNT_VARS = ("LOGNAME", "USER", "LNAME", "USERNAME")
@@ -62,6 +66,26 @@ def test_a_windows_shell_names_its_account_in_the_audit_row_and_the_manifest(
     assert manifest["user"] == "alice"
     created = [e for e in recorder.events if e.event_type == "snapshot_created"]
     assert [e.caller_identity for e in created] == ["alice"]
+
+
+def test_a_windows_shell_names_its_account_in_the_dashboard_export_manifest(
+    patched_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _account_env(monkeypatch, USERNAME="alice")
+    skeletons: list[dict] = []
+    plan_sessions = portability._plan_sessions
+
+    def _record_skeleton(*args, manifest: dict, **kwargs):
+        skeletons.append(manifest)
+        return plan_sessions(*args, manifest=manifest, **kwargs)
+
+    # The chat budget is measured against a manifest skeleton built before the archive.
+    monkeypatch.setattr(portability, "_plan_sessions", _record_skeleton)
+    plan = portability.plan_export(include_sessions=True)
+    manifest = portability.stream_export_zip(lambda _chunk: None, plan)
+
+    assert [skeleton["user"] for skeleton in skeletons] == ["alice"]
+    assert manifest["user"] == "alice"
 
 
 @pytest.mark.parametrize(
