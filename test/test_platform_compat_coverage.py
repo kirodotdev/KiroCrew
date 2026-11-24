@@ -657,6 +657,42 @@ class TestWindowsSystemDirs:
         assert r"C:\Windows\System32" not in dirs
         assert any(d.endswith(os.path.join("WindowsPowerShell", "v1.0")) for d in dirs)
 
+    def test_inbox_openssh_is_searched_under_the_api_directory_only(self, monkeypatch):
+        """``ssh.exe`` ships in ``<System32>\\OpenSSH``, derived from the API answer.
+
+        A ``SystemRoot`` pointed elsewhere contributes no OpenSSH directory: the
+        subdirectory hangs off the same root as the rest, never the environment.
+        """
+
+        def _get_system_directory(buf: Any, _size: Any) -> int:
+            buf.value = r"C:\Windows\system32"
+            return len(buf.value)
+
+        kernel32 = types.SimpleNamespace(GetSystemDirectoryW=_get_system_directory)
+        _fake_windows(monkeypatch, kernel32=kernel32)
+        monkeypatch.setitem(os.environ, "SystemRoot", r"D:\planted")
+
+        dirs = pc._windows_system_dirs()
+
+        assert os.path.join(r"C:\Windows\system32", "OpenSSH") in dirs
+        assert [d for d in dirs if d.endswith("OpenSSH")] == [
+            os.path.join(r"C:\Windows\system32", "OpenSSH")
+        ]
+        assert not any("planted" in d for d in dirs)
+
+    def test_inbox_openssh_is_appended_per_fallback_root(self, monkeypatch):
+        def _boom(_buf: Any, _size: Any) -> int:
+            raise OSError("no such entry point")
+
+        kernel32 = types.SimpleNamespace(GetSystemDirectoryW=_boom)
+        _fake_windows(monkeypatch, kernel32=kernel32)
+        monkeypatch.setitem(os.environ, "SystemRoot", r"D:\Win")
+
+        dirs = pc._windows_system_dirs()
+
+        assert os.path.join(r"D:\Win", "System32", "OpenSSH") in dirs
+        assert os.path.join(r"C:\Windows\System32", "OpenSSH") in dirs
+
     def test_falls_back_when_the_api_call_fails(self, monkeypatch):
         def _boom(_buf: Any, _size: Any) -> int:
             raise OSError("no such entry point")

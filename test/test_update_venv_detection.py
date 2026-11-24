@@ -40,8 +40,8 @@ def _init_repo(path) -> None:
 def _pin_probe_git(monkeypatch, tmp_path):
     """Resolve the worktree probe's git to a fake under ``tmp_path``.
 
-    ``update_capability._git_toplevel`` finds git through ``trusted_system_bin``
-    (fixed system directories, never PATH) and asks ``rev-parse --show-toplevel``
+    ``update_capability._git_toplevel`` finds git through ``trusted_git_bin``
+    (fixed install directories, never PATH) and asks ``rev-parse --show-toplevel``
     about the install root. Left alone, that is the HOST's git running from the
     test process -- and on a host that keeps git outside those directories the
     probe silently degrades to the on-disk fallback, so which branch a test
@@ -88,9 +88,7 @@ def _pin_probe_git(monkeypatch, tmp_path):
             encoding="utf-8",
         )
         fake.chmod(0o755)
-    monkeypatch.setattr(
-        "kiro_crew.platform.update_capability.trusted_system_bin", lambda _name: str(fake)
-    )
+    monkeypatch.setattr("kiro_crew.platform.update_capability.trusted_git_bin", lambda: str(fake))
     return fake
 
 
