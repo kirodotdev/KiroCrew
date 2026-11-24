@@ -122,6 +122,32 @@ async def test_the_check_never_reads_the_key_or_decrypts(tmp_path, monkeypatch):
     assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tokens", "kiro-path-tokens"])
+async def test_the_fingerprint_names_this_sign_in_and_changes_with_a_new_one(
+    tmp_path, monkeypatch, kind
+):
+    """The change card's "is it the same grant" read, for a vault-held sign-in."""
+    root = mcp_grant_kas.grant_store_root(tmp_path)
+    assert mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root) is None
+    name = f"kiro.mcp.{mcp_grant_kas.kas_connection_hash(_FIGMA)}.{kind}"
+    store = kss.McpGrantStore(tmp_path)
+    await store.store(name, "{}")
+    first = mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root)
+    await store.store(name, "{}")  # signed in again: same value, fresh ciphertext
+
+    def _refuse(*a: object, **kw: object) -> Any:
+        raise AssertionError("the fingerprint touched the vault key")
+
+    monkeypatch.setattr(SecretVault, "_get_or_create_key", _refuse)
+    monkeypatch.setattr(SecretVault, "_decrypt_entry", _refuse)
+    second = mcp_grant_kas.kas_grant_fingerprint(_FIGMA, store_root=root)
+
+    assert isinstance(first, str) and isinstance(second, str)
+    assert first != second
+    assert mcp_grant_kas.kas_grant_fingerprint("https://other.example/mcp", store_root=root) is None
+
+
 def test_no_vault_yet_is_a_definite_absence(tmp_path):
     root = mcp_grant_kas.grant_store_root(tmp_path)
     assert mcp_grant_kas.kas_grant_presence(_FIGMA, store_root=root) is False
@@ -198,15 +224,15 @@ def _audit_calls(monkeypatch: pytest.MonkeyPatch, recorded: bool = True) -> list
 async def test_persistence_off_skips_the_vault_and_audit(monkeypatch):
     monkeypatch.setattr(mcp_grant_kas, "persistence_enabled", lambda: False)
     presence = Mock(return_value=True)
-    list_names = Mock()
+    load_entries = Mock()
     monkeypatch.setattr(mcp_grant_kas, "kas_grant_presence", presence)
-    monkeypatch.setattr(SecretVault, "list_names", list_names)
+    monkeypatch.setattr(SecretVault, "_load_entries", load_entries)
     seen = _audit_calls(monkeypatch)
 
     assert await mcp_grant_kas.kas_grant_observed(_FIGMA) is False
 
     presence.assert_not_called()
-    list_names.assert_not_called()
+    load_entries.assert_not_called()
     assert seen == []
 
 
