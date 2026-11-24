@@ -244,6 +244,7 @@ DECLARED_SITES = frozenset(
         ("sandbox_argv.py", "cleanup_stale_sandbox_profiles"),
         ("sandbox_launcher_parts/mask_stages.py", "apply_carveouts"),
         ("sandbox_launcher_parts/mask_stages.py", "seal_operator_readonly"),
+        ("sandbox_seals.py", "_materialize_kiro_mcp_registry"),
         ("sandbox_seals.py", "_refuse_if_dangling_symlink"),
         ("seed.py", "copy_fixture_into_witnessed_dir"),
         ("seed.py", "copy_fixture_into_witnessed_dir._walk"),
