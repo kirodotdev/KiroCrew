@@ -3470,7 +3470,14 @@ splice words across the newline segment boundary, so `origin ma\` + newline +
 sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
-visible to the superset scan. The invariant
+visible to the superset scan. A newline inside quotes ends a segment too, so a push
+written after a multi-line quoted argument on the same line (`git commit -m
+"a<newline><newline>b" && git push origin feature`) is refused on the ungated
+sentinel: its segment `b" && git push origin feature` reads the closing quote as an
+opening one, so no `git` word stands outside the quote and the push does not parse.
+That is a stated residual (see [Stated residuals of the command-text
+checks](#stated-residuals-of-the-command-text-checks)): a `-m` value kept on one
+line, `-F <file>`, or the push on its own line passes. The invariant
 has two different strengths, stated honestly: the OPTION-ARITY axis fails
 protective by construction (an unrecognised option lands in the fallback), while
 the SHELL-SYNTAX axis rests on the metacharacter inventory being complete — a
