@@ -256,3 +256,39 @@ async def test_the_owner_session_mint_with_the_real_secret_still_mints(
     assert resp.status == 200
     assert seen["kw"].get("session") is True
     assert "via_app" not in (seen["extra"] or {})
+
+
+@_LEG_TWO_HOST
+@pytest.mark.asyncio
+async def test_a_delegated_mint_carries_no_embed_claims(world, minted, fake_sel):
+    """The embed claims are the owner's pane wiring: an app's backend names no framing port.
+
+    ``embed_parent_port`` / ``embed_forward_port`` publish a loopback origin into the
+    gateway-wide framing record (``apps.pane_ports``); a delegated token must not carry them.
+    """
+    resp = await core_mod.api_token_local(
+        _req(
+            app={"local_secret": _REAL, "state": SimpleNamespace(owner_id="owner-1")},
+            headers={"X-Local-Secret": dashboard_proxy.stand_in_value(_APP)},
+            query={"embed_parent_port": "41000", "embed_forward_port": "41001"},
+        )
+    )
+    assert resp.status == 200
+    assert minted["extra"]["via_app"] == _APP
+    assert "embed_parent_port" not in minted["extra"]
+    assert "embed_forward_port" not in minted["extra"]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_mint_still_carries_its_embed_claims(world, minted, fake_sel):
+    world.update(owner_app=None, host=True)
+    resp = await core_mod.api_token_local(
+        _req(
+            app={"local_secret": _REAL, "state": SimpleNamespace(owner_id="owner-1")},
+            headers={"X-Local-Secret": _REAL},
+            query={"embed_parent_port": "41000", "embed_forward_port": "41001"},
+        )
+    )
+    assert resp.status == 200
+    assert minted["extra"]["embed_parent_port"] == "41000"
+    assert minted["extra"]["embed_forward_port"] == "41001"

@@ -172,8 +172,10 @@ async def api_token_local(request: web.Request) -> web.Response:
     # port, so the embedded remote can authorize exactly that loopback parent
     # origin in CSP frame-ancestors (see server._extra_frame_ancestors). Minted
     # only via this local-secret-gated endpoint; validated as a loopback port.
+    # Never for a delegated (``via_app``) mint: the claims publish a loopback origin into
+    # the gateway-wide framing record (``apps.pane_ports``), which an app must not widen.
     extra: dict[str, str] = {}
-    epp = request.query.get("embed_parent_port", "")
+    epp = "" if via_app else request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
         # The pane's own forward port on this machine, which binds the app web

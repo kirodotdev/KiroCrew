@@ -124,6 +124,20 @@ async def test_a_pane_token_records_its_port() -> None:
     assert pp.pane_ports(app).parents(_PANE, time.time()) == [_HUB]
 
 
+@pytest.mark.asyncio
+async def test_a_delegated_token_with_a_parent_claim_records_nothing() -> None:
+    """A ``via_app`` token acts for an app: its claims never widen the framing record.
+
+    The record is gateway-wide and lasts to the session's expiry, past a revoke, and it is
+    written before ``delegated_scope.enforce_delegated`` runs, so it is refused here.
+    """
+    app = _app()
+    await pp.note_pane_request(
+        _request(app, f"localhost:{_PANE}"), _claims(via_app="tunnel-like", via_grant="g")
+    )
+    assert pp.pane_ports(app).parents(_PANE, time.time()) == []
+
+
 @pytest.mark.parametrize(
     ("peer", "recorded"),
     [("169.254.255.193", [_HUB]), ("10.0.0.5", [])],
