@@ -337,6 +337,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/crew",
         "<ROOT>/op/.kiro",
         "<ROOT>/op",
+        "<ROOT>/op/.kiro/mates",
         "<ROOT>/op/.kiro/crew",
         "<ROOT>/op/.kiro/crew/apps",
         "<ROOT>/op/.kiro/crew/mcp",
@@ -366,6 +367,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/op/.kirocrew/mcp-launch-approvals",
         "<ROOT>/op/.kirocrew/mcp/resolved",
         "<ROOT>/op/.kiro/agents",
+        "<ROOT>/op/.kiro/mates/migrated.json",
     ],
     "writable_dirs": ["<ROOT>/crew/run/mcp-tmp/probe-x"],
     "sensitive_files": [
@@ -627,6 +629,7 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/crew"))
 (deny file-write* (literal "<ROOT>/op/.kiro"))
 (deny file-write* (literal "<ROOT>/op"))
+(deny file-write* (literal "<ROOT>/op/.kiro/mates"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/apps"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/mcp"))
@@ -695,6 +698,9 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/op/.kiro/agents"))
 (deny file-write* (subpath "<ROOT>/op/.kiro/agents"))
 (deny file-link (subpath "<ROOT>/op/.kiro/agents"))
+(deny file-write* (literal "<ROOT>/op/.kiro/mates/migrated.json"))
+(deny file-write* (subpath "<ROOT>/op/.kiro/mates/migrated.json"))
+(deny file-link (subpath "<ROOT>/op/.kiro/mates/migrated.json"))
 (deny file-read* (literal "<ROOT>/op/.npmrc"))
 (deny file-link (literal "<ROOT>/op/.npmrc"))
 (deny file-read* (literal "<ROOT>/op/.netrc"))
@@ -802,6 +808,7 @@ _HOST_READERS: dict[str, tuple[str, ...]] = {
         "_relocated_crew_targets",
         "_relocated_policy_cache_dirs",
         "_resolved_kiro_agents_targets",
+        "_resolved_mate_ledger_targets",
         "_sandbox_policy",
         "_ssh_supports_accept_new",
         "_voice_runtime_parent_paths",
@@ -812,6 +819,7 @@ _HOST_READERS: dict[str, tuple[str, ...]] = {
         "_relocated_crew_targets",
         "_relocated_policy_cache_dirs",
         "_resolved_kiro_agents_targets",
+        "_resolved_mate_ledger_targets",
         "_sandbox_policy",
         "_voice_runtime_ancestor_guards",
         "_voice_runtime_parent_paths",

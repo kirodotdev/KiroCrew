@@ -446,7 +446,9 @@ def _ledger_names(member_ids: set[str], agent: str = "") -> bool:
     A damaged file cannot say which limits a Bot has, but its text still
     shows which Bots it recorded, so only those are held. An entry recorded
     with no ``member_id`` is matched by its Bot's name, as :func:`_bot_rules`
-    matches it. A file whose bytes cannot be read at all names everyone.
+    matches it. A file whose bytes cannot be read at all names everyone, and so
+    does one cut off before the closing brace every save ends with (an empty one
+    included), which is what a save cut short leaves (``atomic_write.rewrite_in_place``).
     """
     names = {n for n in (*member_ids, agent) if n}
     if not names:
@@ -459,7 +461,8 @@ def _ledger_names(member_ids: set[str], agent: str = "") -> bool:
         )
     except OSError:
         return True
-    return any(json.dumps(name) in text for name in names)
+    # A save writes ``json.dumps(data, indent=2)``, whose only unindented ``}`` ends it.
+    return not text.rstrip().endswith("\n}") or any(json.dumps(name) in text for name in names)
 
 
 def _bot_rules(session_key: str, agent: str) -> list[Any]:
@@ -492,7 +495,19 @@ def _bot_rules(session_key: str, agent: str) -> list[Any]:
     member_ids.add(_member_of(agent))
     member_ids.discard("")
     if entries is None:
-        return [{"text": UNREADABLE, "capability": ANY}] if _ledger_names(member_ids, agent) else []
+        # A save rewrites the record in place under the ledger lock
+        # (``mate_config_migration._write_ledger``), so a read racing one can see it
+        # cut off; read again under that lock, only a record damaged on disk stays so.
+        from kiro_crew.mate_ledger_lock import ledger_lock
+
+        try:
+            with ledger_lock():
+                entries = _held_entries()
+                named = entries is None and _ledger_names(member_ids, agent)
+        except OSError:  # the lock past its ceiling: held, as unreadable bytes are
+            named = bool(member_ids or agent)
+        if entries is None:
+            return [{"text": UNREADABLE, "capability": ANY}] if named else []
     rules: list[Any] = []
     for name, entry in entries.items():
         if not isinstance(entry, dict):

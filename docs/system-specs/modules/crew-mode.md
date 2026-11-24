@@ -5611,9 +5611,9 @@ unknown capability, refuses every such helper, since Kiro CLI reads inside the
 session folder unasked. A helper that pre-approves nothing held starts as before,
 and its held calls ask at the gate.
 The Bot's worker, its other sessions and other Bots' helpers still start. While
-`migrated.json` cannot be parsed, only the Bots its text still names are held
-(`mate_held_rules._ledger_names`, by member id or, for an entry with none, by name); a file whose bytes cannot be read holds every
-Bot. Once a Bot's rules are read, an error matching a call against them holds
+`migrated.json` is complete but cannot be parsed, only the Bots its text still names are held
+(`mate_held_rules._ledger_names`, by member id or, for an entry with none, by name); a file whose bytes cannot be read, or one cut off before the closing brace every save ends with (an empty one included; a save cut short leaves it, since `_write_ledger` rewrites the record in place), holds every
+Bot. A file that does not parse is read again under the ledger lock first, so a read racing a save sees the saved record. Once a Bot's rules are read, an error matching a call against them holds
 that call (`held_for`). A Bot whose worker runs on Kiro CLI
 still reads files inside its own folder without a permission request, as any
 Kiro CLI agent does, so its notice says that when it holds a read limit
@@ -5696,7 +5696,7 @@ the Bot's approval mode does not, since an `auto` cron's approval does not depen
 on that mode (a control to review and release held rules is #37321). Every read-modify-write of
 `migrated.json` runs under `mate_ledger_lock.ledger_lock` (a thread lock plus a
 `migrated.json.lock` file lock, since two gateways with their own data homes can
-share one Kiro home), so one writer cannot erase a hold another records. A Bot whose repoint fails stays on its old agent, which still
+share one Kiro home), so one writer cannot erase a hold another records. A sandboxed agent process gets the ledger read-only, so only the unsandboxed gateway writes it ([security](security.md), "The Bot-move ledger is sealed read-only for every sandboxed child"). A Bot whose repoint fails stays on its old agent, which still
 enforces its own limits, so the hold the move recorded for it is cleared again,
 only when the entry still carries the `member_id` it was recorded under
 (`mate_held_rules.drop_held`); the next start that moves it holds them again. A repaired Bot is

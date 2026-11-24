@@ -163,7 +163,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _CREW_CHILD_WITHHELD_LEAVES _CREW_CHILD_READABLE_LEAVES crew_host_runtime_leaves
         """.split()),
     "kiro_crew.sandbox_tiers": tuple("""
-        _resolved_kiro_agents_targets _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
+        _resolved_kiro_agents_targets _resolved_mate_ledger_targets
+        _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
@@ -201,7 +202,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _mint_gateway_id_before_seal _materialize_sealable_ceilings _warn_aliased_strict_leaves
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
         require_unaliased_model_file _resolved_kiro_mcp_registry_targets
-        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
+        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry _materialize_mate_ledger
         _MAX_REGISTRY_LINK_HOPS _registry_chain_end
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
@@ -391,7 +392,9 @@ _BOUND_HERE: frozenset[str] = frozenset()
 _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.sandbox_tiers": frozenset({"kiro_crew.sandbox_leaves"}),
     "kiro_crew.sandbox_precreate": frozenset({"kiro_crew.sandbox_leaves"}),
-    "kiro_crew.sandbox_seals": frozenset({"kiro_crew.sandbox_precreate"}),
+    "kiro_crew.sandbox_seals": frozenset(
+        {"kiro_crew.sandbox_precreate", "kiro_crew.sandbox_tiers"}
+    ),
     "kiro_crew.sandbox_aliases": frozenset({"kiro_crew.sandbox_leaves", "kiro_crew.sandbox_seals"}),
     "kiro_crew.sandbox_staging": frozenset(
         {

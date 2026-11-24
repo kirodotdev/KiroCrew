@@ -206,13 +206,16 @@ class PlanHost:
     #: Emitted only, never checked against an exception, window or carve-out, for the
     #: same reason as the targets: the person's project folder must stay writable.
     project_ancestor_guards: tuple[str, ...] = ()
+    #: The resolved Bot-move ledger (a moved Bot's held limits), sealed read-only.
+    mate_ledger_targets: tuple[str, ...] = ()
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
-    #: Every entry resolving a read-only seal (``run``, the kiro agents tree, the crew-home
-    #: ceilings, the install tree) steps on, links included, and the parents of its own
-    #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
-    #: backend only those this uid could rename, since it pins each with a mount.
+    #: Every entry resolving a read-only seal (``run``, the kiro agents tree, the Bot-move
+    #: ledger, the crew-home ceilings, the install tree) steps on, links included, and the
+    #: parents of its own spelling: renaming one carries the seal away. Seatbelt gets every
+    #: one; the namespace backend only those this uid could rename, since it pins each with
+    #: a mount.
     readonly_ancestor_guards: tuple[str, ...] = ()
     #: The EXISTING ancestors of each ``extra_hidden_dirs`` entry (namespace: those this uid
     #: could rename). A missing folder holds nothing a rename could carry away, and a deny
@@ -1168,6 +1171,8 @@ def _namespace_plan(
     readonly.extend(path for path in host.relocated_crew_readonly if path not in kept)
     # Same relocation hole for the kiro agents tree (fork governance's specs).
     readonly.extend(path for path in host.kiro_agents_targets if path not in kept)
+    # The Bot-move ledger: the held limits the gateway's approval gates read.
+    readonly.extend(path for path in host.mate_ledger_targets if path not in kept)
     # The gateway's own packaged install tree: what it executes on its next start. Not
     # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
     # updater that legitimately writes it runs in the gateway process, unwrapped.
@@ -1380,6 +1385,7 @@ def _seatbelt_plan(
         [os.path.join(home, rel) for rel in host.crew_readonly_targets]
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
+        + list(host.mate_ledger_targets)
         + list(host.install_root_targets)
     )
     caller_targets = list(

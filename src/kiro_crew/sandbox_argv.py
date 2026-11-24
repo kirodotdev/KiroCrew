@@ -54,6 +54,7 @@ from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
     _materialize_kiro_mcp_registry,
+    _materialize_mate_ledger,
     _materialize_sealable_ceilings,
     _refuse_linked_models_leaf,
     _resolved_kiro_mcp_registry_targets,
@@ -89,6 +90,7 @@ from kiro_crew.sandbox_tiers import (
     _relocated_policy_cache_dirs,
     _resolved_install_root_targets,
     _resolved_kiro_agents_targets,
+    _resolved_mate_ledger_targets,
     _sandbox_policy,
     configured_readonly_layer,
 )
@@ -497,6 +499,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         for entry in (os.path.dirname(target), *_resolution_entries(target))
         if os.path.lexists(entry)
     )
+    mate_ledger_targets = tuple(_resolved_mate_ledger_targets())
     install_root_targets = tuple(_resolved_install_root_targets())
     # A renamed parent carries a seal away on both backends, so every entry resolving a
     # seal steps on is guarded, and so are the parents of its own spelling, which keep a
@@ -508,6 +511,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         for target in (
             *voice_runtime_parents,
             *kiro_cli_targets,
+            *mate_ledger_targets,
             *(os.path.join(home, rel) for rel in (*_CREW_READONLY_TARGETS, *app_readonly)),
             *relocated_crew_readonly,
             *install_root_targets,
@@ -688,6 +692,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *voice_runtime_ancestor_guards,
         *kiro_agents_targets,
         *project_targets,
+        *mate_ledger_targets,
         *install_root_targets,
         *readonly_ancestor_guards,
         *project_ancestor_guards,
@@ -716,6 +721,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
         kiro_agents_targets=kiro_agents_targets,
         project_mcp_targets=project_targets,
+        mate_ledger_targets=mate_ledger_targets,
         install_root_targets=install_root_targets,
         readonly_ancestor_guards=readonly_ancestor_guards,
         project_ancestor_guards=project_ancestor_guards,
@@ -931,6 +937,8 @@ def namespace_argv(
     _materialize_sealable_ceilings(_required_targets)
     # kiro-cli's MCP registry the same way, but best-effort: never a refusal.
     _materialize_kiro_mcp_registry()
+    # The Bot-move ledger (a moved Bot's held limits) refuses like the ceilings.
+    _materialize_mate_ledger(_required_targets)
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)

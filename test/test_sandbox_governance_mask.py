@@ -1389,3 +1389,95 @@ class TestTheModelsSealRefusesAWritableCarveout:
         )
 
         assert (os.path.normpath(str(own)) in plan.writable) is approved
+
+
+class TestTheBotMoveLedgerIsSealedInEveryMode:
+    """The Bot-move ledger the gateway's approval gates read a moved Bot's held limits
+    from is read-only for every sandboxed child, its parent rename-guarded."""
+
+    @staticmethod
+    def _ledger() -> str:
+        from kiro_crew import mate_config_migration
+
+        return os.path.normpath(str(mate_config_migration._ledger_path()))
+
+    def test_the_resolver_names_the_ledger_the_gate_reads(self) -> None:
+        assert sandbox._resolved_mate_ledger_targets() == [self._ledger()]
+
+    @_POSIX_ONLY
+    def test_a_linked_kiro_home_seals_the_resolved_ledger_too(self, tmp_path, monkeypatch):
+        """Seatbelt matches the resolved path, so a write through a linked ``~/.kiro``
+        meets no rule naming only the lexical spelling."""
+        from kiro_crew.config import paths
+
+        real = tmp_path / "real-kiro"
+        (real / "mates").mkdir(parents=True)
+        (real / "mates" / "migrated.json").write_text("{}\n", encoding="utf-8")
+        link = tmp_path / "kiro-link"
+        link.symlink_to(real, target_is_directory=True)
+        monkeypatch.setattr(paths, "_mate_agents_dir_override", lambda: link / "mates" / "agents")
+        lexical = str(link / "mates" / "migrated.json")
+        resolved = str(real / "mates" / "migrated.json")
+        assert self._ledger() == lexical
+
+        assert sandbox._resolved_mate_ledger_targets() == [lexical, resolved]
+        profile = sandbox._build_seatbelt_profile("strict")
+        assert f'(deny file-write* (literal "{resolved}"))' in profile
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_linux_seals_the_ledger_read_only(self, mode: str) -> None:
+        hidden, readonly, files = _launcher_sets(mode)
+        ledger = self._ledger()
+
+        assert ledger in readonly, f"the ledger is writable through the {mode} sandbox"
+        assert ledger not in hidden and ledger not in files, "the ledger must stay readable"
+
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_macos_denies_writes_to_the_ledger(self, mode: str) -> None:
+        profile = sandbox._build_seatbelt_profile(mode)
+        ledger = self._ledger()
+
+        assert f'(deny file-write* (literal "{ledger}"))' in profile
+        assert f'(deny file-write* (subpath "{ledger}"))' in profile
+        assert f'(deny file-read* (subpath "{ledger}"))' not in profile
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize(
+        "backend", (sandbox_plan.BACKEND_NAMESPACE, sandbox_plan.BACKEND_SEATBELT)
+    )
+    def test_the_ledger_parent_cannot_be_renamed(self, backend: str) -> None:
+        mates = os.path.dirname(self._ledger())
+        os.makedirs(mates, exist_ok=True)
+        host = sandbox._live_plan_host(
+            sandbox_plan.SandboxRequest(tier="standard", backend=backend)
+        )
+
+        assert mates in host.readonly_ancestor_guards
+
+    @_POSIX_ONLY
+    def test_an_absent_ledger_is_created_empty_so_the_seal_has_a_file(self) -> None:
+        """A bind needs a file, and the first Bot move can come after a sandbox started."""
+        from kiro_crew import mate_config_migration, mate_held_rules
+
+        ledger = self._ledger()
+        assert not os.path.lexists(ledger)
+
+        assert sandbox._materialize_mate_ledger() == [ledger]
+        with open(ledger, "rb") as fh:
+            assert fh.read() == b"{}\n"
+        assert os.stat(ledger).st_mode & 0o777 == 0o600
+        assert mate_config_migration._read_ledger() == {}
+        assert mate_held_rules._held_entries() == {}
+        assert mate_config_migration.moved_from_agents() == frozenset()
+        spec = {"allowedTools": ["shell"]}
+        assert mate_held_rules.strip_held_approvals(spec, "m-1", "ada") == {
+            "allowedTools": ["shell"]
+        }
+
+        recorded = b'{\n  "migrated": ["ada"]\n}\n'
+        with open(ledger, "wb") as fh:
+            fh.write(recorded)
+        assert sandbox._materialize_mate_ledger() == []
+        with open(ledger, "rb") as fh:
+            assert fh.read() == recorded

@@ -260,11 +260,12 @@ def test_a_bot_moved_now_is_not_told_earlier_work_ran_without_its_limits():
 
 
 def test_an_unreadable_ledger_holds_every_call_of_the_bots_it_still_names(ledger, monkeypatch):
-    """A damaged ``migrated.json`` cannot say which limits a Bot has, so every call of
-    a Bot it still names is held; a Bot its text does not name runs as before."""
+    """A damaged ``migrated.json``, complete but not JSON, cannot say which limits a Bot
+    has, so every call of a Bot it still names is held; a Bot its text does not name
+    runs as before."""
     from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
-    ledger.write_text('{"held_rules": {"zxc": {"member_id": "zxc", "rul', encoding="utf-8")
+    ledger.write_text('{"held_rules": {"zxc": {"member_id": "zxc", "rul\n}', encoding="utf-8")
     cfg = KiroCrewConfig()
     cfg.agents = {
         "zxc": KiroCrewAgentConfig(member_id="zxc", kiro_agent="zxc"),
@@ -278,11 +279,68 @@ def test_an_unreadable_ledger_holds_every_call_of_the_bots_it_still_names(ledger
     assert mate_held_rules.held_for(_event("read"), agent="kirocrew") == []
 
     # An entry recorded with no member id is matched by its Bot's name.
-    ledger.write_text('{"held_rules": {"kirocrew": {"member_id": "", "rul', encoding="utf-8")
+    ledger.write_text('{"held_rules": {"kirocrew": {"member_id": "", "rul\n}', encoding="utf-8")
     assert mate_held_rules.held_for(_event("read"), agent="kirocrew") == [
         mate_held_rules.UNREADABLE
     ]
     assert mate_held_rules.held_for(_event("read"), agent="zxc") == []
+
+
+def test_a_ledger_save_keeps_the_inode_a_sandbox_sealed(ledger):
+    """A running Linux sandbox bind-mounts ``migrated.json`` read-only, and a rename
+    over it would detach that seal there, so a gateway save rewrites it in place."""
+    _hold(ledger, "shell")
+    inode = ledger.stat().st_ino
+
+    mate_held_rules.record_held("abc", "", [{"text": "deny shell", "capability": "shell"}])
+
+    assert ledger.stat().st_ino == inode
+    assert mate_held_rules.held_for(_event("execute"), agent="abc") == ["deny shell"]
+
+
+def test_a_read_racing_a_ledger_save_is_read_again_under_its_lock(ledger, monkeypatch):
+    """A save rewrites ``migrated.json`` in place under the ledger lock, so a read
+    racing it sees the record cut off; read again under that lock, a Bot the cut-off
+    text does not name keeps its limits."""
+    import contextlib
+
+    from kiro_crew import mate_ledger_lock
+
+    _hold(ledger, "shell")
+    whole = ledger.read_text(encoding="utf-8")
+    ledger.write_text('{"migrated": ["a', encoding="utf-8")  # the save, mid-write
+    real_lock = mate_ledger_lock.ledger_lock
+
+    @contextlib.contextmanager
+    def save_finishes_first():
+        with real_lock():
+            ledger.write_text(whole, encoding="utf-8")
+            yield
+
+    monkeypatch.setattr(mate_ledger_lock, "ledger_lock", save_finishes_first)
+
+    assert mate_held_rules.held_for(_event("execute"), agent="zxc") == [
+        "its permissions rule to deny shell"
+    ]
+
+
+@pytest.mark.parametrize(
+    "record",
+    ["", '{\n  "held_rules": {\n    "zxc": {\n      "member_id": "zxc"'],
+    ids=["empty", "cut-off"],
+)
+def test_a_cut_off_ledger_holds_every_call_of_every_bot(ledger, monkeypatch, record):
+    """A save rewrites ``migrated.json`` in place, so one cut short leaves the record
+    empty or cut off before the closing brace every save ends with. The Bots its
+    entries after the cut held are not in its text, so every Bot is held."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    ledger.write_text(record, encoding="utf-8")
+    cfg = KiroCrewConfig()
+    cfg.agents = {"abc": KiroCrewAgentConfig(member_id="abc", kiro_agent="abc")}
+    monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: cfg))
+
+    assert mate_held_rules.held_for(_event("read"), agent="abc") == [mate_held_rules.UNREADABLE]
 
 
 def test_a_call_that_cannot_be_matched_against_read_rules_is_held(ledger, monkeypatch):
