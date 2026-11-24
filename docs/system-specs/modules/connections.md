@@ -1674,6 +1674,9 @@ a pending sign-in (constant-time) is the only admission, each `state` answers
 once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
 HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
 echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Both loopback listeners (the shared port and a consent's own port) answer with
+the same titled page (`crew_oauth_dcr.titled_page`), so the tab reads the same
+wherever the vendor sends the browser back.
 A callback that carries an `error`, or no `code`, is a refusal, even beside a
 code: `crew_oauth.callback_refusal` maps the `error` value onto the closed RFC
 6749 §4.1.2.1 set (`callback_access_denied`, `callback_invalid_request`,
