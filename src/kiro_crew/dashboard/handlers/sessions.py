@@ -241,8 +241,8 @@ if TYPE_CHECKING:
     from kiro_crew.cron import cron_owner_matches  # noqa: F401
     from kiro_crew.dashboard import directive_queue  # noqa: F401
     from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
-    from kiro_crew.dashboard.chat_utils import effective_session_key  # noqa: F401
-    from kiro_crew.dashboard.chat_utils import slot_history_key  # noqa: F401
+    from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key  # noqa: F401
+    from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import internal_memory_scope  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401

@@ -6829,6 +6829,7 @@
       "auto_jev_enter": "স্বয়ংক্রিয় (সিদ্ধান্ত মডেল): এখনই কাজে লাগানো হবে নাকি পরে চালানো হবে, সিদ্ধান্ত মডেল ঠিক করে (Enter)",
       "approval_hint_adjust": "অনুমোদন মোড সামঞ্জস্য করুন",
       "approval_hint_question": "প্রতিবার নিশ্চিত করতে ক্লান্ত?",
+      "git_confirm_always_asks": "এই কমান্ড সবসময় অনুমতি চায়, Trust বা YOLO চালু থাকলেও।",
       "send_a_message_or_tap_the_mic_for_voice": "বার্তা পাঠান, বা ভয়েসের জন্য মাইকে ট্যাপ করুন",
       "release_to_transcribe": "লেখায় রূপান্তরে ছেড়ে দিন",
       "hold_to_talk": "বলতে চেপে ধরুন",

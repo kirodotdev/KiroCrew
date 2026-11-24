@@ -6645,6 +6645,7 @@
       "auto_jev_enter": "自动 (决策模型)：由决策模型决定立即处理还是稍后执行 (Enter)",
       "approval_hint_adjust": "调整审批模式",
       "approval_hint_question": "不想每次都确认？",
+      "git_confirm_always_asks": "此命令始终需要确认，即使在 Trust 或 YOLO 模式下也是如此。",
       "send_a_message_or_tap_the_mic_for_voice": "发消息，或点麦克风用语音",
       "release_to_transcribe": "松手转文字",
       "hold_to_talk": "按住说话",

@@ -198,6 +198,9 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  command by this rule): the bar offers the override scopes and a reject,
    *  and no Allow once / Trust, which the server would read as a refusal. */
   const approvalDenyRule = typeof approvalMeta?.deny_override_rule === 'string' ? approvalMeta.deny_override_rule : ''
+  /** Set on a git-confirm card (``hooks.confirm_git_writes``): it asks under every
+   *  approval mode, so it offers no Trust and no approval-mode hint. */
+  const approvalIsGitConfirm = approvalMeta?.git_confirm === '1'
   /** The plain sentence on what that rule blocks, when the server knows one. */
   const approvalDenyDetail = typeof approvalMeta?.deny_override_detail === 'string' ? approvalMeta.deny_override_detail : ''
   /** The rule's family slug, which picks the card's one plain-language line on
@@ -462,7 +465,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalBrowserTrustClass, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
-    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
+    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand, approvalIsGitConfirm,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, approvalSubagentTask, approvalAskedBySubagent, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,
   }

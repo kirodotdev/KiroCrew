@@ -6645,6 +6645,7 @@
       "auto_jev_enter": "自動 (判断モデル): すぐ反映するか後で実行するかを判断モデルが決めます (Enter)",
       "approval_hint_adjust": "承認モードを調整",
       "approval_hint_question": "毎回の確認が面倒ですか？",
+      "git_confirm_always_asks": "このコマンドは Trust や YOLO でも毎回確認されます。",
       "send_a_message_or_tap_the_mic_for_voice": "メッセージを送信、またはマイクをタップして音声入力",
       "release_to_transcribe": "離して文字起こし",
       "hold_to_talk": "押して話す",

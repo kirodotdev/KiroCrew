@@ -7013,6 +7013,7 @@
       "auto_jev_enter": "Automatique (modèle de décision) : le modèle de décision choisit d'agir maintenant ou d'exécuter ensuite (Entrée)",
       "approval_hint_adjust": "Régler le mode d'approbation",
       "approval_hint_question": "Fatigué de confirmer chaque étape ?",
+      "git_confirm_always_asks": "Cette commande demande toujours une confirmation, même en Trust ou YOLO.",
       "send_a_message_or_tap_the_mic_for_voice": "Envoyer un message ou appuyer sur le micro pour la voix",
       "release_to_transcribe": "Relâcher pour transcrire",
       "hold_to_talk": "Maintenir pour parler",

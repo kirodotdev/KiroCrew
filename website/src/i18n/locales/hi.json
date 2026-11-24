@@ -6829,6 +6829,7 @@
       "auto_jev_enter": "स्वतः (निर्णय मॉडल): निर्णय मॉडल तय करता है कि अभी लागू करो या बाद में चलाओ (Enter)",
       "approval_hint_adjust": "अनुमोदन मोड समायोजित करें",
       "approval_hint_question": "हर बार पुष्टि करते-करते थक गए?",
+      "git_confirm_always_asks": "यह कमांड हमेशा पूछता है, Trust या YOLO में भी।",
       "send_a_message_or_tap_the_mic_for_voice": "संदेश भेजें, या वॉइस के लिए माइक टैप करें",
       "release_to_transcribe": "लिखने के लिए छोड़ें",
       "hold_to_talk": "बोलने के लिए दबाए रखें",
