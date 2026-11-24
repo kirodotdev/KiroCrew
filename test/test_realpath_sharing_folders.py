@@ -85,7 +85,9 @@ def test_every_answer_is_realpaths_answer(tmp_path):
         for base in (home, tmp_path / "homelink")
         for leaf in _LEAVES
     ]
-    paths += ["/", "//", "//x/y", "relative/path", "", ".", "\0", str(home) + "\0"]
+    paths += ["/", "//", "relative/path", "", ".", "\0", str(home) + "\0"]
+    if os.name != "nt":  # on Windows `//x/y` is a UNC share: resolving it opens SMB (D10)
+        paths.append("//x/y")
     assert realpaths_sharing_folders(paths) == _one_by_one(paths)
     # Order must not matter: a folder first met through a child is the same folder.
     assert realpaths_sharing_folders(paths[::-1]) == _one_by_one(paths[::-1])
