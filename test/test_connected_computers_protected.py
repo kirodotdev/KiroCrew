@@ -382,8 +382,8 @@ class TestLibsecretAdapter:
 
 
 class TestPlatformChoice:
-    @pytest.mark.parametrize("platform", ["win32", "darwin"])
-    def test_r2_b06_only_linux_has_a_protected_store_yet(self, monkeypatch, tmp_path, platform):
+    @pytest.mark.parametrize("platform", ["freebsd14", "sunos5"])
+    def test_r2_b06_a_system_with_no_store_is_refused(self, monkeypatch, tmp_path, platform):
         monkeypatch.setattr(ps.sys, "platform", platform)
         with pytest.raises(ProtectionUnavailable):
             ps.protected_store_for(tmp_path)

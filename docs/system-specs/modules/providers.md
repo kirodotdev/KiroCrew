@@ -148,9 +148,9 @@ of `@workspace`; an empty or read-only allowlist stays one, `_workspace_grants`)
 Built-in exclusions also exclude their replacements, and core wildcards keep the
 complete requested pattern. Workspace tools cannot skip the gateway gate: shell
 arguments meet command policy and the deny floor, and file tools carry their
-read/write scopes, matched as the guest's POSIX paths on any gateway OS
-(`platform/guest_paths.py`; governance.md, "Path matcher — remote-workspace
-targets"), so a Windows gateway attaches a workspace too. The link stops reading (so acknowledging) while the session's
+read/write scopes, matched as the guest's own paths on any gateway OS (POSIX,
+or Windows for a Windows connected computer; `platform/guest_paths.py`;
+governance.md, "Path matcher — remote-workspace targets"), so a Windows gateway attaches a workspace too. The link stops reading (so acknowledging) while the session's
 reader is behind, holding the guest at its unacked window. The fence needs a
 host whose tool allowlist travels over the wire; only KAS qualifies, so any
 other backend is refused before a workspace is touched
@@ -466,7 +466,48 @@ stop does not reach. It runs unchanged from every other remote workspace: its
 SIGTERM retirement unwinds a running command (`_unwind`, coreutils `timeout`
 signalling the command's group), and whatever is left in the sandbox ends with
 the tool server's own PID namespace. Pinned by
-`test_connected_computers_broker.py`.
+`test_connected_computers_broker.py`. macOS and Windows have no such namespace,
+so there the connector starts the tool server with `--end-commands-with-server`:
+on POSIX each command runs in a process group of its own (no `timeout`
+wrapper), which the server tracks until the group empties
+(`workspace_lifetime.CommandGroups`). A timeout ends the command's whole group:
+SIGTERM, up to 1 s, then SIGKILL, so a test runner's children stop with it. A
+group whose command returned but left a background child stays tracked, and
+every tracked group is ended the same way before the server exits: when its
+input ends, on SIGTERM (the connector's group stop, whose 3 s grace covers the
+server's 1 s), and when a once-a-second check finds the connector that started
+it gone, after which the server exits on its own. A SIGTERM that lands while a
+command starts is held until the command is tracked, then acted on
+(`CommandGroups.spawning`), so no started command is missed. A group is signalled only by
+the id read when its command started, and forgotten once no member answers, so
+an id the system has handed on is never signalled. On macOS this guarantee is
+weaker than on Linux and Windows, by the owner's decision: a process a command
+moves into a session of its own (`setsid`, `start_new_session=True`, a
+double-forking daemon) leaves its tracked group, so neither a timeout nor
+revoking the share ends it. It keeps running under the same Seatbelt profile,
+with that profile's access to the shared folder and the network, until it exits
+or the computer's user ends it. Seatbelt has no PID namespace or job to end
+every member, and a sweep of descendants would still miss a process re-parented
+to `launchd`. On Windows the server first
+joins a job that ends every member when the server exits (kill on job close),
+and refuses to start when the job cannot be made. Every other Windows child,
+an exposed MCP server included, starts through the same file as a launcher
+(`workspace_lifetime.py --run-in-job -- <program>`, `confinement.windows_job_argv`):
+it holds the program in its own kill-on-close job and waits, so a helper the
+program detached ends when the launcher exits or the connector kills it, even
+after the program itself has exited. It runs nothing when the job cannot be made. Both live in
+`workspace_lifetime.py`, which ships beside the tool server like
+`workspace_git_bodies.py`. Under `cmd.exe` a command holding a line
+break is refused with a hint to join steps with `&&`, since `cmd /c` runs only
+the first line, and the tool's description says so. A command is also refused
+in a folder whose name holds `& | < > ^ "` (`CMD_SPECIAL_CHARS`): cmd expands
+`%CD%` before it reads those, so the folder's name would add commands the
+approval never saw. A macOS child reads only the devices it needs (`/dev/null`,
+`/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/dtracehelper`,
+`/dev/fd`), never all of `/dev`, where the user's other terminals are readable. The gateway accepts a
+reported root that is absolute and normalized as its own system writes it:
+POSIX, or Windows with a drive letter or a UNC share (`protocol.valid_root`).
+Pinned by `test_connected_computers_platforms.py`.
 
 A connected-computer workspace attachment that fails or is cancelled closes all
 workspace and local-MCP relays opened by that attempt before re-raising. This
@@ -657,16 +698,68 @@ only: a datagram pair (`SOCK_DGRAM`, or `SOCK_RAW`, which the kernel makes one)
 answers `EPERM`, because `sendto` with an explicit address on it reaches an
 unconnected abstract datagram listener. A filesystem unix socket inside the root is refused
 too, since seccomp cannot read the address. A processor with no table
-(`seccomp.TABLES`: x86_64, aarch64) has no plan. Sharing is Linux-only for now:
-macOS and Windows have no plan and refuse with that reason
-(`confinement.plan_for_this_machine`).
+(`seccomp.TABLES`: x86_64, aarch64) has no plan.
+
+macOS (`confinement_macos.MacPlan`, `macos-seatbelt`) runs every child under
+`sandbox-exec -p` with a `(deny default)` profile: reads of the system runtime
+(`/usr` by its system subtrees, `/System`, `/bin`, `/sbin`, `/private/etc`), the
+developer tools, the Python install and the tool-server files; under each package
+prefix (`/opt/homebrew`, `/usr/local`) only its toolchain (`bin`, `sbin`, `lib`,
+`libexec`, `include`, `share`, `opt`, `Cellar`, `Frameworks`), never its `var` or
+`etc`, which hold the user's service data and configs (a database's files, a
+server's config). Those two are denied again after every read allow, so a Python
+install at a prefix cannot reopen them, and then only Homebrew's certificate
+bundles (`etc/ca-certificates/cert.pem`, `etc/openssl@3` and `etc/openssl@1.1`
+`cert.pem` and `openssl.cnf`) and git's system config (`etc/gitconfig`,
+`etc/gitattributes`, which Homebrew git refuses to run without reading) are
+readable again; a shared root under one stays
+shared, since the root's allow comes last;
+reads and writes under the resolved root and scratch; stat-only access to their
+parent folders; IP networking; the Mach services in `MACOS_MACH_SERVICES` only
+(no LaunchServices, Apple Events, preferences, keychain or pasteboard); and unix
+sockets only under the root, the scratch and the name resolver. The read-only
+runtime and tool paths are denied writes after the root is allowed them, since
+Seatbelt is last-match-wins. `sandbox-exec` and the in-fence launcher
+(`confinement_exec.py`, `python -I -S`) start with the bare base environment; the
+child's environment is written to an unlinked owner-only file in the scratch,
+handed over as an inherited descriptor, read inside the fence, and the launcher
+then `execvpe`s the child, so no `DYLD_` value runs before the fence and no value
+sits in an argv. A folder name holding a line break or NUL is refused.
+
+Windows (`WindowsUnconfinedPlan`, `windows-none`) has no OS sandbox, by the
+owner's decision: the child runs as the user, in the root, with an environment
+built from nothing (system names, homes and temp folders pointed at the scratch,
+the local gateway's credentials withheld), and the workspace tool server still
+refuses paths outside the root (`Workspace.resolve`) and runs commands through
+`cmd.exe` from the system folder (`--shell cmd`). A network folder cannot be
+shared from Windows: `cmd.exe` cannot start in one and would run the command in
+the Windows folder instead, so `resolve_root` refuses a root whose real path is
+a UNC share (a drive letter mapped to a share included), at share and at every
+start, and the tool server refuses a command whose working folder is one
+(`workspace_tools.windows_network_folder`). Every other program either
+side starts by a bare name (an exposed MCP server's command, the git views'
+`git`) is looked up only in the child's `PATH` entries that carry a drive or a
+UNC share, never `.`, an empty or a relative entry, and never in the current
+folder, which `CreateProcess` and `shutil.which` would search first and which is
+the shared root (`workspace_tools.windows_program`, which uses no `which`: each
+entry is tried with each `PATHEXT` extension in order, Windows' default
+`.COM;.EXE;.BAT;.CMD` when unset, and a name already ending in one is tried as
+it is first); not found refuses the
+start, or answers "git is not installed". A command it runs, and an
+exposed local MCP server, can read and change any file the user can. The consent
+describe (the desktop host's, which the dashboard share and the menu both use) carries `confinement: {plan, fenced}`
+from `describe_confinement`, and the native dialog's first question says so in
+plain words when `fenced` is false. Any other system has no plan and refuses
+with `UNSUPPORTED_OS_REASON` (`confinement.plan_for_this_machine`).
 
 `self_test` runs once per grant per controller, before its first connector
 start, and refuses the computer unless the standalone `confinement_probe.py`
 entry point, run once unconfined (the control) and once confined, answers as a
 fence does against witnesses created for that check: a file, a folder and a
-unix socket outside the root (an abstract one), a symlink in the root pointing
-out, a loopback TCP listener, and the session keyring (a read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
+unix socket outside the root (an abstract one on Linux, a socket file on
+macOS), a symlink in the root pointing out, a loopback TCP listener, on macOS an
+excluded Mach service (`MACOS_MACH_WITNESS`, `com.apple.cfprefsd.daemon`), and
+on Linux the session keyring (a read-only `keyctl(KEYCTL_GET_KEYRING_ID)`, number from `confinement.keyctl_number`).
 The control must reach every non-link witness, except the keyring, which a host whose own
 seccomp refuses `keyctl` (a container's) cannot reach and so has none to protect.
 Both runs refuse the symlink witness through no-follow opens: it checks probe I/O
@@ -797,14 +890,20 @@ and the install key, are AES-GCM sealed under a 32-byte data key the OS keeps
 a sealed value moved to another field or grant does not open. The document
 records only the key's id. The OS store is the Linux Secret Service
 (`secret-tool`, resolved from fixed system folders with
-`trusted_system_bin_quiet`, never `PATH`, the key on stdin); one item per data home
+`trusted_system_bin_quiet`, never `PATH`, the key on stdin), the macOS login
+Keychain (`/usr/bin/security`, the key sent on stdin to `security -i`; exit 44 is
+"no item", any other failure unavailable; a save is proved by reading it back),
+or on Windows the key sealed by DPAPI for this user (`CryptProtectData`,
+`CRYPTPROTECT_UI_FORBIDDEN`, entropy bound to the data home's account) in
+`connected-computers-key.dpapi`, written atomically with an owner-only DACL;
+one item per data home
 (`account_for`). Key initialization holds `connected-computers-key.lock` in that
 same data home through the OS save and vault key-id write. Each caller opens its
 own descriptor through `platform_compat`, excluding both sibling threads and
 other processes, and re-reads both stores under the lock before making a key.
 The lock is separate from the vault's write lock, which the key-id write takes.
 Every save is read back. No tool, no session bus, a locked or
-silent keyring (30 s), any other platform (macOS and Windows included) is
+silent keyring (30 s), any other platform is
 `ProtectionUnavailable`: a consent is refused before any SSH enrollment (the
 desktop host's `describe` and `share` answer `protection_unavailable`), a renewal
 is not stored, and a connector does not start. Nothing falls back to plaintext.
@@ -980,8 +1079,10 @@ controller's first reconcile. stdin EOF (the app quit or died) stops every
 connector, releases the lock and keeps every grant (exit 0). A first line that
 is not `hello`, or a line past the stream limit, exits 2 and is not respawned.
 The app respawns any other exit after 5 s, at most 5 times in a row, and ends
-its stdin and then sends SIGTERM 8 s later on quit. macOS and Windows run no
-host: the CLI refuses there and the menu stays hidden. Pinned by
+its stdin and then sends SIGTERM 8 s later on quit. Linux, macOS and Windows run
+the host (on Windows its stdin is read on a thread, since the app's pipe cannot
+be read by the event loop); any other system runs none: the CLI refuses there
+and the menu stays hidden. Pinned by
 `test_connected_computers_desktop_host.py`,
 `website/electron/test/connected-computers-host.test.js` and
 `connected-computers-desktop.test.js`.
@@ -1083,7 +1184,7 @@ providers), `test/test_connected_computers_mcp_filter.py` (B14 tools turned off 
 |---|---|
 | B03 work runs only on the chat's computer | `coder.session_launch.prepare_for_session` sends a `connected_computer` choice to `provider.prepare_connected_session` before any profile or config is read; `ConnectedComputerLaunch.dial` opens channels on that one device id; `start_worker` takes a channel kind only (`workspace`, `mcp:<name>`), never an argv or path; built-in file and shell tools are replaced by `@workspace` (`_remote_workspace_agents`); the agent loop and the gateway's own servers stay on the gateway |
 | B04 declined approval, no effect | `may_skip_gate` never keeps `@workspace` or `@connected-computer-*` (governance.md); a declined call is never written to the link; recording a worker starts nothing on the computer |
-| B05 out of scope | the root is resolved and refused at consent (`root_policy`), including a root that holds or is inside the running `kiro_crew` package or Python install, whose code runs unconfined; it is re-resolved before every confined start (`Connector._open`), and a root that is now a symlink or whose real path differs from the stored one is refused (SEL `root_changed`) before anything is bound; the read-only runtime binds are mounted after the writable root so they stay read-only; the tool server resolves every path through symlinks and refuses one outside the root (`remote_session/workspace_tools.Workspace.resolve`: reads, writes and `cwd`); every child, the workspace tools and each exposed MCP server, is spawned through the plan on the granted root (`Connector._open`), whose sandbox makes only the root and a scratch folder writable and keeps descendants inside it (bwrap `--unshare-pid --die-with-parent --new-session`) |
+| B05 out of scope | the root is resolved and refused at consent (`root_policy`), including a root that holds or is inside the running `kiro_crew` package, the Python install or the folder the interpreter is started from (a Homebrew `bin` link), whose code runs unconfined; it is re-resolved before every confined start (`Connector._open`), and a root that is now a symlink or whose real path differs from the stored one is refused (SEL `root_changed`) before anything is bound; the read-only runtime binds are mounted after the writable root so they stay read-only; the tool server resolves every path through symlinks and refuses one outside the root (`remote_session/workspace_tools.Workspace.resolve`: reads, writes and `cwd`); every child, the workspace tools and each exposed MCP server, is spawned through the plan on the granted root (`Connector._open`), whose sandbox makes only the root and a scratch folder writable and keeps descendants inside it (bwrap `--unshare-pid --die-with-parent --new-session`) |
 | B08 loss | a lost or ended link closes the bridge and stops the tool server, refuses later writes and never redials (`ChannelLink`); nothing is retried, resent or fabricated. The chat stays bound, so a start on an offline computer is refused, never moved. A runtime's close and end-watcher end only the relays it attached (`ConnectedComputerLaunch.own_relays`, captured at attach and at registration, closed by `close_relays`), so a runtime that dies after a respawn attached new relays to the same launch never closes the respawn's |
 | Files, Git, health and terminal panels | the dashboard has no channel of its own to the computer: `session_browse._resolve` refuses a row recorded `connected_computer` with `ConnectedComputerOnly` before any config or Coder lookup, answered 409 `connected_computer` (the terminal parks as on the wrong machine), and `RemoteFilesPanel` shows a neutral notice for such a placement instead of browsing |
 | B14 exposed MCP | mcp.md § Servers a connected computer exposes: ticked stdio servers only, the agent's own grants decide, every call meets the gate; a tool turned off in the computer's own MCP config (`disabledTools`) is snapshotted into the grant and kept off by the connector on the computer (`mcp_filter.ToolFilter`: the call gets a tool error and never reaches the server, the tool is trimmed from `tools/list`; an entry matches exactly or, with `*`/`?`, as a glob, as kiro-cli reads it, mcp.md), so the server is shared with its other tools rather than refused. Each start re-reads the local MCP config (`local_mcp.live_limits`), which only narrows: a tool turned off since joins the list, and a server removed, turned off or no longer exposable does not start |
@@ -1096,8 +1197,9 @@ person's own MCP server whose name starts `connected-computer-` loses auto-appro
 (mcp.md), and with it off that server keeps the answer it had before. In the chat's trust
 mode a connected computer's tools run without asking, as every tool does in that mode; the
 sensitive-path and denied-command floors still judge `@workspace` calls as the built-ins
-they replace (governance.md § Path matcher). Sharing is Linux-only for now: native
-confinement is authored for Linux; macOS and Windows refuse with a plain reason (B06).
+they replace (governance.md § Path matcher). Linux and macOS confine every child
+natively; Windows has no OS sandbox by owner decision and says so at consent; any
+other system refuses with a plain reason (B06).
 
 With Session Environments or the connected-computers preview off, a chat placed
 on a connected computer runs on this server as before. The developer-flag early

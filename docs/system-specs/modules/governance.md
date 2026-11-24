@@ -144,7 +144,8 @@ can reorder strictness or redefine matching):
 
   **Path matcher — remote-workspace targets.** A remote workspace's file tools
   act on a Linux guest, so their targets are matched as the guest's POSIX paths
-  on every gateway OS, a Windows one included. The flavour is chosen per call,
+  on every gateway OS, a Windows one included (a Windows connected computer is
+  read as Windows paths, below). The flavour is chosen per call,
   never globally: `build_permission_event` tags the call's arguments with the
   `GuestPathParams` type (`platform/guest_paths.py`) only on a runtime whose own
   remote-workspace binding (`set_remote_workspace`) attached the workspace
@@ -163,8 +164,50 @@ can reorder strictness or redefine matching):
   builder cannot place for certain (an untrusted identity, or a `workspace` tool
   it does not know) is tagged `also_local` and must pass every rule under both
   the guest's and the gateway's reading. A remote diff-block path is anchored by
-  `posixpath.isabs` (`edit_target_candidates`). A local call keeps the gateway's
+  `guest_absolute` (`edit_target_candidates`). A local call keeps the gateway's
   own `os.path` reading unchanged.
+
+  **Path matcher — a Windows connected computer.** It is the one guest that is
+  not Linux: its workdir is a native Windows path, a drive letter or a UNC share
+  (`guest_windows`), and the builder tags its calls exactly as it tags a POSIX
+  guest's (`guest_workdir_absolute` accepts either root), so they are never
+  judged as this gateway's paths. The workdir chooses the reading. A relative
+  argument is anchored with `ntpath.join`, which keeps a `\x` on the workdir's
+  drive and leaves a `D:x` unanchored (`guest_anchor`). `guest_norm` then
+  reads every `/` as `\` and only then removes a namespace prefix (`\\?\`,
+  `\\.\`, `\??\`, including `\\?\UNC\`), so a mixed spelling such as
+  `\\./C:/x` or `//?\C:\x` is removed too; what follows a prefix is read as
+  absolute, and one that names no drive-letter or UNC file (a device, a volume
+  GUID) has no answer. It also removes a trailing `::$DATA`, collapses `.`, `..` and both separators with
+  `ntpath.normpath`, drops the trailing dots and spaces Windows drops from each
+  name, and upper-cases the drive letter. The matcher compares the result as a
+  Windows gateway compares its own paths (`_match_local_path(windows=True)`): a
+  pattern's `/` also meets `\`, and a deny, never an allow, also meets the other
+  ASCII case. The never-permittable item is added for a target that carries a
+  namespace prefix, a `%`, `$` or `~` (a variable, or an 8.3 short name such as
+  `PROGRA~1`), a `:` after the drive (a data stream) or a name ending in a dot
+  or a space, so an allow-mode confinement refuses each spelling another reader
+  could take for a different file. On Windows and macOS guests a deny is at
+  least as wide as the filesystem's own aliasing (`_match_denied_path`). On
+  Windows, a target with no answer (a drive-relative `D:x`, a device path) and
+  every target that check marks as an alias spelling (an 8.3 short name such as
+  `PRIVAT~1`, a stream such as `report.docx:Zone.Identifier` or
+  `private::$INDEX_ALLOCATION`, a namespace prefix, a trailing dot or space)
+  meets every deny pattern (`guest_alias_windows`, `_windows_fs_alias`), since
+  the computer may open a denied file through it. A `%` or `$` is not an alias:
+  the tool server opens it as the literal character, so such a name meets a
+  deny only as written, and only an allow refuses it as unverifiable. On a
+  macOS computer, whose APFS volume opens a name in any case and in either
+  Unicode form, and on a Windows computer, whose NTFS volume opens a name in any
+  Unicode case, a deny also compares the target and the pattern folded
+  (`_guest_fold`: NFC, full Unicode case fold, and on Windows one separator). The connection's authenticated
+  `ready` platform (`ConnectedComputerLaunch.platform`) sets
+  `case_insensitive` on the runtime's workspace binding, and the builder copies
+  it onto `GuestPathParams`; a model input cannot set it. A Linux guest and
+  every allow match as written, so an allow never widens. A POSIX rule never binds such a target, and
+  a rule for it is written with that computer's own path (`C:\Projects\app\**`
+  or `C:/Projects/app/**`). Pinned by the `test_win_` cases in
+  `test_remote_workspace_guest_paths.py`.
 
 `SCOPE_CATALOG` is the single place a scope name binds to its archetype +
 matcher. `register_scope` / `register_matcher` are append-only extension seams;

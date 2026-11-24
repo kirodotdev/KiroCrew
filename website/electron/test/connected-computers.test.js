@@ -228,3 +228,34 @@ test("the native dialog can approve the full limit and offers no excess server",
   assert.deepEqual(result.mcp, servers.slice(0, MAX_MCP_PROMPTS).map((s) => s.name));
   assert.equal(dialog.shown.filter((s) => s.kind === "message").length, MAX_MCP_PROMPTS + 1);
 });
+
+test("Windows: an unfenced describe warns that commands reach files outside the folder", async () => {
+  const { UNFENCED_DETAIL } = require(MODULE_PATH);
+  const host = fakeHost({
+    replies: { describe: { ...DESCRIBED, confinement: { plan: "windows-none", fenced: false } } },
+  });
+  const dialog = fakeDialog({ confirm: 1 });
+  const out = await shareFromDashboard("work-crew", deps(dialog, host));
+  assert.deepEqual(out, { ok: false, error: "cancelled" });
+  // Cancelled at the warning: nothing was shared.
+  assert.deepEqual(host.calls.map((c) => c.op), ["describe"]);
+  const first = dialog.shown[0].opts;
+  assert.equal(first.type, "warning");
+  // Cancel is the default answer when nothing keeps commands in the folder.
+  assert.equal(first.defaultId, 1);
+  assert.match(first.detail, /Work crew/);
+  assert.ok(first.detail.includes(UNFENCED_DETAIL));
+  assert.match(first.detail, /any file your account can/);
+});
+
+test("a fenced or older describe keeps the folder-only wording", async () => {
+  const { FENCED_DETAIL } = require(MODULE_PATH);
+  for (const confinement of [{ plan: "macos-seatbelt", fenced: true }, undefined]) {
+    const dialog = fakeDialog({ confirm: 1 });
+    await askNative("Work crew", [], { dialog, window: null }, confinement);
+    const first = dialog.shown[0].opts;
+    assert.equal(first.type, "question");
+    assert.equal(first.defaultId, 0);
+    assert.ok(first.detail.includes(FENCED_DETAIL));
+  }
+});

@@ -36,10 +36,64 @@ MAX_MATCHES = 200
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 1800
 LOCK_DIR = ".kirocrew-file-locks"
+#: The refusal of a multi-line command under cmd.exe, which would run only line one.
+CMD_ONE_LINE = (
+    "cmd.exe runs only the first line of a command; put it on one line and join "
+    "the steps with && (or & to run the next step even when one fails)"
+)
+#: Characters cmd.exe reads as syntax after it expands a variable such as %CD%.
+#: Only the ones that chain, pipe, redirect, escape or end a quote: an expanded
+#: value is not expanded again, and a folder like ``Copy (2)`` stays usable.
+CMD_SPECIAL_CHARS = frozenset('&|<>^"')
+#: The refusal of a command in a folder whose name cmd.exe would read as syntax.
+CMD_SPECIAL_FOLDER = (
+    "cmd.exe would read this folder's name as part of the command (it holds one of "
+    '& | < > ^ "); run the command in a folder without them'
+)
+#: The refusal of a command in a network folder, which cmd.exe cannot start in.
+CMD_NETWORK_FOLDER = (
+    "cmd.exe cannot run a command in a network folder (it would run in the Windows "
+    "folder instead); share a folder on a local drive"
+)
 # Matches platform_lock_compat; this guest file ships without the gateway package.
 _LOCK_POLL_SECS = 0.01
 #: This script's own directory: browsing runs it, so no workspace write may replace it.
 _SELF_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def _beside(name: str) -> Any:
+    """Load the sibling module ``name`` from this file's own folder.
+
+    Run as a script this file has no package, and under ``python -I`` (a
+    connected computer) its folder is not on ``sys.path`` either, so the
+    sibling is loaded by its exact path: nothing else on the path can stand in.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_SELF_DIR, name + ".py"))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{name}.py is missing beside workspace_tools.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    from . import workspace_git_bodies as _git_views
+    from . import workspace_lifetime as _lifetime
+except ImportError:  # run as a script, copied beside it
+    _git_views = _beside("workspace_git_bodies")
+    _lifetime = _beside("workspace_lifetime")
+
+# Re-exported: the diff view and its tests read them here.
+_git_bool = _git_views._git_bool
+_git_index_entry = _git_views._git_index_entry
+_git_index_mode = _git_views._git_index_mode
+_worktree_mode = _git_views._worktree_mode
+_GIT_NONPRINTABLE = _git_views._GIT_NONPRINTABLE
+_git_auto_text = _git_views._git_auto_text
+_git_bodies = _git_views._git_bodies
 
 
 def _is_within(path: str, root: str) -> bool:
@@ -426,6 +480,105 @@ def _windows_system_dir() -> str:
     return "C:\\Windows\\System32"
 
 
+def _windows_qualified(path: str) -> bool:
+    """A drive-letter or UNC path, never one resolved against a current directory."""
+    import ntpath
+
+    drive = ntpath.splitdrive(path)[0]
+    return bool(drive) and ntpath.isabs(path) and not drive.startswith(("\\\\?\\", "\\\\.\\"))
+
+
+def windows_network_folder(path: str) -> bool:
+    """Whether *path* is a Windows network folder (``\\\\server\\share``, any spelling).
+
+    ``cmd.exe`` cannot start in one: it warns and runs in the Windows folder
+    instead, so a command would act outside the shared folder.
+    """
+    import ntpath
+
+    unified = path.replace("/", "\\")
+    if unified[:8].upper() == "\\\\?\\UNC\\":
+        return True
+    drive = ntpath.splitdrive(unified)[0]
+    return drive.startswith("\\\\") and not drive.startswith(("\\\\?\\", "\\\\.\\"))
+
+
+#: Windows' own ``PATHEXT`` default, used when the child's environment has none.
+_WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+#: The file check :func:`windows_program` uses (patched by tests on every OS).
+_is_file = os.path.isfile
+
+
+def windows_program(name: str, path: str, pathext: str = "") -> Optional[str]:
+    """Windows: the absolute file *name* runs as, from *path*'s absolute entries only.
+
+    ``CreateProcess`` looks in the current directory before ``PATH``, and so
+    does ``shutil.which`` even when given a path, and a tool server's current
+    directory is the shared root, so a bare ``git`` could start a ``git.exe``
+    someone put there. So no ``which`` is used: each ``PATH`` entry with a drive
+    or a UNC share is tried on its own, ``.``, empty and relative entries never,
+    with each ``PATHEXT`` extension in order (*pathext*, or Windows' default
+    when empty), and a name that already ends in one of them is tried as it is
+    first. A name with a separator or a drive is refused. None when nothing is
+    found.
+    """
+    import ntpath
+
+    if not name or any(ch in name for ch in "\\/:"):
+        return None
+    exts = [ext.strip() for ext in (pathext or _WINDOWS_PATHEXT).split(";") if ext.strip()]
+    names = [name + ext for ext in exts]
+    if any(name.upper().endswith(ext.upper()) for ext in exts):
+        names.insert(0, name)
+    for entry in path.split(";"):
+        entry = entry.strip().strip('"')
+        if not _windows_qualified(entry):
+            continue
+        for candidate in names:
+            found = ntpath.join(entry, candidate)
+            if _windows_qualified(found) and _is_file(found):
+                return found
+    return None
+
+
+def _windows_oem_codec() -> Optional[str]:
+    """The console (OEM) code page cmd.exe writes to a pipe in, such as ``cp850``."""
+    try:
+        import ctypes
+
+        page = int(ctypes.windll.kernel32.GetOEMCP())  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        return None
+    codec = f"cp{page}"
+    try:
+        codecs.lookup(codec)
+    except LookupError:
+        return None
+    return codec
+
+
+def _command_text(data: bytes, *, windows_cmd: bool) -> str:
+    """A command's output as text.
+
+    POSIX commands and most modern Windows tools write UTF-8. cmd.exe and its
+    built-ins (``echo``, ``dir``) write the console code page instead, so on the
+    cmd path output that is not valid UTF-8 is read in that code page.
+    """
+    if not windows_cmd:
+        return data.decode("utf-8", "replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    codec = _windows_oem_codec()
+    return data.decode(codec or "utf-8", "replace")
+
+
+def _windows_cmd() -> str:
+    """``cmd.exe`` from the system directory, never from ``PATH`` or ``%ComSpec%``."""
+    return os.path.join(_windows_system_dir(), "cmd.exe")
+
+
 def _stop_tree(proc: Any) -> None:
     """Windows: end ``proc`` and every process under it (``taskkill /T``)."""
     taskkill = os.path.join(_windows_system_dir(), "taskkill.exe")
@@ -545,7 +698,23 @@ class Workspace:
         lock_dir: Optional[str] = None,
         git_proxy_secret: str = "",
         git_proxy_starting: str = "",
+        shell: str = "sh",
+        end_commands_with_server: bool = False,
     ) -> None:
+        #: How ``run_command`` runs a command: ``sh`` (``/bin/sh -c``) or, on a
+        #: Windows connected computer, ``cmd`` (``cmd.exe /d /s /c``).
+        self.shell = shell
+        #: A macOS or Windows connected computer, which has no PID namespace to
+        #: end what a command leaves running: on POSIX each command's own process
+        #: group is tracked (``command_groups``) and ended on a timeout and when
+        #: this server stops; on Windows every command is in this server's job
+        #: (``workspace_lifetime``), so ending this server ends them.
+        self.end_commands_with_server = end_commands_with_server
+        self.command_groups: Any = (
+            _lifetime.CommandGroups()
+            if end_commands_with_server and sys.platform != "win32"
+            else None
+        )
         #: The port file of THIS session's git proxy (``git_proxy.py --port-file``);
         #: empty when this process runs no git (the browse and write modes).
         self.git_proxy_port_file = git_proxy_port_file
@@ -784,17 +953,42 @@ class Workspace:
                 starting=self.git_proxy_starting,
             )
         )
-        argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
+        argv: Any
+        if self.shell == "cmd":
+            if "\n" in command or "\r" in command:
+                # cmd.exe /c runs the first line and drops the rest unreported.
+                raise ToolError(CMD_ONE_LINE)
+            if windows_network_folder(workdir):
+                raise ToolError(CMD_NETWORK_FOLDER)
+            if any(ch in CMD_SPECIAL_CHARS for ch in workdir):
+                # cmd.exe expands %CD% before it reads & | < >, so a folder
+                # name holding them would add commands nobody approved.
+                raise ToolError(CMD_SPECIAL_FOLDER)
+            # One command line, not a list: with /s cmd.exe drops the outer
+            # quotes and runs the rest as typed, which list quoting would break.
+            argv = f'"{_windows_cmd()}" /d /s /c "{command}"'
+            wait_secs = float(timeout)
+        elif self.command_groups is not None:
+            # No ``timeout`` wrapper: this server ends the command's whole group
+            # itself, on the deadline and when it stops (CommandGroups).
+            argv, wait_secs = ["/bin/sh", "-c", command], float(timeout)
+        else:
+            argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
         started = time.monotonic()
-        proc = subprocess.Popen(
-            argv,
-            cwd=workdir,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        groups = self.command_groups
+        # A stop that lands while the command starts waits until it is tracked.
+        with groups.spawning() if groups is not None else contextlib.nullcontext():
+            proc = subprocess.Popen(
+                argv,
+                cwd=workdir,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            if groups is not None:
+                groups.add(proc)
         # Drained into a bounded tail, so endless output costs at most MAX_OUTPUT_BYTES.
         tail = _OutputTail(MAX_OUTPUT_BYTES)
         reader = threading.Thread(target=tail.drain, args=(proc.stdout,), daemon=True)
@@ -805,12 +999,15 @@ class Workspace:
         except subprocess.TimeoutExpired:
             code = None
         finally:
-            if proc.returncode is None:
+            if proc.returncode is None and self.command_groups is not None:
+                # The whole group: a test runner's children are not left running.
+                self.command_groups.end(proc)
+            elif proc.returncode is None:
                 _unwind(proc)
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
         output, omitted = tail.snapshot()
-        text = output.decode("utf-8", "replace")
+        text = _command_text(output, windows_cmd=self.shell == "cmd")
         if omitted:
             # Keep the tail: errors and summaries come last.
             text = f"[{omitted} earlier bytes omitted]\n" + text
@@ -866,9 +1063,10 @@ _S = {"type": "string"}
 _I = {"type": "integer"}
 
 
-def tool_specs(root: str) -> List[Dict[str, Any]]:
+def tool_specs(root: str, shell: str = "sh") -> List[Dict[str, Any]]:
     # Every file tool takes a path, so governance always has a target to judge.
     where = f"in the remote workspace ({root}). Relative paths are relative to it; use . for it."
+    runs = " It runs through cmd.exe: one line, steps joined with &&." if shell == "cmd" else ""
     return [
         {
             "name": "read_file",
@@ -905,7 +1103,9 @@ def tool_specs(root: str) -> List[Dict[str, Any]]:
         },
         {
             "name": "run_command",
-            "description": f"Run a shell command {where} Returns combined output and exit status.",
+            "description": (
+                f"Run a shell command {where} Returns combined output and exit status.{runs}"
+            ),
             "inputSchema": _schema({"command": _S, "timeout": _I, "cwd": _S}, ["command"]),
         },
     ]
@@ -938,7 +1138,7 @@ class Server:
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": tool_specs(self.ws.root)}
+            return {"tools": tool_specs(self.ws.root, self.ws.shell)}
         if method == "tools/call":
             name = params.get("name")
             fn = self.tools.get(name) if isinstance(name, str) else None
@@ -1151,9 +1351,12 @@ def _stats(ws: Workspace) -> Dict[str, Any]:
             available = max(0, min(available, cgroup[0] - cgroup[1]))
         result["memory"] = {"total_bytes": total, "available_bytes": available}
     if not contained:
+        # Windows has no load average.
+        loadavg = getattr(os, "getloadavg", None)
         try:
-            result["load"] = [round(v, 2) for v in os.getloadavg()]
-        except (OSError, AttributeError):
+            if loadavg is not None:
+                result["load"] = [round(v, 2) for v in loadavg()]
+        except OSError:
             pass
     try:
         disk = shutil.disk_usage(ws.root)
@@ -1167,264 +1370,6 @@ def _stats(ws: Workspace) -> Dict[str, Any]:
         except (OSError, ValueError, IndexError):
             pass
     return result
-
-
-def _git_bool(run: Callable, key: str, default: bool) -> bool:
-    """A boolean config value as git reads it; ``default`` when it is unset."""
-    try:
-        return run(["config", "--bool", "--get", key]).strip() == b"true"
-    except subprocess.CalledProcessError as exc:
-        if exc.returncode != 1:
-            raise
-        return default
-
-
-def _git_index_entry(run: Callable, target: str, rel: str) -> Optional[Tuple[str, str]]:
-    """The mode and object id the index records for ``rel`` (stage 0), if any."""
-    for row in run(["ls-files", "--stage", "--full-name", "-z", "--", target]).split(b"\0"):
-        meta, _, name = row.partition(b"\t")
-        fields = meta.split(b" ")
-        if name == os.fsencode(rel) and len(fields) == 3 and fields[2] == b"0":
-            return fields[0].decode("ascii", "replace"), fields[1].decode("ascii", "replace")
-    return None
-
-
-def _git_index_mode(run: Callable, target: str, rel: str) -> Optional[str]:
-    """The mode the index records for the file at ``rel`` (stage 0), if any."""
-    entry = _git_index_entry(run, target, rel)
-    return entry[0] if entry else None
-
-
-def _worktree_mode(st_mode: int) -> str:
-    """Git's mode for a worktree entry, from ``lstat`` alone."""
-    if stat.S_ISLNK(st_mode):
-        return "120000"
-    # Git records 100755 only for the owner's execute bit (ce_permissions).
-    return "100755" if st_mode & stat.S_IXUSR else "100644"
-
-
-# Control bytes git's gather_stats counts as non-printable: below 32 except
-# BS, TAB, ESC and FF (CR and LF are counted apart), and DEL.
-_GIT_NONPRINTABLE = tuple(bytes([c]) for c in (*range(32), 127) if c not in (8, 9, 10, 12, 13, 27))
-
-
-def _git_auto_text(body: bytes) -> bool:
-    """Whether git's automatic conversion would treat ``body`` as text.
-
-    Mirrors convert.c's ``convert_is_binary``: a lone CR, a NUL, or more than
-    one non-printable byte per 128 printable ones makes git leave the bytes as
-    they are, so their CRLFs must not be folded either. A trailing Ctrl-Z
-    (DOS end of file) is not counted as non-printable.
-    """
-    lone_cr = body.count(b"\r") - body.count(b"\r\n")
-    nonprintable = sum(body.count(c) for c in _GIT_NONPRINTABLE)
-    if body.endswith(b"\x1a"):
-        nonprintable -= 1
-    printable = len(body) - nonprintable - body.count(b"\r") - body.count(b"\n")
-    if body.endswith(b"\x1a"):
-        printable -= 1
-    return not lone_cr and b"\0" not in body and (printable >> 7) >= nonprintable
-
-
-def _git_bodies(
-    ws: Workspace, path: str, run: Callable, source: Optional[str] = None
-) -> Dict[str, Any]:
-    """Read the two bodies and modes, never a patch of unmasked content.
-
-    ``run`` supplies the fixed git prefix and checks every exit status. Only
-    the parent is resolved: a symlink's body is its target text, not its referent.
-    ``source`` is a rename's old path: the HEAD side is read there, confined the
-    same way, and named in ``old_path``. When the two bodies together exceed
-    ``MAX_READ_BYTES`` the reply is ``truncated`` and carries no body at all.
-    """
-    repo_root = os.fsdecode(run(["rev-parse", "--show-toplevel"])).rstrip("\r\n")
-
-    def locate(name_in_repo: str) -> "tuple[str, str]":
-        found = os.path.normpath(os.path.join(repo_root, name_in_repo))
-        if found == ws.root:
-            raise ValueError("a file path is required, not a directory")
-        parent, leaf = os.path.split(found)
-        found = os.path.join(ws.resolve(parent, must_exist=False), leaf)
-        return found, os.path.relpath(found, repo_root).replace(os.sep, "/")
-
-    target, rel = locate(path)
-    head = "HEAD"
-    try:
-        entry = run(["ls-tree", "-z", head, "--", target])
-    except subprocess.CalledProcessError:
-        # Only an unborn branch has an absent baseline; corrupt objects fail.
-        try:
-            run(["log", "-1", "--format=%h"])
-        except subprocess.CalledProcessError as exc:
-            if exc.returncode != 128 or not re.fullmatch(
-                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
-                exc.stderr,
-            ):
-                raise
-        else:
-            raise
-        head = run(["hash-object", "-t", "tree", "--stdin"]).decode("ascii").strip()
-        entry = b""
-    old_rel = rel
-    if source is not None and head == "HEAD":
-        source_path, source_rel = locate(source)
-        if source_rel != rel:
-            source_entry = run(["ls-tree", "-z", head, "--", source_path])
-            # A source HEAD does not hold is no rename; the target's own entry stands.
-            if source_entry:
-                entry, old_rel = source_entry, source_rel
-    mode, sha = "", ""
-    if entry:
-        mode, _kind, sha = entry.split(b"\t", 1)[0].decode("ascii").split()
-        if mode == "040000":
-            raise ValueError("a file path is required, not a directory")
-    old = None
-    if sha:
-        old = (
-            f"Subproject commit {sha}\n".encode()
-            if mode == "160000"
-            else run(["cat-file", "blob", sha])[: MAX_READ_BYTES + 1]
-        )
-    try:
-        disk_mode = os.lstat(target).st_mode
-    except FileNotFoundError:
-        disk_mode = 0
-    new = None
-    new_mode: Optional[str] = None
-    # A gitlink replaced by a file or symlink is read below with the bounded
-    # worktree read; git's own diff of it would be buffered whole.
-    if stat.S_ISDIR(disk_mode) or (mode == "160000" and not disk_mode):
-        index = run(["ls-files", "--stage", "--full-name", "-z", "--", target])
-        rows = [row for row in index.split(b"\0") if row]
-        indexed_link = any(
-            row.startswith(b"160000 ") and row.split(b"\t", 1)[-1] == os.fsencode(rel)
-            for row in rows
-        )
-        # A gitlink the index replaced with files under the path is a directory
-        # of files now: refuse it before git builds that subtree's whole patch.
-        if not indexed_link and (mode != "160000" or rows):
-            raise ValueError("a file path is required, not a directory")
-        summary = run(
-            [
-                "diff",
-                "--no-color",
-                "--submodule=short",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--ignore-submodules=dirty",
-                head,
-                "--",
-                target,
-            ]
-        )
-        # The raw format uses an all-zero new id for an unstaged gitlink.
-        # The short format names its commit without running inside the submodule;
-        # only that synthetic commit line is retained, never the patch itself.
-        match = re.search(rb"^\+Subproject commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$", summary, re.M)
-        if match:
-            new = b"Subproject commit " + match[1] + b"\n"
-        elif not summary:
-            new = old
-        elif disk_mode and stat.S_ISDIR(disk_mode):
-            raise ValueError("git did not report the submodule commit")
-        if new is not None:
-            new_mode = "160000"
-    if stat.S_ISLNK(disk_mode):
-        new = os.fsencode(os.readlink(target))
-        new_mode = _worktree_mode(disk_mode)
-    elif stat.S_ISREG(disk_mode):
-        # Resolve again on hosts without O_NOFOLLOW; guest workspaces are POSIX.
-        read_path = target if hasattr(os, "O_NOFOLLOW") else ws.resolve(target)
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        fd = os.open(read_path, flags)
-        with os.fdopen(fd, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise ValueError("a regular file or symlink is required")
-            new = handle.read(MAX_READ_BYTES + 1)
-        new_mode = _worktree_mode(disk_mode)
-        filemode = _git_bool(run, "core.filemode", True)
-        symlinks = _git_bool(run, "core.symlinks", True)
-        if not filemode or not symlinks:
-            # Where the filesystem cannot carry a mode, git takes the one the
-            # index records (ce_mode_from_stat), so a staged chmod still shows;
-            # a path the index does not hold keeps HEAD's.
-            recorded = _git_index_mode(run, target, rel) or mode
-            if recorded == "120000" and not symlinks:
-                new_mode = recorded
-            elif recorded in ("100644", "100755") and not filemode:
-                new_mode = recorded
-    elif disk_mode and not stat.S_ISDIR(disk_mode):
-        raise ValueError("a regular file or symlink is required")
-    if old is None and new is None:
-        raise ValueError("the path is neither in HEAD nor a worktree file")
-    truncated = len(old or b"") + len(new or b"") > MAX_READ_BYTES
-    result: Dict[str, Any] = {
-        "root": ws.root,
-        "git": True,
-        "path": rel,
-        "truncated": truncated,
-        "old_mode": mode if old is not None else None,
-        "new_mode": new_mode if new is not None else None,
-    }
-    if old_rel != rel:
-        result["old_path"] = old_rel
-    if any(b"\0" in body[:8000] for body in (old, new) if body is not None):
-        if old == new:
-            # Identical bytes are no content change: only a rename or mode
-            # header can differ, so the bodies go as equal and empty.
-            return {**result, "old": "", "new": ""}
-        return {**result, "binary": True}
-    if truncated:
-        # Over the cap no body is sent: a partial body cannot give a true diff.
-        return result
-    if new is not None and stat.S_ISREG(disk_mode) and b"\r\n" in new:
-        fields = run(["check-attr", "-z", "text", "eol", "--", target]).split(b"\0")
-        attrs = dict(zip(fields[1::3], fields[2::3]))
-        text, eol = attrs.get(b"text"), attrs.get(b"eol")
-        convert = text == b"set"
-
-        def crlf_in_index() -> bool:
-            # git's has_crlf_in_index: automatic conversion leaves a file whose
-            # INDEX blob is text holding CRLF unchanged; explicit text does not.
-            # HEAD stays the old side. A staged renormalization makes the two
-            # differ, and only then is the index blob read.
-            staged = _git_index_entry(run, target, rel)
-            if staged is None or staged[0] == "160000":
-                return False
-            blob = old if staged[1] == sha else run(["cat-file", "blob", staged[1]])
-            return blob is not None and b"\r\n" in blob and _git_auto_text(blob)
-
-        if text != b"unset":
-            if text == b"auto":
-                convert = _git_auto_text(new) and not crlf_in_index()
-            elif eol in (b"lf", b"crlf"):
-                convert = True
-            elif not convert:
-                try:
-                    autocrlf = run(["config", "--get", "core.autocrlf"]).strip().lower()
-                except subprocess.CalledProcessError as exc:
-                    if exc.returncode != 1:
-                        raise
-                    autocrlf = b"false"
-                convert = (
-                    autocrlf in (b"true", b"input") and _git_auto_text(new) and not crlf_in_index()
-                )
-        if convert:
-            new = new.replace(b"\r\n", b"\n")
-    try:
-        return {
-            **result,
-            "old": old.decode("utf-8") if old is not None else None,
-            "new": new.decode("utf-8") if new is not None else None,
-        }
-    except UnicodeDecodeError:
-        if old == new:
-            # Identical bytes stay identical text: only a mode line can differ.
-            body = old.decode("utf-8", "replace") if old is not None else None
-            return {**result, "old": body, "new": body}
-        # Replacement characters would make different non-UTF-8 bytes read
-        # as equal text and hide the change, so such a body is not text here.
-        return {**result, "binary": True}
 
 
 def _git_read(ws: Workspace, op: str, path: str, source: Optional[str] = None) -> Dict[str, Any]:
@@ -1460,6 +1405,17 @@ def _git_read(ws: Workspace, op: str, path: str, source: Optional[str] = None) -
     env["GIT_OPTIONAL_LOCKS"] = "0"
     # Repository-state diagnostics must not depend on the guest's locale.
     env["LC_ALL"] = "C"
+    if sys.platform == "win32":
+        # Never a git.exe in the shared root, which is this server's cwd.
+        git = windows_program("git", env.get("PATH", ""), env.get("PATHEXT", ""))
+        if git is None:
+            return {
+                "root": ws.root,
+                "git": False,
+                "code": "git_failed",
+                "error_text": "git is not installed",
+            }
+        base[0] = git
 
     def run(args: List[str]):
         # A filter driver git starts must not outlive a timed-out read.
@@ -1558,7 +1514,7 @@ def _git_read(ws: Workspace, op: str, path: str, source: Optional[str] = None) -
                     )
                 return reply.stdout
 
-            return _git_bodies(ws, path, checked, source)
+            return _git_bodies(ws, path, checked, source, limit=MAX_READ_BYTES)
         # Bounded like the blob read: one huge commit subject cannot be buffered.
         proc = _run_grouped(
             argv,
@@ -1629,6 +1585,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--root", required=True)
     p.add_argument("--git-proxy-port-file", default="")
     p.add_argument("--git-proxy-secret-stdin", action="store_true")
+    p.add_argument("--shell", choices=("sh", "cmd"), default="sh")
+    p.add_argument(
+        "--end-commands-with-server",
+        action="store_true",
+        help="keep every command in this server's process group or job, so they end with it",
+    )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
         "--browse",
@@ -1661,6 +1623,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         lock_dir=os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "file-locks"),
         git_proxy_secret=secret,
         git_proxy_starting=starting,
+        shell=args.shell,
+        end_commands_with_server=args.end_commands_with_server,
     )
     if args.browse or args.write:
         limit = (2 * MAX_WRITE_BYTES) if args.write else 65536
@@ -1678,12 +1642,29 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     def retire(_signum, _frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if groups is not None and groups.defer_retire():
+            return
         raise SystemExit(0)
 
+    if (
+        args.end_commands_with_server
+        and sys.platform == "win32"
+        and not _lifetime.end_children_on_exit()
+    ):
+        # Without the job a command's children would outlive a revoke.
+        raise SystemExit("could not tie commands to the tool server's lifetime")
+    groups = ws.command_groups
     previous = signal.signal(signal.SIGTERM, retire)
+    if groups is not None:
+        groups.watch(os.getppid())
     try:
         serve(Server(ws))
     finally:
+        if groups is not None:
+            # Input ended, SIGTERM or a crash: what the commands left ends first,
+            # and a later SIGTERM must not cut that short.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            groups.end_all()
         signal.signal(signal.SIGTERM, previous)
     return 0
 

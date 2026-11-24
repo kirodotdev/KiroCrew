@@ -43,6 +43,7 @@ from kiro_crew.platform.governance_parts.tool_calls import (
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
+    guest_case_insensitive,
     guest_root,
     guest_unverifiable,
 )
@@ -388,7 +389,7 @@ def gate_decision(
             (scope, target)
             for scope, item in pairs
             for target in (
-                _governed_targets((item,), root, also_local)
+                _governed_targets((item,), root, also_local, guest_case_insensitive(raw_params))
                 if scope.startswith("filesystem.")
                 else (item,)
             )

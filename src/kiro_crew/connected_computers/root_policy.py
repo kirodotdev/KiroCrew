@@ -10,6 +10,9 @@ again here, on its resolved real path, before any grant is written:
   and the grants themselves live there);
 * never inside, or holding, a credential home the agent sandbox already hides
   (``security.paths.sensitive_home_dirs``: ``~/.ssh``, ``~/.aws``, ...);
+* on Windows, never a network folder, a drive letter mapped to a share
+  included (its real path is the share): ``cmd.exe`` cannot run a command
+  there and would run it in the Windows folder instead;
 * never inside, or holding, the program that runs it: the ``kiro_crew`` package
   and the Python install (``confinement.runtime_reads``). The self-test probe and
   the next gateway start run that code unconfined, so a root that held it would
@@ -22,8 +25,16 @@ this check only stops a grant that confinement could not make safe.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
+
+#: What a Windows network folder share is refused with.
+NETWORK_FOLDER_REFUSAL = (
+    "a network folder cannot be shared from Windows; choose a folder on a local drive"
+)
+#: The real-path lookup (a module name, so tests can stand in for Windows' answer).
+_realpath = os.path.realpath
 
 
 class RootRefused(ValueError):
@@ -54,7 +65,11 @@ def _program_dirs() -> list[Path]:
     from kiro_crew.connected_computers.confinement import runtime_reads
 
     package = Path(os.path.realpath(kiro_crew.__file__)).parent
-    return [package, *(Path(p) for p in runtime_reads())]
+    # The folder the interpreter is started from, as typed (``/opt/homebrew/bin``
+    # for a Homebrew python3 link), beside the install it resolves to: a share
+    # of it could replace that link, and the self-test runs it unconfined.
+    launcher = Path(os.path.realpath(os.path.dirname(os.path.abspath(sys.executable))))
+    return [package, launcher, *(Path(p) for p in runtime_reads())]
 
 
 def resolve_root(raw: str, *, home: Optional[Path] = None, protected: Iterable[Path] = ()) -> str:
@@ -65,7 +80,12 @@ def resolve_root(raw: str, *, home: Optional[Path] = None, protected: Iterable[P
         raise RootRefused("the folder must be an absolute path")
     if ".." in Path(raw).parts:
         raise RootRefused("the folder path must not contain '..'")
-    real = Path(os.path.realpath(raw))
+    from kiro_crew.remote_session.workspace_tools import windows_network_folder
+
+    real = Path(_realpath(raw))
+    if sys.platform == "win32" and windows_network_folder(str(real)):
+        # The real path, so a drive letter mapped to a share is caught too.
+        raise RootRefused(NETWORK_FOLDER_REFUSAL)
     if not real.is_dir():
         raise RootRefused("the folder does not exist")
     home_dir = Path(os.path.realpath(home if home is not None else Path.home()))

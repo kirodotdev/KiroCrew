@@ -806,6 +806,11 @@ async def apply_session_permission_routing(self: AcpSessionHandle) -> None:
     )
 
 
+def _remote_case_insensitive(remote_workspace: object) -> bool:
+    """Whether the attached guest names files case-insensitively (a macOS computer)."""
+    return isinstance(remote_workspace, dict) and remote_workspace.get("case_insensitive") is True
+
+
 def _remote_workdir(remote_workspace: object) -> str:
     """The guest workdir of an attached remote workspace; empty when unreadable, which
     leaves its tools unmapped rather than anchored somewhere else."""
@@ -992,6 +997,7 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # guest workdir its relative path arguments resolve in.
         remote_workspace_server=(WORKSPACE_SERVER_NAME if _remote is not None else ""),
         remote_workspace_root=_remote_workdir(_remote),
+        remote_workspace_case_insensitive=_remote_case_insensitive(_remote),
         # The servers this session's claude envelope placed, and those reached
         # through a Crew-owned Connection bridge, as the per-chat client hands
         # them: a placed server's tool reads with its trusted (server, tool) name.

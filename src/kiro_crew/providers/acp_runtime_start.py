@@ -894,7 +894,11 @@ async def _start_kiro_runtime_impl(
             from kiro_crew.connected_computers.provider import notice_for
 
             workspace["extra_servers"] = await remote.launch.local_mcp_servers()
-            workspace["notice"] = notice_for(remote.profile_name, remote.workdir)
+            workspace["notice"] = notice_for(
+                remote.profile_name, remote.workdir, remote.launch.platform
+            )
+            # A Mac's files answer to any case: a deny there matches either case.
+            workspace["case_insensitive"] = remote.launch.platform == "darwin"
             workspace["close"] = functools.partial(
                 remote.launch.close_relays, remote.launch.own_relays()
             )

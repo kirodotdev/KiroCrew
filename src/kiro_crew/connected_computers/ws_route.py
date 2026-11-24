@@ -57,7 +57,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import posixpath
 import secrets
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Final, Optional
@@ -157,14 +156,8 @@ def _rejection_close_code(exc: CredentialRejected) -> int:
 
 
 def valid_root(root: str) -> bool:
-    """A root the gateway can show and match: absolute, normalized POSIX."""
-    return (
-        isinstance(root, str)
-        and root.startswith("/")
-        and root != "/"
-        and posixpath.normpath(root) == root
-        and all(ch.isprintable() for ch in root)
-    )
+    """A root the gateway can show and match (:func:`.protocol.valid_root`)."""
+    return protocol.valid_root(root)
 
 
 async def _receive(
@@ -293,7 +286,7 @@ async def api_connector_connect(request: web.Request) -> web.StreamResponse:
     try:
         ready = await _receive(ws, frozenset({"ready"}), frames)
         if not valid_root(ready["root"]):
-            raise protocol.ProtocolError("ready.root is not an absolute POSIX path")
+            raise protocol.ProtocolError("ready.root is not an absolute, normalized path")
     except (asyncio.TimeoutError, protocol.ProtocolError) as exc:
         _audit(request, "denied", f"handshake: {exc}", record.device_id)
         await ws.close(code=protocol.CLOSE_HANDSHAKE_FAILED, message=b"handshake failed")

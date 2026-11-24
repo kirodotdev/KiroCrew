@@ -143,6 +143,10 @@ async def test_b13_a_dashboard_share_writes_the_named_crew_root_and_tools(
         "ssh_host": "clouddesk",
     }
     assert [s["name"] for s in described["mcp"]] == ["notes"]
+    from kiro_crew.connected_computers.confinement import describe_confinement
+
+    # The dashboard share's dialog says plainly when commands are not fenced.
+    assert described["confinement"] == describe_confinement()
     reply = await _share(consent_host, described["consent"], root)
     assert reply["ok"] is True, reply
     [grant] = store.active()

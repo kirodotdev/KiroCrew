@@ -316,7 +316,7 @@ Read `references/cloud-network-desktop.md` for the tailnet commands.
 
 Read `references/cloud-network-desktop.md` for the computer-use commands.
 
-## Connected Computers (feature preview, Linux only)
+## Connected Computers (feature preview; Windows has no sandbox)
 
 Share a folder on this computer with a remote gateway. Off unless
 `dashboard.feature_previews.connected_computers` is on. Some commands run on

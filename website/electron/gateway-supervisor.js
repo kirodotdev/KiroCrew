@@ -113,6 +113,8 @@ const PRUNED_STATUS = "Some app files are missing. Use Quit in the dialog, then 
 // while it runs, so the reason is the caller's to name.
 const RESTARTING_FOR_LOCAL_GATEWAY_STATUS = "Restarting Kiro Crew to start a local gateway…";
 const POLL_INTERVAL_MS = 500;
+// The systems a connected-computer host runs on, for the preview read and both hosts.
+const CONNECTED_COMPUTER_PLATFORMS = Object.freeze(["linux", "darwin", "win32"]);
 // The failure dialog's actions that go on to start or reconnect a gateway.
 const RETRY_ACTIONS = new Set(["retry", "force-retry", "enable-retry", "configure-remote"]);
 // loadFile query that tells loading.html it is being painted by a reconnect
@@ -372,12 +374,16 @@ function createGatewaySupervisor({
   // main.js starts it, and only while the preview is on; constructing it runs
   // nothing. Its environment is the tunnel keeper's: ssh runs by name here too,
   // so the launchd PATH is recovered per spawn.
+  // Linux and macOS fence shared work in an OS sandbox; Windows shares with
+  // none (the consent dialog says so). Any other system runs no host.
+  const connectedComputersSupported = CONNECTED_COMPUTER_PLATFORMS.includes(processObj.platform);
+
   function readConnectedComputersPreview() {
-    if (processObj.platform !== "linux") return false;
+    if (!connectedComputersSupported) return false;
     try {
       const output = execFileSync(resolveGatewayBin(), ["connected-computer", "preview"], {
         encoding: "utf8", timeout: 15000, maxBuffer: 65536,
-        env: { ...processObj.env, KIROCREW_HOME: canonicalHome() },
+        env: { ...processObj.env, KIROCREW_HOME },
         stdio: ["ignore", "pipe", "ignore"],
       });
       return JSON.parse(output).enabled === true;
@@ -385,7 +391,10 @@ function createGatewaySupervisor({
   }
 
   function connectedComputersHostEnv() {
-    const { KIROCREW_PORT: _unused, ...hostEnv } = processObj.env;
+    // The host reads the same data folder the app hands its gateway, so a share
+    // asked for from that gateway's dashboard finds its Remote Crew connections.
+    const { KIROCREW_PORT: _unused, ...inherited } = processObj.env;
+    const hostEnv = { ...inherited, KIROCREW_HOME };
     const recovered = recoverLaunchdPath(hostEnv.PATH || "");
     return recovered ? { ...hostEnv, PATH: recovered.path } : hostEnv;
   }
@@ -397,7 +406,7 @@ function createGatewaySupervisor({
     getEnv: connectedComputersHostEnv,
     getInstances: () => instancesFromStore(store),
     onState: (state) => onConnectedComputersState(state),
-    supported: processObj.platform === "linux",
+    supported: connectedComputersSupported,
     revokeSavedOnStart: () => revokeSavedConnectedComputers(),
     log: glog,
     setTimeoutFn,
@@ -415,7 +424,7 @@ function createGatewaySupervisor({
       resolveBin: resolveGatewayBin,
       getEnv: connectedComputersHostEnv,
       getInstances: () => instancesFromStore(store),
-      supported: processObj.platform === "linux",
+      supported: connectedComputersSupported,
       log: glog,
       setTimeoutFn,
       clearTimeoutFn,
@@ -1492,4 +1501,4 @@ function createGatewaySupervisor({
   });
 }
 
-module.exports = { createGatewaySupervisor };
+module.exports = { createGatewaySupervisor, CONNECTED_COMPUTER_PLATFORMS };
