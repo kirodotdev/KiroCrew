@@ -44,13 +44,15 @@ describe('isStashChord', () => {
     expect(isStashChord(chord({ isComposing: true }))).toBe(false)
   })
 
-  it('matches the physical S key, not the glyph, so non-Latin layouts keep the chord', () => {
+  it('matches the S the layout types, and the physical S key where no Latin letter is typed', () => {
     // Cyrillic layout: Ctrl+physical-S reports the glyph on that key.
     expect(isStashChord(chord({ key: 'ы', code: 'KeyS' }))).toBe(true)
-    // The registry's `stash-prompt` entry is positional too; a glyph 's' on
-    // another physical key is not the chord.
-    expect(isStashChord(chord({ key: 's', code: 'KeyD' }))).toBe(false)
+    // The registry's `stash-prompt` entry reads letters the same way: the key
+    // that types 's' is the chord wherever it sits, and Dvorak's physical S
+    // key, which types 'o', is not.
+    expect(isStashChord(chord({ key: 's', code: 'KeyD' }))).toBe(true)
     expect(isStashChord(chord({ key: 's', code: 'KeyS' }))).toBe(true)
+    expect(isStashChord(chord({ key: 'o', code: 'KeyS', ctrlKey: false, metaKey: true }))).toBe(false)
   })
 })
 

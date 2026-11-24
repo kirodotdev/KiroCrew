@@ -7,7 +7,7 @@ import { ChevronRight } from 'lucide-react'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { i18nT } from '../../i18n/t'
 import { loadPanelToggleOverrides, resolvePanelToggleBinding } from '../../lib/panelToggleShortcuts'
-import { formatChordKeys } from '../../lib/quickSearchShortcut'
+import { chordReachable, formatChordKeys } from '../../lib/quickSearchShortcut'
 import { fmtDateFields, fmtDateTime } from '../../i18n/format'
 import { folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
@@ -28,7 +28,7 @@ export { reclickDoubleClick, reclickTogglesPanel } from '../../lib/reclickPanelT
 /** The open chat row's tooltip: what a click does, with the live shortcut. */
 export function reclickPanelTitle(): string {
   const chord = resolvePanelToggleBinding('side-panel', loadPanelToggleOverrides())
-  return chord
+  return chord && chordReachable(chord)
     ? i18nT('pages.chatSidebar.reclick_toggles_side_panel_shortcut', { shortcut: formatChordKeys(chord).join(IS_MAC ? '' : '+') })
     : i18nT('pages.chatSidebar.reclick_toggles_side_panel')
 }
