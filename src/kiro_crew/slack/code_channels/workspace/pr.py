@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef
 from kiro_crew.validation import is_valid_followup_branch
@@ -45,6 +45,14 @@ class PullRequest:
     checks: tuple[int, int, int] | None = None
     #: The PR's title ("" when the read did not carry it).
     title: str = ""
+    #: GitHub's review decision, lowercased (``changes_requested``, ``approved``,
+    #: ``review_required``), and its mergeable state (``mergeable`` /
+    #: ``conflicting``); each "" when the read did not settle it.
+    review: str = ""
+    mergeable: str = ""
+    #: Whether this read settled ``ci``: False when the checks read failed or
+    #: reported CI unavailable, so ``ci`` says nothing about the PR's checks.
+    ci_settled: bool = True
 
 
 #: The internal ``ciCounts`` marker: ``"<passed>/<total>/<running>"``.
@@ -58,6 +66,18 @@ def _checks(status: dict) -> tuple[int, int, int] | None:
         return None
     passed, total, running = (int(g) for g in match.groups())
     return passed, total, running
+
+
+#: The chip read's marker for a CI part it could not read (``chip_refresh``).
+_CI_UNAVAILABLE = "ciUnavailable"
+#: Review decisions and mergeable states this module reports (any other is "").
+REVIEW_STATES = frozenset({"changes_requested", "approved", "review_required"})
+MERGEABLE_STATES = frozenset({"mergeable", "conflicting"})
+
+
+def _known(raw: object, allowed: frozenset[str]) -> str:
+    value = str(raw or "").lower()
+    return value if value in allowed else ""
 
 
 @dataclass(frozen=True)
@@ -113,7 +133,14 @@ def _pick(rows: object, repo: RepoRef) -> PullRequest | None:
         if state in PR_STATES:
             title = row.get("title")
             candidates.append(
-                PullRequest(number, url, state, title=title if isinstance(title, str) else "")
+                PullRequest(
+                    number,
+                    url,
+                    state,
+                    title=title if isinstance(title, str) else "",
+                    review=_known(row.get("reviewDecision"), REVIEW_STATES),
+                    mergeable=_known(row.get("mergeable"), MERGEABLE_STATES),
+                )
             )
     for pr in candidates:
         if pr.state in {"open", "draft"}:
@@ -144,7 +171,7 @@ async def find_pull_request(repo: RepoRef, branch: str) -> PrLookup:
             "--state",
             "all",
             "--json",
-            "number,url,state,isDraft,title",
+            "number,url,state,isDraft,title,reviewDecision,mergeable",
             "--limit",
             "5",
             host=repo.host,
@@ -163,12 +190,22 @@ async def find_pull_request(repo: RepoRef, branch: str) -> PrLookup:
     except Exception as exc:  # gh signed out for checks, rate limit, outage
         logger.info("code channel CI read unavailable for %s: %s", pr.url, exc)
         status = None
-    if isinstance(status, dict):
-        state = status.get("state") if status.get("state") in PR_STATES else pr.state
-        ci = status.get("ci") if status.get("ci") in CI_STATES else ""
-        pr = PullRequest(
-            pr.number, pr.url, str(state), str(ci or ""), _checks(status), title=pr.title
-        )
+    if not isinstance(status, dict):
+        return PrLookup("found", replace(pr, ci_settled=False))
+    state = status.get("state") if status.get("state") in PR_STATES else pr.state
+    ci = status.get("ci") if status.get("ci") in CI_STATES else ""
+    pr = PullRequest(
+        pr.number,
+        pr.url,
+        str(state),
+        str(ci or ""),
+        _checks(status),
+        title=pr.title,
+        review=pr.review,
+        # The chip read's settled answer first, else the list read's own.
+        mergeable=_known(status.get("mergeable"), MERGEABLE_STATES) or pr.mergeable,
+        ci_settled=not status.get(_CI_UNAVAILABLE),
+    )
     return PrLookup("found", pr)
 
 
