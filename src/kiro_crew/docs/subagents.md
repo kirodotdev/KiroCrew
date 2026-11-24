@@ -166,9 +166,19 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 ## KAS sub-agents (a feature preview)
 
 With the "KAS sub-agents" feature preview on (Settings > Developer > Feature
-previews, off by default), a KAS dashboard chat on the default agent hands short, independent tasks whose
+previews, off by default), a KAS chat hands short, independent tasks whose
 results it needs in the same reply to the KAS engine's own sub-agent tool
-(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. A KAS sub-agent
+(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. That is every KAS
+chat: your dashboard chats, a crew member's chat, a cron run and a
+messaging channel's chat, on any agent Kiro Crew ships or builds (an agent file of
+your own is read as kiro-cli reads it); not a conductor's chat (a Bot's own chat,
+which hands its work to the Bot's workers, and a conductor mode chat), a Kiro Crew
+sub-agent run, a workflow or a heartbeat, and not while "Chat runtime sharing" is
+on. Your own dashboard chat on the default agent, and the chat of the crew member
+named `default` on it, use the engine's tool in place of `spawn_run` and
+`spawn_sub_agents`, and only there can it run your own agents too; every other
+chat keeps both beside it, for work that needs a model, a backend or a folder of
+its own, or has to outlive the turn, and runs `kirocrew-helper` only. A KAS sub-agent
 runs inside the chat's turn and process: it starts no process and no MCP server of
 its own, so the memory guard, the queue and the sub-agent count settings above do
 not apply to it, and its cost is part of the chat's turn. It holds the chat agent's

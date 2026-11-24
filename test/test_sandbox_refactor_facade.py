@@ -202,6 +202,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
         require_unaliased_model_file _resolved_kiro_mcp_registry_targets
         _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
+        _MAX_REGISTRY_LINK_HOPS _registry_chain_end
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES

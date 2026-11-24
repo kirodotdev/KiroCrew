@@ -65,6 +65,28 @@ def _reset_code_channel_audience():
 
 
 @per_test_guard
+def _reset_code_channel_senders():
+    """Forget the dispatch exemption's Slack-author records and Stop marks.
+
+    ``code_channel_exemption`` keeps, per slot key, who drove the conversation from Slack
+    and which slots a Conductor thread's Stop fenced. Tests reuse slot keys, so a mark one
+    test left would refuse the next one's dispatch. Looked up in ``sys.modules`` so a run
+    that never imported it pays nothing.
+    """
+
+    def forget() -> None:
+        module = sys.modules.get("kiro_crew.dashboard.session_control_parts.code_channel_exemption")
+        if module is not None:
+            module.forget_senders()
+
+    forget()
+    try:
+        yield
+    finally:
+        forget()
+
+
+@per_test_guard
 def _reset_thread_board():
     """Forget the Conductor-thread board's refresh state (its running refreshes, the
     rooms asked to run again and the newest binding each trigger carried).

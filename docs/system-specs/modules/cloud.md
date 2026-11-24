@@ -67,6 +67,8 @@ claim that a hostile in-process agent is fully contained.
 
 ## Module map
 
+`DELETE /api/cloud/{tag}` on the managed-environment lane (`kiro_managed_env`) is refused 409 `lane_delete_elsewhere` and deletes nothing; that lane deletes from its own Remote Crew section. Other non-EC2 lanes delete as before.
+
 | Module | Role |
 |--------|------|
 | `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`; `configured_region(profile)`, the profile's own Region from the AWS config file (`aws configure get region`, "" when unset or in an agent session), which `cloud doctor` compares with the default Region it checks; `warn_if_started_from_agent_session()`, the gateway's log-only post-READY WARNING when its own process reads as an agent session (`_in_agent_session`, the check `assert_human_action` refuses on), e.g. restarted from an agent's shell. |

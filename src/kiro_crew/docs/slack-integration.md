@@ -273,25 +273,37 @@ own cron, task and spawn tools also still run as the owner in their turns, even
 though the `run` and cron keywords are refused to them, and a schedule they set
 up that way keeps running as the owner after they are removed: to stop one, open
 **Schedule** in the dashboard and delete it. Only add people you trust. The page
-shows this warning, and turning the switch on needs an explicit confirm. The page
-doesn't turn it on while anyone on the list isn't confirmed by Slack: remove them,
-or fix what their row says, first.
+shows this warning, and turning the switch on needs an explicit confirm. With
+`verify_with_slack` on, the page doesn't turn it on while anyone on the list isn't
+confirmed by Slack: remove them, or fix what their row says, first.
 
-- **Who counts.** Each Slack member ID on the list is checked with Slack
-  (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
-  person rather than a bot or app, not deactivated, and not the owner. The page
-  refuses an ID that fails, and shows each person's name next to their ID. You
-  can add a person by their email instead of their ID: the page looks it up with
-  `users.lookupByEmail` (bot scope `users:read.email`, in the shipped manifest;
-  an older install needs a reinstall) and keeps the member ID, and the audit log
-  records the ID, never the email. Pasting a Slack profile link
+- **Who counts.** By default (`slack.shared_access.verify_with_slack` is
+  `false`) every well-formed member ID on the list counts, except the owner's own.
+  A config that already shared access before the key existed (`enabled: true`, no
+  `verify_with_slack`) has `true` written on its first load, so an upgrade keeps
+  Slack's check; to go list-only, set the key to `false`. Turning sharing on in the
+  dashboard stores `false`.
+  Slack is not asked, so the bot needs no `users:read` scope, and a bot, a
+  deactivated account or someone in another workspace (Slack Connect included) on
+  the list can act as the owner too: keep the list right yourself. The page marks
+  each such row "On your list" and shows no name.
+- **Checking with Slack.** Set `slack.shared_access.verify_with_slack` to `true`
+  to have each ID checked with Slack (`users.info`, which needs `users:read`)
+  before it is used: same workspace as the bot (`auth.test`), a person rather than
+  a bot or app, not deactivated, and not the owner. The page then refuses an ID
+  that fails, and shows each person's name next to their ID. A confirmation is
+  re-checked every 10 minutes, and a refusal after a minute: an ID that stays on
+  the list gets access as soon as Slack confirms it, so remove an ID to keep that
+  person out. A failed check logs Slack's error code (for example `missing_scope`).
+- **Adding people.** You can add a person by their email instead of their ID: the
+  page looks it up with `users.lookupByEmail` (bot scope `users:read.email`, in the
+  shipped manifest; an older install needs a reinstall) and keeps the member ID,
+  and the audit log records the ID, never the email. Pasting a Slack profile link
   (`https://<workspace>.slack.com/team/U…`) works too. Nobody can be added until
   the Owner Slack member ID is saved, and an ID that becomes the owner's is shown
-  as the owner's own row and left out of the switch's confirm. An ID
-  added with `kirocrew config` gets the same check from the gateway before its
-  first message counts. A confirmation is re-checked every 10 minutes, and a
-  refusal after a minute: an ID that stays on the list gets access as soon as
-  Slack confirms it, so remove an ID to keep that person out.
+  as the owner's own row and left out of the switch's confirm. An ID added with
+  `kirocrew config` gets the same check from the gateway before its first message
+  counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
   prompts their own turns post, and send or edit the review-mode draft of their
@@ -566,7 +578,7 @@ can name, create or archive a channel.
 |---|---|
 | `code_channel_rename` | Renames the channel and its session (1-200 characters). |
 | `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
-| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads; ask for a preview of a page or site and the agent sends it here as one) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads; ask for a preview of a page or site and the agent sends it here as one), a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs), or `diff`, which opens the channel's Code tab now (the channel's own changes and its helper agents' commits): ask to see the diff, or pick a "Show me the diff" option, and the agent opens it there instead of pasting it, or sends it as an html view when the Code tab has nothing to show. The same `view_key` updates the same tab; a channel holds up to five tabs. |
 | `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
 | `code_channel_read_plan_canvas` | Reads the plan canvas back: its current markdown and the open comments on it. Use it after a restart or when the plan is no longer in the agent's context. |
 | `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |

@@ -578,6 +578,21 @@ crewmates' private copies.
     once the board carries each row's PR. A PR tab is removed, by the view id
     recorded when it opened, only on evidence: its PR seen merged or closed, or
     two newer open PRs seen. A failed read removes nothing.
+  * **Pull request status** (amended 2026-11-23). The channel-wide
+    `code_channel.pr_status` property mirrors the channel's own PR, the one its
+    `agent_resource` names; helper agents' PRs do not change it. The PR counts
+    by its real state as `gh` reads it: a draft, merged or closed PR as such;
+    an open one as `blocked` while its checks fail, a review asks for changes or
+    it conflicts with its base, else `open`. A read that could not settle the
+    checks leaves the last-read result in place, and an open PR whose checks no
+    read has settled sends nothing that pass. Once the channel has no PR any
+    more an empty value clears the status, once. The value never comes from an
+    agent tool or a person's text. It goes in a `setProperties` call of its own
+    after a turn, only when it or its PR changed, through the workspace's write
+    gate and the channel's activation. A rate limit, an outage or
+    `pr_link_failed` is retried on the next pass; a refusal of the value itself
+    holds it for that channel until the gateway restarts and never turns the
+    channel's publishing off. No setting.
   * **Workers tab.** A `workers` block_kit tab drawn from the work board's own
     snapshot and redaction: for each open helper agent (up to 14, then `+N
     more`) its title, status, PR and CI, **Open in dashboard** and, while it

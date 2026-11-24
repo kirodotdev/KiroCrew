@@ -374,13 +374,11 @@ async def test_a_registered_target_in_the_shape_keeps_the_rule(agents_dir, previ
 @pytest.mark.parametrize(
     "key,kw",
     [
-        ("cron:job1", {}),
-        ("dashboard:member-ada", {}),
-        (_DASHBOARD, {"member_dispatch": True}),
-        (_DASHBOARD, {"crew_panel": True}),
+        ("subagent:job1", {}),
+        ("wf:run-1", {}),
         (_DASHBOARD, {"remote_workspace": True}),
     ],
-    ids=["a-cron-session", "a-crew-members-chat", "a-member-dispatch", "a-crew-panel", "remote"],
+    ids=["a-kiro-crew-sub-agent", "a-workflow", "remote"],
 )
 @pytest.mark.parametrize("excluded", [_IDS, ["subagent"]], ids=["both-names", "tag"])
 async def test_a_session_the_preview_does_not_reach_keeps_the_rule(

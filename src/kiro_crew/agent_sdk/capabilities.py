@@ -283,6 +283,15 @@ class SessionCapabilities:
     #: backend is counted rather than missed.
     writes_crew_readable_transcript: bool
 
+    #: Whether a chat may switch steering files off one by one and have Crew's
+    #: steering load leave them out (:mod:`kiro_crew.steering_off`): the context
+    #: list offers the switch and the load honours it.
+    #:
+    #: True for claude, whose chats take their steering through Crew's load and
+    #: whose list offers the switch. False everywhere else, an unknown backend
+    #: included: there the list offers no switch and the load sends every file.
+    honors_chat_steering_off: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -316,6 +325,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
         permission_requests_name_child=backend in ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
         writes_crew_readable_transcript=backend in _CREW_READABLE_TRANSCRIPT_BACKENDS,
+        honors_chat_steering_off=is_claude_backend_name(backend),
     )
 
 
@@ -352,6 +362,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     refines_tool_call_titles=False,
     permission_requests_name_child=False,
     writes_crew_readable_transcript=False,
+    honors_chat_steering_off=False,
 )
 
 

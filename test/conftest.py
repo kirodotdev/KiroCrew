@@ -377,6 +377,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 
 # Per-test resets of process-global kiro_crew.acp state.
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _isolate_kas_model_catalog_recording,
     _reset_kas_agent_config_error_reports,
 )
 from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
@@ -384,6 +385,9 @@ from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest an
 )
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
+)
+from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_managed_env_shared_client,
 )
 from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_kas_env_left_out_marks,
@@ -399,6 +403,7 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_slack_thread_state,
     _enterprise_bypass,
     _reset_code_channel_audience,
+    _reset_code_channel_senders,
     _reset_conductor_thread_notices,
     _reset_options_control_state,
     _reset_thread_board,

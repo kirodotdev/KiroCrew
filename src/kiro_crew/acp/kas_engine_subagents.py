@@ -1,13 +1,13 @@
-"""The ``kas_subagents`` preview: whether a KAS chat's default agent uses the engine's sub-agents.
+"""The ``kas_subagents`` preview: whether a KAS chat's agent uses the engine's sub-agents.
 
 On (``dashboard.feature_previews.kas_subagents`` is ``true``, set under Settings >
-Developer > Feature previews): in the sessions :func:`engine_subagents_on` names,
-the default agent's projected entry mounts KAS's own sub-agent tool
-(``invoke_sub_agent``) naming the shipped helper
-(``acp/kas_engine_subagent_target.py``) and the person's own agents the target
-projection registers (:func:`_held_children`), ``spawn_sub_agents`` leaves that entry's
-tools, and the operating contract's one ``spawn_sub_agents`` sentence names the
-engine's tool in its place (:func:`contract_names_engine_subagents`, read once per
+Developer > Feature previews): in the chats :func:`engine_subagents_on` names
+(never a conductor's, :func:`hands_work_to_sessions`), the chat agent's projected
+entry mounts KAS's own sub-agent tool (``invoke_sub_agent``) naming the shipped helper (``acp/kas_engine_subagent_target.py``). Only in the chats
+:func:`engine_replaces_spawn` names do the person's own agents the target projection
+registers join it (:func:`_held_children`) and ``spawn_run`` and ``spawn_sub_agents``
+leave that entry's tools. The operating contract's one ``spawn_sub_agents`` sentence
+names the engine's tool to match (:func:`contract_engine_subagent_mode`, read once per
 session by the contract renderer). Off or never set (the default): nothing is
 mounted and the contract is what it was. An LTS build reads it off
 (``edition_locks.feature_previews``).
@@ -55,8 +55,13 @@ logger = logging.getLogger(__name__)
 #: The preview's name under ``dashboard.feature_previews`` (``FEATURE_PREVIEW_FLAGS``).
 KAS_SUBAGENTS_PREVIEW = "kas_subagents"
 
-#: The shipped default agent, the only one this mounts the tool on.
+#: The shipped default agent.
 DEFAULT_AGENT = "kirocrew"
+#: The crew member whose own dashboard chat on the shipped default agent drops
+#: Kiro Crew's own sub-agent tools for the engine's, as the shipped agent's does.
+DEFAULT_MEMBER = "default"
+#: Kiro Crew's own sub-agent tools the engine's tool replaces in those two chats.
+_SPAWN_TOOLS = frozenset({("kirocrew-core", "spawn_sub_agents"), ("kirocrew-core", "spawn_run")})
 
 #: The contract sentence the engine's tool replaces, as ``config/prompt.md`` ships
 #: it, and its replacement. Only this sentence changes; a prompt that does not hold
@@ -79,6 +84,57 @@ ENGINE_SUB_AGENT_SENTENCE = (
     'of the user\'s): a refusal that reads `deny subagent matching "*"` refuses '
     "that one agent, so start it with `spawn_run` instead. No sub-agent it runs has "
     "a Kiro Crew tool: keep that work or send it to `spawn_run`."
+)
+#: The sentence the chats that keep ``spawn_run`` and ``spawn_sub_agents`` read beside
+#: theirs (``"beside"``): their mount runs the shipped helper only.
+ENGINE_HELPER_SUB_AGENT_SENTENCE = (
+    f"`{KAS_SUBAGENT_TOOL}`, when it is in your tool list, runs short, independent "
+    f"tasks whose results you need before you answer inside this turn, in this chat's "
+    f"own process, with agent `{KAS_HELPER_AGENT}` only: one call per task, all in one "
+    "reply. Every other agent its list names is refused here: start that one with "
+    "`spawn_run`. No sub-agent it runs has a Kiro Crew tool: keep that work or send it "
+    "to `spawn_run`."
+)
+#: The first words of the shipped contract's three orchestration steps, which name
+#: ``spawn_run`` and its completion events; the chats that drop it read
+#: :data:`ENGINE_STEPS` in their place.
+_SPAWN_STEP_STARTS = (
+    "1. Submit all independent tasks in ONE `spawn_run(tasks=[…])` batch.",
+    "2. Report the dispatch and **END YOUR TURN**.",
+    "3. Results arrive as `[Subagent completion event]` messages.",
+)
+#: The orchestration steps for the chats that drop ``spawn_run`` (``"replace"``).
+ENGINE_STEPS = (
+    f"1. Call `{KAS_SUBAGENT_TOOL}` once per independent task, all in one reply. Each "
+    "task states its goal, ready inputs, verifiable output and stop condition. Never "
+    "hand a task a result that is still being worked out.\n"
+    f"2. Each call's result comes back in this turn as the tool's own result: read "
+    "the actual outcome before you answer; a failed or refused call is not success.\n"
+    f"3. When `{KAS_SUBAGENT_TOOL}` is not in your tool list, submit the tasks in ONE "
+    "`spawn_run(tasks=[…])` batch instead, report the dispatch and END YOUR TURN, then "
+    "wait for the whole batch's `[Subagent completion event]` messages before you "
+    "answer."
+)
+#: What the shipped contract's sub-agent bullet says of ``spawn_run`` before that
+#: sentence; the chats that drop ``spawn_run`` lose it with the sentence.
+SPAWN_RUN_LEAD = (
+    "`spawn_run`: background subagents, `tasks` array for parallel work; follow the "
+    "lifecycle below. "
+)
+#: The same bullet lead for the chats that drop ``spawn_run`` and ``spawn_sub_agents``
+#: (:func:`engine_replaces_spawn`). True whether or not the mount was accepted: a chat
+#: whose mount was refused (a remote workspace, a helper name taken, a restriction the
+#: helper cannot mirror) keeps both spawn tools and has no engine tool.
+ENGINE_ONLY_SUB_AGENT_SENTENCE = (
+    f"`{KAS_SUBAGENT_TOOL}`, when it is in your tool list, runs short, independent "
+    f"tasks whose results you need before you answer inside this turn, in this chat's "
+    f"own process, with agent `{KAS_HELPER_AGENT}` or one of the user's own agents: "
+    "one call per task, all in one reply. Its list names agents it will not run (Kiro "
+    "Crew's own, and some of the user's): a refusal that reads `deny subagent matching \"*\"` "
+    "refuses that one agent. No sub-agent it runs has a Kiro Crew tool: keep that work "
+    "yourself. When it is not in your tool list, `spawn_run` runs background subagents "
+    "(`tasks` array for parallel work; follow the lifecycle below), and "
+    + SPAWN_SUB_AGENTS_SENTENCE
 )
 
 #: The not-registered line when a helper of the same name already exists.
@@ -110,58 +166,170 @@ def engine_subagents_on(
     member_dispatch: bool,
     crew_panel: bool,
 ) -> bool:
-    """Whether this KAS session's default agent mounts the engine's sub-agent tool.
+    """Whether this KAS session's agent mounts the engine's sub-agent tool.
 
-    True only for a person's dashboard chat (``dashboard:`` / ``dashboard_`` keys,
-    not a crew member's) on the shipped default agent, outside a member dispatch and
-    a Crew panel, with
-    the ``kas_subagents`` preview on and the chat-runtime-sharing preview off: a
-    chat whose agent can start native sub-agents keeps its own process
+    True for a chat of any agent but a conductor with the ``kas_subagents`` preview
+    on: a person's dashboard chat (``dashboard:`` / ``dashboard_`` keys, a crew
+    member's, a member dispatch and a Crew panel included), a cron run (``cron:`` /
+    ``cron_``) and a messaging channel's chat. Never a conductor's chat, a Bot's own
+    thread among them (:func:`hands_work_to_sessions`), never a Kiro Crew sub-agent
+    run, a workflow, a task runner or a heartbeat session, and never while the
+    chat-runtime-sharing preview is on: a chat whose agent can start native
+    sub-agents keeps its own process
     (``chat_runtime_sharing.spec_grants_native_subagents``), and this mount is not
     in the spec that check reads, so the preview keeps it off instead.
+    *member_dispatch* and *crew_panel* do not narrow it.
     """
     from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_enabled
-    from kiro_crew.constants import is_owner_minted_session_key
-    from kiro_crew.members import is_member_session_key
 
+    del member_dispatch, crew_panel
     return (
         kas_subagents_preview_on(cfg)
-        and agent == DEFAULT_AGENT
-        and is_owner_minted_session_key(session_key)
-        and not is_member_session_key(session_key)
-        and not member_dispatch
-        and not crew_panel
+        and bool(agent)
+        and not hands_work_to_sessions(agent)
+        and _is_chat_key(session_key)
         and not chat_runtime_sharing_enabled(cfg)
     )
+
+
+def hands_work_to_sessions(agent: str) -> bool:
+    """Whether *agent* is a conductor, which hands its work to sessions, never to a sub-agent.
+
+    A Bot's own conductor (``mate_worker.MATE_CONDUCTOR_AGENT``) starts no sub-agent:
+    its hand-off is a worker session, so its spec leaves out Kiro Crew's spawn tools
+    (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``) and the spawn gate refuses it
+    (``subagent_parts.agent_policy.conductor_spawn_refusal``). Every conductor
+    ``crew_mode.conductor_agents`` names (the shipped conductor templates, the
+    configured ``agent.crew_mode_agent`` and its aliases) dispatches each work item
+    to a session it can verify and report on. The engine's tool would give each an
+    in-turn sub-agent beside that dispatch, so none of them mounts it. Read from the
+    agent alone, the one fact the batch and the contract renderer share.
+    """
+    from kiro_crew.crew_mode import conductor_agents
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    return agent == MATE_CONDUCTOR_AGENT or agent in conductor_agents()
+
+
+def _is_chat_key(session_key: str) -> bool:
+    """Whether *session_key* is a chat's: the dashboard's, a cron run's or a channel's."""
+    from kiro_crew.constants import is_owner_minted_session_key
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    key = session_key or ""
+    return (
+        is_owner_minted_session_key(key)
+        or key.startswith(("cron:", "cron_"))
+        or is_channel_session_key(key)
+    )
+
+
+def engine_replaces_spawn(agent: str, session_key: str) -> bool:
+    """Whether a mounted chat also drops ``spawn_run`` and ``spawn_sub_agents``.
+
+    Only a person's own dashboard chat on the shipped default agent, and the crew
+    member named ``default``'s own chat on it. Read from the agent and the key alone,
+    the two facts the contract renderer also holds, so the batch and the contract
+    agree. Every other mounted chat keeps both: the shipped flows that pin a model,
+    a backend or a folder for a sub-agent run there. Blocking file IO (the member's
+    DM binding).
+    """
+    from kiro_crew.constants import is_owner_minted_session_key
+    from kiro_crew.members import is_member_session_key, member_identity_for_session
+
+    if agent != DEFAULT_AGENT or not is_owner_minted_session_key(session_key or ""):
+        return False
+    if not is_member_session_key(session_key):
+        return True
+    identity = member_identity_for_session(session_key)
+    return identity is not None and identity.get("name") == DEFAULT_MEMBER
 
 
 def contract_names_engine_subagents(
     provider_label: str | None, agent: str | None, session_key: str | None
 ) -> bool:
-    """Whether a session's operating contract names the engine's sub-agent tool.
+    """Whether a session's operating contract names the engine's sub-agent tool."""
+    return bool(contract_engine_subagent_mode(provider_label, agent, session_key))
 
-    A live reading, taken once per session by the contract renderer: the session's
-    provider label is KAS's (positive), and :func:`engine_subagents_on` holds for it
-    with no member dispatch or Crew panel (both need a crew member's key, which it
-    refuses). Never raises: an unreadable config reads False.
+
+def contract_engine_subagent_mode(
+    provider_label: str | None, agent: str | None, session_key: str | None
+) -> str:
+    """How a session's operating contract names the engine's sub-agent tool.
+
+    ``""`` when it does not, ``"replace"`` when the engine's tool replaces Kiro Crew's
+    own sub-agent tools (:func:`engine_replaces_spawn`), else ``"beside"``. A live
+    reading, taken once per session by the contract renderer: the session's provider
+    label is KAS's (positive), and :func:`engine_subagents_on` holds for it with no
+    member dispatch or Crew panel. Never raises: an unreadable config reads ``""``.
     """
     from kiro_crew.acp.provider_labels import PROVIDER_LABEL_KAS
 
     if provider_label != PROVIDER_LABEL_KAS or not agent or not session_key:
-        return False
+        return ""
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg = KiroCrewConfig.load()
-        return engine_subagents_on(cfg, agent, session_key, member_dispatch=False, crew_panel=False)
+        if not engine_subagents_on(
+            cfg, agent, session_key, member_dispatch=False, crew_panel=False
+        ):
+            return ""
+        if _is_own_agent_file(agent):
+            # Never mounted (``kas_native_batch``): its file is read as kiro-cli reads it.
+            return ""
+        replaces = engine_replaces_spawn(agent, session_key)
     except Exception:  # noqa: BLE001 - an unreadable config keeps today's contract
         logger.debug("the kas_subagents preview unreadable for the contract", exc_info=True)
-        return False
+        return ""
+    return "replace" if replaces else "beside"
 
 
-def with_engine_sentence(prompt: str) -> str:
-    """*prompt* with its one ``spawn_sub_agents`` sentence naming the engine's tool."""
-    return prompt.replace(SPAWN_SUB_AGENTS_SENTENCE, ENGINE_SUB_AGENT_SENTENCE, 1)
+def _is_own_agent_file(agent: str) -> bool:
+    """Whether *agent*'s spec is a person's own file, which the mount skips.
+
+    The same test ``kas_native_batch`` applies to the projected spec. A spec that
+    cannot be read is judged by its name alone, as an empty spec: one of Kiro Crew's
+    own names is not a person's file, any other name is. Blocking file IO.
+    """
+    from kiro_crew.acp.default_crew_servers import is_custom_agent
+    from kiro_crew.acp.kas_agents import load_agent_spec
+    from kiro_crew.config import paths as paths_mod
+
+    try:
+        spec: Any = load_agent_spec(paths_mod.kiro_agents_dir(), agent)
+    except Exception:  # noqa: BLE001 - judged by its name alone
+        spec = {}
+    return is_custom_agent(agent, spec if isinstance(spec, dict) else {})
+
+
+def _with_engine_steps(prompt: str) -> str:
+    """*prompt* with the shipped three ``spawn_run`` steps replaced by :data:`ENGINE_STEPS`.
+
+    Only when all three are there, one after the other, each a whole line; a prompt
+    of the person's own is left as it is.
+    """
+    lines = prompt.split("\n")
+    for i in range(len(lines) - 2):
+        if all(lines[i + n].startswith(_SPAWN_STEP_STARTS[n]) for n in range(3)):
+            return "\n".join([*lines[:i], ENGINE_STEPS, *lines[i + 3 :]])
+    return prompt
+
+
+def with_engine_sentence(prompt: str, mode: str = "replace") -> str:
+    """*prompt* with its one ``spawn_sub_agents`` sentence naming the engine's tool.
+
+    ``"replace"``: the sentence names the engine's tool first. ``"beside"``: the
+    ``spawn_sub_agents`` sentence stays and the helper-only one follows it.
+    """
+    if mode == "beside":
+        both = f"{SPAWN_SUB_AGENTS_SENTENCE} {ENGINE_HELPER_SUB_AGENT_SENTENCE}"
+        return prompt.replace(SPAWN_SUB_AGENTS_SENTENCE, both, 1)
+    prompt = _with_engine_steps(prompt)
+    lead = SPAWN_RUN_LEAD + SPAWN_SUB_AGENTS_SENTENCE
+    if lead in prompt:
+        return prompt.replace(lead, ENGINE_ONLY_SUB_AGENT_SENTENCE, 1)
+    return prompt.replace(SPAWN_SUB_AGENTS_SENTENCE, ENGINE_ONLY_SUB_AGENT_SENTENCE, 1)
 
 
 def _helper_file_exists(work_dir: str | Path | None) -> bool:
@@ -189,13 +357,18 @@ def _helper_file_exists(work_dir: str | Path | None) -> bool:
     return False
 
 
-def _mounted(entry: dict[str, Any]) -> dict[str, Any]:
-    """The default agent's *entry* with the engine's tool on, only the helper reachable."""
+def _mounted(entry: dict[str, Any], replace_spawn: bool = True) -> dict[str, Any]:
+    """The session agent's *entry* with the engine's tool on, only the helper reachable.
+
+    *replace_spawn* also takes ``spawn_run`` and ``spawn_sub_agents`` off it
+    (:func:`engine_replaces_spawn`); otherwise both stay beside the engine's tool.
+    """
     tools = entry.get("tools")
     held = entry.get("permissions")
     block = dict(held) if isinstance(held, dict) else {}
     block["rules"] = [*(block.get("rules") or []), only_helper_rule()]
-    [entry] = with_switched_off_tools([entry], frozenset({("kirocrew-core", "spawn_sub_agents")}))
+    if replace_spawn:
+        [entry] = with_switched_off_tools([entry], _SPAWN_TOOLS)
     # ``"*"`` already mounts the tool; any other shape is a list the tool joins.
     mounted = (
         tools
@@ -457,8 +630,11 @@ def with_engine_subagents(
     parent_spec: dict[str, Any] | None = None,
     mounted_out: list[str] | None = None,
     own_agents: Callable[[], tuple[list[dict[str, Any]], str]] | None = None,
+    replace_spawn: bool = True,
 ) -> list[dict[str, Any]]:
-    """*custom_agents* with the default agent's entry mounted and the helper appended.
+    """*custom_agents* with the session agent's entry mounted and the helper appended.
+
+    *replace_spawn* is :func:`engine_replaces_spawn`'s answer for the session.
 
     *mounted_out* gains *agent* only when the helper is built and appended here: the
     host-memory provenance a helper-only child's grant stamp requires.
@@ -517,7 +693,7 @@ def with_engine_subagents(
     helper = _withhold_session_hooks(helper, KAS_HELPER_AGENT, matchers)
     own_rules = len(_rules_of(helper))
     helper = _with_parent_restrictions(helper, parent)
-    mounted = [_mounted(a) if a is parent else a for a in custom_agents]
+    mounted = [_mounted(a, replace_spawn) if a is parent else a for a in custom_agents]
     if children:
         reached = [str(c.get("id")) for c in children]
         mounted = [_also_reaching(a, reached) if a.get("id") == agent else a for a in mounted]
@@ -541,11 +717,19 @@ def with_engine_subagents(
 
 
 __all__ = [
+    "DEFAULT_MEMBER",
+    "ENGINE_HELPER_SUB_AGENT_SENTENCE",
+    "ENGINE_ONLY_SUB_AGENT_SENTENCE",
+    "ENGINE_STEPS",
     "ENGINE_SUB_AGENT_SENTENCE",
+    "SPAWN_RUN_LEAD",
     "SPAWN_SUB_AGENTS_SENTENCE",
     "KAS_SUBAGENTS_PREVIEW",
+    "contract_engine_subagent_mode",
     "contract_names_engine_subagents",
+    "engine_replaces_spawn",
     "engine_subagents_on",
+    "hands_work_to_sessions",
     "kas_subagents_preview_on",
     "parent_refuses_helper",
     "unmirrored_restriction",

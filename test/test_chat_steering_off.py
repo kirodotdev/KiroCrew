@@ -210,6 +210,28 @@ def test_a_codex_chat_ignores_a_stored_switch_off(home):
     assert RULE in msg
 
 
+def test_the_load_follows_the_capability_not_the_label(home, monkeypatch):
+    """Give codex ``honors_chat_steering_off`` and its load leaves the file out."""
+    import dataclasses
+
+    import kiro_crew.agent_sdk.capabilities as caps_mod
+
+    real = caps_mod.capabilities_for
+
+    def _codex_honours(backend):
+        record = real(backend)
+        if backend == "codex":
+            return dataclasses.replace(record, honors_chat_steering_off=True)
+        return record
+
+    monkeypatch.setattr(caps_mod, "capabilities_for", _codex_honours)
+    off = frozenset({_resolved(home / ".kiro" / "steering" / "global.md")})
+    msg, _ = _builder(home).build_message(
+        "hello", True, "main", provider_type="codex", steering_off=off
+    )
+    assert RULE not in msg
+
+
 @pytest.mark.skipif(
     not pinned_fs.supports_pinned_tree_walk(),
     reason="folder steering refuses to walk by name on this platform",

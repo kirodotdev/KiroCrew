@@ -1647,7 +1647,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _actor,
             prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
-        from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+        from kiro_crew.dashboard import slot_buffers
 
         # A hold a restart restored into this idle slot is owed to this turn.
         # Its rows reach an SSE reader through `_pending`, which the stale-frame
@@ -1655,7 +1655,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _restored_frames: list[dict[str, Any]] = []
         if slot._deferred_notes:
             slot.drain()
-            flush_restored_hold(slot, logger=logger)
+            slot_buffers.flush_restored_hold(slot, logger=logger)
             _restored_frames = slot.drain()
         _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
         _send_race.commit_request(
@@ -1692,10 +1692,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             request, slot, person=_person_send, card_origin=card_origin
         )
 
-        # Drain stale pending messages from previous turns that completed
-        # after their SSE reader disconnected. Must happen BEFORE _run_chat
-        # so we don't discard the new turn's output.
-        slot.drain()
+        # Drain what earlier turns left pending, BEFORE _run_chat so the new
+        # turn's output stays; a still-attached reader keeps its turn's end.
+        _stream_epoch = slot_buffers.drain_stale_pending(slot)
         # Only the slot's own reader gets them back: an app's turn-scoped stream
         # may send on this session but not read the note, which reached the
         # user's tabs through the flush's own broadcast.
@@ -1897,7 +1896,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # release must not run while an SSE reader still has undelivered tokens
     # queued, and `_has_reader` alone cannot carry that: the `done` branch below
     # clears it before this scope ends, and a turn-scoped reader never sets it.
-    with slot.pending_consumer():
+    with slot_buffers.stream_reader(slot, _stream_epoch):
         try:
             await resp.prepare(request)
         except BaseException:
@@ -1908,7 +1907,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             raise
         try:
             while True:
-                pending = slot.drain()
+                pending = slot_buffers.stream_frames(slot, _stream_epoch)
                 for msg in pending:
                     # Fail closed even if a dispatch path misses turn_end: only
                     # this request's gateway-minted user row belongs to its SSE.
@@ -1932,12 +1931,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                         await write_sse_or_abort(request, resp, f"data: {event}\n\n".encode())
                     turn_timing.sse_first_frame(slot.key)
                 try:
-                    await asyncio.wait_for(slot.event.wait(), timeout=30)
+                    await asyncio.wait_for(slot_buffers.stream_wait(slot, _stream_epoch), 30)
                 except asyncio.TimeoutError:
                     await write_sse_or_abort(request, resp, b": keepalive\n\n")
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
-            slot.drain()
             slot._has_reader = False
     return resp

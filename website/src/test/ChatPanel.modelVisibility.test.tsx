@@ -455,4 +455,28 @@ describe('Settings selectable models', () => {
     const sonnetRow = await screen.findByRole('checkbox', { name: 'claude-sonnet-5' })
     expect(sonnetRow.closest('label')?.querySelector('[data-multi-select-hint]')).toBeNull()
   })
+
+  it('locks a model the Kiro account hid, unticked, and leaves it out of Deselect all', async () => {
+    modelsMock.mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'model-a', description: 'Model A' },
+      { model_name: 'model-b', description: 'Model B', hidden_by_account: true },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).not.toBeDisabled())
+    expect(trigger).toHaveTextContent('Selected 2 / 3')
+    fireEvent.click(trigger)
+    const hidden = await screen.findByRole('checkbox', { name: 'model-b' })
+    expect(hidden).toBeDisabled()
+    expect(hidden).not.toBeChecked()
+    const row = hidden.closest('label')
+    expect(row).toHaveTextContent('Model B')
+    expect(row?.querySelector('[data-multi-select-locked-reason]')).toHaveTextContent('Hidden through your app.kiro.dev settings · Manage Kiro models · Model B')
+    expect(row?.querySelector('[data-multi-select-locked-reason] a')).toHaveAttribute('href', 'https://app.kiro.dev/settings/model')
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect all' }))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+      model_picker_hidden_models_add: ['model-a'],
+    }))
+  })
 })

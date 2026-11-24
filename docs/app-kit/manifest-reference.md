@@ -2527,9 +2527,11 @@ Level 2 of the bridge (App Kit seam level 7) adds:
   release, and follow `onDrag((phase, x, y) => ...)` (`start`, `move`, `end`).
   A message sent to this window goes to the copy hosting the avatar.
 - `showSession(slotKey)`: raise the dashboard on a session (resolves `true` once it
-  is there to show it), and `openExternal(url)` for an `https:` link. Each is answered
-  only within 2 s of a mouse or key press the shell saw in the window, one request per
-  press (its release does not count again), never from a background window.
+  is there to show it; a window shown from a crew names a session on that crew, which
+  the dashboard opens as a crew link does), and `openExternal(url)` for an `https:`
+  link. Each is answered only within 2 s of a mouse or key press the shell saw in the
+  window, one request per press (its release does not count again), never from a
+  background window.
 
 The trust prompt lists the window shapes you declare before the user says yes.
 

@@ -380,16 +380,47 @@ def test_only_restrictions_travel_to_the_helper():
 
 
 @pytest.mark.asyncio
-async def test_engine_takes_spawn_sub_agents_off_the_default_agent_only(agents_dir, setting):
+async def test_engine_takes_both_spawn_tools_off_the_default_agents_own_chat(agents_dir, setting):
     _write(agents_dir, _default_spec())
     setting(True)
     batch = _by_id(await _batch())
-    assert "@kirocrew-core/spawn_sub_agents" in batch["kirocrew"]["excludedTools"]
-    # spawn_run, its lifecycle tools and every other Kiro Crew tool stay.
+    excluded = batch["kirocrew"]["excludedTools"]
+    assert {"@kirocrew-core/spawn_sub_agents", "@kirocrew-core/spawn_run"} <= set(excluded)
+    # The run lifecycle tools and every other Kiro Crew tool stay.
     assert not any(
-        t.startswith("@kirocrew-core/") and t != "@kirocrew-core/spawn_sub_agents"
-        for t in batch["kirocrew"]["excludedTools"]
+        t.startswith("@kirocrew-core/")
+        and t not in ("@kirocrew-core/spawn_sub_agents", "@kirocrew-core/spawn_run")
+        for t in excluded
     )
+
+
+def _spawn_kept(entry: dict) -> bool:
+    return not any(
+        t in ("@kirocrew-core/spawn_sub_agents", "@kirocrew-core/spawn_run")
+        for t in entry.get("excludedTools") or []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key, kw",
+    [
+        ("cron:job-1", {}),
+        ("slack:C1:T1", {}),
+        ("dashboard:member-ada", {}),
+        ("dashboard:member-ada", {"member_dispatch": True}),
+    ],
+    ids=["cron", "channel", "a-members-chat", "a-members-dispatch"],
+)
+async def test_every_other_chat_kind_mounts_the_tool_and_keeps_both_spawn_tools(
+    agents_dir, setting, key, kw
+):
+    _write(agents_dir, _default_spec())
+    setting(True)
+    batch = _by_id(await _batch(key=key, **kw))
+    assert _HELPER in batch
+    assert "invoke_sub_agent" in batch["kirocrew"]["tools"] or batch["kirocrew"]["tools"] == "*"
+    assert _spawn_kept(batch["kirocrew"])
 
 
 # ── off, and everywhere "on" does not apply: exactly main's batch ────────────
@@ -405,9 +436,9 @@ async def test_off_projects_what_main_projects(agents_dir, setting, monkeypatch)
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "key",
-    ["cron:job-1", "subagent:abc", "wf:run-1", "taskrunner:t", "slack:C1:T1", "heartbeat", ""],
+    ["subagent:abc", "wf:run-1", "taskrunner:t", "heartbeat", ""],
 )
-async def test_engine_leaves_every_other_session_kind_as_main(
+async def test_engine_leaves_every_session_that_is_not_a_chat_as_main(
     agents_dir, setting, monkeypatch, key
 ):
     _write(agents_dir, _default_spec())
@@ -420,33 +451,45 @@ async def test_engine_leaves_every_other_session_kind_as_main(
 
 
 @pytest.mark.asyncio
-async def test_engine_leaves_a_crew_members_chat_as_main(agents_dir, setting, monkeypatch):
+async def test_the_member_named_default_drops_both_spawn_tools_in_its_own_chat(
+    agents_dir, setting, monkeypatch
+):
+    from kiro_crew import members as members_mod
+
     _write(agents_dir, _default_spec())
     setting(True)
-    key = "dashboard:member-ada"
-    assert await _batch(key=key) == await _mains_batch(monkeypatch, key=key)
+    key = "dashboard:member-default"
+    monkeypatch.setattr(
+        members_mod, "member_identity_for_session", lambda k: {"slug": "default", "name": "default"}
+    )
+    assert not _spawn_kept(_by_id(await _batch(key=key))["kirocrew"])
+    # Another member's chat keeps them.
+    monkeypatch.setattr(
+        members_mod, "member_identity_for_session", lambda k: {"slug": "ada", "name": "ada"}
+    )
+    assert _spawn_kept(_by_id(await _batch(key=key))["kirocrew"])
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "name",
     [
-        "kirocrew-conductor",
         "kirocrew-research",
-        "kirocrew-mate-conductor",
         "kirocrew-worker",
         "kirocrew-heartbeat",
-        "kirocrew-team-lead",
     ],
 )
-async def test_an_agent_built_from_the_default_template_is_byte_equal_to_main(
+async def test_an_agent_built_from_the_default_template_mounts_and_keeps_both_spawn_tools(
     agents_dir, setting, monkeypatch, name
 ):
     _write(agents_dir, _default_spec())
     _write(agents_dir, _default_spec(name))
-    # A mirror's generation check is not what is compared here: both sides skip it.
     monkeypatch.setattr(agent_mod, "require_fresh_derived_spec", lambda *a, **k: None)
     setting(True)
+    batch = _by_id(await _batch(name))
+    assert _HELPER in batch and _spawn_kept(batch[name])
+    setting(False)
+    # Off: byte-equal to the batch from before the preview.
     assert json.dumps(await _batch(name), sort_keys=True) == json.dumps(
         await _mains_batch(monkeypatch, name), sort_keys=True
     )

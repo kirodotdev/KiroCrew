@@ -569,7 +569,8 @@ key-based route: see the `agent.strands_provider`, `agent.strands_model` and
 |-----|-------------|---------|
 | `slack.allowed_users` | Ignored for access; a name is only a display-name fallback. Never read by shared access | `[]` |
 | `slack.shared_access.enabled` | Let the Slack users in `slack.shared_access.user_ids` drive this Crew **as you**, with your files, Git and cloud credentials and connected tools. Only a literal `true` turns it on. See [Sharing Slack access](slack-integration.md#sharing-slack-access) | `false` |
-| `slack.shared_access.user_ids` | Slack member IDs (`U…` or `W…`) allowed while shared access is on. Each is checked with Slack before it counts: same workspace as the bot, a person, not deactivated, not the owner. Malformed entries are ignored | `[]` |
+| `slack.shared_access.user_ids` | Slack member IDs (`U…` or `W…`) allowed while shared access is on. The owner's own ID never counts and malformed entries are ignored. By default an ID counts as written: Slack is not asked whether it is a bot, deactivated or in another workspace | `[]` |
+| `slack.shared_access.verify_with_slack` | Check each listed ID with Slack before it counts: same workspace as the bot, a person, not deactivated. Needs the `users:read` bot scope. Only a literal `true` turns it on. A config that already has `enabled: true` and no `verify_with_slack` gets `true` written on its first load by this version, so an upgrade keeps the check; set it to `false` for list-only. Turning sharing on in the dashboard stores `false` | `false` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
@@ -1200,13 +1201,21 @@ Headers sent with each trace export to `telemetry.traces_otlp_endpoint`.
 | `tunnel.name_override` | Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo'). | `""` |
 | `tunnel.relay_handle_email_domains` | Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do. | `[]` |
 
-### Remote Crew managed environments
+### Kiro Managed Environments
 
-Settings for Kiro managed environments (persistent cloud machines) in Remote Crew. Remote Crew does not offer managed environments yet, so setting them changes nothing today. They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
+Kiro Managed Environments are remote machines that Kiro starts and keeps for you, so Crew can run there. These settings are for using them from Remote Crew, which offers a "Kiro Managed Environments" launch row while the preview is on; the new environment's Crew runs its engine in machine mode (the `agent.kas_*` keys). They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
 
 | Key | Description | Default |
 |-----|-------------|---------|
 | `instances.managed_env_endpoint` | HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty: every call is refused and names this key. | `""` |
+| `instances.managed_env_start_url` | IAM Identity Center start URL whose Crew sign-in (the Kiro account tab in Settings) the lane uses. Only that sign-in's token is sent to the service endpoint. Signing in on this start URL turns off chat with the agent on this computer while that sign-in is active. Empty: the lane is signed out. | `""` |
+| `instances.managed_env_profile_arn` | Kiro profile ARN pinned on the sign-in above, so it asks no control plane for a profile; the lane sends it with every call. Empty: the lane is signed out. | `""` |
+| `instances.managed_env_ssh_region` | AWS Region the Session Manager plugin is started in when ssh reaches a managed environment. Empty: a connect is refused and names this key. | `""` |
+| `instances.managed_env_kas_endpoint` | HTTPS runtime endpoint the Crew on a new managed environment runs its engine against. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_control_plane_endpoint` | HTTPS control-plane endpoint for that engine. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_region` | Region the two engine endpoints serve. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_box_token_path` | Absolute path, on the managed environment, of the machine token file its image keeps fresh. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_box_env_drop` | Environment variable names the image sets (its own credentials, or the machine token's variable) that are cleared before Crew starts there. | `[]` |
 
 ### Messaging channels
 

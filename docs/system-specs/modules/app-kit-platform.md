@@ -9145,7 +9145,12 @@ host carries no import of a store another program wrote:
 dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
 `""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
 notification it could not act on (`website/electron/dashboard-session.js`, the same
-check the kirocrew:// deep link uses). `openExternal(url)` hands an `https:` link to the
+check the kirocrew:// deep link uses). A window a crew serves (`gatewayChoice`) names a
+session on that crew: the crew comes from the window's own target, never the page, and the
+dashboard gets the crew link's route (`/chat?crew=<id>&crewSid=<key>`, refused before the
+window moves when the key or id fails the crew link's rules), so a crew's key never opens a
+same-named local session; true there means the dashboard has the link, which can still
+refuse it as a crew link is refused. `openExternal(url)` hands an `https:` link to the
 OS browser and nothing else. Both move the user's focus, so each is answered only while
 the user is acting in the sender: the shell saw a mouse or key press start in that window
 within the last 2 s (Electron's `input-event` `mouseDown` or `rawKeyDown`, not a release or

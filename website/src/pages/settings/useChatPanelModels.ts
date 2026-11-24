@@ -164,8 +164,12 @@ export function useChatPanelModelDefaults({
     normalizeHiddenModels(dashCfg.model_picker_hidden_models),
   )
   const isHiddenModel = hiddenModelMatcher(hiddenModels)
+  // A model the account hid on app.kiro.dev (`ModelInfo.hiddenByAccount`) is out of
+  // the chat picker whatever Crew's own list says, so its row is locked and unticked
+  // and no Crew edit (one row, select all, deselect all) writes it.
+  const editableModels = availableModels.filter(model => model.hiddenByAccount !== true)
   const selectedModelIds = new Set(
-    availableModels
+    editableModels
       .filter(model => model.name === 'auto' || !isHiddenModel(model.name))
       .map(model => model.name),
   )
@@ -224,9 +228,9 @@ export function useChatPanelModelDefaults({
       : [...hiddenModels.filter(value => value !== model), model]
     saveHiddenModels(selected ? { next, remove: [...new Set([model, ...stored])] } : { next, add: [model] })
   }
-  const isAdvertisedModel = hiddenModelMatcher(availableModels.map(model => model.name))
+  const isAdvertisedModel = hiddenModelMatcher(editableModels.map(model => model.name))
   const hiddenUnadvertisedModels = hiddenModels.filter(model => !isAdvertisedModel(model))
-  const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
+  const advertisedOptionalModelIds = editableModels.filter(model => model.name !== 'auto').map(model => model.name)
   // The server removes ids by exact string, so showing every model must name
   // each stored spelling of an advertised model, not only the advertised id.
   const selectAllModels = () => saveHiddenModels({

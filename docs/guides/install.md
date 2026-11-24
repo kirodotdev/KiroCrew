@@ -581,7 +581,7 @@ The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
 installs the next time you quit the app (by default closing the window only hides
-it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+it to the tray, and the first time it does a notification says so; quit with **Quit Kiro Crew** (**Quit Kiro Crew and Stop Background Sessions** while the app runs a gateway it started) from the tray or the menu bar, or turn off **Keep running in the background
 after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
@@ -1157,7 +1157,12 @@ path — `python -m kiro_crew`, a different venv's entry point, a re-created ven
 the profile has not been re-pointed at — stays unconfined, and `kirocrew doctor`
 reports the attachment as stale in the re-created-venv case. Prefer running the
 gateway as the service: it pins `ExecStart` to the attached path and restarts on
-boot.
+boot. On a Toolbox install `ExecStart` runs the Toolbox launcher
+`~/.toolbox/bin/kirocrew` instead, which starts the current version, so the
+service keeps starting after an update. That launcher execs the version's own
+`tools/kirocrew/<version>/bin/kirocrew` script, so on a Toolbox install the
+profile is attached to that script in every version folder
+(`tools/kirocrew/*/bin/kirocrew`), and to no other Toolbox tool's.
 
 ### The AppImage (desktop app) needs its own profile
 

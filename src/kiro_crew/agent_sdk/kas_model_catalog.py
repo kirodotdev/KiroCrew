@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew import model_registry
@@ -66,7 +67,21 @@ _recorded: list[dict[str, Any]] | None = None
 #: read as the recording's request went out: WHICH account the rows are. Under
 #: ``_LOCK`` with the rows, as one state.
 _recorded_identity = ""
+#: The account's hidden models as the engine's connection view last stated them
+#: (``acp.kas_shared_model_picker``), with the vault identity they were read
+#: under; ``None`` until an engine states the row. Under ``_LOCK`` like the rows:
+#: the chat picker reads both together.
+_recorded_hidden: list[str] | None = None
+_recorded_hidden_identity = ""
+#: Receive order of the view the recording came from (:func:`next_hidden_models_seq`),
+#: so a view whose vault read finished late cannot overwrite a newer one.
+_recorded_hidden_seq = 0
+_hidden_models_seq = 0
 _LOCK = threading.Lock()
+#: Told, outside ``_LOCK``, each time the recorded hidden models change, so a
+#: picker that already holds a list reads again (the dashboard registers its
+#: ``models_changed`` broadcast). ``None`` until a consumer registers one.
+_hidden_models_changed: Callable[[], None] | None = None
 
 
 def _clamp(value: object) -> str:
@@ -290,3 +305,76 @@ def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:
         if _recorded is None or not identity or identity != _recorded_identity:
             return None
         return [dict(row) for row in _recorded]
+
+
+def next_hidden_models_seq() -> int:
+    """The receive-order stamp for a view about to be recorded.
+
+    Taken on the loop when the view arrives, before the vault read that precedes
+    :func:`record_hidden_models`; a recording stamped lower than the one held is
+    refused, so two views whose reads finish out of order land in receive order.
+    """
+    global _hidden_models_seq
+    with _LOCK:
+        _hidden_models_seq += 1
+        return _hidden_models_seq
+
+
+def record_hidden_models(hidden: list[str] | None, *, identity: object, seq: int = 0) -> bool:
+    """Remember the account's hidden models the engine stated; ``True`` when recorded.
+
+    *hidden* is the ``modelPickerHidden`` row's ids, ``[]`` for an account that hid
+    nothing, or ``None`` for a view that states no row, which records nothing: the
+    chat picker then keeps whatever an earlier view stated. *identity* is the vault
+    fingerprint the engine's request went out under, refused when empty for the same
+    reason :func:`record_catalog` refuses one. *seq* is the view's
+    :func:`next_hidden_models_seq` stamp; a view older than the recorded one is
+    refused, and ``0`` (no stamp) always records.
+    """
+    global _recorded_hidden, _recorded_hidden_identity, _recorded_hidden_seq
+    if hidden is None or not (isinstance(identity, str) and identity):
+        return False
+    with _LOCK:
+        if seq and seq < _recorded_hidden_seq:
+            logger.debug(
+                "KAS account hidden models: view %d is older than recorded %d",
+                seq,
+                _recorded_hidden_seq,
+            )
+            return False
+        changed = _recorded_hidden != list(hidden) or _recorded_hidden_identity != identity
+        _recorded_hidden = list(hidden)
+        _recorded_hidden_identity = identity
+        _recorded_hidden_seq = max(_recorded_hidden_seq, seq)
+    logger.debug("KAS account hidden models recorded (%d ids)", len(hidden))
+    listener = _hidden_models_changed
+    if changed and listener is not None:
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - a consumer's failure does not unrecord the row
+            logger.debug("hidden-models listener failed", exc_info=True)
+    return True
+
+
+def on_hidden_models_changed(listener: Callable[[], None] | None) -> None:
+    """Register the one consumer told when the recorded hidden models change.
+
+    The dashboard registers its ``models_changed`` broadcast at install, so an
+    open picker reads again when the account hides or shows a model on another
+    client, or when the first read lands after the picker's own. ``None``
+    unregisters.
+    """
+    global _hidden_models_changed
+    _hidden_models_changed = listener
+
+
+def recorded_hidden_models_snapshot(identity: str) -> list[str] | None:
+    """A copy of the account's hidden models, if they were stated for *identity*.
+
+    ``None`` when no engine stated the row for that account (nothing to hide from
+    the account), as :func:`recorded_catalog_snapshot` answers for the rows.
+    """
+    with _LOCK:
+        if _recorded_hidden is None or not identity or identity != _recorded_hidden_identity:
+            return None
+        return list(_recorded_hidden)

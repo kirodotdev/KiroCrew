@@ -223,11 +223,13 @@ def steering_resources_part(
     steering and ``AGENTS.md`` that kiro-cli inherits. A harness that reads that
     ``AGENTS.md`` itself from its working directory (Codex, OpenCode, Pi) does not get it from
     this load. *steering_off* holds the resolved paths this chat switched off;
-    only a Claude Code chat honours it, the one harness whose list offers the
-    switch, and a chat with none takes exactly the old call.
+    only a harness whose capability record says it honours the switch
+    (``SessionCapabilities.honors_chat_steering_off``, Claude Code today) leaves
+    them out, and a chat with none takes exactly the old call.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.steering_off import honoured_for as steering_off_honoured
 
     if essentials or not ctx.acp_driver.crew_loads_spec_steering(provider_type):
         return ""
@@ -236,7 +238,7 @@ def steering_resources_part(
     if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):
         return ""
     reads_agents_md = ctx.acp_driver.reads_project_agents_md(provider_type)
-    if steering_off and ctx.is_claude_code(provider_type):
+    if steering_off and steering_off_honoured(provider_type):
         return ctx._load_steering_resources(
             project, steering_off, harness_reads_agents_md=reads_agents_md
         )
