@@ -511,13 +511,13 @@ is the part worth knowing before you switch:
   steering or a crew member's essentials carry it. `prompt`
   survives as context text.
 - **`toolsSettings` reaches no mirror.** A shell or write allowlist is applied on
-  kiro-cli, KAS and `claude` only, and `deniedPaths` and `web_fetch.blocked` on
+  kiro-cli, KAS, `claude` and `opencode` only, and `deniedPaths` and `web_fetch.blocked` on
   kiro-cli and KAS only; `subagent.availableAgents` is applied by Crew's spawn gate
   on every backend. On
   every mirrored harness a new chat session whose spec sets anything else there
   gets one notice naming it,
-  so the loss is told rather than silent, but off `claude` nothing refuses what the
-  allowlist would have refused.
+  so the loss is told rather than silent, but off `claude` and `opencode` nothing
+  refuses what the allowlist would have refused.
 
 So a spec written for kiro-cli degrades predictably rather than silently, as long
 as you read `per_tool_deny`, the `hooks` ruling, the `resources` note and the

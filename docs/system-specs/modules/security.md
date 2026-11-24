@@ -4030,7 +4030,8 @@ It refuses the session for its own entry only; a sub-agent registered beside it
 named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
 
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
-a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only; kiro-cli
+a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode,
+whose seeded `permission` `"*": "ask"` already makes each call ask; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both
 from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
 `spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell

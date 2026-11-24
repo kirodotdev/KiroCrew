@@ -173,7 +173,8 @@ On Linux (glibc 2.28+) and macOS 11+ the installer takes the platform wheel,
 which already carries the [built-in KAS engine](#first-run) this release pins,
 so there is nothing more to download. Anywhere else it takes the plain wheel and
 then runs the new `kirocrew kas install` to download the engine (about 55-70 MB
-for your platform). If that download fails, for example on a host with no access
+for your platform). On x86_64 Linux with glibc 2.26 or 2.27, such as Amazon
+Linux 2, that download is an Amazon Linux 2 build of the same engine. If that download fails, for example on a host with no access
 to the CDN, a first install exits 1 with the command to retry, and the gateway
 tries again when it starts; a re-run over an existing install, and an LTS install
 that is not signed in yet, keep exit 0. On a host that cannot run the engine at all (no build for its
