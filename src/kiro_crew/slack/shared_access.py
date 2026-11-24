@@ -155,12 +155,13 @@ def still_confirmed(cfg: Any, user_id: str, *, owner: bool) -> bool:
     :func:`is_shared_user` without its expiry, for a check made where nothing primes
     the answer (a code channel's session judged mid-turn, long after the person's
     message). The list is read live, so the owner removing them, or switching shared
-    access off, ends it at once; a refusal from Slack does too.
+    access off, ends it at once; a refusal from Slack does too, and so does turning
+    ``verify_with_slack`` on while only a list-only answer is held.
     """
     if owner or not listed(cfg, user_id):
         return False
     verdict = _verdicts.get(user_id)
-    return verdict is not None and verdict.ok
+    return verdict is not None and verdict.ok and _fits(verdict, verify=verify_with_slack(cfg))
 
 
 def was_shared(user_id: str) -> bool:

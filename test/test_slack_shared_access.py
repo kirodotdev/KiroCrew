@@ -313,6 +313,18 @@ async def test_flipping_verify_asks_again_instead_of_reusing_the_old_answer(
 
 
 @pytest.mark.asyncio
+async def test_a_list_only_pass_does_not_outlive_turning_verification_on(
+    _floor_monkeypatch,
+) -> None:
+    # still_confirmed serves a code channel mid-turn, with no expiry and no re-prime.
+    cfg_off, cfg_on = _cfg(verify=False), _cfg(verify=True)
+    _use(_floor_monkeypatch, cfg_off)
+    await shared_access.prime_shared_user(FRIEND)
+    assert shared_access.still_confirmed(cfg_off, FRIEND, owner=False) is True
+    assert shared_access.still_confirmed(cfg_on, FRIEND, owner=False) is False
+
+
+@pytest.mark.asyncio
 async def test_a_failed_slack_check_logs_slacks_error_code(_gateway, caplog) -> None:
     async def _refuse(user: str) -> dict[str, Any]:
         raise _SlackError("missing_scope")
