@@ -5,7 +5,7 @@
  * draws in place of its `>` block.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import UserMessage from '../pages/chat/UserMessage'
 import { prependQuote } from '../chat-core/composer/messageQuote'
 
@@ -248,5 +248,179 @@ describe('a row carrying meta.quote', () => {
     render(<UserMessage content={content} meta={{ quote }} renderContent={renderContent} />)
     await act(async () => { fireEvent.click(screen.getByLabelText('Copy')) })
     expect(copyToClipboard).toHaveBeenCalledWith(content)
+  })
+})
+
+describe('the sent quote card renders its quote as markdown, clamped', () => {
+  const MD = [
+    'We can drop the question.',
+    '',
+    '| Server | Now |',
+    '|---|---|',
+    '| builder | Asks you |',
+    '',
+    '- Only declared facts count.',
+    '- It does not guess.',
+    '',
+    '<mcwidget title="Board"><div id="w">live</div></mcwidget>',
+  ].join('\n')
+  const quote = { role: 'assistant' as const, text: MD, ts: '2026-09-29T09:12:00Z', mid: 'm9' }
+  // jsdom lays nothing out: give every element the scroll height a tall or a
+  // short quote would have, so the card's overflow measure has something to read.
+  const layOut = (px: number) => {
+    const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => px })
+    // The real getter lives on Element.prototype, so with no own descriptor the
+    // restore is a delete, which exposes it again.
+    return () => { if (desc) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', desc); else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight') }
+  }
+
+  it('draws the table and the list as markdown, not raw pipes or joined bullets, and no widget', () => {
+    render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} />)
+    const card = screen.getByTestId('quote-card-sent')
+    expect(card.querySelector('table')).not.toBeNull()
+    expect(card.querySelectorAll('li')).toHaveLength(2)
+    expect(card.textContent).not.toContain('|---|')
+    expect(card.textContent).not.toContain(' · ')
+    expect(card.textContent).not.toContain('live')
+    expect(card.querySelector('iframe')).toBeNull()
+  })
+
+  it('clamps a long quote with a fade, and Show more expands it in place', () => {
+    const restore = layOut(400)
+    try {
+      render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} />)
+      const body = screen.getByTestId('quote-card-body')
+      expect(body).toHaveAttribute('data-clamped')
+      expect(body.style.maskImage).toContain('linear-gradient')
+      const toggle = screen.getByTestId('quote-card-toggle')
+      expect(toggle).toHaveTextContent('Show more')
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveTextContent('Show less')
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      expect(body).not.toHaveAttribute('data-clamped')
+      expect(body.className).toContain('overflow-y-auto')
+      fireEvent.click(toggle)
+      expect(body).toHaveAttribute('data-clamped')
+    } finally { restore() }
+  })
+
+  it('Show less scrolls the body back to the top, so the collapsed card starts at the quote\'s start', () => {
+    const restore = layOut(400)
+    try {
+      render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} />)
+      const body = screen.getByTestId('quote-card-body')
+      let scrollTop = 0
+      Object.defineProperty(body, 'scrollTop', { configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v } })
+      const toggle = screen.getByTestId('quote-card-toggle')
+      fireEvent.click(toggle)
+      scrollTop = 150
+      fireEvent.click(toggle)
+      expect(toggle).toHaveTextContent('Show more')
+      expect(scrollTop).toBe(0)
+    } finally { restore() }
+  })
+
+  it('a short quote shows whole, with no fade and no toggle', () => {
+    const restore = layOut(40)
+    try {
+      render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} />)
+      expect(screen.getByTestId('quote-card-body')).not.toHaveAttribute('data-clamped')
+      expect(screen.queryByTestId('quote-card-toggle')).not.toBeInTheDocument()
+    } finally { restore() }
+  })
+
+  it('expanded, the body keeps a bottom fade only while more sits below', () => {
+    const restore = layOut(400)
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    const st = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+    let clientHeight = 300
+    let scrollTop = 0
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => clientHeight })
+    Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get: () => scrollTop, set: () => {} })
+    try {
+      render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} />)
+      const body = screen.getByTestId('quote-card-body')
+      fireEvent.click(screen.getByTestId('quote-card-toggle'))
+      fireEvent.scroll(body)
+      expect(body.className).toContain('mask-image')
+      scrollTop = 100
+      fireEvent.scroll(body)
+      expect(body.className).not.toContain('mask-image')
+      scrollTop = 0
+      clientHeight = 400
+      fireEvent.scroll(body)
+      expect(body.className).not.toContain('mask-image')
+    } finally {
+      restore()
+      if (ch) Object.defineProperty(HTMLElement.prototype, 'clientHeight', ch)
+      if (st) Object.defineProperty(Element.prototype, 'scrollTop', st)
+    }
+  })
+
+  it('renders no live link inside the quote, only the link text', () => {
+    const linked = { role: 'assistant' as const, text: 'See [the label](https://example.com/x) and https://example.com/y', ts: '2026-09-29T09:12:00Z' }
+    render(<UserMessage content={prependQuote('Why?', linked)} meta={{ quote: linked }} renderContent={renderContent} />)
+    const card = screen.getByTestId('quote-card-sent')
+    expect(card.querySelector('a[href]')).toBeNull()
+    expect(card).toHaveTextContent('the label')
+    expect(card).toHaveTextContent('https://example.com/y')
+  })
+
+  const card = (text: string, role: 'user' | 'assistant' = 'assistant') => {
+    const q = { role, text, ts: '2026-09-29T09:12:00Z' }
+    render(<UserMessage content={prependQuote('Why?', q)} meta={{ quote: q }} renderContent={renderContent} />)
+    return screen.getByTestId('quote-card-sent')
+  }
+
+  it('a widget tag named in inline code stays text, and the text after it is kept', () => {
+    const c = card('Use the `<mcwidget title="x">` tag, then more text.')
+    expect(c).toHaveTextContent('Use the <mcwidget title="x"> tag, then more text.')
+  })
+
+  it('a widget tag inside a fenced code block shows as code', () => {
+    const c = card('Example:\n\n```html\n<mcwidget title="x"><div>hi</div></mcwidget>\n```\n\nafter')
+    expect(c.querySelector('pre')?.textContent).toContain('<mcwidget title="x"><div>hi</div></mcwidget>')
+    expect(c).toHaveTextContent('after')
+  })
+
+  it('an unclosed widget tag mounts no widget frame or placeholder', () => {
+    const c = card('text before\n\n<mcwidget title="Cut"><div>cut')
+    expect(c).toHaveTextContent('text before')
+    expect(c.textContent).not.toContain('cut')
+    expect(c.textContent).not.toContain('Cut')
+    expect(c.querySelector('iframe')).toBeNull()
+  })
+
+  it('a quoted user message keeps its Shift+Enter line breaks; an assistant one does not', () => {
+    expect(card('line one\nline two', 'user').querySelector('br')).not.toBeNull()
+    cleanup()
+    expect(card('line one\nline two', 'assistant').querySelector('br')).toBeNull()
+  })
+
+  it('an image in the quote never loads: no img, only its alt text', () => {
+    const c = card('See ![diagram](https://example.com/a.png) and <img src="https://example.com/b.png" alt="raw shot">')
+    expect(c.querySelector('img')).toBeNull()
+    // Nor the click-to-load chip, one click from fetching the address.
+    expect(c.querySelector('button[title^="https://example.com/"]')).toBeNull()
+    expect(c.textContent).not.toContain('click to load')
+    expect(c).toHaveTextContent('diagram')
+    expect(c).toHaveTextContent('raw shot')
+  })
+
+  it('remote video and audio in the quote never offer to load: no media element, no load button', () => {
+    const c = card('Clip <video src="https://example.com/a.mp4" title="demo clip"></video> and <audio src="https://example.com/b.mp3"></audio>')
+    expect(c.querySelector('video, audio')).toBeNull()
+    expect(c.querySelectorAll('button').length).toBe(c.querySelectorAll('[data-testid="quote-card-toggle"], [data-testid="quote-card-sent-jump"]').length)
+    expect(c).toHaveTextContent('demo clip')
+  })
+
+  it('the header, not the whole card, is the jump control, so the toggle stays clickable', () => {
+    const onJump = vi.fn()
+    render(<UserMessage content={prependQuote('Why?', quote)} meta={{ quote }} renderContent={renderContent} onJumpToQuote={onJump} />)
+    expect(screen.getByTestId('quote-card-sent').tagName).toBe('DIV')
+    fireEvent.click(screen.getByTestId('quote-card-sent-jump'))
+    expect(onJump).toHaveBeenCalledWith(quote)
   })
 })

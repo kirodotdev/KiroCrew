@@ -6830,6 +6830,8 @@
         "assistant": "{{productName}}",
         "quoting_author": "Quoting {{author}}",
         "remove_quote": "Remove quote",
+        "show_more": "Show more",
+        "show_less": "Show less",
         "jump_to_quoted_message": "Jump to the quoted message",
         "message_unavailable": "Can't jump to it — the original message is no longer in this conversation.",
         "message_not_loaded": "Can't jump to it — the quoted message isn't among the messages loaded here."

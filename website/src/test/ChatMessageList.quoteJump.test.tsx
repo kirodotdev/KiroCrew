@@ -27,12 +27,12 @@ describe('ChatMessageList onJumpToQuote', () => {
     expect(document.querySelector('.animate-msg-highlight')).toBeNull()
   })
 
-  it('makes the card a button that hands the host its quote', () => {
+  it("makes the card's header a button that hands the host its quote", () => {
     const onJumpToQuote = vi.fn()
     render(<ChatMessageList messages={MESSAGES} running={false} onJumpToQuote={onJumpToQuote} />)
-    const card = screen.getByTestId('quote-card-sent')
-    expect(card.tagName).toBe('BUTTON')
-    fireEvent.click(card)
+    const jump = screen.getByTestId('quote-card-sent-jump')
+    expect(jump.tagName).toBe('BUTTON')
+    fireEvent.click(jump)
     expect(onJumpToQuote).toHaveBeenCalledWith(QUOTE)
   })
 

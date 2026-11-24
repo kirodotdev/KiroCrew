@@ -14896,6 +14896,8 @@
         "assistant": "{{productName}}",
         "quoting_author": "Citazione di {{author}}",
         "remove_quote": "Rimuovi citazione",
+        "show_more": "Mostra di più",
+        "show_less": "Mostra di meno",
         "jump_to_quoted_message": "Vai al messaggio citato",
         "message_unavailable": "Impossibile raggiungerlo: il messaggio originale non è più in questa conversazione.",
         "message_not_loaded": "Impossibile raggiungerlo: il messaggio citato non è tra i messaggi caricati qui."
