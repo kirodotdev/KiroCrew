@@ -39,12 +39,7 @@ from urllib.parse import quote
 from kiro_crew import dashboard_agentic, mcp_panel_snapshot
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
-from kiro_crew.mcp_core import (
-    _get,
-    _post,
-    _resolve_session_key,
-    require_strict_session_key,
-)
+from kiro_crew.mcp_core import _get, _post, _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import MCP_PANEL_SCHEMAS, validate_tool_args
@@ -351,6 +346,68 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "dashboard_add_field",
+            "description": (
+                "ADD ONE FIELD to your Bot's own page without sending the page again. "
+                "Use it when your page is live and needs one more field that you "
+                "write yourself, such as the XR room's `xr_layout`. The gateway takes "
+                "ONE whole page (its model, view, theme and widgets together), adds "
+                'the field with the source `{"agentic": true}`, and saves the result as '
+                "a DRAFT through the same gate as dashboard_save. The page it takes is "
+                "your DRAFT when you have one: a page you saved, or added to, and never "
+                "put live. Otherwise it takes a copy of your own live page. A page you "
+                "left, by a rollback or by applying a template after it, is not taken, "
+                "unless its artifact was renamed, described, tagged or saved again "
+                "since it was last put live: then it reads as a draft and is taken. "
+                "The reply says which page it was when it was read, because "
+                "dashboard_apply puts the whole saved page live, with every other "
+                "change it holds. So "
+                "you can add several fields and apply once. Nothing is live until "
+                "dashboard_apply; after that, dashboard_write gives the field its value. "
+                "It takes `name` and `type`, and may take `label` and `description`: "
+                "nothing else. An `enum` (it needs choices), a field read from a fold, "
+                "and any change to the page's HTML or theme go through dashboard_save. "
+                "It is refused, and says why, when you have no page of your own "
+                "(a shipped template is not one), when the page's history cannot say "
+                "whether your stored page was ever live, when the page changed while "
+                "the field was being added, when the page already declares the "
+                "name, and when the page holds as many fields as a page may. The reply "
+                "names the field, its type and the draft's version, and does not repeat "
+                "your label or description."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "description": (
+                            "The field's name: lowercase letters, digits and "
+                            "underscores, starting with a letter. Name it for a "
+                            "reader; a name that looks like a credential is refused."
+                        ),
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": list(ADD_FIELD_TYPES),
+                        "description": "The field's data type, from dashboard_save's catalog.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "maxLength": 120,
+                        "description": "Optional. One line a person reads beside the value.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "maxLength": 120,
+                        "description": "Optional. One line saying what the field holds.",
+                    },
+                },
+                "required": ["name", "type"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "dashboard_templates",
             "description": (
                 "List or SEARCH the dashboard pages this gateway can give your "
@@ -503,6 +560,50 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return validate_tool_args(args, schema)
 
 
+#: The types ``dashboard_add_field`` advertises: the catalog's types that need no key
+#: of their own. ``test_dashboard_add_field.py`` holds it equal to the gateway's list.
+ADD_FIELD_TYPES: tuple[str, ...] = ("array", "bool", "number", "object", "text", "timestamp")
+
+#: What a page check said, in words. A status this table does not hold is not repeated.
+_ADDED_CHECK: dict[str, str] = {
+    "passed": " The page check passed.",
+    "failed": (
+        " The page check FAILED: the page raises a script error. dashboard_save the "
+        "page to read the errors before you apply it."
+    ),
+    "timed_out": " The page check timed out, so the page was not checked.",
+    "skipped": " The page check was skipped, so the page was not checked.",
+}
+
+
+#: Which page the field went onto, as the gateway's ``onto`` names it. Held equal to
+#: the gateway's own sentences by ``test_dashboard_add_field.py``.
+_ADDED_ONTO: dict[str, str] = {
+    "draft": (
+        "added to your saved page, which was not live when it was read; "
+        "dashboard_apply puts that whole page live"
+    ),
+    "live": (
+        "added to a copy of the page that was live when it was read; "
+        "dashboard_apply puts it live"
+    ),
+}
+
+
+def _render_added(d: dict[str, Any]) -> str:
+    """The ``dashboard_add_field`` reply: the gateway's field, type and numbers only."""
+    added = d.get("added") or {}
+    saved = d.get("saved") or {}
+    return (
+        f"Saved a DRAFT of your page with the new field `{added.get('field')}` "
+        f"({added.get('type')}): {saved.get('fields')} fields, package version "
+        f"{saved.get('package_version')}. It is NOT live yet: "
+        f"{_ADDED_ONTO.get(str(d.get('onto')), 'dashboard_apply puts it live')}."
+        + _ADDED_CHECK.get(str(d.get("verification")), "")
+        + f" Next: {d.get('next')}."
+    )
+
+
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     """Dispatch one validated tool call."""
     if name == "panel_templates":
@@ -607,10 +708,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # the mistake book exists to end.
             return redact(f"Error: {api_err}")
         written = d.get("written") or {}
+        # The XR room's verdict on a layout write: the gateway's own fixed words
+        # (`dashboard_xr_layout.verdict`), never the Bot's text.
+        room = d.get("xr_room")
         return redact(
             f"Wrote `{written.get('field', field)}` "
             f"({written.get('type', 'value')}) to your dashboard."
             + (" It corrected an earlier refused write." if d.get("corrected") else "")
+            + (f" {room}" if isinstance(room, str) and room else "")
         )
 
     if name == "dashboard_save":
@@ -662,6 +767,29 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # nothing.
             return redact(f"Error: {api_err}")
         return redact(_render_saved(d.get("saved") or {}, d.get("verification"), reply=d))
+
+    if name == "dashboard_add_field":
+        # THE FOUR, named one by one like the save's three: a fifth key cannot pass
+        # through from here, and the gateway refuses one too. No `source` and no page:
+        # the gateway sets the first and picks the second itself: the caller's true
+        # draft, else its own page in force.
+        adding: dict[str, Any] = {}
+        for key in ("name", "type", "label", "description"):
+            part = args.get(key)
+            if part is None and key in ("label", "description"):
+                continue
+            if not isinstance(part, str) or not part.strip():
+                return f"Error: `{key}` must be a string that is not blank"
+            adding[key] = part
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        d = _post("/api/agent-panel/dashboard/add-field", adding, session_key=sk)
+        api_err = d.get("error")
+        if api_err:
+            # The gateway's own fixed sentence: it says what to do next.
+            return redact(f"Error: {api_err}")
+        return redact(_render_added(d))
 
     if name == "dashboard_templates":
         query = args.get("query")

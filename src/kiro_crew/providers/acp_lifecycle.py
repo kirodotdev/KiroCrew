@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncContextManager
 
+from kiro_crew import turn_timing
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.acp.types import METHOD_SESSION_DELETE
 from kiro_crew.agent_sdk.backends import (
@@ -113,9 +114,18 @@ async def start(self: AcpProvider) -> None:
         # Spawn a runtime, create/resume a session, wrap in
         # AcpSessionProvider. One process hosts parent + all subagent
         # sessions (session sharing).
+        _st0 = time.monotonic()
         await self._start_kiro_runtime()
+        _st1 = time.monotonic()
         if self.is_kiro_backend:
             await self._note_zero_tool_servers()
+        if turn_timing.ENABLED:
+            logger.warning(
+                "start_timing session_key=%s start_runtime_ms=%.0f zero_tool_check_ms=%.0f",
+                getattr(self._client, "_session_key", "") or "-",
+                (_st1 - _st0) * 1000.0,
+                (time.monotonic() - _st1) * 1000.0,
+            )
     else:
         # ── CC path: legacy AcpClient ──
         # Only the runtime arm can fence a remote workspace, so refuse here.

@@ -16,12 +16,19 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 from aiohttp import web
 
-from kiro_crew import agent_panel, dashboard_agentic, dashboard_package, dashboard_types
+from kiro_crew import (
+    agent_panel,
+    dashboard_agentic,
+    dashboard_package,
+    dashboard_types,
+    dashboard_xr_layout,
+)
 from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store.model import ArtifactValidationError
 from kiro_crew.config.loader import KiroCrewConfig
@@ -547,9 +554,87 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
     # drives the frame's refill; this frame is for a client watching the panel
     # surface, and it carries the SLUG only, like the publish broadcast.
     _broadcast_changed(state, "dashboard_value_written", slug, crew_name, slot)
-    return web.json_response(
-        {"ok": True, "written": {"field": field, "type": entry["type"]}, "corrected": corrected}
-    )
+    reply: dict[str, Any] = {
+        "ok": True,
+        "written": {"field": field, "type": entry["type"]},
+        "corrected": corrected,
+    }
+    # THE VERDICT LINE (D103 5): a Bot that writes its 3D layout is told what the XR room
+    # will make of it, in the room's own fixed words; a wrong layout is answered, never
+    # refused (D99). A cleared one says "no 3D dashboard".
+    # It reads the STORED value, the scrubbed one the room reads, never what the Bot sent
+    # (M75: a credential-shaped lamp key is stored as a placeholder and the room says "bad
+    # key"). The value is stored by now, so nothing here may fail the write (R1): a raise
+    # costs the line and nothing else.
+    #
+    # WHAT EACH PART SHOWS (D169): the line also names, for each good part, the number it
+    # reads now or a dash and why, from the page's own values (the read `dashboard_fields`
+    # makes) with THIS write's stored value laid over them, so the line is true of this
+    # write whether or not the fold has caught up. A write of any other field carries a
+    # line only for the parts that read it. Asked only of a page that declares the
+    # layout's field, so a Bot with no 3D dashboard pays no read. Fixed words and numbers
+    # only (`dashboard_xr_layout.part_says`): never a name or a text value.
+    #
+    # THE WHOLE LINE IS MADE IN ONE WORKER HOP (M175): the read of the values and the
+    # reading of the layout and of each value. Nothing of it runs on the event loop, so a
+    # value that is slow to read cannot hold every other session of this gateway.
+    if dashboard_xr_layout.DASH_FIELD in _declared_fields(package.model):
+        try:
+            line = await asyncio.to_thread(
+                _xr_line, slug, crew_name, slot, package.model, field, entry["value"]["v"]
+            )
+            if line:
+                reply["xr_room"] = line
+        except Exception:  # noqa: BLE001 - the stored write is answered whatever the verdict does
+            logger.warning("xr layout verdict failed for a stored write", exc_info=True)
+    return web.json_response(reply)
+
+
+def _declared_fields(instance: dashboard_agentic.Instance | None) -> Mapping[str, Any]:
+    """The fields the page in force declares, by name; none for no page."""
+    fields = getattr(getattr(instance, "manifest", None), "fields", None)
+    return fields if isinstance(fields, Mapping) else {}
+
+
+def _xr_values(
+    slug: str,
+    crew_name: str,
+    slot: str,
+    instance: dashboard_agentic.Instance | None,
+    field: str,
+    stored: Any,
+) -> dict[str, Any] | None:
+    """The page's values as the XR room will read them after this write, or ``None``.
+
+    The page's current read with the value this write stored laid over its field.
+    ``None`` when the values cannot be read: the layout's line then names each part's
+    kind only, and a number's write says nothing of the room.
+    """
+    values, _stamps = _current_values(slug, crew_name, instance, "" if crew_name else slot)
+    if values is None:
+        return None
+    return {**values, field: stored}
+
+
+def _xr_line(
+    slug: str,
+    crew_name: str,
+    slot: str,
+    instance: dashboard_agentic.Instance | None,
+    field: str,
+    stored: Any,
+) -> str:
+    """The reply's line of what the XR room makes of this write, or "" for none.
+
+    Runs in a worker thread, whole: the page's values are read here (file IO) and the
+    layout and each value are read here too. For the layout's own field the line is
+    :func:`dashboard_xr_layout.verdict`; for any other, the parts that read it
+    (:func:`dashboard_xr_layout.field_verdict`), which is "" when none does.
+    """
+    values = _xr_values(slug, crew_name, slot, instance, field, stored)
+    if field == dashboard_xr_layout.DASH_FIELD:
+        return dashboard_xr_layout.verdict(stored, values)
+    return dashboard_xr_layout.field_verdict(field, values)
 
 
 def _writer_key(crew_name: str, slot: str) -> str:
@@ -741,10 +826,9 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
             status=400,
         )
 
-    binding = _page_binding(slug)
     package = {
         "kind": _dashboard.DASHBOARD_KIND,
-        "bound_to": binding,
+        "bound_to": _page_binding(slug),
         "model": args.get("model"),
         "view": args.get("view"),
         "theme": args.get("theme"),
@@ -791,16 +875,141 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
             status=400,
         )
 
+    try:
+        stored = await _store_bound_package(
+            slug, crew_name, slot, package=package, widgets_sent=widgets_sent
+        )
+    except PageNotStored as failed:
+        if isinstance(failed.cause, ArtifactValidationError):
+            # WHOLE, like a refused agentic write: the refusal names the key path and,
+            # for a closed catalog, the values that would have been accepted. A binding
+            # the library cannot resolve to one package lands here too.
+            return web.json_response(
+                {"error": str(failed.cause), "code": "invalid_package"}, status=400
+            )
+        logger.warning("a dashboard page for %s could not be saved", slug, exc_info=failed.cause)
+        return web.json_response(
+            {"error": f"the page could not be saved: {failed.cause}", "code": "save_failed"},
+            status=503,
+        )
+
+    manual = [row["field"] for row in stored.sources if row["source"] == "manual"]
+    # NO BROADCAST: the page in force has not changed. `dashboard_apply` puts it live.
+    return web.json_response(
+        {
+            "ok": True,
+            "saved": {
+                "package": stored.art.slug,
+                "package_version": int(stored.art.version),
+                **stored.counts,
+            },
+            # What the page raised over a synthetic copy of the record; None for a block layout.
+            "verification": stored.verification,
+            # Every field with its type and where its value comes from, and the
+            # hand-written ones named, so the crewmate sees which cells stay current only
+            # while it keeps writing them.
+            "fields": stored.sources,
+            "manual_fields": manual,
+            **({"manual_note": MANUAL_FIELDS_NOTE} if manual else {}),
+            # Checked here, by the gateway, because the page run above is skipped on a
+            # host with no browser: a list bound to a text cell, a theme for one scheme.
+            **({"shape_warnings": stored.shapes} if stored.shapes else {}),
+            **({"theme_warnings": stored.themes} if stored.themes else {}),
+            "next": "dashboard_apply puts this page live on your Dashboard as a new version",
+        }
+    )
+
+
+class PageNotStored(Exception):
+    """The write half of :func:`_store_bound_package` did not store the page.
+
+    ``cause`` is what stopped it, as raised: an ``ArtifactValidationError`` from the
+    write gate, a refusal a ``compose`` raised, or the store's own failure. The check
+    half never raises this, so each route answers a failed write in its own words and
+    a failed check is not mistaken for one.
+    """
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+@dataclass(frozen=True)
+class Composed:
+    """A page a ``compose`` built, and the one read it was built from.
+
+    ``slug`` and ``token`` are the stored record's and the ``content_token`` of that
+    read; ``slug`` is ``""`` when no record was stored and one is to be created.
+    """
+
+    package: dict[str, Any]
+    slug: str
+    token: str | None
+
+
+@dataclass(frozen=True)
+class StoredPage:
+    """What :func:`_store_bound_package` wrote and what the checks said of it."""
+
+    art: Any
+    counts: dict[str, int]
+    package: dict[str, Any]
+    verification: dict[str, Any] | None
+    sources: list[dict[str, str]]
+    shapes: list[Any]
+    themes: list[Any]
+
+
+async def _store_bound_package(
+    slug: str,
+    crew_name: str,
+    slot: str,
+    *,
+    package: dict[str, Any] | None = None,
+    widgets_sent: bool,
+    compose: Callable[[Any], Composed] | None = None,
+) -> StoredPage:
+    """Build, gate, lock, write and check the caller's own package: the one writer.
+
+    ``dashboard_save`` and ``dashboard_add_field`` both end here, so a page reaches
+    the store by one path whichever tool made it. The caller is the vetted one
+    (``_resolve_dashboard_caller``); the binding is derived from *slug* and never
+    taken from a body.
+
+    A save hands its *package*, built from the body: it replaces the stored page, and
+    its write is fenced on the token of the one read it makes of that page
+    (``_write_bound_package``). An add hands *compose*, which is called with the store
+    INSIDE the save lock and returns a :class:`Composed`: the package to write, and the
+    record and token of the ONE read that package was built from. The write is fenced
+    on that token and no second read is made (``_write_composed``), so a write by
+    another route between the read and the write (the artifact route takes no save
+    lock) is met by the store's own refusal, ``ArtifactConflictError``, and is not
+    overwritten. Either way the package passes ``canonical_package_content`` first.
+
+    Raises :class:`PageNotStored` when nothing was written. After a write the page is
+    run once (``_page_check``) and its shapes and theme are checked.
+    """
+    binding = _page_binding(slug)
+
     def _save() -> tuple[Any, dict[str, int], dict[str, Any]]:
         from kiro_crew.dashboard_templates import instance as instance_store
 
-        content = _dashboard.canonical_package_content(json.dumps(package, ensure_ascii=False))
+        content = ""
+        if compose is None:
+            content = _dashboard.canonical_package_content(json.dumps(package, ensure_ascii=False))
         store = _dashboard_artifact_store()
         # ONE SAVE AT A TIME per crewmate, across the lookup and the write it decides:
         # two first saves would otherwise both find no package and create two with
         # the same binding, which every later save and apply refuses as ambiguous.
         with instance_store.package_save_lock(slug):
-            art, content = _write_bound_package(store, content)
+            if compose is not None:
+                composed = compose(store)
+                content = _dashboard.canonical_package_content(
+                    json.dumps(composed.package, ensure_ascii=False)
+                )
+                art = _write_composed(store, content, composed)
+            else:
+                art, content = _write_bound_package(store, content)
         parsed = _dashboard.parse_package(content)
         counts = {"fields": len((parsed.get("model") or {}).get("types") or {})}
         # The parsed canonical bytes go back too, for the page check below.
@@ -817,7 +1026,7 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         widgets = stored.get("widgets")
         if not widgets:
             return content
-        merged = {**package, "widgets": widgets}
+        merged = {**(package or {}), "widgets": widgets}
         try:
             return _dashboard.canonical_package_content(json.dumps(merged, ensure_ascii=False))
         except ArtifactValidationError as exc:
@@ -826,6 +1035,29 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
                 "Keep the fields they bind in model.types, or change the widgets with "
                 "artifact_update first; nothing was written"
             ) from None
+
+    def _write_composed(store: Any, content: str, composed: Composed) -> Any:
+        """Write a composed page over the record it was built from. Under the save lock.
+
+        NO READ HERE. The update names the token of the read the page was built from
+        (``composed.token``), so the store refuses it when the record changed since.
+        With no record (the page was built from the pinned page in force alone) one
+        is created, as a first save creates it.
+        """
+        if composed.slug:
+            return store.update(
+                composed.slug,
+                content=content,
+                actor="agent",
+                snapshot=True,
+                snapshot_token=composed.token,
+            )
+        return store.create(
+            name=f"{crew_name} dashboard",
+            content=content,
+            kind=_dashboard.DASHBOARD_KIND,
+            description="This Bot's own Dashboard page.",
+        )
 
     def _write_bound_package(store: Any, content: str) -> tuple[Any, str]:
         """Update the package bound to the caller, or create it. Under the save lock.
@@ -870,17 +1102,8 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
 
     try:
         art, counts, saved_package = await asyncio.to_thread(_save)
-    except ArtifactValidationError as exc:
-        # WHOLE, like a refused agentic write: the refusal names the key path and,
-        # for a closed catalog, the values that would have been accepted. A binding
-        # the library cannot resolve to one package lands here too.
-        return web.json_response({"error": str(exc), "code": "invalid_package"}, status=400)
     except Exception as exc:
-        logger.warning("a dashboard page for %s could not be saved", slug, exc_info=True)
-        return web.json_response(
-            {"error": f"the page could not be saved: {exc}", "code": "save_failed"},
-            status=503,
-        )
+        raise PageNotStored(exc) from None
 
     # After saving, so a page that throws is still saved and one more save fixes it.
     verification = await _page_check(slug, crew_name, slot, saved_package)
@@ -889,32 +1112,11 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         # read "verification" as a pass on a host with no browser.
         verification["note"] = skipped_note(str(verification.get("reason") or ""))
     sources = field_sources(saved_package)
-    manual = [row["field"] for row in sources if row["source"] == "manual"]
     # Off the loop: both checks read the page text the crewmate wrote, up to the view cap.
     shapes, themes = await asyncio.to_thread(
         lambda: (shape_warnings(saved_package), theme_warnings(saved_package))
     )
-
-    # NO BROADCAST: the page in force has not changed. `dashboard_apply` puts it live.
-    return web.json_response(
-        {
-            "ok": True,
-            "saved": {"package": art.slug, "package_version": int(art.version), **counts},
-            # What the page raised over a synthetic copy of the record; None for a block layout.
-            "verification": verification,
-            # Every field with its type and where its value comes from, and the
-            # hand-written ones named, so the crewmate sees which cells stay current only
-            # while it keeps writing them.
-            "fields": sources,
-            "manual_fields": manual,
-            **({"manual_note": MANUAL_FIELDS_NOTE} if manual else {}),
-            # Checked here, by the gateway, because the page run above is skipped on a
-            # host with no browser: a list bound to a text cell, a theme for one scheme.
-            **({"shape_warnings": shapes} if shapes else {}),
-            **({"theme_warnings": themes} if themes else {}),
-            "next": "dashboard_apply puts this page live on your Dashboard as a new version",
-        }
-    )
+    return StoredPage(art, counts, saved_package, verification, sources, shapes, themes)
 
 
 def field_sources(package: Mapping[str, Any]) -> list[dict[str, str]]:

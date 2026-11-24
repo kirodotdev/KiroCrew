@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { handleDashboardFields, subscribeDashboardFields } from './dashboardFields'
+import { handleDashboardFields, handleDashboardPageChanged, subscribeDashboardFields, subscribeDashboardPage } from './dashboardFields'
 
 /** Every test disposes what it subscribed; the registry is module state. */
 const disposers: Array<() => void> = []
@@ -154,5 +154,30 @@ describe('a frame names the package it belongs to', () => {
     listen('atlas', got)
     handleDashboardFields({ slug: 'atlas', dashboard: 42, read: { fields: { boards: 1 } } })
     expect(got.mock.calls[0][1]).toBe('')
+  })
+})
+
+describe('subscribeDashboardPage: who hears that a mate page changed', () => {
+  it('does not let one listener throw cost the next its frame', () => {
+    const next = vi.fn()
+    const stops = [subscribeDashboardPage(() => { throw new Error('boom') }), subscribeDashboardPage(next)]
+    expect(() => handleDashboardPageChanged({ slug: 'ada' })).not.toThrow()
+    expect(next).toHaveBeenCalledWith('ada')
+    for (const stop of stops) stop()
+  })
+
+  it('drops a frame that names no mate', () => {
+    const heard = vi.fn()
+    const stop = subscribeDashboardPage(heard)
+    for (const frame of [undefined, null, {}, { slug: '' }, { slug: 7 }, 'ada']) handleDashboardPageChanged(frame)
+    expect(heard).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('stops delivering once its reader is gone', () => {
+    const heard = vi.fn()
+    subscribeDashboardPage(heard)()
+    handleDashboardPageChanged({ slug: 'ada' })
+    expect(heard).not.toHaveBeenCalled()
   })
 })

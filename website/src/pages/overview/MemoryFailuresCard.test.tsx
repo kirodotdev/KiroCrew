@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installInitialResizeObserver } from '../../test/initialResizeObserver'
 import { renderWithProviders } from '../../test/helpers'
 import MemoryFailuresCard from './MemoryFailuresCard'
 import { ApiError } from '../../api/apiError'
@@ -34,6 +35,8 @@ const failure = {
 }
 
 beforeEach(() => {
+  // Table edges are first measured on the observer's first delivery.
+  installInitialResizeObserver()
   vi.clearAllMocks()
   api.themes.mockResolvedValue({ themes: [] })
   api.themeDetail.mockResolvedValue({})
@@ -41,6 +44,7 @@ beforeEach(() => {
   api.recurringFailures.mockResolvedValue({ failures: [failure], window_days: 7 })
   api.kirocrewConfig.mockResolvedValue({})
 })
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('MemoryFailuresCard', () => {
   it('writes nothing until the owner saves the draft, then saves the edited text as a tool lesson', async () => {

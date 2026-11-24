@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 
 import { Btn } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
@@ -154,7 +155,7 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
                 <span className="sr-only sm:hidden">{i18nT('pages.chat.browserLiveCard.open_in', { browser: target })}</span>
               </Btn>
             )}
-            <Btn primary onClick={() => onRelease()} className="whitespace-nowrap shrink-0">
+            <Btn primary onClick={() => onRelease()} className="whitespace-nowrap shrink-0" {...agentGrant}>
               {i18nT('pages.chat.browserLiveCard.hand_back')}
               <kbd className="ml-0.5 rounded border border-accent-fg/40 px-1 py-px font-sans text-[10px] leading-4">Esc</kbd>
             </Btn>

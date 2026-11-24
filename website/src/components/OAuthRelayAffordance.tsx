@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { agentGrant } from '../guide/trustRoot'
 import { Loader2 } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
@@ -256,6 +257,7 @@ export default function OAuthRelayAffordance({
             <button
               type="button"
               onClick={() => void runRelay()}
+              {...agentGrant}
               disabled={!returnAddress.trim() || busy}
               className="inline-flex items-center gap-1.5 shrink-0 px-3 py-1 rounded-md text-[13px] leading-5 font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
             >

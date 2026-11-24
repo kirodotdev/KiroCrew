@@ -379,6 +379,9 @@ class AdaptiveController:
     :data:`LADDER` index for the hub.
     """
 
+    #: A frame is late only past this many seconds too, whatever its period (a panel's own, ``panel_stream``).
+    late_floor_s = 0.0
+
     def __init__(self, *, fps_floor: int = 0, picture_floor: int = 0) -> None:
         self.fps_floor = max(0, min(fps_floor, len(FPS_STEPS) - 1))
         self.picture_floor = max(0, min(picture_floor, len(PICTURES) - 1))
@@ -403,7 +406,7 @@ class AdaptiveController:
         w.delivery_s += delivery_s
         if len(w.rates) < 240:
             w.rates.append(nbytes / delivery_s if delivery_s > 1e-3 else float("inf"))
-        if delivery_s > LATE_PERIODS * LADDER[self.rung].period:
+        if delivery_s > max(self.late_floor_s, LATE_PERIODS * LADDER[self.rung].period):
             w.late += 1
 
     def set_floors(self, *, fps_floor: int | None = None, picture_floor: int | None = None) -> int:
@@ -600,6 +603,11 @@ class FrameSink(Protocol):
 #: Shortest interval between two Chrome acks while the card is hidden and the stream
 #: casts only for the recorder: the recorder's own frame-rate ceiling (5 fps).
 HIDDEN_RECORD_PERIOD_S = 0.2
+#: Shortest interval between two Chrome acks while frames fail on their way. A
+#: failed frame is never told to the ladder, so nothing else would slow a sink
+#: that keeps failing: the browser would make pictures at the best step's pace
+#: for a socket that takes none.
+FAILED_FRAME_PERIOD_S = 0.5
 
 
 class Relay(Protocol):
@@ -1071,6 +1079,13 @@ class LiveStream:
                 await self._frame(params)
             except Exception:
                 logger.debug("live frame dropped", exc_info=True)
+                # The browser is told that this frame is done all the same. It
+                # holds its next picture until it is, so a frame that failed on
+                # its way (the socket did not take it) would be the last one the
+                # page ever sent. It is told slowly: a sink that fails again and
+                # again gets two frames a second, and the first one that arrives
+                # is back on the ladder's own grid.
+                await self._paced_ack(params.get("sessionId"), floor=FAILED_FRAME_PERIOD_S)
 
     async def _frame(self, params: dict[str, Any]) -> None:
         data = params.get("data")
@@ -1079,6 +1094,9 @@ class LiveStream:
         try:
             jpeg = base64.b64decode(data, validate=True)
         except (ValueError, TypeError):
+            return
+        if self._skip_frame(jpeg):
+            await self._paced_ack(params.get("sessionId"))
             return
         now = self._clock()
         # The first frame after a still spell puts the stream on its fastest step.
@@ -1140,7 +1158,7 @@ class LiveStream:
             return
         self.metrics.seq += 1
         seq = self.metrics.seq
-        header = frame_header(self.session_key, seq, width, height, mask, self.stream_id)
+        header = self._frame_header(seq, width, height, mask)
         waiter = asyncio.Event()
         self._acks[seq] = waiter
         t0 = self._clock()
@@ -1164,6 +1182,16 @@ class LiveStream:
         elif not sharp:
             self.controller.observe(len(jpeg), took)
         await self._paced_ack(params.get("sessionId"))
+
+    def _skip_frame(self, jpeg: bytes) -> bool:
+        """Whether this frame is acked to Chrome and goes nowhere else. Never, for a card."""
+        return False
+
+    def _frame_header(
+        self, seq: int, width: int, height: int, mask: list[list[int]]
+    ) -> dict[str, Any]:
+        """The header one frame travels under; a stream for another wire names its own."""
+        return frame_header(self.session_key, seq, width, height, mask, self.stream_id)
 
     def _recorder_wants(self) -> bool:
         """The recorder would keep a frame now (its 5 fps gate is open)."""

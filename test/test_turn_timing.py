@@ -68,10 +68,12 @@ def _fields(line: str) -> dict[str, str]:
     return dict(part.split("=", 1) for part in line.split()[1:])
 
 
-def _import_level(flag: str | None) -> str:
+def _import_level(flag: str | None, home: str | None = None) -> str:
     env = {k: v for k, v in os.environ.items() if k != "KIROCREW_TURN_TIMING"}
     if flag is not None:
         env["KIROCREW_TURN_TIMING"] = flag
+    if home is not None:
+        env["KIROCREW_HOME"] = home
     code = (
         "import logging; from kiro_crew import turn_timing as t; "
         "print(t.ENABLED, logging.getLogger('kiro_crew.turn_timing').level)"
@@ -91,6 +93,12 @@ def _import_level(flag: str | None) -> str:
 def test_flag_off_leaves_logger_level_alone_and_flag_on_sets_info():
     assert _import_level(None) == f"False {logging.NOTSET}"
     assert _import_level("1") == f"True {logging.INFO}"
+
+
+def test_flag_file_in_the_data_home_turns_timing_on(tmp_path):
+    assert _import_level(None, str(tmp_path)) == f"False {logging.NOTSET}"
+    (tmp_path / turn_timing.FLAG_FILE).touch()
+    assert _import_level(None, str(tmp_path)) == f"True {logging.INFO}"
 
 
 def test_flag_off_logs_no_marker_line(monkeypatch, caplog):

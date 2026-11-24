@@ -8,6 +8,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { ackNotification, unackNotification, decideApprovalRow, rowPhase } from '../../store/notificationsSlice'
 import { switchSlot, resumeFromHistory, openCreatedSlot } from '../../store/chatSlice'
 import { Badge } from '../ui'
+import { agentGrant } from '../../guide/trustRoot'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
 import ErrorNotice from '../ErrorNotice'
@@ -342,7 +343,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           <>
             {!buttonsWithdrawn && (
               <div className="flex gap-3 mt-4">
-                <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => decide('approve')}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
+                <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => decide('approve')} {...agentGrant}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
                 <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => decide('reject')}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
               </div>
             )}

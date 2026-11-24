@@ -1,0 +1,1307 @@
+{
+  "about": "A Bot's 3D dashboard layout in, how the room reads it out: the whole document's reason ('' when it is a layout), and for each part either its reason or the name, unit, path, limit and lamp key it is drawn with. Read by website/src/pages/xr/workspace/dash3d.test.ts against readLayout, and by test/test_dashboard_xr_layout.py against kiro_crew.dashboard_xr_layout.read_layout. A case added here holds both readers. Where the two tables of Unicode differ, `parts` is the tab's answer and `py_parts` the Python reader's, whose part says its name was not checked.",
+  "cases": [
+    {
+      "name": "no record",
+      "layout": "ring",
+      "why": "not_layout",
+      "parts": []
+    },
+    {
+      "name": "null",
+      "layout": null,
+      "why": "not_layout",
+      "parts": []
+    },
+    {
+      "name": "a list",
+      "layout": [
+        1,
+        2
+      ],
+      "why": "not_layout",
+      "parts": []
+    },
+    {
+      "name": "another version",
+      "layout": {
+        "v": 2,
+        "parts": []
+      },
+      "why": "version",
+      "parts": []
+    },
+    {
+      "name": "a version as text",
+      "layout": {
+        "v": "1",
+        "parts": []
+      },
+      "why": "version",
+      "parts": []
+    },
+    {
+      "name": "no parts key",
+      "layout": {
+        "v": 1
+      },
+      "why": "not_layout",
+      "parts": []
+    },
+    {
+      "name": "parts not a list",
+      "layout": {
+        "v": 1,
+        "parts": {
+          "kind": "ring"
+        }
+      },
+      "why": "not_layout",
+      "parts": []
+    },
+    {
+      "name": "no parts",
+      "layout": {
+        "v": 1,
+        "parts": []
+      },
+      "why": "no_parts",
+      "parts": []
+    },
+    {
+      "name": "seven parts",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "too_many",
+      "parts": []
+    },
+    {
+      "name": "six parts, every kind, in the order written",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "lamps",
+            "name": "Fleet",
+            "field": "fleet"
+          },
+          {
+            "kind": "ring",
+            "name": "Checks",
+            "field": "checks",
+            "max": 20
+          },
+          {
+            "kind": "bar",
+            "name": "Spend",
+            "field": "spend",
+            "max": "budget",
+            "unit": "$"
+          },
+          {
+            "kind": "number",
+            "name": "Open PRs",
+            "field": "open_prs"
+          },
+          {
+            "kind": "number",
+            "name": "p99",
+            "field": "p99",
+            "unit": "ms"
+          },
+          {
+            "kind": "bar",
+            "name": "Done",
+            "field": "done",
+            "max": 100,
+            "unit": "%"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "lamps",
+          "name": "Fleet",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        },
+        {
+          "kind": "ring",
+          "name": "Checks",
+          "unit": "",
+          "path": [],
+          "max": 20,
+          "key": "state"
+        },
+        {
+          "kind": "bar",
+          "name": "Spend",
+          "unit": "$",
+          "path": [],
+          "max": "budget",
+          "key": "state"
+        },
+        {
+          "kind": "number",
+          "name": "Open PRs",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        },
+        {
+          "kind": "number",
+          "name": "p99",
+          "unit": "ms",
+          "path": [],
+          "max": null,
+          "key": "state"
+        },
+        {
+          "kind": "bar",
+          "name": "Done",
+          "unit": "%",
+          "path": [],
+          "max": 100,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a part that is no record",
+      "layout": {
+        "v": 1,
+        "parts": [
+          "ring",
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "part"
+        },
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a kind the kit lacks",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "gauge",
+            "name": "Load",
+            "field": "load"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "kind"
+        }
+      ]
+    },
+    {
+      "name": "a kind in capitals",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "Ring",
+            "name": "Load",
+            "field": "load",
+            "max": 1
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "kind"
+        }
+      ]
+    },
+    {
+      "name": "no name",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ]
+    },
+    {
+      "name": "an empty name",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "  ",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ]
+    },
+    {
+      "name": "16 letters",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "Requests per sec",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "Requests per sec",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "17 letters",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "Seventeen letters",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ]
+    },
+    {
+      "name": "a letter keeps two marks of four",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "é̂̃̄",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "é̂",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "marks with no letter under them, first, are taken out",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "́́́A",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "16 letters with their marks",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "éééééééééééééééé",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "éééééééééééééééé",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "control and format characters are taken out",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A\u0007‎‮B⁦",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "AB",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "the room's own state glyphs are taken out",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "Done ✓●",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "Done",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a name of glyphs only",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "●⚠",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ]
+    },
+    {
+      "name": "Chinese letters",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "部署",
+            "field": "a"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "部署",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a field with a capital, a digit first, a dash, none",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "Open"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "1a"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a-b"
+          },
+          {
+            "kind": "number",
+            "name": "A"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "field"
+        },
+        {
+          "broken": "field"
+        },
+        {
+          "broken": "field"
+        },
+        {
+          "broken": "field"
+        }
+      ]
+    },
+    {
+      "name": "a field of 64 and of 65",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        },
+        {
+          "broken": "field"
+        }
+      ]
+    },
+    {
+      "name": "a path of four keys, five, a list, a key of 65",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "path": "b.c.d.e"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "path": "b.c.d.e.f"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "path": [
+              "b"
+            ]
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "path": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [
+            "b",
+            "c",
+            "d",
+            "e"
+          ],
+          "max": null,
+          "key": "state"
+        },
+        {
+          "broken": "path"
+        },
+        {
+          "broken": "path"
+        },
+        {
+          "broken": "path"
+        }
+      ]
+    },
+    {
+      "name": "a bar's and a ring's limit",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "bar",
+            "name": "A",
+            "field": "a"
+          },
+          {
+            "kind": "bar",
+            "name": "A",
+            "field": "a",
+            "max": 0
+          },
+          {
+            "kind": "ring",
+            "name": "A",
+            "field": "a",
+            "max": "Budget"
+          },
+          {
+            "kind": "ring",
+            "name": "A",
+            "field": "a",
+            "max": "budget"
+          },
+          {
+            "kind": "bar",
+            "name": "A",
+            "field": "a",
+            "max": 2.5
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "max"
+        },
+        {
+          "broken": "max"
+        },
+        {
+          "broken": "max"
+        },
+        {
+          "kind": "ring",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": "budget",
+          "key": "state"
+        },
+        {
+          "kind": "bar",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": 2.5,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a lamp's key; a key on another kind is read by nothing",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "lamps",
+            "name": "A",
+            "field": "a",
+            "key": "phase"
+          },
+          {
+            "kind": "lamps",
+            "name": "A",
+            "field": "a",
+            "key": "a b"
+          },
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "key": "a b"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "lamps",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "phase"
+        },
+        {
+          "broken": "key"
+        },
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a unit outside the list is dropped; a key the room does not know is not read",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "a",
+            "unit": "kg",
+            "colour": "red"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a limit of 400 digits is no finite number",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "bar",
+            "name": "A",
+            "field": "f",
+            "max": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "max"
+        }
+      ]
+    },
+    {
+      "name": "a mark named after Unicode 15.0 (U+0897) rides its letter",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "Aࢗ",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "Aࢗ",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "Aࢗ",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "16 letters, each with a mark named after Unicode 15.0",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "AࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗ",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "AࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗ",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "AࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗAࢗ",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "a raw name of 256 signs that cleans to one letter is read",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "A",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ]
+    },
+    {
+      "name": "a raw name over 256 signs is a bad name, though it would clean to one letter",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ]
+    },
+    {
+      "name": "a raw path over 259 signs is a bad path",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "A",
+            "field": "f",
+            "path": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "path"
+        }
+      ]
+    },
+    {
+      "name": "an emoji named in Unicode 16 (U+1FAE9)",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "🫩",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "🫩",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "🫩",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "a sign of CJK Extension J (U+323B0)",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "𲎰",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "𲎰",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "𲎰",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "a Garay letter (U+10D50)",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "𐵐",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "𐵐",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "𐵐",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "an unassigned sign (U+E0080)",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "󠂀",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "kind": "number",
+          "name": "󠂀",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "󠂀",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    },
+    {
+      "name": "16 letters and the emoji U+1FAE9: 17 letters in the tab",
+      "layout": {
+        "v": 1,
+        "parts": [
+          {
+            "kind": "number",
+            "name": "AAAAAAAAAAAAAAAA🫩",
+            "field": "f"
+          }
+        ]
+      },
+      "why": "",
+      "parts": [
+        {
+          "broken": "name"
+        }
+      ],
+      "py_parts": [
+        {
+          "kind": "number",
+          "name": "AAAAAAAAAAAAAAAA🫩",
+          "unit": "",
+          "path": [],
+          "max": null,
+          "key": "state",
+          "name_checked": false
+        }
+      ]
+    }
+  ],
+  "value_about": "A layout and the page's values in, what each good part shows out, in the fixed words of the write's reply: read by dash3d.test.ts against partSays and by test_dashboard_xr_layout.py against part_says. `says` has one line for each part of the layout, in order.",
+  "value_cases": [
+    {
+      "name": "every part has its value",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": 7, "spend": 12.5, "budget": 40, "checks": 12, "workers": [{"state": "done"}, {"state": "working"}, {"state": "needs"}, "idle"]},
+      "says": ["number 7", "bar 12.5 $ of 40", "ring 12/20", "lamps 4 (1 idle, 1 working, 1 done, 1 grey)"]
+    },
+    {
+      "name": "a layout written before its numbers",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {},
+      "says": ["number, a dash: its field holds no value", "bar, a dash: its field holds no value", "ring, a dash: its field holds no value", "lamps, a dash: its field holds no value"]
+    },
+    {
+      "name": "fields that hold null",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": null, "spend": null, "budget": 40, "checks": null, "workers": null},
+      "says": ["number, a dash: its field holds no value", "bar, a dash: its field holds no value", "ring, a dash: its field holds no value", "lamps, a dash: its field holds no value"]
+    },
+    {
+      "name": "values of the wrong type for their part",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": "many", "spend": true, "budget": 40, "checks": [1], "workers": 5},
+      "says": ["number, a dash: not a number", "bar, a dash: not a number", "ring, a dash: not a number", "lamps, a dash: not a list"]
+    },
+    {
+      "name": "a text is never said back",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": "the secret words", "spend": "12 dollars", "budget": 40, "checks": "twelve", "workers": "done"},
+      "says": ["number, a dash: not a number", "bar, a dash: not a number", "ring, a dash: not a number", "lamps, a dash: not a list"]
+    },
+    {
+      "name": "text that is a plain number",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": "1,234", "spend": "12,5", "budget": "40", "checks": " 50 % ", "workers": []},
+      "says": ["number 1234", "bar 12.5 $ of 40", "ring 50/20, over its limit", "lamps 0"]
+    },
+    {
+      "name": "a limit that is no number above 0, and more lamps than are drawn",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": -3.456, "spend": -1, "budget": 0, "checks": 0, "workers": ["done", "done", "done", "done", "done", "done", "done", "done", "done", "done", "done", "done", "failed", "failed", "failed"]},
+      "says": ["number -3.46", "bar, a dash: its limit is no number above 0", "ring 0/20", "lamps 15, 12 drawn (12 done)"]
+    },
+    {
+      "name": "a limit's field that is missing",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"spend": 5, "checks": 25},
+      "says": ["number, a dash: its field holds no value", "bar, a dash: its limit is no number above 0", "ring 25/20, over its limit", "lamps, a dash: its field holds no value"]
+    },
+    {
+      "name": "a limit's field that holds words",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"spend": 5, "budget": "lots", "checks": 20},
+      "says": ["number, a dash: its field holds no value", "bar, a dash: its limit is no number above 0", "ring 20/20", "lamps, a dash: its field holds no value"]
+    },
+    {
+      "name": "numbers under 0",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": -0.001, "spend": -2, "budget": 10, "checks": -1, "workers": [{"state": 3}, {}, null]},
+      "says": ["number 0", "bar -2 $ of 10, under 0", "ring -1/20, under 0", "lamps 3 (3 grey)"]
+    },
+    {
+      "name": "long numbers, and a half rounded away from 0",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": 1000000000000, "spend": 999999999999, "budget": 1e15, "checks": 0.125, "workers": []},
+      "says": ["number a number of more than 12 digits", "bar 999999999999 $ of a number of more than 12 digits", "ring 0.13/20", "lamps 0"]
+    },
+    {
+      "name": "a number too large for a number",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Open PRs", "field": "open_prs"}, {"kind": "bar", "name": "Spend", "field": "spend", "max": "budget", "unit": "$"}, {"kind": "ring", "name": "Checks", "field": "checks", "max": 20}, {"kind": "lamps", "name": "Workers", "field": "workers"}]},
+      "fields": {"open_prs": 1e400, "spend": 2.5, "budget": 2.5, "checks": 100, "workers": []},
+      "says": ["number, a dash: not a number", "bar 2.5 $ of 2.5", "ring 100/20, over its limit", "lamps 0"]
+    },
+    {
+      "name": "a path into a record, and a lamp's own key",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Deep", "field": "stats", "path": "a.b", "unit": "ms"}, {"kind": "lamps", "name": "Rows", "field": "stats", "path": "rows", "key": "phase"}]},
+      "fields": {"stats": {"a": {"b": 3}, "rows": [{"phase": "failed"}, {"state": "done"}]}},
+      "says": ["number 3 ms", "lamps 2 (1 failed, 1 grey)"]
+    },
+    {
+      "name": "a path that finds nothing",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Deep", "field": "stats", "path": "a.b", "unit": "ms"}, {"kind": "lamps", "name": "Rows", "field": "stats", "path": "rows", "key": "phase"}]},
+      "fields": {"stats": {"a": 5}},
+      "says": ["number, a dash: its path finds nothing", "lamps, a dash: its path finds nothing"]
+    },
+    {
+      "name": "a path into what is no record",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "Deep", "field": "stats", "path": "a.b", "unit": "ms"}, {"kind": "lamps", "name": "Rows", "field": "stats", "path": "rows", "key": "phase"}]},
+      "fields": {"stats": 4},
+      "says": ["number, a dash: its path finds nothing", "lamps, a dash: its path finds nothing"]
+    },
+    {
+      "name": "the five texts on whose spaces the two languages disagree (M176)",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "A", "field": "a"}, {"kind": "number", "name": "B", "field": "b"}, {"kind": "number", "name": "C", "field": "c"}, {"kind": "number", "name": "D", "field": "d"}, {"kind": "number", "name": "E", "field": "e"}]},
+      "fields": {"a": "\ufeff12", "b": "12\ufeff", "c": "12\u001f", "d": "\u001c12", "e": "12\u0085"},
+      "says": ["number 12", "number 12", "number, a dash: not a number", "number, a dash: not a number", "number, a dash: not a number"]
+    },
+    {
+      "name": "a sign, a point, a thousands comma, a percent sign with and without a space",
+      "layout": {"v": 1, "parts": [{"kind": "ring", "name": "R", "field": "n", "max": "m"}, {"kind": "bar", "name": "B", "field": "n", "max": 50, "unit": "%"}]},
+      "fields": {"n": "-1,234.5 %", "m": "12%"},
+      "says": ["ring -1234.5/12, under 0", "bar -1234.5 % of 50, under 0"]
+    },
+    {
+      "name": "an exponent, an empty text, only spaces: no number",
+      "layout": {"v": 1, "parts": [{"kind": "number", "name": "A", "field": "a"}, {"kind": "number", "name": "B", "field": "b"}, {"kind": "number", "name": "C", "field": "c"}, {"kind": "number", "name": "D", "field": "d"}, {"kind": "number", "name": "E", "field": "e"}]},
+      "fields": {"a": "1e3", "b": "", "c": "   ", "d": "12", "e": " 12\t"},
+      "says": ["number, a dash: not a number", "number, a dash: not a number", "number, a dash: not a number", "number 12", "number 12"]
+    }
+  ],
+  "plain_number_about": "A text in, the plain number it is read as out (null: none): read by plainNumber.test.ts against plainNumber in glance.ts and by test_dashboard_xr_layout.py against _plain_number. plain_number_spaces are the code points that count as a space round a plain number; each reader holds the same list.",
+  "plain_number_spaces": [9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279],
+  "plain_number_cases": [
+    ["12", 12],
+    [" 12 ", 12],
+    ["12 %", 12],
+    ["12%", 12],
+    ["12 % ", 12],
+    ["\t12", 12],
+    ["12\u00a0", 12],
+    ["\n12\r\n", 12],
+    ["-12", -12],
+    ["+12", null],
+    ["- 12", null],
+    ["--12", null],
+    ["1.5", 1.5],
+    ["1,5", 1.5],
+    [".5", null],
+    ["5.", null],
+    ["1..5", null],
+    ["0012", 12],
+    ["0.10", 0.1],
+    ["1e3", null],
+    ["1E3", null],
+    ["0x10", null],
+    ["1_000", null],
+    ["Infinity", null],
+    ["NaN", null],
+    ["1,234", 1234],
+    ["1,234.5", 1234.5],
+    ["1,23", 1.23],
+    ["1,2,3", null],
+    ["1.234,5", null],
+    ["1,234,567", 1234567],
+    ["-1,234,567", -1234567],
+    ["1,234,567 %", 1234567],
+    ["0,123,456", 123456],
+    ["123,456,789,012", 123456789012],
+    ["1,234,567.25", 1234567.25],
+    ["1,234,567.", null],
+    ["1,234,567.8.9", null],
+    ["1,2345", 12345],
+    ["1,234,56", 1234.56],
+    ["1,234,5678", 1234.5678],
+    ["1234,567,890", 1234567.89],
+    ["12,34,567", 12.34567],
+    ["1,234,567,89", null],
+    ["12,345,678.9", 12345678.9],
+    ["", null],
+    [" ", null],
+    ["   \t ", null],
+    ["%", null],
+    [" % ", null],
+    ["12%%", null],
+    ["12 % %", null],
+    ["% 12", null],
+    ["12 34", null],
+    ["12 %x", null],
+    ["\u0661\u0662", null],
+    ["\uff11\uff12", null],
+    ["12\u200b", null],
+    ["twelve", null],
+    ["12 dollars", null],
+    ["\ufeff12", 12],
+    ["12\ufeff", 12],
+    ["12\u001f", null],
+    ["\u001c12", null],
+    ["12\u0085", null],
+    ["\u001d12", null],
+    ["12\u001e", null],
+    ["12 \ufeff% \ufeff", 12],
+    ["12\u0085%", null],
+    ["\u168012\u1680", 12],
+    ["\u200012\u200a", 12],
+    ["\u202812\u2029", 12],
+    ["\u202f12\u205f", 12],
+    ["\u300012\u3000", 12],
+    ["\u000b12\f", 12]
+  ]
+}

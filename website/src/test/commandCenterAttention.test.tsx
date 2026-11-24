@@ -57,6 +57,12 @@ describe('task dashboard input routing', () => {
     expect(screen.getByText('The agent did not provide a reason for this request.')).toBeVisible()
   })
 
+  it('marks Approve once as a control that grants an agent something, and Reject once not: an XR page passes no plain press to the first', () => {
+    renderWithProviders(<AttentionCard item={approval} title="Backend worker" />)
+    expect(screen.getByRole('button', { name: 'Approve once' })).toHaveAttribute('data-agent-grant', 'yes')
+    expect(screen.getByRole('button', { name: 'Reject once' }).closest('[data-agent-grant]')).toBeNull()
+  })
+
   it('does not auto-approve in Normal mode and routes one explicit click to the exact slot/request', async () => {
     const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     renderWithProviders(<AttentionCard item={approval} title="Backend worker" />)

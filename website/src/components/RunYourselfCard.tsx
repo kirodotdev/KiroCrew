@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { agentGrant } from '../guide/trustRoot'
 import { Check, Copy, SquareTerminal } from 'lucide-react'
 import { copyCode } from '../utils/clipboard'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
@@ -130,7 +131,7 @@ function RunYourselfCardInner({ code, summary, willCopy }: { code: string; summa
             button its own status line says will not work. A remount (a new
             reply, a reload) offers it again. */}
         {terminalEnabled && !runFailed && (
-          <button type="button" className={primary} onClick={askToRun}>
+          <button type="button" className={primary} onClick={askToRun} {...agentGrant}>
             <SquareTerminal size={14} aria-hidden />{runLabel}
           </button>
         )}

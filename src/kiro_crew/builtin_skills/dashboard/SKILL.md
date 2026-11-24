@@ -1,7 +1,7 @@
 ---
 name: dashboard
 description: "Build or change a Bot's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
-triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template
+triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template, 3d dashboard, xr dashboard
 ---
 
 # The Dashboard Tab
@@ -364,3 +364,81 @@ markup reads; the controller pushes only that list.
 
 Search documentation with `search_docs` and locate controls with `find_ui`
 when a fold, field or setting needs clarification.
+
+## 8. In XR: a 3D dashboard
+
+In the XR room of pages a Bot can carry a small solid dashboard: a row of
+parts on a tray that it holds in front of its body, and that the person
+takes to read. The room builds it from ONE field of your own page,
+`xr_layout`, and from the fields that field names. Your flat page
+stays as it is.
+
+Add one only when the person asks for a 3D dashboard or uses the XR room.
+A Bot on a shipped template page keeps that page: never replace it with a
+page of your own for this (section 1).
+
+1. Your page in force declares `xr_layout` as an `object` field, and
+   every field a part reads. On a page of your own, add each one with
+   `dashboard_add_field` (`name`, `type`): it saves a draft of your
+   whole page with that field added and changes nothing else. Add all you
+   need, then `dashboard_apply` once. A field with choices, or one read
+   from a fold, goes into the model you `dashboard_save`. A Bot on a
+   shipped page has no 3D dashboard.
+2. Write the layout once with `dashboard_write`, `field: "xr_layout"`.
+   It names fields and holds no number itself. The reply ends with one
+   line that says what the XR room makes of the value it stored, and
+   what each part shows now:
+   "In the XR room this layout reads: part 1: ring 12/20; part 2: bar, a dash: not a number; part 3: layout: bad name."
+   A part named "name not checked" holds a sign this gateway cannot
+   check; a grey tray says why it is empty; "no 3D dashboard" after a
+   clear. A wrong layout is stored all the same: fix the part it names
+   and write it again.
+3. Keep the numbers true by writing their own fields, as for the flat page.
+   The reply to such a write ends with the same words for the parts that
+   read that field: "In the XR room: part 1: ring 13/20."
+4. To take it away: `dashboard_write`, `field: "xr_layout"`, `clear: true`.
+
+The layout is `{"v": 1, "parts": [...]}` with 1 to 6 parts, drawn left
+to right in the order written. A key the room does not know is not read.
+
+| Key of a part | What it takes |
+|---|---|
+| `kind` | one of `number`, `bar`, `ring`, `lamps` |
+| `name` | the word under the part: 1 to 16 letters; a letter keeps at most 2 combining marks, and control and format characters are removed |
+| `field` | the field of your page it shows: a lowercase letter, then lowercase letters, digits or `_`, 64 characters at most |
+| `path` | optional, for an object field: one string of dotted keys, at most 4, each of letters, digits or `_`, 64 characters at most |
+| `max` | `bar` and `ring` only, and needed there: a number above 0, or the name of a field that holds one |
+| `key` | `lamps` only, optional: the key of each row that holds its state (`state` when left out): letters, digits or `_`, 64 characters at most |
+| `unit` | optional: one of `%`, `$`, `ms`, `/s`; any other is dropped |
+
+| Kind | Its field holds | It shows |
+|---|---|---|
+| `number` | a number, or text that is a plain number | the number, in at most 6 characters, with its unit |
+| `bar` | a number, or text that is a plain number | a column filled to its share of `max`, up to 1.2 times; the number with its unit |
+| `ring` | a number, or text that is a plain number | a ring filled to its share of `max`, written as `n/max`, with no unit |
+| `lamps` | a list of rows (or of words) | one lamp a row, at most 12, the rest only counted: `idle`, `working`, `done`, `failed`; any other word is grey |
+
+A part whose field is missing, or holds what its kind does not take (a word
+for a number, a number for lamps), stands with a dash (—) for its
+number, and the room says no more. The reply's line says why:
+"a dash: its field holds no value", "a dash: its path finds nothing", "a dash: not a list", "a dash: not a number", "a dash: its limit is no number above 0".
+A number in that line is the number the part reads, written plainly;
+the room writes it short. A text that a field holds is never repeated.
+
+A small whole layout:
+
+```json
+{"v": 1, "parts": [
+  {"kind": "ring", "name": "Checks", "field": "checks_done", "max": 20},
+  {"kind": "bar", "name": "Spend", "field": "spend_today", "max": "spend_budget", "unit": "$"},
+  {"kind": "lamps", "name": "Workers", "field": "workers"},
+  {"kind": "number", "name": "Open PRs", "field": "open_prs"}
+]}
+```
+
+`dashboard_write` checks the value as the object your page declares, and
+stores a wrong layout all the same. The reply's last line is how you
+learn what the room makes of it: read it after every write. The room
+draws a document that is no layout as an empty grey tray, and a wrong
+part as an empty socket while the others stand. Taken, each says why in
+one line: "not a layout", "unknown version", "no parts", "too many parts", "not a part", "unknown part", "bad name", "bad field", "bad path", "bad limit", "bad key".

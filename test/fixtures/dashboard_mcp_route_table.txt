@@ -63,6 +63,7 @@ HEAD /api/agent-panel/dashboard/fields api_dashboard_fields
 GET /api/agent-panel/dashboard/fields api_dashboard_fields
 POST /api/agent-panel/dashboard/write api_dashboard_write
 POST /api/agent-panel/dashboard/save api_dashboard_save
+POST /api/agent-panel/dashboard/add-field api_dashboard_add_field
 HEAD /api/agent-panel/dashboard/types api_dashboard_types
 GET /api/agent-panel/dashboard/types api_dashboard_types
 HEAD /api/agent-panel/dashboard/templates api_dashboard_templates

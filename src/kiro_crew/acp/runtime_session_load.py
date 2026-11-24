@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from kiro_crew import session_head
+from kiro_crew import session_head, turn_timing
 from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
@@ -991,6 +991,9 @@ async def _wait_managed_mcp(
     # *params* carries the batch as sent, so its entry is keyed by the wire id.
     wire_agent = kas_wire_agent_id(agent)
     required = required_managed_servers(params, wire_agent)
+    _mt0 = time.monotonic()
+    _mt_required = _mt_brief = _mt0
+    brief: tuple[str, ...] = ()
     try:
         # Read off the loop: the declaration is config I/O.
         governed = bool(required) and await asyncio.to_thread(_declared_governed)
@@ -1045,11 +1048,24 @@ async def _wait_managed_mcp(
         # Best effort, never required: a slow or dead one must not block the start.
         # Which servers, and why not the user's own when a person is waiting:
         # ``first_prompt_brief_wait``.
+        _mt_required = time.monotonic()
         brief = first_prompt_brief_wait(
             params, wire_agent, required, start_priority, focus_resume=focus_resume
         )
         if brief:
             await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
+        _mt_brief = time.monotonic()
+        if turn_timing.ENABLED:
+            logger.warning(
+                "mcp_start_timing session=%s priority=%s required_ms=%.0f brief_ms=%.0f "
+                "brief=%s still_unreported=%s",
+                handle.session_id,
+                getattr(start_priority, "name", start_priority),
+                (_mt_required - _mt0) * 1000.0,
+                (_mt_brief - _mt_required) * 1000.0,
+                ",".join(brief) or "-",
+                ",".join(handle.mcp_session_report().unreported(brief)) or "-",
+            )
         # The agent's own servers a person-waited start skipped: its first turn
         # is told of them, or holds its prompt for them (same rule).
         left, more = left_to_first_turn(

@@ -75,10 +75,12 @@ export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTrans
      *  it, so the answers become its tool result) or by `POST /api/ask-question`.
      *  Pass no answers to dismiss; `reason: 'composer'` says the user answered in
      *  the chat composer instead, so the agent reads their next message rather
-     *  than treating the question as declined. */
-    answerQuestion: (askId: string, answers?: Record<string, string>, reason?: 'composer' | 'queued') =>
+     *  than treating the question as declined. `responseId` names this one
+     *  answer: a retry of it is replayed, and an answer someone else gave
+     *  first comes back as 409 `already_resolved` with that decision. */
+    answerQuestion: (askId: string, answers?: Record<string, string>, reason?: 'composer' | 'queued', responseId?: string) =>
       post('/api/ask-question/' + encodeURIComponent(askId) + '/answer',
-        answers ? { answers } : reason ? { dismissed: true, reason } : { dismissed: true }).then(j),
+        { ...(answers ? { answers } : reason ? { dismissed: true, reason } : { dismissed: true }), ...(responseId ? { response_id: responseId } : {}) }).then(j),
     /** Retire the slot's needs-input status for a STATELESS card (no `ask_id`),
      *  which blocks nothing and is otherwise removed client-side only — leaving
      *  the sidebar and sessions board claiming the agent is still waiting.

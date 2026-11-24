@@ -9,7 +9,7 @@ import { GRANT_DURATIONS, grantEndsAt, grantTtlSeconds, type GrantDuration } fro
 import { fmtTime } from '../i18n/format'
 
 import { i18nT } from '../i18n/t'
-import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
+import { agentGrant, guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
@@ -269,6 +269,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
         disabled={disabled || only.disabled}
         className={className}
         onClick={only.fire}
+        {...agentGrant}
       >
         {only.icon}
         {only.body}
@@ -282,14 +283,14 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
     <GuideTrustRootProvider>
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
-          <button disabled={disabled} className={className}>
+          <button disabled={disabled} className={className} {...agentGrant}>
             <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
           </button>
         </DropdownMenuTrigger>
         {/* The width cap is viewport-aware: a flat max-w overflows a narrow screen
             (measured at 320px, the menu reached 440px and ran off the right edge),
             which hides the very label this menu exists to make readable. */}
-        <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]" {...guideTrustRoot}>
+        <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]" {...guideTrustRoot} {...agentGrant}>
           {tiers.map(tier => (
             <DropdownMenuItem
               key={tier.id}

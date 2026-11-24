@@ -1,0 +1,38 @@
+{
+  "generic-button": {
+    "path": "generic-button/profile.json"
+  },
+  "generic-fixed-hand": {
+    "path": "generic-fixed-hand/profile.json"
+  },
+  "generic-hand": {
+    "path": "generic-hand/profile.json"
+  },
+  "generic-touchpad": {
+    "path": "generic-touchpad/profile.json"
+  },
+  "generic-trigger-squeeze-thumbstick": {
+    "path": "generic-trigger-squeeze-thumbstick/profile.json"
+  },
+  "generic-trigger-squeeze-touchpad-thumbstick": {
+    "path": "generic-trigger-squeeze-touchpad-thumbstick/profile.json"
+  },
+  "generic-trigger-squeeze-touchpad": {
+    "path": "generic-trigger-squeeze-touchpad/profile.json"
+  },
+  "generic-trigger-squeeze": {
+    "path": "generic-trigger-squeeze/profile.json"
+  },
+  "generic-trigger-thumbstick": {
+    "path": "generic-trigger-thumbstick/profile.json"
+  },
+  "generic-trigger-touchpad-thumbstick": {
+    "path": "generic-trigger-touchpad-thumbstick/profile.json"
+  },
+  "generic-trigger-touchpad": {
+    "path": "generic-trigger-touchpad/profile.json"
+  },
+  "generic-trigger": {
+    "path": "generic-trigger/profile.json"
+  }
+}

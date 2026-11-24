@@ -72,7 +72,7 @@ import {
   invalidateRefreshQueries,
   refreshMayChangeRegistry,
 } from './websocket/serverState'
-import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
+import { DASHBOARD_FIELDS_FRAME, handleDashboardFields, handleDashboardPageChanged } from './websocket/dashboardFields'
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface, recordShown } from './websocket/attention'
@@ -80,6 +80,7 @@ import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory,
 import { createReconnectSnapshotWait, runFirstConnect, runReconnectCatchUp, type ReconnectSnapshotWait } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
+import { applyXrPanelBinary, applyXrPanelFrame, setXrPanelSender } from './xrPanelLink'
 import { batchedUnlessOpen } from '../lib/streamBatch'
 import { ackRead } from '../lib/readOutbox'
 import { noteShownHere } from '../lib/slotReadRelay'
@@ -252,6 +253,8 @@ export function useWebSocket() {
       // presence, work and decision state is re-read from the server.
       setSharedCrewSender(payload => socket.sendIfOpen(payload))
       onSharedCrewSocketOpen(queryClient)
+      // The XR page's live panels: what the gateway held for the last socket is gone, so each opens again.
+      setXrPanelSender(payload => socket.sendIfOpen(payload))
       const catchUp = {
         dispatch,
         queryClient,
@@ -298,6 +301,8 @@ export function useWebSocket() {
       // only). It never touches the JSON router, the store or React: the
       // live-browser store acks it, keeps it for Replay and paints it.
       if (e.data instanceof ArrayBuffer) {
+        // A picture of one of the XR page's live panels goes to that panel and nowhere else.
+        if (applyXrPanelBinary(e.data)) return
         browserLiveStore.applyBinary(e.data)
         return
       }
@@ -318,6 +323,9 @@ export function useWebSocket() {
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
             if (socket.wsRef.current === ws) reconnectSnapshot.onSlots(data)
+            break
+          case 'xr_panel':
+            applyXrPanelFrame(data)
             break
           case 'shared_crew.presence':
           case 'shared_crew.work':
@@ -486,6 +494,8 @@ export function useWebSocket() {
             // the tab's refetch re-asks the server, which re-composes the page and
             // re-checks ownership.
             handleDashboardMoved(queryClient, data)
+            // A reader that keeps only the page's own facts is told of a changed PAGE alone.
+            if (type === 'dashboard_instance_changed') handleDashboardPageChanged(data)
             break
           case 'dashboard_instance_changed':
             // The crewmate's dashboard PAGE changed: a template applied or a
@@ -1212,7 +1222,7 @@ export function useWebSocket() {
     }
 
     ws.onclose = (ev) => {
-      if (socket.wsRef.current === ws) reconnectSnapshot.disarm()
+      if (socket.wsRef.current === ws) { reconnectSnapshot.disarm(); setXrPanelSender(null) }
       socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
     }
 

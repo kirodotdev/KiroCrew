@@ -2,6 +2,7 @@ import { Lightbulb, Bug } from 'lucide-react'
 
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
+import { agentGrant } from '../guide/trustRoot'
 import { Glass } from './Glass'
 import { InstantTip, useInstantTip } from './InstantTip'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../utils/laneMembership'
@@ -143,6 +144,8 @@ export default function FeedbackPill({
         type="button"
         className="flex items-center gap-1.5 h-full px-2.5 text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0"
         onClick={onRequestFeature}
+        // It sends a fixed message as the person, with steps for the agent that the person does not see.
+        {...agentGrant}
         // Named explicitly: the desktop top bar can hide the label (see
         // `tb-drop-feedback-label` in index.css), leaving only the icon.
         aria-label={i18nT('app.request_a_feature_2')}

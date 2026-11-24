@@ -1,5 +1,5 @@
 import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useState, memo, Suspense } from 'react'
-import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
+import { agentGrant, GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, Terminal, Clock, X } from 'lucide-react'
@@ -1873,6 +1873,7 @@ function ChatInput({
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             {...bindProjectPress<HTMLButtonElement>(el => onProjectClick(el.getBoundingClientRect(), el), { keepFocusOffTrigger: true })}
+            {...agentGrant}
             /* Stays enabled mid-turn: the project route never touches the
                running turn's process. It waits on the session lock a turn
                holds while it prepares, then writes slot.project and arms the

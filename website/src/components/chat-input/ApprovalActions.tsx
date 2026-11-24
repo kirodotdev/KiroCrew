@@ -2,6 +2,7 @@ import { CheckCircle } from 'lucide-react'
 import DenyOverrideDropdown from '../DenyOverrideDropdown'
 import RejectDropdown from '../RejectDropdown'
 import TrustDropdown, { TrustUnavailable } from '../TrustDropdown'
+import { agentGrant } from '../../guide/trustRoot'
 import { i18nT } from '../../i18n/t'
 import { approvalBtnClass, type useToolApproval } from './approval'
 
@@ -26,7 +27,7 @@ export function ApprovalActions({ approval, slotId }: { approval: ReturnType<typ
     // A keyboard chord targets this row's first enabled control; Reject arrives on the row.
     <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
       {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={action => { handleApprovalAction(action) }} /> : <>
-        <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
+        <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')} {...agentGrant}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
         {/* All standing grants stay in Trust: Allow once + Trust + Reject, never a fourth button. */}
         {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly || !!approvalAlwaysAllowRef || !!approvalAlwaysAllowRefusal) ? (
           <TrustDropdown

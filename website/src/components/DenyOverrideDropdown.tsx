@@ -5,6 +5,7 @@ import {
 } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
+import { agentGrant } from '../guide/trustRoot'
 
 /** One plain-language line on what a rule FAMILY protects, keyed by the slug the
  *  server sends (`deny_override_family`, from `dashboard.deny_override
@@ -124,6 +125,7 @@ export default function DenyOverrideDropdown({ disabled, className, family, onAc
           aria-label={i18nT('components.denyOverride.override')}
           aria-haspopup="menu"
           data-testid="deny-override-trigger"
+          {...agentGrant}
         >
           {/* Warn, not danger: nothing has failed (the command has not run),
               so this trigger and the warning line under the buttons both use
@@ -132,7 +134,7 @@ export default function DenyOverrideDropdown({ disabled, className, family, onAc
           <ChevronDown size={12} className="shrink-0" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="end" className="min-w-[240px] max-w-[min(420px,calc(100vw-2rem))]">
+      <DropdownMenuContent side="top" align="end" className="min-w-[240px] max-w-[min(420px,calc(100vw-2rem))]" {...agentGrant}>
         <DropdownMenuItem onSelect={() => onAction('deny_override_once')}>
           <CheckCircle size={12} className="shrink-0 text-warn" />
           <span className="min-w-0 text-[12px]">{i18nT('components.denyOverride.allow_once')}</span>

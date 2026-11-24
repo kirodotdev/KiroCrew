@@ -529,6 +529,25 @@ DASHBOARD_SAVE_SCHEMA = ToolSchema(
     ],
 )
 
+DASHBOARD_ADD_FIELD_SCHEMA = ToolSchema(
+    tool_name="dashboard_add_field",
+    fields=[
+        # FOUR strings and nothing else. No ``source``: a field this tool adds is
+        # always the Bot's own to write (``{"agentic": true}``), set by the gateway. No
+        # ``bound_to`` and no page: both come from the vetted caller. An unknown key is
+        # refused by the rule every ToolSchema enforces.
+        #
+        # Typed only as strings, with lengths well over the gate's own. The name rule,
+        # the closed list of types and the label rule are
+        # ``artifact_store.dashboard_package``'s, asked by the route, so this schema
+        # cannot disagree with the write gate and each rule answers in its own words.
+        FieldSpec("name", str, required=True, max_len=256),
+        FieldSpec("type", str, required=True, max_len=64),
+        FieldSpec("label", str, max_len=1024),
+        FieldSpec("description", str, max_len=1024),
+    ],
+)
+
 DASHBOARD_TEMPLATES_SCHEMA = ToolSchema(
     tool_name="dashboard_templates",
     fields=[
@@ -591,6 +610,7 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "dashboard_types": DASHBOARD_TYPES_SCHEMA,
     "dashboard_write": DASHBOARD_WRITE_TOOL_SCHEMA,
     "dashboard_save": DASHBOARD_SAVE_SCHEMA,
+    "dashboard_add_field": DASHBOARD_ADD_FIELD_SCHEMA,
     "dashboard_templates": DASHBOARD_TEMPLATES_SCHEMA,
     "dashboard_preview": DASHBOARD_PREVIEW_SCHEMA,
     "dashboard_apply": DASHBOARD_APPLY_SCHEMA,

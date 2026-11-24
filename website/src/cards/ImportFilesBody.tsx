@@ -10,6 +10,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { cardsApi, type CrewmateImportFiles } from '../api/cards'
 import { CardRow, type KindBodyProps } from './kindBodies'
+import { agentGrantNone } from '../guide/trustRoot'
 
 // A failed card can be retried, so its staged copy is still kept.
 const LIVE: ReadonlySet<string> = new Set(['pending', 'applying', 'failed'])
@@ -18,7 +19,7 @@ function FileText({ path, text }: { path: string; text: string }) {
   return (
     // Folded: the whole file is one click away, and the decision reads first.
     <details className="mb-2 last:mb-0" data-testid="import-file">
-      <summary className="cursor-pointer text-[12px] font-medium text-muted [overflow-wrap:anywhere]">
+      <summary className="cursor-pointer text-[12px] font-medium text-muted [overflow-wrap:anywhere]" {...agentGrantNone}>
         {path} · {i18nT('components.changeCards.carried_show_code')}
       </summary>
       <pre className="m-0 mt-1 max-h-60 overflow-auto rounded bg-bg-hover p-2 text-[12px] leading-4 whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</pre>

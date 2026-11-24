@@ -48,5 +48,7 @@ async def test_drain_on_idle_slot_pushes_a_running_slot(tmp_path, monkeypatch):
         assert await chat_runner._start_next_queued_turn(state, slot) is True
 
     assert slot.task is live_turn
-    assert frames, "the drain must push the slot list once the turn holds the slot"
-    assert frames[-1].get("running") is True, frames[-1]
+    # One slots frame at the turn's start: the drain's push, coalesced by its
+    # suspend block, and no second one from the turn's own start.
+    assert len(frames) == 1, frames
+    assert frames[0].get("running") is True, frames[0]

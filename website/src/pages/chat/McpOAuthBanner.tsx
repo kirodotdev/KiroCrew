@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { agentGrant } from '../../guide/trustRoot'
 import { Lock, ExternalLink, CheckCircle, History } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
@@ -204,6 +205,7 @@ export default function McpOAuthBanner({
         href={safeUrl}
         target="_blank"
         rel="noopener noreferrer"
+        {...agentGrant}
         className="inline-flex items-center justify-center gap-2 self-start px-4 py-2 rounded-md text-[13px] leading-5 font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity no-underline"
       >
         {i18nT('pages.chat.mcpOAuthBanner.authorize')} {label} <ExternalLink className="lucide-inline" size={13} />

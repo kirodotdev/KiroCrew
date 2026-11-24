@@ -276,6 +276,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/agent-panel/dashboard/save", _deferred("agent_panel", "api_dashboard_save")
     )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/add-field",
+        _deferred("agent_panel", "api_dashboard_add_field"),
+    )
     app.router.add_get(
         "/api/agent-panel/dashboard/types", _deferred("agent_panel", "api_dashboard_types")
     )

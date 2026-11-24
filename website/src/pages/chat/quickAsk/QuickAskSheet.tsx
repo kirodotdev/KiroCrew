@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useRef, useSt
 import { EyeOff, Lock, Unlock, X } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
+import { agentGrant, agentGrantNone, AgentGrantProvider } from '../../../guide/trustRoot'
 import Clickable from '../../../components/Clickable'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { OverlayPortal, useInsideDialog } from '../../../components/overlayRoot'
@@ -132,6 +133,10 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
   }, [imeLatch])
 
   const panel = (
+    // The agent asked, and an answer here lets it go on: a credential, a code, a field's value, a final click.
+    // The sheet is a grant surface as a whole; only Not now, Decline, "I'll do it myself" and the open and close
+    // of the saved logins say that they grant nothing.
+    <AgentGrantProvider>
     <div
       ref={panelRef}
       role="dialog"
@@ -140,6 +145,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
       tabIndex={-1}
       data-testid="quick-ask-sheet"
       data-quick-ask-sheet=""
+      {...agentGrant}
       data-kind={ask.kind}
       className={mode === 'overlay'
         ? 'max-h-full w-[min(400px,100%)] overflow-y-auto rounded-2xl border border-border-strong bg-bg-elevated px-5 pt-5 shadow-2xl focus:outline-none'
@@ -155,7 +161,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
           {/* The sign-in sheet shows the origin as its own read-only first field. */}
           {!isSignInTakeover(ask) && <OriginLine ask={ask} className="mt-0.5" />}
         </div>
-        <Btn type="button" className="!px-1.5 border-transparent shrink-0" onClick={onCollapse} aria-label={i18nT('pages.chat.quickAsk.not_now')} title={i18nT('pages.chat.quickAsk.not_now')} data-testid="quick-ask-not-now">
+        <Btn type="button" className="!px-1.5 border-transparent shrink-0" onClick={onCollapse} aria-label={i18nT('pages.chat.quickAsk.not_now')} title={i18nT('pages.chat.quickAsk.not_now')} data-testid="quick-ask-not-now" {...agentGrantNone}>
           <X size={16} aria-hidden="true" />
         </Btn>
       </div>
@@ -174,6 +180,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
       <p className="mt-3 pb-[max(20px,env(safe-area-inset-bottom))] text-center text-[11px] text-muted">{i18nT('pages.chat.quickAsk.kiro_paused')}</p>
       {edges.bottom && !rowPinned && <MoreBelowFade className="sticky bottom-0 -mt-6" />}
     </div>
+    </AgentGrantProvider>
   )
 
   if (mode === 'overlay') {
@@ -300,7 +307,7 @@ function Actions({ primary, onDecline, busy, declineLabel, onPrimary }: {
     // more; an unpinned row scrolls away, so the sheet's bottom edge shows it instead.
     <div className={`${pinned ? 'sticky bottom-0 z-10' : 'relative'} mt-4 flex flex-col-reverse gap-2 bg-bg-elevated py-2 sm:flex-row sm:justify-end`} data-testid="quick-ask-actions" data-pinned={pinned ? '' : undefined} data-more-below={moreBelow ? '' : undefined}>
       {moreBelow && pinned && <MoreBelowFade className="absolute inset-x-0 -top-6" />}
-      <Btn type="button" className="h-11 justify-center px-4 text-[15px]" onClick={onDecline} disabled={busy} data-testid="quick-ask-decline">
+      <Btn type="button" className="h-11 justify-center px-4 text-[15px]" onClick={onDecline} disabled={busy} data-testid="quick-ask-decline" {...agentGrantNone}>
         {declineLabel ?? i18nT('pages.chat.quickAsk.decline')}
       </Btn>
       {primary !== undefined && (
@@ -470,7 +477,7 @@ function SignInBody({ ask, busy, send }: { ask: QuickAsk; busy: boolean; send: S
       <p className="mt-1 text-center text-[12px] text-muted">
         {i18nT('pages.chat.quickAsk.take_over_instead_hint')}{' '}
         <button type="button" className="cursor-pointer border-0 bg-transparent p-0 font-medium text-accent underline-offset-2 hover:underline disabled:opacity-50" disabled={busy}
-          onClick={() => { void send('take_over') }} data-testid="quick-ask-take-over">
+          onClick={() => { void send('take_over') }} data-testid="quick-ask-take-over" {...agentGrantNone}>
           {i18nT('pages.chat.quickAsk.take_over_instead')}
         </button>
       </p>

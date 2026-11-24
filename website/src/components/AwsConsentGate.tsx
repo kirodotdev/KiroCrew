@@ -3,6 +3,7 @@ import { RefreshCw, ShieldCheck, Receipt } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../api/client'
 import ErrorNotice from './ErrorNotice'
 import { Btn, Badge, Card, CardTitle } from './ui'
+import { agentGrant } from '../guide/trustRoot'
 import { i18nT } from '../i18n/t'
 import { fmtDate } from '../i18n/format'
 
@@ -337,6 +338,7 @@ export default function AwsConsentGate({
             primary
             disabled={busy || !c.identityResolved}
             onClick={() => grantMut.mutate()}
+            {...agentGrant}
             data-testid={'aws-consent-' + service + '-confirm'}
           >
             {i18nT('components.awsConsentGate.confirm_button')}
@@ -425,6 +427,7 @@ export default function AwsConsentGate({
             primary
             disabled={busy || !c.identityResolved}
             onClick={() => grantMut.mutate()}
+            {...agentGrant}
             data-testid={'aws-consent-' + service + '-confirm'}
           >
             {i18nT('components.awsConsentGate.confirm_button')}

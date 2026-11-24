@@ -43,8 +43,9 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,30 @@ _SH_REMAP = 'exec 3</dev/fd/"$1" 4>/dev/fd/"$2"; shift 2; exec "$@"'
 #: The first fd a pipe end may occupy before the remap, so ``exec 3<... 4>...`` never
 #: reads a descriptor it has just overwritten.
 _FIRST_SAFE_FD = 5
+#: The same remap for a transport made of sockets. ``/dev/fd/N`` cannot be opened
+#: when N is a socket, which is the point of using one, so the two ends are
+#: duplicated onto 3 and 4 instead. The venv's interpreter does it: a shell's
+#: ``3<&N`` takes one digit only on some hosts.
+#:
+#: Its first act is to set the core limit to zero, soft and hard, whatever the
+#: gateway's own limit is. The browser it becomes holds the owner's sign-in in
+#: memory, and a process that dies of a signal can leave its memory in a core
+#: file wherever the host's ``core_pattern`` points, for any process of the same
+#: user to read. The limit is inherited by every child of the browser, and a hard
+#: limit of zero cannot be raised again. Set in the child, not with
+#: ``preexec_fn``, which makes CPython ``fork()`` the whole gateway
+#: (``stt/preflight.py`` does the same for its probe). It is not caught: a child
+#: that cannot set the limit ends before it becomes a browser.
+_PY_REMAP = (
+    "import os, resource, sys\n"
+    "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+    "a, b = int(sys.argv[1]), int(sys.argv[2])\n"
+    "os.dup2(a, 3)\n"
+    "os.dup2(b, 4)\n"
+    "os.close(a)\n"
+    "os.close(b)\n"
+    "os.execv(sys.argv[3], sys.argv[3:])\n"
+)
 
 
 #: The status detail while a Redownload replaces Kiro's Chromium.
@@ -944,11 +969,7 @@ class HarnessSupervisor:
         profile = self.profile_dir
         await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
         await asyncio.to_thread(_clear_restored_session, profile)
-        argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
-        if choice.headless:
-            argv.append(_HEADLESS_ARG)
-        if platform_compat.effective_uid() == _ROOT_UID:
-            argv.append(_NO_SANDBOX_ARG)
+        argv = chromium_argv(exe, profile, headless=choice.headless)
         if platform_compat.IS_WINDOWS:
             return await self._launch_chromium_port(argv, profile)
         return await self._launch_chromium_pipe(argv)
@@ -956,53 +977,12 @@ class HarnessSupervisor:
     async def _launch_chromium_pipe(
         self, argv: list[str]
     ) -> tuple[asyncio.subprocess.Process, PipeUpstream]:
-        """POSIX: ``--remote-debugging-pipe`` over two pipes; no port is ever opened.
+        """POSIX: ``--remote-debugging-pipe`` over two pipes; no port is ever opened."""
 
-        Its stderr goes to a third pipe the gateway drains for the browser's whole
-        life (:func:`_keep_stderr_tail`). The pipe is the gateway's own, not
-        asyncio's: an asyncio pipe would make reaping the browser wait for every
-        descendant that inherited it.
-        """
-        to_browser_r, to_browser_w = os.pipe()
-        from_browser_r, from_browser_w = os.pipe()
-        stderr_r, stderr_w = os.pipe()
-        try:
-            to_browser_r = _fd_at_or_above(to_browser_r, _FIRST_SAFE_FD)
-            from_browser_w = _fd_at_or_above(from_browser_w, _FIRST_SAFE_FD)
-            sh_argv = [
-                _SH,
-                "-c",
-                _SH_REMAP,
-                "kirocrew-chromium",
-                str(to_browser_r),
-                str(from_browser_w),
-                *argv,
-                _CHROMIUM_PIPE_ARG,
-            ]
-            proc = await self._spawn(
-                sh_argv,
-                env=dict(self._env()),
-                pipes=False,
-                pass_fds=(to_browser_r, from_browser_w),
-                stderr=stderr_w,
-            )
-        except BaseException:
-            for fd in (to_browser_w, from_browser_r, stderr_r):
-                os.close(fd)
-            raise
-        finally:
-            # The browser holds its ends now (or never started); the gateway
-            # keeps only its own.
-            for fd in (to_browser_r, from_browser_w, stderr_w):
-                os.close(fd)
-        try:
-            upstream = await pipe_upstream_from_fds(from_browser_r, to_browser_w)
-        except BaseException:
-            # pipe_upstream_from_fds has closed the gateway's two ends already.
-            os.close(stderr_r)
-            await _stop_unowned(proc)
-            raise
-        self._chromium_stderr = _keep_stderr_tail(stderr_r)
+        async def spawn(sh_argv: list[str], **kwargs: Any) -> asyncio.subprocess.Process:
+            return await self._spawn(sh_argv, env=dict(self._env()), **kwargs)
+
+        proc, upstream, self._chromium_stderr = await launch_chromium_pipe(argv, spawn)
         return proc, upstream
 
     async def _launch_chromium_port(
@@ -1134,31 +1114,8 @@ class HarnessSupervisor:
         pass_fds: tuple[int, ...] = (),
         stderr: int = subprocess.DEVNULL,
     ) -> asyncio.subprocess.Process:
-        """The supervisor's one spawn: the venv's interpreter or Kiro's Chromium.
-
-        Every argv token is a module constant, a path under the data home or the
-        read-only harness prefix, or a pipe fd number the gateway chose; nothing an
-        agent says reaches it. Each child gets its own process group so
-        :func:`_stop_process` can take the tree. *stderr* applies without *pipes*.
-        """
-        kwargs: dict[str, Any] = {"env": env, "stdin": subprocess.DEVNULL}
-        if pass_fds:
-            kwargs["pass_fds"] = pass_fds
-        if pipes:
-            kwargs["stdin"] = subprocess.PIPE
-            kwargs["stdout"] = subprocess.PIPE
-            kwargs["stderr"] = subprocess.DEVNULL
-            kwargs["limit"] = WORKER_LINE_LIMIT
-        else:
-            kwargs["stdout"] = subprocess.DEVNULL
-            kwargs["stderr"] = stderr
-        if platform_compat.IS_WINDOWS:
-            kwargs["creationflags"] = (
-                platform_compat.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined,unused-ignore]
-            )
-        else:
-            kwargs["start_new_session"] = True
-        return await asyncio.create_subprocess_exec(*argv, **kwargs)
+        """The supervisor's one spawn: the venv's interpreter or Kiro's Chromium."""
+        return await spawn_child(argv, env=env, pipes=pipes, pass_fds=pass_fds, stderr=stderr)
 
     # ── Harness IPC (the daemon's own protocol, client side) ──
 
@@ -1304,6 +1261,124 @@ async def _devtools_ws_url(profile: Path) -> str | None:
     return f"ws://{_LOOPBACK}:{port}{path}"
 
 
+def chromium_argv(exe: Path, profile: Path, *, headless: bool) -> list[str]:
+    """The command line of Kiro's Chromium on *profile*, before its debugging flag."""
+    argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
+    if headless:
+        argv.append(_HEADLESS_ARG)
+    if platform_compat.effective_uid() == _ROOT_UID:
+        argv.append(_NO_SANDBOX_ARG)
+    return argv
+
+
+async def spawn_child(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    pipes: bool,
+    pass_fds: tuple[int, ...] = (),
+    stderr: int = subprocess.DEVNULL,
+) -> asyncio.subprocess.Process:
+    """The one spawn of a harness child: the venv's interpreter or Kiro's Chromium.
+
+    Every argv token is a module constant, a path under the data home or the
+    read-only harness prefix, or a pipe fd number the gateway chose; nothing an
+    agent says reaches it. Each child gets its own process group so
+    :func:`_stop_process` can take the tree. *stderr* applies without *pipes*.
+    """
+    kwargs: dict[str, Any] = {"env": env, "stdin": subprocess.DEVNULL}
+    if pass_fds:
+        kwargs["pass_fds"] = pass_fds
+    if pipes:
+        kwargs["stdin"] = subprocess.PIPE
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.DEVNULL
+        kwargs["limit"] = WORKER_LINE_LIMIT
+    else:
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = stderr
+    if platform_compat.IS_WINDOWS:
+        kwargs["creationflags"] = (
+            platform_compat.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined,unused-ignore]
+        )
+    else:
+        kwargs["start_new_session"] = True
+    return await asyncio.create_subprocess_exec(*argv, **kwargs)
+
+
+async def launch_chromium_pipe(
+    argv: list[str],
+    spawn: Callable[..., Awaitable[asyncio.subprocess.Process]],
+    *,
+    pair: Callable[[], tuple[int, int]] | None = None,
+) -> tuple[asyncio.subprocess.Process, PipeUpstream, bytearray]:
+    """Start a Chromium that speaks CDP over two pipes; no port is ever opened (POSIX).
+
+    *spawn* is the caller's own spawn, called as ``spawn(argv, pipes=False,
+    pass_fds=..., stderr=...)``. Returns the process, the gateway's end of the
+    pipes and the buffer its newest stderr bytes are kept in.
+
+    *pair* makes the two ends of each direction in place of ``os.pipe``. The
+    panel browser hands in a maker of socket pairs: a pipe can be opened a
+    second time through ``/proc/<pid>/fd/N`` by any process of the same user; a
+    socket cannot (the open fails), so nothing but the gateway and the browser
+    holds an end. Chromium reads and writes its descriptors 3 and 4 the same
+    way for either. Ends that are not pipes are moved onto 3 and 4 by
+    duplication (:data:`_PY_REMAP`), since they cannot be opened by path.
+
+    Its stderr goes to a third pipe the gateway drains for the browser's whole
+    life (:func:`_keep_stderr_tail`). The pipe is the gateway's own, not
+    asyncio's: an asyncio pipe would make reaping the browser wait for every
+    descendant that inherited it.
+    """
+    to_browser_r, to_browser_w = (pair or os.pipe)()
+    try:
+        from_browser_r, from_browser_w = (pair or os.pipe)()
+    except BaseException:
+        os.close(to_browser_r)
+        os.close(to_browser_w)
+        raise
+    stderr_r, stderr_w = os.pipe()
+    try:
+        to_browser_r = _fd_at_or_above(to_browser_r, _FIRST_SAFE_FD)
+        from_browser_w = _fd_at_or_above(from_browser_w, _FIRST_SAFE_FD)
+        remap = (
+            [sys.executable, "-I", "-S", "-c", _PY_REMAP]
+            if pair is not None
+            else [_SH, "-c", _SH_REMAP, "kirocrew-chromium"]
+        )
+        sh_argv = [
+            *remap,
+            str(to_browser_r),
+            str(from_browser_w),
+            *argv,
+            _CHROMIUM_PIPE_ARG,
+        ]
+        proc = await spawn(
+            sh_argv,
+            pipes=False,
+            pass_fds=(to_browser_r, from_browser_w),
+            stderr=stderr_w,
+        )
+    except BaseException:
+        for fd in (to_browser_w, from_browser_r, stderr_r):
+            os.close(fd)
+        raise
+    finally:
+        # The browser holds its ends now (or never started); the gateway
+        # keeps only its own.
+        for fd in (to_browser_r, from_browser_w, stderr_w):
+            os.close(fd)
+    try:
+        upstream = await pipe_upstream_from_fds(from_browser_r, to_browser_w)
+    except BaseException:
+        # pipe_upstream_from_fds has closed the gateway's two ends already.
+        os.close(stderr_r)
+        await _stop_unowned(proc)
+        raise
+    return proc, upstream, _keep_stderr_tail(stderr_r)
+
+
 def _fd_at_or_above(fd: int, floor: int) -> int:
     """Return an fd for the same file at or above *floor*; *fd* itself is closed.
 
@@ -1432,6 +1507,10 @@ async def _stop_browser(proc: asyncio.subprocess.Process | None, profile: Path) 
         await _close_browser_first(proc, profile)
     finally:
         await _stop_process(proc)
+
+
+#: The stop of a harness child, for the package's other owners of a browser.
+stop_child = _stop_process
 
 
 async def _stop_unowned(proc: asyncio.subprocess.Process, profile: Path | None = None) -> None:

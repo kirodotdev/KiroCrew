@@ -39,6 +39,8 @@ ROUTES = (
     "/api/browser/ask/answer",
     "/api/browser/media",
 )
+#: The XR page's panel routes share the slice; ``test_browser_panel_routes.py`` covers them.
+PANEL_ROUTES = ("/api/browser/panel/input", "/api/browser/panel/ask")
 RECORDING_ROUTES = (
     "/api/browser/live/{session}/recordings",
     "/api/browser/live/{session}/recordings/{turn_id}",
@@ -357,7 +359,7 @@ async def test_the_slice_binds_the_hub_to_the_owner_senders_and_registers_cleanu
     assert hub._publish == wire.publish and hub._send_frame == wire.send_frame
     assert route_slice._close_live_hub in app.on_cleanup
     posts = {r.resource.canonical for r in app.router.routes() if r.method == "POST"}
-    assert posts == set(ROUTES)
+    assert posts == set(ROUTES) | set(PANEL_ROUTES)
     # The turn replay's three reads and the media state read (aiohttp adds a HEAD beside every GET).
     gets = {r.resource.canonical for r in app.router.routes() if r.method == "GET"}
     assert gets == set(RECORDING_ROUTES) | {"/api/browser/media"}

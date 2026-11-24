@@ -13,6 +13,7 @@ import type { CardAddition, CardChange } from '../api/cards'
 import { CardRow } from './kindBodies'
 import { useCardAuthor } from './cardAuthor'
 import { fmtCardCron } from './scheduleText'
+import { agentGrantNone } from '../guide/trustRoot'
 
 /** Localized labels for the card fields the gateway names in `field`. */
 export const FIELD_LABELS: Record<string, () => string> = {
@@ -375,7 +376,7 @@ export function CardChanges({ changes }: { changes: CardChange[] }) {
         : <ChangeRow key={`${c.label}-${i}`} c={c} />))}
       {details.length > 0 && (
         <details data-card-row="" data-testid="change-card-details" className="py-2">
-          <summary className="cursor-pointer text-[12px] leading-5 text-muted hover:text-text">
+          <summary className="cursor-pointer text-[12px] leading-5 text-muted hover:text-text" {...agentGrantNone}>
             {i18nT('components.changeCards.details')}
           </summary>
           <div className="[&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border">

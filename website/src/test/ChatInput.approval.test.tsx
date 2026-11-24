@@ -5,6 +5,7 @@ vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-
 
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
+import { installPanelGuard, removePanelGuard } from './panelGuard'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
@@ -132,6 +133,26 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     await waitFor(() => expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument())
+  })
+
+  it('the message box is in no guarded region while the prompt is shown: the panel guard passes text typed there', async () => {
+    // On an XR panel text and keys go to the page's focus, and the gateway sends neither while its reader says
+    // the focus is guarded. The message box must stay outside every guarded region, or a person could not type
+    // while a tool waits; Allow once must stay inside one, or Enter on it would approve.
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(stateWithApproval()) })
+    const allow = await screen.findByRole('button', { name: /Allow once/ })
+    const reader = installPanelGuard()
+    try {
+      const box = screen.getByRole('textbox')
+      box.focus()
+      expect(document.activeElement).toBe(box)
+      expect(reader.focus()).toMatchObject({ editable: true, guarded: false })
+      allow.focus()
+      expect(reader.focus().guarded).toBe(true)
+      const reject = screen.getByRole('button', { name: /Reject/ })
+      reject.focus()
+      expect(reader.focus().guarded).toBe(false)
+    } finally { removePanelGuard() }
   })
 
   it('shows Allow once button', () => {

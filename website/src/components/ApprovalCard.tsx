@@ -11,7 +11,7 @@ import { haptic } from '../lib/haptic'
 
 import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
-import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
+import { agentGrant, agentGrantNone, guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 type ApprovalCardProps = {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
   /** False when the approval has no tool command behind it (for example, an
@@ -144,9 +144,9 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
         // text — a redundant aria-label would only override it, so only the
         // otherwise-unnamed group gets an explicit label.
         <div ref={buttonsRef} role="group" aria-label={i18nT('components.approvalCard.actions_group')} className="mt-1.5 flex gap-1.5 flex-wrap">
-          <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
+          <button className={btnClass} onClick={() => handle('approved')} {...agentGrant}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
           {showTrust && <TrustDropdown fullCommand={hasCommand ? normalized : ''} baseCommand={baseCmd} isShell={hasCommand && isShell} hasCommand={hasCommand} showTrustBase={baseDerivable !== false} trustAllLabelKey={trustAllLabelKey} trustCommandLabelKey={trustCommandLabelKey} trustBaseLabelKey={trustBaseLabelKey} labelValues={labelValues} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
-          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
+          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')} {...agentGrantNone}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}
       {/* A gone approval is status: nothing the user did failed. */}

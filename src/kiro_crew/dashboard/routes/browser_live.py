@@ -14,6 +14,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import browser_panels
 
 
 async def _close_live_hub(_app: web.Application) -> None:
@@ -44,6 +45,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/browser/input/claim", handlers.api_browser_input_claim)
     app.router.add_post("/api/browser/input/release", handlers.api_browser_input_release)
     app.router.add_post("/api/browser/input/event", handlers.api_browser_input_event)
+    # The XR page's live panels (owner-only, ``handlers/browser_panels.py``): the
+    # hand's input and the three fixed questions. Opening a panel rides ``/api/ws``.
+    app.router.add_post("/api/browser/panel/input", browser_panels.api_browser_panel_input)
+    app.router.add_post("/api/browser/panel/ask", browser_panels.api_browser_panel_ask)
+    app.on_cleanup.append(browser_panels.close_panel_hub)
     # The card's answer to a quick ask (owner-only, ``handlers/browser_ask.py``).
     app.router.add_post("/api/browser/ask/answer", handlers.api_browser_ask_answer)
     # An app page's media buttons on its own agent's tab (owner-only, ``handlers/browser_media.py``).

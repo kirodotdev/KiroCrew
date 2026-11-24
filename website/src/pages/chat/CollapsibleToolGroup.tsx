@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, memo, type ReactNode } from 'react'
+import { agentGrant } from '../../guide/trustRoot'
 import { CheckCircle, ChevronRight, Handshake, Ban, Wrench, AlertTriangle } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { purposeFromToolArgs } from '../../utils/toolPurpose'
@@ -317,8 +318,8 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
       )}
       {needsAttention && (onApprove || onApproveBatch) && !failure?.terminal && (
         <div ref={buttonsRef} className="mt-1 ml-4 pl-3 flex gap-2 flex-wrap">
-          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {isBatch ? i18nT('pages.chat.collapsibleToolGroup.approve_all', { count: pendingPermCount }) : i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
-          {canTrust && !isBatch && <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>}
+          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }} {...agentGrant}><CheckCircle className="lucide-inline" /> {isBatch ? i18nT('pages.chat.collapsibleToolGroup.approve_all', { count: pendingPermCount }) : i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
+          {canTrust && !isBatch && <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }} {...agentGrant}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>}
           <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> {isBatch ? i18nT('pages.chat.collapsibleToolGroup.reject_all', { count: pendingPermCount }) : i18nT('pages.chat.collapsibleToolGroup.reject')}</button>
         </div>
       )}

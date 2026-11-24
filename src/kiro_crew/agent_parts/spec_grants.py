@@ -385,6 +385,12 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/dashboard_types",
     "@kirocrew-panel/dashboard_write",
     "@kirocrew-panel/dashboard_save",
+    # One more hand-written field on the caller's own page (its true draft, else its
+    # own page in force; not a page it left, unless that page's artifact was renamed,
+    # described, tagged or saved again since it was last put live), saved as a draft
+    # through the save's own writer. Granted on the save's test: it reaches the same
+    # package and nothing a save cannot, and nothing is live until ``dashboard_apply``.
+    "@kirocrew-panel/dashboard_add_field",
     "@kirocrew-panel/dashboard_templates",
     "@kirocrew-panel/dashboard_preview",
     "@kirocrew-panel/dashboard_apply",

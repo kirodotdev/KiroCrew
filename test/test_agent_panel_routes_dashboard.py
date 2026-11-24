@@ -26,6 +26,7 @@ from kiro_crew import members as members_mod
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
+from kiro_crew.dashboard.handlers import agent_panel_dashboard
 
 # Bound at collection, before conftest's autouse ``gateway_posts`` swaps
 # ``mcp_core._post`` for its recorder in each test.
@@ -429,6 +430,294 @@ async def test_a_value_lands_and_an_open_dashboard_is_told(vetted, monkeypatch):
         sent = app["state"].broadcasts
         assert ("dashboard_value_written", {"slug": SLUG}) in sent, f"nothing pushed: {sent}"
         assert agent_panel.crew_key(CREW) not in json.dumps(sent)
+
+
+async def test_a_layout_write_is_answered_with_what_the_xr_room_makes_of_it(vetted, monkeypatch):
+    """D103 5: the reply to a write of `xr_layout` says what the room makes of it, in the
+    room's fixed words; a wrong layout is answered, never refused; a cleared one says
+    "no 3D dashboard"; a field no part reads adds nothing."""
+    _adopt_dashboard(monkeypatch)
+    _page_values(monkeypatch, {})
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    record = templates_pkg.instance.read(SLUG)
+    record.manifest = {
+        **record.manifest,
+        "fields": {
+            **record.manifest["fields"],
+            "xr_layout": {"type": "object", "source": {"agentic": True}},
+        },
+    }
+    layout = {
+        "v": 1,
+        "parts": [
+            {"kind": "ring", "name": "Secret words", "field": "open_items", "max": 9},
+            {"kind": "gauge", "name": "Load", "field": "open_items"},
+        ],
+    }
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        h = {"X-Session-Key": "dashboard:chat-1"}
+        resp = await c.post(WRITE_PATH, json={"field": "xr_layout", "value": layout}, headers=h)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["xr_room"] == (
+            "In the XR room this layout reads: part 1: ring, a dash: its field holds no value; "
+            "part 2: layout: unknown part."
+        )
+        assert "Secret" not in json.dumps(body)
+        cleared = await c.post(WRITE_PATH, json={"field": "xr_layout", "value": {}}, headers=h)
+        assert cleared.status == 200, await cleared.text()
+        assert (await cleared.json())["xr_room"] == "In the XR room: no 3D dashboard."
+        other = await c.post(WRITE_PATH, json={"field": "open_items", "value": 7}, headers=h)
+        assert "xr_room" not in await other.json()
+        # M75: the verdict reads what is STORED. A lamp key shaped like a credential is
+        # stored as a placeholder, which the room reads as a bad key.
+        secret_key = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+        lamps = {
+            "v": 1,
+            "parts": [{"kind": "lamps", "name": "Fleet", "field": "open_items", "key": secret_key}],
+        }
+        scrubbed = await c.post(WRITE_PATH, json={"field": "xr_layout", "value": lamps}, headers=h)
+        assert scrubbed.status == 200, await scrubbed.text()
+        body = await scrubbed.json()
+        # What the store holds is the write's own scrub (`dashboard_agentic._redacted`), which the owner's
+        # redaction setting may turn off (its default is off on some lines): the room reads THAT value.
+        from kiro_crew.dashboard_agentic import _redacted
+
+        stored = _redacted(secret_key)
+        part = (
+            "layout: bad key" if stored != secret_key else "lamps, a dash: its field holds no value"
+        )
+        assert body["xr_room"] == f"In the XR room this layout reads: part 1: {part}."
+        assert secret_key not in json.dumps(body)
+
+
+def _page_values(monkeypatch, values, calls=None):
+    """Stand in for the page's own read of its values (`_current_values`): *values* by
+    field name, or ``None`` for a read that failed. *calls* counts the reads."""
+
+    def read(_slug, _crew, _instance, _slot=""):
+        if calls is not None:
+            calls.append(1)
+        return (None if values is None else dict(values)), {}
+
+    monkeypatch.setattr(agent_panel_dashboard, "_current_values", read)
+
+
+def _declare(monkeypatch, **fields):
+    """An adopted page whose model also declares *fields* (name -> type)."""
+    _adopt_dashboard(monkeypatch)
+    import kiro_crew.dashboard_templates as templates_pkg
+
+    record = templates_pkg.instance.read(SLUG)
+    record.manifest = {
+        **record.manifest,
+        "fields": {
+            **record.manifest["fields"],
+            **{n: {"type": t, "source": {"agentic": True}} for n, t in fields.items()},
+        },
+    }
+
+
+XR_LAYOUT = {
+    "v": 1,
+    "parts": [
+        {"kind": "ring", "name": "Secret words", "field": "open_items", "max": "budget"},
+        {"kind": "number", "name": "Open", "field": "open_items", "unit": "%"},
+        {"kind": "number", "name": "Note", "field": "note"},
+        {"kind": "gauge", "name": "Load", "field": "open_items"},
+    ],
+}
+XR_FIELDS = {"xr_layout": "object", "budget": "number", "note": "string"}
+
+
+async def _write(c, field, value):
+    resp = await c.post(
+        WRITE_PATH,
+        json={"field": field, "value": value},
+        headers={"X-Session-Key": "dashboard:chat-1"},
+    )
+    assert resp.status == 200, await resp.text()
+    return await resp.json()
+
+
+async def test_the_layouts_line_says_what_each_part_shows(vetted, monkeypatch):
+    """D169: each good part's place carries what it shows now, from the page's values; a
+    wrong part keeps its reason; the layout is laid over the values it was read with."""
+    _declare(monkeypatch, **XR_FIELDS)
+    _page_values(monkeypatch, {"open_items": 12, "budget": 20, "note": "the secret words"})
+    async with TestClient(TestServer(_mounted())) as c:
+        body = await _write(c, "xr_layout", XR_LAYOUT)
+        assert body["xr_room"] == (
+            "In the XR room this layout reads: part 1: ring 12/20; part 2: number 12 %; "
+            "part 3: number, a dash: not a number; part 4: layout: unknown part."
+        )
+        # Never the Bot's own text: not a part's name, not the text a field holds.
+        assert "Secret" not in json.dumps(body) and "secret" not in json.dumps(body)
+
+
+async def test_a_layout_written_before_its_numbers_says_a_dash_for_each(vetted, monkeypatch):
+    _declare(monkeypatch, **XR_FIELDS)
+    _page_values(monkeypatch, {})
+    async with TestClient(TestServer(_mounted())) as c:
+        body = await _write(c, "xr_layout", XR_LAYOUT)
+        none = "a dash: its field holds no value"
+        assert body["xr_room"] == (
+            f"In the XR room this layout reads: part 1: ring, {none}; part 2: number, {none}; "
+            f"part 3: number, {none}; part 4: layout: unknown part."
+        )
+
+
+async def test_a_number_written_later_is_answered_for_the_parts_that_read_it(vetted, monkeypatch):
+    """D169 3: the reply to a write of a number carries the line for the parts that read
+    that field, as their own or as their limit, with THIS write's stored value; a field
+    two parts read names both; a field no part reads says nothing."""
+    _declare(monkeypatch, entries_seen="number", **XR_FIELDS)
+    _page_values(monkeypatch, {"xr_layout": XR_LAYOUT, "open_items": 3, "budget": 20})
+    async with TestClient(TestServer(_mounted())) as c:
+        body = await _write(c, "open_items", 12)
+        assert body["xr_room"] == "In the XR room: part 1: ring 12/20; part 2: number 12 %."
+        limit = await _write(c, "budget", 2)
+        assert limit["xr_room"] == "In the XR room: part 1: ring 3/2, over its limit."
+        assert "xr_room" not in await _write(c, "entries_seen", 5)
+
+
+async def test_a_wrong_value_is_answered_never_refused_and_a_text_is_never_said_back(
+    vetted, monkeypatch
+):
+    """D99 on the values' side: a value its part cannot show is stored and answered with
+    a dash and why. The text itself never comes back."""
+    _declare(monkeypatch, **XR_FIELDS)
+    _page_values(monkeypatch, {"xr_layout": XR_LAYOUT, "open_items": 3, "budget": 20})
+    async with TestClient(TestServer(_mounted())) as c:
+        body = await _write(c, "note", "the secret words 12345")
+        assert body["ok"] is True
+        assert body["xr_room"] == "In the XR room: part 3: number, a dash: not a number."
+        assert "secret" not in json.dumps(body) and "12345" not in json.dumps(body)
+        zero = await _write(c, "budget", 0)
+        assert zero["xr_room"] == (
+            "In the XR room: part 1: ring, a dash: its limit is no number above 0."
+        )
+
+
+async def test_a_page_with_no_layout_field_reads_nothing_and_says_nothing(vetted, monkeypatch):
+    """A Bot with no 3D dashboard pays no read: its page does not declare the field."""
+    _adopt_dashboard(monkeypatch)
+    calls: list[int] = []
+    _page_values(monkeypatch, {"xr_layout": XR_LAYOUT, "open_items": 3}, calls)
+    async with TestClient(TestServer(_mounted())) as c:
+        assert "xr_room" not in await _write(c, "open_items", 7)
+    assert calls == []
+
+
+async def test_a_page_whose_layout_is_not_written_or_is_no_layout_says_nothing_of_a_number(
+    vetted, monkeypatch
+):
+    _declare(monkeypatch, **XR_FIELDS)
+    async with TestClient(TestServer(_mounted())) as c:
+        for layout in ({}, None, {"v": 1, "parts": []}, "ring"):
+            _page_values(monkeypatch, {"xr_layout": layout} if layout is not None else {})
+            assert "xr_room" not in await _write(c, "open_items", 7)
+
+
+async def test_values_that_cannot_be_read_cost_the_values_only(vetted, monkeypatch):
+    """The layout's write still names each part's kind; a number's write says nothing."""
+    _declare(monkeypatch, **XR_FIELDS)
+    _page_values(monkeypatch, None)
+    async with TestClient(TestServer(_mounted())) as c:
+        body = await _write(c, "xr_layout", XR_LAYOUT)
+        assert body["xr_room"] == (
+            "In the XR room this layout reads: part 1: ring; part 2: number; part 3: number; "
+            "part 4: layout: unknown part."
+        )
+        assert "xr_room" not in await _write(c, "open_items", 7)
+
+
+async def test_two_writes_at_once_are_each_answered_with_their_own_value(vetted, monkeypatch):
+    """Each reply lays its own stored value over the page's read, so neither waits for
+    the other's to be folded: each names the number it wrote."""
+    _declare(monkeypatch, **XR_FIELDS)
+    _page_values(monkeypatch, {"xr_layout": XR_LAYOUT, "open_items": 3, "budget": 20})
+    async with TestClient(TestServer(_mounted())) as c:
+        a, b = await asyncio.gather(_write(c, "open_items", 5), _write(c, "budget", 50))
+        assert a["xr_room"] == "In the XR room: part 1: ring 5/20; part 2: number 5 %."
+        assert b["xr_room"] == "In the XR room: part 1: ring 3/50."
+
+
+async def test_the_line_is_made_off_the_event_loop_whole(vetted, monkeypatch):
+    """M175: the read of the values and the reading of the layout and of each value run
+    in the worker hop, none of it on the gateway's event loop: a value that is slow to
+    read holds no other session. Each step says which thread it ran on."""
+    import threading
+
+    from kiro_crew import dashboard_xr_layout
+
+    _declare(monkeypatch, **XR_FIELDS)
+    loop_thread = threading.current_thread()
+    ran: list[tuple[str, bool]] = []
+
+    def read(_slug, _crew, _instance, _slot=""):
+        ran.append(("values", threading.current_thread() is loop_thread))
+        return {"xr_layout": XR_LAYOUT, "open_items": 3, "budget": 20}, {}
+
+    monkeypatch.setattr(agent_panel_dashboard, "_current_values", read)
+    for name in ("verdict", "field_verdict", "part_says", "read_layout", "_plain_number"):
+        real = getattr(dashboard_xr_layout, name)
+
+        def spy(*args, _name=name, _real=real, **kwargs):
+            ran.append((_name, threading.current_thread() is loop_thread))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(dashboard_xr_layout, name, spy)
+    async with TestClient(TestServer(_mounted())) as c:
+        layout = await _write(c, "xr_layout", XR_LAYOUT)
+        assert layout["xr_room"].startswith("In the XR room this layout reads: part 1: ring 3/20")
+        number = await _write(c, "note", " 12 %")
+        assert number["xr_room"] == "In the XR room: part 3: number 12."
+    steps = {name for name, _on_loop in ran}
+    assert steps == {
+        "values",
+        "verdict",
+        "field_verdict",
+        "part_says",
+        "read_layout",
+        "_plain_number",
+    }
+    assert [name for name, on_loop in ran if on_loop] == []
+
+
+async def test_a_verdict_that_raises_never_fails_a_stored_write(vetted, monkeypatch):
+    """R1: the value is stored before the verdict is made, so a raise in it costs the
+    line only: the write is answered 200 with no `xr_room`."""
+    _adopt_dashboard(monkeypatch)
+    import kiro_crew.dashboard_templates as templates_pkg
+    from kiro_crew import dashboard_xr_layout
+
+    record = templates_pkg.instance.read(SLUG)
+    record.manifest = {
+        **record.manifest,
+        "fields": {
+            **record.manifest["fields"],
+            "xr_layout": {"type": "object", "source": {"agentic": True}},
+        },
+    }
+
+    def broken(_raw, _fields=None):
+        raise RuntimeError("the verdict broke")
+
+    monkeypatch.setattr(dashboard_xr_layout, "verdict", broken)
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "xr_layout", "value": {"v": 1, "parts": []}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["ok"] is True
+        assert "xr_room" not in body
 
 
 async def test_a_write_that_answers_a_recorded_mistake_reports_the_correction(vetted, monkeypatch):

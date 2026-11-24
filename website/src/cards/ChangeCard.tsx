@@ -13,6 +13,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import { Btn } from '../components/ui'
+import { agentGrant, agentGrantNone, AgentGrantProvider } from '../guide/trustRoot'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { fmtRelative, fmtUnit, toDate, type FormatUnit } from '../i18n/format'
@@ -273,12 +274,17 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
   const title = cardTitle(card)
 
   return (
+    // An agent raised this card, and one press on it turns the proposal on. So the whole card is a grant surface:
+    // every control in it is guarded on a surface where a press can be a slip (the XR page's live panels), and
+    // only the ones that grant nothing say so (`agentGrantNone`). A control added later is guarded until marked.
+    <AgentGrantProvider>
     <section
       ref={rootRef}
       aria-labelledby={headingId}
       data-testid="change-card"
       data-card-status={card.status}
       className={`@container ${corners} border border-border bg-card text-card-fg`}
+      {...agentGrant}
     >
       {/* The collapse animates the real height to the measured content, never
           a layout scale: a scale stretched the text and let the rows below
@@ -436,6 +442,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 onClick={cancel}
                 disabled={busy}
                 data-testid="change-card-cancel"
+                {...agentGrantNone}
               >
                 {isToolAccessCard(card)
                   ? i18nT('components.changeCards.tool_access_not_now')
@@ -448,6 +455,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 onClick={dismiss}
                 disabled={running !== null}
                 data-testid="change-card-dismiss"
+                {...agentGrantNone}
               >
                 {i18nT('components.changeCards.dismiss')}
               </Btn>
@@ -468,5 +476,6 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
       </div>
       </motion.div>
     </section>
+    </AgentGrantProvider>
   )
 }

@@ -15,6 +15,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { agentGrant } from '../guide/trustRoot'
 import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from './overlayRoot'
 import { noteInPlaceResize } from '../hooks/virtualizer/inPlaceResize'
 import { TOUCH_REPLAY_WINDOW_MS } from './InstantTip'
@@ -1438,7 +1439,7 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
               {i18nT('components.redaction.link_open_once')}
             </button>
             {allowable && !allowed && (
-              <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming('allow')}>
+              <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming('allow')} {...agentGrant}>
                 {i18nT('components.redaction.link_allow')}
               </button>
             )}
@@ -1476,7 +1477,7 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
           <Trans i18nKey="components.redaction.link_allow_confirm_body" components={[<b key="0" />, <b key="1" />]} />
           <div className="mt-2 flex flex-wrap gap-2">
             <button ref={confirming === 'allow' ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(null)}>{i18nT('components.redaction.cancel')}</button>
-            <button type="button" className={btnWarnCls} data-testid="blocked-link-allow-confirmed" onClick={() => void allow()}>{i18nT('components.redaction.link_allow_short')}</button>
+            <button type="button" className={btnWarnCls} data-testid="blocked-link-allow-confirmed" onClick={() => void allow()} {...agentGrant}>{i18nT('components.redaction.link_allow_short')}</button>
           </div>
         </div></>)}
         {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-error" message={shownError} />}

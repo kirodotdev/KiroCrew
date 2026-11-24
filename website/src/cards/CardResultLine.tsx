@@ -19,6 +19,7 @@ import { problemText, wantsRefresh, type CardProblem } from './refusals'
 import { CardChanges, changeLabel } from './CardChanges'
 import { isOneShot, oneShotWhen } from './oneShot'
 import { fmtCardCron } from './scheduleText'
+import { agentGrantNone } from '../guide/trustRoot'
 
 interface CardResultLineProps {
   card: Card
@@ -95,6 +96,7 @@ const CardResultLine = forwardRef<HTMLDivElement, CardResultLineProps>(function 
             aria-controls={detailsId}
             onClick={() => setOpen(o => !o)}
             data-testid="change-card-details"
+            {...agentGrantNone}
           >
             {i18nT('components.changeCards.details')}
             <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />

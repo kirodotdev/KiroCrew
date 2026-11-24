@@ -26,6 +26,7 @@ import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayR
 import ErrorNotice from '../../components/ErrorNotice'
 import StatusNotice from '../../components/StatusNotice'
 import { Btn } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { mintSendId, sendTurn } from '../../chat-core/transport/sendTurn'
 import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempotencyKey } from '../../api/sendRace'
@@ -394,6 +395,7 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
                 onClick={() => onDecide(ask, false)}>{t('pages.chatSidebar.needsMeCard.deny')}</Btn>
               <Btn type="button" disabled={outcome === 'pending'} className="px-2.5 py-0.5 text-[11px] font-semibold bg-ok text-ok-fg border-ok hover:bg-ok hover:brightness-110"
                 aria-label={t('pages.chatSidebar.needsMeCard.approve_aria', { tool })}
+                {...agentGrant}
                 onClick={() => onDecide(ask, true)}><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approve')}</Btn>
             </>
           )}

@@ -24,6 +24,7 @@ import { useSecondClock } from '../../hooks/useSecondClock'
 import { markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, isSpawnApprovalGone, isSpawnApprovalRetired, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../components/workflows/runModel'
@@ -497,7 +498,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       {/* Approval buttons for pending */}
       {isPending && !a.approving && goneFor !== approvalGoneKey(a.approval_id, a.approval_target) && !storeGone && (
         <div className="px-3 pb-2 flex gap-1.5">
-          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
+          <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')} {...agentGrant}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}
@@ -614,7 +615,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
       {!isResolved && !acting && !gone && (
         <div className="px-3 pb-2 flex gap-1.5">
-          <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
+          <button className={btnClass} onClick={() => onAction('approved')} {...agentGrant}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}

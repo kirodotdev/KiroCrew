@@ -727,6 +727,25 @@ const APP_WINDOWS_ROOT = fileURLToPath(new URL('./src/apps', import.meta.url))
 /** Keep in sync with `APP_WINDOW_URL_PREFIX` in `dashboard/server.py`. */
 const APP_WINDOW_URL_PREFIX = 'app-windows'
 
+/**
+ * `@pmndrs/xr` carries a desktop XR emulator (IWER, its dev UI and five room models, about 6 MB of chunks) behind a
+ * lazy import. The `/xr` page turns the emulator off (`makeXrStore` in `XrStage.tsx`), so that import never runs.
+ * This keeps its chunks out of the build, which ships inside the package.
+ */
+function xrNoEmulatorPlugin(): Plugin {
+  const stub = '\0kirocrew-xr-no-emulator'
+  return {
+    name: 'kirocrew-xr-no-emulator',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      return source === './emulate.js' && importer?.replace(/\\/g, '/').includes('/@pmndrs/xr/dist/') ? stub : null
+    },
+    load(id) {
+      return id === stub ? "export function emulate() { throw new Error('the XR emulator is not part of this build') }" : null
+    },
+  }
+}
+
 function appWindowEntries(): Record<string, string> {
   const entries: Record<string, string> = {}
   if (!existsSync(APP_WINDOWS_ROOT)) return entries
@@ -786,7 +805,7 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), xrNoEmulatorPlugin(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
@@ -1174,6 +1193,25 @@ export default defineConfig({
               name: 'vendor-dompurify',
               priority: 30,
               test: /[\\/]node_modules[\\/]dompurify[\\/]/,
+            },
+            {
+              // three.js and the pmndrs packages that draw `/xr`. The route has two
+              // views, each its own lazy chunk (the land in `XrPage`, the workspace
+              // of pages behind it), and both need all of this. Named here so the
+              // code they share is one chunk with a name that says what it is; left
+              // to automatic chunking it was named after its smallest module.
+              //
+              // Its priority is BELOW the first-load groups at the end of this list,
+              // on purpose. A group also takes what its modules depend on, and
+              // fiber depends on `use-sync-external-store`, which the first load
+              // uses too: at a higher priority this group took that module, and the
+              // first load then fetched all of three for it (measured: 12 chunks and
+              // 10.10 MB against a budget of 9.43 MB). Below them, the first load
+              // keeps what it reaches and this chunk holds only what `/xr` adds.
+              name: 'vendor-three',
+              priority: 0,
+              // The grab handles are the workspace's alone, so they stay out and ride in its own chunk.
+              test: /[\\/]node_modules[\\/](three|@react-three[\\/](fiber|xr)|@pmndrs[\\/](xr|pointer-events))[\\/]/,
             },
             {
               // Graph/network visualization stack (vis-network, vis-data, sigma,

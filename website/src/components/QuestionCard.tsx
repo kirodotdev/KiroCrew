@@ -560,10 +560,13 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
           </div>
         )}
         <div className="flex justify-end items-center gap-2">
+          {/* `data-xr-answer`: the two controls that answer the card. Crew in XR holds a press on a panel back while
+              such a control has just come or moved under it (`panel_page.ANSWER_ATTR`); nothing else reads it. */}
           {onDismiss && (
             <button
               onClick={onDismiss}
               disabled={busy}
+              data-xr-answer=""
               aria-label={i18nT('components.questionCard.dismiss_question_without_answering')}
               title={i18nT('components.questionCard.dismiss_hint')}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-transparent text-muted hover:text-text border border-border"
@@ -575,6 +578,7 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
             <button
               onClick={handleSubmit}
               disabled={!allAnswered || busy}
+              data-xr-answer=""
               className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
             >
               <MessageSquare size={14} /> {submitLabel ?? i18nT('components.questionCard.submit')}

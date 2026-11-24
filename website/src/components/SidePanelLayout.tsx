@@ -103,6 +103,9 @@ interface SidePanelLayoutProps {
    *  (segment[1] present) for basePath consumers — a second-level selection
    *  is a path segment there, not a `?sub=` param. Must not end in '/'. */
   basePath?: string
+  /** Attributes for the content pane of the active tab (a `data-` mark that covers the whole pane). The pane
+   *  element carries them itself, so the tab's content keeps the pane as its parent. */
+  paneAttrs?: (activeTab: string) => Record<string, string>
   children: (activeTab: string) => React.ReactNode
 }
 
@@ -214,7 +217,7 @@ function TabCountBadge({ badge, className = '' }: { badge?: SidePanelTab['badge'
   )
 }
 
-export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', navTop, paneOwnsHeader = false, fixedContent, basePath, children }: SidePanelLayoutProps) {
+export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', navTop, paneOwnsHeader = false, fixedContent, basePath, paneAttrs, children }: SidePanelLayoutProps) {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
@@ -673,7 +676,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             * page using either does NOT also stamp headerRight in this row. */}
           {headerRightDock === 'header' && headerRight}
         </div>}
-        <div data-testid="side-panel-pane" className={`${isMobile ? 'px-4 pt-1' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
+        <div data-testid="side-panel-pane" {...paneAttrs?.(tab)} className={`${isMobile ? 'px-4 pt-1' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
           {renderPane()}
         </div>
       </div>

@@ -80,7 +80,12 @@ deferred `/compact` acknowledgement, omits the pair (`ends_turn=False`), because
 the same turn keeps streaming after it. So a turn writer clears `slot.task` only
 after the turn's last content frame is out, hands off to a successor (queued turn
 or synthesis) without a `push_slots_update()` observing the gap, and lets
-nothing but the terminal `chat_done` follow the idle push. `_finish_queue_cycle`
+nothing but the terminal `chat_done` follow the idle push. A turn that the drain
+starts (`_start_next_queued_turn` in `chat_turn/queue_drain.py`) pushes the slots
+list once the slot holds it, as a direct send does: every socket that may see the
+slot gets that push at the turn's start, not only at its end, though a push can
+wait up to 2 s in the bundling window. It is one push, pinned by
+`test_queue_drain_pushes_running_slot.py`. `_finish_queue_cycle`
 in `chat_turn/queue_cycle.py` is the ordinary terminal step (content, `done`, clear, push,
 one `chat_done`), pinned by `test_finish_queue_cycle_terminal_order.py`.
 

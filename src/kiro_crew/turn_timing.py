@@ -1,5 +1,7 @@
 """Per-turn first-byte timing, logged when ``KIROCREW_TURN_TIMING=1``.
 
+Also on when ``<data home>/turn-timing.on`` exists at import.
+
 A bench aid for reading where a turn's time goes before its first model byte,
 under load. One
 record per top-level turn rides a context variable from the ``/api/chat``
@@ -53,7 +55,21 @@ import os
 import time
 from typing import Any
 
-ENABLED = os.environ.get("KIROCREW_TURN_TIMING", "") == "1"
+#: A file under the data home that turns timing on too, so a restart that keeps
+#: the process environment (``kirocrew restart`` execs in place) can still turn it
+#: on. Read once, at import; a plain path join, so nothing is created.
+FLAG_FILE = "turn-timing.on"
+
+
+def _flag_file_present() -> bool:
+    home = os.environ.get("KIROCREW_HOME") or os.path.join(os.path.expanduser("~"), ".kiro", "crew")
+    try:
+        return os.path.isfile(os.path.join(home, FLAG_FILE))
+    except (OSError, ValueError):
+        return False
+
+
+ENABLED = os.environ.get("KIROCREW_TURN_TIMING", "") == "1" or _flag_file_present()
 
 logger = logging.getLogger("kiro_crew.turn_timing")
 if ENABLED:

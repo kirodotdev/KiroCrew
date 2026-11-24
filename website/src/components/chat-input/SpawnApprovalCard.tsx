@@ -4,6 +4,7 @@ import { Glass } from '../Glass'
 import type { SubagentActivity } from '../../types'
 import { i18nT } from '../../i18n/t'
 import { approvalBtnClass } from './approval'
+import { agentGrant } from '../../guide/trustRoot'
 /**
  * Sub-agent spawn-approval banner — a top-level signal that one or more
  * sub-agents are queued awaiting the user's approval to run, with inline
@@ -76,6 +77,7 @@ export function SpawnApprovalCard({ pendingSpawnApprovals, hasApproval, spawnApp
                 <motion.div key="decide" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
+                    {...agentGrant}
                     onClick={() => resolveSpawnApprovals('approve')}
                     className={approvalBtnClass}
                   >
@@ -125,6 +127,7 @@ export function SpawnApprovalCard({ pendingSpawnApprovals, hasApproval, spawnApp
                         <button
                           type="button"
                           aria-label={i18nT('components.chatInput.approve_sub_agent', { name: a.task || a.agent || a.id })}
+                          {...agentGrant}
                           onClick={() => resolveOneSpawn(a, 'approve')}
                           className={approvalBtnClass}
                         >

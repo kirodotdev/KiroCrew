@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { agentGrant } from '../guide/trustRoot'
 import { SquareTerminal, ShieldAlert } from 'lucide-react'
 import Modal from './Modal'
 
@@ -75,6 +76,7 @@ export default function RunInTerminalConfirm(
                 ? 'bg-warn text-warn-fg hover:bg-warn/90'
                 : 'bg-accent text-accent-fg hover:bg-accent-hover'
             }`}
+            {...agentGrant}
             onClick={onConfirm}
           >
             {willCopy

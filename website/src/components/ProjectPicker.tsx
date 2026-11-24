@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, RefObject, type Reac
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { OverlayPortal } from './overlayRoot'
+import { useAgentGrantAttrs } from '../guide/trustRoot'
 import { FolderOpen, FolderSearch, ChevronRight, ChevronLeft, Clock, Search, Star } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
@@ -210,6 +211,9 @@ interface Props {
 }
 
 export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, errorHandoff = false, startPath = '', footer }: Props) {
+  // Opened from a grant surface (the chat composer's project chip): the popover portals out of it, so it carries
+  // the surface's mark itself.
+  const grantAttrs = useAgentGrantAttrs()
   const [tab, setTab] = useState<'favorites' | 'recent' | 'browse'>('recent')
   // Focus inside the caller's footer (a field of its own) disarms the list navigators:
   // their document-capture listeners claim Enter and Tab, which would pick a project and
@@ -821,7 +825,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
 
   return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
-    <div ref={bindDrop} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    <div ref={bindDrop} onKeyDown={isolateKeys} {...grantAttrs} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2

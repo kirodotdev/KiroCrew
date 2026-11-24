@@ -38,6 +38,47 @@ export const guideTrustRoot = { [GUIDE_TRUST_ROOT_ATTR]: '' } as const
 /** Spread onto a control that removes something (see the module comment). */
 export const guideCaution = { [GUIDE_CAUTION_ATTR]: '' } as const
 
+/**
+ * Marks a control by whether pressing it grants an agent permission: `yes` on one that does (Allow once, Approve,
+ * every Trust and override choice), `no` on one that sits inside a trust-root region and grants nothing (Reject).
+ * A surface where a press can be a slip reads it and does not pass a plain press on a `yes` control: the XR page's
+ * live panels, where a stray pinch must never approve (`browser_harness/panel_page.py` on the gateway reads this
+ * attribute by name). The nearest mark wins; with none, a trust-root region counts as `yes`.
+ */
+export const AGENT_GRANT_ATTR = 'data-agent-grant'
+/** Spread onto a control that grants an agent permission. */
+export const agentGrant = { [AGENT_GRANT_ATTR]: 'yes' } as const
+/** Spread onto a control inside a trust-root region that grants nothing. */
+export const agentGrantNone = { [AGENT_GRANT_ATTR]: 'no' } as const
+
+const AgentGrantContext = createContext<'yes' | 'no' | null>(null)
+
+/**
+ * A surface whose controls grant an agent something unless one says otherwise: a card that an agent raised (a
+ * proposed change, a question that lets it go on), or a Settings tab that holds such controls. The whole surface
+ * is marked `yes` at its root, and only the controls in it that grant nothing are marked `no`, so a control that is
+ * added later is guarded until someone marks it. What the surface renders through a portal (a menu, a popover, a
+ * dialog) carries the mark too, as a trust-root region's portals do.
+ */
+export function AgentGrantRegion({ children }: { children?: ReactNode }) {
+  return createElement(AgentGrantContext.Provider, { value: 'yes' }, createElement('div', { className: 'contents', ...agentGrant }, children))
+}
+
+/**
+ * The same for a surface that draws its own root element: wrap its content, and spread `agentGrant` on the root.
+ * `on={false}` is for a root that is a grant surface only some of the time (a Settings pane, by its tab): the
+ * content then renders outside any surface, whatever stands above it.
+ */
+export function AgentGrantProvider({ children, on = true }: { children?: ReactNode; on?: boolean }) {
+  return createElement(AgentGrantContext.Provider, { value: on ? 'yes' : null }, children)
+}
+
+/** The grant mark a portalled primitive spreads onto its content: present inside a grant surface only. */
+export function useAgentGrantAttrs(): Partial<Record<typeof AGENT_GRANT_ATTR, 'yes' | 'no'>> {
+  const grant = useContext(AgentGrantContext)
+  return grant ? { [AGENT_GRANT_ATTR]: grant } : {}
+}
+
 const GuideTrustRootContext = createContext(false)
 
 /** Everything rendered under it, portals included, is part of a trust-root region. */
@@ -58,9 +99,14 @@ export function useGuideTrustRoot(): boolean {
   return useContext(GuideTrustRootContext)
 }
 
-/** The marker a portalled primitive spreads onto its content: present inside a trust-root region only. */
-export function useGuideTrustRootAttrs(): Partial<typeof guideTrustRoot> {
-  return useGuideTrustRoot() ? guideTrustRoot : {}
+/**
+ * The markers a portalled primitive spreads onto its content: the trust-root marker inside a trust-root region, and
+ * the grant mark inside a grant surface (`AgentGrantRegion`). One hook for both, so every primitive that already
+ * re-emits the first re-emits the second.
+ */
+export function useGuideTrustRootAttrs(): Partial<typeof guideTrustRoot> & Partial<Record<typeof AGENT_GRANT_ATTR, 'yes' | 'no'>> {
+  const grant = useAgentGrantAttrs()
+  return useGuideTrustRoot() ? { ...guideTrustRoot, ...grant } : grant
 }
 
 /**

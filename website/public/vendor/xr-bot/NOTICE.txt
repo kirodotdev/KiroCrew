@@ -1,0 +1,16 @@
+ghost.glb: the Bot body of the /xr page (second body).
+
+Every point in this file was worked out by code from one input: the outline of the
+Kiro ghost mark, website/src/assets/kiro-ghost-mark.svg, which is this repository's
+own art. The code that worked it out (a sculpting script and the modules beside it)
+is not in this repository; the file is its whole output.
+
+No model, no scan and no other party's data went into the file. It holds no texture
+and no picture. So it carries no licence of its own beyond this repository's.
+
+The things a Bot can wear (the file's second scene, "wardrobe") were shaped by the
+same code after the dashboard's own avatar art, website/src/lib/kiroGhostAvatar.ts.
+
+Tools that ran while it was made. None of them is in the file:
+  Python 3.12 (PSF-2.0), NumPy 2.5.5 (BSD-3-Clause), SciPy 1.18.1 (BSD-3-Clause),
+  Pillow 13.0.0 (MIT-CMU).

@@ -63,6 +63,15 @@ describe('CrewApprovalCards (owner decision B)', () => {
     expect(screen.getAllByTestId('crew-approval-card')).toHaveLength(1)
   })
 
+  it('marks Approve and Trust as controls that grant an agent something, and Reject not: an XR page passes no plain press to the first two', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root', workers: [{ key: 'w1', summary: 'Fix the build', group: 'approval' }] })
+    await renderCards([{ key: 'root', crew_mode_root: true }, waiting('w1')])
+    const card = screen.getByTestId('crew-approval-card')
+    expect(within(card).getByRole('button', { name: 'Approve' })).toHaveAttribute('data-agent-grant', 'yes')
+    expect(within(card).getByRole('button', { name: 'Trust this crew member' })).toHaveAttribute('data-agent-grant', 'yes')
+    expect(within(card).getByRole('button', { name: 'Reject' }).closest('[data-agent-grant]')).toBeNull()
+  })
+
   it("keeps each card's task line from the last read when a re-read fails, and says the read failed", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const store = createTestStore({ dashboard: { slots: [{ key: 'root', crew_mode_root: true }, waiting('w1')] } } as never)

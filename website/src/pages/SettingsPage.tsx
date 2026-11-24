@@ -89,7 +89,8 @@ import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
-import { GuideTrustRootRegion } from '../guide/trustRoot'
+import { agentGrant, AgentGrantProvider, GuideTrustRootRegion } from '../guide/trustRoot'
+import { SETTINGS_TABS_THAT_GRANT_NOTHING } from './settings/grantTabs'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
 // which runs per render — rather than at module load. Translating them at module
@@ -106,7 +107,7 @@ import { GuideTrustRootRegion } from '../guide/trustRoot'
  * The group headers double as the grouping KEY (SidePanelLayout starts a new
  * header whenever this string changes), so they are resolved here too.
  */
-function buildTabs() {
+export function buildTabs() {
   const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
@@ -362,8 +363,11 @@ export default function SettingsPage() {
       navTop={<SettingsSearch />}
       headerRight={<SettingsSearch />}
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
+      // A tab's content pane is a grant surface as a whole unless the tab is known to grant nothing: the pane
+      // carries the mark, and the provider below carries it onto what the tab opens through a portal.
+      paneAttrs={tab => (SETTINGS_TABS_THAT_GRANT_NOTHING.has(tab) ? {} : agentGrant)}
     >
-      {tab => <CardFrameContext.Provider value="grouped">
+      {tab => <AgentGrantProvider on={!SETTINGS_TABS_THAT_GRANT_NOTHING.has(tab)}><CardFrameContext.Provider value="grouped">
         <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
@@ -461,7 +465,7 @@ export default function SettingsPage() {
             <AboutPanel />
           </Suspense>
         )}
-      </CardFrameContext.Provider>}
+      </CardFrameContext.Provider></AgentGrantProvider>}
     </SidePanelLayout>
   )
 }

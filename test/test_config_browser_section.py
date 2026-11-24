@@ -91,6 +91,29 @@ class TestDefaults:
         assert BrowserConfig.from_raw({"isolation": "private"}).isolation == "shared"
         assert sum("browser.isolation" in r.getMessage() for r in caplog.records) == 1
 
+    def test_live_pages_in_xr_are_off_unless_set_to_true(self):
+        assert KiroCrewConfig().browser.xr_pages is False
+        assert BrowserConfig.from_raw({}).xr_pages is False
+        assert BrowserConfig.from_raw({"xr_pages": "true"}).xr_pages is False
+        assert BrowserConfig.from_raw({"xr_pages": 1}).xr_pages is False
+        assert BrowserConfig.from_raw({"xr_pages": True}).xr_pages is True
+
+    def test_starting_the_xr_browser_on_a_host_that_lets_processes_attach_is_off_by_default(
+        self,
+    ) -> None:
+        name = "xr_pages_accept_same_user_attach"
+        assert KiroCrewConfig().browser.xr_pages_accept_same_user_attach is False
+        assert BrowserConfig.from_raw({}).xr_pages_accept_same_user_attach is False
+        assert BrowserConfig.from_raw({name: "true"}).xr_pages_accept_same_user_attach is False
+        assert BrowserConfig.from_raw({name: True}).xr_pages_accept_same_user_attach is True
+
+    def test_the_guard_of_the_xr_pages_is_off_unless_set_to_true(self) -> None:
+        name = "xr_pages_guarded"
+        assert KiroCrewConfig().browser.xr_pages_guarded is False
+        assert BrowserConfig.from_raw({}).xr_pages_guarded is False
+        assert BrowserConfig.from_raw({name: "true"}).xr_pages_guarded is False
+        assert BrowserConfig.from_raw({name: True}).xr_pages_guarded is True
+
     def test_the_enums_are_the_contract_values(self):
         assert BROWSER_CHOICES == ("auto", "user_chrome", "kiro_chromium", "headless")
         assert LIVE_QUALITIES == ("auto", "high", "medium", "low")
@@ -197,6 +220,9 @@ class TestRoundTrip:
             "choice": "kiro_chromium",
             "isolation": "shared",
             "report_changes": False,
+            "xr_pages": False,
+            "xr_pages_accept_same_user_attach": False,
+            "xr_pages_guarded": False,
             "live": {"enabled": True, "quality": "medium", "max_fps": 30, "mask_passwords": True},
             # Unset: ``None`` and ``[]`` both mean "follow the edition's default".
             "credentials": {"enabled": None, "domains": []},

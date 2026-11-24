@@ -15,11 +15,12 @@
  *                 checked against a working preview, where it must not read as
  *                 an error.
  *
- * Both servers bind every interface rather than `127.0.0.1`: the panel's
- * cookie-isolation swap rewrites a preview host equal to the dashboard's onto
- * the other loopback alias, and a server bound to IPv4 only would then be
- * unreachable at `localhost` when that resolves to `::1` -- which the panel
- * would correctly report as a dead server, capturing the wrong state.
+ * Both servers bind the loopback addresses only, `127.0.0.1` and, where the
+ * host has it, `::1` on the same port: the panel's cookie-isolation swap
+ * rewrites a preview host equal to the dashboard's onto the other loopback
+ * alias, and a server bound to IPv4 only would then be unreachable at
+ * `localhost` when that resolves to `::1` -- which the panel would correctly
+ * report as a dead server, capturing the wrong state.
  *
  * The probes assert the hint is present, that a frame element really is on
  * screen beside it, and that its link carries the pristine target address, so a
@@ -84,14 +85,21 @@ const PAGE_HTML = `<!doctype html><html><head><meta charset="utf-8">
  *  either loopback alias reaches it (see the header comment). */
 function servePage(deny) {
   return new Promise(resolve => {
-    const srv = createServer((req, res) => {
+    const answer = (req, res) => {
       const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
       if (deny) headers['x-frame-options'] = 'DENY'
       res.writeHead(200, headers)
       const port = srv.address().port
       res.end(req.method === 'HEAD' ? '' : PAGE_HTML.replace('PORT_HERE', String(port)))
+    }
+    const srv = createServer(answer)
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port
+      // The same port on the IPv6 loopback; a host without it, or with the port taken there, goes on without.
+      const v6 = createServer(answer)
+      v6.on('error', () => resolve({ srv, port }))
+      v6.listen(port, '::1', () => { srv.on('close', () => v6.close()); resolve({ srv, port }) })
     })
-    srv.listen(0, () => resolve({ srv, port: srv.address().port }))
   })
 }
 

@@ -27,6 +27,7 @@ import { i18nT } from '../i18n/t'
 import { errMessage } from '../utils/thunkError'
 import { fmtDateFields, fmtDateTime, fmtNumber } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
+import { AgentGrantRegion } from '../guide/trustRoot'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import type { UseQueryResult } from '@tanstack/react-query'
 import type {
@@ -491,7 +492,11 @@ export function ArtifactDetailPageBody({
       {/* Publish panel — toggled by the Publish toolbar button */}
       {showPublish && artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
         <div className="mb-3">
-          <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
+          {/* Publishing sends the artifact to a host outside this machine and cannot be taken back by a second
+              press, so a surface where a press can be a slip holds the whole panel back. */}
+          <AgentGrantRegion>
+            <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
+          </AgentGrantRegion>
         </div>
       )}
 

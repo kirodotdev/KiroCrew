@@ -7,9 +7,10 @@ name**, such as `widgets.reset`) and how long its request and response shape is
 promised (a **tier**). This spec says where a label is recorded and how to pick its
 two parts.
 
-**No route is labelled yet.** The table is empty, and every route registered today is
-listed in a baseline instead. What exists is the mechanism: a new route must come
-with a label, and the baseline may only shrink.
+**Routes older than the table are not labelled yet.** They are listed in a baseline
+instead. A new route must come with a label, and the baseline may only shrink. The
+first entry is `POST /api/agent-panel/dashboard/add-field` (`dashboard.add_field`,
+`unstable`).
 
 The labels are a record. No request reads them, and they do not decide which caller
 may call a route: each route's own checks do that, unchanged.

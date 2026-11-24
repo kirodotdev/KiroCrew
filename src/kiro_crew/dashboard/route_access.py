@@ -2,7 +2,7 @@
 
 A :class:`RouteAccess` says what a route does (for example ``widgets.reset``) and how long its
 request and response shape is promised. :data:`ROUTES` records the labels, keyed by
-method and path pattern. It is empty: no route is labelled yet.
+method and path pattern. Routes older than the table are not labelled yet.
 
 The table is separate from route registration on purpose. One handler can serve two
 routes, so a label on the handler would be ambiguous, and registration runs on the
@@ -53,4 +53,7 @@ class RouteAccess:
 # Keyed by (METHOD, path pattern). The pattern is the route's canonical path: the path
 # as registered, with any regex dropped from a ``{name:regex}`` segment. A HEAD route
 # registered beside a GET route of the same path takes the GET route's entry.
-ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {}
+ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
+    # The audit operation is ``dashboard_add_field``; the shape is new.
+    ("POST", "/api/agent-panel/dashboard/add-field"): RouteAccess("dashboard.add_field", UNSTABLE),
+}

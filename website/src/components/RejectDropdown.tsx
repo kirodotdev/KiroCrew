@@ -5,6 +5,7 @@ import {
 } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
+import { agentGrantNone } from '../guide/trustRoot'
 
 interface RejectDropdownProps {
   disabled?: boolean
@@ -63,12 +64,14 @@ export default function RejectDropdown({ disabled, className, takesReason = fals
           disabled={disabled}
           className={className}
           aria-label={i18nT('components.chatInput.reject')}
+          {...agentGrantNone}
         >
           <Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}
           <ChevronDown size={10} className="shrink-0 opacity-70" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="end" className="min-w-[240px] max-w-[min(420px,calc(100vw-2rem))]">
+      {/* A rejection grants nothing, also where the prompt it belongs to is a trust-root region. */}
+      <DropdownMenuContent side="top" align="end" className="min-w-[240px] max-w-[min(420px,calc(100vw-2rem))]" {...agentGrantNone}>
         {takesReason && (
           <div className="px-2 pt-1.5 pb-1">
             {/* Typed keys stay in the box: the menu's type-to-select would

@@ -72,3 +72,31 @@ export function handleDashboardFields(data: unknown): void {
     }
   }
 }
+
+/** A listener for "a crewmate's dashboard PAGE changed" (a page applied, a version rolled back), by slug. */
+type PageListener = (slug: string) => void
+
+const pageListeners = new Set<PageListener>()
+
+/** Listen for the frames that say a crewmate's page itself changed. Returns its own disposer.
+ *
+ *  For a reader that keeps the page's own facts (which package is in force, which fields it declares) and must
+ *  not re-read them on every value the crewmate writes: the tab's query is refreshed by both kinds of frame,
+ *  this is told of the page's kind alone. */
+export function subscribeDashboardPage(fn: PageListener): () => void {
+  pageListeners.add(fn)
+  return () => { pageListeners.delete(fn) }
+}
+
+/** Hand one `dashboard_instance_changed` frame to the page listeners. Read defensively, like the field frames. */
+export function handleDashboardPageChanged(data: unknown): void {
+  const slug = (data ?? {}) as { slug?: unknown }
+  if (typeof slug.slug !== 'string' || !slug.slug) return
+  for (const fn of Array.from(pageListeners)) {
+    try {
+      fn(slug.slug)
+    } catch {
+      // One listener's throw must not cost another's.
+    }
+  }
+}

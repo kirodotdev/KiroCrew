@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useContext, type ReactNode } from 'react'
+import { agentGrant } from '../guide/trustRoot'
 import { useQuery, QueryClientContext } from '@tanstack/react-query'
 import { SquareTerminal, Check, ClipboardCheck, AlertCircle } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
@@ -210,6 +211,7 @@ function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: 
       <button
         className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
         onClick={askToRun}
+        {...agentGrant}
         title={i18nT('components.runInTerminalBtn.run_in_terminal')}
         aria-label={i18nT('components.runInTerminalBtn.run_in_terminal')}
       >

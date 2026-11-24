@@ -14,6 +14,7 @@ import type { ChatSlot, PendingApproval } from '../../types'
 import { approvalTitle } from '../../pages/chat/command-center/model'
 import { ApprovalInputText } from '../ApprovalInputText'
 import { mateRootOf } from '../../lib/crewMode'
+import { agentGrant } from '../../guide/trustRoot'
 
 /** One request's identity: its worker, origin, request id and delivery
  *  (`request_mid` for a native request, `request_instance` for a coordinator
@@ -169,7 +170,8 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
           <h3 id={headingId} className="flex-1 min-w-0 text-[13px] truncate" title={`${title}: ${call}`}>
             <span className="font-semibold">{title}</span><span className="text-muted">: </span><span>{call}</span>
           </h3>
-          <button type="button" className={`${small} bg-accent text-accent-fg border-accent`} disabled={busy} onClick={() => decide('approve')}>{i18nT('components.crewMode.approval_approve')}</button>
+          {/* Approve and Trust let a worker's tool call run: on an XR page a plain pinch or tap is not passed to them. */}
+          <button type="button" {...agentGrant} className={`${small} bg-accent text-accent-fg border-accent`} disabled={busy} onClick={() => decide('approve')}>{i18nT('components.crewMode.approval_approve')}</button>
           <button type="button" className={`${small} border-border hover:bg-bg-hover`} disabled={busy} onClick={() => decide('reject')}>{i18nT('components.crewMode.approval_reject')}</button>
         </div>
         <div className="flex items-start gap-3 pl-[22px] text-[11px] text-muted">
@@ -185,7 +187,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
             )}
           </details>
           {approval.trust_grantable === '1' && (
-            <button type="button" className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
+            <button type="button" {...agentGrant} className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
               title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.conductor_mode_trust')}</button>
           )}
         </div>
@@ -246,7 +248,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
       />
       {/* The two answers to THIS request in one row (primary + secondary). */}
       <div className="flex flex-wrap gap-2">
-        <Btn primary className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('approve')}>
+        <Btn primary {...agentGrant} className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('approve')}>
           {i18nT('components.crewMode.approval_approve')}
         </Btn>
         <Btn className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('reject')}>
@@ -257,7 +259,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
           grants written beside it, read by everyone and not only on hover. */}
       {approval.trust_grantable === '1' && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="crew-approval-trust-row">
-          <Btn className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('trust')} aria-describedby={trustHintId}>
+          <Btn {...agentGrant} className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('trust')} aria-describedby={trustHintId}>
             {tree === 'mate' ? i18nT('components.mateWorkers.trust') : i18nT('components.crewMode.approval_trust')}
           </Btn>
           <p id={trustHintId} className="text-[11px] text-muted min-w-0 flex-1 basis-40">{trustHint}</p>

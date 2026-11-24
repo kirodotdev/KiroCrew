@@ -241,6 +241,7 @@ SKIP_SUFFIXES = (
     ".pdf",
     ".zip",
     ".gz",
+    ".glb",
 )
 SKIP_PATHS = (
     "package-lock.json",

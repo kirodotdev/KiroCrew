@@ -156,6 +156,8 @@ const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
 const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
 const MigrationPage = lazyPage(() => import('./pages/MigrationRoute'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
+// The crew for XR glasses. Lazy, so the 3D library loads only for someone who opens it.
+const XrPage = lazyPage(() => import('./pages/xr/XrPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -400,6 +402,7 @@ const MainRoutes = memo(function MainRoutes() {
       <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />
       <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
       <Route path="/deploy" element={<ArtifactDeployPage />} />
+      <Route path="/xr" element={<ErrorBoundary><XrPage /></ErrorBoundary>} />
       {/* Builtin app routes — auto-discovered from registry. React Router v6
           ranks static paths higher than parameterized ones, so /settings, /agents
           etc. still match first. Unrecognized paths fall through to /chat.

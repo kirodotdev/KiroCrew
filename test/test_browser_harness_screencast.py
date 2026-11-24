@@ -1115,3 +1115,27 @@ async def test_a_restart_whose_card_goes_during_the_stop_leaves_the_cast_stopped
     await stream.restart()
     assert stream.casting is False
     assert len(relay.methods("Page.startScreencast")) == starts
+
+
+@pytest.mark.asyncio
+async def test_a_sink_that_fails_again_and_again_gets_two_frames_a_second() -> None:
+    stream, relay, clock, _sink = make_stream()
+    calls: list[int] = []
+
+    class Raises:
+        async def frame(self, _header: Any, _blob: bytes) -> None:
+            calls.append(1)
+            raise ConnectionResetError("Cannot write to closing transport")
+
+    stream.sink = Raises()
+    await stream.start()
+    best = stream.rung
+    start = clock.now
+    for i in range(20):
+        await stream._on_event(frame_event(make_jpeg(1280, 800, 512 + i)))
+    # Every frame is acked, so the browser is never left waiting; none sooner than
+    # half a second after the last; and the ladder, which was told of none, is where it was.
+    assert len(calls) == 20 and len(relay.methods("Page.screencastFrameAck")) == 20
+    # The first two find the grid at rest; from the third on, one each half second.
+    assert clock.now - start >= 18 * sc.FAILED_FRAME_PERIOD_S
+    assert stream.rung == best and stream.metrics.frames == 0

@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { ChevronDown, ExternalLink, Globe, Hand, History, Lock, Maximize, Minimize, Play } from 'lucide-react'
 
 import { Btn } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
@@ -251,7 +252,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
           {turn && <span className="hidden md:inline text-[12px] text-muted truncate min-w-0 ml-auto">{browserLabel(turn.browser, turn.headless)}</span>}
         </div>
         {mode === 'live' && (inControl ? (
-          <Btn primary onClick={() => release()} className="whitespace-nowrap shrink-0" data-testid="browser-live-stage-hand-back">
+          <Btn primary onClick={() => release()} className="whitespace-nowrap shrink-0" data-testid="browser-live-stage-hand-back" {...agentGrant}>
             {i18nT('pages.chat.browserLiveCard.hand_back')}
             <kbd className="ml-0.5 rounded border border-accent-fg/40 px-1 py-px font-sans text-[10px] leading-4">Esc</kbd>
           </Btn>

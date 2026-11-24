@@ -482,6 +482,8 @@ export interface ChatSlot extends TurnIdentityFields {
   /** The interrupted turn ended on a sign-in error with nothing after it
    * (`newest_error_is_sign_in`), so the sidebar row names the sign-in first. */
   interrupted_by_sign_in?: boolean
+  /** The cut is old (`slot_projection.is_interruption_stale`): still `interrupted`, but left out of the bulk Resume. */
+  interrupted_stale?: boolean
   /** A loop wake is opening the running turn and its row is not in the
    * transcript yet (a structured monitor writes it only once the runner
    * accepts the turn). Only ever true while `running`; absent from an older

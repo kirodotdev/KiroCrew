@@ -1556,6 +1556,58 @@ redactor would mask is refused too, before anything is written — every one of
 those names is a join key, so a masked name would break the page rather than
 protect it.
 
+A Bot adds one hand-written field to its own page through a route of its own: the
+`dashboard_add_field` MCP tool and `POST /api/agent-panel/dashboard/add-field`
+(`kiro_crew.dashboard.handlers.agent_panel_add_field`). It is under the same
+prefix and behind the same caller gate as the save, and it writes through the
+save's own writer (`agent_panel_dashboard._store_bound_package`: the write gate,
+the save lock, the fenced update, the page check), so it reaches nothing a save
+cannot. The body is four strings under a closed schema: `name`, `type`, `label`,
+`description`. The field's `source` is always `{"agentic": true}`.
+
+- **One source, whole.** The field is added to one page: its model, view, theme
+  and widgets together. Which page:
+  - his **true draft**, when there is one: the stored package, if it was never
+    put in force. The record says so (`instance_applied.applied_pages`): no version it
+    keeps pins the package's bytes, or the package was written after the last
+    version that does;
+  - else **his own page in force**, whole: the stored package when it is that
+    page, and otherwise the pinned snapshot, written as the new stored package.
+    A stored page he **left** (by a rollback, or by applying a template after it)
+    is not the source, so one add and one `dashboard_apply` do not bring it back,
+    unless its artifact was renamed, described, tagged or saved again since the
+    page was last put live (while it was still live, or after he left it): any
+    of those moves the artifact's `updated_at`, the page then reads
+    as written after the last version that pins it, and the add takes it as a
+    true draft (an open hole, not a rule). It stays in the artifact's history;
+  - with a shipped template in force and no true draft: refused, `template_live`.
+
+  Where the record cannot tell, the add is refused and writes nothing; it never
+  falls back to either page: `history_before_pins` (the record has no `package`
+  key and a person cut the stored version) and `history_not_kept` (the stored
+  package was written before the oldest version the record can answer for: 20
+  are kept). A page written at that version's time or later is tellable. Both
+  sentences name the one way on: `dashboard_save` the page once, then add.
+  The page is read inside the save lock, so two adds, or an add and a save, run
+  one after the other. The reply's `onto` is `draft` or `live` and `note` is the
+  matching fixed sentence, because `dashboard_apply` puts the whole stored page
+  live.
+- **One read, one token, one write.** The add reads the stored record once, with
+  its `content_token`, builds the page from that read and fences its write on
+  that token (`_write_composed`): it makes no second read. A write by another
+  route between the two (the artifact route takes no save lock) is met by the
+  store's own `ArtifactConflictError`; the add then writes nothing and answers
+  `page_changed`. It does not try again by itself. A save is another shape: it
+  replaces the stored page with the body's, and fences on the one read it makes.
+- **A draft.** Nothing is live until `dashboard_apply`.
+- **Fixed words.** Every refusal is one sentence of
+  `agent_panel_add_field.REFUSALS`. The reply and the log carry those words, the
+  field's name once it passed the name rule, a type from the catalog, the
+  package slug and numbers. The label, the description, an unknown key and a
+  store's own failure text are never repeated.
+- **Types.** The catalog's types that need no key of their own; an `enum` needs
+  `choices` and goes through the save.
+
 The save then runs a page written as `view.html` once, offline
 (`dashboard_verify.verify_page`, reached through
 `member_dashboard_fields.verify_package_page`) and returns the outcome as the reply's

@@ -16,6 +16,43 @@ export type { BrowserInputEvent }
 
 export interface BrowserLiveOk { ok: boolean }
 
+/** What a hand does on a live panel of the XR page. `x` and `y` are CSS pixels of the page. */
+export type BrowserPanelEvent =
+  /** `grants`: on a click on an ask's panel, where the XR page last heard the controls that answer an ask are ([x, y, w, h] each). */
+  /**
+   * `aimed`: on a click, the box of the control that the XR page saw at that place in the picture he aimed at, then
+   * its label when it has one (at most 80 characters), or `null` for none there (omitted when it did not see).
+   */
+  | { type: 'mouse'; action: 'move' | 'click'; x: number; y: number; grants?: number[][]; aimed?: (number | string)[] | null }
+  | { type: 'wheel'; x: number; y: number; dx: number; dy: number }
+  | { type: 'text'; text: string }
+  | { type: 'key'; key: string }
+  | { type: 'leave' }
+
+/** The thing a pinch at a point of the page would take. `guarded`: it grants an agent permission, so a plain pinch is not sent. */
+export interface BrowserPanelTarget { rect: [number, number, number, number]; kind: 'button' | 'text' | ''; label: string; guarded: boolean }
+
+/** Where the page's focus is after a press: in a field that takes text or not, and whether inside a guarded surface. */
+export interface BrowserPanelFocus { editable: boolean; guarded: boolean }
+
+export interface BrowserPanelInputAnswer extends BrowserLiveOk {
+  sent?: number
+  guarded?: boolean
+  /** A picker that the browser draws by itself was open: the press was not sent, and the picker was closed. */
+  picker?: boolean
+  /** The controls that answer an ask stand elsewhere than the press said: it was not sent, and `grants` says where they are now. */
+  moved?: boolean
+  grants?: number[][]
+  /** The page could not say where those controls are: the press was not sent. */
+  unread?: boolean
+  /** The tab's connection was cut while it was sent: `sent` commands reached the page, the rest did not. */
+  lost?: boolean
+  /** The control at the press's place is another one, or stands elsewhere, than in the picture he aimed at: not sent. */
+  stale?: boolean
+  target?: BrowserPanelTarget | null
+  focus?: BrowserPanelFocus | null
+}
+
 /** What the person says as they hand back; either part may be left out. */
 export interface BrowserHandbackSaid { note?: string; choice?: string }
 export interface BrowserLiveRelease extends BrowserLiveOk { delivered?: '' | 'agent' | 'chat' }
@@ -55,6 +92,13 @@ export function createBrowserLiveEndpoints({ get, post, j }: ClientTransport) {
       /** One mouse, wheel or key event, in frame pixels. Never logged on either side. */
       browserInputEvent: (sessionKey: string, event: BrowserInputEvent) =>
         post('/api/browser/input/event', { session_key: sessionKey, event }).then(j) as Promise<BrowserLiveOk>,
+      /** One event of a hand on a live panel of the XR page, in the page's CSS pixels. Owner-only,
+       *  and only for a panel this sign-in opened. Never logged on either side. */
+      browserPanelInput: (panel: string, event: BrowserPanelEvent) =>
+        post('/api/browser/panel/input', { panel, event }).then(j) as Promise<BrowserPanelInputAnswer>,
+      /** What is under a point of a live panel's page, where its focus is, or its state. */
+      browserPanelAsk: (panel: string, question: 'target' | 'focus' | 'state', x = 0, y = 0) =>
+        post('/api/browser/panel/ask', { panel, question, x, y }).then(j) as Promise<{ ok: boolean; answer: unknown }>,
       /** Focus the real browser window, for what the frame cannot carry (autofill, file pickers). */
       browserLiveOpenInBrowser: (sessionKey: string) =>
         post('/api/browser/live/open-in-browser', { session_key: sessionKey }).then(j) as Promise<BrowserLiveOk>,

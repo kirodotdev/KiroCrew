@@ -45,6 +45,7 @@ vi.mock('../../hooks/useAvailableModels', () => ({
 import CrewProfileSettings from './CrewProfileSettings'
 import { ProfilePagePushContext, type ProfilePagePush } from './CrewProfilePanel'
 import { isTrustRootTarget } from '../../guide/findTargetPolicy'
+import { AGENT_GRANT_ATTR } from '../../guide/trustRoot'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 
@@ -704,6 +705,15 @@ describe('CrewProfileSettings Dynamic capabilities preview', () => {
         rows?.map((r) => ({ ...r, dynamic_capabilities: false })))
     })
     await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('false'))
+  })
+
+  it('marks both switches as grants, so a panel of the XR page sends no plain press on one', async () => {
+    setup(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    const send = within(screen.getByTestId('crew-profile-dashboard-card-send')).getByRole('switch')
+    for (const el of [sw(), send]) expect(el.closest(`[${AGENT_GRANT_ATTR}]`)?.getAttribute(AGENT_GRANT_ATTR)).toBe('yes')
+    // The rows around them carry no mark: a tap on a picker row is not a grant.
+    expect(screen.getByTestId('crew-profile-settings').hasAttribute(AGENT_GRANT_ATTR)).toBe(false)
   })
 
   it('is off for a new crewmate and carries a Preview tag', async () => {

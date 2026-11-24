@@ -29,6 +29,7 @@ import { withMemorySource } from '../../utils/agentLabel'
 import { harnessManagedNoteBackend, type useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
+import { agentGrant } from '../../guide/trustRoot'
 
 /* The context shelf under the composer: its measured width (which collapses
    the chips to icons) and the controls that stand on it -- app session
@@ -146,6 +147,9 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
       // host's outside-click closes the popover and the chip's toggle
       // then re-opens it — a flicker instead of a dismissal.
       data-session-control-chip=""
+      // What an app's control gives the session is the app's to say (an account, a profile, a mode), so a surface
+      // where a press can be a slip holds it back like any control that can widen what the agent has.
+      {...agentGrant}
       title={chipName}
       aria-label={chipName}
     >
@@ -204,6 +208,7 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
     <button
       className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
       {...press}
+      {...agentGrant}
       disabled={isRunning}
       title={cycleLine ? `${label}\n${cycleLine}` : label}
       aria-label={label}

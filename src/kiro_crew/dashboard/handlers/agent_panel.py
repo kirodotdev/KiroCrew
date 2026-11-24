@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.dashboard.handlers.agent_panel_add_field import api_dashboard_add_field
 from kiro_crew.dashboard.handlers.agent_panel_dashboard import (
     api_dashboard_apply,
     api_dashboard_fields,
@@ -86,6 +87,11 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # the caller this prefix's gate vetted. A cookie-only caller reaching it could name
     # any live session and put a page on whatever crew that resolved to.
     app.router.add_post("/api/agent-panel/dashboard/save", api_dashboard_save)
+    # One more field on the caller's own page (its true draft, else its own page in
+    # force), saved as a draft. Under the same
+    # prefix and so behind the same gate as the save: it writes the same package, bound
+    # to the caller that gate vetted, through the save's own writer.
+    app.router.add_post("/api/agent-panel/dashboard/add-field", api_dashboard_add_field)
     # The page's own four, under the same prefix and so with the same auth. A preview
     # and an apply reach a crewmate's instance store and its crew log, so a caller
     # holding only a dashboard cookie must not reach them either.
@@ -117,6 +123,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_read",
     "kiro_crew.dashboard.handlers.agent_panel_publish",
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
+    "kiro_crew.dashboard.handlers.agent_panel_add_field",
     "kiro_crew.dashboard.handlers.agent_panel_snapshot",
     "kiro_crew.dashboard.handlers.agent_panel_record",
     "kiro_crew.dashboard.handlers.agent_panel_record_app",
@@ -130,8 +137,27 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.dashboard.handlers.agent_panel_add_field import (  # noqa: F401
+        _HISTORY_CANNOT_SAY,
+        _NOTHING,
+        AGENTIC_SOURCE,
+        NEXT,
+        ONTO,
+        OPERATION,
+        REFUSALS,
+        AddRefused,
+        _compose,
+        _one_line,
+        _refusal,
+        _vetted,
+        _written_ms,
+        addable_types,
+    )
     from kiro_crew.dashboard.handlers.agent_panel_dashboard import (  # noqa: F401
         _SESSION_PACKAGE_REFUSAL,
+        Composed,
+        PageNotStored,
+        StoredPage,
         _apply_own_package,
         _await_check,
         _broadcast_changed,
@@ -139,6 +165,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _current_values,
         _dashboard_artifact_store,
         _dashboard_block,
+        _declared_fields,
         _folded_through,
         _history_session,
         _instance_body,
@@ -149,9 +176,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _page_check,
         _record_refusal,
         _resolve_dashboard_caller,
+        _store_bound_package,
         _template_matches,
         _templates_for_agent,
         _writer_key,
+        _xr_line,
+        _xr_values,
         field_sources,
         read_instance,
     )
@@ -233,10 +263,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import dashboard_agentic  # noqa: F401
     from kiro_crew import dashboard_package  # noqa: F401
     from kiro_crew import dashboard_types  # noqa: F401
+    from kiro_crew import dashboard_xr_layout  # noqa: F401
     from kiro_crew import pipeline_board_contract  # noqa: F401
     from kiro_crew import members as members_mod  # noqa: F401
     from kiro_crew.artifact_store import dashboard_package as _dashboard  # noqa: F401
-    from kiro_crew.artifact_store.model import ArtifactValidationError  # noqa: F401
+    from kiro_crew.artifact_store.model import (  # noqa: F401
+        ArtifactConflictError,
+        ArtifactValidationError,
+    )
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log import projection  # noqa: F401
@@ -291,6 +325,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
+        DASHBOARD_ADD_FIELD_SCHEMA,
         DASHBOARD_SAVE_SCHEMA,
         DASHBOARD_WRITE_SCHEMA,
         PANEL_PUBLISH_SCHEMA,

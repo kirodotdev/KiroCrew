@@ -15,7 +15,7 @@ import { acpBackendName } from '../../api/acpBackend'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { uiLocation } from '../../uiLocations/uiLocation'
-import { GuideTrustRootRegion } from '../../guide/trustRoot'
+import { GuideTrustRootRegion, agentGrant } from '../../guide/trustRoot'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { cn } from '../../lib/utils'
 import { ProfilePagePushContext } from './CrewProfilePanel'
@@ -792,12 +792,15 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       {/* Its own group, so its caption (what a click on a card does) sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
         <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">
-          <Toggle
-            checked={displayCardSend}
-            onChange={(v) => cardSendFlip.mutate(v)}
-            disabled={cardSendFlip.isPending}
-            label={t('pages.membersPage.profile_dashboard_card_send_switch')}
-          />
+          {/* A switch that lets the crewmate do more at one click is a grant, as its permission above is. */}
+          <span className="contents" {...agentGrant}>
+            <Toggle
+              checked={displayCardSend}
+              onChange={(v) => cardSendFlip.mutate(v)}
+              disabled={cardSendFlip.isPending}
+              label={t('pages.membersPage.profile_dashboard_card_send_switch')}
+            />
+          </span>
         </RowStatic>
       </RowGroup>
       {/* No hand-off: the Crewmates page's composer may hold an unsent draft to
@@ -830,12 +833,14 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           >
             {t('pages.membersPage.profile_preview_tag')}
           </span>
-          <Toggle
-            checked={dynOn}
-            onChange={(v) => dynFlip.mutate(v)}
-            disabled={dynFlip.isPending}
-            label={t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}
-          />
+          <span className="contents" {...agentGrant}>
+            <Toggle
+              checked={dynOn}
+              onChange={(v) => dynFlip.mutate(v)}
+              disabled={dynFlip.isPending}
+              label={t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}
+            />
+          </span>
         </RowStatic>
       </RowGroup>
       <ErrorNotice

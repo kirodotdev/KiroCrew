@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 
 import Clickable from '../Clickable'
 import Glass from '../Glass'
+import { agentGrant } from '../../guide/trustRoot'
 import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, notePriority, noteText, stripMd, fmtRelativeMinute, MAC_ACTION_BTN_CLASS } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, noteMember } from './CrewmateNoteFace'
@@ -25,6 +26,8 @@ export interface NotificationCardAction {
   /** Pushes this action to the row's far end (the feed's stack toggle). */
   trailing?: boolean
   'aria-expanded'?: boolean
+  /** The press grants an agent permission (Approve): the button carries the grant mark (`guide/trustRoot`). */
+  grants?: boolean
 }
 
 export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title' | 'onClick'> {
@@ -166,6 +169,7 @@ export default function NotificationCard({
               type="button"
               aria-expanded={a['aria-expanded']}
               className={`${MAC_ACTION_BTN_CLASS} ${TONE_CLASS[a.tone ?? 'text']} ${a.trailing ? 'ml-auto' : ''}`}
+              {...(a.grants ? agentGrant : {})}
               onClick={e => { e.stopPropagation(); a.onClick(e) }}
             >{a.label}</button>
           ))}

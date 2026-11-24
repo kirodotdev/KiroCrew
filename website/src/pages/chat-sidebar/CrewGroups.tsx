@@ -19,6 +19,7 @@ import { switchSlot } from '../../store/chatSlice'
 import { safeSetItem } from '../../utils/safeStorage'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import { CREW_COLLAPSED_LS_KEY, CREW_SPACE_COLLAPSED_LS_KEY, readCollapsedCrews } from './persistence'
 import { opensElsewhereOf } from './rows'
 import type { Slot } from './types'
@@ -390,6 +391,7 @@ export function CrewGroupSection({ group, rows, collapsed, onToggle, hideWhenEmp
               <span className="min-w-0">{i18nT('pages.chatSidebar.crew_group_disabled')}</span>
               {onEnable && (
                 <Btn onClick={() => onEnable(group.id)}
+                  {...agentGrant}
                   data-testid={`crew-group-enable-${group.id}`}
                   aria-label={i18nT('pages.chatSidebar.crew_enable_named', { name: group.name })}
                   className="shrink-0 text-[11px] py-0.5 px-2">

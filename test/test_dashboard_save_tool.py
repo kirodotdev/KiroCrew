@@ -71,11 +71,28 @@ def _package_body() -> dict[str, Any]:
 
 
 class _Store:
-    """A stand-in for ``ArtifactStore`` that keeps the real write gate.
+    """A stand-in for ``ArtifactStore`` that keeps the real write gate and the real fence.
 
     ``create`` and ``update`` call ``parse_package`` where the real store does; only
-    the filesystem is faked (records live in a dict).
+    the filesystem is faked (records live in a dict). A record's ``content_token``
+    names its bytes, and a content write must name the token the record holds now
+    (``snapshot_token`` or ``expected_token``), as ``artifacts_writes`` asks of a
+    dashboard package: with none, or with another, it raises ``ArtifactConflictError``
+    and writes nothing.
     """
+
+    @staticmethod
+    def _now() -> str:
+        """When a record was written, as the real store stamps it (``artifacts_disk._now_iso``)."""
+        from kiro_crew.artifacts_disk import _now_iso
+
+        return _now_iso()
+
+    @staticmethod
+    def _token(content: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def __init__(self) -> None:
         self.records: dict[str, SimpleNamespace] = {}
@@ -99,7 +116,9 @@ class _Store:
             raise ArtifactError(f"{slug} cannot be opened")
         if slug not in self.records:
             raise ArtifactNotFoundError(slug)
-        return self.records[slug]
+        rec = self.records[slug]
+        # A read names the bytes it saw: a copy, so a later write does not change it.
+        return SimpleNamespace(**{**vars(rec), "content_token": self._token(rec.content)})
 
     def create(self, *, name: str, content: str, kind: str | None = None, **_kw: Any):
         from kiro_crew.artifact_store.dashboard_package import canonical_package_content
@@ -113,7 +132,8 @@ class _Store:
             content=content,
             kind=kind or "markdown",
             version=1,
-            content_token="0" * 64,
+            content_token=self._token(content),
+            updated_at=self._now(),
         )
         self.records[slug] = rec
         return rec
@@ -123,14 +143,28 @@ class _Store:
             canonical_package_content,
             layout_changed,
         )
+        from kiro_crew.artifact_store.model import ArtifactConflictError
 
-        rec = self.get(slug)
+        self.get(slug)
+        rec = self.records[slug]
+        if content is not None and rec.kind == DASHBOARD_KIND:
+            # A write made on the record directly (a test's own edit of ``rec.content``)
+            # is a write: the token follows the bytes.
+            held = self._token(rec.content)
+            named = kw.get("snapshot_token") or kw.get("expected_token")
+            if named != held:
+                raise ArtifactConflictError(
+                    f"artifact {slug!r} changed since it was read; refetch and re-base",
+                    current_token=held,
+                )
         self.updates.append({"slug": slug, **kw})
         if content is not None:
             new = canonical_package_content(content)
             if layout_changed(rec.content, new):
                 rec.version += 1
             rec.content = new
+            rec.content_token = self._token(new)
+            rec.updated_at = self._now()
         return rec
 
 
@@ -1801,7 +1835,8 @@ async def test_a_save_whose_limit_has_passed_starts_no_browser_and_says_timed_ou
 
 
 def test_only_a_save_of_a_written_page_can_start_a_check():
-    """The browser runs only for ``dashboard_save`` and ``dashboard_snapshot`` of a page.
+    """The browser runs only for a page ``dashboard_save`` or ``dashboard_add_field``
+    stored, through the one writer both end in, and for ``dashboard_snapshot`` of a page.
 
     Not for a ``dashboard_write``, a preview, an apply, or a page load; every module that
     names the runner or the glue is listed.
@@ -1836,7 +1871,15 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         for call in ast.walk(fn)
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_page_check"
     }
-    assert starters == {"api_dashboard_save"}
+    assert starters == {"_store_bound_package"}
+    writers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_store_bound_package"
+    }
+    assert writers == {"api_dashboard_save", "api_dashboard_add_field"}
     snapshot = importlib.import_module("kiro_crew.dashboard.handlers.agent_panel_snapshot")
     picture_takers = {
         fn.name

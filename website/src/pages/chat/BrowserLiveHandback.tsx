@@ -2,6 +2,7 @@ import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { SendHorizontal } from 'lucide-react'
 
 import { Btn } from '../../components/ui'
+import { agentGrant } from '../../guide/trustRoot'
 import { i18nT } from '../../i18n/t'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { HANDBACK_NOTE_MAX } from '../../hooks/useBrowserLive'
@@ -72,6 +73,7 @@ export function BrowserLiveHandbackBar({ offered, onHandBack, draft, className }
       className={`flex flex-col gap-1.5 px-3 py-2 border-t border-border bg-bg-elevated ${className ?? ''}`}
       onSubmit={onSubmit}
       data-testid="browser-live-handback"
+      {...agentGrant}
     >
       <div role="group" aria-label={i18nT('pages.chat.browserLiveHandback.what_happened')} className="flex flex-wrap items-center gap-1.5">
         {choices.map(c => (

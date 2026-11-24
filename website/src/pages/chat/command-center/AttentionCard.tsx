@@ -19,6 +19,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
+import { agentGrant } from '../../../guide/trustRoot'
 import { coordinatorTarget, nativeTarget } from '../../../types/approvalTarget'
 import { ApiError, apiErrorCode, isTerminalApprovalRefusal, noPendingApprovalError } from '../../../api/apiError'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
@@ -293,7 +294,8 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
           <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
           <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
           <div className="flex gap-2">
-            <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
+            {/* Approve lets a tool call run: on an XR page a plain pinch or tap is not passed to it. */}
+            <Btn primary {...agentGrant} className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
             <Btn className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'reject_once' })}>{t('commandCenter.reject')}</Btn>
           </div>
         </>}

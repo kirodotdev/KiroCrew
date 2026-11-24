@@ -9,6 +9,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { clearNotifications, ackAllNotifications, deleteNotification, decideApprovalRow, dismissLocalApprovalRow, approvalMarks, rowPhase } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
+import { agentGrant } from '../../guide/trustRoot'
 import Clickable from '../Clickable'
 import Glass from '../Glass'
 import ErrorNotice from '../ErrorNotice'
@@ -776,7 +777,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // controls and the ghost/selected material.
                 const macActions: NotificationCardAction[] = [
                   ...(isApproval ? [
-                    { id: 'approve', label: approveLabel, tone: 'ok' as const, onClick: () => resolveApprovalNote(n, 'approve') },
+                    { id: 'approve', label: approveLabel, tone: 'ok' as const, grants: true, onClick: () => resolveApprovalNote(n, 'approve') },
                     { id: 'reject', label: rejectLabel, tone: 'danger' as const, onClick: () => resolveApprovalNote(n, 'reject') },
                   ] : []),
                   ...urlActions.map(a => ({ id: a.id, label: a.label, tone: 'text' as const, onClick: () => leave(() => navigate(a.safeUrl!), a.safeUrl!) })),
@@ -923,6 +924,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                               <button
                                 type="button"
                                 className={`${actionBtn} text-ok`}
+                                {...agentGrant}
                                 onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'approve') }}
                               >{approveLabel}</button>
                               <button

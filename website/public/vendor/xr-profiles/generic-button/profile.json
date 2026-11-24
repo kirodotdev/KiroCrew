@@ -1,0 +1,93 @@
+{
+  "profileId": "generic-button",
+  "fallbackProfileIds": [],
+  "layouts": {
+    "left": {
+      "selectComponentId": "face-button",
+      "components": {
+        "face-button": {
+          "type": "button",
+          "gamepadIndices": {
+            "button": 0
+          },
+          "rootNodeName": "face_button",
+          "visualResponses": {
+            "face_button_pressed": {
+              "componentProperty": "button",
+              "states": [
+                "default",
+                "touched",
+                "pressed"
+              ],
+              "valueNodeProperty": "transform",
+              "valueNodeName": "face_button_pressed_value",
+              "minNodeName": "face_button_pressed_min",
+              "maxNodeName": "face_button_pressed_max"
+            }
+          }
+        }
+      },
+      "gamepadMapping": "",
+      "rootNodeName": "generic-button-left",
+      "assetPath": "left.glb"
+    },
+    "right": {
+      "selectComponentId": "face-button",
+      "components": {
+        "face-button": {
+          "type": "button",
+          "gamepadIndices": {
+            "button": 0
+          },
+          "rootNodeName": "face_button",
+          "visualResponses": {
+            "face_button_pressed": {
+              "componentProperty": "button",
+              "states": [
+                "default",
+                "touched",
+                "pressed"
+              ],
+              "valueNodeProperty": "transform",
+              "valueNodeName": "face_button_pressed_value",
+              "minNodeName": "face_button_pressed_min",
+              "maxNodeName": "face_button_pressed_max"
+            }
+          }
+        }
+      },
+      "gamepadMapping": "",
+      "rootNodeName": "generic-button-right",
+      "assetPath": "right.glb"
+    },
+    "none": {
+      "selectComponentId": "face-button",
+      "components": {
+        "face-button": {
+          "type": "button",
+          "gamepadIndices": {
+            "button": 0
+          },
+          "rootNodeName": "face_button",
+          "visualResponses": {
+            "face_button_pressed": {
+              "componentProperty": "button",
+              "states": [
+                "default",
+                "touched",
+                "pressed"
+              ],
+              "valueNodeProperty": "transform",
+              "valueNodeName": "face_button_pressed_value",
+              "minNodeName": "face_button_pressed_min",
+              "maxNodeName": "face_button_pressed_max"
+            }
+          }
+        }
+      },
+      "gamepadMapping": "",
+      "rootNodeName": "generic-button-none",
+      "assetPath": "none.glb"
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ChevronDown, KeyRound, UserPlus, type LucideIcon } from 'lucide-react'
 
 import { Btn, Checkbox } from '../../../components/ui'
+import { agentGrantNone } from '../../../guide/trustRoot'
 import ErrorNotice from '../../../components/ErrorNotice'
 import InfoTip from '../../../components/InfoTip'
 import { i18nT } from '../../../i18n/t'
@@ -31,7 +32,7 @@ const rowCls = 'h-11 w-full justify-start gap-2 px-3 text-[15px]'
 /** A row that opens more of the card in place: a chevron, or *icon* when it adds an entry. */
 export function ExpandRow({ label, open, onToggle, busy, testId, icon: Icon }: { label: string; open: boolean; onToggle: () => void; busy: boolean; testId: string; icon?: LucideIcon }) {
   return (
-    <Btn type="button" className={rowCls} aria-expanded={open} disabled={busy} onClick={onToggle} data-testid={testId}>
+    <Btn type="button" className={rowCls} aria-expanded={open} disabled={busy} onClick={onToggle} data-testid={testId} {...agentGrantNone}>
       {Icon
         ? <Icon size={16} aria-hidden="true" className="shrink-0 text-muted" />
         : <ChevronDown size={16} aria-hidden="true" className={`shrink-0 text-muted ${open ? "rotate-180" : ""}`} />}

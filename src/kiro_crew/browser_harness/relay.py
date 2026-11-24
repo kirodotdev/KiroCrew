@@ -256,6 +256,10 @@ class CdpRelay:
         self.on_target_created: Callable[[str], Awaitable[None]] | None = None
         #: Called once when the upstream connection closes for any reason.
         self.on_upstream_closed: Callable[[], Awaitable[None]] | None = None
+        #: Called with each event of the browser that belongs to no session of the
+        #: relay's own and to no reply: the browser's own events and those of a
+        #: session it attached by itself. The panel browser hears new windows here.
+        self.on_browser_event: EventCallback | None = None
         self._secret = secrets.token_urlsafe(_SECRET_BYTES)
         self._up: Upstream | None = None
         self._up_lock: asyncio.Lock | None = None
@@ -296,8 +300,12 @@ class CdpRelay:
 
     # ── lifecycle ──
 
-    async def start(self, upstream: str | Upstream) -> str:
+    async def start(self, upstream: str | Upstream, *, serve: bool = True) -> str:
         """Connect to the browser and serve the relay; return the daemon's HTTP URL.
+
+        With ``serve=False`` nothing listens: no socket is bound, ``url`` stays
+        empty, and only the gateway's own :meth:`send` and :meth:`attach` reach
+        the browser. A browser no daemon and no agent may drive is held this way.
 
         *upstream* is a CDP websocket URL or an already-open :class:`PipeUpstream`.
         A URL blocks for as long as the browser holds the handshake -- on the
@@ -315,6 +323,9 @@ class CdpRelay:
         else:
             self.upstream_url = "pipe"
             self._up = upstream
+        if not serve:
+            self._reader = asyncio.create_task(self._read_upstream(), name="cdp-relay-upstream")
+            return self.url
         app = web.Application(client_max_size=_UNLIMITED_MESSAGE)
         app.router.add_get("/{token}/json/version", self._serve_version)
         app.router.add_get("/{token}/json", self._serve_version)
@@ -671,6 +682,8 @@ class CdpRelay:
                     self._closing.discard(closed)
                 return
         await self._observe_event(msg)
+        if self.on_browser_event is not None and "method" in msg:
+            asyncio.create_task(self.on_browser_event(msg))
         if msg.get("method") in _DISCOVERY_EVENTS and not sid and not self._client_discovers:
             return
         for ws in list(self._clients):

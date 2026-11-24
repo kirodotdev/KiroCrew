@@ -1,6 +1,7 @@
 import type { NavigateFunction } from 'react-router-dom'
 import { useId, useMemo, useState, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
+import { agentGrant, AgentGrantProvider } from '../../../guide/trustRoot'
 import { Undo2 } from 'lucide-react'
 import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
 import { CREW_STEER_MAX_CHARS, crewApprovalDecidableHere, crewModeRoot } from '../../../lib/crewMode'
@@ -888,7 +889,7 @@ export default function ComposerDockView({
               // role="listbox"; the dialog is a focus container (tabIndex={-1}),
               // not an interactive widget itself, so this delegation is intentional.
               // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
+              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} {...agentGrant} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
                 <div className="px-1.5 pt-1.5 pb-1">
                   <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px]" />
                 </div>
@@ -963,7 +964,9 @@ export default function ComposerDockView({
             </OverlayPortal>}
             {/* Outside the model picker's portal: the picker closes before it opens. */}
             {kiroCliSignIn.dialog}
-            {/* Project picker — triggered from input bar */}
+            {/* Project picker — triggered from input bar. A project is what the agent may read and change, so
+                picking one widens its reach: the picker is a grant surface, like the chip that opens it. */}
+            <AgentGrantProvider>
             <ProjectPicker
               open={projectPickerOpen}
               onOpenChange={setProjectPickerOpen}
@@ -975,6 +978,7 @@ export default function ComposerDockView({
                 ? <ProjectAwsProfileSection project={_slotProject} errorHandoff onHandoff={() => setProjectPickerOpen(false)} />
                 : undefined}
             />
+            </AgentGrantProvider>
             {/* App-contributed session control popover — triggered from input bar.
                 Only the open one is mounted, so an app's control costs nothing
                 while closed. Render is gated on the slot the control was opened

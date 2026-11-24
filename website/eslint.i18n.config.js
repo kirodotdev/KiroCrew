@@ -301,6 +301,33 @@ export default [
       // header name would produce a snippet that fails. Exempted by exact path;
       // the Webhooks page itself remains fully gated.
       'src/pages/webhooks/requestExamples.ts',
+      // GLSL for the material of a page in XR: an `#include` name and the shader
+      // lines that replace it, handed to the renderer's compiler and never shown
+      // as words. Same named-boundary idiom as `folderColorPaint.ts` above: the
+      // module may hold ONLY shader text, and its consumer (Panel.tsx) stays
+      // fully gated. False-negative class: copy added to THIS path is not reported.
+      'src/pages/xr/workspace/pageShader.ts',
+      // GLSL for a Bot's body in XR: the lines that bend its lower body and the
+      // line that softens its fold shade, handed to the renderer's compiler and
+      // never shown as words. Same named boundary as `pageShader.ts` above: the
+      // module may hold ONLY shader text, and its consumers (botFlow.ts,
+      // botSkin.ts) stay fully gated. False-negative class: copy added to THIS
+      // path is not reported.
+      'src/pages/xr/botShader.ts',
+      // GLSL for the pieces a leaving board comes apart into in XR, handed to the
+      // renderer's compiler and never shown as words. Same named boundary as
+      // `pageShader.ts` above: the module may hold ONLY shader text, and its
+      // consumer (BoardDust.tsx) stays fully gated. False-negative class: copy
+      // added to THIS path is not reported.
+      'src/pages/xr/workspace/boardDustShader.ts',
+      // The keys of the XR new chat card's keyboard: the letters and signs of each
+      // key row, the DOM key names a key types (`Backspace`, `Enter`, `Shift`) and
+      // the glyphs and layer names on the keycaps (`abc`, `123`), as on any
+      // phone's keyboard in every language; plus the keyboard's sizes. No words
+      // are read here. Same named boundary as `pageShader.ts` above: its
+      // consumers (DeskKeys.tsx, useChatCard.ts) stay fully gated.
+      // False-negative class: copy added to THIS path is not reported.
+      'src/pages/xr/workspace/deskKeys.ts',
       // Model-facing, not user-facing: `planningInstructionForMode` returns the
       // behaviour instruction embedded in the pet's planning PROMPT. Translating it
       // would send the agent a localized instruction while the rest of its prompt
@@ -328,6 +355,14 @@ export default [
       // or render path), so the filename IS the boundary and its consumer
       // `LexicalComposerInput.tsx` stays fully covered.
       'src/components/domDeleteKeys.ts',
+      // DOM `KeyboardEvent.key` protocol values only ('Enter', 'Backspace', the
+      // arrows, ...): the keys a page of the XR workspace takes as keys, sent to
+      // the gateway as they are and matched there by value against its own list
+      // (`browser_harness/panel_hub.py`, `PANEL_KEYS`). Key names, never rendered
+      // copy: the same rationale as `domDeleteKeys.ts` above. The module is
+      // export-only and imports nothing, so the filename IS the boundary; its
+      // consumers `typing.ts` and `PhoneField.tsx` stay fully covered.
+      'src/pages/xr/workspace/pageKeys.ts',
       // CSS text injected through <style>; a stylesheet is not translatable copy.
       'src/apps/spec-builder/inlineStyles.ts',
       // Inline `style.cssText` declarations for the fixed auth banners in
@@ -428,6 +463,21 @@ export default [
       // fully gated. Same false-negative class: copy added to THIS path is not
       // reported.
       'src/lib/instanceFavicon.ts',
+      // The XR page's face cutter, by the same boundary as the two modules above:
+      // its literals are SVG wrappers (`<svg viewBox>`, a tile `<circle>`, the flip
+      // `<g transform>`) around the dashboard's own avatar art, handed to the SVG
+      // parser and drawn as a texture. It imports no `i18nT`, touches no DOM, and
+      // every export is data in, SVG `string` out.
+      //
+      // Same false-negative class: copy added to THIS path is not reported, so
+      // keep it parser-facing only.
+      'src/pages/xr/faces.ts',
+      // Sample data for `/xr?fixture=1`: a made-up crew in the wire shapes the
+      // gateway serves (roster rows, slots, transcripts), used by tests, pictures
+      // and the tour. Same category as the Storybook fixtures above: it stands in
+      // for what a person's own Bots would say, which is never translated either.
+      // The words the page itself shows live in `strings.ts`, fully covered.
+      'src/pages/xr/fixture.ts',
       // Same rationale, different convention: this app keeps its seed prompts in a
       // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
       // payload sent over the wire, never rendered.

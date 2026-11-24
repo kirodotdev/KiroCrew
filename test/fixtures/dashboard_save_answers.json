@@ -1,0 +1,62 @@
+{
+  "a body key the schema does not hold": [
+    400,
+    "{\"error\": \"x: unknown field for tool 'dashboard_save'\", \"code\": \"validation_error\"}"
+  ],
+  "a bound_to in the body": [
+    400,
+    "{\"error\": \"bound_to: unknown field for tool 'dashboard_save'\", \"code\": \"validation_error\"}"
+  ],
+  "no model": [
+    400,
+    "{\"error\": \"model: required\", \"code\": \"validation_error\"}"
+  ],
+  "widgets while the preview is off": [
+    403,
+    "{\"error\": \"widgets is not taken: phone widgets are not enabled on this Crew (the 'Phone widgets' feature preview is off). Save the page without widgets.\", \"code\": \"widgets_preview_off\"}"
+  ],
+  "a name a redactor would mask": [
+    400,
+    "{\"error\": \"a dashboard package cannot declare a name a redactor would mask: declared field #2 of 3 looks like a credential, and the page refuses a whole read rather than rewriting such a name, because every name a package declares is a JOIN KEY -- a field name joins the read's fields and the page's cells, and a theme token is the CSS variable the page's own style references. Rename it to something a reader recognises -- a name is shown to the person, so 'open_prs' and '--accent', not a token\", \"code\": \"unsafe_declared_name\"}"
+  ],
+  "a type outside the catalog": [
+    400,
+    "{\"error\": \"dashboard package: model.types.open_prs.type: unknown data type 'money': the catalog holds ['array', 'bool', 'enum', 'number', 'object', 'text', 'timestamp']\", \"code\": \"invalid_package\"}"
+  ],
+  "a 65th field": [
+    400,
+    "{\"error\": \"dashboard package: model.types: declares 66 fields; at most 64 are allowed\", \"code\": \"invalid_package\"}"
+  ],
+  "a cell bound to a field not declared": [
+    400,
+    "{\"error\": \"dashboard package: view.html: binds ['nope'], which model.types does not declare (declared: ['headline', 'open_prs']). The model is also the list of fields the controller will push, so a name only the page knows is a cell nothing ever fills\", \"code\": \"invalid_package\"}"
+  ],
+  "a first save": [
+    200,
+    "{\"ok\": true, \"saved\": {\"package\": \"dashboard-0\", \"package_version\": 1, \"fields\": 2}, \"verification\": {\"status\": \"skipped\", \"reason\": \"no_browser\", \"note\": \"The page was NOT run: no_browser. Nothing checked that it draws, that its script runs or that it reads in light and dark, so check those yourself in the page before you apply it.\"}, \"fields\": [{\"field\": \"headline\", \"source\": \"manual\", \"type\": \"text\"}, {\"field\": \"open_prs\", \"source\": \"manual\", \"type\": \"number\"}], \"manual_fields\": [\"headline\", \"open_prs\"], \"manual_note\": \"These fields change through dashboard_write, not an automatic source update. Use a fold where it records the same fact. Verified project snapshots and your own verdicts can be manual: show their source and observation time, and update them when that source changes. Arrays and objects can carry measured samples; an old observation is not a live reading.\", \"next\": \"dashboard_apply puts this page live on your Dashboard as a new version\"}"
+  ],
+  "a second save of another layout": [
+    200,
+    "{\"ok\": true, \"saved\": {\"package\": \"dashboard-0\", \"package_version\": 2, \"fields\": 2}, \"verification\": {\"status\": \"skipped\", \"reason\": \"no_browser\", \"note\": \"The page was NOT run: no_browser. Nothing checked that it draws, that its script runs or that it reads in light and dark, so check those yourself in the page before you apply it.\"}, \"fields\": [{\"field\": \"headline\", \"source\": \"manual\", \"type\": \"text\"}, {\"field\": \"open_prs\", \"source\": \"manual\", \"type\": \"number\"}], \"manual_fields\": [\"headline\", \"open_prs\"], \"manual_note\": \"These fields change through dashboard_write, not an automatic source update. Use a fold where it records the same fact. Verified project snapshots and your own verdicts can be manual: show their source and observation time, and update them when that source changes. Arrays and objects can carry measured samples; an old observation is not a live reading.\", \"next\": \"dashboard_apply puts this page live on your Dashboard as a new version\"}"
+  ],
+  "a save of the same layout again": [
+    200,
+    "{\"ok\": true, \"saved\": {\"package\": \"dashboard-0\", \"package_version\": 2, \"fields\": 2}, \"verification\": {\"status\": \"skipped\", \"reason\": \"no_browser\", \"note\": \"The page was NOT run: no_browser. Nothing checked that it draws, that its script runs or that it reads in light and dark, so check those yourself in the page before you apply it.\"}, \"fields\": [{\"field\": \"headline\", \"source\": \"manual\", \"type\": \"text\"}, {\"field\": \"open_prs\", \"source\": \"manual\", \"type\": \"number\"}], \"manual_fields\": [\"headline\", \"open_prs\"], \"manual_note\": \"These fields change through dashboard_write, not an automatic source update. Use a fold where it records the same fact. Verified project snapshots and your own verdicts can be manual: show their source and observation time, and update them when that source changes. Arrays and objects can carry measured samples; an old observation is not a live reading.\", \"next\": \"dashboard_apply puts this page live on your Dashboard as a new version\"}"
+  ],
+  "a save with a hand-written and a fold field": [
+    200,
+    "{\"ok\": true, \"saved\": {\"package\": \"dashboard-0\", \"package_version\": 3, \"fields\": 3}, \"verification\": {\"status\": \"skipped\", \"reason\": \"no_browser\", \"note\": \"The page was NOT run: no_browser. Nothing checked that it draws, that its script runs or that it reads in light and dark, so check those yourself in the page before you apply it.\"}, \"fields\": [{\"field\": \"headline\", \"source\": \"manual\", \"type\": \"text\"}, {\"field\": \"open_prs\", \"source\": \"manual\", \"type\": \"number\"}, {\"field\": \"work_rows\", \"source\": \"fold:work.items\", \"type\": \"array\"}], \"manual_fields\": [\"headline\", \"open_prs\"], \"manual_note\": \"These fields change through dashboard_write, not an automatic source update. Use a fold where it records the same fact. Verified project snapshots and your own verdicts can be manual: show their source and observation time, and update them when that source changes. Arrays and objects can carry measured samples; an old observation is not a live reading.\", \"next\": \"dashboard_apply puts this page live on your Dashboard as a new version\"}"
+  ],
+  "a store that cannot write": [
+    503,
+    "{\"error\": \"the page could not be saved: the disk is full\", \"code\": \"save_failed\"}"
+  ],
+  "a root session": [
+    400,
+    "{\"error\": \"a root session's Dashboard is a template page: pick one with dashboard_templates and dashboard_apply with its template_id. A composed package is a Bot's own page\", \"code\": \"session_package_unsupported\"}"
+  ],
+  "a caller the gate turns away": [
+    400,
+    "{\"error\": \"not a dashboard thread\", \"code\": \"no_dashboard_slot\"}"
+  ]
+}

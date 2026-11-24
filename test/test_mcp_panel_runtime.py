@@ -400,6 +400,15 @@ class TestDashboardWrite:
         assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
         assert out == "Wrote `open_items` (value) to your dashboard."
 
+    def test_a_layout_write_tells_the_bot_what_the_xr_room_makes_of_it(self) -> None:
+        """D103 5: the gateway's verdict line is passed on after the write's own sentence."""
+        line = "In the XR room this layout reads: part 1: ring."
+        reply = {"written": {"field": "xr_layout", "type": "object"}, "xr_room": line}
+        with patch("kiro_crew.mcp_panel._post", side_effect=_gateway_serving(GOOD_KEY, reply)):
+            out = _call_tool_inner("dashboard_write", {"field": "xr_layout", "value": {"v": 1}})
+
+        assert out == f"Wrote `xr_layout` (object) to your dashboard. {line}"
+
     def test_the_target_dashboard_is_never_taken_from_the_arguments(self) -> None:
         """Ownership comes from the vetted session, as it does for a publish."""
         with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:

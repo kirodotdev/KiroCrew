@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { Glass } from './Glass'
+import { agentGrant } from '../guide/trustRoot'
 import { Zap } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
@@ -54,6 +55,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       type="button"
       ref={ref as never}
       data-testid={testId}
+      {...agentGrant}
       aria-label={i18nT('components.crewMode.chip_off')}
       aria-pressed={pressed}
       aria-describedby={describedBy}

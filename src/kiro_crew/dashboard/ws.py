@@ -791,7 +791,9 @@ async def _serve_ws(
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
 
+    from kiro_crew.browser_harness.panel_hub import PANEL_MESSAGE_TYPE
     from kiro_crew.dashboard.handlers import _log_ring
+    from kiro_crew.dashboard.handlers.browser_panels import close_panel_socket, handle_panel_frame
 
     state: DashboardState = request.app["state"]
     from kiro_crew.dashboard.handlers.source_providers import (
@@ -1878,6 +1880,8 @@ async def _serve_ws(
                                     {"type": _ws_chunk_scope.CHUNK_WATCH_ACK_FRAME, "data": _ack}
                                 ),
                             )
+                    elif msg_type == PANEL_MESSAGE_TYPE:  # the XR page's live panels
+                        handle_panel_frame(ws, request, data.get("data"))
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -1972,6 +1976,7 @@ async def _serve_ws(
             logger.debug("ws: presence release failed", exc_info=True)
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
+        await close_panel_socket(ws)
     return ws
 
 

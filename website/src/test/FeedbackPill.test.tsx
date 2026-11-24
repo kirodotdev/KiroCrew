@@ -14,6 +14,7 @@ import userEvent from '@testing-library/user-event'
 import { i18nT } from '../i18n/t'
 
 import FeedbackPill from '../components/FeedbackPill'
+import { AGENT_GRANT_ATTR } from '../guide/trustRoot'
 import { OPEN_DELAY_MS } from '../components/InstantTip'
 
 const status: {
@@ -111,6 +112,14 @@ describe('FeedbackPill', () => {
     await userEvent.click(screen.getByTestId('prerelease-report-chip'))
     expect(onReportProblem).toHaveBeenCalledTimes(1)
     expect(onRequestFeature).not.toHaveBeenCalled()
+  })
+
+  it('marks the feature request as a grant, and not the report chip', () => {
+    // It sends a fixed message as the person: a panel of the XR page sends no plain press on it.
+    status.release_channel = 'nightly'
+    mount()
+    expect(screen.getByText(/request a feature/i).closest('button')?.getAttribute(AGENT_GRANT_ATTR)).toBe('yes')
+    expect(screen.getByTestId('prerelease-report-chip').closest(`[${AGENT_GRANT_ATTR}]`)).toBeNull()
   })
 
   it('still runs the feature-request action from the left half', async () => {

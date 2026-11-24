@@ -418,6 +418,41 @@ class BrowserConfig:
             "document, not what is inside frames. Off by default.",
         ),
     )
+    xr_pages: bool = field(
+        default=False,
+        metadata=_meta(
+            "Live pages in XR",
+            "Let the XR page show this dashboard's own pages live on panels. The "
+            "gateway then runs a second browser of its own on its host, signed in "
+            "as you for as long as your XR page is open, and sends that browser's "
+            "pictures to your XR page only. The agent has no way to reach that "
+            "browser. Off by default: while off, no such browser starts.",
+        ),
+    )
+    xr_pages_accept_same_user_attach: bool = field(
+        default=False,
+        metadata=_meta(
+            "Live pages in XR where processes may attach to each other",
+            "Start the XR pages' browser on a host where one process may attach to "
+            "another process of the same user (kernel.yama.ptrace_scope is 0, or "
+            "cannot be read). On such a host a command that an agent runs can take "
+            "hold of that browser, which is signed in as you. Off by default: there "
+            "the browser does not start, and the panel says why.",
+        ),
+    )
+    xr_pages_guarded: bool = field(
+        default=False,
+        metadata=_meta(
+            "Guard the live pages in XR",
+            "Hold the XR pages to a short list of the dashboard's pages, show the "
+            "Task Runner and Schedule for looking at only, take no press on a "
+            "control that grants an agent permission, and open no address that "
+            "sends or runs by itself. Off by default: a page on a panel then takes "
+            "a press, keys and text wherever the dashboard's own page takes them, "
+            "and any page of the dashboard opens on a panel but the pages that "
+            "publish, admit people or link other machines.",
+        ),
+    )
     live: BrowserLiveConfig = field(
         default_factory=BrowserLiveConfig,
         metadata=_meta("Live view", "The live view of the agent's browser in chat."),
@@ -465,6 +500,11 @@ class BrowserConfig:
             choice=_validated_choice(reader.get("choice")),
             isolation=_validated_isolation(reader.get("isolation")),
             report_changes=reader.read("report_changes", _safe_bool),
+            xr_pages=reader.read("xr_pages", _safe_bool),
+            xr_pages_accept_same_user_attach=reader.read(
+                "xr_pages_accept_same_user_attach", _safe_bool
+            ),
+            xr_pages_guarded=reader.read("xr_pages_guarded", _safe_bool),
             live=BrowserLiveConfig.from_raw(section.get("live")),
             credentials=BrowserCredentialsConfig.from_raw(section.get("credentials")),
             recording=BrowserRecordingConfig.from_raw(section.get("recording")),

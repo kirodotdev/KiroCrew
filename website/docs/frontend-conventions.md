@@ -11,6 +11,12 @@ in [theming-contract](theming-contract.md); user-facing strings are in
 React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
 Framer Motion, Tailwind CSS 4, Lucide React, DOMPurify, highlight.js, the Pierre
 editor (`src/pierre/`), TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
+The `/xr` route alone draws with three.js, through React Three Fiber and `@react-three/xr`
+(`src/pages/xr/XrStage.tsx`), with `@react-three/handle` for the drags of its workspace of pages
+(`src/pages/xr/workspace/Panel.tsx`); nothing else in the dashboard imports them. Everything it draws is a
+component with `useFrame` (`src/pages/xr/Bot.tsx` is the pattern), and what a pointer is on is the
+framework's hover, never a ray cast of the page's own. The scene (`src/pages/xr/scene.ts`) keeps
+the state and the rules as plain data and plain transforms, and draws nothing.
 
 Prefer the library already here over a new dependency. Every addition is bytes in a
 bundle a user downloads and a supply-chain surface someone has to review, and two

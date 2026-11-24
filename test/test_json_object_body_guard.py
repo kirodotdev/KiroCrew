@@ -184,6 +184,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_config": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # One xr panel input: a typed text of the panel hub's cap plus its envelope.
+    "handlers/browser_panels.py::_run": ("_MAX_BODY_BYTES", _BOUNDED_BY_DEFAULT),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     # One diagram source; 64 KB is four times the largest PlantUML source the
     # redactor decodes (``_PLANTUML_SOURCE_CAP``).

@@ -83,6 +83,13 @@ export const CHUNK_BUDGETS = {
   // engine, code-split from the app core and not usefully splittable further.
   PierreImpl: 570 * KB, // measured 540 KB
 
+  // The `/xr` route's libraries: three.js, React Three Fiber, `@react-three/xr`
+  // and `@react-three/handle`, in the chunk both views of the route share. Only
+  // a person who opens `/xr` fetches it. Fiber registers every class of three
+  // as an element, so all of three is here and none of it tree-shakes. The
+  // route's own code (`XrPage`, `Workspace`) is under the default budget.
+  'vendor-three': 1010 * KB, // measured 992 KB
+
   // Textmate grammar bundles shipped with the pierre editor's syntax
   // highlighting (PR #4072). Each is a prebuilt upstream grammar artifact,
   // lazy-loaded per language; size is fixed by the grammar, not our code.
