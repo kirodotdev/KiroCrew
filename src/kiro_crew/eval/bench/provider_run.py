@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
+
 from . import scorers, stats
 from .answer import Budget, BudgetExhausted, Llm, answer_query
 from .item_corpus import ItemCorpus, ItemQuery, ItemUnit, ranked_ids
@@ -280,7 +282,11 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        os.replace(tmp, path)
+        # A status poll reads the run file while the runner saves it, and on
+        # Windows a rename onto a file someone has open fails. Every caller
+        # writes off the loop, so the sharing window is retried here; lost, the
+        # final save left the file 'running' and every later read 'paused'.
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
