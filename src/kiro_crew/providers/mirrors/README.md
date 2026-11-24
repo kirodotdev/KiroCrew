@@ -81,7 +81,8 @@ register it in `registry.py`.
   refuse when the backend asks permission for them), `disabled_servers` (servers
   switched off whole) and `restricted_servers` (servers withheld because the spec
   narrows them per tool). The client's member dispatch and panel appends read the
-  last two so they never re-add a server the projection withheld. The default
+  last two so they never re-add a server switched off or narrowed that way; a server
+  the agent's own exclusions withhold whole is not among them. The default
   returns the wire params with nothing off-wire, so a mirror relying on it reports
   neither set and that append fails open for it; a mirror that has no such
   obligation implements only `session_params()`. A mirror that does (codex) overrides this
