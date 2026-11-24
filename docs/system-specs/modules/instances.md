@@ -1632,10 +1632,12 @@ when AWS is reachable.
 
 **A failed credentials check names its cause.** `iam.reachability_check` sets `cause`
 to `cli_missing`, `profile_not_found` (with `profile_missing`, the name the CLI could
-not find) or `region_not_enabled`, and puts the fix in plain words in `note`;
+not find) or `region_rejects_credentials`, and puts the fix in plain words in `note`;
 `detail` stays the CLI's own text. The Region verdict is `InvalidClientTokenId` from
-STS in the chosen Region while the same read-only call succeeds in `us-east-1`; with no
-Region, or `us-east-1`, it stays a credentials failure. The setup form leads the
+STS in the chosen Region while the same read-only call succeeds in `us-east-1`. That
+does not prove the Region is disabled (an enabled opt-in Region also rejects a session
+token valid only in Regions enabled by default), so the note names both causes and
+their fixes. With no Region, or `us-east-1`, it stays a credentials failure. The setup form leads the
 credentials row with that sentence and shows `detail` under it. `cloud doctor` prints
 `note`, a launch job's pre-flight failure leads with it, `cloud list` prints the same
 sentence in place of `tag:GetResources failed: ...`,

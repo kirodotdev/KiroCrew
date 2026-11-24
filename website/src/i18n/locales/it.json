@@ -22856,7 +22856,7 @@
         "credentials_cli_missing": "AWS CLI non è installata sul computer che esegue {{productName}}.",
         "credentials_cli_missing_steps": "Installala, poi verifica di nuovo.",
         "credentials_profile_not_found": "Non esiste alcun profilo AWS di nome {{profile}} sul computer che esegue {{productName}}. Esegui lì {{sso}} (o {{configure}}) per crearlo, poi verifica di nuovo.",
-        "credentials_region_not_enabled": "La regione {{region}} non è abilitata per questo account AWS. Scegli un’altra regione, oppure abilita {{region}} nelle impostazioni dell’account, poi verifica di nuovo.",
+        "credentials_region_rejected": "La regione {{region}} ha rifiutato queste credenziali (AWS segnala un token di sicurezza non valido), ma funzionano in us-east-1. O {{region}} non è abilitata per questo account AWS, o il token di sessione è valido solo nelle regioni abilitate per impostazione predefinita. Scegli un’altra regione, abilita {{region}} nelle impostazioni dell’account, oppure rendi i token dell’endpoint STS globale validi in tutte le regioni nelle impostazioni dell’account IAM, poi ricontrolla.",
         "credentials_ok": "Profilo {{profile}} in uso → account {{account}}.",
         "credentials_ok_default": "Uso delle tue credenziali AWS predefinite → account {{account}}.",
         "custom_type": "Tipo di istanza personalizzato",

@@ -21740,7 +21740,7 @@
         "credentials_cli_missing": "{{productName}} を実行しているコンピューターに AWS CLI がインストールされていません。",
         "credentials_cli_missing_steps": "インストールしてから再確認してください。",
         "credentials_profile_not_found": "{{productName}} を実行しているコンピューターに、{{profile}} という名前の AWS プロファイルがありません。そこで {{sso}}（または {{configure}}）を実行して作成し、再確認してください。",
-        "credentials_region_not_enabled": "リージョン {{region}} はこの AWS アカウントで有効になっていません。別のリージョンを選ぶか、アカウント設定で {{region}} を有効にしてから再確認してください。",
+        "credentials_region_rejected": "リージョン {{region}} はこの認証情報を拒否しました（AWS は無効なセキュリティトークンと報告しています）が、us-east-1 では使えます。{{region}} がこの AWS アカウントで有効になっていないか、セッショントークンがデフォルトで有効なリージョンでしか使えません。別のリージョンを選ぶか、アカウント設定で {{region}} を有効にするか、IAM のアカウント設定で STS グローバルエンドポイントのトークンをすべてのリージョンで有効にしてから再確認してください。",
         "credentials_ok": "プロファイル {{profile}} → アカウント {{account}} を使用しています。",
         "credentials_ok_default": "既定の AWS 認証情報を使用中 → アカウント {{account}}。",
         "custom_type": "カスタムインスタンスタイプ",

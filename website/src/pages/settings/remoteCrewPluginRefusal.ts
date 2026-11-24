@@ -63,8 +63,8 @@ export function awsCredentialCauseCopy(
         }),
       }
     }
-    case 'region_not_enabled':
-      return { failure: i18nT('pages.settings.remoteCrewPanel.credentials_region_not_enabled', { region }) }
+    case 'region_rejects_credentials':
+      return { failure: i18nT('pages.settings.remoteCrewPanel.credentials_region_rejected', { region }) }
     default:
       return null
   }

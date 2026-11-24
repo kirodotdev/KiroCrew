@@ -387,7 +387,11 @@ class TestDoctor:
 
     def test_another_unreachable_cause_shows_its_note(self, monkeypatch, shown):
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: True)
-        reach = {"reachable": False, "cause": "region_not_enabled", "note": "pick another Region"}
+        reach = {
+            "reachable": False,
+            "cause": "region_rejects_credentials",
+            "note": "pick another Region",
+        }
         monkeypatch.setattr(iam, "reachability_check", lambda p, r: reach)
         assert cli_cloud._cloud_doctor(_args()) == 1
         assert ("detail", "pick another Region") in shown

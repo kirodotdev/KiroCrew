@@ -1160,7 +1160,7 @@ def credential_helper_hint(name: str) -> str:
     )
 
 
-# The Region a Region-not-enabled verdict is checked against: every account has it.
+# The Region a Region-rejects-credentials verdict is checked against: every account has it.
 _ALWAYS_ENABLED_REGION = "us-east-1"
 
 
@@ -1187,11 +1187,13 @@ def missing_profile(stderr: str) -> str:
     return name.strip()
 
 
-def _region_not_enabled(stderr: str, profile: str, region: str) -> bool:
+def _region_rejects_credentials(stderr: str, profile: str, region: str) -> bool:
     """True when the chosen Region rejects credentials that work in a default Region.
 
-    ``InvalidClientTokenId`` from STS in an opt-in Region the account has not enabled reads
-    like bad credentials, so the same read-only call is repeated in :data:`_ALWAYS_ENABLED_REGION`.
+    ``InvalidClientTokenId`` from STS in the chosen Region reads like bad credentials, so the
+    same read-only call is repeated in :data:`_ALWAYS_ENABLED_REGION`. A success there does
+    not prove the Region is disabled: an enabled opt-in Region also rejects a session token
+    that is valid only in Regions enabled by default, so the note names both.
     """
     if "InvalidClientTokenId" not in (stderr or "") or region in ("", _ALWAYS_ENABLED_REGION):
         return False
@@ -1252,12 +1254,15 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
         # An explicit --profile drops the CLI's environment-credential step.
         result["env_credentials"] = not profile and bool(env_hint)
         cause, note = plain_credential_failure(rc, err)
-        if not cause and _region_not_enabled(err, profile, region):
-            cause = "region_not_enabled"
+        if not cause and _region_rejects_credentials(err, profile, region):
+            cause = "region_rejects_credentials"
             note = (
-                f"Region {region} is not enabled for this AWS account: the same credentials "
-                f"work in {_ALWAYS_ENABLED_REGION}. Pick another Region, or enable {region} "
-                "in the account settings."
+                f"Region {region} rejected these credentials (AWS reports an invalid security "
+                f"token), but they work in {_ALWAYS_ENABLED_REGION}. Either {region} is not "
+                "enabled for this AWS account, or the session token is valid only in Regions "
+                f"enabled by default. Pick another Region, enable {region} in the account "
+                "settings, or make STS global endpoint tokens valid in all Regions in the IAM "
+                "account settings."
             )
         result["cause"] = cause
         result["profile_missing"] = missing_profile(err)

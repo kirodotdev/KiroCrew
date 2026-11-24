@@ -21740,7 +21740,7 @@
         "credentials_cli_missing": "运行 {{productName}} 的电脑上没有安装 AWS CLI。",
         "credentials_cli_missing_steps": "安装后请重新检查。",
         "credentials_profile_not_found": "运行 {{productName}} 的电脑上没有名为 {{profile}} 的 AWS 配置文件。请在那台电脑上运行 {{sso}}（或 {{configure}}）来创建它，然后重新检查。",
-        "credentials_region_not_enabled": "此 AWS 账户未启用区域 {{region}}。请选择其他区域，或在账户设置中启用 {{region}}，然后重新检查。",
+        "credentials_region_rejected": "区域 {{region}} 拒绝了这些凭证（AWS 报告安全令牌无效），但它们在 us-east-1 中可用。要么此 AWS 账户未启用 {{region}}，要么会话令牌仅在默认启用的区域中有效。请选择其他区域、在账户设置中启用 {{region}}，或在 IAM 账户设置中使 STS 全局终端节点令牌在所有区域中有效，然后重新检查。",
         "credentials_ok": "Using profile {{profile}} → account {{account}}.",
         "credentials_ok_default": "使用默认 AWS 凭证 → 账户 {{account}}。",
         "custom_type": "自定义实例类型",

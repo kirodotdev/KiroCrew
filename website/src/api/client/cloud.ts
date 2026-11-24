@@ -43,7 +43,7 @@ export interface CloudPreflight {
   note: string
   detail: string
   /** Why the credentials check failed, when the gateway could tell: 'cli_missing',
-   *  'profile_not_found' or 'region_not_enabled'; "" when it could not. */
+   *  'profile_not_found' or 'region_rejects_credentials'; "" when it could not. */
   cause?: string
   /** For 'profile_not_found': the profile name the AWS CLI said it could not find. */
   profile_missing?: string

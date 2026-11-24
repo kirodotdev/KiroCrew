@@ -22856,7 +22856,7 @@
         "credentials_cli_missing": "La AWS CLI no está instalada en el equipo donde se ejecuta {{productName}}.",
         "credentials_cli_missing_steps": "Instálala y vuelve a comprobar.",
         "credentials_profile_not_found": "No hay ningún perfil de AWS llamado {{profile}} en el equipo donde se ejecuta {{productName}}. Ejecuta allí {{sso}} (o {{configure}}) para crearlo y vuelve a comprobar.",
-        "credentials_region_not_enabled": "La región {{region}} no está habilitada para esta cuenta de AWS. Elige otra región o habilita {{region}} en la configuración de la cuenta y vuelve a comprobar.",
+        "credentials_region_rejected": "La región {{region}} rechazó estas credenciales (AWS informa de un token de seguridad no válido), pero funcionan en us-east-1. O bien {{region}} no está habilitada para esta cuenta de AWS, o el token de sesión solo es válido en las regiones habilitadas de forma predeterminada. Elige otra región, habilita {{region}} en la configuración de la cuenta o haz que los tokens del punto de enlace global de STS sean válidos en todas las regiones en la configuración de la cuenta de IAM, y vuelve a comprobar.",
         "credentials_ok": "Usando el perfil {{profile}} → cuenta {{account}}.",
         "credentials_ok_default": "Usando tus credenciales de AWS predeterminadas → cuenta {{account}}.",
         "custom_type": "Tipo de instancia personalizado",

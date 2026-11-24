@@ -933,7 +933,7 @@ class TestReachabilityCheck:
         assert "no AWS profile named kirocrew-test" in r["note"]
         assert "aws configure sso --profile kirocrew-test" in r["note"]
 
-    def test_a_region_the_account_has_not_enabled_is_not_called_bad_credentials(self, monkeypatch):
+    def test_a_region_that_rejects_working_credentials_names_both_causes(self, monkeypatch):
         calls = []
 
         def fake_run(args, profile="", region="", **_kw):
@@ -944,8 +944,11 @@ class TestReachabilityCheck:
 
         monkeypatch.setattr(aws, "run_aws", fake_run)
         r = iam.reachability_check("kirocrew-test", "af-south-1")
-        assert r["cause"] == "region_not_enabled"
-        assert "Region af-south-1 is not enabled" in r["note"]
+        assert r["cause"] == "region_rejects_credentials"
+        assert "Region af-south-1 rejected these credentials" in r["note"]
+        # A success in us-east-1 does not prove the Region is disabled: name both causes.
+        assert "af-south-1 is not enabled" in r["note"]
+        assert "valid only in Regions enabled by default" in r["note"]
         assert "InvalidClientTokenId" in r["detail"]
         assert calls == [("sts", "af-south-1"), ("sts", "us-east-1")]
 

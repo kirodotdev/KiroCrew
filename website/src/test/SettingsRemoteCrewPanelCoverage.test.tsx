@@ -821,9 +821,9 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
       raw: 'aws: [ERROR]: The config profile (kirocrew-test) could not be found',
     },
     {
-      name: 'a Region the account has not enabled',
-      fields: { cause: 'region_not_enabled', detail: 'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation' },
-      sentence: /Region .+ is not enabled for this AWS account\. Pick another Region/,
+      name: 'a Region that rejects credentials that work in us-east-1',
+      fields: { cause: 'region_rejects_credentials', detail: 'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation' },
+      sentence: /Region .+ rejected these credentials.*Either .+ is not enabled for this AWS account, or the session token is valid only in Regions enabled by default/,
       raw: 'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation',
     },
   ])('names the cause in plain words when the credentials check fails on $name', async ({ fields, sentence, raw }) => {

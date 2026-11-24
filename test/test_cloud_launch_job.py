@@ -811,12 +811,12 @@ class TestRealEnginePreflight:
 
         reach = {
             "reachable": False,
-            "cause": "region_not_enabled",
-            "note": "Region af-south-1 is not enabled for this AWS account.",
+            "cause": "region_rejects_credentials",
+            "note": "Region af-south-1 rejected these credentials.",
             "detail": "aws: [ERROR]: InvalidClientTokenId",
         }
         engine = self._engine(monkeypatch, reach)
-        with pytest.raises(AWSError, match="Region af-south-1 is not enabled"):
+        with pytest.raises(AWSError, match="Region af-south-1 rejected these credentials"):
             engine.preflight("default", "af-south-1")
 
 

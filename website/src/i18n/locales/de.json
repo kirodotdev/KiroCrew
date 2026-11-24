@@ -22298,7 +22298,7 @@
         "credentials_cli_missing": "Die AWS CLI ist auf dem Computer, auf dem {{productName}} läuft, nicht installiert.",
         "credentials_cli_missing_steps": "Installiere sie und prüfe dann erneut.",
         "credentials_profile_not_found": "Auf dem Computer, auf dem {{productName}} läuft, gibt es kein AWS-Profil namens {{profile}}. Führe dort {{sso}} (oder {{configure}}) aus, um es anzulegen, und prüfe dann erneut.",
-        "credentials_region_not_enabled": "Die Region {{region}} ist für dieses AWS-Konto nicht aktiviert. Wähle eine andere Region oder aktiviere {{region}} in den Kontoeinstellungen und prüfe dann erneut.",
+        "credentials_region_rejected": "Die Region {{region}} hat diese Anmeldedaten abgelehnt (AWS meldet ein ungültiges Sicherheitstoken), in us-east-1 funktionieren sie aber. Entweder ist {{region}} für dieses AWS-Konto nicht aktiviert, oder das Sitzungstoken gilt nur in standardmäßig aktivierten Regionen. Wähle eine andere Region, aktiviere {{region}} in den Kontoeinstellungen oder mache Token des globalen STS-Endpunkts in den IAM-Kontoeinstellungen in allen Regionen gültig, und prüfe dann erneut.",
         "credentials_ok": "Profil {{profile}} → Konto {{account}}.",
         "credentials_ok_default": "Deine Standard-AWS-Anmeldedaten werden verwendet → Konto {{account}}.",
         "custom_type": "Eigener Instanztyp",
