@@ -495,6 +495,38 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    async def test_install_into_a_store_it_cannot_read_is_refused_as_unreadable(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """A store that may be valid but cannot be read is not reported as unparseable."""
+        raw = json.dumps({"mcpServers": {"github": {"command": "gh-mcp"}}}).encode()
+        sandbox.kirocrew_json.write_bytes(raw)
+        real_read_text = Path.read_text
+
+        def read_text(self, *args, **kwargs):
+            if self == sandbox.kirocrew_json:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 500
+            assert await resp.json() == {
+                "error": "cannot read the Kiro Crew mcp.json",
+                "code": "config_unreadable",
+            }
+            assert sandbox.kirocrew_json.read_bytes() == raw
+            assert not sandbox.rebuild.called
+            outcomes = [c.kwargs.get("outcome") for c in fake_sel.log_api_access.call_args_list]
+            assert outcomes == ["error"]
+        finally:
+            await client.close()
+
     @pytest.mark.parametrize(
         "stub",
         [

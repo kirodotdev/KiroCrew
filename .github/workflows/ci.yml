@@ -2301,11 +2301,14 @@ jobs:
           # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
           # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
           # 16,111 MiB; at 6 it peaked at 9,858-11,234 MiB (runs 44434126975,
-          # 44440752272). So one worker per 2 GiB after 2 GiB for the host,
-          # capped at the core count: 6 on the 16 GiB fleet runner, 4 on a
-          # 4-core hosted runner. The step prints its peak memory after the run.
+          # 44440752272). At 8, shard 7 on an AWS c6i.2xlarge (8 vCPU,
+          # 16 GiB, the fleet runner's size) ran in a median 846 s against
+          # 921 s at 6, 5 rounds each, at a 12,109 MiB median peak. So one
+          # worker per 1.5 GiB after 2 GiB for the host, capped at the core
+          # count: 8 on the 16 GiB fleet runner, 4 on a 4-core hosted runner.
+          # The step prints its peak memory after the run.
           mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 1536 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"

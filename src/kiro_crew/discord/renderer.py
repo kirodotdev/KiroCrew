@@ -87,7 +87,7 @@ from kiro_crew.discord.client import (
     EDIT_GONE,
     EDIT_OK,
 )
-from kiro_crew.discord.renderer_approval import DiscordApprovalDecider
+from kiro_crew.discord.renderer_approval import DiscordApprovalDecider, approval_prompt_text
 from kiro_crew.discord.renderer_components import (
     _STYLE_DANGER,
     _STYLE_SUCCESS,
@@ -1284,17 +1284,23 @@ class DiscordRenderer(Renderer):
                 ],
             }
         ]
-        # The tool name is LLM-authored and Discord renders the message as
-        # markdown, so it goes through the same display-form scan as streamed text.
-        # The driver's byte-level pass sees `AKIA**…**` as broken while the rendered
-        # prompt shows it whole -- the reason _redact_transformed exists.
-        # The request's OWN title first: `_last_tool` is the last tool_call seen
-        # and is never cleared, so it names the previous tool for any permission
-        # that arrives without one of its own. Either source is LLM-authored, so
-        # the display-form scan above applies to both.
+        # The title, purpose and input are LLM-authored and Discord renders the
+        # message as markdown, so each goes through the same display-form scan as
+        # streamed text, off the loop. The driver's byte-level pass sees `AKIA**…**`
+        # as broken while the rendered prompt shows it whole -- the reason
+        # _redact_transformed exists.
+        # The request's OWN title only. No tool call id reaches this prompt, so the
+        # last tool_call seen (`_last_tool`) cannot be tied to the request and is
+        # never used: an untitled request reads `this tool` (approval_prompt_text).
         try:
-            tool = await asyncio.to_thread(
-                _redact_transformed, tool_title or self._last_tool or "this tool"
+            content = await asyncio.to_thread(
+                approval_prompt_text,
+                tool_title,
+                tool_purpose,
+                tool_input,
+                _redact_transformed,
+                _redact_all,
+                self.prompt_mcp_identity,
             )
             # A turn parked on a human is not a stalled turn: hold the watchdog until
             # the next real activity (``_note_progress``) resumes it, so waiting for
@@ -1303,7 +1309,7 @@ class DiscordRenderer(Renderer):
                 self._ladder_paused = True
                 self._ladder.pause_stall_watchdog()
             posted = await self._client.send_message(
-                self._channel_id, f"🔐 Approve `{tool}`?", components=components
+                self._channel_id, content, components=components
             )
             if not posted:
                 # This client reports a failed send by RETURNING no message id
@@ -1574,6 +1580,20 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.discord.renderer_approval import (  # noqa: F401
         _APPROVAL_TIMEOUT_S,
+        _ASCII,
+        _CUT_MARKER,
+        _HIDDEN,
+        _INPUT_CHARS,
+        _LINE_CHARS,
+        _LINE_MAX,
+        _NAME_MAX,
+        _break_backtick_pairs,
+        _cut,
+        _inline,
+        _literal_scan,
+        _Scan,
+        _shown,
+        _tag_spans,
     )
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,

@@ -1583,7 +1583,7 @@ proposed goal exactly as one created on the Bots page does (see the goal
 welcome below); the `/members?create=1&name=<encoded-name>&goal=<encoded-goal>`
 link to an editable UI draft remains for a user who wants to fill it in; opening a draft
 never creates a member or starts a schedule.
-An app's proposal of a Bot from a `.crewmate` bundle is a `crewmate.import` card, raised only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)). Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
+A Bot made from a Bot file (a `.kirobot` file, an older `.crewjam` or `.crewmate` one, or an app's bundle) is a `crewmate.import` card: an app raises one only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)), and the owner raises one with Import from file or with Make a copy on a Bot's Profile card, which hands that Bot's export straight to the same import. Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
 Creating a Bot is never a first-run chapter: neither the end of the tour nor
 a Bots visit opens anything by itself, and the page's New Bot card is
 the one place a Bot is created on the Bots page.
@@ -2652,8 +2652,9 @@ continue" with the gateway's reason; a turn starting retires it. An error card
 with a remedy of its own (a context overflow, a repeated session start, a
 refused feature request, a refused app agent) withholds Resume from the composer
 too, through the one predicate `newestErrorOwnsRecovery` that ChatPage reads. A
-sign-in error (`auth_required`) is not one of them: the press works once the
-sign-in lands, so the composer keeps Resume and only its placeholder changes,
+sign-in error (`auth_required`, or `kiro_cli_sign_in` for kiro-cli's own
+sign-in) is not one of them: the press works once the sign-in lands, so the
+composer keeps Resume and only its placeholder changes,
 to "Last turn needs a sign-in -- follow the message above, then press Resume or
 send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
 and a crew's window). That chat's sidebar row reads "Turn interrupted · Sign
@@ -4421,7 +4422,11 @@ worker it dispatched, the session it is answering about — as a `/chat?sid=…`
 link, a bare slot key, or a short name (`chat-1380`). In this chat those behave
 exactly as they do on the single-chat page: a plain click switches to that
 session, a key chip is an affordance, and an unresolvable one stays muted text
-with its href intact. There is no second resolver — the
+with its href intact. A key of another shape, such as a cron-born session's
+title-derived key (`_nightly-report-…`, possibly ending in `...`), resolves only
+as the exact key of an OPEN session (`rosterKeyFrom`); a `chat-…` span never
+takes that path, so a short name keeps its write-time pin and ambiguity refusal,
+and a closed session of another shape is not probed. There is no second resolver — the
 markdown renderer's own `SessionActionCtx` does the work on both surfaces, and it
 gates on (`onSessionOpen` AND `sessions`), so what changed is only who supplies
 them. `ChatPane` takes the triple as optional props and hands it to
@@ -5867,10 +5872,11 @@ kiro-cli that lacks its engine.
   argument, so the gate only ever sees a confirmed pin and never raises
   (harness-parity H17, the one exception to H3). Displays that name the pin as
   stored read `crewmate_stored_pin`, which never raises.
-- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS under the
-  same rule as a stored `agent.acp_backend: kiro` (`CrewBackendPin.resolve` calls
-  `kiro_cli_pick_backend()` when `agent.kas_bundle` is off), for the DM chat and
-  the workers alike, while the stored value still reads `kiro`
+- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS on
+  kiro-cli's help verdict, without the v3 start a stored `agent.acp_backend: kiro`
+  waits for (`CrewBackendPin.resolve` calls `kiro_cli_listed_backend()` when
+  `agent.kas_bundle` is off), for the DM chat and the workers alike, while the
+  stored value still reads `kiro`
   (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
@@ -5878,7 +5884,7 @@ kiro-cli that lacks its engine.
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
   `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6 and 5.4: KAS, Claude Code, Codex, Pi; never
   deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
-  `kiro_cli_pick_backend()` moves it there), and that this host's session start
+  `kiro_cli_listed_backend()` moves it there), and that this host's session start
   does not refuse (`tool_gate.sandbox_floor_refusal`: an enforced harness whose
   credential mask cannot apply here is refused with the launch's own sentence).
   A stored pin outside that list is

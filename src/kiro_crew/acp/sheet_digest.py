@@ -110,11 +110,13 @@ def _kind(value: str) -> str:
     if body.isascii() and body.isdigit():
         return "integer"
     if any(ch.isdigit() for ch in value):
-        try:
-            float(value)
-            return "number"
-        except ValueError:
-            pass
+        # float() reads "12_34" as a number; a code with an underscore is not one.
+        if "_" not in value:
+            try:
+                float(value)
+                return "number"
+            except ValueError:
+                pass
         try:
             _dt.datetime.fromisoformat(value)
             return "date"
@@ -167,6 +169,26 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
         return _shape(name, rows[0], iter(rows[1:]), partial=partial, read=read_note)
     except csv.Error:
         return None
+
+
+def _csv_delimiter(text: str) -> str:
+    """``;`` when the ``.csv`` *text* is plainly semicolon-separated, else ``,``.
+
+    The first record, read with the comma rules ``digest_text`` uses, decides first: two or
+    more fields keep ``,``. Only a one-field record lets ``;`` apply, and then the typing
+    sample (the first :data:`MAX_TYPED_ROWS` data records, blank lines apart) must read as
+    the same two or more cells in every record with ``;``, so a quoted ``;`` never counts.
+    """
+    try:
+        first = next((r for r in csv.reader(io.StringIO(text, newline="")) if r), [])
+        if len(first) > 1:
+            return ","
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=";")
+        rows = [row for row in itertools.islice(reader, MAX_TYPED_ROWS + 1) if row]
+    except csv.Error:
+        return ","
+    width = len(rows[0]) if rows else 0
+    return ";" if width > 1 and all(len(row) == width for row in rows) else ","
 
 
 def _counts_only(name: str, count: int, width: int, *, partial: bool, read: str) -> str:
@@ -237,6 +259,8 @@ def digest_file(path: Path) -> str | None:
         # digest_text redacts what it shows, in the attachment path's order, so a secret in a
         # cell never reaches the prompt.
         text = data.decode("utf-8-sig", errors="replace")
+        if path.suffix.lower() == ".csv":
+            delimiter = _csv_delimiter(text)
         return digest_text(path.name, text, delimiter, partial=partial)
     except Exception:
         logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)

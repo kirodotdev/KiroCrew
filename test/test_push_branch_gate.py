@@ -411,7 +411,7 @@ class TestGitPushEnforcement:
         assert len(allow) == 1
         assert allow[0].operation == "git_push"
 
-    @pytest.mark.timeout(10)
+    @pytest.mark.timeout(60)
     def test_redos_safe_on_pathological_input(self) -> None:
         """is_denied must not backtrack exponentially on whitespace-laden flags.
 
@@ -422,10 +422,14 @@ class TestGitPushEnforcement:
         executes grow linearly over three pump sizes, with the verdict "allowed"
         at each size.
 
-        The 10s ceiling is a lost-run bound owned by pytest-timeout's mark, not
+        The 60s ceiling is a lost-run bound owned by pytest-timeout's mark, not
         a SIGALRM armed in the body: the mark keeps the run-wide watchdog armed
-        through the assert and teardown, so a hang fails as ``Timeout >10.0s``
-        attributed to this test, with stacks.
+        through the assert and teardown, so a hang fails as ``Timeout >60.0s``
+        attributed to this test, with stacks. No check here reads the wall clock,
+        so the mark sizes the run and decides no verdict: CI's coverage shard
+        spends 5-8 s of wall clock in this body (``linux-pytest-progress-3``),
+        and 60 s, half the suite's ``--timeout=120``, is over seven times the
+        slowest of those runs.
         """
         _assert_scan_is_linear(
             lambda n: "git " + ("\t-! " * n) + "x", (100, 200, 300), denied=False

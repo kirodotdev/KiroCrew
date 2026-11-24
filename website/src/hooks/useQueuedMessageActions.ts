@@ -49,10 +49,29 @@ export interface QueuedSendRecord {
  *  three small strings bounded by queued sends per tab session. */
 export const queuedSendStash = new Map<string, QueuedSendRecord>()
 
+/** One cancel of `onCancelAll` that did not go through. */
+export interface QueuedCancelFailure {
+  queueId: string
+  reason: unknown
+}
+
 /** The queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
 export interface QueuedMessageActions {
   onCancel: (queueId: string) => void
+  /** Cancel several cards at once (`QueueStack`'s Discard all). Each id goes
+   *  through the same per-entry cancel request as `onCancel`, so the server
+   *  sends each one's notice and releases each one's hold. Unlike `onCancel`
+   *  it restores nothing into the composer, and it removes a card only once
+   *  the server accepted its cancel: several messages merged into one draft
+   *  is not a draft anyone wrote, and with no draft to show at once there is
+   *  no reason to hide a card the server may still run. Ids that are no longer
+   *  a visible card, whose user row is already written (`meta.written`, which
+   *  the server refuses to cancel), or whose action is already in flight, are
+   *  skipped. Resolves once every request has answered, to each refused or
+   *  lost one's id and reason (empty when all went through), so the stack can
+   *  say which messages are still queued. */
+  onCancelAll: (queueIds: readonly string[]) => Promise<QueuedCancelFailure[]>
   onInterrupt: (queueId: string) => void
   /** `pastes`: the paste blocks the edit kept, when the card carried any
    *  (`QueueStack`'s `onEdit`); the optimistic row takes exactly that set. */
@@ -134,7 +153,9 @@ const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as str
  * Cancel and edit stay optimistic and still swallow a failed mutation, matching
  * what both hosts did before this hook existed. Item 1 of #5891 — rollback or
  * dispatch-after-success, plus an error surface — is a contract change with two
- * viable answers, and lands here, once, when someone picks one.
+ * viable answers, and lands here, once, when someone picks one. `onCancelAll`
+ * is the one exception: it restores nothing, so it waits for the server and
+ * reports what failed.
  */
 export function useQueuedMessageActions({
   slot,
@@ -147,6 +168,8 @@ export function useQueuedMessageActions({
 }: QueuedMessageActionsOptions): QueuedMessageActions {
   const dispatch = useAppDispatch()
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const pendingIdsRef = useRef(pendingIds)
+  pendingIdsRef.current = pendingIds
 
   // Reads happen inside callbacks that must NOT be re-created when the queue
   // changes: `QueueStack` is memo-compared on callback identity, so a new
@@ -221,7 +244,8 @@ export function useQueuedMessageActions({
    *
    *  The failure path stays silent, matching what both hosts did before this
    *  hook existed and leaving item 1 of #5891 to decide otherwise. It must still
-   *  release, or one lost request freezes a card until the queue drains. */
+   *  release, or one lost request freezes a card until the queue drains.
+   *  `onCancelAll` latches through it too, and reports its own failures. */
   const run = useCallback((queueId: string, call: Promise<unknown>) => {
     markPending(queueId, true)
     const release = () => markPending(queueId, false)
@@ -291,6 +315,32 @@ export function useQueuedMessageActions({
     // Optimistically remove the card; the WS echo is a no-op if already gone.
     dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))
     run(queueId, api.cancelQueuedMessage(slot, queueId))
+  }, [slot, dispatch, run])
+
+  const onCancelAll = useCallback((queueIds: readonly string[]): Promise<QueuedCancelFailure[]> => {
+    if (!slot) return Promise.resolve([])
+    // Re-read now: the dialog stayed open after the ids were read (see the interface doc).
+    const visible = new Set(visibleQueuedRef.current
+      .filter(m => m.meta?.written !== true)
+      .map(queueIdOf)
+      .filter((id): id is string => !!id))
+    const pending = pendingIdsRef.current
+    const sent: string[] = []
+    const calls: Promise<unknown>[] = []
+    for (const queueId of new Set(queueIds)) {
+      if (!visible.has(queueId) || pending.has(queueId)) continue
+      // Not optimistic: the card leaves only once the server dropped its entry.
+      const call = api.cancelQueuedMessage(slot, queueId).then(() => {
+        // Nothing is restored, so the send-time record has no reader left.
+        queuedSendStash.delete(queueId)
+        dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))
+      })
+      run(queueId, call)
+      sent.push(queueId)
+      calls.push(call)
+    }
+    return Promise.allSettled(calls).then(results =>
+      results.flatMap((r, i) => (r.status === 'rejected' ? [{ queueId: sent[i], reason: r.reason }] : [])))
   }, [slot, dispatch, run])
 
   const onInterrupt = useCallback((queueId: string) => {
@@ -377,7 +427,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds],
+    () => ({ onCancel, onCancelAll, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds }),
+    [onCancel, onCancelAll, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds],
   )
 }

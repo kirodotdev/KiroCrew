@@ -80,13 +80,16 @@ def kas_backend_offered() -> bool:
 def kiro_cli_runs_on_kas() -> bool:
     """Whether a Kiro CLI pick would run on KAS here, whatever is stored. Blocking.
 
-    The remap's own conditions (``_read_backend_choice``): off the bundle route, and
-    :func:`~kiro_crew.acp_backends.kiro_cli_pick_backend` answers KAS.
+    Off the bundle route, and kiro-cli's help verdict names v3
+    (:func:`~kiro_crew.agent_sdk.backends.kiro_cli_listed_backend` answers KAS). The help
+    verdict, not the start check a saved pick then runs
+    (:func:`~kiro_crew.agent_sdk.backends.kiro_cli_pick_backend`): with no pick stored
+    nothing is started, and a refusal on record already takes KAS off this host.
     """
-    from kiro_crew.acp_backends import ACP_BACKEND_KAS, kiro_cli_pick_backend
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, kiro_cli_listed_backend
     from kiro_crew.config.loader_document import acp_backend_bundle_route
 
-    return not acp_backend_bundle_route() and kiro_cli_pick_backend() == ACP_BACKEND_KAS
+    return not acp_backend_bundle_route() and kiro_cli_listed_backend() == ACP_BACKEND_KAS
 
 
 def _claim() -> bool:

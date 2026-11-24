@@ -343,12 +343,14 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _published_redaction_verdict_on,
     _release_source_corpus_after_module,
     _release_stt_engine,
+    _reset_app_scope_grant_facts,
     _reset_browser_host_approvals,
     _reset_browser_media_watches,
     _reset_builtin_discovery_scan,
     _reset_channel_turn_ceiling,
     _reset_chromium_opt_in_record,
     _reset_cjk_segmenter,
+    _reset_code_channel_owner_only_notices,
     _reset_create_rate_limit_buckets,
     _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
@@ -363,6 +365,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_session_switch_locks,
     _reset_subagent_memory_price_holders,
     _reset_subagent_not_due_memo,
+    _reset_waiting_sends,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
     _session_memory_scope_sample_unshared,
@@ -386,7 +389,9 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_slack_thread_state,
     _enterprise_bypass,
     _reset_code_channel_audience,
+    _reset_conductor_thread_notices,
     _reset_options_control_state,
+    _reset_thread_board,
 )
 
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
@@ -670,6 +675,9 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    # ``raising=False``: a tree with the production change reverted (prove.py) has no
+    # such flag, and the guard must not turn every test there into a setup error.
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_started", False, raising=False)
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
     # The gateway floor asks again about an unknown Kiro CLI pick after minutes; a
     # test that drives the floor opts into those asks with delays of its own.

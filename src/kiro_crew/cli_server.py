@@ -559,6 +559,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     task_name = getattr(args, "name", "")
     # Local: this module's top-level imports are a frozen facade inventory.
     from kiro_crew.hooks import FileTooLargeError
+    from kiro_crew.taskrunner_parts.run_reporting import live_error
 
     try:
         try:
@@ -575,7 +576,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         if result.status == "completed":
             print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
         elif result.status == "failed":
-            print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
+            print(f"\n❌ Task failed ({label}): {live_error(result)}", file=sys.stderr)
             sys.exit(1)
         elif result.status == "cancelled":
             print("\n⚠️  Task cancelled")
@@ -593,13 +594,15 @@ def _service_cmd(args: argparse.Namespace) -> int:
     """
     action = getattr(args, "service_action", None)
     if action == "install":
-        rc = service_controller.install_service()
+        # True / False for --headless / --no-headless, None for neither (keep).
+        headless = getattr(args, "headless", None)
+        rc = service_controller.install_service(headless=headless)
         sel().log_api_access(
             caller="cli",
             operation="service_install",
             outcome="allowed" if rc == 0 else "error",
             source="cli",
-            resources=f"rc={rc}",
+            resources=f"rc={rc} headless={'keep' if headless is None else int(headless)}",
         )
         return rc
     if action == "uninstall":

@@ -30,11 +30,13 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
+import threading
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -44,6 +46,9 @@ REPO = "kirodotdev/KiroCrew"
 # ci.yml's Linux matrix job, `Backend Tests (3.12, 4)`; not the Windows or IPv6 lanes.
 LINUX_BACKEND_JOB = re.compile(r"Backend Tests \(3\.\d+, \d+\)")
 TIMEOUT = 120
+# A backend shard's log is a few megabytes. One a pull request made larger than
+# this is not read: it is cut off at the limit, never held whole.
+MAX_LOG_BYTES = 64 * 1024 * 1024
 _NO_TIER = "\0no-guard-tier"
 
 
@@ -78,6 +83,47 @@ def _run(argv: list[str], root: Path) -> str:
 
 def _gh_json(args: list[str], root: Path) -> Any:
     return json.loads(_run(["gh", *args], root))
+
+
+def capped(stream: IO[bytes], most: int) -> bytes | None:
+    """What `stream` holds, or None when it holds more than `most` bytes.
+
+    One byte past the limit is the most that is ever kept: a job log and an
+    artifact are as large as the pull request that made them chose.
+    """
+    held = stream.read(most + 1)
+    return None if len(held) > most else held
+
+
+def _gh_bytes(argv: list[str], root: Path, most: int) -> bytes | None:
+    """What one `gh` call prints, undecoded; None when it prints more than `most` bytes.
+
+    The output is read as it comes and the call is ended at the limit, so no
+    more than the limit is ever held. Raises as `_run` does when the call fails.
+    """
+    with tempfile.TemporaryFile() as said:
+        call = subprocess.Popen(  # noqa: S603  (fixed argv, no shell)
+            argv, cwd=root, stdout=subprocess.PIPE, stderr=said
+        )
+        deadline = threading.Timer(TIMEOUT, call.kill)
+        deadline.start()
+        try:
+            assert call.stdout is not None  # noqa: S101  (PIPE was asked for)
+            held = capped(call.stdout, most)
+            if held is None:
+                call.kill()
+            code = call.wait()
+        finally:
+            deadline.cancel()
+            if call.stdout is not None:
+                call.stdout.close()
+        if held is None:
+            return None
+        if code:
+            said.seek(0)
+            error = said.read(4096).decode("utf-8", errors="replace")
+            raise subprocess.CalledProcessError(code, argv, stderr=error)
+    return held
 
 
 def failing_test_files(failures: dict[str, str]) -> list[str]:
@@ -222,23 +268,22 @@ def run_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | No
     return jobs
 
 
+def job_log(job: dict[str, Any], root: Path) -> str | None:
+    """One job's log, None when it is larger than `MAX_LOG_BYTES`. Raises when `gh` fails."""
+    argv = ["gh", "api", "--allow-escape-sequences", f"repos/{REPO}/actions/jobs/{job['id']}/logs"]
+    raw = _gh_bytes(argv, root, MAX_LOG_BYTES)
+    return None if raw is None else raw.decode("utf-8", errors="replace")
+
+
 def job_failures(
     job: dict[str, Any], root: Path, parse: Callable[[str], dict[str, str]]
 ) -> dict[str, str] | None:
-    """The failing node ids one job's log names, None when the log cannot be read."""
+    """The failing node ids one job's log names, None when the log cannot be read whole."""
     try:
-        log = _run(
-            [
-                "gh",
-                "api",
-                "--allow-escape-sequences",
-                f"repos/{REPO}/actions/jobs/{job['id']}/logs",
-            ],
-            root,
-        )
+        log = job_log(job, root)
     except subprocess.CalledProcessError:
         return None
-    return parse(log)
+    return None if log is None else parse(log)
 
 
 def _red_row(

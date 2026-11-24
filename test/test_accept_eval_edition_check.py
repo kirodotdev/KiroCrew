@@ -189,9 +189,9 @@ def test_every_argv_element_is_a_template_literal_or_a_validated_field(monkeypat
         assert element in {"kirocrew", "acceptance-check", "--json", CHECK, REF}, element
 
 
-def test_the_self_built_commands_are_exactly_gh_and_kirocrew():
+def test_the_self_built_commands_are_exactly_gh_kirocrew_and_git():
     mod = _load()
-    assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew"}
+    assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew", "git"}
 
 
 def test_the_ledger_mirror_uses_the_evaluators_own_patterns():

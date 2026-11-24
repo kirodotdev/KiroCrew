@@ -19,12 +19,6 @@ from kiro_crew.sel import sel
 logger = logging.getLogger("kiro_crew.apps.routes")
 
 
-async def _owner_denial(request: web.Request, operation: str) -> web.Response | None:
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
-
-
 def _not_installed(name: str) -> web.Response:
     return web.json_response(
         {"error": f"app {name!r} not installed", "code": "app_not_installed"}, status=404
@@ -52,7 +46,11 @@ async def handle_bot_grants(request: web.Request) -> web.Response:
     """GET reads the ticked list and the scopes; PUT ``{"bots": [slug, ...]}`` replaces the list."""
     name = request.match_info["name"]
     write = request.method == "PUT"
-    denied = await _owner_denial(request, "apps.bot_grants." + ("write" if write else "read"))
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(
+        request, "apps.bot_grants." + ("write" if write else "read")
+    )
     if denied is not None:
         return denied
     if not write:

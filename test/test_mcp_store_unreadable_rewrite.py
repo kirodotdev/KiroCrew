@@ -3,9 +3,10 @@
 ``<data home>/mcp.json`` holds every server Kiro Crew keeps for itself. Read as an
 empty document, a file that does not parse or cannot be opened would be written
 back holding only the entry being changed, and every other server would be gone
-with no error. These writers read it strictly instead: a missing file is empty,
-and anything else they cannot read is answered as ``"corrupt"`` (or changes no
-tool) with its bytes left exactly as they were.
+with no error. These writers read it strictly instead: a missing file is empty, a
+file that cannot be read is answered as ``"unreadable"`` and one that does not
+parse as ``"corrupt"`` (or changes no tool), with its bytes left exactly as they
+were.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import pytest
 from aiohttp import web
 from body_stream_helpers import attach_body
 from dashboard_owner_helpers import owner_claims
+from handlers_mcp_coverage_helpers import sandbox_fixture  # noqa: F401
+from handlers_mcp_coverage_helpers import _request
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
@@ -72,11 +75,87 @@ def test_a_store_that_cannot_be_opened_is_not_rewritten(store) -> None:
     store.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
     store.chmod(0o000)
     try:
-        assert mcp_mod._set_kirocrew_entry("srv", enabled=False) == "corrupt"
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=False) == "unreadable"
         assert mcp_mod._set_tool_overrides("github", {"delete_repo": False}) == []
     finally:
         store.chmod(0o600)
     assert json.loads(store.read_text(encoding="utf-8")) == {"mcpServers": servers}
+
+
+def _refuse_reads_of(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ``read_text`` of *path* fail as a held or unpermitted file does."""
+    real_read_text = Path.read_text
+
+    def read_text(self: Path, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+
+@pytest.mark.parametrize("existing_only", [False, True], ids=["upsert", "existing-only"])
+def test_a_store_whose_read_is_refused_is_unreadable_not_corrupt(
+    store, monkeypatch, existing_only
+) -> None:
+    raw = json.dumps({"mcpServers": {"srv": {"command": "x"}}}).encode()
+    store.write_bytes(raw)
+    _refuse_reads_of(store, monkeypatch)
+
+    action = mcp_mod._set_kirocrew_entry(
+        "srv", enabled=True, spec={"command": "x"}, existing_only=existing_only
+    )
+
+    assert action == "unreadable"
+    assert store.read_bytes() == raw
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_names_a_store_it_cannot_read_as_unreadable(sandbox, monkeypatch) -> None:
+    from kiro_crew.dashboard.handlers import _shared
+
+    store = mcp_mod._kirocrew_mcp_json()
+    store.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"mcpServers": {"keep1": {"command": "x", "disabled": True}}}).encode()
+    store.write_bytes(raw)
+    no_manager = MagicMock()
+    no_manager.available.return_value = False
+    monkeypatch.setattr(_shared, "_capability_manager", lambda: no_manager)
+    _refuse_reads_of(store, monkeypatch)
+
+    resp = await mcp_mod.api_mcp_toggle(_request({"name": "keep1", "enabled": True}))
+
+    assert resp.status == 500
+    assert json.loads(resp.body) == {
+        "error": "cannot read the Kiro Crew mcp.json",
+        "code": "config_unreadable",
+    }
+    assert store.read_bytes() == raw
+    assert not sandbox.global_json.exists()
+    assert sandbox.synced == []
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_still_names_a_store_that_does_not_parse_as_corrupt(
+    sandbox, monkeypatch
+) -> None:
+    from kiro_crew.dashboard.handlers import _shared
+
+    store = mcp_mod._kirocrew_mcp_json()
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(_TRUNCATED)
+    no_manager = MagicMock()
+    no_manager.available.return_value = False
+    monkeypatch.setattr(_shared, "_capability_manager", lambda: no_manager)
+
+    resp = await mcp_mod.api_mcp_toggle(_request({"name": "github", "enabled": True}))
+
+    assert resp.status == 500
+    assert json.loads(resp.body) == {
+        "error": "cannot parse the Kiro Crew mcp.json",
+        "code": "config_corrupt",
+    }
+    assert store.read_bytes() == _TRUNCATED
 
 
 def test_a_missing_store_is_still_created(store) -> None:

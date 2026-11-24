@@ -62,6 +62,17 @@ python3 scripts/kas_bundle_publish.py --kas-dir <KAS build drop> --version 0.66.
 - `--node-linux-x64` must be laid out like nodejs.org's tarball (`node-v<N>-linux-x64/bin/node`) and print exactly `v<N>`; run the publish on a linux-x64 host so that can be checked. Every other Node key still comes from nodejs.org.
 - `--onnx-overlay-linux-x64` re-packs only the linux-x64 engine tarball. Every other platform's tar bytes stay the KAS build's.
 - `provenance.json` beside `manifest.json` records where each piece came from.
-- Use a new version name that keeps the `-node<N>` part; a published version is never overwritten.
+- Name it `<KAS_PIN_VERSION>-al2`; a published version is never overwritten.
 
-To ship it, change three things in `src/kiro_crew/acp/kas_pin.py` in one commit: `KAS_PIN_VERSION`, `KAS_PIN_MANIFEST_SHA256` (the script prints both), and `KAS_PIN_LINUX_GLIBC_FLOOR["linux-x64"] = (2, 26)`. Only a pinned AL2 release lowers the install floor; any other version keeps 2.28, and `linux-arm64` stays at 2.28.
+## Which host runs which pin
+
+| Host | Pin | glibc floor |
+|---|---|---|
+| linux-x64, glibc below 2.28 | `KAS_PIN_AL2_VERSION` (`<KAS_PIN_VERSION>-al2`) | 2.26 |
+| linux-x64, glibc 2.28+ or unreadable | `KAS_PIN_VERSION` | 2.28 |
+| linux-arm64 | `KAS_PIN_VERSION` | 2.28 |
+| macOS, Windows | `KAS_PIN_VERSION` | none |
+
+Both pins are the same engine release, so every engine version check reads one value (`KAS_PIN_ENGINE_RELEASE`). The choice is made again on every install check: a host that moves to glibc 2.28+ installs the normal pin next time. `--unpinned`, `--from` with another version and `KIROCREW_KAS_VERSION` are held to 2.28.
+
+To move both pins, publish the normal release and its `-al2` republish, then change `KAS_PIN_VERSION`, `KAS_PIN_MANIFEST_SHA256` and `KAS_PIN_AL2_MANIFEST_SHA256` in `src/kiro_crew/acp/kas_pin.py` in one commit. `KAS_PIN_AL2_VERSION` follows `KAS_PIN_VERSION` by itself.

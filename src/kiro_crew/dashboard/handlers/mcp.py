@@ -82,6 +82,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _load_config_or_refusal,
     _mcp_config_busy,
     _mcp_config_corrupt,
+    _mcp_config_unreadable,
     _mcp_server_not_found,
     _mcp_spec_invalid,
     _mcp_write_failed,
@@ -606,6 +607,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
                 {"error": f"{name!r} is ambiguous", "code": "mcp_server_name_ambiguous"},
                 status=409,
             )
+        if store_action == "unreadable":
+            return _mcp_config_unreadable("the Kiro Crew mcp.json")
         if store_action == "corrupt":
             return web.json_response(
                 {"error": "cannot parse the Kiro Crew mcp.json", "code": "config_corrupt"},
@@ -1210,8 +1213,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _get_mcp_lock_sync,
         _has_json_comments_on_disk,
         _load_config_for_update,
+        _load_config_or_reason,
         _load_json_or_empty,
-        _mcp_config_unreadable,
         _McpFileLockSync,
         _resolve_key_from_read,
         _unreadable_mcp_files,
@@ -1243,6 +1246,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_gateway_status,
         api_mcp_resolve_refresh,
         declared_launch,
+        mcp_sharing_can_turn_on,
     )
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,
@@ -1371,6 +1375,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         return refused
     results: list[dict] = []
     corrupt = False  # a scope file broke mid-batch: stop and refuse
+    unreadable = False  # the store could not be read mid-batch: stop and refuse
 
     # ── Phase 1 (BEFORE the MCP file lock): companion package uninstalls ──
     # Run capability-manager uninstalls FIRST, off the lock, so:
@@ -1664,6 +1669,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         spec=resolved_spec,
                         preferred=keys.get(f"{scope.id}Global"),
                     )
+                if "unreadable" in outcome["actions"].values():
+                    unreadable = True
+                    results.append(outcome)
+                    break
                 if "corrupt" in outcome["actions"].values():
                     corrupt = True
                     results.append(outcome)
@@ -1790,6 +1799,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         _urls_clean, _ = redact_exfiltration_urls(str(exc))
         rebuild_error, _ = redact_credentials(_urls_clean)
         logger.warning("rebuild_agent_config failed after apply: %s", exc)
+    if unreadable:
+        return _mcp_config_unreadable("the Kiro Crew mcp.json")
     if corrupt:
         return _mcp_config_corrupt()
     return web.json_response(

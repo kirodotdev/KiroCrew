@@ -329,7 +329,11 @@ other; single quotes group nothing under `cmd.exe`.
 Both platforms get `KIROCREW_HOOK_EVENT` and `KIROCREW_HOOK_CONTEXT` in the
 environment, and the hook-event JSON on stdin. `KIROCREW_HOOK_CONTEXT` is capped
 at 500 characters on every event. Read the full text from stdin instead: `prompt`
-on `UserPromptSubmit`, `assistant_text` on `Stop`.
+on `UserPromptSubmit`, `assistant_text` on `Stop`. On `PostToolUse`,
+`tool_response.output` holds at most the first 2,000 characters of the redacted
+tool output: `truncated` says whether it was cut, and `output_length` is the
+length of the text it was cut from, which is no more than about 8,000 for a tool
+result Kiro Crew reads over ACP.
 
 In a dashboard chat, and on a channel turn that runs the Hooks page's hooks (your
 own conversation, such as a Slack 1:1 DM), `prompt` is your message, not the

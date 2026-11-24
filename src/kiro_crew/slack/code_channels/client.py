@@ -319,6 +319,7 @@ def parse_channel_info(channel_id: str, raw: Any) -> ChannelInfo:
         archived=(
             channel.get("is_archived") if isinstance(channel.get("is_archived"), bool) else None
         ),
+        mpim=channel.get("is_mpim") if isinstance(channel.get("is_mpim"), bool) else None,
     )
 
 

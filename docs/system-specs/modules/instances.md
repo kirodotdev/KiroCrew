@@ -995,10 +995,11 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   characters, the hint store's limit. The resolver rebuilds it as
   `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
   same-named local session; a `crew` that is not an id becomes the value-free
-  `/chat?crewError=1`. The hub reads the route only from the native navigate
-  channel, never from its URL, and matches the id against a crew list read
+  `/chat?crewError=1`. The hub runs the link (pane switch, connect rule) only
+  from the native navigate channel, and matches the id against a crew list read
   fresh for the link (not the cached `['instances']`, which can still say
-  `connected` for a tunnel that died while the window was hidden). The newest
+  `connected` for a tunnel that died while the window was hidden). The same
+  route on the dashboard's own address only opens the crew window (below). The newest
   native link wins: a crew link whose read answers after a later link arrived,
   or after the user switched panes, is dropped silently. A link that arrives
   before a reloading window has restored its remembered pane wins over that
@@ -1025,6 +1026,30 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
     switches there. Known limit: a dead forwarder the gateway has not noticed yet
     still reads `connected`, so the key reaches the pane on screen, which a tab
     click would show just as broken.
+  - **On the dashboard address.** `/chat?crew=<crew id>&crewSid=<key>` (and
+    `/chat/<slug>?…`) typed or linked into the hub's own address opens that
+    session in the crew window over the local chat page, the window the
+    sidebar's crew rows open (`useCrewAddressLink`). It runs in the hub only,
+    never in a pane, a popout or an `/embed/` frame (the embedded chat keeps its
+    own `?crew=&key=`), on every new address entry that carries the route. It
+    drops `crew`, `crewSid` and `crewError` from the live address at once (the
+    chat page's URL writer copies every other param, so a reload never re-reads
+    them; it copies the router's committed search, which can still hold the
+    route while the replace's transition is pending, so it leaves out each of
+    the three the live address no longer carries, `withoutSpentCrewLink`),
+    forgets a remembered pane and brings the local crew forward, then
+    checks the id against the shared `['instances']` list: a malformed link, an
+    unknown id, a crew turned off, a crew with no dashboard pane or a list that
+    failed to load raises the same message as the native link and opens nothing.
+    A link whose list read answers after a newer address link arrived, after
+    the user picked or opened a session or closed the window, or while a crew
+    pane is in front or another page is shown, opens nothing and shows nothing.
+    It has no connect rule: it never switches to the crew's pane and never
+    starts a tunnel, because any web page can open a dashboard address. A crew
+    that is not connected opens the window in its not-connected state, which
+    goes live once the tunnel is up; known limit: a crew outside the warm set
+    stays not connected until the user connects it from its tab. The address
+    takes no `sid`: a `sid` beside it is read as a local session, as always.
 - **Active pane on reload.** `mc-active-pane` in sessionStorage
   (`lib/activePaneMemory.ts`) stores only the crew id, never a port or token.
   Reload keeps it. A new window starts empty and opens on Local. The first
@@ -4455,7 +4480,7 @@ the `exclude_incognito` arm reports as retryable) is `503 crew_peer_busy`, its
 naming the status and nothing from the peer's body, and a reply over the read cap
 is `502 crew_reply_too_large`; `crew_malformed_reply` is reserved for a 2xx that is
 not JSON. Every call emits a SEL audit event
-(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+(tool name `instances_` plus `crew_search`, `crew_list` or `crew_read`) carrying the resolved instance id
 **and the originating MCP caller's session key**, so an audit reviewer can see
 which agent session read which remote crew's history.
 

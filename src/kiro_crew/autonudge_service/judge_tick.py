@@ -64,7 +64,8 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
 
     ``None`` means no judge applies, so the caller falls through to the typed probe
     path: ungated loops, opted-out ones, machines without the evidence scope, and a
-    loop under the default brief whose message names no target it can read.
+    loop under the default brief whose message names no target it can read, or only
+    sessions that are closed or deleted.
     Once the scope is granted, a GATED loop with no brief runs under
     :func:`~kiro_crew.autonudge_judge.default_spec`.
 
@@ -152,6 +153,14 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
             return None
         logger.debug("AutoNudge: loop %s has a judge spec naming no usable target", loop.id)
         return False
+    if brief_kind == judge.BRIEF_DEFAULT and all(
+        judge.is_session_target(target) and self._worker_closed(target) for target in targets_wanted
+    ):
+        # Every session the default brief would read is closed or deleted, so it has
+        # nothing to read, as above. Counted as unread, a gone session would fire every
+        # tick until the loop ends; one that is only unreadable for now still fires.
+        logger.debug("AutoNudge: loop %s names only sessions that are gone", loop.id)
+        return None
     verdict_trace: dict[str, Any] = {}
     try:
         evidence, dropped, staged_cursors = await self._collect_judge_evidence(loop)

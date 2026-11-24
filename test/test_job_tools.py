@@ -47,13 +47,14 @@ JOB_TOOL_BUDGETS: dict[str, int] = {
     "kirocrew": 4_950,
     "kirocrew-worker": 1_200,
     "kirocrew-mate-worker": 1_200,
-    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up.
-    "kirocrew-pipeline-conductor": 7_700,
-    "kirocrew-security-conductor": 7_700,
-    # 7,808 with it: the next 50 up.
-    "kirocrew-conductor": 7_850,
-    "kirocrew-ledger-conductor": 7_850,
-    "kirocrew-team-lead": 7_850,
+    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up; then
+    # +50 for the ``git_commit`` acceptance shape in ``work_ledger_record``.
+    "kirocrew-pipeline-conductor": 7_750,
+    "kirocrew-security-conductor": 7_750,
+    # 7,808 with it: the next 50 up; then +50 for the ``git_commit`` shape.
+    "kirocrew-conductor": 7_900,
+    "kirocrew-ledger-conductor": 7_900,
+    "kirocrew-team-lead": 7_900,
 }
 
 

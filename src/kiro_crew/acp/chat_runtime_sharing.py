@@ -142,8 +142,11 @@ def _bundle_engine_version() -> str | None:
     return installed.version if installed is not None else None
 
 
-def _relay_engine_version() -> str | None:
+def relay_engine_version(cli: tuple[int, int, int] | None = None) -> str | None:
     """The engine kiro-cli's relay runs, or ``None`` when it cannot be known.
+
+    *cli* is the kiro-cli version when the caller already read it; else it is read
+    here (``installed_kiro_cli_version``).
 
     kiro-cli unpacks its embedded engine into ``<data dir>/kas/<version>-<sha256>/``
     (:mod:`kiro_crew.acp.kas_extract_repair`) and runs it from there; kiro-cli's
@@ -157,7 +160,8 @@ def _relay_engine_version() -> str | None:
     from kiro_crew.kiro_cli import installed_kiro_cli_version  # noqa: PLC0415
     from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
 
-    cli = installed_kiro_cli_version()
+    if cli is None:
+        cli = installed_kiro_cli_version()
     if cli is None:
         return None
     prefix = ".".join(str(n) for n in cli) + "-"
@@ -188,7 +192,7 @@ def _relay_engine_version() -> str | None:
 def relay_engine_shares_chats() -> bool:
     """Whether the engine kiro-cli's relay runs may host several chats. Blocking; never raises."""
     try:
-        return engine_shares_chats(_relay_engine_version())
+        return engine_shares_chats(relay_engine_version())
     except Exception:  # noqa: BLE001 - an unreadable extract is not a shareable engine
         return False
 
@@ -199,7 +203,7 @@ def kas_chat_sharing_ready(pin: str = "") -> bool:
     True only when the engine that route will run is at or above
     :data:`KAS_CHAT_SHARING_MIN_ENGINE`: on the bundle route the installed
     pinned bundle (:func:`_bundle_engine_version`), on the relay the engine
-    kiro-cli unpacked (:func:`_relay_engine_version`). A kiro-cli version alone
+    kiro-cli unpacked (:func:`relay_engine_version`). A kiro-cli version alone
     is not enough: kiro-cli 3.1.0 through 3.2.1 ship engines that queue chats.
     With the preview on the route is the bundle (``kas_route`` rule
     ``REASON_SHARING_PREVIEW``); until the first spawn has installed it, there is
@@ -224,7 +228,7 @@ def kas_chat_sharing_ready(pin: str = "") -> bool:
         if route.bundle:
             version = _bundle_engine_version()
         else:
-            version = _relay_engine_version()
+            version = relay_engine_version()
     except Exception:  # noqa: BLE001 - a failed probe keeps the unshared path
         logger.info(
             "chat-runtime-sharing: KAS engine readiness unreadable; not sharing", exc_info=True
@@ -1094,6 +1098,7 @@ __all__ = [
     "kas_chat_sharing_ready",
     "member_scope_of",
     "relay_engine_shares_chats",
+    "relay_engine_version",
     "set_share_tree_reader",
     "share_tree_root_of",
     "spec_grants_native_subagents",

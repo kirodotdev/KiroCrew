@@ -176,6 +176,55 @@ jobs:
             claude.ai:443
             downloads.claude.ai:443
 
+      # Measurement only: counts this job's GitHub API calls by kind so the
+      # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
+      # `gh` resolves to a shim that appends one line to a counter file and
+      # then `exec`s the real gh with the same arguments, so arguments,
+      # stdin, stdout, stderr and exit code are the real gh's own. A counter
+      # that cannot be installed or written is skipped; it never fails the job.
+      # It sits second because the egress allowlist must be the first step.
+      # Pinned identical in every job by test_gh_call_counter.py.
+      - name: Count GitHub API calls (measurement only)
+        continue-on-error: true
+        run: |
+          real="$(command -v gh || true)"
+          dir="$RUNNER_TEMP/gh-call-count"
+          if [ -z "$real" ] || [ "$real" = "$dir/gh" ]; then exit 0; fi
+          mkdir -p "$dir" && : > "$dir/calls" || exit 0
+          {
+            echo '#!/usr/bin/env bash'
+            printf 'REAL_GH=%q\n' "$real"
+            printf 'COUNT_FILE=%q\n' "$dir/calls"
+            cat <<'SHIM'
+          # Kinds follow gh 2.103 at github.com/cli/cli: `api` is one REST
+          # request (`--paginate` one per page, so it is also tallied apart),
+          # `api graphql` one GraphQL request, `pr comment` a GraphQL lookup
+          # plus a GraphQL addComment, `pr view` and `label list` GraphQL,
+          # `label create` REST. `api rate_limit` costs no quota. Anything
+          # else is `other`, counted but unclassified.
+          {
+            kind=other n=1
+            case "${1-} ${2-}" in
+              "api rate_limit" | "api /rate_limit") kind=free ;;
+              api\ *)
+                kind=rest
+                for arg in "${@:2}"; do
+                  case "$arg" in
+                    graphql) kind=graphql ;;
+                    --paginate) printf 'paginate 1\n' >> "$COUNT_FILE" ;;
+                  esac
+                done
+                ;;
+              "pr comment") kind=graphql n=2 ;;
+              "pr view" | "label list") kind=graphql ;;
+              "label create") kind=rest ;;
+            esac
+            printf '%s %s\n' "$kind" "$n" >> "$COUNT_FILE"
+          } 2> /dev/null
+          exec "$REAL_GH" "$@"
+          SHIM
+          } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
+
       # STEP TIMEOUTS, here and on the four steps after it. Each of these steps
       # takes seconds (checkout about two minutes), yet a run can hang in one of
       # them until the 30-minute JOB timeout kills it (the hang itself is tracked
@@ -331,17 +380,34 @@ jobs:
           # Values reach jq through --arg, never spliced into the program: a git
           # branch name may legally contain a double quote, which would break the
           # program (or inject into it).
-          if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            | jq -rs --arg sha "$head_sha" --arg repo "$WR_HEAD_REPO" --arg ref "$WR_HEAD_REF" '
-                first(.[][]
-                  | select(.head.sha == $sha
-                           and ($repo == "" or .head.repo.full_name == $repo)
-                           and ($ref  == "" or .head.ref  == $ref))
-                  | .number) // empty
-              ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 6 attempts; see the errors above"
-            exit 1
+          # Ask for this head's own branch before walking every open PR:
+          # `head=<owner>:<ref>` is the list endpoint's own filter, so the answer is
+          # one page instead of one request per hundred open PRs. The filter only
+          # narrows what the match below reads; the match still decides. The owner
+          # and the branch name are the fork's to choose, so they are URL-encoded
+          # as one value and never spliced into the query. A filtered answer with
+          # no match falls through to the full walk, which also finds a PR whose
+          # head label differs from its head repository's owner.
+          head_filter=""
+          if [ -n "$WR_HEAD_REPO" ] && [ -n "$WR_HEAD_REF" ]; then
+            head_filter="&head=$(jq -rn --arg v "${WR_HEAD_REPO%%/*}:$WR_HEAD_REF" '$v | @uri')"
           fi
+          for head_param in "$head_filter" ""; do
+            if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open${head_param}&per_page=100" --paginate \
+              | jq -rs --arg sha "$head_sha" --arg repo "$WR_HEAD_REPO" --arg ref "$WR_HEAD_REF" '
+                  first(.[][]
+                    | select(.head.sha == $sha
+                             and ($repo == "" or .head.repo.full_name == $repo)
+                             and ($ref  == "" or .head.ref  == $ref))
+                    | .number) // empty
+                ')"; then
+              echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 6 attempts; see the errors above"
+              exit 1
+            fi
+            [ -z "$pr" ] || break
+            [ -n "$head_param" ] || break
+            echo "No open PR matched this head on its own branch's page; walking every open PR."
+          done
           if [ -z "$pr" ]; then
             echo "::error::no open PR has head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF - superseded or closed while CI was queued; nothing to review"
             exit 1
@@ -897,6 +963,24 @@ jobs:
           path: ${{ runner.temp }}/scope-review-output.md
           if-no-files-found: warn
           retention-days: 1
+
+      # Counts only, never arguments or responses. `basis=gh-invocations`:
+      # a `--paginate` call is one `rest` however many pages it read, and
+      # calls made by actions (claude-code-action's octokit) are not seen.
+      - name: Report GitHub API call counts
+        if: always()
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/gh-call-count/calls"
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/}"
+          if [ ! -f "$f" ]; then
+            echo "rest-calls: workflow=$wf job=$GITHUB_JOB counter=absent"
+            exit 0
+          fi
+          awk -v wf="$wf" -v job="$GITHUB_JOB" '{ c[$1] += $2 } END {
+            printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
+              wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true
 
   # ==========================================================================
   # JOB 2 — validate. RUNS THIS REPOSITORY'S PROGRAMS, HOLDS NO CREDENTIAL.
@@ -1575,6 +1659,55 @@ jobs:
             api.github.com:443
             objects.githubusercontent.com:443
             codeload.github.com:443
+
+      # Measurement only: counts this job's GitHub API calls by kind so the
+      # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
+      # `gh` resolves to a shim that appends one line to a counter file and
+      # then `exec`s the real gh with the same arguments, so arguments,
+      # stdin, stdout, stderr and exit code are the real gh's own. A counter
+      # that cannot be installed or written is skipped; it never fails the job.
+      # It sits second because the egress allowlist must be the first step.
+      # Pinned identical in every job by test_gh_call_counter.py.
+      - name: Count GitHub API calls (measurement only)
+        continue-on-error: true
+        run: |
+          real="$(command -v gh || true)"
+          dir="$RUNNER_TEMP/gh-call-count"
+          if [ -z "$real" ] || [ "$real" = "$dir/gh" ]; then exit 0; fi
+          mkdir -p "$dir" && : > "$dir/calls" || exit 0
+          {
+            echo '#!/usr/bin/env bash'
+            printf 'REAL_GH=%q\n' "$real"
+            printf 'COUNT_FILE=%q\n' "$dir/calls"
+            cat <<'SHIM'
+          # Kinds follow gh 2.103 at github.com/cli/cli: `api` is one REST
+          # request (`--paginate` one per page, so it is also tallied apart),
+          # `api graphql` one GraphQL request, `pr comment` a GraphQL lookup
+          # plus a GraphQL addComment, `pr view` and `label list` GraphQL,
+          # `label create` REST. `api rate_limit` costs no quota. Anything
+          # else is `other`, counted but unclassified.
+          {
+            kind=other n=1
+            case "${1-} ${2-}" in
+              "api rate_limit" | "api /rate_limit") kind=free ;;
+              api\ *)
+                kind=rest
+                for arg in "${@:2}"; do
+                  case "$arg" in
+                    graphql) kind=graphql ;;
+                    --paginate) printf 'paginate 1\n' >> "$COUNT_FILE" ;;
+                  esac
+                done
+                ;;
+              "pr comment") kind=graphql n=2 ;;
+              "pr view" | "label list") kind=graphql ;;
+              "label create") kind=rest ;;
+            esac
+            printf '%s %s\n' "$kind" "$n" >> "$COUNT_FILE"
+          } 2> /dev/null
+          exec "$REAL_GH" "$@"
+          SHIM
+          } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
 
       # DEFAULT branch: the trusted harness only. No PR ref is fetched here, so
       # there is no fork tree on this runner to execute even by accident.
@@ -2970,3 +3103,21 @@ jobs:
             exit 1
           fi
           echo "Security Scope Review: ${CONCLUSION:-} — ${TITLE:-}"
+
+      # Counts only, never arguments or responses. `basis=gh-invocations`:
+      # a `--paginate` call is one `rest` however many pages it read, and
+      # calls made by actions (claude-code-action's octokit) are not seen.
+      - name: Report GitHub API call counts
+        if: always()
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/gh-call-count/calls"
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/}"
+          if [ ! -f "$f" ]; then
+            echo "rest-calls: workflow=$wf job=$GITHUB_JOB counter=absent"
+            exit 0
+          fi
+          awk -v wf="$wf" -v job="$GITHUB_JOB" '{ c[$1] += $2 } END {
+            printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
+              wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true

@@ -147,6 +147,11 @@ type UploadProgress = (loaded: number, total: number) => void
  *  `init.signal` aborts (at once, whatever the request does next). */
 function sendWithProgress(url: string, init: RequestInit | undefined, onProgress?: UploadProgress): Promise<Response> {
   return new Promise((resolve, reject) => {
+    // An `abort` listener added now never hears an abort that already happened.
+    if (init?.signal?.aborted) {
+      reject(new DOMException('The upload was cancelled.', 'AbortError'))
+      return
+    }
     const xhr = new XMLHttpRequest()
     xhr.open(init?.method ?? 'GET', url)
     if (onProgress) xhr.upload.onloadstart = xhr.upload.onprogress = e => onProgress(e.loaded, e.total)

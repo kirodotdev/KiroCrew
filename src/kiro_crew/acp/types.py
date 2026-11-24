@@ -1141,6 +1141,7 @@ class AcpEvent:
     # Owning sub-agent session id (EVENT_SUBAGENT_ACTIVITY) — ties a tool call
     # to a specific native sub-agent card.
     sub_session_id: str = ""
+    auto_reject_reason: str = ""  #: an ``AUTO_REJECT_*`` on an auto-rejected ``Blocked:`` notice
     # Agent TODO-list snapshot (EVENT_TODO_UPDATE) — normalised
     # {description, tasks:[{id,text,completed}]}. Every todo_list command
     # returns the WHOLE list, so this is a full snapshot, never a delta.

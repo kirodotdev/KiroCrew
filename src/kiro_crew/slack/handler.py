@@ -252,11 +252,13 @@ from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
     bots_text,
     context_template,
     crew_bots,
+    memory_binding_refusal,
     resolve_bot_name,
     resolve_channel_crew,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.client import SlackClientOps
+from kiro_crew.slack.conductor_thread import THREAD_SWITCH_COMMANDS
 from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
@@ -335,6 +337,7 @@ from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_allowlist,
     _bang_bot,
     _bang_channel,
+    _bang_conductor,
     _bang_dashboard,
     _bang_link_to_dashboard,
     _bang_project,
@@ -511,8 +514,9 @@ def _display_redactor(text: str) -> str:
 
 
 # Bang commands with no slash equivalent that the native router still answers in a thread
-# linked to a dashboard chat, so they are never delivered to it as a chat message.
-_NATIVE_BANG_COMMANDS: frozenset[str] = frozenset({"!bot"})
+# linked to a dashboard chat, so they are never delivered to it as a chat message: the
+# words that change what a thread is (``!bot``, ``!conductor``), one set for both.
+_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS
 
 # Mapping of bang commands to their /kirocrew slash equivalents.
 _BANG_TO_SLASH: dict[str, str] = {

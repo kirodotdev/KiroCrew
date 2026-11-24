@@ -12,7 +12,15 @@ from typing import Any
 import pytest
 from test_browser_harness_ops import FakeBrowser
 
-from kiro_crew.browser_harness import helper_ops, helper_worker, op_classes, ops, supervisor
+from kiro_crew.browser_harness import (
+    helper_ops,
+    helper_worker,
+    keys,
+    op_classes,
+    ops,
+    reflex,
+    supervisor,
+)
 from kiro_crew.dashboard.handlers import browser_ops as route
 
 _NEW_OPS = ("fill", "dispatch_key", "wait_for_element", "wait_for_network_idle")
@@ -234,6 +242,29 @@ def test_function_and_editing_keys_are_pressed(fake: FakeBrowser, key: str) -> N
 
 def test_a_key_past_f12_is_still_refused(fake: FakeBrowser) -> None:
     assert run(ops.run_op("press_key", {"key": "F13"}, fake.ctx()))["code"] == "bad_key"
+
+
+def test_a_code_name_is_refused_with_the_character_and_the_named_keys(fake: FakeBrowser) -> None:
+    refused = [
+        (run(ops.run_op("press_key", {"key": "BracketLeft"}, fake.ctx())), "bad_key"),
+        (
+            run(ops.run_op("dispatch_key", {"selector": "#q", "key": "BracketLeft"}, fake.ctx())),
+            "bad_key",
+        ),
+        (run(ops.run_op("type", {"steps": [{"key": "BracketLeft"}]}, fake.ctx())), "bad_steps"),
+        (reflex.parse({"goal": "g", "keys": ["BracketLeft"]}), "bad_key"),
+    ]
+    for out, code in refused:
+        assert isinstance(out, dict) and out["code"] == code, out
+        assert "'BracketLeft'; a key is one character (such as '['" in out["error"], out
+        assert "F1-F12" in out["error"], out
+    assert not {"press_key", "dispatch_key", "type_text"} & set(fake.helper_names())
+    # The error names exactly the named keys: each by name, the F-keys as one range.
+    named = keys.unknown_key_error("x").split("or a named key: ")[1]
+    named = named.replace("F1-F12", ", ".join(f"F{n}" for n in range(1, 13)))
+    assert set(named.split(", ")) == keys.NAMED_KEYS - {" "}
+    assert run(ops.run_op("press_key", {"key": "["}, fake.ctx()))["ok"] is True
+    assert fake.calls[-1] == ("press_key", {"key": "[", "modifiers": 0})
 
 
 @pytest.mark.parametrize(

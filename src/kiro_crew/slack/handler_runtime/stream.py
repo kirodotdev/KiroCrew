@@ -946,6 +946,10 @@ class _AnswerStream:
                 )
             self.status_dirty = False
 
+        # Open the stream first: it decides ``use_slack_stream``, so the turn's
+        # first chunk is filtered like every later one.
+        await self.ensure_started()
+
         # ── Hold-back: filter [OPTIONS: ...] and control tags from the stream ──
         # See ``_filter_options_brackets`` for what is held and when it is decided.
         if self.use_slack_stream:
@@ -954,8 +958,6 @@ class _AnswerStream:
             )
         else:
             self.stream_buffer += text
-
-        await self.ensure_started()
 
         now = time.monotonic()
         if now - self.last_edit >= _EDIT_INTERVAL:

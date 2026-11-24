@@ -1,9 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, screen, createEvent, act, waitFor } from '@testing-library/react'
 
 import MarkdownRenderer, { COPIED_FLASH_MS, COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
 import { copyToClipboard } from '../utils/clipboard'
 import { buildShareableUrl } from '../utils/shareUrl'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { isKindsRequest, kindsRequestPaths, kindsResponse } from './pathKindStub'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => undefined) }))
 
@@ -394,6 +396,115 @@ describe('session chip — a SHORT slot name', () => {
   })
 })
 
+describe('session chip — a title-derived key (#41426)', () => {
+  // A cron-born session's key comes from the task title: it starts with `_` and a
+  // cut one ends in a literal `...`, so the `chat-<n>-<ts>` grammar refuses it.
+  const CRON = '_123-Example_task_title_that_gets_truncated...'
+  const cronRoster = () => new Map([[KEY, 'Fix the pagination bug'], [CRON, 'Nightly report']])
+
+  it('switches to the open session the span names exactly', () => {
+    render(<MarkdownRenderer content={`See \`${CRON}\`.`} onSessionOpen={onSessionOpen} sessions={cronRoster()} />)
+    const chip = screen.getByText(CRON)
+    expect(chip).toHaveAttribute('data-session-key', CRON)
+    fireEvent.click(chip)
+    expect(onSessionOpen).toHaveBeenCalledWith(CRON)
+  })
+
+  it('normalises the dashboard_ spelling list_sessions reports', () => {
+    render(<MarkdownRenderer content={`\`dashboard_${CRON}\``} onSessionOpen={onSessionOpen} sessions={cronRoster()} />)
+    fireEvent.click(screen.getByText(`dashboard_${CRON}`))
+    expect(onSessionOpen).toHaveBeenCalledWith(CRON)
+  })
+
+  it('offers no chip for a key the open roster does not hold, or for part of one', () => {
+    render(
+      <MarkdownRenderer
+        content={'`_123-Example_task_title` and `_nightly-report-run_the_report_skill_`'}
+        onSessionOpen={onSessionOpen}
+        sessions={cronRoster()}
+      />,
+    )
+    expect(screen.getByText('_123-Example_task_title')).not.toHaveAttribute('data-session-key')
+    expect(screen.getByText('_nightly-report-run_the_report_skill_')).not.toHaveAttribute('data-session-key')
+  })
+
+  it('offers no chip for the session the reader is already in', () => {
+    render(<MarkdownRenderer content={`\`${CRON}\``} onSessionOpen={onSessionOpen} sessions={cronRoster()} activeSession={CRON} />)
+    expect(screen.getByText(CRON)).not.toHaveAttribute('data-session-key')
+  })
+
+  describe('a path-shaped key waits for its path probe', () => {
+    // `_reports/weekly.md` has a separator and an extension, so it is probed as a
+    // path first. While the probe is in flight there must be no session chip a
+    // file answer would then withdraw.
+    const PATHY = '_reports/weekly.md'
+    const realFetch = globalThis.fetch
+    let answer: (r: Response) => void = () => {}
+    let asked: string[] = []
+    beforeEach(() => {
+      __resetPathKindCache()
+      asked = []
+      globalThis.fetch = vi.fn((url: unknown, init?: RequestInit) => {
+        if (!isKindsRequest(url, init)) return Promise.resolve(new Response('', { status: 404 }))
+        asked = kindsRequestPaths(init)
+        return new Promise<Response>((resolve) => { answer = resolve })
+      }) as unknown as typeof fetch
+    })
+    afterEach(() => {
+      globalThis.fetch = realFetch
+      __resetPathKindCache()
+    })
+    const renderPathy = () => render(<MarkdownRenderer content={`See \`${PATHY}\`.`} onSessionOpen={onSessionOpen} sessions={new Map([[PATHY, 'Report']])} />)
+
+    it('becomes the session chip once the probe answers "not a path"', async () => {
+      renderPathy()
+      await waitFor(() => expect(asked).toContain(PATHY))
+      expect(screen.getByText(PATHY)).not.toHaveAttribute('data-session-key')
+      await act(async () => { answer(kindsResponse(asked, () => null)) })
+      await waitFor(() => expect(screen.getByText(PATHY)).toHaveAttribute('data-session-key', PATHY))
+    })
+
+    it('ends as the path chip, never a session chip, when the probe answers "file"', async () => {
+      renderPathy()
+      await waitFor(() => expect(asked).toContain(PATHY))
+      expect(screen.getByText(PATHY)).not.toHaveAttribute('data-session-key')
+      await act(async () => { answer(kindsResponse(asked, () => 'file')) })
+      await waitFor(() => expect(screen.getByText(PATHY)).toHaveAttribute('data-path-kind', 'file'))
+      expect(screen.getByText(PATHY)).not.toHaveAttribute('data-session-key')
+    })
+  })
+
+  it('a /chat?sid= link to it switches in place on a plain click', () => {
+    render(<MarkdownRenderer content={`[the cron run](/chat?sid=${encodeURIComponent(CRON)})`} onSessionOpen={onSessionOpen} sessions={cronRoster()} />)
+    const anchor = screen.getByText('the cron run').closest('a')!
+    expect(anchor).not.toHaveAttribute('target')
+    fireEvent.click(anchor, { button: 0 })
+    expect(onSessionOpen).toHaveBeenCalledWith(CRON)
+  })
+
+  it('rewrites a dashboard_ sid to the canonical key', () => {
+    render(<MarkdownRenderer content={`[the cron run](/chat?sid=dashboard_${encodeURIComponent(CRON)})`} onSessionOpen={onSessionOpen} sessions={cronRoster()} />)
+    const anchor = screen.getByText('the cron run').closest('a')!
+    expect(new URL(anchor.getAttribute('href')!, 'http://x').searchParams.get('sid')).toBe(CRON)
+    fireEvent.click(anchor, { button: 0 })
+    expect(onSessionOpen).toHaveBeenCalledWith(CRON)
+  })
+
+  it('a link to the active session is declined like a chat-shaped one, not navigated', () => {
+    // Same answer as `[x](/chat?sid=<active chat-<n>-<ts> key>)`: muted, plain click swallowed.
+    for (const key of [KEY, CRON]) {
+      const { unmount } = render(<MarkdownRenderer content={`[here](/chat?sid=${encodeURIComponent(key)})`} onSessionOpen={onSessionOpen} sessions={cronRoster()} activeSession={key} />)
+      const anchor = screen.getByText('here').closest('a')!
+      expect(anchor.className).toContain('text-muted')
+      const click = createEvent.click(anchor, { button: 0 })
+      fireEvent(anchor, click)
+      expect(click.defaultPrevented).toBe(true)
+      unmount()
+    }
+    expect(onSessionOpen).not.toHaveBeenCalled()
+  })
+})
+
 describe('session chip — the honesty gates', () => {
   /** Assert the span fell back to the plain click-to-copy chip. */
   const expectCopyChip = async (text: string) => {
@@ -453,6 +564,24 @@ describe('session chip — the honesty gates', () => {
     )
     expect(screen.getByText('chat-24')).not.toHaveAttribute('data-session-key')
     expect(screen.getByText(`${KEY}.jsonl`)).not.toHaveAttribute('data-session-key')
+  })
+
+  it('leaves the open key plus a suffix plain while the real key is open', () => {
+    render(<MarkdownRenderer content={`\`${KEY}.jsonl\` and \`${KEY}\``} onSessionOpen={onSessionOpen} sessions={roster()} />)
+    expect(screen.getByText(`${KEY}.jsonl`)).not.toHaveAttribute('data-session-key')
+    expect(screen.getByText(KEY)).toHaveAttribute('data-session-key', KEY)
+  })
+
+  it('a roster slot keyed `chat-24` does not let the short name skip its write-time pin', () => {
+    // The exact-roster-key path is for keys of another shape; a `chat-…` span
+    // still resolves only through the short-name lookup, which needs a write time
+    // and then names the minted slot, never the literal `chat-24` entry.
+    const sessions = new Map([['chat-24', 'literal'], [KEY, 'Fix the pagination bug']])
+    const { unmount } = render(<MarkdownRenderer content={'`chat-24`'} onSessionOpen={onSessionOpen} sessions={sessions} />)
+    expect(screen.getByText('chat-24')).not.toHaveAttribute('data-session-key')
+    unmount()
+    render(<MarkdownRenderer content={'`chat-24`'} onSessionOpen={onSessionOpen} sessions={sessions} messageTs={WRITTEN} />)
+    expect(screen.getByText('chat-24')).toHaveAttribute('data-session-key', KEY)
   })
 
   it('drops a data-session-key forged in raw HTML', () => {

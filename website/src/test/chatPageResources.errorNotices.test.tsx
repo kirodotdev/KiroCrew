@@ -208,7 +208,10 @@ describe('dropping a space-named folder (#30416)', () => {
 describe('a failed upload reports to the chat it started in', () => {
   afterEach(() => { clearSlotUploadFailures() })
 
-  function render(activeSlotRef: { current: string | null }, setUploadError: (v: string) => void, dispatch: (a: unknown) => void) {
+  function render(
+    activeSlotRef: { current: string | null }, setUploadError: (v: string) => void, dispatch: (a: unknown) => void,
+    showActionError: (m: string) => void = vi.fn(),
+  ) {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ upload_max_mb: 50 } as never)
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -216,7 +219,7 @@ describe('a failed upload reports to the chat it started in', () => {
     const noop = vi.fn()
     const props = {
       activeSlot: 'slot-a', activeSlotRef, messages: [], slotLoading: false,
-      dispatch: dispatch as never, queryClient, showActionError: noop,
+      dispatch: dispatch as never, queryClient, showActionError,
       composer: {
         inputRef: ref(''), setInput: noop, drafts: ref({}), fileDrafts: ref({}), setPendingFiles: noop,
         currentProjectRef: ref(undefined), voiceCaretRef: ref(null), voicePendingCaretRef: ref(null), saveDrafts: noop,
@@ -312,7 +315,7 @@ describe('a failed upload reports to the chat it started in', () => {
     forgetSlotSuccession('slot-a')
   })
 
-  it('shows the banner when a memory-mode switch put the upload\'s successor on screen', async () => {
+  it('holds an upload failure for its chat while a memory-mode switch to the successor is pending', async () => {
     let settle!: (v: unknown) => void
     vi.spyOn(api, 'uploadFiles').mockReturnValue(new Promise(r => { settle = r }) as never)
     const activeSlotRef = ref<string | null>('slot-a')
@@ -320,12 +323,31 @@ describe('a failed upload reports to the chat it started in', () => {
     const { result } = render(activeSlotRef, setUploadError, vi.fn())
     let pending: Promise<boolean> | undefined
     act(() => { pending = result.current.uploadFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]) })
-    // The switch made slot-a2 active but has not handed the upload over yet.
-    recordSlotSuccession('slot-a', 'slot-a2')
+    // The switch shows slot-a2 while its history loads, and has not committed.
+    recordSlotSuccession('slot-a', 'slot-a2', { pending: true })
     activeSlotRef.current = 'slot-a2'
+    setUploadError.mockClear()
     await act(async () => { settle({ error: 'disk full' }); await pending })
-    expect(setUploadError).toHaveBeenCalledWith(expect.stringContaining('disk full'))
-    expect(takeSlotUploadFailure('slot-a')).toBe('')
+    expect(setUploadError).not.toHaveBeenCalledWith(expect.stringContaining('disk full'))
+    expect(takeSlotUploadFailure('slot-a2')).toBe('')
+    expect(takeSlotUploadFailure('slot-a')).toContain('disk full')
+    forgetSlotSuccession('slot-a')
+  })
+
+  it('holds a failed native screenshot for its chat while a memory-mode switch to the successor is pending', async () => {
+    let fail!: (e: unknown) => void
+    vi.spyOn(api, 'screenshot').mockReturnValue(new Promise((_r, rej) => { fail = rej }) as never)
+    const activeSlotRef = ref<string | null>('slot-a')
+    const showActionError = vi.fn()
+    const { result } = render(activeSlotRef, vi.fn(), vi.fn(), showActionError)
+    let pending: Promise<void> | undefined
+    act(() => { pending = result.current.handleCapture() })
+    recordSlotSuccession('slot-a', 'slot-a2', { pending: true })
+    activeSlotRef.current = 'slot-a2'
+    await act(async () => { fail(new Error('capture timed out')); await pending })
+    expect(showActionError).not.toHaveBeenCalledWith(expect.stringContaining('capture timed out'))
+    expect(takeSlotUploadFailure('slot-a2')).toBe('')
+    expect(takeSlotUploadFailure('slot-a')).toContain('capture timed out')
     forgetSlotSuccession('slot-a')
   })
 

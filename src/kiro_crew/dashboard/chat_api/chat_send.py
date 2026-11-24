@@ -1865,19 +1865,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # The turn task inherits its sender as initiator, so a turn running
         # outside admitted work is still found and stopped when the owner
         # removes that person (``access_set.stop_work``).
+        from kiro_crew.shared_crew import turn_gate as _turn_gate
         from kiro_crew.shared_crew.admission_gate import actor_budget as _turn_actor_budget
-        from kiro_crew.shared_crew.turn_gate import initiated_by as _turn_initiated_by
-        from kiro_crew.shared_crew.turn_gate import note_admission_ended
 
         def _admission_ended() -> None:
             # Expired or refused before it ran: end the cycle and hand off the queue.
-            note_admission_ended(slot, turn_admission)
+            _turn_gate.note_admission_ended(slot, turn_admission)
             state.push_slots_update()
 
         # Opened here so the turn task's copied context carries the record.
         turn_timing.begin(slot.key, "ws" if ws_mode else "sse", _timing_t0)
         turn_timing.mark("dispatched")
-        with _turn_initiated_by("" if request_app else _turn_actor_budget(request)):
+        with _turn_gate.initiated_by("" if request_app else _turn_actor_budget(request)):
             task = spawn_guarded_turn(
                 state,
                 slot,
@@ -1889,6 +1888,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     ),
                     still_live=lambda: slot_is_live(state, slot),
                     on_ended=_admission_ended,
+                    stop_count=_turn_gate.session_stop_count(state, slot),
                 ),
             )
         turn_dispatched = True

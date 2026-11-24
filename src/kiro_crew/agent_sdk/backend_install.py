@@ -233,7 +233,7 @@ def _engine_installable_here() -> bool:
     from kiro_crew.acp import kas_bundle as acp_kas_bundle
 
     # Only the release's pin installs unattended (``acp/kas_engine_install.py``).
-    if acp_kas_bundle.pinned_version() != acp_kas_bundle.KAS_PIN_VERSION:
+    if acp_kas_bundle.pinned_version() != acp_kas_bundle.host_pin_version():
         return False
     from kiro_crew.acp import kas_pin
 

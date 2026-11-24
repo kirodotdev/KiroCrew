@@ -1674,6 +1674,9 @@ a pending sign-in (constant-time) is the only admission, each `state` answers
 once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
 HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
 echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Both loopback listeners (the shared port and a consent's own port) answer with
+the same titled page (`crew_oauth_dcr.titled_page`), so the tab reads the same
+wherever the vendor sends the browser back.
 A callback that carries an `error`, or no `code`, is a refusal, even beside a
 code: `crew_oauth.callback_refusal` maps the `error` value onto the closed RFC
 6749 §4.1.2.1 set (`callback_access_denied`, `callback_invalid_request`,
@@ -1777,6 +1780,17 @@ owner-only `PUT` / `DELETE /api/connections/oauth-clients/{slug}`. The launch
 gate keeps governing the entry's quality claims: a configured GitHub still runs
 the normal first-connect (`not-verified`) flow, and `launch_gate_passed` flips
 only after the manual L2 walk with an operator-registered app.
+
+**Creating the app from the card.** When the gateway can generate a
+pre-registered card's OAuth app, owner-only
+`GET /api/connections/app-manifests` answers `{slug: {create_url, manifest}}`
+(handlers/connections_app_manifest.py). Only Slack has a generator: the
+`slack_manifest.deep_link()` link and its payload, for this install's alias and
+Slack Code switches plus `slack_mcp`, so one app serves the channel bot and the
+card. While the card is `needs-configuration` and its client is not saved, the
+"Before you connect" tip carries **Create the <provider> app** (the link, https
+only, new tab), **Copy manifest** and one line on what Slack does next. The card
+names no vendor; a refused or failed route leaves the tip without the buttons.
 
 **Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
 (index in its `README.md`): console, app type, scopes, the exact redirect URI,

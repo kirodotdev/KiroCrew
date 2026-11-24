@@ -39,6 +39,7 @@ vi.mock('../../store', () => ({
   useAppStore: () => ({ getState: () => storeState }),
 }))
 vi.mock('../../store/chatSlice', () => ({
+  selectSlotStreamState: () => 'idle',
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   setPendingInput: (text: string) => ({ type: 'setPendingInput', text }),
   switchSlot: (arg: unknown) => ({ type: 'switchSlot', arg }),
@@ -576,6 +577,104 @@ describe('command bar — folders view', () => {
     await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
     expect(hasRow('Trading Desk')).toBe(true)
     expect(chatFolders).not.toHaveBeenCalled()
+  })
+
+  it('offers a Bot home only while the Sessions list draws it (#39653)', async () => {
+    // The Sessions list draws no row for a Bot's home, or the folders inside it,
+    // while none of its sessions is listed (`foldersForSessionList`): here one
+    // session in it belongs to a live Bot thread, which takes it off the list, and
+    // the other is on a surface the chat page does not list.
+    // Revealing that home would land on no row, so the view must not offer it.
+    const botFolders = [
+      { id: 'f-bot', name: 'Radar', parent_id: '', order: 0, collapsed: false, hidden: false, mate_home: true },
+      { id: 'f-bot-inbox', name: 'Radar inbox', parent_id: 'f-bot', order: 0, collapsed: false, hidden: false },
+      { id: 'f-trade', name: 'Trading Desk', parent_id: '', order: 1, collapsed: false, hidden: false },
+    ]
+    const botThread = [
+      { key: 'mate-1', mode: 'member', title: 'Radar' },
+      { key: 'work-1', mate_root: 'mate-1', folder_id: 'f-bot-inbox', title: 'Inbox run' },
+    ]
+    storeState.dashboard = {
+      slots: [...botThread, { key: 'dash-1', surface: 'dashboard', folder_id: 'f-bot', title: 'Board' }],
+      unreadSlots: [],
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { unmount } = await openFoldersView(botFolders, { client })
+    await waitFor(() => expect(hasRow('Trading Desk')).toBe(true))
+    expect(hasRow('Radar')).toBe(false)
+    unmount()
+
+    // The Bot thread ends, so the session it filed in the home is listed again and
+    // the list draws the home. Reopened inside the view's stale window, against the
+    // same cache: the listed sessions are part of the rows' identity, so the home
+    // is back at once.
+    storeState.dashboard = { slots: [botThread[1]], unreadSlots: [] }
+    mount(botFolders, { client })
+    await enterFoldersView()
+    await waitFor(() => expect(hasRow('Radar inbox')).toBe(true))
+    expect(folderRowOrder(['Radar inbox', 'Radar', 'Trading Desk'])).toEqual(['Radar', 'Radar inbox', 'Trading Desk'])
+  })
+
+  it('keeps the selection on its folder when a Bot home joins the list under an open view', async () => {
+    // The listed sessions' folders are part of the view's query key, so a Bot thread
+    // ending, which lists the session it filed in the Bot's home, mints a new key on
+    // an event the reader did not cause.
+    // Without held-over rows the list blanks and the clamp pulls the selection to row
+    // 0; without the follow it keeps its row NUMBER while the home's rows land above.
+    const folders = [
+      { id: 'f-bot', name: 'Radar', parent_id: '', order: 0, collapsed: false, hidden: false, mate_home: true },
+      { id: 'f-bot-inbox', name: 'Radar inbox', parent_id: 'f-bot', order: 0, collapsed: false, hidden: false },
+      { id: 'f-trade', name: 'Trading Desk', parent_id: '', order: 1, collapsed: false, hidden: false },
+      { id: 'f-zeta', name: 'Zeta', parent_id: '', order: 2, collapsed: false, hidden: false },
+    ]
+    const names = ['Radar inbox', 'Radar', 'Trading Desk', 'Zeta']
+    const work = { key: 'work-1', mate_root: 'mate-1', folder_id: 'f-bot-inbox', title: 'Inbox run' }
+    storeState.dashboard = { slots: [{ key: 'mate-1', mode: 'member', title: 'Radar' }, work], unreadSlots: [] }
+    await openFoldersView(folders)
+    await waitFor(() => expect(folderRowOrder(names)).toEqual(['Trading Desk', 'Zeta']))
+    const input = screen.getByRole('combobox')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    storeState.dashboard = { slots: [work], unreadSlots: [] }
+    // Two moves that cancel out, so the re-render that reads the new slots changes
+    // nothing the reader chose.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    await waitFor(() => expect(folderRowOrder(names)).toEqual(['Radar', 'Radar inbox', 'Trading Desk', 'Zeta']))
+    await waitFor(() => expect(rowByText('Zeta').getAttribute('aria-selected')).toBe('true'))
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-zeta' })
+  })
+
+  it('keeps the selection on its folder when a Bot home leaves the list under an open view', async () => {
+    // The leaving direction: a Bot thread starts and takes the home off the list.
+    // The selected row moves from index 2 to index 0 while the list shrinks to two
+    // rows, so the follow and the bounds clamp both want to move the selection, and
+    // the clamp must not win over a folder that is still listed.
+    const folders = [
+      { id: 'f-bot', name: 'Radar', parent_id: '', order: 0, collapsed: false, hidden: false, mate_home: true },
+      { id: 'f-bot-inbox', name: 'Radar inbox', parent_id: 'f-bot', order: 0, collapsed: false, hidden: false },
+      { id: 'f-trade', name: 'Trading Desk', parent_id: '', order: 1, collapsed: false, hidden: false },
+      { id: 'f-zeta', name: 'Zeta', parent_id: '', order: 2, collapsed: false, hidden: false },
+    ]
+    const names = ['Radar inbox', 'Radar', 'Trading Desk', 'Zeta']
+    const work = { key: 'work-1', mate_root: 'mate-1', folder_id: 'f-bot-inbox', title: 'Inbox run' }
+    storeState.dashboard = { slots: [work], unreadSlots: [] }
+    await openFoldersView(folders)
+    await waitFor(() => expect(folderRowOrder(names)).toEqual(['Radar', 'Radar inbox', 'Trading Desk', 'Zeta']))
+    const input = screen.getByRole('combobox')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(rowByText('Trading Desk').getAttribute('aria-selected')).toBe('true')
+    storeState.dashboard = { slots: [{ key: 'mate-1', mode: 'member', title: 'Radar' }, work], unreadSlots: [] }
+    // Two moves that cancel out, so the re-render that reads the new slots changes
+    // nothing the reader chose.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    await waitFor(() => expect(folderRowOrder(names)).toEqual(['Trading Desk', 'Zeta']))
+    await waitFor(() => expect(rowByText('Trading Desk').getAttribute('aria-selected')).toBe('true'))
+    expect(rowByText('Zeta').getAttribute('aria-selected')).toBe('false')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-trade' })
   })
 
   it('reports a failed folder read through ErrorNotice, with Retry still in the list', async () => {

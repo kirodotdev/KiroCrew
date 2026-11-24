@@ -6,8 +6,9 @@ Moved verbatim from the goal-conductor `SKILL.md` core; the core says when to re
 
 2. **Assertable** — you can name its completion condition *now*, before
    dispatching, as one of the evaluator's kinds: `pr_checks` (a non-draft
-   PR's checks all green), `pr_merged`, `edition_check`, `file` (a path
-   existing) or `human_approval` (the user accepts it). For `pr_checks` and
+   PR's checks all green), `pr_merged`, `edition_check`, `git_commit` (a
+   local branch has a commit past a base sha), `file` (a path existing) or
+   `human_approval` (the user accepts it). For `pr_checks` and
    `pr_merged`, always set `repo` to `owner/name`, with `repo` required.
    **There is deliberately no "run this command" kind**, so "the test suite
    passes" is expressed as `pr_checks` on the PR that carries the work — CI

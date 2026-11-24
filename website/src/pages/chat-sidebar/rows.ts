@@ -28,7 +28,6 @@ import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
-import { isActiveIn } from './rowStatus'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
 import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
@@ -67,6 +66,10 @@ export interface LocalRowIndex {
   /** Each unpinned row's position in the order it is drawn in now, whatever the
    *  sort: where a manual drop's insertion line goes. */
   drawnIndex: ReadonlyMap<string, number>
+  /** The chat open in the main pane, or null. Opening a chat marks it read, so the
+   *  Unread chip lets it through while it is open instead of dropping the row the
+   *  person is working in. No other chip changes when a chat is opened. */
+  openKey: string | null
 }
 
 export interface SidebarRowFilters {
@@ -169,7 +172,10 @@ export interface RowPlacement {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  /** The row drawn below this one when a divider may separate the two, else null.
+   *  The row hides the divider while it or this next row is the open row, which it
+   *  reads from the row-status store (./rowStatus). */
+  dividerNext: Slot | null
   /** Paint-order stamp, clamped by the facade. The row never reads it: it exists so a
    *  row whose position moved compares unequal and re-renders for the layout spring. */
   orderStamp: number
@@ -235,13 +241,11 @@ export interface RowShell {
 
 /** The values one render shows rows with. */
 export interface RowScene {
-  /** The LOCAL slot the chat pane shows. */
-  activeSlot: string | null
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
-   *  null. While one is open it is the active row, and no local row is. */
+   *  null. Every row withholds "Reference in chat" while one is open. */
   crewWindow: { instanceId: string; key: string } | null
-  // The crew-parent mark, Split View and a failed open reach rows through the
-  // row-status store (./rowStatus), with the active slot and unread.
+  // The open session, the crew-parent mark, Split View, a failed open and unread
+  // reach rows through the row-status store (./rowStatus).
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -277,7 +281,7 @@ export interface SessionRowView {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  dividerNext: Slot | null
   orderStamp: number
   rowAnimEnabled: boolean
   rowMotionHeld: boolean
@@ -336,9 +340,6 @@ export interface RowWindow {
 }
 
 export interface SidebarRowViews {
-  /** The active-row highlight: the peer row the open crew window names by its (crew,
-   *  key) pair, else the LOCAL row whose key is the active slot. */
-  isActive: (slot: Slot | null | undefined) => boolean
   view: (slot: Slot, placement: RowPlacement) => SessionRowView
   windowOf: (slot: Slot) => RowWindow
 }
@@ -602,6 +603,7 @@ function makeDimensions(
   searchRanks: ReadonlyMap<string, number> | null,
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
+  openKey: string | null,
 ): FilterDimension[] {
   const { tags, models, creators, search, status, folders: folderFilter } = filters
   // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
@@ -627,6 +629,8 @@ function makeDimensions(
     return !!folderId && folderFilter.pinnedSubtree.has(folderId)
   }
   const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
+  const isOpen = (slot: Slot): boolean => openKey !== null && localKeyOf(slot) === openKey
+  const passesChip = (key: SessionFilterKey, slot: Slot): boolean => matches[key](slot) || (key === 'unread' && isOpen(slot))
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -674,15 +678,16 @@ function makeDimensions(
     },
     {
       // Status chips. Active chips OR together: a row passes when any active chip
-      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`).
+      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`),
+      // and the Unread chip passes the open chat (`LocalRowIndex.openKey`).
       // `hides` restates the exemption too: `excluded` is list membership, not this
       // dimension's verdict, so a pinned row the SEARCH dropped would otherwise read as
       // hidden by the chips and a reveal would clear them.
-      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
+      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => passesChip(key, slot)),
       narrows: () => activeStatus.length > 0,
       exemptsPinned: true,
       isSearch: false,
-      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
+      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && !(activeStatus.includes('unread') && isOpen(slot)) && excluded(slot),
       clear: () => clears.status(),
     },
     {
@@ -856,20 +861,18 @@ interface ViewModel {
 
 function makeViews(model: ViewModel): SidebarRows['views'] {
   return scene => {
-    const isActive = (slot: Slot | null | undefined) => !!slot && isActiveIn(scene, slot)
     return {
-      isActive,
       view: (slot, placement) => rowView(slot, placement, scene, model),
       windowOf: slot => {
         const key = localKeyOf(slot)
         const { renaming, revealFlash, nativeDragKey } = scene.local
         return {
           title: sessionDisplayTitle(slot),
-          // The active, renaming, dragged and revealed rows never stub: each holds state
-          // a remount would drop. The dnd-kit clause compares the raw key, as the drag id
-          // is one; no peer row can be dragged.
-          keepMounted: isActive(slot)
-            || (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
+          // The renaming, dragged and revealed rows never stub: each holds state a
+          // remount would drop (the open row too, which laneRows reads from the
+          // row-status store). The dnd-kit clause compares the raw key, as the drag
+          // id is one; no peer row can be dragged.
+          keepMounted: (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
             || (key !== null && renaming.key === key)
             || (scene.drag?.type === 'session' && scene.drag.id === slot.key)
             || (key !== null && nativeDragKey === key),
@@ -884,7 +887,7 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
 export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRows | null): SidebarRows {
   const prev = previous ? memosOf.get(previous) : undefined
   const { rows, local, filters, clears, crewGroups, sortKey, clock, frozen } = inputs
-  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex } = local
+  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex, openKey } = local
   const { tags, search, status, folders: folderFilter } = filters
   // Read here, outside every compute: the drag freeze is the one place a build reads
   // the previous one's output.
@@ -908,8 +911,8 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     filters.creators.passes, filters.creators.active,
     search.text, search.folderMatches, searchRanks,
     statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
-    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides,
-  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
+    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides, openKey,
+  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears, openKey))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
   // peer row's recency, and this keeps the two reads in their order.
@@ -1002,7 +1005,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     scope: placement.scope,
     navScope: placement.navScope,
     holdContainer: placement.holdContainer,
-    showDivider: placement.showDivider,
+    dividerNext: placement.dividerNext,
     orderStamp: placement.orderStamp,
     rowAnimEnabled: placement.rowAnimEnabled,
     rowMotionHeld: placement.rowMotionHeld ?? false,
@@ -1051,7 +1054,7 @@ export function opensElsewhereOf(slot: Slot): string | null {
  *  without a line here is a type error rather than a field equality never compares. */
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
-  holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
+  holdContainer: true, dividerNext: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true, crew: true,
   crewWindowCovers: true, isOut: true, isPinned: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,

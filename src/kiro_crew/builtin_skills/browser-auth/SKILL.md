@@ -13,6 +13,11 @@ in to are already signed in for you. Where it is Kiro's own headless Chromium
 ONCE, by the user, through takeover, and its cookies stay in Kiro's browser
 profile for later turns.
 
+An edition that signs sites in by itself keeps Kiro's Chromium off its company
+sign-in pages altogether, even during a takeover: read the result's `sign_in`
+block (`outcome`, `reason`, `note`) and pass its note to the user, rather than
+asking them to take over for that sign-in.
+
 Either way the rule is the same: **you never type a password.** `type`
 refuses a password field with `password_field`, the live view masks password
 boxes, and nothing in a credential ever reaches you or the transcript.

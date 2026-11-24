@@ -95,11 +95,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: floor), ``argv_floor_tar`` (the line-cap split of its tar grammar) and
 #: ``argv_floor_ssh_operand`` (the line-cap split of the ssh operand reader). The security
 #: package loads before the list, so the owners cannot move behind it; nothing else loads.
+#: Raised by 1 for ``mcp-core`` (496 to 497) and ``mcp-mate`` (359 to 360): the self-kill
+#: floor reads the Windows by-name kill programs through its own
+#: ``kiro_crew.security.self_kill_windows``, which ``argv_floor_self`` imports; the module
+#: count rose by that one file and nothing else loads (``mcp-cron`` and ``mcp-guide`` had room).
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 496,
+    "mcp-core": 497,
     "mcp-cron": 364,
     "mcp-guide": 358,
-    "mcp-mate": 359,
+    "mcp-mate": 360,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

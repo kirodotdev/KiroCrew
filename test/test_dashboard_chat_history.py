@@ -1314,6 +1314,38 @@ class TestCronTranscriptResume:
         assert list(state._slots) == ["cron-job1"]
         assert state.get_slot("cron-job1") is tab
 
+    @pytest.mark.asyncio
+    async def test_a_cron_transcript_no_tab_saved_reopens_on_its_own_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        """A job's transcript whose line carries no link is bound by its file name.
+
+        A job tab that flushed its run's rows but never saved its own line leaves no
+        ``linked_session_key``; unbound, the reopened tab's saves are refused.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:0a1b2c3d", "user", "cron prompt")
+        log.append("cron:0a1b2c3d", "assistant", "cron result")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cron_0a1b2c3d/resume", json={"key": "cron_0a1b2c3d"}
+            )
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-0a1b2c3d"
+
+        slot = state.get_slot("cron-0a1b2c3d")
+        assert slot.linked_session_key == "cron:0a1b2c3d"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert log.read_messages("cron:0a1b2c3d")[-1]["content"] == "follow-up after resume"
+        assert log.read_messages("dashboard:cron_0a1b2c3d") == []
+
 
 class TestTaskReviewTranscriptResume:
     @pytest.mark.asyncio

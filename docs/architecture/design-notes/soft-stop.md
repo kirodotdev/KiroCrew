@@ -235,10 +235,14 @@ provider reports `"idle"`, the orphaned card is resolved immediately. When that
 `"idle"` lands on a slot that still reads `running` — the turn reached its done
 boundary at the provider but the slot has not seen the terminal event settle it —
 the reply carries `info: "no active turn"` so it does not read as "stopped a
-running turn". A genuine in-flight turn whose cooperative cancel does not confirm
-answers `stop_turn` with a non-acked outcome instead, which escalates to the hard
-kill on its own (step 2 above); `"idle"` is the signal that there is no provider
-turn to kill, so the handler names the state rather than forcing a reset.
+running turn". Two cases answer `{"ok": true}` instead, because the press ends a
+turn that has no provider turn yet (session.md): a runner still preparing its turn
+(`turn_stop._cancel_preparing_runner`), and a dashboard send still waiting in Shared
+Crew fair admission before its runner starts (`admission_entry.cancel_waiting_send`).
+A genuine in-flight turn whose cooperative cancel does not confirm answers
+`stop_turn` with a non-acked outcome instead, which escalates to the hard kill on
+its own (step 2 above); `"idle"` is the signal that there is no provider turn to
+kill, so the handler names the state rather than forcing a reset.
 That settle, and the `"compacting"` undo, apply only while `_stop_generation`
 still equals the value this press claimed. A turn end can reset the posture
 during the `stop_turn` await and a later press can claim a new generation;
@@ -444,6 +448,13 @@ the NEW user message to the conversation log only **after** the preamble is buil
 so at that moment `recent()` holds only prior turns and the latest user entry is the
 cancelled one. It is consumed one-shot on the first prompt after a cancel, so
 subsequent prompts see only the normal ACP-held conversation.
+
+The dashboard also hands it the prompt's history replay (`replay=`). A cold start
+rebuilds the replay from the same transcript, and a Stop on a fresh chat's first turn
+leaves the first-turn history debt armed, so that replay can already hold the stopped
+request as a `User:` row. The restore then returns `""`: the request reaches the model
+once, through the replay, and the stop note in the session context still says the turn
+was stopped. A replay whose budget dropped the request row keeps the restore.
 
 A mid-turn steer is a `user` row marked `meta.steer`: it was injected into the
 running turn and did not open it. When the newest user row before the marker is a

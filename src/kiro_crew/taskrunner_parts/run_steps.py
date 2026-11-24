@@ -37,6 +37,7 @@ from kiro_crew.task_models import (
     TaskStatus,
 )
 from kiro_crew.task_planner import group_parallel_tasks
+from kiro_crew.taskrunner_parts.run_reporting import decompose_recording_refusal
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
 from kiro_crew.workflow_memory import inherited_step_agent
 
@@ -436,13 +437,16 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
         f"## Failed Task\n- Error: {failed_task.title}: {err_detail}\n{may_have_run}\n"
         f"{memory_ctx}\n\nRe-plan the REMAINING work."
     )
-    new_tasks = await self._decompose(replan_spec, run.work_dir, run.task_id, agent=run.agent)
+    replan_failed = f"Re-plan failed after task {failed_task.index}"
+    new_tasks = await decompose_recording_refusal(
+        self, run, replan_failed, replan_spec, run.work_dir, run.task_id, agent=run.agent
+    )
     if not new_tasks:
         if self._stopping():
             # The stop most likely took the planning session away; resumed on restart.
             return False
         run.status = "failed"
-        run.error = f"Re-plan failed after task {failed_task.index}"
+        run.error = replan_failed
         return False
     # The revised plan replaces every step that failed (a parallel group can
     # fail more than the one passed here) and the original's remaining work.

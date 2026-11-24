@@ -90,7 +90,15 @@ from spawning one worker per request. It is set only after the worker's
 `Thread.start()` returned and cleared in the worker's `finally`, so neither a crash
 nor a thread that cannot start (thread exhaustion, interpreter shutdown, a test
 patching `Thread.start`) strands the check: a set flag with no worker would skip
-every later recheck for the life of the process.
+every later recheck for the life of the process. The data home is resolved on the
+scheduling thread (`data_home()`) and the worker thread runs through
+`config.paths.run_with_data_home`, so every read it makes (the config load, a rebuild)
+uses that home and none reads `KIROCREW_HOME`: a variable cleared before the worker
+reads cannot send it to the default home. The consent pins are handled the same way:
+`consent_pins.bind_env_pins` snapshots `DO_NOT_TRACK`, `KIROCREW_TELEMETRY` and
+`KIROCREW_TELEMETRY_DISABLED` on the scheduling thread, and every pin the worker
+resolves answers from that snapshot, so a `KIROCREW_TELEMETRY=0` cleared in that gap
+cannot turn recording on from `telemetry.enabled`.
 
 Consent resolution is env-first: `env_pin()` reads `DO_NOT_TRACK`, then
 `TELEMETRY_ENV_VAR` (`KIROCREW_TELEMETRY`), then `KIROCREW_TELEMETRY_DISABLED`

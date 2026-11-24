@@ -3,7 +3,7 @@
 Moved verbatim from the kirocrew-prepare-pr `SKILL.md` core (Phase 3 step 5). The call itself is in `monitor-loop.md`.
 
    - **10** → still running. In a chat slot, load `kirocrew-core::monitor_start`
-     through `tool_search`, request a finite same-session loop, then END THE TURN.
+     as the `[TOOL NAMES]` block says, request a finite same-session loop, then END THE TURN.
      Slot-less subagent, cron, webhook and task-runner turns cannot arm one: use
      bounded in-turn `wait` + re-poll and disclose that fallback.
 

@@ -195,6 +195,7 @@ function BotSessionView({ root, sessionKey, liveSlots, slotsLoaded, onBack, onRe
     body = (
       <RunInTerminalScope.Provider value={terminalScope}>
         <ChatPane slotKey={sessionKey} frameless focused={claimsKeys || undefined} pushToTalk={claimsKeys}
+          historyKnown={slot.messages > 0}
           onFocus={() => setPaneFocused(true)} />
       </RunInTerminalScope.Provider>
     )
