@@ -345,8 +345,9 @@ with no row here.
      - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
    * - ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``
      - driver-internal (whether the direct client stamps the spec's shell and
-       write allowlists on its own permission requests, and the claude seed adds
-       the ``permissions.ask`` rules that make those calls reach the gate)
+       write allowlists on its own permission requests; the claude seed adds
+       the ``permissions.ask`` rules that make those calls reach the gate, and
+       opencode's seeded ``"*": "ask"`` already does)
    * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
      - context assembly (whether Crew puts the agent spec's ``file://`` steering
        and the global and project steering trees into the prompt, asked by

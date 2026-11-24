@@ -71,6 +71,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
@@ -359,6 +360,10 @@ async def approve_tool(
         # switch let through, so the session would be killed for the operator's
         # own choice. Crew's side of the grant is unaffected.
         or bool(getattr(self, "_unasked_shell_tripwire", False))
+        # opencode's allow-always stops it asking about every later call the
+        # approved pattern covers, and Crew's spec allowlist rows judge only a
+        # call that asks.
+        or getattr(self, "backend", None) == ACP_BACKEND_OPENCODE
     )
     offered = (self._permission_options.get(request_id) or {}) if once_only else {}
     if resolved_id is None:
