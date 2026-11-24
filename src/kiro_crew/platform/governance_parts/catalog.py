@@ -226,7 +226,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # for each event of the user's kiro hooks before they are installed. An unnamed
     # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
     # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
-    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name -- and,
+    # for a spec hook document with a name of its own, ``hook_stable_name`` too.
     # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
         CAPABILITY,

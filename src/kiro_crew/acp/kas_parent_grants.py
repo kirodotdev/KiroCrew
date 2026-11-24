@@ -113,7 +113,7 @@ _WHOLE_TOOL = {
 #: ``ScriptHook`` fields that name a hook or record its last runs. Every other
 #: field decides whether the hook runs or what it stops.
 _HOOK_NAMING_FIELDS = frozenset(
-    {"id", "name", "last_run", "last_status", "last_error", "run_count"}
+    {"id", "name", "spec_name", "last_run", "last_status", "last_error", "run_count"}
 )
 #: What decides which process or endpoint an MCP server entry is.
 _LAUNCH_KEYS = ("type", "command", "args", "env", "url", "headers")

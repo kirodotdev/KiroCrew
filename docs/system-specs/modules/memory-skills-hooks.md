@@ -7960,7 +7960,10 @@ directory on its own unless a suppressed document names it: an `action` of type
 the per-hook `name`, `description` and `timeout`. Crew's own conversion
 (`agent_sdk/spec_hooks._from_documents`) gives a `PreCompact` or `PostCompact`
 document no number, so the other documents' `<agent>/<Event>/<n>` policy names
-are the ones they would have without it. `enabled: false` and
+are the ones they would have without it. A document's own `name` rides on the
+in-memory `ScriptHook.spec_name` (never saved, like `spec_origin`) when
+`hook_event_governance.with_stable_names` lets it name the hook in a policy's
+`hooks` list too (governance.md). `enabled: false` and
 `confirm: true` are NOT in that class: each grants less execution than the object
 form can express, so either one keeps the hook out of the kiro-cli spec entirely,
 with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`
