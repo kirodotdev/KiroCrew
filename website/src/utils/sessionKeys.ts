@@ -48,6 +48,27 @@ export function sessionKeyFrom(raw: string): string | null {
 }
 
 /**
+ * The OPEN slot `raw` names by its exact key, whatever that key's shape, or null.
+ *
+ * Not every slot key is `chat-<n>-<ts>`: a session a cron or scheduled run opens
+ * can carry a key derived from the task title (`_nightly-report-…`, possibly
+ * ending in a literal `...`), which the grammar above refuses (#41426). The live
+ * roster is already the authority for whether a chip may exist, so a span that
+ * IS one of its keys, after the same prefix strip, names that session. A lookup,
+ * not a shape: no text the roster does not hold exactly can match.
+ *
+ * Never for a `chat-…` span. That namespace is the minted grammar's: a full key
+ * resolves through `sessionKeyFrom`, and a short name (`chat-24`) only through
+ * `classifyShortName`, whose write-time pin and ambiguity refusal must not be
+ * bypassed by a roster slot that happens to be keyed `chat-24`.
+ */
+export function rosterKeyFrom(raw: string, roster: ReadonlyMap<string, string>): string | null {
+  const key = normalizeRunSessionKey(raw.trim())
+  if (key.startsWith('chat-')) return null
+  return roster.has(key) ? key : null
+}
+
+/**
  * A slot's SHORT name, with the mint timestamp left off: `chat-<n>`.
  *
  * This is how a session is actually named in prose — the sidebar shows it, the
