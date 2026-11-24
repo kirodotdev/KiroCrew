@@ -1366,7 +1366,7 @@ teardown on an over-budget read at a product site not listed in
 `test/conftest_floor_read_budget.py`, unless its module resets the budget in its own
 fixture.
 
-Eight members are there for a different reason — a **process-global** that any testpath
+Ten members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -1422,7 +1422,14 @@ one scope down:
   installed with nothing attached. The root logger's handler list is doubly excluded —
   pytest's own `catching_logs` adds one per test phase and removes it at the phase
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
-  the teardown phase is capturing through.
+  the teardown phase is capturing through. The one handler that does come off is the next
+  entry's.
+* `_restore_cli_log_file_handlers` closes and detaches every `_AppendOnlyLogFileHandler`
+  the test attached to the root or `kiro_crew` logger, and nothing else. A short-lived
+  `cli.main()` command attaches one, writing a `gateway.log` under that test's deleted
+  `tmp_path`, so every later `kiro_crew` record on the worker prints `--- Logging error ---`
+  to stderr. No module global records it as installed and no list is written back, so
+  neither reason above applies.
 * `_close_skills_loaders_the_test_opened` closes every `SkillsLoader` the test built,
   through production's weak registry of live loaders, and joins each one's catalog
   worker. It then closes every `SkillSearchIndex` built during the test (the

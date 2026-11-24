@@ -781,7 +781,6 @@ def _resolve_agent_prompt(
     project: str | None,
     mode: str,
     session_key: str | None,
-    is_cc: bool,
     private_owner: bool,
     session_start: bool,
     provider_type: str | None = None,
@@ -798,10 +797,17 @@ def _resolve_agent_prompt(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.agent_sdk.kas_tool_names import backend_of_provider_label
 
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    # Asked of the backend behind the provider label
+    # (``SessionCapabilities.crew_sends_persona_prompt``); a label no known backend
+    # carries, ``None`` and ``""`` answer False.
+    backend = backend_of_provider_label(provider_type)
+    sends_persona = backend is not None and capabilities_for(backend).crew_sends_persona_prompt
     agent_prompt: str
-    if is_cc and not is_custom:
+    if sends_persona and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including
         # the Output Format rules (diff blocks, image embeds, OPTIONS)
         # which are dashboard UI contracts, not kiro-specific. Only the

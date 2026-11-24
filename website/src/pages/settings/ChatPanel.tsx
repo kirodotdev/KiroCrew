@@ -282,7 +282,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
     subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
     memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
-    clearAgentEffortPinError,
+    clearAgentEffortPinError, shownOptimizerModel, optimizerModelOpts, optimizerModelLabels,
+    optimizerModelMut, shownOptimizerEffort, optimizerEffortLabels, optimizerEffortSupported,
+    optimizerEffortMut,
   } = useChatPanelModelDefaults({
     qc, setPathSaveError, clearOwnPathError, overlay, dashCfg, mcCfg, optimisticConfigOpts,
     fallbackModel, shownFallbackModel, refusalFallbackModel, shownRefusalFallbackModel,
@@ -956,6 +958,24 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_optimize_prompt')} hint={i18nT('pages.settings.chatPanel.show_optimize_prompt_desc', { chord: platformShortcut('Cmd+Shift+Enter') })} checked={chatCfg.showOptimizePrompt} onChange={v => setChat('showOptimizePrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} disabled={!chatCfg.showOptimizePrompt} />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_model')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_model_hint')}
+            value={shownOptimizerModel}
+            options={optimizerModelOpts}
+            optionLabels={optimizerModelLabels}
+            onChange={v => optimizerModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.optimize_prompt_effort')}
+            hint={i18nT('pages.settings.chatPanel.optimize_prompt_effort_hint')}
+            value={shownOptimizerEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={optimizerEffortLabels}
+            onChange={v => optimizerEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !optimizerEffortSupported}
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc_summary')} hint={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput

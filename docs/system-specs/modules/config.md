@@ -1687,9 +1687,9 @@ and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
 work goes to the one that owns it: `portability_archive.py` (what an archive holds,
 member names and limits both ways), `portability_templates.py` (agent templates, bundled
 on export and installed on import), `portability_export.py` (what an export reads: the
-walk, the SQLite backups, the session planner and writer, and the installed apps it
-names but leaves out) and `portability_vetting.py`
-(`validate_import_zip` and the staged cron and store checks). A patch of
+walk, the SQLite backups, the session planner and writer, the installed apps it
+names but leaves out, and, on import, the ones of those a machine has not set up) and
+`portability_vetting.py` (`validate_import_zip` and the staged cron and store checks). A patch of
 `portability.<name>` reaches every owner holding the name. The archive builders
 (`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
 which the facade re-exports and which reads these names as `portability.<name>`.

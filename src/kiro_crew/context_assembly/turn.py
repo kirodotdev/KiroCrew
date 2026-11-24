@@ -93,7 +93,6 @@ def post_compaction_parts(
         project=project or template_dir,
         mode=mode,
         session_key=session_key,
-        is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
         provider_type=provider_type,

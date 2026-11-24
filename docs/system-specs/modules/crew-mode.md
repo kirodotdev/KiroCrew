@@ -1902,12 +1902,17 @@ per-session element cannot express, so the session mount
 element and every Bot call would refuse `identity_unattested`.
 
 Whether the Bot's sessions load those tools
-(`member_mate_tools.binding_has_mate_tools`, read from the spec they run) picks
-the wording Crew writes for it. With them, the identity sentence, the first
-welcomes and the goal nudges name `update_self`, `set_goal`, `set_key_results`
-and `set_check_ins`; without them, they name no Bot tool, have the Bot
-write proposed goals, milestones and check-ins in the chat, and point the user at
-the Bot page and its Goals tab. A spec that cannot be read keeps the
+(`member_mate_tools.binding_has_mate_tools`, read from the spec they run, and
+true as well for a spec without the server when the Bot's chat runs on a
+backend that mounts it there, `acp/member_goal_mount.py` and on KAS
+`acp/kas_member_goal_tools.py`) picks the wording Crew writes for it. With
+them, the identity sentence, the first welcomes and the goal nudges name
+`update_self`, `set_goal`, `set_key_results` and `set_check_ins`; without
+them, they name no Bot tool. The identity sentence and the first welcomes
+then say plainly that this chat cannot save a goal and that picking KAS as
+Agent harness under Settings on the Profile tab gives it the tool; the goal
+nudges have the Bot write proposed milestones and check-ins in the chat and
+point the user at the Goals tab. A spec that cannot be read keeps the
 with-tools wording.
 
 The primary New Bot action (the header **+** menu's one row, the empty

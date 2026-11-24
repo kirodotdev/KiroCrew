@@ -19,8 +19,11 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
+from kiro_crew.members import is_dispatchable_member_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ def _grant_request(view: dict[str, Any]) -> dict[str, Any]:
         "redirect_uri": view["redirect_uri"],
         "user_code": view["user_code"],
         "requested_scopes": view["requested_scopes"],
+        "requested_bots": view["requested_bots"],
         "created_at": view["created_at"],
         "expires_at": view["expires_at"],
         "decided_at": view["decided_at"],
@@ -46,14 +50,25 @@ def _grant_request(view: dict[str, Any]) -> dict[str, Any]:
         "grant_id": view["grant_id"],
         # Present only on an approved request: what the owner gave, which may be fewer.
         **({"granted_scopes": view["granted_scopes"]} if "granted_scopes" in view else {}),
+        # Present only on an approved request: the Bots the owner gave, which may be none.
+        **({"granted_bots": view["granted_bots"]} if "granted_bots" in view else {}),
     }
+
+
+async def _existing_bots() -> set[str]:
+    """Bot ids from a confirmed config read, without a fallback roster."""
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    if config.degraded_sections & {DEGRADED_WHOLE_CONFIG, "agents"}:
+        raise ValueError("the Bot roster is degraded")
+    return {name for name in config.agents if is_dispatchable_member_name(name)}
 
 
 def _error(status: int, code: str, message: str) -> web.Response:
     return web.json_response({"error": message, "code": code}, status=status)
 
 
-#: The largest decision body read: a decision and at most every scope there is.
+# shortcut: a decision must fit in 4 KiB, so the owner may need a shorter Bot list;
+# raise this limit when decisions need to carry every requested Bot at once.
 _BODY_MAX = 4 * 1024
 
 _UNAVAILABLE = (503, "instance_unavailable", "local authorization is unavailable")
@@ -133,6 +148,7 @@ def _grant(view: dict[str, Any]) -> dict[str, Any]:
         # As the app reported them; nothing verified the name or the id.
         "app": {"name": view["client_name"], "icon_url": None},
         "scopes": view["scopes"],
+        "bots": view["bots"],
         "status": view["status"],
         "created_at": view["created_at"],
         "expires_at": view["expires_at"],
@@ -214,13 +230,43 @@ async def decide_grant_request(request: web.Request) -> web.Response:
         return _error(400, "invalid_request", "scopes must be a list of strings")
     approve = body["decision"] == "approve"
     request_id = request.match_info["request_id"]
+    try:
+        pending = await asyncio.to_thread(
+            lambda: la.gateway_local_authorization().request_for_decision(request_id)
+        )
+    except la.UnknownRequest:
+        return _error(404, "not_found", "no such grant request, or it has expired")
+    except la.RequestAlreadyAnswered:
+        return _error(409, "grant_request_already_resolved", "this request was already answered")
+    except Exception:
+        return _error(*_UNAVAILABLE)
+    # Left out, an approval gives no Bot: a Bot is never given by default.
+    bots = body.get("bots", []) if approve else None
+    if approve:
+        if not (isinstance(bots, list) and all(isinstance(b, str) for b in bots)):
+            return _error(400, "invalid_request", "bots must be a list of strings")
+        try:
+            la.validate_bots(bots)
+        except la.AuthError as exc:
+            return _error(400, exc.error, exc.description)
+        if not set(bots) <= set(pending["requested_bots"]):
+            return _error(400, "invalid_request", "bots must be a subset of the requested bots")
+    if bots:
+        # A Bot is given only while this Kiro Crew has it. A roster that cannot be
+        # read gives none.
+        try:
+            existing = await _existing_bots()
+        except Exception:
+            return _error(*_UNAVAILABLE)
+        if not set(bots) <= existing:
+            return _error(400, "invalid_request", "bots names a Bot this Kiro Crew does not have")
     # Token auth set this subject; _host_owner_refusal proved it is the host owner's.
     subject = str(request["user"])
     try:
         # The store is built in the worker thread too: its path lookup can touch disk.
         view = await asyncio.to_thread(
             lambda: la.gateway_local_authorization().decide(
-                request_id, approve, scopes if approve else None, caller=subject
+                request_id, approve, scopes if approve else None, bots=bots, caller=subject
             )
         )
     except la.UnknownRequest:
@@ -229,6 +275,8 @@ async def decide_grant_request(request: web.Request) -> web.Response:
         return _error(409, "grant_request_already_resolved", "this request was already answered")
     except la.ScopesNotRequested:
         return _error(400, "invalid_scope", "scopes must be a subset of the requested scopes")
+    except la.BotsNotRequested:
+        return _error(400, "invalid_request", "bots must be a subset of the requested bots")
     except Exception:
         # The record cannot be read or written, or the audit row failed.
         return _error(*_UNAVAILABLE)

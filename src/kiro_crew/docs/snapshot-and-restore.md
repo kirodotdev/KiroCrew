@@ -389,6 +389,15 @@ an app's data stays on this one. A built-in app that is off is not named,
 because every install starts with it switched off, and its data, if it has
 any, is not carried either. A memory-only export names none.
 
+The archive lists the apps the export named. On the other machine, the import
+names each one that machine does not have, or has off though it was on where
+you exported, and installs none of them. An app that was off there and is
+installed here is not named. No app's data is in the archive, so an app that
+is already on here keeps only the data this machine has. The list holds at
+most 200 apps; the import says how many more the other machine had, which it
+could not check. An archive from an older version lists no apps, and its import
+names none.
+
 The dashboard export leaves out folders that tools rebuild inside your
 workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as
 `.pytest_cache`), and the import skips them in an older archive. A backup that

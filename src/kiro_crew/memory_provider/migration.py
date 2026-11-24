@@ -58,6 +58,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.memory_provider.contract import (
     LESSON_KINDS,
     MemoryItem,
@@ -316,7 +317,8 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        os.replace(tmp, path)
+        # A status read holds the job file open; on Windows that fails a bare rename.
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

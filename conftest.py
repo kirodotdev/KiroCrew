@@ -393,6 +393,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _no_leaked_telemetry_exporter,
     _record_skill_search_indexes,
     _restore_boot_wired_globals,
+    _restore_cli_log_file_handlers,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,

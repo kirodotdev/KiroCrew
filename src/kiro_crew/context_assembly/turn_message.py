@@ -404,7 +404,6 @@ def build_message(
                 project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
-                is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=not slim_resume,
                 provider_type=provider_type,

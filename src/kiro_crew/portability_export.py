@@ -5,7 +5,8 @@ SQLite backups taken from a checkpointed database, and the session transcripts a
 companions within the manifest's budget: the session planner and writer
 (:func:`_plan_sessions`, :func:`_write_sessions`) that ``kiro_crew.portability_stream``
 drives when it builds the archive. Also names the installed apps an export does not
-carry (:func:`unbundled_apps`).
+carry (:func:`unbundled_apps`), records them in the manifest (:func:`recorded_apps`) and
+names on import the ones a machine has not set up (:func:`apps_not_set_up`).
 """
 
 from __future__ import annotations
@@ -655,47 +656,118 @@ def unbundled_apps() -> tuple[list[str], int]:
     """The installed apps a whole-install export leaves behind, with their data.
 
     No export carries an app or its data, so every installed app is named except a
-    built-in that is off (:func:`_named_in_export`). An app is named as the Apps page
-    shows it, the manifest's display name or else its id, so a damaged manifest still
-    names the app. Returns ``(names, more)``, sorted case-insensitively and bounded like
-    :func:`~kiro_crew.portability_templates.unbundled_agent_templates`. Read-only: it
-    creates no folder, and an unreadable apps folder answers ``([], 0)``, because this
-    feeds a warning and must never fail the export.
+    built-in that is off (:func:`_named_apps`). Returns ``(names, more)``, sorted
+    case-insensitively and bounded like
+    :func:`~kiro_crew.portability_templates.unbundled_agent_templates`.
     """
-    from kiro_crew.apps import manager  # noqa: PLC0415 -- the apps family imports heavily
-
-    try:
-        ids = manager._recorded_app_names(manager.apps_dir())
-    except OSError as exc:
-        logger.warning("Export: could not list the installed apps: %s", exc)
-        return [], 0
-    labels = (
-        manager._app_display_name(app_id) for app_id in ids if _named_in_export(manager, app_id)
-    )
-    names = sorted(labels, key=lambda n: (n.casefold(), n))
+    names = sorted((app["name"] for app in _named_apps()), key=lambda n: (n.casefold(), n))
     kept = names[:MAX_TEMPLATE_WARNINGS]
     return [_clip(n) for n in kept], len(names) - len(kept)
 
 
-def _named_in_export(manager: Any, app_id: str) -> bool:
-    """Whether the export notice names *app_id*.
+#: Most apps a whole-install export records in its manifest for the import to name
+#: (:func:`recorded_apps`), as many as it lists agent templates.
+MAX_RECORDED_APPS = 200
+
+
+def recorded_apps() -> tuple[list[dict[str, Any]], int]:
+    """The apps :func:`unbundled_apps` names, as the export's manifest records them.
+
+    Each is ``{"id", "name", "enabled"}`` in id order, its name clipped, at most
+    :data:`MAX_RECORDED_APPS`, so the import can name the ones the other machine has
+    not set up (:func:`apps_not_set_up`). Returns ``(rows, past_cap)``: *past_cap*
+    counts the named apps past the cap, which the manifest records so the import can
+    say it did not check them.
+    """
+    named = _named_apps()
+    kept = named[:MAX_RECORDED_APPS]
+    return [{**app, "name": _clip(app["name"])} for app in kept], len(named) - len(kept)
+
+
+def _named_apps() -> list[dict[str, Any]]:
+    """Every installed app the export names, in id order: ``{"id", "name", "enabled"}``.
 
     A folder with no install record is not an installed app (an uninstall that kept
     the app's data leaves one). A built-in that is off, adopted onto its repository or
     not, is not named: every install registers it switched off, and nothing on disk
     tells one the person used from one they never opened. A record that cannot be read
-    is named, never a failed export.
+    is named, as on, never a failed export. ``name`` is what the Apps page shows, the
+    manifest's display name or else the id, so a damaged manifest still names the app.
+    Read-only: it creates no folder, and an unreadable apps folder answers ``[]``,
+    because this feeds warnings and must never fail the export.
     """
+    from kiro_crew.apps import manager  # noqa: PLC0415 -- the apps family imports heavily
     from kiro_crew.apps.builtin_adoption import is_adopted_record  # noqa: PLC0415 -- as above
 
     try:
+        ids = manager._recorded_app_names(manager.apps_dir())
+    except OSError as exc:
+        logger.warning("Export: could not list the installed apps: %s", exc)
+        return []
+    named: list[dict[str, Any]] = []
+    for app_id in ids:
+        try:
+            if not (manager.app_dir(app_id) / manager.INSTALLED_META_FILENAME).is_file():
+                continue
+            record = manager._read_installed(app_id)
+            if (
+                record is not None
+                and not record.enabled
+                and (manager._builtin_owns_install(record) or is_adopted_record(app_id, record))
+            ):
+                continue
+            on = record is None or record.enabled
+        except Exception:  # noqa: BLE001 - app-writable record: unreadable reads as named
+            on = True
+        named.append({"id": app_id, "name": manager._app_display_name(app_id), "enabled": on})
+    return named
+
+
+def apps_not_set_up(manifest: object) -> tuple[list[str], int, int]:
+    """The apps an archive's *manifest* records (:func:`recorded_apps`) that this install
+    has not set up: no install record here, or on there and off here.
+
+    An app that was off there and is installed here is not named, so a restore onto the
+    same machine does not ask to turn on an app the person turned off. A record here
+    that cannot be read counts as installed and off. The manifest is the archive's, so
+    an id that is not an app name is skipped and a name is clipped; an older archive,
+    with no list, names none. Returns ``(names, more, unlisted)``, *names* and *more*
+    bounded like :func:`unbundled_apps`. *unlisted* counts the other machine's apps
+    nothing here checked: the export's ``unbundled_apps_past_cap`` and the list's rows
+    past :data:`MAX_RECORDED_APPS`.
+    """
+    from kiro_crew.apps import manager  # noqa: PLC0415 -- as above
+    from kiro_crew.apps.execution import APP_NAME_RE  # noqa: PLC0415 -- as above
+
+    rows = manifest.get("unbundled_apps") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or not isinstance(rows, list):
+        return [], 0, 0
+    past_cap = manifest.get("unbundled_apps_past_cap")
+    unlisted = max(0, len(rows) - MAX_RECORDED_APPS)
+    if isinstance(past_cap, int) and not isinstance(past_cap, bool) and past_cap > 0:
+        unlisted += past_cap
+    names: list[str] = []
+    for row in rows[:MAX_RECORDED_APPS]:
+        app_id = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(app_id, str) or APP_NAME_RE.fullmatch(app_id) is None:
+            continue
+        if _set_up_here(manager, app_id, was_on=row.get("enabled") is not False):
+            continue
+        name = row.get("name")
+        names.append(name if isinstance(name, str) and name.strip() else app_id)
+    names.sort(key=lambda n: (n.casefold(), n))
+    kept = names[:MAX_TEMPLATE_WARNINGS]
+    return [_clip(n) for n in kept], len(names) - len(kept), unlisted
+
+
+def _set_up_here(manager: Any, app_id: str, *, was_on: bool) -> bool:
+    """Whether this install has *app_id*, and has it on when it *was_on* there."""
+    try:
         if not (manager.app_dir(app_id) / manager.INSTALLED_META_FILENAME).is_file():
             return False
+        if not was_on:
+            return True
         record = manager._read_installed(app_id)
-        return (
-            record is None
-            or record.enabled
-            or not (manager._builtin_owns_install(record) or is_adopted_record(app_id, record))
-        )
-    except Exception:  # noqa: BLE001 - app-writable record: unreadable reads as named
-        return True
+    except Exception:  # noqa: BLE001 - app-writable record: unreadable reads as off
+        return False
+    return record is not None and record.enabled
