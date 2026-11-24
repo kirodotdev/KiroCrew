@@ -48,17 +48,19 @@ def _slot_app(request: web.Request, key: str) -> str:
     return str(getattr(slots.get(key), "_app", "") or "")
 
 
-async def _view_refusal(request: web.Request, key: str) -> web.Response | None:
+async def _view_refusal(request: web.Request, key: str, operation: str) -> web.Response | None:
     """An app slot, the preview on, and the app's ``view`` verb approved, or why not."""
     from kiro_crew.apps.browser_sdk import verb_refusal  # noqa: PLC0415
 
     app = _slot_app(request, key)
     if not app:
+        browser_live._audit(request, operation=operation, outcome="denied", error="not_app_slot")
         return _error("not_app_slot", "a second view is for an app's own slot", 404)
     # Use the single authoritative gate rather than re-implementing preview + verb checks.
     refused = await asyncio.to_thread(verb_refusal, app, "view")
     if refused is not None:
         code, message = refused
+        browser_live._audit(request, operation=operation, outcome="denied", error=code)
         status = 404 if code == "preview_off" else 403
         return _error(code, message, status)
     return None
@@ -68,10 +70,9 @@ async def api_browser_live_views_tabs(request: web.Request) -> web.Response:
     """POST /api/browser/live/views/tabs: the slot's own tabs, to pick one to show."""
 
     async def act(hub: LiveHub, key: str, body: dict[str, Any]) -> dict[str, Any] | web.Response:
-        refused = await _view_refusal(request, key)
+        refused = await _view_refusal(request, key, "browser_live_views_tabs")
         if refused is not None:
             return refused
-        if not hub.targets_of(key):
             return {"tabs": []}
         from kiro_crew.apps.browser_page_port import _flat, _redacted  # noqa: PLC0415
         from kiro_crew.dashboard.handlers.browser_ops import (  # noqa: PLC0415
@@ -121,7 +122,7 @@ async def api_browser_live_views_open(request: web.Request) -> web.Response:
         tab_id = body.get("tab_id")
         if not isinstance(tab_id, str) or not _TAB_ID_RE.fullmatch(tab_id):
             return _error("invalid_tab", "tab_id must be one of this slot's tabs", 400)
-        refused = await _view_refusal(request, key)
+        refused = await _view_refusal(request, key, "browser_live_views_open")
         if refused is not None:
             return refused
         view_key = live_hub_views.free_view_key(hub, key)

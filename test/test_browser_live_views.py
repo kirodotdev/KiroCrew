@@ -875,3 +875,73 @@ async def test_a_running_view_is_ended_via_ack_when_the_app_is_disabled(grant) -
         assert status == 403
         assert body.get("code") == "app_disabled"
         assert hub.get(view_key) is None, "view must be ended after app is disabled (ack path)"
+
+
+async def test_view_refusal_is_recorded_in_sel(
+    grant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A revoked view grant writes a denied SEL record before returning the error.
+
+    One-line change that turns this test red: remove the ``browser_live._audit``
+    call from ``_view_refusal`` in ``browser_live_views.py``.
+    """
+    await _browsing()
+    logged: list[dict[str, str]] = []
+
+    def _capture(**kwargs: str) -> None:
+        logged.append(dict(kwargs))
+
+    monkeypatch.setattr(live_mod, "_sel", lambda: SimpleNamespace(log_api_access=_capture))
+
+    async with TestClient(TestServer(_app())) as client:
+        # Revoke the view verb.
+        grant["verbs"] = ()
+        status, body = await _open(client, "a")
+        assert (status, body["code"]) == (403, "permission_denied")
+        # tabs also goes through _view_refusal.
+        status2, body2 = await _post(client, "/api/browser/live/views/tabs", {"session_key": SLOT})
+        assert (status2, body2["code"]) == (403, "permission_denied")
+
+    denied = [r for r in logged if r.get("outcome") == "denied"]
+    assert len(denied) >= 2, f"expected >=2 denied SEL records, got {denied}"
+    for rec in denied:
+        assert rec.get("error") == "permission_denied"
+
+
+async def test_keepalive_revocation_writes_one_sel_record(
+    grant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keepalive-triggered grant revocation writes exactly one denied SEL record.
+
+    One-line change that turns this test red: remove the ``sel.log_api_access`` call
+    from the keepalive revocation branch in ``live_hub.py::LiveHub.set_visible``.
+    """
+    import kiro_crew.sel as _sel_mod
+
+    await _browsing()
+    logged: list[dict[str, str]] = []
+
+    def _capture(**kwargs: str) -> None:
+        logged.append(dict(kwargs))
+
+    # Patch the sel() factory so the lazy import inside set_visible captures calls.
+    monkeypatch.setattr(_sel_mod, "sel", lambda: SimpleNamespace(log_api_access=_capture))
+    # Keep live_mod._sel pointing at the same capture so the route's _audit also works.
+    monkeypatch.setattr(live_mod, "_sel", lambda: SimpleNamespace(log_api_access=_capture))
+
+    async with TestClient(TestServer(_app())) as client:
+        # Open the view using existing helper (grant["verbs"] still has "view" here).
+        view_key = (await _open(client, "a"))[1]["view_key"]
+        hub = lh.get_live_hub()
+        assert hub.get(view_key) is not None
+
+        # Revoke the view verb.
+        grant["verbs"] = ()
+
+        # Trigger a keepalive heartbeat, which runs set_visible -> revocation.
+        await _post(client, "/api/browser/live/visibility", {"session_key": view_key, "visible": True})
+
+    # Exactly one revocation record from the keepalive path.
+    revoked = [r for r in logged if r.get("error") == "view_grant_revoked"]
+    assert len(revoked) == 1, f"expected exactly 1 revocation SEL record, got {revoked}"
+    assert revoked[0].get("outcome") == "denied"

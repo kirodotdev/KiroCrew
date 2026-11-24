@@ -1062,6 +1062,26 @@ describe('BrowserView second view (tabId)', () => {
     // Session must NOT be recreated; the ring from the forgotten key is gone.
     expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW_F)).toBe(false)
   })
+
+  it('a forgotten key becomes live again after __resetForTests clears the tombstone', async () => {
+    // One-line change that turns this test red: remove forgottenViews.clear() from
+    // BrowserLiveStore.__resetForTests() in useBrowserLive.ts.
+    const VIEW_R = `${OWN}#viewreset01`
+    // Seed a session, then forget it -- this adds VIEW_R to forgottenViews.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW_R, { turn_id: 'r1' })) })
+    browserLiveStore.forgetView(VIEW_R)
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW_R)).toBe(false)
+    // Reset the store -- should clear forgottenViews.
+    browserLiveStore.__resetForTests()
+    // After reset, the same key's events must be accepted again.
+    act(() => { browserLiveStore.applyEvent(ev(VIEW_R, { turn_id: 'r2' })) })
+    expect((browserLiveStore as unknown as { sessions: Map<string, unknown> }).sessions.has(VIEW_R)).toBe(true)
+    // And a frame must populate the ring.
+    act(() => { browserLiveStore.applyFrame(frame(VIEW_R)) })
+    type S = { sessions: Map<string, { turns: Map<string, { ring: { length: number } }> }> }
+    const after = (browserLiveStore as unknown as S).sessions.get(VIEW_R)?.turns.get('r2')?.ring?.length ?? 0
+    expect(after).toBeGreaterThan(0)
+  })
 })
 
 describe('applyEvent ring eviction scope', () => {

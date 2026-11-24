@@ -978,6 +978,8 @@ class BrowserLiveStore {
     this.frameListeners.clear()
     this.handBackDrains.clear()
     this.handBackDrafts.clear()
+    this.forgottenViews.clear()
+    this.secondaryViewKeys.clear()
     this.notify()
   }
 }

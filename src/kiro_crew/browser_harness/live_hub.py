@@ -1229,6 +1229,19 @@ class LiveHub:
                     from kiro_crew.apps.browser_sdk import verb_refusal  # noqa: PLC0415
 
                     if await asyncio.to_thread(verb_refusal, sess.view_app, "view"):
+                        try:
+                            from kiro_crew.sel import sel as _sel  # noqa: PLC0415
+
+                            _sel().log_api_access(
+                                caller="dashboard",
+                                operation="browser_live_view_keepalive",
+                                outcome="denied",
+                                source="dashboard",
+                                resources=session_key,
+                                error="view_grant_revoked",
+                            )
+                        except Exception:
+                            pass
                         await _lhv.stop_view(self, session_key)
         if sess.stream is not None:
             await sess.stream.set_visible(sess.visible)
