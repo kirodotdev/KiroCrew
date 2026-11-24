@@ -1046,8 +1046,35 @@ engine instead ([aws-control.md](aws-control.md)).
   after a Skip or a sign-in. Skip saves nothing: no config key, no browser flag.
   While `chat_needs_sign_in` is true the tour's last card
   (`components.onboardingFlow.pop_chat_body_sign_in_first`) names Settings → Kiro
-  account instead of saying the agent is ready. Decision:
+  account instead of saying the agent is ready; with the built-in engine on it
+  says "Almost ready" and points at the one sign-in strip above the message box
+  (`pop_chat_body_almost_ready`). Decision:
   [2026-11-13](../../decisions/2026-11-13-first-run-offers-the-kiro-sign-in-with-a-skip.md).
+- **With the built-in engine on, first run asks for a harness first.** When that
+  same read says the built-in engine is on (`engine_choice: "engine"` on
+  `GET /api/kas-bundle`: the saved `agent.kas_bundle`, else the build's
+  preference) and the caller may do setup (`setup_allowed`), the hold shows
+  `FirstRunHarnessSetup` instead of `KasLoginGate`:
+  pick a harness (Built-in harness first and picked; Kiro CLI always listed, with
+  its install command while it is missing and Continue off while it is picked;
+  the rest behind "Other harnesses", from the same `harnessList` and
+  `HarnessPickerList` Settings > Agent Harness uses, so a harness the
+  deployment's policy denies gets no row; with KAS denied, Kiro CLI is saved as
+  itself), sign in through the shared
+  `KiroSignInFlow`, then "You're all set". The pick is saved with the keys
+  Settings writes (`agent.acp_backend`, `agent.kas_bundle`); no chat exists yet,
+  so there is no restart prompt, and each spawn reads `agent.kas_bundle` afresh.
+  A failed save stays on the choice with its error, and the pick cannot change
+  while it saves; a picked harness that is not usable yet gets Check again.
+  Kiro CLI picked here gets no Kiro Crew sign-in offer on "You're all set": the
+  person chose it. "Set up later" admits as Skip does. With the engine off, the hold is exactly
+  the sign-in above. Until the hold has decided (status or agent unknown on a
+  browser that never finished setup, or the read in flight) the app stays hidden
+  once an early read, under its own query key, says the engine is on, for at
+  most 4 s, so the settings import screen never paints and vanishes under the
+  step; off, unreadable or not answered yet, the app paints as on main.
+  Decision:
+  [2026-11-24](../../decisions/2026-11-24-first-run-asks-for-a-harness-when-the-built-in-engine-is-on.md).
 - **A signed-out chat names every sign-in that can fix it.** The row follows
   where the turn ran, read from the route the last KAS spawn recorded
   (`kas_route.last_spawn_route`); which sign-in the relay draws is unchanged.

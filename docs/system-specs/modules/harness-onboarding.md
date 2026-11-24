@@ -176,7 +176,9 @@ channel none of them describes, add a set — do not widen an existing one.
 Every decision in this stage is READ BACK to the operator. Settings > Agent
 Harness is a LIST of harnesses — radio rows built from the same pieces as first-run
 setup's "Use other coding agents" picker (`website/src/components/agentHarness/`:
-row, status badge, install block, Use / Check again actions) — and a DETAIL that
+row, status badge, install block, Use / Check again actions; the ids, order and
+names come from `harnessList.ts` and the rows from `HarnessPickerList.tsx`, which
+the built-in engine's first-run harness step uses too) — and a DETAIL that
 opens directly under whichever row is checked, and the detail carries that
 harness's capability card — each line projected from these memberships by
 `agent_sdk/backend_cards.py`. So a membership is not only what the code branches
