@@ -15,6 +15,7 @@ const resolveAskAfterSend = vi.hoisted(() => vi.fn(async () => true))
 vi.mock('../../lib/resolveAskAfterSend', () => ({ resolveAskAfterSend }))
 // No shared-Crew revision read in these tests: the press-time base is simply unknown.
 vi.mock('../../hooks/sharedCrew/sendRevisionSeed', () => ({ baseRevisionForPress: async () => undefined }))
+vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), render: vi.fn() } }))
 
 const api = vi.hoisted(() => ({
   approveChatSlot: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('../../api/client', async importActual => {
   return { ...actual, api }
 })
 
+import mermaid from 'mermaid'
 import NeedsMeHoverLayer, { CLOSE_GRACE_MS, FINE_POINTER_QUERY, OPEN_DELAY_MS } from './NeedsMeHoverCard'
 import { collectAsks, pickRecap } from './needsMeCard'
 import { store } from '../../store'
@@ -359,6 +361,41 @@ describe('NeedsMeHoverCard', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByTestId('needs-me-card')).toBeTruthy()
     expect((screen.getByTestId('needs-me-reply') as HTMLTextAreaElement).value).toBe('half typed')
+  })
+
+  it('a press outside closes the card even while a draft holds it, and reopening brings the draft back', async () => {
+    mount()
+    hover('gate')
+    const box = await screen.findByTestId('needs-me-reply')
+    fireEvent.change(box, { target: { value: 'half typed' } })
+    box.focus()
+    fireEvent.pointerDown(screen.getByTestId('needs-me-card'))
+    // Let any exit animation finish: a closed card would be gone after this.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByTestId('needs-me-card')).toBeTruthy()
+    fireEvent.pointerDown(document.body)
+    await waitFor(() => expect(screen.queryByTestId('needs-me-card')).toBeNull())
+    hover('gate')
+    expect((await screen.findByTestId('needs-me-reply') as HTMLTextAreaElement).value).toBe('half typed')
+  })
+
+  it('a press inside a viewer the card opened in a portal keeps the card and the viewer', async () => {
+    vi.mocked(mermaid.render).mockResolvedValue({ svg: '<svg></svg>' } as never)
+    store.dispatch(setQuestionCard({ slot: 'ask', ask_id: 'a1', questions: [{ question: '```mermaid\ngraph TD;A-->B\n```', options: [] }] }))
+    mount()
+    hover('ask')
+    const card = await screen.findByTestId('needs-me-card')
+    // Chain: MermaidBlock.draw() -> dynamic import('mermaid') -> render -> SVG install. The wait sits behind that
+    // lazy boundary, so it carries an explicit ceiling instead of the 1000 ms default.
+    const figure = await waitFor(() => { const f = card.querySelector('figure.cursor-zoom-in'); expect(f).toBeTruthy(); return f as HTMLElement }, { timeout: 5000 })
+    fireEvent.click(figure)
+    const viewer = await waitFor(() => { const v = document.querySelector('[role="dialog"][aria-modal="true"]'); expect(v).toBeTruthy(); return v as HTMLElement })
+    // The viewer is portalled out of the card's DOM: only the React tree joins them.
+    expect(card.contains(viewer)).toBe(false)
+    fireEvent.pointerDown(viewer)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByTestId('needs-me-card')).toBeTruthy()
+    expect(viewer.isConnected).toBe(true)
   })
 
   it('lists a question card in full with no action button', async () => {
