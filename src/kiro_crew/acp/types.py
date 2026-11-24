@@ -356,7 +356,7 @@ METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: entry comes from a passive attempt whose listener is already closed.
 METHOD_KAS_MCP_RESET_SERVER = "_kiro/mcp/resetServer"
 #: Engine -> client request carrying the consent URL of that sign-in. It names
-#: neither the session nor the server.
+#: no session; a mid-session one (``kas_mcp_lazy_sign_in``) names its server.
 METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 #: KAS's spelling of ``elicitation/create``: the engine turns an MCP server's
 #: elicitation around as this server->client request, with the elicitation

@@ -28,7 +28,9 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_agent_config_error, kas_secret_storage
+from kiro_crew.acp import kas_agent_config_error
+from kiro_crew.acp import kas_mcp_lazy_sign_in as _lazy_sign_in
+from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
@@ -679,6 +681,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 )
                 self._answer_tasks.add(_secret_task)
                 _secret_task.add_done_callback(self._answer_tasks.discard)
+                continue
+            # The end of a mid-session sign-in. It names no session, so it goes
+            # only to the one that was shown the link, never to every session.
+            if (
+                msg.id is None
+                and msg.method == _lazy_sign_in.METHOD_KAS_MCP_OAUTH_COMPLETED
+                and self._harness.opens_external_urls
+            ):
+                await _lazy_sign_in.settle_mid_session_sign_in(self, msg.params)
                 continue
             # Any other request that arrives without a sessionId is
             # unroutable and is answered -32601 by

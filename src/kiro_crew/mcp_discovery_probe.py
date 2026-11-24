@@ -909,6 +909,9 @@ async def probe_server(
 
         if isinstance(resp, dict) and resp.get("error"):
             server.status = "error"
+            # The server started and answered: it is refusing, not wedging, so
+            # the probe quarantine does not count it (see _quarantine_verdicts).
+            server.probe_mode = "refused"
             err = resp["error"]
             server.error = (
                 err.get("message", "unknown error") if isinstance(err, dict) else str(err)
@@ -984,6 +987,7 @@ async def probe_server(
         if isinstance(resp2, dict) and resp2.get("error"):
             err2 = resp2["error"]
             server.status = "error"
+            server.probe_mode = "refused"
             server.error = "tools/list: " + (
                 err2.get("message", "unknown error") if isinstance(err2, dict) else str(err2)
             )

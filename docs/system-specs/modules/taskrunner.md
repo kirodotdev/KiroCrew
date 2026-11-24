@@ -481,7 +481,8 @@ class Project:
 When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
 complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
 acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
-answer. The snapshot taken while the turn runs stays raw, so a step whose stream
+answer. Each line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`). The snapshot taken while the turn runs stays raw, so a step whose stream
 raises (a dead process, a context overflow) keeps that snapshot as it is. Neither
 carries the alternation placeholder the model repeats at the start of a turn after
 one that ended on a tool result: each prompt of the step streams through
@@ -1410,7 +1411,9 @@ and an error that names the stop reason, with the partial text still sent beside
 cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
 status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
 (`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
-not the spec.
+not the spec. A line that only quotes a directive tool's marker is dropped the same way
+(`session_directive.strip_quoted_markers`): the refine turn runs the default spec, which
+pre-grants the directive tools, so they run without a permission request.
 
 ## Dashboard UI (Projects Page)
 

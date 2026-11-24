@@ -149,7 +149,9 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
                         "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
                         "day or week count, is read in 'timezone' when given, "
-                        "else the global config timezone, then 'local'. "
+                        "else the global config timezone, then 'local'. An ISO 8601 "
+                        "time with its own zone ('2026-03-28T14:00:00Z', "
+                        "'2026-03-28T14:00+02:00') names an instant and ignores 'timezone'. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {

@@ -1632,10 +1632,11 @@ never spawns `kiro-cli` in tests. Two production adapters:
   `on_event`: each completed call is refused with
   `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the
   step's own session key), and the refusals lead the step's text before
-  redaction (`agent_exec.step_text`). Nothing is applied. A `schema=` step is
+  redaction (`agent_exec.step_text`, which also drops each line that only quotes
+  a directive marker, `session_directive.strip_quoted_markers`). Nothing is applied. A `schema=` step is
   the exception: its text is parsed as JSON, and a refusal line ahead of a
-  scalar reply would fail that parse and spend the step's re-asks, so there the
-  text is left as the model wrote it and each refusal of a turn that returns
+  scalar reply would fail that parse and spend the step's re-asks, so there no
+  refusal is put in front of the text and each refusal of a turn that returns
   goes to the runner's `_on_refusal`, which records it on the run's event
   stream as a `log` line `agent a<N> "<label>": <refusal>` between that call's
   `agent_started` and `agent_finished`, where the Workflows run view shows it.

@@ -491,6 +491,8 @@ async def _probe_remote(
                     return await _probe_remote(server, protocol_version=fallback)
                 if data.get("error"):
                     server.status = "error"
+                    # Answered, not unreachable: see the stdio probe's rule.
+                    server.probe_mode = "refused"
                     err = data["error"]
                     server.error = (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
@@ -535,6 +537,7 @@ async def _probe_remote(
                 if data.get("error"):
                     err = data["error"]
                     server.status = "error"
+                    server.probe_mode = "refused"
                     server.error = "tools/list: " + (
                         err.get("message", "unknown error") if isinstance(err, dict) else str(err)
                     )

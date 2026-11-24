@@ -988,6 +988,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
+        "Crew API responses",
+        "dashboard/crew_api_responses.py",
+        "The reply text and the failure reason of a POST /v1/responses turn, redacted "
+        "before the answer leaves. `metadata`, the model name and the names of ignored "
+        "fields go back as the caller sent them.",
+    ),
+    (
         "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "

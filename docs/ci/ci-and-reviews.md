@@ -765,7 +765,7 @@ even if it looks like an outage.
 | Signature in the failing step | What it is | Bound |
 |---|---|---|
 | `The runner has received a shutdown signal` / `lost communication with the server` | Runner loss (hosted or CodeBuild). If it keeps hitting the same heavy shard, suspect memory pressure before blaming the host. | Re-run the failed jobs once. A second loss on the same job is a resource question, not luck. |
-| `Unexpected HTTP response: 429` (or `504`) in `setup-python` | Tool download throttled, or the GitHub release host timing out. `setup-python` already retries the download three times with a backoff, so a red after that is an upstream outage. CodeBuild has no tool cache, so every job downloads Python at the same moment (Node is pre-seeded by `seed-node-tool-cache`, Python is not). | Re-run once. A repeat means the Python download needs the same seeding. |
+| `Unexpected HTTP response: 429` (or `504`) in `setup-python` | Tool download throttled, or the GitHub release host timing out. `setup-python` already retries the download three times with a backoff, so a red after that is an upstream outage. CodeBuild has no tool cache, so every job downloads Python at the same moment. `seed-python-tool-cache` makes the same download first, so this line in a CodeBuild job means the seed fell through; its `::warning::` in the same log says why. | Re-run once. A repeat with the seed's warning naming a failed download is an upstream outage; a warning naming a missing row means `python-versions.txt` needs a row for that runner. |
 | `E: Failed to fetch ... Mirror sync in progress?` before `could not install lsof` | An apt index, often a third-party list, caught mid-sync. `run-as-runner` retries the install itself. | That composite carries the bound. A failure after its retries is a real mirror outage. |
 | `API rate limit exceeded for installation` (or the fail-closed wrappers that quote it: `Could not read this PR`, `could not query open PRs`, `could not publish it`) | The shared installation token is drained. This is the **primary** hourly limit, so a retry within seconds cannot succeed. The fork Opus 5.5 Review validation pass handles this itself: when it fails before the model runs and `GET /rate_limit` reports a spent bucket (or `Retry-After`), it waits for the reset, up to 20 minutes, and retries once. Past that wait it fails closed and names the reset time. The PR resolver (`gh_read`) in every fork review lane (GPT 6.1, Opus 5.5, Security Scope, Design, UX, First Principles and Internal Content Scan) does the same for each query: a failure whose error names a rate limit reads `GET /rate_limit`, and when the REST (`core`) bucket its queries draw on is spent it waits for the reset, up to 10 minutes (8 in Security Scope, whose resolver step times out at 10), then retries. Past that wait it fails at once with an `::error::` naming the reset time. Any other failure, including a secondary limit `GET /rate_limit` does not report as spent, keeps the seconds-long backoff. `test/test_fork_review_gh_read_rate_limit.py` runs it. Await Fast Gate (`.github/scripts/await-fast-gate.sh`) reads `GET /rate_limit` the same way when its listing read names a rate limit: a spent REST bucket that resets inside what is left of its 2100 s budget is waited out once, and one that resets later fails the job at once naming the reset, instead of retrying every 10 s until the budget runs out; `test/test_await_fast_gate_poll.py` runs it. | Wait for the reset. Do not mass re-run, because each re-run spends the same quota. A failed fork lane is cleared by re-running that lane's job after the reset; it needs no new push. A step that lists PR files through the API instead of local git is a defect: `test/test_paths_filter_local_git.py`. |
 | `curl: (7) Failed to connect to <host> port 443 after 1 ms` behind `egress-policy: block` | **Self-inflicted**: our own harden-runner allowlist refused the host. A 1 ms connect failure is a local refusal, not an outage. | Never re-run. Add the host the bootstrap actually fetches; `TestForkLaneBubblewrapBootstrapEgress` covers the claude-code-action install. |
@@ -1579,6 +1579,40 @@ runners the composite does nothing. It changes no pin: the version input must
 match the following `setup-node` step, an authoring obligation that no test
 checks, and `test_node_version_pins.py` governs the `setup-node` pins
 themselves.
+
+`setup-python` has the same gap and a larger cost: a miss there reads
+`actions/python-versions`' manifest with two authenticated `api.github.com`
+calls (the repository tree, then the manifest blob). The composite
+`.github/actions/seed-python-tool-cache` runs directly before every
+`setup-python` step of a job whose `runs-on` can name a CodeBuild project,
+except in `fast-gate.yml`: that workflow's own contract
+(`test_fast_gate_barrier.py`) puts `setup-python` directly after the checkout,
+so its jobs are not seeded and still make the two calls each. In a workflow
+another repository can call (`workflow_call`), the checkout is the caller's
+tree, which does not hold the action, so there the seed step carries `if:
+github.repository == 'kirodotdev/KiroCrew'` and is skipped before the action is
+loaded. On
+`runner.environment == 'self-hosted'` it looks up the runner (OS, OS version,
+architecture) and the requested version in `python-versions.txt` beside it,
+downloads that row's archive -- the release asset `setup-python` itself would
+download -- without a token, checks it against the row's SHA-256 before
+opening it, and runs the archive's own installer, which writes
+`RUNNER_TOOL_CACHE/Python/<version>/<arch>` and the `<arch>.complete` marker.
+`setup-python` then logs `Successfully set up CPython` with no `Version 3.12
+was not found in the local cache` line before it. A SHA-256 mismatch fails the
+job with nothing unpacked. Any other stop (no row for the runner, an install
+already present, a failed download, an installer that fails) prints one
+`::warning title=seed-python-tool-cache::` naming the reason and leaves
+`setup-python` to install Python as it does without the seed, so a lost saving
+is visible in the log and never a new failure. On GitHub-hosted runners the
+composite does nothing. The version a runner gets is the row's until the row
+changes: a new upstream patch release reaches CodeBuild jobs only when
+`python-versions.txt` is updated (new version, URL and SHA-256 together).
+`test_ci_seed_python_tool_cache.py` derives the seeded steps from `runs-on`,
+holds each to the seed, its version and a checkout that contains the action,
+holds the Fast Gate jobs to carrying no seed,
+checks the table against every version those steps request, and runs the Linux
+step against a fixture archive.
 
 Rollback needs no AWS change: set Linux resolver outputs to `ubuntu-latest` and
 Windows to `windows-latest`, and return the two direct routes (`changes` and

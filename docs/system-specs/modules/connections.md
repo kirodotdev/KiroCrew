@@ -1435,8 +1435,12 @@ drop the parameter to save the extra screen.
 **Which backend can use it.** The client reaches a chat's sign-in only through
 the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 (`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
-`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
-schema with no slot for it (#27711). A pre-registered provider's Connect
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS engines before 0.66.104 had
+no slot for it (#27711); from 0.66.104 KAS takes a public client's `clientId` and
+`redirectUri`, but Crew withholds a block that names a `clientSecret` on every
+engine (`kas_engine_features.carry_oauth`), and every pre-registered provider is
+confidential. KAS joins the set once Crew sends the secret through
+`_kiro/mcp/oauth/setClientSecret` (#41723). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
 chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`

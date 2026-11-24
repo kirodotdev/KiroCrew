@@ -197,10 +197,52 @@ class TestSelfProtectionKillTargetScoping:
                 "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
                 "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
             ),
+            # A same-line assignment of literal text is resolved, so a name joined
+            # from such assignments is the name itself.
+            *_named(
+                "test_a_name_joined_from_literal_assignments_is_a_kill",
+                'kill $(a=kiro; b=crew; pgrep -f "$a$b")',
+                'kill $(case x in x) :;; esac; a=kiro; b=crew; pgrep -f "$a$b")',
+                f'a=kiro; b=crew; {_PK} -f "$a$b"',
+            ),
         ],
     )
     def test_kill_spellings_that_name_the_cli_are_kills(self, origin, cmd):
         assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        ['kill $(pgrep -f "$pattern")', "kill $(pgrep -f otherproduct)"],
+        ids=["pattern-variable", "another-product"],
+    )
+    def test_a_lookup_by_a_pattern_variable_or_another_name_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'kill $(pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(case x in x) :;; esac; pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(x=$(printf kiro); pgrep -f "${x}crew")',
+            "kill $(pgrep -f kiro{c..c}rew)",
+            "kill $(pidof kiro{,}crew)",
+            f"{_PK} -f kiro{{c..c}}rew",
+            f'{_PK} -f "$(printf kiro)$(printf crew)"',
+        ],
+        ids=[
+            "printed-halves",
+            "printed-halves-after-esac",
+            "printed-assignment",
+            "brace-sequence",
+            "pidof-brace-list",
+            "pkill-brace-sequence",
+            "pkill-printed-halves",
+        ],
+    )
+    def test_an_assembled_lookup_target_remains_residual(self, cmd):
+        # A stated residual of this floor: a target the command assembles from what a
+        # substitution prints, or from a brace expansion, is not worked out.
+        assert _denied_by(cmd) != _RULE_KILL, cmd
 
     def test_nested_shell_payload_bare_kill_allowed(self):
         # Descending must not widen: a bare PID kill inside a payload is still

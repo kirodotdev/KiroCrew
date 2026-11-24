@@ -464,12 +464,14 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = (
 # Backends that honour a remote MCP entry's ``oauth`` block (the pre-registered
 # client id, redirect URI and scopes a Connections provider writes). Only kiro-cli
 # reads it: it loads the entry from the agent file it was launched with. KAS takes
-# its agents over ``_meta.kiro.customAgents``, whose remote-server schema has no
-# ``oauth`` slot, so the block is dropped and the engine falls back to dynamic
-# client registration, which a pre-registered provider does not offer.
-# The kiro-cli relay route of KAS projects through the same schema, so it is not a
-# member either. A backend joins only once its own path carries the block to the
-# engine; until then the Connections page marks those providers kiro-cli only.
+# its agents over ``_meta.kiro.customAgents``; from engine 0.66.104 that schema keeps
+# a public client's ``clientId`` and ``redirectUri`` (``kas_engine_features.carry_oauth``),
+# but a confidential client's block, one naming ``clientSecret``, is withheld on
+# every engine. Every pre-registered Connections provider is confidential, so KAS
+# is not a member until Crew sends the secret through
+# ``_kiro/mcp/oauth/setClientSecret``. A backend joins only once its own path carries
+# the block to the engine; until then the Connections page marks those providers
+# kiro-cli only.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose sessions reach a Crew-owned Connection (``crew_oauth`` preview)
