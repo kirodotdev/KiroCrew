@@ -5562,12 +5562,19 @@ the agent's `permissions`: `{"capability": "skill", "exclude": [<names>],
 "effect": "deny"}`. Measured with that rule: 3 for the 3-skill spec, 35 for a
 35-skill spec, and an excluded skill still loads while a global one is refused.
 No rule is added for an unmapped `kirocrew` / `kirocrew-worker` (whole catalog)
-or for a scope that is exactly the default trees KAS already loads. An empty
+or for a scope that is exactly the default trees KAS already loads, unless the
+workspace holds a `.kiro/skills` tree Crew's project-skill trust has not admitted:
+KAS loads that tree whatever the trust store says, so such a scope becomes the
+trees Crew admits and the rule denies the workspace's skills. An empty
 scope (an agent that may not inherit, or a workspace that turned inheritance off)
 denies every skill. KAS compiles `exclude` unsplit, and Crew bounds every rule at
 `kas_permissions._MAX_PATTERNS_PER_RULE` (KAS's compiler overflows near 114), so
 past that many names the rule is written as split `match` denies of the
-default-tree skills outside the scope. That form cannot see a skill added to
+default-tree skills outside the scope (an unadmitted workspace tree's included,
+and one sharing an in-scope name stays offered), each named both as Crew reads it
+and as KAS's own front-matter parser does (`name: a # b` is `a` to KAS, and its
+js-yaml CORE schema types only null, `true`/`false`, integers and floats, so
+`name: yes` and `name: 2026-01-01` are strings and `<<` is a plain key). That form cannot see a skill added to
 those trees after session start, and a name with glob characters is never
 written as a `match` entry (it would deny in-scope skills too), so such a skill
 stays offered. Every projection that adds the rules records one
