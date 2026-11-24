@@ -1310,7 +1310,9 @@ answers "where is this app's caret", including for a background app. Identity is
 compared with `CFEqual`, never pointer equality: `AXFocusedUIElement` is a
 Copy-Rule read returning a fresh reference to a node the walk reaches under a
 different one, so an address comparison would answer "not focused" for every element
-and the marker would silently never appear.
+and the marker would silently never appear. The selection is flattened and clipped
+to `text_limit` with `render._clip` when it is read, so `Snapshot.selected_text`
+never holds more than the caller asked for, whoever consumes it.
 
 **Alternate child collections** (`AXRows`, `AXVisibleChildren`, merged with
 `AXChildren`). `AXChildren` alone is not the whole tree: a table, outline or list
