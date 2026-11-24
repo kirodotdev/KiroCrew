@@ -1563,7 +1563,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   The fixed tail hold ends at the last
   word, and a word ends at a blank or at a non-ASCII character that no reader folds
   onto ASCII (`compat.ends_word`; `ſ`, the Kelvin sign or `ß` fold onto letters and
-  stay inside the word): every anchor and credential is ASCII, and unspaced Chinese
+  stay inside the word, as does a default-ignorable character such as a zero-width
+  space, which the credential plan reads through): every anchor and credential is ASCII, and unspaced Chinese
   or Japanese prose would otherwise be held whole until its next blank. The stream
   snaps the hold back to the start of that word (`compat.word_start`) and holds a
   hit the cut would end exactly at while more text follows it (its closing quote
