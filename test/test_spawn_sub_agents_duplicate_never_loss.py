@@ -1382,12 +1382,14 @@ async def test_a_completion_parked_through_a_restart_is_re_announced(tmp_path, m
     sessions.note_turn_landed(key)
     sessions.release(key)
     await asyncio.wait_for(asyncio.gather(*getattr(orch, "_inline_tasks", ())), 30)
-    await async_wait_until(
-        lambda: (tmp_path / info.id / "tombstone.json").exists(),
+    text = await async_wait_until(
+        lambda: (tmp_path / info.id / "tombstone.json").read_text(encoding="utf-8"),
         timeout=10,
+        off_loop=True,
+        ignoring=(FileNotFoundError, PermissionError),
         describe=lambda: "the settle never wrote the tombstone",
     )
-    tomb = json.loads((tmp_path / info.id / "tombstone.json").read_text(encoding="utf-8"))
+    tomb = json.loads(text)
     assert tomb["cause"] == "delivered"
     assert info.id not in [o.get("id") for o in list_orphans()]
 
