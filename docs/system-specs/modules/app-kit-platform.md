@@ -7966,9 +7966,9 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
 `ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
 `/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45); level 14 adds backend
-SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError` and
-`address_is_not_public` (§40). Several seams share level 7,
-three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
+SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
+`address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES` (§40). Several seams
+share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -10117,6 +10117,7 @@ that wants one helper does not pay for the security stack.
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
 | Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
+| Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
 
 **Same safety semantics.** A read refuses exactly what the private read refuses and
 raises the gateway's own `FileTooLargeError`; the path gate answers exactly what
@@ -10129,6 +10130,16 @@ name: no app imports the class, so an app reads the result's `url`, `scheme`, `h
 `wire_host`, `port`, `ip`, `addresses` and `domain` and never names its type. The
 exception classes are the private ones, not look-alikes, so an `except` written against
 either catches both.
+The sniff answers from the leading bytes the caller holds, never from a name or a declared
+type (CWE-434), with the gateway's own table: no SVG, and a RIFF container only when
+its form tag is `WEBP`. Its answer is the set the gateway can sniff, not an acceptance
+list, so the app keeps its own allowlist on top and a type the gateway adds later does
+not widen what the app takes (the `messaging/raster.py` contract in
+[messaging](messaging.md)). `RASTER_SNIFF_BYTES` is bound from the gateway's own
+`raster.SNIFF_BYTES` when `backend_sdk.media` is imported, so an app slicing its read
+with it carries no hand-copied window. An app that names the package and still defines
+its own shim function spelled `sniff_raster_mime` is counted at level 14 as well
+(§33), which only asks for a higher `--min-sdk-level`.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
@@ -10191,7 +10202,8 @@ package as a level-7 use (§33), so a tree that adopts it is held on a host with
 A name published later is a row of `_EXPORT_LEVELS` with its own level, and
 `BACKEND_SDK_LEVEL` stays 7. Level 14 is one batch of such names, each added by its own
 change, all sharing the level: `canonical_file_path`, `vet_public_url`,
-`UrlRejectedError` and `address_is_not_public`. A host from level 7 to 13 has the
+`UrlRejectedError`, `address_is_not_public`, `sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`. A host from level 7 to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
 of the name's level (§33), so a host below it keeps the wheel copy.
@@ -10199,8 +10211,8 @@ of the name's level (§33), so a host below it keeps the wheel copy.
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
 to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helpers,
-`link_unfurl.pinned_connector` and `PinnedResolver`, `messaging.raster.sniff_raster_mime`,
-`asset_downloader.download_to`, `executors.subprocess_executor`,
+`link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
+`executors.subprocess_executor`,
 `apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
 `security.redact_local_paths`, `security.iter_credential_matches`,
 `atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
@@ -10211,11 +10223,12 @@ to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helper
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
-`apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/app_sdk_level.py`,
-`website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`,
-`_BACKEND_SDK_LATER_NAMES`).
+`apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
-`test/test_app_backend_sdk_urls.py` and `test/test_builtin_adoption_pins.py`.
+`test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py` and
+`test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
 ## 41. App-owned chat slots (seam level 7)
