@@ -94,9 +94,23 @@ def _client_cwd(client: Any) -> str:
     return cwd if isinstance(cwd, str) else ""
 
 
+def _marked_if_missing(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """*snapshot*, with ``before_missing`` set to the probed path when nothing is there.
+
+    The probe is the canonical path the snapshot read, so a ``~`` spelling names the
+    same file. A failed call that leaves it empty provably changed nothing, and
+    ``_settle_failed_write`` drops its entry instead of showing an unverified write.
+    """
+    probed = snapshot.get("canonical_path") or snapshot["path"]
+    if not os.path.lexists(probed):
+        snapshot["before_missing"] = probed
+    return snapshot
+
+
 def _snapshot_tool_writes(event: Any, cwd: str = "") -> list[dict[str, Any]]:
     """Every pre-write snapshot one tool-call event yields, for ``_record_turn_snapshot``.
 
+    Each snapshot whose path holds nothing yet is marked (``_marked_if_missing``).
     kiro-cli's shapes go to ``_snapshot_write_target`` first and, when it takes
     the event, nothing else is read, so its behaviour is unchanged. Otherwise a
     non-kiro write shape (the module docstring) is snapshotted from disk. An MCP
@@ -110,7 +124,7 @@ def _snapshot_tool_writes(event: Any, cwd: str = "") -> list[dict[str, Any]]:
         diff_path=getattr(event, "diff_path", "") or "",
     )
     if snapshot:
-        return [snapshot]
+        return [_marked_if_missing(snapshot)]
     if getattr(event, "mcp_server_name", ""):
         return []
     if isinstance(raw_params, dict):
@@ -132,5 +146,5 @@ def _snapshot_tool_writes(event: Any, cwd: str = "") -> list[dict[str, Any]]:
             continue
         canonical = validate_file_path(anchored)
         if canonical is not None:
-            snapshots.append(_disk_before_snapshot(anchored, canonical))
+            snapshots.append(_marked_if_missing(_disk_before_snapshot(anchored, canonical)))
     return snapshots
