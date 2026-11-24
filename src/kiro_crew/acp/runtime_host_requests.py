@@ -431,8 +431,14 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
 
 
 def mcp_sign_in_holds(self: AcpRuntime, session_id: str, server_name: str) -> bool:
-    """Whether the runtime holds this session and server's sign-in slot."""
-    return self._mcp_sign_in == (session_id, server_name)
+    """Whether a sign-in of this session and server is live.
+
+    Its slot is held, or the engine's mid-session sign-in whose link this session
+    was shown has not ended yet (``kas_mcp_lazy_sign_in.flow_open``).
+    """
+    return self._mcp_sign_in == (session_id, server_name) or _lazy_sign_in.flow_open(
+        self, session_id, server_name
+    )
 
 
 def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bool:

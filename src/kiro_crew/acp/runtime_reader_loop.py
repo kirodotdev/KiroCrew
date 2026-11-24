@@ -50,7 +50,6 @@ from kiro_crew.acp.transport_framing import (
 )
 from kiro_crew.acp.types import (
     METHOD_AGENT_SWITCHED,
-    METHOD_KAS_MCP_OAUTH_COMPLETED,
     METHOD_KAS_OPEN_EXTERNAL_URL,
     METHOD_REQUEST_PERMISSION,
     JsonRpcMessage,
@@ -687,7 +686,7 @@ async def _reader_loop(self: AcpRuntime) -> None:
             # only to the one that was shown the link, never to every session.
             if (
                 msg.id is None
-                and msg.method == METHOD_KAS_MCP_OAUTH_COMPLETED
+                and msg.method == _lazy_sign_in.METHOD_KAS_MCP_OAUTH_COMPLETED
                 and self._harness.opens_external_urls
             ):
                 await _lazy_sign_in.settle_mid_session_sign_in(self, msg.params)

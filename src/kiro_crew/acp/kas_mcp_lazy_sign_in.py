@@ -19,6 +19,7 @@ Instance fields read: ``_announced_children``, ``_fold_mcp_frame``, ``_mcp_repor
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -45,6 +46,11 @@ _FLOW_ID_CAP = 200
 _FAILED_SIGN_IN = "sign-in did not finish"
 
 
+#: Engine -> client notification ending a mid-session sign-in: the one whose link
+#: came with ``oauthCompletion: 'notification'``. ``params`` carries ``serverName``,
+#: ``success`` and the link's ``oauthFlowId``; it names no session.
+METHOD_KAS_MCP_OAUTH_COMPLETED = "_kiro/mcp/oauthCompleted"
+
 #: Set on a consent frame whose link replaces the one its session was shown for the
 #: same flow; the session handle then passes it on (``_accept_oauth_request``).
 REPLACES_LINK = "replacesLink"
@@ -55,7 +61,9 @@ class LazySignInFlow(NamedTuple):
 
     session_id: str
     server_name: str
-    url: str
+    #: The link's sha256, for the repeat check: the link itself is external
+    #: content of any length, so the flow keeps only a fixed-size digest of it.
+    url_digest: str
     #: The queue the link was put on. A completion goes only to this queue, so a
     #: session that left, or a new queue registered under its id, gets nothing.
     queue: asyncio.Queue[Any]
@@ -66,6 +74,19 @@ class LazySignInFlow(NamedTuple):
 
 #: A runtime's open mid-session sign-ins, oldest first, by flow key.
 LazySignInFlows = OrderedDict[str, LazySignInFlow]
+
+
+def flow_open(self: AcpRuntime, session_id: str, server_name: str) -> bool:
+    """Whether this session was shown a mid-session sign-in link for *server_name* still open.
+
+    Open until its ``_kiro/mcp/oauthCompleted`` arrives (the engine sends one at the
+    latest when its five-minute wait ends), the flow is dropped past the cap, or the
+    session's queue goes.
+    """
+    queue = self._session_queues.get(session_id)
+    return queue is not None and any(
+        flow.queue is queue and flow.server_name == server_name for flow in _flows(self).values()
+    )
 
 
 def is_mid_session_consent(params: Any) -> bool:
@@ -173,14 +194,21 @@ async def deliver_mid_session_consent(self: AcpRuntime, params: dict[str, Any], 
     flow_id = _flow_id(params)
     # A link without an id is keyed by its owner, which no engine id can equal.
     key = flow_id or f"\0{session_id}\0{server_name}"
-    flow = LazySignInFlow(session_id, server_name, url, queue, bool(flow_id))
+    digest = hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()
+    flow = LazySignInFlow(session_id, server_name, digest, queue, bool(flow_id))
     known = flows.get(key)
     if known == flow:
         return ""
     flows[key] = flow
     flows.move_to_end(key)
     while len(flows) > _FLOW_CAP:
-        flows.popitem(last=False)
+        _, dropped = flows.popitem(last=False)
+        logger.info(
+            "Mid-session MCP sign-in for %s forgotten past %d open ones: its card "
+            "will not close by itself",
+            sanitize_sink_text(dropped.server_name, NAME_CAP),
+            _FLOW_CAP,
+        )
     consent_params: dict[str, Any] = {
         "sessionId": session_id,
         "serverName": server_name,

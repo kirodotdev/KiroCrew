@@ -515,3 +515,47 @@ async def test_a_server_only_on_the_wire_is_not_proof_of_holding_it(monkeypatch)
 
     assert [kind for kind, _id, _msg in replies] == ["error"]
     assert _frames(runtime, "s1") == []
+
+
+# ── an open mid-session sign-in counts as live, so its card keeps its link ───
+
+
+@pytest.mark.asyncio
+async def test_an_open_mid_session_sign_in_is_live_until_it_ends(monkeypatch):
+    """The chat withdraws a link whose sign-in ended (``mcp_sign_in_ended``)."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    runtime = _runtime(("s1", ["remote"]), ("s2", ["other"]))
+    _answers(runtime, monkeypatch)
+    provider = AcpSessionProvider.__new__(AcpSessionProvider)
+    provider._handle = SimpleNamespace(session_id="s1")
+    provider._runtime = runtime
+    assert provider.mcp_sign_in_ended("remote") is True
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert runtime.mcp_sign_in_holds("s1", "remote") is True
+    assert provider.mcp_sign_in_ended("remote") is False
+    assert runtime.mcp_sign_in_holds("s2", "remote") is False
+    assert runtime.mcp_sign_in_holds("s1", "other") is False
+    await _complete(runtime, serverName="remote", success=True, oauthFlowId="flow-1")
+    assert provider.mcp_sign_in_ended("remote") is True
+
+
+@pytest.mark.asyncio
+async def test_a_flow_past_the_cap_is_forgotten_with_a_log_line(monkeypatch, caplog):
+    from kiro_crew.acp import kas_mcp_lazy_sign_in
+
+    runtime = _runtime(("s1", ["remote"]))
+    _answers(runtime, monkeypatch)
+    monkeypatch.setattr(kas_mcp_lazy_sign_in, "_FLOW_CAP", 2)
+    caplog.set_level("INFO", logger="kiro_crew.acp.runtime")
+
+    for n in range(3):
+        await runtime._answer_open_external_url(n, _lazy(url=f"{_URL}-{n}", flow=f"flow-{n}"))
+
+    assert list(runtime._mcp_lazy_sign_in_flows) == ["flow-1", "flow-2"]
+    assert "forgotten past 2 open ones" in caplog.text
+    assert all(len(f.url_digest) == 64 for f in runtime._mcp_lazy_sign_in_flows.values())
