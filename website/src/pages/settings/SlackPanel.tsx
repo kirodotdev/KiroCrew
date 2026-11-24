@@ -70,6 +70,8 @@ type Draft = {
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** `slack.tracking_channels` IDs; saved as adds and removes against the seed. */
+  tracking_channels: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Whether Slack files its sessions in a folder at all (off = unfiled). */
@@ -89,6 +91,7 @@ function draftFrom(c: SlackConfigData): Draft {
     owner_id: c.owner_id,
     command: c.command,
     allowed_enterprise_ids: [...c.allowed_enterprise_ids],
+    tracking_channels: [...(c.tracking_channels ?? [])],
     reactions_enabled: c.reactions_enabled,
     show_thinking: c.show_thinking,
     // A configured name IS the on-state — the backend has one field, where ""
@@ -367,12 +370,17 @@ export function SlackPanel() {
   // sends the owner only when the field was edited, so a save that lands
   // while "Claim in Slack" confirms cannot write the old value back.
   const ownerBaseline = useRef('')
+  // The tracked channels the draft was seeded from: the save sends only what was
+  // added and removed here, so a channel added in Slack (/kirocrew channels)
+  // since this page loaded is not removed by a save of the older list.
+  const trackingBaseline = useRef<string[]>([])
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
       const seeded = draftFrom(data)
       codeBaseline.current = seeded.code
       ownerBaseline.current = seeded.owner_id.trim()
+      trackingBaseline.current = seeded.tracking_channels
       setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
@@ -460,10 +468,14 @@ export function SlackPanel() {
     if (!draft) return
     setError('')
     const owner = draft.owner_id.trim()
+    const trackAdd = draft.tracking_channels.filter(c => !trackingBaseline.current.includes(c))
+    const trackRemove = trackingBaseline.current.filter(c => !draft.tracking_channels.includes(c))
     const payload: Partial<SlackConfigSave> = {
       ...(owner !== ownerBaseline.current ? { owner_id: owner } : {}),
       command: draft.command.trim(),
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
+      ...(trackAdd.length ? { tracking_channels_add: trackAdd } : {}),
+      ...(trackRemove.length ? { tracking_channels_remove: trackRemove } : {}),
       reactions_enabled: draft.reactions_enabled,
       show_thinking: draft.show_thinking,
       // Off sends "" (the field's off-state); on with a blank name falls back
@@ -718,6 +730,19 @@ export function SlackPanel() {
             placeholder={i18nT('pages.settings.slackPanel.e0123abc456')}
             onChange={v => upd({ allowed_enterprise_ids: v })}
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
+            readOnly={ro}
+          />
+          {/* Where the agent may post, react, pin and read. The refusal for an
+              untracked channel names this row (slack/tracked_channels.py), so
+              keep the label and that text together. */}
+          <TagListEditor
+            label={i18nT('pages.settings.slackPanel.tracked_channels')}
+            description={i18nT('pages.settings.slackPanel.tracked_channels_summary')}
+            hint={i18nT('pages.settings.slackPanel.tracked_channels_hint')}
+            values={draft.tracking_channels}
+            placeholder={i18nT('pages.settings.slackPanel.c0123abc456')}
+            onChange={v => upd({ tracking_channels: v })}
+            validate={v => /^[CG][A-Z0-9]{2,}$/.test(v)}
             readOnly={ro}
           />
           {/* Off by default: lets the people listed here drive this Crew as the

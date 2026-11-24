@@ -20860,6 +20860,10 @@
       "slackPanel": {
         "add": "追加",
         "allowed_enterprise_orgs": "許可されたエンタープライズ org",
+        "tracked_channels": "追跡チャンネル",
+        "tracked_channels_summary": "エージェントが投稿、リアクション、閲覧できるチャンネルです。保存すると適用されます。",
+        "tracked_channels_hint": "C または G で始まる Slack チャンネル ID です。Slack でチャンネルの詳細を開くと、一番下に ID があります。Slack の /kirocrew channels でもチャンネルを追加でき、各チャンネルのアクティベーションモードとエージェントもそこで設定します。",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode に必要なアプリレベルトークン（xapp- で始まります）。",
         "auto_link_sessions": "新しいセッションを自動的にSlackへ接続",
         "auto_link_sessions_desc": "ダッシュボードの新しいセッションごとに、最初のメッセージでボットとのプライベートなダイレクトメッセージにSlackスレッドが作られます。cron、アプリ、サブエージェントから始まったセッション、Slackや他のメッセージングアプリで始まったセッション、シークレットや一時的なセッションは対象外です。この方法で接続したセッションは、下のフォルダー設定ではSlackセッションとして数えられません。サイドバーの元の場所に残り、Slackで始まった会話だけがフォルダーに入ります。",

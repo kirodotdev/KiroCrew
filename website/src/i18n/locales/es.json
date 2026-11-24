@@ -21974,6 +21974,10 @@
       "slackPanel": {
         "add": "Añadir",
         "allowed_enterprise_orgs": "Organizaciones enterprise permitidas",
+        "tracked_channels": "Canales seguidos",
+        "tracked_channels_summary": "Canales en los que el agente puede publicar, reaccionar y leer. Se aplica al guardar.",
+        "tracked_channels_hint": "IDs de canal de Slack, que empiezan por C o G. En Slack, abre los detalles del canal: el ID está al final. También puedes añadir canales en Slack con /kirocrew channels, donde además eliges el modo de activación y el agente de cada canal.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Token de nivel de app necesario para Socket Mode (empieza por xapp-).",
         "auto_link_sessions": "Conectar las sesiones nuevas a Slack automáticamente",
         "auto_link_sessions_desc": "Cada sesión nueva del panel recibe un hilo de Slack con su primer mensaje, en tu mensaje directo privado con el bot. Las sesiones iniciadas por cron, apps o subagentes, las que empezaron en Slack u otra app de mensajería, y las sesiones de incógnito o temporales no se tocan. Una sesión conectada así no cuenta como sesión de Slack para el ajuste de carpeta de abajo: se queda donde está en la barra lateral, y solo las conversaciones que empiezan en Slack se archivan.",

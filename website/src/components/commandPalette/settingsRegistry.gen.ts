@@ -1050,6 +1050,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "teams.tenant_id"
   },
   {
+    "id": "channels.tracked-channels-slack",
+    "label": "Tracked channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.tracked_channels",
+    "labelSuffix": "Slack",
+    "description": "Channels the agent can post, react and read in. Applies when you save.",
+    "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.webex-bot-token-webex",
     "label": "Webex bot token (Webex)",
     "labelKey": "pages.settings.webexPanel.webex_bot_token",

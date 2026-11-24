@@ -21417,6 +21417,10 @@
       "slackPanel": {
         "add": "Hinzufügen",
         "allowed_enterprise_orgs": "Erlaubte Enterprise-Organisationen",
+        "tracked_channels": "Verfolgte Kanäle",
+        "tracked_channels_summary": "Kanäle, in denen der Agent posten, reagieren und lesen kann. Gilt nach dem Speichern.",
+        "tracked_channels_hint": "Slack-Kanal-IDs, beginnend mit C oder G. Öffne in Slack die Kanaldetails: Die ID steht ganz unten. Du kannst Kanäle auch in Slack mit /kirocrew channels hinzufügen und dort auch den Aktivierungsmodus und den Agenten jedes Kanals festlegen.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "App-Level-Token für Socket Mode erforderlich (beginnt mit xapp-).",
         "auto_link_sessions": "Neue Sitzungen automatisch mit Slack verbinden",
         "auto_link_sessions_desc": "Jede neue Dashboard-Sitzung bekommt bei der ersten Nachricht einen Slack-Thread in deiner privaten Direktnachricht mit dem Bot. Sitzungen, die von Cron, Apps oder Sub-Agenten gestartet wurden, Sitzungen, die in Slack oder einer anderen Messaging-App begonnen haben, sowie Inkognito- und temporäre Sitzungen bleiben unberührt. Eine so verbundene Sitzung zählt für die Ordnereinstellung unten nicht als Slack-Sitzung: Sie bleibt in der Seitenleiste, wo sie ist, und nur Unterhaltungen, die in Slack beginnen, werden einsortiert.",
