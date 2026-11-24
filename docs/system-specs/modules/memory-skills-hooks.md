@@ -4904,7 +4904,9 @@ the frontmatter grammar (`_parse_frontmatter`, `_parse_frontmatter_text`,
 `_DOLLAR_SKILL_PATTERN`, `_MAX_DOLLAR_SKILLS`). Every other constant a `skill_runtime` owner
 reads through `kiro_crew.skills` is defined in the `skills_*` owner whose row above names
 its bound, and re-exported by `skills.py`. Code a repository guard pins by path goes to a
-`skills_*` owner; the loader's other rules go to a `skill_runtime` owner. Trust
+`skills_*` owner; the loader's other rules go to a `skill_runtime` owner. One exception:
+`read_auto_skill_body` refuses a link with `os.path.islink` and stays in
+`skill_runtime.versions`, so the link-screen baseline keys it by that path. Trust
 enforcement and its audit stay beside the choke point they feed, in `skills_body_reads`. A
 function a loader member delegates to or binds carries that member's name, which keeps the
 link-screen gate's name-keyed resolver set unchanged.
