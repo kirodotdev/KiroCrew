@@ -20,7 +20,7 @@ import logging
 import aiohttp
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -189,7 +189,7 @@ async def _post_review_auth_error(response_url: str) -> None:
         async with aiohttp.ClientSession() as sess:
             await sess.post(
                 response_url,
-                proxy=resolve_proxy(response_url),
+                proxy=await resolve_proxy_off_loop(response_url),
                 json={
                     "replace_original": True,
                     "response_type": "ephemeral",
@@ -318,7 +318,9 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
-                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                    response_url,
+                    proxy=await resolve_proxy_off_loop(response_url),
+                    json={"delete_original": True},
                 )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
@@ -371,7 +373,9 @@ async def _handle_review_edit(payload: dict, action: dict) -> None:
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
-                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                    response_url,
+                    proxy=await resolve_proxy_off_loop(response_url),
+                    json={"delete_original": True},
                 )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
@@ -416,7 +420,9 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
-                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                    response_url,
+                    proxy=await resolve_proxy_off_loop(response_url),
+                    json={"delete_original": True},
                 )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
@@ -544,7 +550,9 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
-                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                    response_url,
+                    proxy=await resolve_proxy_off_loop(response_url),
+                    json={"delete_original": True},
                 )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)

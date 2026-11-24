@@ -77,7 +77,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     sel = _Sel()
     monkeypatch.setattr(mod, "sel", lambda: sel)
     web_client = _Web()
-    monkeypatch.setattr(mod, "_web_client", lambda token: web_client)
+
+    async def _client(token: str) -> Any:
+        return web_client
+
+    monkeypatch.setattr(mod, "_web_client", _client)
 
     async def _identity() -> tuple[str, str]:
         return "xoxb-test", OWNER

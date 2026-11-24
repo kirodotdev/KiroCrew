@@ -7,6 +7,7 @@ configured.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import types
@@ -42,6 +43,25 @@ def _reset_module_state(tmp_path, monkeypatch):
     enterprise._configured_ids = set()
 
 
+@contextlib.contextmanager
+def _fake_slack(mod: types.ModuleType, web_mod: types.ModuleType):
+    """Install the fake ``slack_sdk.web`` and answer enterprise's one Slack seam from it.
+
+    ``enterprise`` makes its auth.test through ``http_proxy.slack_call_sync``
+    (the async client, so a resolved ``None`` proxy is direct); the fake
+    module's ``WebClient`` stands in for that call.
+    """
+
+    def _call(token: str, proxy: str | None, method: str, /, **kwargs: object) -> object:
+        return getattr(web_mod.WebClient(token=token), method)(**kwargs)
+
+    with (
+        patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod}),
+        patch.object(enterprise, "slack_call_sync", _call),
+    ):
+        yield
+
+
 def _install_fake_slack_sdk(resp: dict | None = None, *, raise_exc: bool = False):
     """Install a fake ``slack_sdk.web`` module exposing WebClient.
 
@@ -62,7 +82,7 @@ def _install_fake_slack_sdk(resp: dict | None = None, *, raise_exc: bool = False
 
     web_mod.WebClient = _FakeWebClient
     mod.web = web_mod
-    return patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod})
+    return _fake_slack(mod, web_mod)
 
 
 def _write_allowlist(home, allowed_ids: list[str]) -> None:
@@ -1144,7 +1164,7 @@ def _probing_slack_sdk(seen: list[tuple[str, bool]], resp: dict):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    return patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod})
+    return _fake_slack(mod, web_mod)
 
 
 def test_revalidation_keeps_an_armed_allowlist_while_it_probes(tmp_path):
@@ -1194,7 +1214,7 @@ def test_revalidation_keeps_the_bot_identity_while_it_probes(tmp_path):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    with patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod}):
+    with _fake_slack(mod, web_mod):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert seen == [("B1", "U1")]
     assert (enterprise.validated_self_bot_id(), enterprise.validated_self_user_id()) == ("B1", "U1")
@@ -1230,7 +1250,7 @@ def test_a_validation_holds_the_state_lock_a_reload_takes(tmp_path):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    with patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod}):
+    with _fake_slack(mod, web_mod):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert others_could_take_it == [False]
 

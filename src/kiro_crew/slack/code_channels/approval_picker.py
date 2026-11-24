@@ -1636,10 +1636,10 @@ async def _settle_confirm(payload: dict[str, Any], channel: str, line: str) -> N
 async def _post_response_url(url: str, body: dict[str, Any]) -> None:
     import aiohttp
 
-    from kiro_crew.http_proxy import resolve_proxy
+    from kiro_crew.http_proxy import resolve_proxy_off_loop
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as sess:
-        await sess.post(url, proxy=resolve_proxy(url), json=body)
+        await sess.post(url, proxy=await resolve_proxy_off_loop(url), json=body)
 
 
 async def handle_command(

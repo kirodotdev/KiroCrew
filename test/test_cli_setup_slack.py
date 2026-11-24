@@ -35,7 +35,7 @@ class _FakeWebClient:
 
     calls: list[tuple[str, str]] = []
 
-    def __init__(self, token: str = "", timeout: int = 0) -> None:
+    def __init__(self, token: str = "", timeout: int = 0, proxy: str | None = None) -> None:
         self.token = token
 
     def apps_connections_open(self, app_token: str) -> dict[str, object]:
@@ -57,12 +57,17 @@ def _api_error(code: str) -> SlackApiError:
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, client: type[_FakeWebClient]) -> None:
-    """Put *client* in place of the ``WebClient`` name ``cli_setup`` actually calls.
+    """Answer ``cli_setup``'s one Slack seam, ``slack_call_sync``, with *client*.
 
-    Patched at the CONSUMER: ``cli_setup`` imports the class at module scope, so
-    patching ``slack_sdk.web.WebClient`` would no-op and reach real Slack.
+    Patched at the CONSUMER: ``cli_setup`` imports the name at module scope, so
+    patching ``kiro_crew.http_proxy.slack_call_sync`` would no-op and reach real Slack.
     """
-    monkeypatch.setattr("kiro_crew.cli_setup.WebClient", client)
+
+    def _call(token: str, proxy: str | None, method: str, /, **kwargs: object) -> object:
+        kwargs.pop("timeout", None)  # the client's own deadline; the fake answers at once
+        return getattr(client(token=token), method)(**kwargs)
+
+    monkeypatch.setattr("kiro_crew.cli_setup.slack_call_sync", _call)
 
 
 @pytest.fixture()

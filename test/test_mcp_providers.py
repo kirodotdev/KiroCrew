@@ -563,6 +563,11 @@ class TestFetchJsonRead:
         )
         # Pinned so a bypass list on the host running the test cannot decide it.
         monkeypatch.setattr(http_proxy.urllib.request, "proxy_bypass", lambda _host: False)
+        # The off-loop resolver reads the OS settings through these seams.
+        monkeypatch.setattr(
+            http_proxy, "_os_proxies", lambda: {"https": "http://proxy.example:3128"}
+        )
+        monkeypatch.setattr(http_proxy, "_os_bypass", lambda: None)
 
         await official_mod._fetch_json("https://registry.example/v0.1/servers")
 

@@ -2336,8 +2336,8 @@ would publish the first time anyone asked for a dashboard link.
 
 **Slack connect is non-fatal** (`GatewayOrchestrator._connect_slack`): the
 initial socket-mode `connect()` is wrapped so a network/proxy/timeout failure
-(e.g. a stale `HTTPS_PROXY` in the launching shell — slack_sdk's web client
-reads the proxy env vars itself) logs a warning and the gateway
+(e.g. a stale `HTTPS_PROXY` in the launching shell, which the proxy resolver
+hands to every Slack client) logs a warning and the gateway
 continues in **dashboard-only mode** instead of crashing the whole process.
 Only ordinary `Exception`s are swallowed; `CancelledError` (BaseException)
 still propagates so real task cancellation is not masked. There is no
@@ -2346,33 +2346,45 @@ Reconnect (`POST /api/slack/reconnect`) or the next gateway restart. The "connec
 confirmed connect. An exception carrying a `status_reason` (the SOCKS proxy
 error below) shows that text on the settings badge instead of its class name.
 
-**Socket Mode proxy choice** (`slack/socket_mode_proxy.py`). websockets 15
-detects a proxy itself and, for `wss://`, prefers a SOCKS entry over HTTPS. On
-macOS `urllib.request.getproxies()` reads the system proxy settings, which
-local proxy tools fill with HTTP, HTTPS and SOCKS together, and speaking SOCKS
-needs `python-socks`, which is not a dependency. slack_sdk passes no `proxy`
-to `websockets.connect`, so `ProxySelectingSocketModeClient.connect` (the
-parent's body with one added argument; the SDK's reconnects call it too)
-passes `select_socket_mode_proxy(url)`:
+**Socket Mode proxy choice** (`slack/socket_mode_proxy.py`). `setup.cfg`
+requires `websockets>=15,<16`: 15 is the first release whose `connect` takes
+`proxy=`. Left to itself, websockets detects a proxy through
+`urllib.request.getproxies()` and, for `wss://`, prefers a SOCKS entry over
+HTTPS. Speaking SOCKS needs `python-socks`, which is not a dependency. slack_sdk
+passes no `proxy` to `websockets.connect`, so
+`ProxySelectingSocketModeClient.connect` (the parent's body with one added
+argument; the SDK's reconnects call it too) passes the proxy it chooses. When no
+proxy variable beyond `NO_PROXY` is set on Windows or macOS, the OS settings are
+read in a worker thread (`select_socket_mode_proxy_from_os`); otherwise
+`select_socket_mode_proxy(url)` runs on the loop.
 
 | Configured | Socket Mode connects |
 |---|---|
 | host on the bypass list (matched as bare host and as `host:port`) | directly |
 | no proxy | directly |
-| SOCKS, `python-socks` importable | through SOCKS |
-| SOCKS without `python-socks`, plus an HTTPS or HTTP proxy | through that proxy (HTTPS first), the same entries `http_proxy.resolve_proxy` gives every other client |
-| SOCKS only, without `python-socks` | not at all: `SocksProxyUnavailable` names the fix; it never routes around a configured proxy |
-| any other proxy | through it |
+| OS settings (no proxy variable beyond `NO_PROXY`) with a usable HTTPS or HTTP entry | through that entry (HTTPS first), the one the Web API takes (`http_proxy.usable_os_entry`), even when a SOCKS entry is also set |
+| OS settings with only a SOCKS entry, `python-socks` importable | through SOCKS |
+| OS settings with only a SOCKS entry, without `python-socks` | not at all: `SocksProxyUnavailable` names the fix |
+| environment proxy, websockets picks SOCKS, `python-socks` importable | through SOCKS |
+| environment proxy, websockets picks SOCKS, without `python-socks` | through the HTTPS, then HTTP, environment proxy; with neither, `SocksProxyUnavailable` |
+| environment proxy, `wss://` with only `HTTP_PROXY` set | through that HTTP proxy, as the Web API is (websockets alone would go direct) |
+| any other environment proxy | through it |
 
-With websockets older than 15 nothing is passed and the connect is direct, as
-those releases never used a proxy.
+It never routes around a configured proxy it cannot speak: only an empty map
+connects directly.
 
-**Requests outside slack_sdk.** slack_sdk's web client reads `HTTPS_PROXY` itself,
-but a plain aiohttp session reads no proxy variable. So every `response_url` reply
-(button and slash-command answers) and `download_file` pass
-`proxy=http_proxy.resolve_proxy(url)`, the HTTPS-then-HTTP entry with the bypass
-list applied. Without it they dial Slack directly, which fails on a host whose
-only way out is the proxy while the channel itself stays connected.
+**Requests outside slack_sdk.** Every Slack Web API client is built by
+`http_proxy.slack_web_client` (slack_sdk's `AsyncWebClient`) with the resolved
+proxy assigned after construction, `None` included, because slack_sdk would
+otherwise reload `HTTPS_PROXY` and undo a `NO_PROXY` bypass; the sync callers
+go through `http_proxy.slack_call_sync`, which drives the same client. A plain
+aiohttp session reads no proxy variable, so every `response_url` reply (button
+and slash-command answers) and `download_file` pass the proxy too. Async callers
+resolve it with `http_proxy.resolve_proxy_off_loop`, the HTTPS-then-HTTP entry
+with the bypass list applied: the environment is read on the loop, and on
+Windows and macOS the OS lookup runs in a worker thread. Without a proxy these
+requests dial Slack directly, which fails on a host whose only way out is the
+proxy while the channel itself stays connected.
 
 Config example (remote access via URL):
 ```json

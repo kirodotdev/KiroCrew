@@ -280,6 +280,7 @@ async def test_token_and_revoke_posts_go_through_the_configured_proxy(
     proxy = "http://proxy.invalid:3128"
     monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
     monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+    _os_proxy(monkeypatch, {"https": proxy})
     monkeypatch.setattr(oauth, "read_access_token", lambda: "acc")
     monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
     posts = _patch_session(monkeypatch, _FakeResp(200, {"access_token": "a"}))
@@ -382,3 +383,11 @@ async def test_revoke_skips_without_token_or_client(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(oauth, "_client_credentials", _no_client)
     await oauth.revoke_tokens()
     assert posts == []
+
+
+def _os_proxy(monkeypatch, proxies):
+    """The OS proxy settings the off-loop resolver reads, with no bypass list."""
+    from kiro_crew import http_proxy
+
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: dict(proxies))
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: None)

@@ -83,6 +83,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "remote_session/client.py::dial",
         # asyncio.run drives the CLI loop in-process; it is not a child spawn.
         "remote_session/client.py::main",
+        # NOT a subprocess spawn: asyncio.run drives one Slack Web API call on the
+        # aiohttp client in-process, for sync callers with no running loop.
+        "http_proxy.py::slack_call_sync",
         "remote_session/worker.py::main",
         # Guest-script rule, per execution function: these stdlib-only files run
         # inside the remote workspace, never on the gateway, so the guest is the

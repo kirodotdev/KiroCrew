@@ -7,6 +7,7 @@ import aiohttp
 import pytest
 
 # Capture the transport before the suite's network floor replaces this seam.
+from kiro_crew import http_proxy
 from kiro_crew.dashboard.handlers.updates import _fetch_feed_bytes
 
 _FEED_URL = "https://updates.example/feed/stable/latest-cli.json"
@@ -56,6 +57,9 @@ async def test_feed_proxy_selection(monkeypatch, feed_transport, proxies, expect
     monkeypatch.setattr(urllib.request, "getproxies", lambda: proxies)
     bypass = MagicMock(return_value=False)
     monkeypatch.setattr(urllib.request, "proxy_bypass", bypass)
+    # The off-loop resolver reads the OS settings through these seams.
+    monkeypatch.setattr(http_proxy, "_os_proxies", lambda: proxies)
+    monkeypatch.setattr(http_proxy, "_os_bypass", lambda: bypass)
     request, sessions = feed_transport
 
     assert await _fetch_feed_bytes(_FEED_URL) == (200, b'{"version":"0.10.0"}')

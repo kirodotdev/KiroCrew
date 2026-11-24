@@ -42,7 +42,7 @@ from kiro_crew.auth.login.endpoints import (
     social_service_url,
 )
 from kiro_crew.auth.store import KasToken, SocialProvider
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,9 @@ async def exchange_code(
     """Exchange the authorization code for a token at {service}/oauth/token."""
     url = f"{social_service_url()}/oauth/token"
     payload = {"code": code, "code_verifier": code_verifier, "redirect_uri": redirect_uri}
-    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
+    async with session.post(
+        url, json=payload, headers=_HEADERS, proxy=await resolve_proxy_off_loop(url)
+    ) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise PortalAuthError(f"token exchange failed: HTTP {resp.status} {body}")

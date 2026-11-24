@@ -19,7 +19,7 @@ import logging
 import aiohttp
 
 from kiro_crew.dashboard.handlers._shared import read_capped_response
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.release_channel import release_refs
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
@@ -72,7 +72,7 @@ async def image_is_pullable(ref: str) -> bool:
         # never reads netrc credentials into either request.
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(
-                _TOKEN_URL, proxy=resolve_proxy(_TOKEN_URL), allow_redirects=False
+                _TOKEN_URL, proxy=await resolve_proxy_off_loop(_TOKEN_URL), allow_redirects=False
             ) as resp:
                 if resp.status != 200:
                     logger.debug("GHCR pull-auth request returned HTTP %s", resp.status)
@@ -87,7 +87,7 @@ async def image_is_pullable(ref: str) -> bool:
             url = _MANIFEST_URL.format(tag=tag)
             async with session.head(
                 url,
-                proxy=resolve_proxy(url),
+                proxy=await resolve_proxy_off_loop(url),
                 allow_redirects=False,
                 headers={"Authorization": f"Bearer {token}", "Accept": _MANIFEST_ACCEPT},
             ) as resp:

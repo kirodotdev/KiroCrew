@@ -28,7 +28,7 @@ from kiro_crew.auth.login.endpoints import (
     social_service_url,
 )
 from kiro_crew.auth.store import KasToken, TokenStore
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import acquire_lock, release_lock
 
@@ -237,7 +237,7 @@ async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) ->
         url,
         json={"refreshToken": token.refresh_token},
         headers=_JSON_HEADERS,
-        proxy=resolve_proxy(url),
+        proxy=await resolve_proxy_off_loop(url),
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
@@ -268,7 +268,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         "refreshToken": token.refresh_token,
     }
     async with session.post(
-        url, json=payload, headers=_AMZ_HEADERS, proxy=resolve_proxy(url)
+        url, json=payload, headers=_AMZ_HEADERS, proxy=await resolve_proxy_off_loop(url)
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
@@ -304,7 +304,7 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
         endpoint,
         data=form,
         headers={"User-Agent": USER_AGENT},
-        proxy=resolve_proxy(endpoint),
+        proxy=await resolve_proxy_off_loop(endpoint),
     ) as resp:
         if resp.status != 200:
             body = await resp.text()

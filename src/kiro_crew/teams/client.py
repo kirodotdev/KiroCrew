@@ -37,7 +37,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import link_unfurl
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.sel import sel
 from kiro_crew.teams.attachments import quoted_reply_text
@@ -1036,7 +1036,7 @@ class TeamsClient:
             async with session.post(
                 url,
                 data=data,
-                proxy=resolve_proxy(url),
+                proxy=await resolve_proxy_off_loop(url),
                 timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
             ) as resp:
                 if resp.status != 200:
@@ -1472,7 +1472,7 @@ class TeamsClient:
                     method,
                     url,
                     json=activity,
-                    proxy=resolve_proxy(url),
+                    proxy=await resolve_proxy_off_loop(url),
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
                 ) as resp:

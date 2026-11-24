@@ -38,7 +38,7 @@ import aiohttp
 
 from kiro_crew import __version__ as _kirocrew_version
 from kiro_crew.dashboard.urls import is_loopback
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://wakatime.com/api/v1"
 
 
-def _proxy_for(url: str) -> str | None:
+async def _proxy_for(url: str) -> str | None:
     """The configured forward proxy for *url*, or ``None`` to dial it directly.
 
     A self-hosted Wakapi on this machine (``api_base_url`` on a loopback host) is
@@ -55,7 +55,7 @@ def _proxy_for(url: str) -> str | None:
     loopback destination must not leave the machine.
     """
     host = urllib.parse.urlparse(url).hostname or ""
-    return None if is_loopback(host) else resolve_proxy(url)
+    return None if is_loopback(host) else await resolve_proxy_off_loop(url)
 
 
 # WakaTime's own recommended cap on heartbeats per request. Callers batching
@@ -277,7 +277,7 @@ class WakaTimeClient:
                     params=params,
                     json=payload,
                     headers=self._headers(),
-                    proxy=_proxy_for(url),
+                    proxy=await _proxy_for(url),
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     if resp.status == 429 and attempt == 0:
@@ -327,7 +327,7 @@ class WakaTimeClient:
             async with session.get(
                 url,
                 headers=self._headers(),
-                proxy=_proxy_for(url),
+                proxy=await _proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_SECS),
             ) as resp:
                 if resp.status in (401, 403):

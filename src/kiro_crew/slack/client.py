@@ -20,7 +20,7 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import SLACK_API_URL, resolve_proxy_off_loop
 from kiro_crew.slack.agent_sessions.fence import note_message, turn_muted
 from kiro_crew.slack.channel_policy import require_channel
 from kiro_crew.slack.team_ids import use_channel_team_store
@@ -476,6 +476,27 @@ class _ConnectSetupRetryHandler(AsyncRetryHandler):
         return isinstance(error, aiohttp.ClientConnectorError)
 
 
+class _SystemProxyWebClient(AsyncWebClient):
+    """An AsyncWebClient that takes the system proxy before its first call.
+
+    Every Web API method goes through ``api_call``, so the first call (the
+    gateway's own, an orphan notice, a cron, a dashboard route) resolves the
+    proxy off the loop here instead of going direct.
+    """
+
+    proxy_applied = False
+
+    def apply_proxy(self, proxy: str | None) -> None:
+        self.proxy = proxy
+        self.proxy_applied = True
+
+    async def api_call(self, *args: Any, **kwargs: Any) -> Any:
+        if not self.proxy_applied:
+            # Two first calls may both resolve; each sets the same value.
+            self.apply_proxy(await resolve_proxy_off_loop(SLACK_API_URL))
+        return await super().api_call(*args, **kwargs)
+
+
 class RealSlackClient(SlackClientOps):
     """Slack Web API client backed by slack_sdk."""
 
@@ -485,9 +506,12 @@ class RealSlackClient(SlackClientOps):
     agent_sessions: AgentSessionStatus | None = None
 
     def __init__(self, bot_token: str):
-        self._web = AsyncWebClient(
+        # The proxy is resolved off the loop by the first Web API call:
+        # resolving here would read the OS bypass list on the event loop.
+        self._web = _SystemProxyWebClient(
             token=bot_token,
             retry_handlers=[_ConnectSetupRetryHandler(max_retry_count=_SLACK_CONNECT_RETRY_COUNT)],
+            proxy=None,
         )
         # Channel→workspace team_id cache. Populated ONLY from
         # conversations_info()'s home-workspace answer by
@@ -1405,7 +1429,10 @@ class RealSlackClient(SlackClientOps):
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for _ in range(_FILE_DOWNLOAD_MAX_REDIRECTS + 1):
                 async with session.get(
-                    url, headers=headers, allow_redirects=False, proxy=resolve_proxy(url)
+                    url,
+                    headers=headers,
+                    allow_redirects=False,
+                    proxy=await resolve_proxy_off_loop(url),
                 ) as resp:
                     if 300 <= resp.status < 400:
                         location = resp.headers.get("Location", "")

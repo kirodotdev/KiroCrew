@@ -21,7 +21,7 @@ import aiohttp
 
 from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
-from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.http_proxy import resolve_proxy_off_loop
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import (
     ACTION_ALLOWLIST_APPROVE,
@@ -447,7 +447,7 @@ async def _handle_agent_select(
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
                     response_url,
-                    proxy=resolve_proxy(response_url),
+                    proxy=await resolve_proxy_off_loop(response_url),
                     json={"replace_original": True, "text": label, "blocks": blks},
                 )
                 # An expired or rate-limited url answers 4xx/5xx without raising.
@@ -609,7 +609,7 @@ async def _handle_allowlist_remove(
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
                     response_url,
-                    proxy=resolve_proxy(response_url),
+                    proxy=await resolve_proxy_off_loop(response_url),
                     json={"replace_original": True, "text": "Allowlist updated", "blocks": blks},
                 )
                 # An expired or rate-limited url answers 4xx/5xx without raising.
@@ -650,7 +650,7 @@ async def _handle_channel_remove(
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
                     response_url,
-                    proxy=resolve_proxy(response_url),
+                    proxy=await resolve_proxy_off_loop(response_url),
                     json={
                         "replace_original": True,
                         "text": "Tracked channels updated",

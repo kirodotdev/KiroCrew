@@ -119,7 +119,13 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
             subagent_manager=getattr(orch, "subagent_mgr", None),
             task_runner=getattr(orch, "task_runner", None),
         )
-        client = TelegramClient(token=bot_token, on_callback=dispatcher.on_callback)
+        from kiro_crew.telegram.client_http import _resolve_proxy_off_loop
+
+        client = TelegramClient(
+            token=bot_token,
+            on_callback=dispatcher.on_callback,
+            proxy=await _resolve_proxy_off_loop(),
+        )
         transport = TelegramTransport(
             client,
             allowed_user_ids=allowed_ids,
