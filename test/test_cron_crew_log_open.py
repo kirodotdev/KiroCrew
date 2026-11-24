@@ -1,15 +1,17 @@
 """A message cron run opens its session's crew log, so its ledger records and reads back.
 
 The session ledger is a fold of the session's crew log, and ``record_update`` refuses a
-session that has none. Both cron dispatch sites open the run's log after the claim, under
-the job tab's name (``cron-<id>``): what a dashboard turn in that tab records, and what
-``canonical_slot`` folds a read with no session id to (the post-compaction reinjection's
-``render_snapshot``). A stateless run, new on every fire, opens none.
+session that has none. Both cron dispatch sites open the run's log after the claim,
+through the channel opener ``messaging.dispatch.open_turn_crew_log``, under the job
+tab's name (``cron-<id>``): what a dashboard turn in that tab records, and what
+``canonical_slot`` folds a read with no session id to (the post-compaction
+reinjection's ``render_snapshot``). A stateless run, new on every fire, opens none.
 """
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -29,8 +31,10 @@ from kiro_crew.crew_log import KIND_SESSION, CrewLog
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.store_units import unit_header_slot
+from kiro_crew.messaging.dispatch_crew_log import open_turn_crew_log
 from kiro_crew.slack import gateway as _gw
 
+SESSION = "acp-cron-1"
 _SNAPSHOT_LINES = ["goal: ledger check", "phase: checking", "next: stop after this call"]
 
 
@@ -43,6 +47,10 @@ def _crew_log_on(_floor_monkeypatch):
     yield
     settle()
     crew_log_projection.forget_slot_folds()
+
+
+def _provider(session_id: str = SESSION) -> SimpleNamespace:
+    return SimpleNamespace(session_id=session_id, served_model="model-x", cwd="/work")
 
 
 def _client(session_id: str) -> MagicMock:
@@ -74,6 +82,56 @@ def _orchestrator() -> Any:
     orch.sessions = _message_arm_sessions()
     orch.dashboard_state = _mock_dashboard_state()
     return orch
+
+
+def test_without_an_opener_a_cron_session_has_no_crew_log_to_record_into():
+    with pytest.raises(sl.LedgerUnavailable, match="no crew log yet"):
+        sl.record_update("cron:j1", session_id=SESSION, goal="ledger check")
+
+
+def test_an_opened_log_lets_the_ledger_record_and_read_back():
+    open_turn_crew_log(
+        _provider(), session_key="cron:j1", agent="kirocrew", resumed=False, slot="cron-j1"
+    )
+    assert_drained()
+
+    assert CrewLog.exists(KIND_SESSION, SESSION)
+    assert _record_then_snapshot("cron:j1", SESSION).splitlines()[1:] == _SNAPSHOT_LINES
+
+
+def test_a_provider_without_a_session_id_opens_nothing_and_does_not_raise():
+    open_turn_crew_log(
+        _provider(""), session_key="cron:j1", agent="kirocrew", resumed=False, slot="cron-j1"
+    )
+    assert_drained()
+
+    assert not CrewLog.exists(KIND_SESSION, SESSION)
+
+
+def test_a_failing_emitter_never_fails_the_run(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("emitter down")
+
+    monkeypatch.setattr(crew_log_emit, "on_session_opened", _boom)
+    open_turn_crew_log(
+        _provider(), session_key="cron:j1", agent="kirocrew", resumed=False, slot="cron-j1"
+    )
+
+
+def test_a_named_slot_is_the_one_the_header_records():
+    open_turn_crew_log(
+        _provider(), session_key="cron:j1", agent="kirocrew", resumed=False, slot="cron-j1"
+    )
+    assert_drained()
+
+    assert unit_header_slot(KIND_SESSION, SESSION) == "cron-j1"
+
+
+def test_without_a_named_slot_a_channel_key_keeps_its_transcript_stem():
+    open_turn_crew_log(_provider(), session_key="slack:C1:171", agent="kirocrew", resumed=False)
+    assert_drained()
+
+    assert unit_header_slot(KIND_SESSION, SESSION) == "slack_C1_171"
 
 
 @pytest.mark.asyncio
