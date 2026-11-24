@@ -718,6 +718,17 @@ class TestSelfProtectionKillTargetScoping:
                 f"function p*ll/ {{ /usr/bin/pkill \"$@\"; }}; 'p*ll/' -f {_NAME}",
                 _RULE_KILL,
             ),
+            # The printed loop value is rewritten downstream and run by a shell.
+            (
+                f'for w in /usr/bin/p[k]ill/; do echo "$w -f {_NAME}"; done'
+                " | sed 's@/ -f@ -f@' | /bin/ba?h",
+                _RULE_KILL,
+            ),
+            (
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln -s {_NAME} \"$w/z\"; done' 2>&1 | bash",
+                _RULE_KILL,
+            ),
+            (f"for w in /usr/bin/p*ll/; do echo $w {_NAME}; done > /tmp/x.sh", _RULE_KILL),
         ],
     )
     def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
@@ -733,6 +744,9 @@ class TestSelfProtectionKillTargetScoping:
             "$w -f t",
             "echo `basename $w`",
             "for v in $w; do $v -f t; done",
+            "echo $w/z | sed s@//z@@",
+            "ln -s t $w/z 2>&1",
+            "echo $w/z >> /tmp/x.sh",
         ],
     )
     def test_loop_value_that_can_be_rewritten_grants_no_exemption(self, body):
@@ -740,8 +754,8 @@ class TestSelfProtectionKillTargetScoping:
         # sits in the same command as the glob.
         from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
 
-        frames = _self_frames(f"for w in /usr/bin/p*ll/; do {body}; done")
-        assert all(not _for_list_directory_globs(tokens) for _, tokens in frames)
+        text = f"for w in /usr/bin/p*ll/; do {body}; done"
+        assert all(not _for_list_directory_globs(tokens, text) for _, tokens in _self_frames(text))
 
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None

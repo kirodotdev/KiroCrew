@@ -184,27 +184,27 @@ def _is_kill_by_name_program(token: str) -> bool:
 _VALUE_REWRITE_RE = re.compile(r"\$\{(?![a-z_][a-z0-9_]*\})|\$\(|`", re.IGNORECASE)
 #: Words that bind a variable by name (``declare -n r=w``) or re-read text as a command.
 _REBINDING_WORDS = frozenset({"declare", "typeset", "local", "eval"})
-_SHELL_NAME_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 #: Reserved words that precede a command, so the word after one is its program.
 _COMMAND_PREFIX_WORDS = frozenset({"do", "then", "else", "elif", "!", "{", "time"})
 
 
-def _for_list_directory_globs(tokens: "list[str]") -> "frozenset[int]":
+def _for_list_directory_globs(tokens: "list[str]", text: str) -> "frozenset[int]":
     """Indexes of ``for NAME in`` list words ending in ``/`` whose value stays data.
 
     Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
-    Its value can still become a program (``${w%/} -f``, or a bare ``$w`` after
-    ``do``), so the exemption holds only where the frame rewrites no value and every
-    ``$NAME`` is an argument of a data consumer (``ln -s x "$w/z"``).
+    Its value can still become a program (``${w%/} -f``, a bare ``$w``, or printed
+    text piped into a shell), so the exemption needs a command *text* with no pipe or
+    output redirect, a frame that rewrites no value, and data-consumer ``$NAME`` uses.
     """
-    if _REBINDING_WORDS.intersection(tokens) or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
+    rewrites = any(_VALUE_REWRITE_RE.search(t) for t in tokens)
+    if "|" in text or ">" in text or rewrites or _REBINDING_WORDS.intersection(tokens):
         return frozenset()
     programs = _argv_programs(["" if t in _COMMAND_PREFIX_WORDS else t for t in tokens])
     disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
     found: set[int] = set()
     for k in range(len(tokens) - 2):
         name = tokens[k + 1]
-        if tokens[k] != "for" or tokens[k + 2] != "in" or not _SHELL_NAME_RE.fullmatch(name):
+        if tokens[k] != "for" or tokens[k + 2] != "in" or not name.isidentifier():
             continue
         ref = re.compile(r"\$\{?" + name + r"(?![a-z0-9_])", re.IGNORECASE)
         if not all(
@@ -456,7 +456,7 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
             if dir_globs is None:
-                dir_globs = _for_list_directory_globs(tokens)
+                dir_globs = _for_list_directory_globs(tokens, text_lower)
             if i in dir_globs:
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
@@ -916,7 +916,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 continue
             # ``for w in /a/*/`` lists directories, which never run.
             if dir_globs is None:
-                dir_globs = _for_list_directory_globs(tokens)
+                dir_globs = _for_list_directory_globs(tokens, text_lower)
             if i in dir_globs:
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
