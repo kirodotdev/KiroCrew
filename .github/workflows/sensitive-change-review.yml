@@ -5,7 +5,8 @@ name: Sensitive Change Review
 # the PR author's own comment naming the head SHA, or a human approval on the
 # head carrying it. A bare "Approve" click stays red. The author's comment
 # re-runs this check through sensitive-change-review-comment.yml, and a review
-# through sensitive-change-review-approval.yml.
+# through sensitive-change-review-approval.yml. A record for an earlier head
+# still counts when every sensitive file's diff is byte-identical on both heads.
 #
 # Format only, on purpose: no model and no sandbox run. Whoever ran the real
 # sandbox writes what they checked; this gate makes sure it is written down for

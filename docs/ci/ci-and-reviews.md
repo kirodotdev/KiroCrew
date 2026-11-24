@@ -4996,8 +4996,35 @@ undo. Each answer needs at least three words. Either record counts:
   `sensitive-change-review-approval.yml` fires on `pull_request_review` and
   calls the comment workflow, which re-runs the check.
 
-Bots, another user's comment, and a comment or approval for an older commit do
-not count, and there is no waiver label. A new push resets the check. Merging
+Bots, another user's comment, and a bare approval do not count, and there is no
+waiver label. A new push resets the check, with one exception.
+
+**A record carries over a push that leaves the sensitive diff alone.** A
+comment or approval that was complete for an earlier head H0 still counts for
+the current head H1 when every sensitive file's diff is byte-identical on both
+heads, each read from a three-dot compare (`<base>...<head>`) against its own
+merge base. So a plain rebase onto a newer `main` keeps the record. The checker
+compares the exact patch text, hunk headers and context lines included, not a
+patch-id: a patch-id ignores line numbers and whitespace, so it would also match
+a change that moved inside a file `main` edited in between. Only the sensitive
+files are compared, because only they are what the template is about; the rest
+of the PR is judged by the other lanes on H1. The record must still be complete
+for H0 by every other rule (author or write-access reviewer, full template, an
+approval still standing), and a comment names H0 by one full 40-character SHA on
+its `Head commit:` line. A compare row shows no file mode, so each sensitive
+file's mode on each head is read from that head's git tree (GraphQL
+`TreeEntry.mode`) and must match. The check stays red when the set of sensitive
+files differs, any byte of a sensitive file's patch differs, its mode differs, a
+compare or a mode cannot be read, a compare lists 300 or more files, a sensitive
+file has no patch text (a binary file, one too large to show, or a pure rename),
+a patch's `+`/`-` lines disagree with the row's counts (a cut-short patch), a
+sensitive file's status is not `added`, `modified`, `removed` or `renamed`, a
+sensitive file is a symlink or a submodule, or the compare of H1 disagrees with
+the PR's own file list. A carried record does not re-check how `main`'s later
+edits to the same file interact with the PR's change. A fork PR is refused as before, and a dismissed or
+withdrawn approval does not carry. A run compares at most five earlier heads,
+newest record first. The sticky comment and the job summary name the earlier
+head whose record carried, or why each candidate did not. Merging
 still needs a second person's approval: the `main` ruleset enforces that, not
 this gate. CI never runs the sandbox here; it only checks the text. The
 workflow runs on `pull_request_target`, so both it and its checker come from
