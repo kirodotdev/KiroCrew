@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import kiro_crew.security.redaction as redaction
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
 from kiro_crew.security.redaction_structured import charsets
 
 if TYPE_CHECKING:
@@ -402,7 +403,12 @@ def ends_word(c: str) -> bool:
     is ASCII, so a CJK character, which writing in those scripts puts where English
     puts a blank, cannot sit inside one. A character a label match folds onto an
     ASCII letter (``ſ`` reads as ``s`` under :func:`.charsets.ascii_lower` and a
-    case-blind regex) can, so it stays inside the word."""
+    case-blind regex) can, so it stays inside the word. So does a default-ignorable
+    character (U+200B and the rest of :data:`DEFAULT_IGNORABLE`): the credential plan
+    reads the text with those removed, so one can sit inside a credential, and a
+    word end there would commit the anchor before it and stream the rest unread."""
+    if ord(c) in DEFAULT_IGNORABLE:
+        return False
     if c.isspace():
         return True
     if c.isascii():
