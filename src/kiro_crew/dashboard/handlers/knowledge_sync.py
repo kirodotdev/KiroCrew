@@ -25,10 +25,10 @@ from aiohttp import web
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_utils import drained_to_thread
+from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _pipeline,
-    _require_knowledge_owner,
     _sel_log,
     _store,
     _task_registry,
@@ -388,7 +388,7 @@ async def _hand_off_under_gate(  # type: ignore[no-untyped-def]
 
 async def sync_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/sync -- trigger sync for a source."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.sync")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.sync")
     if owner_denied is not None:
         return owner_denied
     pipeline = _pipeline(request)

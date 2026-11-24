@@ -305,10 +305,6 @@ def _person_last_spoke(state: Any, slug: str, member: str, slot: str | None) -> 
         return ""
 
 
-async def _owner_only(request: web.Request, operation: str) -> web.Response | None:
-    return await require_owner_dashboard_request(request, operation)
-
-
 async def _teammate_reader(request: web.Request, slug: str, operation: str) -> bool:
     """Whether *request* is a relay teammate reading a roster Bot's applied page.
 
@@ -467,7 +463,7 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
     slug, member = resolved
     teammate = await _teammate_reader(request, slug, "members.dashboard")
     if not teammate:
-        owner_denied = await _owner_only(request, "members.dashboard")
+        owner_denied = await require_owner_dashboard_request(request, "members.dashboard")
         if owner_denied is not None:
             return owner_denied
     return await _serve(request, slug, member, None, teammate=teammate)
@@ -492,7 +488,7 @@ async def api_session_dashboard(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "sessions.dashboard")
     if denied is not None:
         return denied
-    owner_denied = await _owner_only(request, "sessions.dashboard")
+    owner_denied = await require_owner_dashboard_request(request, "sessions.dashboard")
     if owner_denied is not None:
         return owner_denied
     from kiro_crew.dashboard.card_lifecycle import is_root_session
@@ -1141,7 +1137,7 @@ async def api_member_dashboard_preview_apply(request: web.Request) -> web.Respon
     resolved = await _resolve(request)
     if isinstance(resolved, web.Response):
         return resolved
-    owner_denied = await _owner_only(request, "members.dashboard_preview_apply")
+    owner_denied = await require_owner_dashboard_request(request, "members.dashboard_preview_apply")
     if owner_denied is not None:
         return owner_denied
     slug, member = resolved
@@ -1187,7 +1183,9 @@ async def api_member_dashboard_preview_discard(request: web.Request) -> web.Resp
     resolved = await _resolve(request)
     if isinstance(resolved, web.Response):
         return resolved
-    owner_denied = await _owner_only(request, "members.dashboard_preview_discard")
+    owner_denied = await require_owner_dashboard_request(
+        request, "members.dashboard_preview_discard"
+    )
     if owner_denied is not None:
         return owner_denied
     slug, _member = resolved
@@ -1984,7 +1982,7 @@ async def api_member_dashboard_refetch(request: web.Request) -> web.Response:
     resolved = await _resolve(request)
     if isinstance(resolved, web.Response):
         return resolved
-    owner_denied = await _owner_only(request, "members.dashboard")
+    owner_denied = await require_owner_dashboard_request(request, "members.dashboard")
     if owner_denied is not None:
         return owner_denied
     slug, _member = resolved
