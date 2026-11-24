@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew import channel as channel_mod
-from kiro_crew.channel import Channel, _session_agent_kwargs, run_channel_agent
+from kiro_crew.channel import Channel, run_channel_agent
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
 
@@ -27,17 +27,17 @@ def _cfg() -> KiroCrewConfig:
 
 def test_a_crewmate_name_starts_its_template_under_its_crew_identity() -> None:
     with patch.object(channel_mod.KiroCrewConfig, "load", return_value=_cfg()):
-        kwargs = _session_agent_kwargs("default")
+        kwargs = channel_mod._session_agent_kwargs("default")
     assert kwargs == {"agent": "kirocrew", "crew_agent": "default"}
 
 
 def test_a_template_name_and_no_name_pass_through() -> None:
     with patch.object(channel_mod.KiroCrewConfig, "load", return_value=_cfg()):
-        assert _session_agent_kwargs("deep-researcher") == {
+        assert channel_mod._session_agent_kwargs("deep-researcher") == {
             "agent": "deep-researcher",
             "crew_agent": None,
         }
-        assert _session_agent_kwargs("") == {"agent": None}
+        assert channel_mod._session_agent_kwargs("") == {"agent": None}
 
 
 @pytest.mark.asyncio
