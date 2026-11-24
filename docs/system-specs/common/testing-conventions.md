@@ -139,10 +139,16 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
 - **D10. Loopback only.** Stub the network at the seam the product calls; no test
   depends on a host other than `127.0.0.1` / `::1`. The rootdir network floor reports a
   test that reaches past loopback; one that must is marked `@pytest.mark.real_network`.
-  A UNC path (`\\host\share\x`, `//host/share/x`) is a network host too, and the floor
-  does not see it: on Windows `os.path.realpath`, `Path.resolve`, `stat` and `exists` on
-  one open an SMB connection to `host`, and the answer (WinError 53, 64 or 67, or a
-  stall) depends on the runner's network. `realpath` swallows 53 and 67 but raises 64.
+  A UNC path (`\\host\share\x`, `//host/share/x`) is a network host too, and the socket
+  floor does not see it: on Windows `os.path.realpath`, `Path.resolve`, `stat` and
+  `exists` on one open an SMB connection to `host`, and the answer (WinError 53, 64 or
+  67, or a stall) depends on the runner's network. So on Windows the rootdir floor wraps
+  `os.stat`, `os.lstat`, `os.readlink`, `os.path.exists/isdir/isfile/islink` and the
+  `_getfinalpathname` behind `realpath` (`_refuse_unc_network_paths` in
+  `test/conftest_floor_configure.py`): one given `\\host\share`, `//host/share`,
+  `\\?\UNC\` or `\\.\UNC\` raises `UncNetworkPathRefused` at once, on every runner.
+  `\\?\C:\` long paths, `\\.\` devices, file descriptors and a share holding the
+  checkout, working directory, temp dir, home or interpreter pass.
   A test whose data is a UNC path makes the resolve lexical at the seam the product
   calls (`test_an_absolute_workspace_folder_keeps_the_whole_config` patches
   `os.path.realpath` for UNC input only) or asserts a result no resolve reaches.

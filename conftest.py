@@ -276,6 +276,7 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
     _redirect_hypothesis_database,
+    _refuse_unc_network_paths,
     pytest_warning_recorded,
 )
 
@@ -667,6 +668,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
     _install_determinism_audit_hook()
+    _refuse_unc_network_paths(str(config.rootpath))
     _put_the_tree_under_test_first_on_child_paths()
     _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
