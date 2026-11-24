@@ -95,7 +95,7 @@ import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } 
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { clipboardFiles, hasPlainClipboardText } from './composerPastePolicy'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
-import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
+import { RaisedBy, TypingLockBanner, TYPING_LOCKED_TEXT_COLUMN } from './chat-input/TypingLockBanner'
 import { AskedBySubagent, ApprovalSubagentTask } from './chat-input/ApprovalSubagent'
 import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
@@ -1473,7 +1473,7 @@ function ChatInput({
           onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined}
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
-          className={`relative ${voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
+          className={`relative ${typingLocked ? TYPING_LOCKED_TEXT_COLUMN : ''} ${voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? `flex-1 ${lexicalComposer && !lexicalLoadFailed ? 'min-h-0' : 'min-h-[44px]'} flex flex-col` : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
           // Composing in either editor (textarea or rich text) re-arms a reclaimed session's
           // resume prefetch (the sender throttles); ⌘⇧U / Ctrl+Shift+U in either opens Upload file.
           onFocusCapture={() => emitComposeIntent(slotId)}
