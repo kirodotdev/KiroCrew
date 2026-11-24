@@ -6458,6 +6458,13 @@ frame with a JSON-RPC code, a kill this client sent (`_kill_sent`), a scope admi
 timeout and a pipe that broke with the child still running keep their error.
 Pinned by `test/test_acp_client_initialize_death.py` with real children, and for
 the admission exit by `test_acp_client_scope_admission.py`.
+A child that answers `initialize` and then exits before `session/new`, `session/load`
+or `session/resume` answers ends the start the same way, through the same check
+(`client_start._start_exit_error`), with the stage named: `the agent exited during
+session/new (code=<rc>) — <tail>`. A restore whose child exited raises it at once
+instead of falling back to `session/new`, which that child cannot answer. An error
+frame the harness answers there keeps its error. Pinned by
+`test/test_acp_client_session_new_death.py`.
 
 <a id="scope-admission"></a>**Scope admission is a startup stage of its own.** On a
 host with cgroup delegation the runtime's argv starts with `systemd-run --user
