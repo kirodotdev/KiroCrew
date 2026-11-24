@@ -447,6 +447,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    reactive_model_candidate,
     record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
@@ -1506,13 +1507,11 @@ async def _run_chat(
             and isinstance((_rejected_id := getattr(exc, "rejected_model", None)), str)
             and _rejected_id.strip()
             and len(_rejected_id) <= _MAX_MODEL_ID_LEN
-            and model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
             and (
-                _access_fb_candidate := first_advertised_fallback(
-                    getattr(exc, "advertised", None), _rejected_id
-                )
+                model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
+                or getattr(exc, "unentitled", False) is True
             )
-            is not None
+            and (_access_fb_candidate := reactive_model_candidate(exc, _rejected_id)) is not None
             and len(_access_fb_candidate) <= _MAX_MODEL_ID_LEN
         ):
             await _on_acp_model_access(turn, exc, _rejected_id, _access_fb_candidate)

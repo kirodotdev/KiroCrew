@@ -172,6 +172,15 @@ export interface ModelInfo {
    * is absent.
    */
   rateMultiplier?: number
+  /**
+   * The account hid this model from its Kiro model picker (on Kiro Web or in
+   * the Kiro CLI), as the KAS engine states it (`hidden_by_account` on the
+   * `GET /api/models` row). The chat picker leaves such a model out, on top of
+   * Crew's own hidden list; the Bot and role model pickers keep it, since hiding
+   * is a view preference and the model stays usable. Absent when the engine
+   * states no list, or on another harness.
+   */
+  hiddenByAccount?: boolean
 }
 
 export interface PermissionMode {

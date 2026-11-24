@@ -29,7 +29,7 @@ import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
-import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
+import { KIRO_MODEL_SETTINGS_URL, KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
 import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
 import { ShowAllBotsSessionsRow } from './ShowAllBotsSessionsRow'
@@ -547,7 +547,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
-              locked: model.name === 'auto',
+              locked: model.name === 'auto' || model.hiddenByAccount === true,
+              lockedReason: model.hiddenByAccount === true
+                ? {
+                    text: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_row'),
+                    link: { label: i18nT('pages.settings.chatPanel.kiro_account_hidden_model_link'), href: KIRO_MODEL_SETTINGS_URL },
+                  }
+                : undefined,
             }))}
             selected={selectedModelIds}
             onToggle={toggleVisibleModel}

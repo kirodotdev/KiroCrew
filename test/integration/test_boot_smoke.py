@@ -487,6 +487,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.acp.kas_approve_for_me", "_owner_check"): "rebuilt by each boot",
     # Whether the engine sends its approve-for-me verdict: re-read by each boot.
     ("kiro_crew.acp.kas_approve_for_me", "_ENGINE_SUPPORT"): "re-read by each boot",
+    # The hidden-models listener: each boot binds one to its own dashboard state's
+    # ``models_changed`` broadcast (``dashboard.server``), replacing the last.
+    ("kiro_crew.agent_sdk.kas_model_catalog", "_hidden_models_changed"): "rebuilt by each boot",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",
     # Host facts re-probed on their own TTL or backoff: the user login session
     # behind cgroup scopes and the machine's own host names. A boot that

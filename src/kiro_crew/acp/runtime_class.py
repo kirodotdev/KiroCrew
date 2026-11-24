@@ -280,6 +280,7 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
+    _follow_shared_model_picker = _rt_reader._follow_shared_model_picker
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
     set_remote_workspace = _rt_remote.set_remote_workspace
