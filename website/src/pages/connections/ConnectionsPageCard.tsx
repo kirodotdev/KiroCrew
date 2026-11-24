@@ -936,13 +936,13 @@ function ConnectionCard({
           createApp ? (
             <Trans
               i18nKey="pages.connectionsPage.needs_crew_sign_in_with_app_help"
-              values={{ provider: provider.name }}
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
               components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
             />
           ) : (
             <Trans
               i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-              values={{ provider: provider.name }}
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
               components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
             />
           )

@@ -1878,12 +1878,16 @@ other harness: unchanged. Rules and fail-closed cases:
 
 ### KAS engine sub-agents beside this manager (the `kas_subagents` feature preview)
 
-On KAS with the `kas_subagents` feature preview on (default off), a person's dashboard chat on
-the default agent hands in-turn fan-out to the engine's own sub-agent tool and the
-in-memory `kirocrew-helper` agent (`acp/kas_engine_subagents.py`,
-[acp-client](acp-client.md)); its agent entry excludes `spawn_sub_agents`, and the
-contract's one `spawn_sub_agents` sentence names the engine's tool instead. The
-tool also reaches the person's own agents that pass the KAS target projection, at
+On KAS with the `kas_subagents` feature preview on (default off), every chat on an agent
+Kiro Crew ships or builds (a dashboard chat, a crew member's, a cron run, a messaging
+channel's; never a conductor's) can hand in-turn fan-out to the engine's own sub-agent
+tool and the in-memory `kirocrew-helper` agent (`acp/kas_engine_subagents.py`,
+[acp-client](acp-client.md)). In a person's own dashboard chat on the default agent,
+and the crew member named `default`'s own chat on it, the agent entry excludes
+`spawn_run` and `spawn_sub_agents` and the contract names the engine's tool in their
+place (`engine_replaces_spawn`); every other mounted chat keeps both spawn tools and
+the contract names the helper beside them. Only in those two chats does the
+tool also reach the person's own agents that pass the KAS target projection, at
 most `MAX_SUBAGENT_TARGETS`; one it leaves out can still be started with
 `spawn_run`. The engine's own tool text lists every agent it finds, the ones the
 mount refuses included, and Kiro Crew cannot shorten that list, so the sentence
@@ -1898,9 +1902,9 @@ The person is not told which own agents were left out: that line is logged
 (`kas_engine_subagents._held_children`). In the same chats on a person's own agent, an `excludedTools` list
 run on kiro-cli is read as kiro-cli read it (`acp/kas_excluded_tool_cli.py`,
 [acp-client](acp-client.md)). Nothing
-in this module changes: `spawn_run`, `spawn_sub_agents` (still served to every other
-session and agent), the manager, admission, the memory gate and its deferral queue,
-orphan recovery and every route stay, and serve every other session kind
+in this module changes: `spawn_run`, `spawn_sub_agents` (still served to every session
+and agent but the two chats above), the manager, admission, the memory gate and its
+deferral queue, orphan recovery and every route stay, and serve every session kind
 (`subagent:`, `cron:`, workflows, the task runner, Crew members, Bots, conductors
 and their workers, channels). A KAS child never reaches this manager: it starts no
 process, so the memory gate, `agent.max_subagents` and the per-child usage row do

@@ -1,6 +1,6 @@
 # Design Document: Builtin App Migration
 
-Status: implemented in `src/kiro_crew/apps/manager_records.py`, `src/kiro_crew/apps/manager_builtins.py`, `src/kiro_crew/apps/manager_lookup.py` and the dashboard migration components.
+Status: implemented in `src/kiro_crew/apps/manager_records.py`, `src/kiro_crew/apps/manager_builtins.py`, `src/kiro_crew/apps/manager_lookup.py` and the dashboard migration components. Historical where it differs from main: `_BUILTIN_APPS` is empty, and the built-in set is that list plus `discover_builtin_apps()`, edition-contributed and bundled names; a former built-in pinned in `src/kiro_crew/apps/adoption-pins.json` is pending adoption, never an orphan (`detect_orphaned_builtins`, `_adoption_pin_names` in `apps/manager_builtins.py`). A `migratedTo` that names another app only logs a warning; the app still registers. App data lives under `~/.kiro/crew/apps/{name}/data/`, not `~/.kirocrew/apps/...`.
 
 ## Overview
 
@@ -262,7 +262,7 @@ This means:
 - During cleanup, we only remove `installed.json` and `app.json`; the standalone installer writes its own
 - The `data/` directory is shared by identity (same path), no symlinks needed
 
-**Validation**: `_validate_builtin_app()` will reject (block registration of) any builtin entry where `migratedTo` references a different name than the builtin itself. This is enforced, not just warned, because different names silently break data directory sharing.
+**Validation**: a builtin entry whose `migratedTo` names a different app than the builtin itself is logged as a warning (`register_builtin_apps` in `apps/manager_builtins.py`), because different names break data directory sharing; registration still goes ahead, and `_validate_builtin_app()` treats `migratedTo` leniently.
 
 **Why not symlinks?** Symlinks add complexity (cross-platform issues, cleanup ordering, dangling links). Same-name is simpler and covers all practical cases — there's no reason a standalone version needs a different identifier.
 

@@ -1,6 +1,6 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/apps/manager_records.py`, `src/kiro_crew/apps/manager_builtins.py`, `src/kiro_crew/apps/manager_lookup.py` and the dashboard migration components.
+Status: implemented in `src/kiro_crew/apps/manager_records.py`, `src/kiro_crew/apps/manager_builtins.py`, `src/kiro_crew/apps/manager_lookup.py` and the dashboard migration components. Historical where it differs from main: `_BUILTIN_APPS` is empty, and the built-in set is that list plus `discover_builtin_apps()`, edition-contributed and bundled names; a former built-in pinned in `src/kiro_crew/apps/adoption-pins.json` is pending adoption, never an orphan (`detect_orphaned_builtins`, `_adoption_pin_names` in `apps/manager_builtins.py`). A `migratedTo` that names another app only logs a warning; the app still registers. App data lives under `~/.kiro/crew/apps/{name}/data/`, not `~/.kirocrew/apps/...`.
 
 ## Introduction
 
