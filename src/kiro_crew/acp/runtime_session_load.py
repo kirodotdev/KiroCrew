@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_cli_settings, kas_env_launch
+from kiro_crew.acp import (
+    batch_guard,
+    kas_approve_for_me,
+    kas_cli_settings,
+    kas_client_secret,
+    kas_env_launch,
+)
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_host_auth import sign_in_refused
@@ -450,6 +456,8 @@ async def load_session(
     payload_snapshot = None
     request_identity = ""
     withheld_notice = ""
+    # Confidential MCP clients' secrets for ``setClientSecret``; empty off KAS.
+    prereg_clients: Any = None
     # The load that parks the session in the host's start agent first, when a
     # person waits on this re-open; ``None`` on every other resume and host.
     parking: dict[str, Any] | None = None
@@ -474,6 +482,7 @@ async def load_session(
         # Mirrors create_session: the session-start notice (an unreadable prompt
         # file, withheld server settings) belongs to the resumed session too.
         withheld_notice = kas_extras.withheld_credentials_notice
+        prereg_clients = getattr(kas_extras, "mcp_prereg_clients", None)
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new. User-declared servers stay in the
@@ -905,6 +914,18 @@ async def load_session(
     # every descendant a resumed session created stays unrecorded. It runs
     # beside the session, as create_session's does, and every kill waits for it.
     self._record_tree_in_background()
+
+    if prereg_clients:
+        # After the session's own agent is active, as create_session sends them: a
+        # re-open parked in the start agent declares no server the request could
+        # name until ``set_mode`` above. Nothing holds the handle yet, so a
+        # cancellation in the wait frees the session here, keeping its stored
+        # conversation as a refused resume does.
+        try:
+            await kas_client_secret.deliver_prereg_clients(self, resume_sid, prereg_clients)
+        except BaseException:
+            await asyncio.shield(self.evict_session(resume_sid))
+            raise
 
     logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
     return handle

@@ -39,7 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
-from kiro_crew.acp import kas_approve_for_me, kas_build_default
+from kiro_crew.acp import kas_approve_for_me, kas_build_default, kas_client_secret
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -1356,6 +1356,9 @@ class KasHarness(MembershipHarness):
                 )
             return SessionExtras(vault_identity=vault_identity)
 
+        # Filled by the projection of the session's own agent, read after the build.
+        prereg_clients: dict[str, str] = {}
+
         def _build() -> tuple[
             list[dict[str, Any]],
             Any,
@@ -1589,6 +1592,7 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
                 scope_muted=scope_muted,
+                prereg_out=prereg_clients,
             )
             from kiro_crew.bot_chat_app_tools import carries_app_tools
 
@@ -1766,6 +1770,7 @@ class KasHarness(MembershipHarness):
                 withdrawn_stub_names=withdrawn_stubs,
                 withheld_credentials_notice=withheld_notice,
                 shipped_helper_parent=helper_parent,
+                mcp_prereg_clients=kas_client_secret.declared_clients(built, agent, prereg_clients),
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

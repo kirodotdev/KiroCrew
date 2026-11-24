@@ -35,7 +35,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import kas_approve_for_me, kas_cli_settings, kas_env_launch, runtime_start
+from kiro_crew.acp import (
+    kas_approve_for_me,
+    kas_cli_settings,
+    kas_client_secret,
+    kas_env_launch,
+    runtime_start,
+)
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -770,6 +776,7 @@ async def create_session(
             request_identity=request_identity,
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
+            prereg_clients=getattr(kas_extras, "mcp_prereg_clients", None),
         )
         if collector is None:
             permit.release()
@@ -836,6 +843,7 @@ async def create_session(
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
             start_priority=start_priority,
+            prereg_clients=getattr(kas_extras, "mcp_prereg_clients", None),
         )
         if pruned is not None:
             # On the report the session opened with: what the array left out failed.
@@ -916,6 +924,7 @@ def _collect_late_start(
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
+    prereg_clients: Mapping[str, Any] | None = None,
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -1012,6 +1021,7 @@ def _collect_late_start(
                 request_identity=request_identity,
                 launch_snapshots=launch_snapshots,
                 withheld_notice=withheld_notice,
+                prereg_clients=prereg_clients,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -1086,13 +1096,16 @@ async def _finish_create_session(
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    prereg_clients: Mapping[str, Any] | None = None,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
     Shared by the direct path and a late adoption through
     :class:`StartCollector`. ``buffered_init`` comes from whichever holder
     staged the frames while this id was unknown: the runtime's in-flight
-    scope on the direct path, the collector on an adoption.
+    scope on the direct path, the collector on an adoption. *prereg_clients*
+    (``SessionExtras.mcp_prereg_clients``) go to the engine before the session
+    is claimed (``kas_client_secret.deliver_prereg_clients``).
     """
     # Register the session's queue, and its MCP report with it: no await in
     # between, so a frame that reaches the queue has reached the report.
@@ -1382,6 +1395,12 @@ async def _finish_create_session(
     self._saw_delegate_launch_failure = False
     self._saw_kas_engine_refusal = False
     self._record_tree_in_background()
+
+    if prereg_clients:
+        # After the queue exists, so the status frames the engine's reconnect sends
+        # reach this session's report, and before the claim below, so a failure or a
+        # cancellation in the wait still tears the session down.
+        await kas_client_secret.deliver_prereg_clients(self, session_id, prereg_clients)
 
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
