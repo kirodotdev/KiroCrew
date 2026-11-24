@@ -4,11 +4,20 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import VoicePlaybackBar from '../components/VoicePlaybackBar'
 import { VoiceSpeedProvider, VoiceSpeedSaveNotice } from '../components/VoiceSpeedControl'
+import { VOICE_SPEED_PRESETS, formatVoiceSpeed } from '../lib/voiceSpeed'
 import { setVoicePaused, setVoicePlaying, setVoicePreparing } from '../store/chatSlice'
 import { createTestStore, renderWithProviders } from './helpers'
 
 /** The bar's reading-state line; the speed row's note is a second, later status. */
 const readingStatus = () => screen.getAllByRole('status')[0]
+
+type VoiceSpeedPreset = (typeof VOICE_SPEED_PRESETS)[number]
+
+function presetRate(rate: string): VoiceSpeedPreset {
+  const preset = VOICE_SPEED_PRESETS.find(candidate => candidate === rate)
+  expect(preset).toBeDefined()
+  return preset!
+}
 
 function mount() {
   const store = createTestStore()
@@ -290,7 +299,10 @@ describe('VoicePlaybackBar', () => {
       await new Promise<void>(r => requestAnimationFrame(() => r()))
     }
     /** Let the speed control's saved-rate request settle before the bar goes away. */
-    const settleSpeedConfig = () => screen.findByRole('radio', { name: '100%', checked: true })
+    const settleSpeedConfig = () => screen.findByRole('radio', {
+      name: formatVoiceSpeed(presetRate('100%')),
+      checked: true,
+    })
     let composer: HTMLTextAreaElement
 
     beforeEach(() => {
@@ -352,34 +364,45 @@ describe('VoicePlaybackBar', () => {
       return store
     }
     const speedGroup = () => screen.getByRole('radiogroup', { name: 'Speed' })
-    const speedRadio = (rate: string) => screen.findByRole('radio', { name: rate }) as Promise<HTMLButtonElement>
+    const speedRadios = () => within(speedGroup()).getAllByRole('radio') as HTMLButtonElement[]
+    const presetLabels = () => VOICE_SPEED_PRESETS.map(formatVoiceSpeed)
+    const speedRadio = (rate: string) => {
+      const preset = presetRate(rate)
+      return screen.findByRole('radio', { name: formatVoiceSpeed(preset) }) as Promise<HTMLButtonElement>
+    }
     const loadedRadio = async (rate: string) => {
       const radio = await speedRadio(rate)
       await waitFor(() => expect(radio.disabled).toBe(false))
       return radio
     }
 
-    it('offers the four presets as one radio group labelled Speed', async () => {
+    it('offers every preset as one radio group labelled Speed', async () => {
       mountPlaying()
       await loadedRadio('100%')
-      expect(within(speedGroup()).getAllByRole('radio').map(radio => radio.textContent)).toEqual(['80%', '100%', '120%', '150%'])
+      const expectedLabels = presetLabels()
+      expect(expectedLabels.length).toBeGreaterThan(0)
+      expect(speedRadios().map(radio => radio.textContent)).toEqual(expectedLabels)
     })
 
     it('checks the radio for the saved speaking rate and no other', async () => {
-      vi.mocked(api.voiceConfig).mockResolvedValue({ rate: '120%' })
+      const selectedRate = presetRate('120%')
+      vi.mocked(api.voiceConfig).mockResolvedValue({ rate: selectedRate })
       mountPlaying()
-      await waitFor(async () => expect((await speedRadio('120%')).getAttribute('aria-checked')).toBe('true'))
-      const checked = within(speedGroup()).getAllByRole('radio').filter(radio => radio.getAttribute('aria-checked') === 'true')
-      expect(checked.map(radio => radio.textContent)).toEqual(['120%'])
+      await loadedRadio(selectedRate)
+      for (const [index, radio] of speedRadios().entries()) {
+        expect(radio.getAttribute('aria-checked')).toBe(
+          VOICE_SPEED_PRESETS[index] === selectedRate ? 'true' : 'false',
+        )
+      }
     })
 
     it('checks no radio for a saved rate that is not a preset', async () => {
       vi.mocked(api.voiceConfig).mockResolvedValue({ rate: '90%' })
       mountPlaying()
       await waitFor(() => expect(api.voiceConfig).toHaveBeenCalled())
-      const radios = within(speedGroup()).getAllByRole('radio') as HTMLButtonElement[]
+      const radios = speedRadios()
       await waitFor(() => expect(radios.every(radio => !radio.disabled)).toBe(true))
-      expect(radios.map(radio => radio.getAttribute('aria-checked'))).toEqual(['false', 'false', 'false', 'false'])
+      for (const radio of radios) expect(radio.getAttribute('aria-checked')).toBe('false')
     })
 
     it('keeps the Speed group out of the status row, in the row below with Read again as its only action', async () => {
@@ -400,7 +423,7 @@ describe('VoicePlaybackBar', () => {
     it('disables every radio until the saved rate has loaded', () => {
       vi.mocked(api.voiceConfig).mockReturnValue(new Promise(() => {}))
       mountPlaying()
-      const radios = within(speedGroup()).getAllByRole('radio') as HTMLButtonElement[]
+      const radios = speedRadios()
       expect(radios.every(radio => radio.disabled)).toBe(true)
       expect(radios.some(radio => radio.getAttribute('aria-checked') === 'true')).toBe(false)
     })
@@ -413,9 +436,10 @@ describe('VoicePlaybackBar', () => {
       expect(reason).toHaveTextContent('Speed is unavailable with the Polly neural engine.')
       const group = screen.getByRole('radiogroup', { name: 'Speed. Speed is unavailable with the Polly neural engine.' })
       const radios = within(group).getAllByRole('radio') as HTMLButtonElement[]
+      expect(radios.length).toBeGreaterThan(0)
       expect(radios.every(radio => radio.disabled)).toBe(true)
       expect(screen.getByTestId('voice-speed-applies-next').textContent).toBe('')
-      fireEvent.click(radios[2])
+      fireEvent.click(radios[0])
       expect(api.updateVoiceConfig).not.toHaveBeenCalled()
     })
 
@@ -455,41 +479,49 @@ describe('VoicePlaybackBar', () => {
 
     describe('keyboard', () => {
       it('puts only the checked radio in the tab order', async () => {
-        vi.mocked(api.voiceConfig).mockResolvedValue({ rate: '120%' })
+        const selectedRate = presetRate('120%')
+        vi.mocked(api.voiceConfig).mockResolvedValue({ rate: selectedRate })
         mountPlaying()
-        await loadedRadio('120%')
-        const tabIndexes = (within(speedGroup()).getAllByRole('radio') as HTMLButtonElement[]).map(radio => radio.tabIndex)
-        expect(tabIndexes).toEqual([-1, -1, 0, -1])
+        await loadedRadio(selectedRate)
+        for (const [index, radio] of speedRadios().entries()) {
+          expect(radio.tabIndex).toBe(VOICE_SPEED_PRESETS[index] === selectedRate ? 0 : -1)
+        }
       })
 
       it('moves focus with the arrow keys, wrapping at the ends, without saving', async () => {
         mountPlaying()
-        const hundred = await loadedRadio('100%')
-        hundred.focus()
+        const rates = [...VOICE_SPEED_PRESETS]
+        expect(rates.length).toBeGreaterThan(1)
+        const startingRate = presetRate('100%')
+        const startingIndex = rates.indexOf(startingRate)
+        const startingRadio = await loadedRadio(startingRate)
+        startingRadio.focus()
 
-        fireEvent.keyDown(hundred, { key: 'ArrowRight' })
-        expect(document.activeElement).toBe(await speedRadio('120%'))
-        fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
-        expect(document.activeElement).toBe(await speedRadio('150%'))
-        fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
-        expect(document.activeElement).toBe(await speedRadio('80%'))
+        for (let step = 1; step <= rates.length; step++) {
+          fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
+          expect(document.activeElement).toBe(await speedRadio(rates[(startingIndex + step) % rates.length]))
+        }
         fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' })
-        expect(document.activeElement).toBe(await speedRadio('150%'))
+        expect(document.activeElement).toBe(await speedRadio(rates[(startingIndex - 1 + rates.length) % rates.length]))
         fireEvent.keyDown(document.activeElement!, { key: 'Home' })
-        expect(document.activeElement).toBe(await speedRadio('80%'))
+        expect(document.activeElement).toBe(await speedRadio(rates[0]))
         fireEvent.keyDown(document.activeElement!, { key: 'End' })
-        expect(document.activeElement).toBe(await speedRadio('150%'))
+        expect(document.activeElement).toBe(await speedRadio(rates.at(-1)!))
 
         expect(api.updateVoiceConfig).not.toHaveBeenCalled()
       })
 
       it('saves the focused preset when it is activated', async () => {
         mountPlaying()
-        const hundred = await loadedRadio('100%')
-        hundred.focus()
-        fireEvent.keyDown(hundred, { key: 'ArrowRight' })
+        const rates = [...VOICE_SPEED_PRESETS]
+        expect(rates.length).toBeGreaterThan(1)
+        const startingRate = presetRate('100%')
+        const nextRate = rates[(rates.indexOf(startingRate) + 1) % rates.length]
+        const startingRadio = await loadedRadio(startingRate)
+        startingRadio.focus()
+        fireEvent.keyDown(startingRadio, { key: 'ArrowRight' })
         fireEvent.click(document.activeElement!)
-        await waitFor(() => expect(api.updateVoiceConfig).toHaveBeenCalledWith({ rate: '120%' }))
+        await waitFor(() => expect(api.updateVoiceConfig).toHaveBeenCalledWith({ rate: nextRate }))
       })
     })
 
