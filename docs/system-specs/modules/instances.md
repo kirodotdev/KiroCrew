@@ -2654,7 +2654,7 @@ would make the proxy a token-crossing route without touching this file.
 The transfer needs the
 credential but the browser does not, so the
 request is issued **inside `SshTunnelManager.send_session_bundle`** — the token
-never leaves the manager and is never logged. The minted token is a one-time
+never leaves the manager and is never logged. The minted token is a sign-in
 link, which the peer refuses as a cookie, so the manager trades it once at
 `GET /api/status?token=` and sends only the resulting session cookie (so it
 cannot land in the peer's access log). The trade runs as soon as the link is
