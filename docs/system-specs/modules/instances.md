@@ -995,9 +995,12 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   characters, the hint store's limit. The resolver rebuilds it as
   `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
   same-named local session; a `crew` that is not an id becomes the value-free
-  `/chat?crewError=1`. The hub runs the link (pane switch, connect rule) only
-  from the native navigate channel, and matches the id against a crew list read
-  fresh for the link (not the cached `['instances']`, which can still say
+  `/chat?crewError=1`. The app window host sends the same route when a window a
+  crew serves asks to show one of its sessions (app-kit-platform, *What a window
+  the user is acting in may ask of the shell*). The hub runs the link (pane
+  switch, connect rule) only from the native navigate channel, and matches the
+  id against a crew list read fresh for the link (not the cached
+  `['instances']`, which can still say
   `connected` for a tunnel that died while the window was hidden). The same
   route on the dashboard's own address only opens the crew window (below). The newest
   native link wins: a crew link whose read answers after a later link arrived,

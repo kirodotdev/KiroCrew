@@ -996,8 +996,8 @@ app.whenReady().then(async () => {
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
       displayMemoryPath: appWindowDisplays,
-      showDashboardSession: (slotKey) => openDashboardSession(
-        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
+      showDashboardSession: (slotKey, crewId) => openDashboardSession(
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP, crewId,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
       // Which crew each app's windows show is this computer's choice, kept by the shell.
