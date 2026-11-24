@@ -50,6 +50,7 @@ from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -191,8 +192,17 @@ def _scrub(text: str) -> tuple[str, int]:
     text, warnings = redact_credentials(text)
     count += len(warnings)
     for pattern, repl in _EXTRA_REDACTIONS:
-        text, n = pattern.subn(repl, text)
-        count += n
+        # A match spanning a credential tag re-redacts a secret the passes above
+        # already counted (the header rule over `Authorization: Bearer <tag>`), so
+        # it is replaced but not counted again.
+        # shortcut: such a line is counted once even if it held a second secret
+        # only this rule caught; split the value per secret if exact counts matter.
+        count += sum(
+            1
+            for m in pattern.finditer(text)
+            if not any(tag in m.group(0) for tag in CREDENTIAL_REDACTION_TAGS)
+        )
+        text = pattern.sub(repl, text)
     return text, count
 
 
