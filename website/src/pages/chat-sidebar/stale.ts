@@ -7,7 +7,7 @@ import { STALE_COLLAPSE_TICK_MS, splitStaleSlots } from '../staleCollapse'
 import { readStoredStaleCollapse, STALE_COLLAPSE_LS_KEY } from './persistence'
 import type { Slot } from './types'
 import { isPeerRow, localSlotFolder } from './rowIdentity'
-import { lastActivityEpoch, type SortKey } from '../chat/sessionOrder'
+import { lastActivityEpoch, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import { RowStatusContext, useRowStatusSelect, type RowStatus } from './rowStatus'
 
 /** The dormant-collapse threshold, expanded containers, move exemptions and exempt rows. */
@@ -192,7 +192,7 @@ export function useStaleNarrowBridge({ listNarrowed, filteredSlots, staleCollaps
     // collapse is inert anyway, and holding the capture for a LATER sort
     // switch would mean expanding containers from an arbitrarily old list.
     staleNarrowBridgeRef.current = null
-    if (!shown?.length || staleCollapseMs <= 0 || sortKey !== 'date-desc') return
+    if (!shown?.length || staleCollapseMs <= 0 || !staleCollapseApplies(sortKey)) return
     const { stale } = splitStaleSlots(
       shown, staleCollapseMs, Date.now(),
       s => lastActivityEpoch(s) * 1000, isStaleExempt,

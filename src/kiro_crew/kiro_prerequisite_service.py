@@ -63,20 +63,44 @@ _WARM_UP_DELAY_SECS = 3.0
 _SETUP_COMPLETE_FILENAME = ".kiro_cli_setup_complete"
 
 
+def _holds_a_message(path: Path) -> bool:
+    """Whether *path* is a transcript with a message row, not only its metadata line.
+
+    An unreadable transcript counts, so a read error never demotes a returning
+    user to first-run setup.
+    """
+    from kiro_crew.transcript_count import message_row
+
+    if path.suffix != ".jsonl":
+        return False
+    try:
+        with path.open(encoding="utf-8", errors="replace") as lines:
+            return any(message_row(line) is not None for line in lines)
+    except OSError:
+        return True
+
+
 def _established_installation(data_home: Path) -> bool:
-    """Recognize an existing Kiro Crew home when migrating onto the setup marker."""
+    """Recognize an existing Kiro Crew home when migrating onto the setup marker.
+
+    Under ``sessions`` only a transcript holding a message counts: a gateway start
+    writes the session index there, and opening the dashboard its empty default
+    chat, so neither tells a returning user from a first run.
+    """
 
     marker = data_home / _SETUP_COMPLETE_FILENAME
     if marker.is_file():
         return True
-    for path in (data_home / "sessions", data_home / "history"):
+    sessions = data_home / "sessions"
+    for path in (sessions, data_home / "history"):
         try:
             if path.is_file() and path.stat().st_size > 0:
                 return True
             if path.is_dir():
                 for child in path.rglob("*"):
                     if child.is_file() and child.stat().st_size > 0:
-                        return True
+                        if path != sessions or _holds_a_message(child):
+                            return True
         except OSError:
             continue
     return False

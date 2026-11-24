@@ -331,10 +331,11 @@ def _child(dump: Path) -> str:
         )
         wd.start()
         wd.beat()
-        print("beating", flush=True)
         give_up = time.monotonic() + {_REAL_DEADLINE}
         prev = time.monotonic()
         resumed = None
+        # The parent may stop us as soon as it reads this line.
+        print("beating", flush=True)
         while resumed is None or prev - resumed < {_REAL_AFTER_RESUME}:
             wd.beat()
             time.sleep(0.1)

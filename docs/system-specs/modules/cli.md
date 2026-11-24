@@ -1080,7 +1080,10 @@ before another action can start.
 
 An auto-created `config.json` alone does not mark first-run setup complete; a
 successful authenticated probe writes the setup marker, while existing
-session/history state preserves established-install migration behavior. Fresh
+session/history state preserves established-install migration behavior. Under
+`sessions/` only a transcript holding a message counts (an unreadable one
+counts too): the session index a gateway start writes and the empty default
+chat the dashboard opens do not, so a restart alone never completes setup. Fresh
 installs receive the full-screen flow. Established dashboards remain navigable
 and fully usable when signed out — no controls are paused. Readiness is probed
 once at gateway boot and thereafter only on explicit user action, so no path runs
@@ -2183,6 +2186,10 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
 
 1. The code goes in: `dep_sync.sync_or_reinstall` into the checkout's venv, or
    the shadow tree the wheel engine builds and verifies beside the running one.
+   The shadow tree is installed with every optional extra the running tree has
+   (each `kiro_crew.extras.REQUIREMENTS` entry whose distributions are all
+   installed, as `<wheel>[extra,...]` in the one pip command); a carried extra
+   that cannot be installed fails the update.
 2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
    interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
    it installs is the new release's, never the one the updating process

@@ -656,6 +656,14 @@ class DashboardConfig:
             "earlier messages are dropped.",
         ),
     )
+    fork_inherits_pin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Pin forks of pinned sessions",
+            "A fork of a pinned session is pinned too, so it stays beside the "
+            "original. When off, forks start unpinned.",
+        ),
+    )
     auto_open_browser: bool = field(
         default=True,
         metadata=_meta(
@@ -1152,10 +1160,11 @@ class DashboardConfig:
             "Sidebar Session Order",
             "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
             "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
-            "'name-desc' by title, 'manual' in the order the user drags them into. A "
-            "view preference only; pinned sessions keep their own order. Stored here "
-            "(not only in the browser) so the choice follows the user across browsers "
-            "and the desktop app.",
+            "'name-desc' by title, 'manual' in the order the user drags them into, "
+            "'active-then-date' with running sessions first and then the rest, each "
+            "part by last activity, newest first. A view preference only; pinned "
+            "sessions keep their own order. Stored here (not only in the browser) so "
+            "the choice follows the user across browsers and the desktop app.",
             enum=[
                 "date-desc",
                 "date-asc",
@@ -1164,6 +1173,7 @@ class DashboardConfig:
                 "name-asc",
                 "name-desc",
                 "manual",
+                "active-then-date",
             ],
         ),
     )

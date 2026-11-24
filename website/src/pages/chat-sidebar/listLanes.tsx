@@ -422,11 +422,13 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
                 // date sorts (segments mislead on name/created order, same
                 // guard as the history pane), and pinned rows render first
-                // without segments since pinning overrides date order.
+                // without segments since pinning overrides date order, as do
+                // the running rows "In progress, then newest" lifts above the rest.
                 // A search orders by relevance, so date segments would mislabel it.
-                const isDateSort = !searchLaneActive && (sortKey === 'date-desc' || sortKey === 'date-asc')
+                const isDateSort = !searchLaneActive && (sortKey === 'date-desc' || sortKey === 'date-asc' || sortKey === 'active-then-date')
+                const undated = (s: Slot) => sidebarRows.isPinned(s) || (sortKey === 'active-then-date' && sidebarRows.isRunning(s))
                 // Hoisted above the hold so the pixel anchor can count header heights.
-                const baseSeg = (s: Slot) => (isDateSort && !sidebarRows.isPinned(s) ? dateSegment(slotActivityTs(s)) : '')
+                const baseSeg = (s: Slot) => (isDateSort && !undated(s) ? dateSegment(slotActivityTs(s)) : '')
                 // "Group by kind": the unpinned rows by section, each in lane order.
                 const flatOrdered = sectionRows(flatSlots, sidebarRows.isPinned, kindSections)
                 const { rows: flatRows, navScope: flatLaneScope, container: flatHoldContainer } = heldLane(flatOrdered, 'flat', 'flat', baseSeg, sectionRankOf(sidebarRows.isPinned, kindSections))

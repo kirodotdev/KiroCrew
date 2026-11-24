@@ -12,7 +12,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { sessionRowIdentity } from './rowIdentity'
 import { HIDDEN_FOLDERS_LS_KEY } from './persistence'
 import { FOLDER_BODY_COLLAPSE_MS } from '../../components/FolderBody'
-import type { SortKey } from '../chat/sessionOrder'
+import { staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import type { Slot, RevealBlockingFilter } from './types'
 
 /**
@@ -324,7 +324,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // container's section pre-opened whenever the collapse next re-engages.
     // Deliberately NOT gated on `listNarrowed`: the filter clearing two lines
     // up has not committed yet, so it would still read true here.
-    if (staleCollapseMs > 0 && sortKey === 'date-desc' && !isStaleExempt(slot)) {
+    if (staleCollapseMs > 0 && staleCollapseApplies(sortKey) && !isStaleExempt(slot)) {
       const container = slotFolders[key] || 'root'
       setStaleExpanded(prev => (prev.has(container) ? prev : new Set(prev).add(container)))
     }

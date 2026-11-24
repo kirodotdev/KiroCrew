@@ -416,6 +416,30 @@ class TestApplyWheelUpdateOrchestration:
             promoted / wheel_engine._SHADOW_SENTINEL
         ).exists(), "a promoted tree must never carry the incomplete sentinel"
 
+    def test_the_apply_builds_with_the_extras_this_tree_carries(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._wire(monkeypatch, tmp_path)
+        seen: list[object] = []
+
+        def build(wheel: Path, shadow: Path, *_args: object, **kwargs: object) -> None:
+            seen.append(kwargs.get("extras"))
+            (shadow / "bin").mkdir(parents=True)
+            (shadow / "pyvenv.cfg").write_text("")
+            (shadow / wheel_engine._SHADOW_SENTINEL).write_text("")
+
+        monkeypatch.setattr(wheel_engine, "build_shadow_venv", build)
+        # Not raising: the assertion below, not the setattr, is what pins the name,
+        # since a renamed read would hand the build the runner's own extras.
+        monkeypatch.setattr(wheel_engine, "_carried_extras", lambda: ("feishu",), raising=False)
+        wheel_engine.apply_wheel_update(
+            channel="stable",
+            feed_base=_FEED_BASE,
+            artifact_base=_ARTIFACT_BASE,
+            expected_version="9.9.9",
+        )
+        assert seen == [("feishu",)]
+
     def test_already_promoted_completes_launcher_handoff_without_rebuilding(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

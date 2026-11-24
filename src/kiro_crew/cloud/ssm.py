@@ -187,8 +187,6 @@ def run_command(
             region,
         )
         if rc == 0:
-            import json
-
             try:
                 inv = json.loads(out or "{}")
             except json.JSONDecodeError:
@@ -1405,6 +1403,4 @@ def _install_error(argv: list[str], err: str) -> str:
 
 def _json_str_list(items: list[str]) -> str:
     """Render a JSON array of strings for the --parameters commands=[...] form."""
-    import json
-
     return json.dumps(items)

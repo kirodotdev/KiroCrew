@@ -241,10 +241,12 @@ RECENT_TINT_COUNT_MAX = 10
 FOLDER_SORT_MODES: tuple[str, ...] = ("custom", "name", "created")
 FOLDER_SORT_DEFAULT = "custom"
 # The sidebar's session sort keys: last activity, creation time or title, each
-# both ways, and ``manual``, the person's own drag order (kept by
-# ``dashboard.pinned_session_order``). The loader normalizes to this set and the
-# PATCH allowlist accepts exactly it; the frontend's ``SortKey`` mirrors this
-# list. A build without ``manual`` reads it as the default, ``date-desc``.
+# both ways, ``manual``, the person's own drag order (kept by
+# ``dashboard.pinned_session_order``), and ``active-then-date``, the running
+# sessions first and then the rest, each part newest activity first. The loader
+# normalizes to this set and the PATCH allowlist accepts exactly it; the
+# frontend's ``SortKey`` mirrors this list. A build without a key reads it as
+# the default, ``date-desc``.
 SESSION_SORT_MODES: tuple[str, ...] = (
     "date-desc",
     "date-asc",
@@ -253,6 +255,7 @@ SESSION_SORT_MODES: tuple[str, ...] = (
     "name-asc",
     "name-desc",
     "manual",
+    "active-then-date",
 )
 # The "Translucent panels" (Liquid Glass) switch as the workspace stores it: a
 # string like ``theme_mode``, with ``""`` for "never chosen here" so the browser's
