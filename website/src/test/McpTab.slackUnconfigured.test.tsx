@@ -104,16 +104,16 @@ describe('McpTab: a slack row and its Connections card', () => {
     mockApi.mcpServers.mockResolvedValue([slackRow({ ...state, connectionNeedsCrewSignIn: true })])
     renderTab()
 
-    const setUp = await screen.findByRole('link', { name: 'Turn on Kiro Crew sign-in' })
+    const setUp = await screen.findByRole('link', { name: 'Open Kiro Crew sign-in setting' })
     const href = setUp.getAttribute('href') ?? ''
     expect(href.startsWith('/settings/developer/feature-previews')).toBe(true)
     expect(href).toContain('highlight=developer.mcp-sign-in-by-kiro-crew')
     expect(screen.getByText(/Slack signs in through Kiro Crew/)).toBeInTheDocument()
-    // The help reuses the tip's text: step 2 links to Settings, no raw tag, no jargon.
+    // The help reuses the tip's text: step 2 names and links the Agent Harness tab, no raw tag.
     expect(screen.getByText(/Slack signs in through Kiro Crew/).textContent).toBe(
-      'Slack signs in through Kiro Crew. To connect it: (1) turn on Kiro Crew sign-in with the button, (2) in Settings, set chats to run on Kiro Agent. Turn on Kiro Crew sign-in',
+      'Slack signs in through Kiro Crew. To connect it: (1) open the Kiro Crew sign-in setting with the button and make sure it is on, (2) in Settings → Agent Harness, choose Kiro Agent. Open Kiro Crew sign-in setting',
     )
-    const harness = screen.getByRole('link', { name: 'Settings' })
+    const harness = screen.getByRole('link', { name: 'Settings → Agent Harness' })
     expect(harness.getAttribute('href')).toBe('/settings/agent')
     expect(document.body.textContent).not.toContain('settingsLink')
     expect(screen.queryByRole('button', { name: /Sign in/ })).toBeNull()
@@ -131,7 +131,7 @@ describe('McpTab: a slack row and its Connections card', () => {
     await waitFor(() => expect(screen.getByTestId('mcp-probe-error')).toBeInTheDocument())
     expect(screen.getByText(/HTTP 401/)).toBeInTheDocument()
     expect(screen.getByText(/static Authorization header cannot satisfy it/)).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Turn on Kiro Crew sign-in' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Open Kiro Crew sign-in setting' })).toBeNull()
   })
 
   it('keeps the tools and their toggles on a marked row that lists tools', async () => {
@@ -141,7 +141,7 @@ describe('McpTab: a slack row and its Connections card', () => {
     renderTab()
 
     await waitFor(() => expect(screen.getByRole('button', { name: /2 tools/ })).toBeInTheDocument())
-    expect(screen.queryByRole('link', { name: 'Turn on Kiro Crew sign-in' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Open Kiro Crew sign-in setting' })).toBeNull()
   })
 
   describe.each([

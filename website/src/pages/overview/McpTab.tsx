@@ -1016,7 +1016,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
               <span className="text-warn text-[12px]">
                 <Trans
                   i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-                  values={{ provider: crewSignInProvider.name }}
+                  values={{ provider: crewSignInProvider.name, tab: i18nT('settings.tabs.agent.label') }}
                   components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent transition-colors" /> }}
                 />{' '}
                 <Link
