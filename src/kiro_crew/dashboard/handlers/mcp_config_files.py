@@ -89,7 +89,7 @@ class _McpFileLockSync:
     def __enter__(self) -> None:
         try:
             _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
-            _MCP_LOCK_PATH.touch(exist_ok=True)
+            _MCP_LOCK_PATH.touch(mode=0o600, exist_ok=True)
             # Non-truncating "r+", kept inline for the same reason as
             # :class:`_McpFileLock` in handlers/mcp.py.
             fd = open(_MCP_LOCK_PATH, "r+")
