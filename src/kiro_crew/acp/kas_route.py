@@ -119,7 +119,10 @@ class KasRoute:
     bundle: bool
     reason: str = ""
     #: On the launcher relay: whether Crew's vault answers the engine's credential
-    #: callback too, so either sign-in can be the one that failed.
+    #: callback too, so either sign-in can be the one that failed. On a relay
+    #: :func:`resolve_kas_route` predicts with the automatic switch open: whether
+    #: the spawn enters through ``kiro-cli-chat`` on Crew's vault, so Crew's
+    #: sign-in alone starts it. A spawn records it only on the launcher relay.
     crew_auth: bool = False
 
     @property
@@ -444,7 +447,10 @@ def resolve_kas_route(
     *pin* is the session's own Bot pin as stored (``crewmate_harness.route_pin``),
     judged by rule 2 as the spawn judges it; ``""`` asks about the installation.
     With the ``chat_runtime_sharing`` preview on, the bundle route is chosen
-    before the relay rules (:func:`sharing_preview_selects_bundle`).
+    before the relay rules (:func:`sharing_preview_selects_bundle`). With the
+    automatic switch open, the relay carries ``crew_auth`` when the vault holds
+    an identity and the spawn skips the launcher (:func:`crew_entry_skips_launcher`);
+    a stored Kiro CLI pick answers the plain relay.
 
     """
     from kiro_crew.config.loader import KiroCrewConfig
@@ -485,7 +491,10 @@ def resolve_kas_route(
         vault_identity=vault_identity,
         crew_entry_skips_launcher=skips_launcher,
     )
-    return KasRoute(bundle=True, reason=reason) if reason else RELAY
+    if reason:
+        return KasRoute(bundle=True, reason=reason)
+    # The harness swaps in the chat binary only for a vault spawn that skips the launcher.
+    return KasRoute(bundle=False, crew_auth=True) if vault_identity and skips_launcher else RELAY
 
 
 def relay_can_run(*, environ: Mapping[str, str] | None = None, home: Path | None = None) -> bool:

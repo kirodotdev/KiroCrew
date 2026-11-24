@@ -6015,7 +6015,8 @@ relay-route behaviour byte for byte when the predicate is false.
 the one spelling over a loaded `agent` section. Its optional `pin` (a session's
 stored Bot pin, `crewmate_harness.route_pin`) reaches `resolve_kas_route(pin=...)`,
 so rule 2 is judged on that pin as the spawn judges it; the turn-start readiness
-gate (`dashboard/kiro_readiness._kas_bundle_turn_sync`) passes it. The sign-in owner
+gate (`dashboard/kiro_readiness._kas_bundle_turn_sync`) applies the same two halves
+inline, so one `kas_route(pin)` read also answers the relay's `crew_auth`. The sign-in owner
 (`auth.whoami.agent_owns_sign_in`) reads it behind the backend half and the vault;
 the install probe and spec `permissions` gate (`backend_install._kas_bundle_route`)
 and a `?backend=kas` model list (`crewmate_harness.models_route`) read it bare,
