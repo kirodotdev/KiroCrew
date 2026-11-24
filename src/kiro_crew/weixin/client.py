@@ -17,6 +17,7 @@ import base64
 import functools
 import json
 import logging
+import os
 import secrets
 import struct
 import time
@@ -27,6 +28,7 @@ from urllib.parse import quote
 import aiohttp
 
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.http_proxy import proxy_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +243,15 @@ def protocol_error_code(resp: Dict[str, Any]) -> Any:
     return None
 
 
+def _resolve_proxy() -> str | None:
+    """Resolve an outbound proxy from the environment, if set."""
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    return None
+
+
 class WeixinClient:
     """Thin async wrapper over the iLink Bot HTTP API.
 
@@ -254,6 +265,10 @@ class WeixinClient:
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.account_id = account_id
+        # The forward proxy for every iLink request, read once from the
+        # environment. aiohttp does not read it by itself, and each request
+        # still checks its own host against NO_PROXY.
+        self._proxy = _resolve_proxy()
         self._session: Any = None  # aiohttp.ClientSession, created in connect()
         self._handler_tasks: set[asyncio.Task[Any]] = set()
         # The transport's long-poll task. This client is the gateway's channel
@@ -283,7 +298,12 @@ class WeixinClient:
         url = f"{self.base_url}/{endpoint}"
 
         async def _do() -> Dict[str, Any]:
-            async with self._session.post(url, data=body, headers=_headers(self.token, body)) as resp:
+            async with self._session.post(
+                url,
+                data=body,
+                headers=_headers(self.token, body),
+                proxy=proxy_for_url(self._proxy, url),
+            ) as resp:
                 raw = await resp.text()
                 if not resp.ok:
                     raise RuntimeError(f"iLink POST {endpoint} HTTP {resp.status}: {raw[:200]}")
@@ -299,7 +319,9 @@ class WeixinClient:
         }
 
         async def _do() -> Dict[str, Any]:
-            async with self._session.get(url, headers=headers) as resp:
+            async with self._session.get(
+                url, headers=headers, proxy=proxy_for_url(self._proxy, url)
+            ) as resp:
                 raw = await resp.text()
                 if not resp.ok:
                     raise RuntimeError(f"iLink GET {endpoint} HTTP {resp.status}: {raw[:200]}")
