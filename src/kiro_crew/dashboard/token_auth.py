@@ -1036,9 +1036,17 @@ def token_auth_middleware(
                 # The only place an app credential from local authorization is
                 # recognised. ``bearer`` is read on a Crew API path alone, so no
                 # other path ever carries one.
-                app_refusal = await crew_api_auth.refuse_app_credential(request, token)
-                if app_refusal is not None:
-                    return app_refusal
+                app_answer = await crew_api_auth.judge_app_credential(request, token)
+                if isinstance(app_answer, web.Response):
+                    return app_answer
+                if app_answer is not None:
+                    # Admitted by its route's row. The steps below judge a session,
+                    # and this caller holds none: the peer pin (the credential is
+                    # taken from this machine alone), the link exchange (no cookie
+                    # is minted) and the installed-app allowlist (the served list
+                    # decides, and this caller is no installed app).
+                    await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
+                    return await handler(request)  # type: ignore[operator]
         else:
             valid, user_id, reason, app_name = await validate_token_with_app_off_loop(
                 token, use_session_exp=from_cookie

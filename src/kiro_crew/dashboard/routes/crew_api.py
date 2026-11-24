@@ -12,7 +12,10 @@ here, and ``test_crew_api_owner.py`` fails when a route and its description
 disagree.
 
 Public tier: ``/v1/models`` and ``/v1/responses``, each served by its own handler
-behind the same ``owner_route`` gate while it serves the owner alone.
+behind the same ``owner_route`` gate. ``/v1/models`` also serves a verified app
+credential with an empty list until a grant carries a Bot range or a route lets
+an app run an agent. The owner gets the full catalog; ``/v1/responses`` serves the
+owner alone.
 """
 
 from __future__ import annotations
