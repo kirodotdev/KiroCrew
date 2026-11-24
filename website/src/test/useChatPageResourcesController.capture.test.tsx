@@ -67,7 +67,7 @@ vi.mock('../utils/composerSendHolds', () => ({
   registerComposerUpload: vi.fn(),
   releaseComposerSend: captureSeam.release,
   unregisterComposerUpload: vi.fn(),
-  useComposerUploadCount: () => 0,
+  useComposerUploads: () => [],
 }))
 
 import { useChatPageResourcesController } from '../pages/chat/useChatPageResourcesController'

@@ -320,8 +320,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
   // key, so a side upload holds only the side Send. Finished paths are staged
   // on the slot's side draft beside the text (`stagedFiles`).
   const {
-    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
-    cancelUpload, uploadFiles, dropTargetProps, uploadKey,
+    uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadMutation,
+    uploadFiles, dropTargetProps, uploadKey,
   } = useSideChatUploads(slot)
   const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next); setLengthHint(null) }, [slot])
   // The collapsed paste blocks behind the `[ Paste #N · M lines ]` tokens in
@@ -1200,8 +1200,6 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
             promptStash={false}
             connected={connected}
             onUploadFiles={uploadFiles}
-            onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
-            uploadCount={uploadCount}
             uploadSlot={uploadKey}
             pendingFiles={stagedFiles}
             onRemoveFile={path => { writeSideChatFiles(slot, stagedFiles.filter(f => f !== path)) }}

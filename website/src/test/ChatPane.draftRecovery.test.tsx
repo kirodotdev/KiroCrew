@@ -207,7 +207,8 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'report.pdf', { type: 'application/pdf' })] })
     fireEvent.change(fileInput)
-    expect(await screen.findByText('report.pdf')).toBeInTheDocument()
+    // The staged file, not its upload chip, which shows the same name.
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/report.pdf' })).toBeInTheDocument()
     fireEvent.change(box, { target: { value: 'read this' } })
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
