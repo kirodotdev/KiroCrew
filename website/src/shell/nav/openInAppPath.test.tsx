@@ -47,7 +47,7 @@ describe('useOpenInAppPath', () => {
     expect(here).toBe('/schedule?job=nightly')
   })
 
-  it('brings the local Crew forward for an app detail link before asking the page', () => {
+  it.each(['/apps/detail/demo-app', '/members'])('brings the local Crew forward for %s before asking the page', (target) => {
     const store = createTestStore()
     store.dispatch(setActiveId('remote-1'))
     const guard = vi.fn(() => {
@@ -62,10 +62,10 @@ describe('useOpenInAppPath', () => {
         </MemoryRouter>
       </Provider>,
     )
-    act(() => { open('/apps/detail/demo-app') })
+    act(() => { open(target) })
     expect(guard).toHaveBeenCalledTimes(1)
     expect(store.getState().instances.activeId).toBeNull()
-    expect(here).toBe('/apps/detail/demo-app')
+    expect(here).toBe(target)
   })
 
   it('brings the local Crew forward from a relay Crew pane for an app detail link', () => {
