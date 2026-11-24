@@ -597,6 +597,21 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+
+**A held window is re-read when it comes back on screen.** A slot that was off
+screen while the socket was down missed every frame of that gap: the reconnect warms
+only the panes mounted then. A background pane (a bot DM, a split pane) that mounts
+onto a window the store already holds therefore runs one `warmSlotCache` in place of
+its own hydrate read, whose page `hydrateSlotMessages` would discard
+(`components/chat/useHeldWindowWarm.ts`). The warm's outcome does that read's other
+two jobs: its landed page sets the pane's hydrated latch, which the unread landing
+waits on, and its failure shows the pane's history notice, whose Retry runs the warm
+again. `switchSlot` likewise drops the cached
+trailing reply when it has no row identity, the page reports the slot idle, no chunk
+arrived during the fetch, and the page already answers the prompt that reply belongs
+to (`pageAnswersLocalPrompt`): re-attached, that frozen partial would sit under the
+finished reply.
+
 In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
 each walk that fetched older pages (with the pages and the reason), readable in
 devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
