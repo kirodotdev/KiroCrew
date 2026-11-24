@@ -35,6 +35,21 @@ def binding_of(channel: str, event: dict[str, Any]) -> Binding | None:
     return None
 
 
+def is_stop_text(text: str) -> bool:
+    """Whether *text* is a bare ``!stop``, or one addressed to this bot (its own leading mention).
+
+    One reading for both entry points. A message addressed to someone else
+    (``<@U0OTHER> !stop``) is theirs to answer, not a Stop of this thread.
+    """
+    from kiro_crew.slack.code_channels import routing
+
+    body = routing.strip_leading_mention(text)
+    if body.strip().lower() != "!stop":
+        return False
+    mentioned = routing._MENTION.findall(text[: len(text) - len(body)])
+    return not mentioned or mentioned == [routing._self_user_id()]
+
+
 def is_owner_stop(channel: str, event: dict[str, Any], text: str, sender_id: str) -> bool:
     """Whether *event* is the owner's pure ``!stop`` in a live Conductor thread.
 
@@ -43,13 +58,12 @@ def is_owner_stop(channel: str, event: dict[str, Any], text: str, sender_id: str
     :func:`decide` sees it. Anyone else's, and any other message, is not exempt.
     """
     from kiro_crew.slack.code_channels import binding as _binding
-    from kiro_crew.slack.code_channels import routing
     from kiro_crew.slack.handler import is_owner
 
     thread = binding_of(channel, event)
     return (
         thread is not None
-        and routing.strip_leading_mention(text).strip().lower() == "!stop"
+        and is_stop_text(text)
         and is_owner(sender_id)
         # Only what :func:`decide` acts on: else it would pass the message on, and a
         # channel in off mode would be answered.
@@ -87,7 +101,7 @@ async def decide(
     """
     from kiro_crew.slack.code_channels import routing
 
-    if from_trusted_bot or routing.strip_leading_mention(text).strip().lower() != "!stop":
+    if from_trusted_bot or not is_stop_text(text):
         return routing.PASS
     if not acts_on(binding, cfg):
         return routing.PASS

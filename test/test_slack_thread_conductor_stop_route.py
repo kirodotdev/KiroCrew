@@ -57,6 +57,7 @@ async def _route(activation: str, *, user: str, text: str, switch_on: bool = Tru
         patch("kiro_crew.slack.events.is_allowed_user", return_value=True),
         patch("kiro_crew.slack.events.code_channel_gate", gate),
         patch("kiro_crew.slack.handler.is_owner", lambda u: u == "U_OWNER"),
+        patch("kiro_crew.slack.code_channels.routing._self_user_id", lambda: "U0BOT"),
         patch(
             "kiro_crew.slack.code_channels.thread_runtime.thread_conductor_on",
             lambda _cfg: switch_on,
@@ -91,3 +92,19 @@ async def test_an_idle_conductor_with_the_switch_off_leaves_the_drop_in_place(
     """The gate would pass the message on, so the channel's own drop must still apply."""
     gate = await _route(activation, user="U_OWNER", text="!stop", switch_on=False)
     gate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("activation", [ACTIVATION_OFF, ACTIVATION_REVIEW, ACTIVATION_MENTION])
+async def test_a_stop_addressed_to_someone_else_is_not_a_stop(
+    thread_store, activation: str
+) -> None:
+    gate = await _route(activation, user="U_OWNER", text="<@U0OTHER001> !stop")
+    gate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("activation", [ACTIVATION_OFF, ACTIVATION_REVIEW, ACTIVATION_MENTION])
+async def test_a_stop_that_mentions_this_bot_is_a_stop(thread_store, activation: str) -> None:
+    gate = await _route(activation, user="U_OWNER", text="<@U0BOT> !stop")
+    gate.assert_awaited()
