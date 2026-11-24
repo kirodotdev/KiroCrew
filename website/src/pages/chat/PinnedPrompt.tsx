@@ -4,6 +4,7 @@ import { i18nT } from '../../i18n/t'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { EdgeFade } from '../../app-sdk/ChatScrollChrome'
 import { ROW_PAD_Y, PINNED_PREVIEW_LINES, PINNED_RESTING_LINES, pinnedImageUrl } from '../../utils/pinnedPrompt'
+import { OtherSenderBubble } from './shared-crew/MessageByline'
 
 interface PinnedPromptProps {
   /** Clamped plain-text preview of the pinned prompt (images stripped out). */
@@ -26,6 +27,14 @@ interface PinnedPromptProps {
    * an exemption for.
    */
   bodyBeyondPreview?: boolean
+  /**
+   * The pinned row's meta and its chat. Together they say whether someone else
+   * sent the prompt, by the rule the transcript bubble uses (`OtherSenderBubble`).
+   * A host passes `slotKey` only if its rows pass it to `UserMessage`, so the
+   * card and the row it stands in for always read the same sender.
+   */
+  meta?: Record<string, unknown> | null
+  slotKey?: string
   /** px to translate up so the incoming prompt pushes this banner out of view. */
   pushUp: number
   /**
@@ -204,9 +213,22 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * as the card is being pushed out, so a departing card is always its resting
  * size and the band it slides through is sized for it.
  */
-export default function PinnedPrompt({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey,
-}: PinnedPromptProps) {
+export default function PinnedPrompt({ meta, slotKey, ...card }: PinnedPromptProps) {
+  return (
+    <OtherSenderBubble meta={meta ?? undefined} slotKey={slotKey}>
+      {other => <PinnedPromptCard {...card} other={other} />}
+    </OtherSenderBubble>
+  )
+}
+
+/**
+ * `other`: someone else sent the prompt. The card then sits on the start side
+ * with the outlined bubble, as that person's row does in the transcript
+ * (UserMessage), so a filled card on the end side is always the reader's own.
+ */
+function PinnedPromptCard({
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey, other,
+}: Omit<PinnedPromptProps, 'meta' | 'slotKey'> & { other: boolean }) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
   const lastBoxH = useRef<number | null>(null)
@@ -652,7 +674,7 @@ export default function PinnedPrompt({
 
   return (
     <div
-      className="relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
+      className={`relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start ${other ? 'justify-start' : 'justify-end'}`}
       // The whole band (card, mask fill, fade): what a browser takeover sets aside
       // (`browserLiveClearance.holdPinnedPromptAside`).
       data-pinned-prompt-band=""
@@ -703,7 +725,7 @@ export default function PinnedPrompt({
           painting over the header; `visible` at rest so an expanded or peeked card
           is shown in full. `relative z-[1]` lifts the card above the mask fill. */}
       <div
-        className="relative z-[1] min-w-0 max-w-full flex justify-end"
+        className={`relative z-[1] min-w-0 max-w-full flex ${other ? 'justify-start' : 'justify-end'}`}
         style={{ overflow: cardClipped ? 'hidden' : 'visible' }}
       >
         <div
@@ -748,7 +770,12 @@ export default function PinnedPrompt({
           // It is the only bubble class a theme pack's overrides.css may target, so
           // without it a pack rule on `.message-bubble.user-bubble` tints the bubble
           // and leaves this stand-in on `bg-card` (#23789).
-          className="message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 ring-inset forced-colors:border ring-border shadow-sm px-4 py-2 text-sm"
+          //
+          // Someone else's prompt takes that bubble's own classes instead
+          // (`user-bubble-other`, the stronger ring). It has no fill, like the
+          // bubble; the band's mask behind the card keeps the reply from showing
+          // through.
+          className={`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 ring-inset forced-colors:border shadow-sm px-4 py-2 text-sm ${other ? 'user-bubble-other text-text ring-border-strong' : 'bg-card text-card-fg ring-border'}`}
           style={maxH != null ? { maxHeight: maxH } : undefined}
         >
           <button
