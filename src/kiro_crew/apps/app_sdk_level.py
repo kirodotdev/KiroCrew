@@ -17,6 +17,9 @@ the person's Kiro sign-in, which never reaches the app; and the SDK's
 Level 13 adds ``/api/apps/<name>/browser-sites``: the app's browsing list with the
 sites the owner added, which the app and its backend read, and the owner's edits to
 it; and the SDK's ``useBrowserSites``, whose add asks the owner in the dashboard.
+Level 14 adds backend SDK names, one batch: ``canonical_file_path``, the gateway's
+file path gate (the UNC and link screens and the sensitive-path list, answered as the
+canonical path or None).
 """
 
-APP_SDK_LEVEL = 13
+APP_SDK_LEVEL = 14
