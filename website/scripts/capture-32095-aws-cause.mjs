@@ -68,16 +68,16 @@ const CASES = [
     after: [/There is no AWS profile named kirocrew-test on the computer that runs .+aws configure sso --profile kirocrew-test/],
   },
   {
-    file: '03-region-not-enabled',
+    file: '03-region-rejected',
     profile: '',
     region: 'af-south-1',
     fixture: {
       ...BASE,
       detail:
         'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid',
-      cause: 'region_not_enabled',
+      cause: 'region_rejects_credentials',
     },
-    after: [/Region af-south-1 is not enabled for this AWS account\. Pick another Region, or enable af-south-1/],
+    after: [/Region af-south-1 rejected these credentials .+ but they work in us-east-1\. Either af-south-1 is not enabled for this AWS account, or the session token is valid only in Regions enabled by default/],
   },
 ]
 
