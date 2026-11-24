@@ -6314,6 +6314,10 @@
       "trusted_channel_still_asks": "本次已批准 — 由于此主机的 shell 设置，@{{role}} 每次仍会请求批准",
       "title_wants_to_run": "<title/> 请求运行"
     },
+    "approvalSubagent": {
+      "asked_by": "由子代理 {{name}} 请求",
+      "task_line": "任务：{{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "无法开启“替我批准”。请重试。",
       "approve_for_me_busy": "请等当前回复结束，再选一次 Approve for me。",
@@ -13020,7 +13024,16 @@
         "artifacts_load_failed": "无法加载本次会话的产物",
         "library_load_failed": "无法加载产物库",
         "artifact_save_failed": "无法保存产物",
-        "workflow_runs_load_failed": "无法加载工作流运行"
+        "workflow_runs_load_failed": "无法加载工作流运行",
+        "engine_usage_not_reported": "在对话内运行的子代理不单独报告额度使用和模型，其额度计入本次回答的总额。",
+        "engine_no_output": "（无输出）"
+      },
+      "engineSubagentRecord": {
+        "title": "本轮的子代理：{{n}}",
+        "end_completed": "已完成",
+        "end_failed": "失败",
+        "end_not_reported": "引擎未报告结束状态",
+        "more_children": "未列出的其他子代理：{{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "无法加载分享对话框",
@@ -13560,7 +13573,9 @@
         "parent_turn_stopped": "父轮次已停止",
         "parent_stopped_still_running": "父级已停止，仍在运行",
         "chip_stalled_other": "{{count}} 个代理可能已停滞",
-        "more_running_normally_count_other": "另有 {{count}} 个正常运行中…"
+        "more_running_normally_count_other": "另有 {{count}} 个正常运行中…",
+        "engine_stops_with_answer": "在对话内运行的子代理，会在你停止回答时一并停止。",
+        "stop_all_and_answer": "全部停止并停止回答"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
@@ -16156,6 +16171,9 @@
         "chat_runtime_sharing_harness_save_failed": "开关没能保存，请重试。",
         "chat_runtime_sharing_harness_load_failed": "这些开关没能加载。",
         "chat_runtime_sharing_desc_summary": "让多个聊天在同一个后台程序里运行，少占电脑内存。哪类聊天共用由你来选。它们同时回复，看不到彼此的消息。关闭后，每个新聊天重新各用一个程序。",
+        "kas_subagents": "KAS 子代理",
+        "kas_subagents_desc": "开启后，在 KAS 对话中：默认代理在这一轮内把简短任务交给内置助手，或交给你自己的代理（最多 8 个）；它们受对话代理规则约束，并随这一轮一起停止；spawn_run 在另一个代理上启动子代理时，只有启动方对话无需询问就能运行的操作，它才无需询问就运行；即使代理预先批准了 shell，denyByDefault 命令列表仍然有效；排除子代理工具，或使用三种 deniedCommands 写法之一的代理，按 kiro-cli 的方式读取，对话开始时会说明。关闭：{{productName}} 把默认代理的子代理作为独立会话启动，你可以在子代理面板中打开或停止它们。",
+        "kas_subagents_desc_summary": "在 KAS 上，默认代理在引擎内运行简短子代理，部分代理权限按 kiro-cli 的方式读取，对切换之后启动的对话和子代理生效。",
         "visual_refresh": "视觉焕新",
         "visual_refresh_desc": "开启仪表板正在进行中的新样式。目前还没有任何改动：各部分完成后会陆续出现，可能看起来未完成，或在更新之间发生变化。关闭即可恢复当前外观。",
         "visual_refresh_desc_summary": "仪表板的新样式。目前还没有任何变化。",

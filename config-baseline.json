@@ -11335,6 +11335,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.kas_subagents",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: kas_subagents",
+      "help": "Turn on the 'kas_subagents' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.remote_crew_chat",
       "kind": "core",
       "type": "boolean",

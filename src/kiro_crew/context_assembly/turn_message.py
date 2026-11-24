@@ -407,6 +407,7 @@ def build_message(
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=not slim_resume,
+                provider_type=provider_type,
             )
         )
         # Not when the harness holds this exact text as the agent's own prompt

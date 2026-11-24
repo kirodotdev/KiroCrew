@@ -69,6 +69,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
+    # Has server behavior: kiro_crew.acp.kas_engine_subagents.kas_subagents_preview_on
+    # mounts the engine's sub-agent tool on a KAS chat's default agent.
+    "kas_subagents",
     "remote_crew_chat",
     "session_environments",
     "session_harness",

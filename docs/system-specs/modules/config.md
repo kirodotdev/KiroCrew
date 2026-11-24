@@ -2977,7 +2977,7 @@ name:
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
-  already sit in the file (owner-only, one link) is skipped, and
+  already sit in the file (this user's, mode `0600`, one link) is skipped, and
   `begin_managed_write` records no pending digest for bytes that reproduce the
   finalized one, so a rebuild that changes nothing keeps the file's inode. The
   sandbox pins this file for every spawn and refuses one whose pinned file was

@@ -324,6 +324,42 @@ async def test_post_tool_use_runs_once_on_the_terminal_result(tmp_path, fired):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("matcher", "runs"), [("execute_bash", True), ("fs_read", False)])
+async def test_a_later_consent_round_does_not_rename_the_finished_call(
+    tmp_path, fired, matcher, runs
+):
+    """KAS asks once per consent round, each under the call's id. A shell call that
+    also reads its directory asks as ``run_command`` and then as ``list_directory``:
+    the finished command is the shell call its first request named."""
+    _write_spec(tmp_path, {"postToolUse": [{"matcher": matcher, "command": "post"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False)
+    events = _shell_call(with_request=True)
+    events.insert(
+        2,
+        LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="List Directory",
+            request_id="req-cov-2",
+            tool_call_id="tc-1",
+            is_shell=True,
+            harness_tool_id="list_directory",
+            tool_name="list_directory",
+        ),
+    )
+    _set_stream(client, events)
+
+    def _approve_each_card() -> None:
+        for future in slot._approval_futures.values():
+            if not future.done():
+                future.set_result("approved")
+
+    state.push_slots_update.side_effect = _approve_each_card
+    await _drive(state, slot)
+    assert client.approve_tool.call_count == 2
+    assert ([cmd for _, cmd in fired] == ["post"]) is runs
+
+
+@pytest.mark.asyncio
 async def test_a_post_tool_use_matcher_meets_an_auto_approved_shell_call(tmp_path, fired):
     """No permission request at all: the call's shell classification is what
     names it, as ``execute_bash`` is the only tool kiro-cli runs a command with."""

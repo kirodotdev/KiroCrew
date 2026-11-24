@@ -4570,6 +4570,10 @@
       "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls",
       "title_wants_to_run": "<title/> wants to run"
     },
+    "approvalSubagent": {
+      "asked_by": "Asked by sub-agent {{name}}",
+      "task_line": "Task: {{task}}"
+    },
     "approvalModePicker": {
       "nudge_body": "This is where you adjust how {{productName}} asks for approval. Choosing \"Trust\" here lets it work in this chat without asking first — you can switch back anytime.",
       "nudge_dismiss": "Got it",
@@ -7481,7 +7485,16 @@
         "tool_calls_not_listed_one": "{{count}} earlier call not shown",
         "tool_calls_not_listed_other": "{{count}} earlier calls not shown",
         "waiting_for_output": "Waiting for output…",
-        "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit"
+        "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit",
+        "engine_usage_not_reported": "Credits and model are not reported for a sub-agent that runs inside the chat. Its credits are part of the answer's total.",
+        "engine_no_output": "(no output)"
+      },
+      "engineSubagentRecord": {
+        "title": "Sub-agents in this turn: {{n}}",
+        "end_completed": "Completed",
+        "end_failed": "Failed",
+        "end_not_reported": "End not reported by the engine",
+        "more_children": "More sub-agents not listed: {{n}}"
       },
       "assistantMessage": {
         "applied_to_tasks": "Applied to Tasks",
@@ -7807,7 +7820,9 @@
         "waiting_for_your_approval_to_start": "Waiting for your approval to start",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit",
         "more_running_normally_count_one": "{{count}} more running normally…",
-        "more_running_normally_count_other": "{{count}} more running normally…"
+        "more_running_normally_count_other": "{{count}} more running normally…",
+        "engine_stops_with_answer": "Sub-agents that run inside the chat stop when you stop the answer.",
+        "stop_all_and_answer": "Stop all and the answer"
       },
       "subagentQueued": {
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",

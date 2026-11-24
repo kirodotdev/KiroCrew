@@ -258,6 +258,18 @@ async def _on_permission_prompt(
     # optional there: a card missing them still renders its command.
     perm_meta["tool_kind"] = _redact_tool_field(event.tool_kind or "", limit=64)
     perm_meta.update(_tool_identity_fields(event))
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.dashboard.engine_subagent_cards import APPROVAL_TASK_MAX, approval_card_fields
+    from kiro_crew.security import redact_and_truncate
+
+    # Display only: a KAS engine sub-agent's task, or the sub-agent that asked.
+    # Model-written, so redacted before the cut, like every field of the card.
+    perm_meta.update(
+        {
+            key: redact_and_truncate(value, APPROVAL_TASK_MAX)
+            for key, value in approval_card_fields(turn, event).items()
+        }
+    )
     # A file grant is offered only for a path that names no link on this host,
     # read off the loop (it touches the file system); the trusted-pattern tier
     # checks the same before it honours one.

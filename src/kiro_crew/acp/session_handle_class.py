@@ -772,6 +772,13 @@ class AcpSessionHandle:
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
+        # The native-child calls whose finished frame was already marked
+        # (``kas_child_finished``), so each fires PostToolUse once. Cleared with it.
+        self._native_child_finished: set[str] = set()
+        # The title each native-child call's frames last stated, for that mark.
+        self._native_child_titles: dict[str, str] = {}
+        # The same call's hook subject, uncut, kept apart from that display title.
+        self._native_child_subjects: dict[str, str] = {}
         # Server names for which a mid-session MCP OAuth banner was already
         # emitted, so we don't spam duplicates. Discarded on the matching
         # server_initialized / server_init_failure so a later token-expiry
@@ -888,6 +895,9 @@ class AcpSessionHandle:
         # Whether that shell allowlist lets a read-only command past, as kiro-cli
         # does for `autoAllowReadonly: true` (``kas_agents.projected_shell_readonly``).
         self.kas_spec_shell_readonly: bool = False
+        # For a sub-agent run: the gate-only limits of each agent above it
+        # (``kas_parent_limits.projected_parent_limits``); the gate refuses what any refuses.
+        self.kas_parent_limits: tuple[Any, ...] = ()
         # The agent's write `allowedPaths`, anchored at this session's directory
         # (``kas_write_allowlist.projected_answered_paths``): the gate answers a
         # write every target of which one covers, after its checks.
@@ -904,6 +914,8 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The agent whose registration mounted the shipped helper (host memory).
+        self.kas_shipped_helper_parent = ""
         # The KAS MCP launch snapshot names every projection of this session wrote
         # (``acp.kas_env_launch``), read before ``session/load`` hoists servers out
         # of the batch and carried across a handle swap, so shutdown removes them.

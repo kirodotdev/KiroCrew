@@ -636,6 +636,33 @@ path is unchanged. `test/test_kas_skill_scope.py` compares the skills KAS would
 offer for the built payload with the kiro-cli scope and goes red when the rule
 is not sent.
 
+### KAS engine sub-agents (the `kas_subagents` feature preview)
+
+With the `kas_subagents` feature preview on (default off) a KAS dashboard chat of the default agent mounts the
+engine's own sub-agent tool with the shipped `kirocrew-helper` and the person's own
+registered agents reachable, and
+its entry excludes `spawn_sub_agents` (`acp/kas_engine_subagents.py`). In the same
+chats on a person's own agent, a file that excludes the sub-agent tool the way a
+file run on kiro-cli did is read as kiro-cli read it
+(`acp/kas_excluded_tool_cli.py`). The gate is
+positive (H5): only `KasHarness.session_extras` reads the switch (through
+`acp/kas_native_batch.py`), and the contract renderer names the engine's tool only
+for the KAS provider label (`contract_names_engine_subagents`, read through the
+agent-SDK facade `agent_sdk/kas_engine_subagents.py`). The KAS `toolsSettings`
+translation reads it too, for three `deniedCommands` entries it then sends as
+kiro-cli sends them (`acp/kas_deny_cli_forms.py`); no other harness receives that
+translation. Every other harness,
+Copilot, DeepSeek and Pi included, has no such tool on this path and keeps
+`spawn_sub_agents`: a named gap, not parity. `test_kas_engine_subagents_switch.py`
+pins that nothing outside those three modules imports the seam. The KAS child is an
+H16 native child of its parent (no per-child Stop, no per-child cost row).
+
+With it off or never set the seam adds nothing, so every KAS entry is projected as
+before the preview existed. It is KAS-only by where it is read (H5): no other
+harness reads the switch, and none gains or loses a tool.
+`test_kas_engine_subagents_crew_hold.py` pins the off projection per agent-file
+shape.
+
 ### H16 on Claude: Workflow agents and a child's Stop
 
 Each agent of a Claude Code Workflow run, read from Claude Code's raw SDK task

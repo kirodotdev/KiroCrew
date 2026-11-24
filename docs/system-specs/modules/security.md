@@ -413,12 +413,17 @@ the list, and the code admits only the row marked PROCEEDS.
 
 Because the "any other atomic rewrite" row refuses, a writer that rewrites a sealed leaf on a
 schedule must not rewrite it when nothing changed. Every agent-config rebuild writes
-`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode and single
-link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
+`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode, owner and
+single link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
 (`agent_parts/spec_files._atomic_json_write_unguarded`) does the same for `kirocrew.json`, whose
 inode the worker records in that sidecar. A rebuild that changes nothing therefore keeps every
 sealed file leaf's identity (`test/test_rebuild_keeps_pinned_files.py`); one that changes the
-sidecar still refuses a spawn whose pass and pin straddle the write, as the table says.
+sidecar still refuses a spawn whose pass and pin straddle the write, as the table says. A
+rebuild must also not RUN for nothing: the profile watch rebuilds when the governance answer
+generation moves, and that generation moves only for a profile snapshot that differs from the
+one it replaces (governance.md, the profile watch). The empty `profiles` directory the first
+sandboxed spawn creates on a fresh home is therefore not a move, and the first tick after that
+start leaves both files alone even when the rebuild it would have run had new content to write.
 
 **The gateway's own config save, admitted on its publication record.** The two runtime-config
 files are sealed as files (they sit at the data-home root and cannot move into a directory),
@@ -3921,6 +3926,55 @@ only an unmatched command (`kas_grant_only_settings.without_shell_grant_keys`, t
 reading `kas_agents._allowed_commands_withheld` gives them). The KAS deny rules the translation carries
 are unchanged.
 
+A `deniedCommands` entry with alternation travels as one KAS deny per branch
+(`kas_deny_alternatives.deny_alternatives`), the globs kiro-cli's own upgrade of a
+legacy agent file writes: `(touch|mkdir) .*` becomes `touch *, mkdir *` and
+`rm .*|shred .*` becomes `rm *, shred *`. A `|` outside every group and class
+splits the entry into its branches (an empty branch is dropped: it matches only an
+empty command line); inside a branch, a `( )` or `(?: )` group holding no group or
+class, with no repeat after it, splits into one regex per combination, up to
+`kas_deny_alternatives.MAX_ALTERNATIVES` in all. A group whose whole body is one
+such group, `((rm|shred)) .*`, splits as the inner one. Each branch keeps its text
+as written, a space at either end included, as kiro-cli keeps it: `rm .* | shred .*`
+travels as `rm * ` and ` shred *`, and `(sudo|) rm .*` as `sudo rm *` and ` rm *`,
+so neither refuses `rm x`, as the entry's own regex does not. A class anywhere, a
+group holding anything beside one inner group, a repeated or flagged group, or
+unbalanced parentheses keep the entry (or that branch) whole, handled below as
+before; the branches that do have a glob still travel. A split entry is carried only when every branch has a glob and reaches
+the policy (`kas_permissions.shell_deny_carried`); then the notice does not name
+it, and a Bot worker's `spec-unjudged-denies` row does not hold for a group split.
+It still holds for a top-level split (`kas_spec_denies.denied_command_items`,
+`top_level_split_carries=False`): the branch globs are narrower than the entry's
+own regex, which anchors only its outer ends (`^a|b$`), so the worker's hold on
+every command that is not read-only stays, stricter than kiro-cli. A split entry never counts as carried for lifting
+`denyByDefault` under an `allowedTools` shell grant or for recording
+`autoAllowReadonly` (`shell_denies_carried(..., splits=False)`): kiro-cli keeps the
+allowlist as its own engine rule (`deny shell ["*"] exclude [<allowedCommands>]`)
+beside the split deny, so a command outside `allowedCommands` stays refused at the
+gate. Crew's gate still cannot read alternation (`allowed_commands.parse_deny`), so
+no grant beside it is lifted.
+
+With the `kas_subagents` feature preview on, three entries travel as kiro-cli
+3.5.0 wrote them into the agent files it upgraded, which is not what their regex
+names (`kas_deny_cli_forms.CLI_WRITTEN_GLOBS`): `rm \| .*` as `*`, so every shell
+command is refused (kiro-cli 3.5.0's engine then leaves the shell tool out of the
+agent's tool list, which the notice says as "may have no shell tool");
+`rm [|] .*` as `rm * *`; and `rm .*|shred +x` as `rm *` and
+`shred *x`. Only an entry whose text is one of the three is sent this way, since
+kiro-cli's conversion is not published and no other entry is guessed at. Off or
+never set, the first travels as `rm | *` and the other two as before (`rm [|] .*`
+with no rule, `rm .*|shred +x` as `rm *` alone). The key stays named as not
+carried, and the session-start notice says what each entry refuses in place of
+"no effect" (`kas_deny_cli_forms.split_sent_as_cli`, read by
+`spec_hooks.spec_keys_notice`). Every gate reading above still takes its answer
+from the entry's own split and glob, so each of the three counts as not carried
+and the gate refuses nothing less: for `rm \| .*`, which counted as carried
+while it travelled as `rm | *`, a `denyByDefault` allowlist is now kept, no
+`autoAllowReadonly` is recorded and a Bot worker's shell is held. The preview is
+read by the translation itself, each time a spec is translated, and only for a
+spec that holds one of the three; a config that cannot be read keeps the
+translation of the preview off.
+
 A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect
 character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
 is refused by the same row with no grant beside it
@@ -3979,12 +4033,39 @@ recorded when the spec's `allowedTools` names the shell by name
 `@builtin/` only `execute_bash`, `execute_cmd` and `shell`; an entry holding
 `*` or `?` grants nothing) AND every
 `deniedCommands` entry rides the projected policy as a KAS shell `deny` rule
-(`kas_permissions.shell_denies_carried`): kiro-cli's
+(`kas_permissions.shell_denies_carried`), each as one glob (a split alternation
+keeps the allowlist, see above): kiro-cli's
 `eval_perm` allows every command of such an agent that `deniedCommands` does not
 deny, before it reads `denyByDefault`. Its commands take the gate's usual path
 and prompt or are answered there. A deny with no glob spelling, a redirect, a
 malformed value, or one a merge dropped keeps the allowlist, since lifting it
 would let the command that deny names run.
+
+That lift follows the `kas_subagents` feature preview
+(`dashboard.feature_previews.kas_subagents`), the preview the engine's sub-agents
+follow, through its one reader (`kas_engine_subagents.kas_subagents_preview_on`,
+asked by `kas_shell_grant_lift.shell_grant_lifts_deny_by_default`, which only
+`kas_agents` imports):
+
+| The preview | A `denyByDefault` spec whose `allowedTools` names the shell |
+|---|---|
+| on (a stored `true`) | The allowlist is recorded as for an agent that does not list the shell, whatever its `deniedCommands` entries are (none, one glob each, a split alternation, one KAS receives no rule for), and so is the read-only pass. kiro-cli's agent engine keeps `denyByDefault` for such an agent: its upgrade of the file writes `deny shell ["*"] exclude [<allowedCommands>]` beside `allow shell`, and the deny wins. A person who wants the other commands to run adds them to `allowedCommands` or removes `denyByDefault`. |
+| off or never set, an LTS build, a config that cannot be read | The lift above: no allowlist while every `deniedCommands` entry travels as one glob. |
+
+`kas_shell_grant_lift.kas_shell_allowlist` is the one reading. The projection
+(`kas_agents.to_client_custom_agent`) and the session-start notice
+(`kas_agents.spec_keys_without_carrier`) call it; the session handle's stamp, a
+mode switch, the engine sub-agent target check
+(`kas_subagent_targets._gate_only_limits`) and the remote-workspace check
+(`runtime_remote_workspace._carries_spec_allowlist`) read the record the
+projection wrote, so each gives the answer of the value the projection read. The
+preview is read when the agent is projected, which is at session start, and only
+for a spec the grant would lift: a session already open keeps its record, the
+gate reads that record on every call and never the preview, and a changed value
+reaches a session at its next projection. A config that cannot be read is handed
+to the reader as none, which it reads as off. A spec without `denyByDefault`, or
+one that does not list the shell, is projected the same on every value. On claude
+the preview is not read (§ claude spec allowlists).
 
 **KAS spec write allowlist (`fallbackAction: "deny"`)** — a spec that sets
 `toolsSettings.fs_write.fallbackAction` (or `write`) to `"deny"` (any case, or a
@@ -4069,13 +4150,505 @@ It refuses the session for its own entry only; a sub-agent registered beside it
 (`acp/kas_subagent_targets.py`) that carries either is left out of the batch and
 named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
 
+**KAS native sub-agent ceiling** — a sub-agent the KAS engine runs
+(`invoke_sub_agent`) gets its parent's ceiling or a tighter one, never a wider one,
+and every gap fails closed:
+
+- *Which agents.* Every batch entry, whether or not it selects `invoke_sub_agent`
+  (a per-agent `subagent_<id>` tool reaches the same name check), carries a `subagent` deny
+  naming `agent_files.OWNED_KIRO_AGENT_NAMES` (the stems of `OWNED_KIRO_AGENT_FILES`),
+  with or without an `availableAgents` list (`kas_subagent_targets.deny_own_agents`,
+  applied by `acp/kas_native_batch.py`). A deny only narrows. Each entry that gains
+  it records one `kas_subagent_own_agents_denied` security event (source
+  `kas_agent_projection`) naming the entry (`kas_subagent_targets.audit_subagent_policy`).
+  An entry whose `excludedTools` withhold the sub-agent tool carries an
+  unconditional `subagent` deny (`kas_subagent_targets.deny_every_subagent`)
+  whether the `kas_subagents` feature preview is on or off
+  (`kas_subagent_targets.deny_excluded_subagent_tool`,
+  recorded as `kas_subagent_tool_excluded`), so the engine's per-agent
+  `subagent_<id>` tools, which that exclusion does not reach, start nothing
+  either, Kiro Crew's own agents included. With the preview on, one entry gets no
+  such deny and is read as kiro-cli reads it: the session's own agent, in a
+  person's dashboard chat the preview reaches, when it is a person's own file in
+  one of the two shapes run on kiro-cli
+  (`kas_excluded_tool_cli.hold_excluded_as_cli`; recorded as
+  `kas_subagent_exclusion_read_as_cli`). The deny on Kiro Crew's own agents stays
+  on it, and so does any `subagent` deny its file writes.
+- *The person's own agents under the default agent's mount.* The mount's deny
+  (`kas_engine_subagents._mounted`: every name but the helper) also spares each of
+  the person's user-level and project agents the target projection registers
+  (`project_subagent_targets(every_agent=True)`, the first `MAX_SUBAGENT_TARGETS`
+  in name order, Kiro Crew's own names taking no place). Every refusal of
+  `_project_target` holds for them: one of Kiro Crew's own agents, a reserved id,
+  an agent whose shell or write limits only the gate applies, one with its own
+  `preToolUse` hooks. One more holds for them alone: an agent whose file sets
+  the shell's `denyByDefault` is left out whatever else it grants
+  (`_denies_by_default`). The projection records no allowlist where the file's
+  own `allowedTools` names the shell, and a sub-agent's own grant answers
+  nothing, so that allowlist would bind no one. And the finished entry is read
+  whole (`_left_to_the_gate`), because the gate hands a sub-agent's request its
+  parent's limits and none of its own: each key that never reaches the engine
+  (`kas_permissions.CREW_ONLY_ENTRY_KEYS`) either holds a sub-agent to nothing
+  (`_BINDS_NO_CHILD`: the grants the gate answers the session agent's own request
+  by, and the `mcp.json` stamp) or leaves the agent out, and the deny record is
+  read field by field (`_record_refuses`). So a `web_fetch.blocked` URL that only
+  the gate refuses leaves the agent out, as a denied command beside a grant does;
+  an entry the engine holds as a host deny does not. A key or a record field
+  nobody has judged, and a record that cannot be read, leave it out too. So does
+  a shell `deniedCommands` entry of the file that no engine rule carries whole,
+  record or not (`_spec_denies_uncarried`, read as the Bot worker's hold reads it,
+  `kas_spec_denies.denied_command_items` with `top_level_split_carries=False`):
+  `touch|mkdir` reaches the engine only as the globs `touch` and `mkdir`, the gate
+  cannot read a top-level alternation, and admitted, the agent's `touch scratch`
+  would run on its parent's shell grant.
+  `test_kas_engine_child_gate_only.py` pins the judged keys to
+  `CREW_ONLY_ENTRY_KEYS` and the judged fields to what the projection writes and
+  to what `spec_denied_grant.denies_only` keeps for a sub-agent. A custom
+  parent's listed agent is read as before (`_gate_only_limits`). One field of
+  the record is read narrower: a granted tool beside `deniedCommands` keeps the
+  agent out only when an entry reached its `permissions` as no engine deny rule
+  (`_engine_holds_denied_commands`, `kas_permissions.shell_denies_carried`).
+  Where every entry is a rule the engine refuses what they name for a sub-agent
+  too, and the grant the deny record lifts answers nothing for one, so no limit
+  is left to the gate alone (`test_kas_engine_child_kinds.py`). A refused agent, the engine's bundled agents
+  (`general-task-execution`, whose tools are `*`, and `semantic_reviewer`) and
+  every name not registered stay under the `*` deny. A registered entry is held
+  five ways: it carries every `deny` and `ask` rule of the default agent's entry
+  (`_with_parent_restrictions`, as the helper does); every Kiro Crew server is
+  excluded whole (`@server` in `excludedTools`, `for_default_mount`), since each
+  runs under the parent session's identity, and one it declares is dropped
+  rather than launched; it asks for every MCP call (`_asking_for_mcp`), because
+  the parent's `mcp` allow names a server and would otherwise answer for the
+  entry's own server of that name, whatever that one launches, and that ask
+  spares only the servers the entry declares byte for byte as the parent's does
+  and of which the parent's `excludedTools` name nothing
+  (`kas_engine_child_grants.asking_outside`, `shared_servers_of`: an equal
+  declaration is the same program, and the engine hands it the parent's
+  process). Before that reading, a server the entry's file sets up as the
+  parent's file does is declared as the parent's entry declares it
+  (`holding_parents_servers`), so both launch one thing. The rebuild rewrites
+  the default agent's declaration and no other agent's (a bare `command`
+  becomes the path it resolved to, beside the `x-kirocrew-derived` record of
+  both values), so `set_up_alike` compares like with like and takes either
+  match: the entry's declaration against the parent's as stored, the record
+  aside, or against the parent's as its file was written
+  (`mcp_provenance.source_view`, which restores the command only while the
+  stored one is the value the record says was emitted). A record in the
+  entry's own file is never read, the name alone never matches, and a
+  declaration the projection moved behind Kiro Crew's launcher (one with its
+  own `env` values or `headers`) names its agent, so it matches no other
+  agent's and stays asked. The same comparison decides whether a pooled server
+  the entry declares refuses it (`kas_subagent_targets._pooled_elsewhere`;
+  `test_kas_engine_child_shared_launch.py`). It withholds what the session's
+  PreToolUse hooks cover; and its
+  requests reach the gate with the parent's limits. They carry the parent's
+  grants too, as kiro-cli gives a sub-agent its parent's, only when the engine
+  names the entry on the request as a direct child of the session's agent
+  (`_stamp_own_agent_grants`, `kas_engine_child_grants.named_own_agent`: a string
+  name the mount's deny spares, with an entry in the registered batch, at the
+  integer depth 1, in a session whose registration mounted the helper), and
+  less two things (`narrow`): every grant on an MCP tool of a server it does not
+  share or that an `ask` rule of the entry's own covers (a `match` naming that
+  server, or an unscoped one that does not spare the server whole; an `ask` whose
+  servers cannot be read exactly covers them all: `_asked_servers`, for the
+  gate-answered writes and the hook-held refs alike), and every grant on a
+  built-in whose capability an `ask` rule of the entry's own names, so its own
+  "ask me" is never answered by its parent's grant (its own denies the engine
+  refuses before it asks). A sub-agent another
+  sub-agent started (the engine reports a depth above 1; the helper counts
+  there too) is given the same grants under every rule above it. The engine
+  applies each sub-agent's rules to the calls of those it starts (a deny of the
+  one in between refuses the call, an ask of it raises the request), so an
+  `ask` rule of an agent between it and the session's agent holds the grant
+  back, and no grant on an MCP tool is kept below the first level. Which
+  agents are between is the engine's word on each start, never a guess: a
+  start's `tool_call` frame (`kind: agent-subtask`) carries the id of the
+  sub-agent it starts, and the permission request for that same tool call
+  names the sub-agent that asked and the name it asked to start
+  (`kas_engine_child_grants.note_start_frame`, `note_start_request`, kept per
+  session handle under ids the engine minted). What is kept is bounded as the
+  handle's roster of native sub-agents is, by the roster's own numbers
+  (`_bounds`): at most `NATIVE_CHILD_ROSTER_CAP` of each, the oldest going
+  first; a sub-agent id no longer than the roster admits
+  (`MAX_ACP_SESSION_ID_LEN`); a tool call id and an agent name no longer than
+  the roster stores one at (`NATIVE_CHILD_LABEL_CAP`); a depth no greater than
+  the roster's count. A start with any field past its bound, and a start of a
+  sub-agent the roster refuses (its own session's id, no room left this turn),
+  is not kept; nothing is cut to fit, since a cut id or name could read as
+  another one. Each start that is not kept, and each one that leaves to make
+  room, is counted on the handle (`_Starts.dropped`), and the first is logged.
+  The chain
+  is followed link by link (`started_by`): each start must name the agent it
+  started by the name the request carries, and its asker must run exactly one
+  level above. A link that is missing or does not fit (a start nobody was
+  asked about, a frame not seen, a start that was not kept or has left to
+  make room, two different words for one id) leaves the
+  request alone saying nothing of who started it, and then an `ask` rule of
+  any registered agent holds the grant back; a chain that names an agent the
+  mount does not spare gets no grant at all
+  (`named_own_agent`'s third value, `test_kas_engine_child_chain.py`,
+  `test_kas_engine_child_nesting.py`). A
+  request that names no one (0.66.117) and a name the batch does not hold keep
+  the limits alone and are asked
+  (`test_kas_engine_child_grants.py`, on requests a real engine sent). Its own
+  `allow` rules add nothing: the engine answers a child with its parent's
+  decision unless the child's own is a deny or an explicit ask. Its own `deny`
+  rules bind it. The mount records one `kas_engine_subagent_children` security
+  event naming them. The agents left out are logged, not put in the session-start
+  notice. An entry the person's folder projects under the helper's id never joins
+  the batch (`kas_engine_subagents._held_children`).
+  The mount's deny is the last rule of the default agent's entry
+  (`kas_engine_subagent_target.mount_deny_last`, applied by `native_batch` after
+  the denies that name agents): the engine quotes the first deny that matches a
+  refused call and prints only its `match`, so naming one of Kiro Crew's own
+  agents reads `deny subagent matching "kirocrew, …"` instead of `matching "*"`.
+  The order decides the text only; the most restrictive matching rule decides the
+  call. An own agent the mount found and left out is denied by name too, before
+  the mount's deny (`kas_native_batch.name_left_out`, from the names the
+  projection refused), so its refusal names it; a name no agent carries is still
+  refused as `matching "*"`, since the engine checks its rules before it looks
+  the name up.
+- *Gate-only limits.* A native child's request shares the session's id and is told
+  apart by the id its `agentSubtaskId` frame recorded, or by the sub-agent the
+  engine names on the request itself (`_meta.kiro.requester.subagent`): a
+  sub-agent starting another raises a request whose own `tool_call` frame reads
+  as its parent's, so the recorded ids miss it. `_build_permission_event`
+  stamps the session agent's LIMITS on it, as on the session's own requests: the
+  shell and write allowlists, the read-only flag beside the shell allowlist, a Bot
+  worker's unjudged denies, and the deny record with its grants emptied
+  (`_denies_only`). The `spec_granted_*` and `spec_hook_held`
+  grants stay off, so the `spec-shell-allowlist`, `spec-write-allowlist`,
+  `spec-denies` and unjudged-denies rows refuse the child as they refuse the parent,
+  and no grant row answers for it. One child is judged as its parent: when the
+  registration that built the session's batch mounted the shipped helper for the
+  agent the session runs now (host memory `kas_shipped_helper_parent`, written by
+  `KasHarness.record_session_projection` from the mount itself,
+  `kas_engine_subagents.with_engine_subagents`; never read from an agent entry or
+  file), and that batch holds `kirocrew-helper` while the agent carries the mount's
+  `subagent` deny on every other name
+  (`kas_engine_subagent_target.helper_is_the_only_child`), a native child can only
+  be that helper, whose entry is built from its parent's, so a request that names
+  a tool call also carries the parent's grants (`_stamp_parent_grants`) and the
+  gate answers it by the rule text it answers the parent's by
+  (`test_kas_engine_child_scope.py` runs each call as both and compares every
+  stamped field and the verdict). A child that runs another agent's spec, a
+  person's own agent named `kirocrew-helper`, a registration that mounted none
+  (an agent switch, a re-projection, the preview off, the name already taken), and a
+  request naming no tool call keep the limits alone. When the mount also spares
+  the person's own agents the helper is one child of several, and which child
+  asked is read off the request itself (`_child_is_the_shipped_helper`): the
+  engine puts the asking sub-agent's name and depth under
+  `_meta.kiro.requester.subagent` (`kas_wire.requesting_subagent`), and the grants
+  are stamped only when the name is the helper's id exactly and the depth is the
+  integer 1, so the session's own agent started it
+  (`kas_engine_subagent_target.engine_names_the_helper`). The engine sets both when
+  it creates the child: the name is the registry key of the definition it runs,
+  the depth its own count. A model picks which registered agent to start, and
+  nothing it writes makes one agent report another's id; an agent file never
+  replaces a batch entry of its id. A person's
+  agent, a helper another sub-agent started, a missing or malformed name or depth,
+  and every request of an engine that sends no requester (0.66.117 and earlier;
+  0.66.119 sends it) keep the limits and are asked
+  (`test_kas_engine_child_identity.py`, on requests a real engine sent). All of it
+  sits behind one question, whether the shipped helper was mounted for the agent
+  the session runs (`_shipped_helper_mounted`), answered by the host memory the
+  registration wrote (`kas_shipped_helper_parent`); a name, a batch id or a rule
+  value is not that record. In a session that is itself a held sub-agent run
+  (next bullet) the child's request carries that run's parent limits too.
+- *A `spawn_run` child on another agent (KAS only).* A run of Kiro Crew's own
+  manager that names another agent than its parent's runs that agent's spec in a
+  session of its own, so nothing above stamps it. `acp/kas_parent_limits.py` holds
+  it to its parents' DENIES, as kiro-cli holds a sub-agent to its parent's and its
+  own: at the run's session start (`KasHarness.session_extras`, so `session/new`
+  and `session/load` alike) each agent above it is projected from its
+  `toolsSettings`, `permissions`, `tools` and `allowedTools` by the session's own
+  translation (`to_client_custom_agent`), every engine `deny` rule of that entry
+  except the `subagent` capability joins every entry of the run's batch, and the
+  crew-only limit keys travel under `_crewParentLimits`
+  (dropped before the wire beside `CREW_ONLY_ENTRY_KEYS`) to
+  `AcpSessionHandle.kas_parent_limits`, which the handle stamps on the run's own
+  and its native children's requests (`AcpEvent.spec_parent_limits`). The gate's
+  `spec-parent-limits` row refuses what any record refuses. Rules:
+  - *Denies only.* No `allow` or `ask` rule, hook, `excludedTools`, tool list, MCP
+    exclusion or grant of a parent is carried, each record's deny record has its
+    grants emptied (`denies_only`), and the run's own grants and limits stay. One
+    `ask` is added: the host `ask` of a parent's URL-shaped `web_fetch.blocked`
+    entry (`with_blocked_host_asks`), because a fetch the run's own spec allows
+    would otherwise never reach the gate that refuses it. A fetch on that host no
+    entry reaches then asks. The one exception is the bullet after this one,
+    behind the KAS sub-agents preview.
+  - *Who is above a run.* The sessions that started a run on its key: each run
+    notes its parent as it starts (`note_parent`, called by
+    `run_lifecycle._run_inner`, in memory), and the run record names the first
+    (`state.json` `parent_session`). The walk repeats for a parent that is itself a
+    run, so a grandchild carries its grandparent's denies. A session that is not
+    a run is not looked at. One key keeps at most `MAX_PARENTS_PER_RUN` (64)
+    distinct parents: a new one past it raises `TooManyParents` and changes
+    nothing, so the run that would add it fails before its session starts, and
+    every parent already noted keeps holding the key.
+  - *Each session above holds on its own.* An agent name is not one set of
+    limits: the directory or the session can decide which spec the name resolves
+    to, and a path limit is anchored where its session runs. So `holding_agents`
+    lists every session above the run, two on one agent name included, and each
+    is read with its own key and directories. Records with the same agent, limits
+    and anchor are carried once. A parent on the run's own agent adds nothing
+    only when what is read for it is the run's own limit (`_is_the_runs_own`):
+    the same limits the run's key resolves in the run's directory, from a parent
+    that runs in that directory or in one that is not known. In any other
+    directory it holds the run like any parent, so a run may write only what its
+    own allowlist and each one above it admit.
+  - *Which spec.* The one that parent's own KAS session projects (an app
+    agent's bound file, `read_bound_app_spec`; else `resolve_projected_spec`; a
+    Bot worker's merged spec), read at the CHILD's session start: a running session keeps what it read and the run's next
+    session (a continuation, a retry, a restart) reads the parent's file again.
+    Every directory the parent may run in (`parent_project_dirs`) is read, since
+    the directory can decide which spec a name resolves to, and a spec found from
+    any of them applies. Path limits are anchored at the directory the spec was
+    read from, else at the run's.
+  - *A parent with no directory of its own.* The resolver knows a sub-agent
+    session's directory only when the run was started with a `cwd`. A run
+    started with none still runs somewhere (a pooled session's directory, or a
+    folder of its own), and its limits are anchored there. So each run notes,
+    with its parent, the directory that parent's session is bound to when the
+    parent is itself a run (`note_parent`'s third argument, from the parent
+    run's `_session_cwd`: what its provider reported to the gateway, never the
+    run record's `cwd`, which lives in the run folder the agent can write).
+    `_unresolved_dirs` reads it only for a parent the resolver knows no
+    directory for, and only when it is another directory than the run's, so one
+    session has one directory to the walk and a chain in one folder carries
+    what it carried. The parent is then read in that directory and, after it,
+    with no directory as before: equal limits are carried once, anchored where
+    the parent is bound, and a limit only the second read finds is still
+    carried, anchored at the run's. With none noted (a
+    gateway that restarted since, a chat that is not live and has no project)
+    the parent stays anchored at the run's directory, and the run starts. No
+    other reader of `parent_project_dirs` sees the noted directory: the spawn
+    gate would read that folder's `.kiro/agents` and could refuse a spawn it
+    admits.
+  - *No pooled session.* A warm-pool session's batch was built before any run
+    named it, so a run that carries a parent's denies cold-starts
+    (`get_or_create`, pool decision `bypass_parent_denies`, KAS only). The
+    question is asked for the directory a pooled session is bound to, the
+    pool's (`run_is_held`'s `run_dir`). Only a
+    kept run's first start can reach the pool; every other sub-agent key is
+    stateless and never claims from it.
+  - *The deny record.* A session's own entry records a deny for the gate only
+    beside a grant it held back, because without one its calls ask. A run has
+    grants of its own, so the record it carries holds every `deniedCommands` and
+    write `deniedPaths` entry the gate can read (`_gate_read_denies`), whatever
+    the parent grants.
+  - *Where a parent cannot decide, the run asks.* A parent's own grants wait on
+    a deny check that answers a clear no (`spec_denied_gate.denied_grant_applies`),
+    so its own call asks a person when the check cannot read the command (a
+    chain, a redirect, a substitution), cannot resolve a write's target or a
+    fetch's URL, or when its deny list holds an entry Kiro Crew cannot read
+    (`SpecParentLimits.unread_denies`, the tools `_unread_denies` names: the
+    shell, the write tool, and `web_fetch` for a `blocked` entry that is not a
+    plain URL). A held
+    run gets the same answer: after no record refuses, the row takes the run's
+    own spec grants off the call the later rows judge
+    (`spec_parent_gate.withhold_undecided`: the `spec_granted_*` fields emptied,
+    its own deny record kept with no grant), so `spec-builtin-grant` does not
+    answer it. Rows that do not read the run's spec still answer (an operator
+    grant, the read-only classifier), as for the parent. Only a call of a tool on
+    which a parent has a deny is touched; every other call, and a command the
+    record decides, keeps the run's own grants. Only a call that reaches the
+    gate can be made to ask: every shell call and write does, and a fetch does
+    unless the run's own entry allows it at the engine and no carried host `ask`
+    covers its host.
+  - *Fail closed.* A parent whose record or agent file exists and cannot be read,
+    a batch that would pass the projection's rule bound with the added denies,
+    or a held run that names no agent (no entry to carry them),
+    refuses the run (`ParentLimitsUnreadable` -> `AcpAgentUnavailable`, naming the
+    parent agent). A parent no agent file defines carries nothing, as the spawn
+    gate's `availableAgents` check treats it.
+  - *Not covered.* A run on any other harness (the same gap, unchanged); a
+    parent's `subagent` denies (`availableAgents` is the spawn gate's); sessions
+    that are not sub-agent runs (a Bot's worker, a conductor's worker, a member
+    session).
+- *A `spawn_run` child on another agent, KAS sub-agents preview on: the founding
+  chat's grants.* While the "KAS sub-agents" Feature Preview is on
+  (`kas_parent_grants.preview_on`, its one reader; a switch that is absent or
+  cannot be read is off; it hands the switch's reader the config the projection
+  of the same session start hands it in `kas_shell_grant_lift`, the one the
+  gateway last applied and else `config.json`, so a run never takes its founding
+  chat's grants on one value while its shell grant is read against
+  `denyByDefault` on another, `test_kas_preview_readers_agree.py`), the "denies
+  only" rule above gains one exception: a run
+  founded by a chat on another agent is approved as that chat is. kiro-cli runs a
+  sub-agent on the session agent's grants and gives the sub-agent's own grants
+  no effect; every `ask` and `deny` on the chain still holds. Two calls in
+  `KasHarness.session_extras` (`acp/kas_parent_grants.py`):
+  - *`founding_grants_spec`*, before a Bot's held limits (`held_child_spec`)
+    strip what they hold. The run's spec takes the founding agent's permission
+    half in place of its own: `allowedTools` with each server's `autoApprove`
+    verbs, `toolsSettings`, and its `permissions` rules. The authored `ask` rules
+    of every agent above the run and the run's own `ask` and `deny` rules are
+    appended, and its own `toolsSettings.subagent` stays without `trustedAgents`.
+    Tools, servers, hooks, model and prompt stay the run's. A tool the run's own
+    file restricts (`without_grant_only_settings`) keeps the run's own
+    `toolsSettings` entry, under the run's spelling of the tool, in place of the
+    founder's. The founder's `deniedCommands`, `deniedPaths` and `blocked` lists
+    are not copied into the run's spec: the parent record of the bullet above
+    refuses by them, on the `spec-parent-limits` row and under the founder's
+    name, with the preview on as with it off.
+    A `denyByDefault` of the run's own refuses as its own file makes it refuse:
+    kiro-cli lifts it for an agent whose `allowedTools` names the shell, so
+    whether the list names the shell stays the run's own too. The session's one
+    projection then applies everything it applies to any spec: the governance
+    ceiling, the hook and batch-guard withholds, the withhold of a gate-answered
+    grant under an authored `ask` or `deny`, and the run's own allowlists and
+    denies. So a call the run's own file refuses is refused by the same row with
+    the same text as with the preview off, and a call it leaves asked is asked.
+  - *`limit_to_founders`*, after `hold_to_parents`. Each founder is projected
+    twice under its own session key: the half it hands down (`_half`) and its
+    whole permission half as its own session reads it (`_session_half`). Every
+    allow match and gate-answered grant the run's entry holds that either entry
+    does not is removed. So a grant passes the run's ceiling and the founding
+    chat's, and no hold on the handed-down half can leave the run a grant the
+    founding chat is asked for (a founder that lists the shell beside its own
+    `denyByDefault` asks for a command off its list, and so does the run). A grant
+    the run's own entry kept for a tool its file restricts (its `allowedCommands`,
+    `allowedPaths`, a listed tool) is one of them: it stays only where each
+    founder holds it, by the same pattern or by the whole tool. The limit-only
+    keys the founder's half brought (`_crewShellAllowlist`, `_crewShellReadonly`,
+    `_crewWriteAllowlist`, `_crewShellUnjudgedDenies`) leave the run's own entry
+    where a parent record carries the equal value and the run's own file does not
+    restrict that tool, so those refusals name the founding agent. A founder's
+    deny is never on the run's own entry: the record `hold_to_parents` carries
+    holds it, and where that record cannot decide a call (a chain it cannot
+    split, a redirect, a substitution) it takes the run's grants off the call, so
+    the run asks as the founding chat does.
+  - *Who founds a run.* The sessions at the top of the chain that are not
+    sub-agent runs, found by the walk above. A middle run's grants are never read.
+    With several founders (a run continued from another chat) a grant is kept only
+    when each holds it. Every session counts on its own, never one per agent name:
+    two founding chats on one agent are two founders, each with its own directory
+    and its own spec, and the `ask` rules are read from every session above the
+    run (`_sessions_above`), each from the directories that session runs in. A
+    session above whose directory is not known (a run started with no `cwd`) is
+    read where its session was noted as bound, when that is another directory
+    than the run's, and then with no directory, as its denies are
+    (`kas_parent_limits._unresolved_dirs`). A run with no parent session is
+    returned unchanged. A run whose founders all run its own spec keeps its own
+    permission half and is limited by no founder. The `ask` rules of the sessions
+    above that its own spec lacks are appended to its spec (`_with_asks`), so a
+    chat on agent A that starts an agent with an `ask`, which starts A again,
+    gets a run of A that asks as a run of any other agent does. Its entry also
+    records every `deniedCommands` and write `deniedPaths` entry of its own file
+    the gate reads (`_holding_its_denies`): the projection records them only
+    beside a grant they held back, and the appended `ask` may have taken that
+    grant, so the `spec-denies` row refuses by them as it did. With no such `ask`
+    above, the run is returned unchanged. A run whose rules would pass what KAS
+    reads with the appended `ask` rules keeps its spec and no grant, or is not
+    started. A founder runs the run's own
+    spec when it names the run's agent and reads an equal spec through the one
+    reader both use (`kas_parent_limits.parent_spec`); a name that a folder or an
+    app binding resolves to another spec is another agent to that run. A session
+    above the run that names an agent no file defines leaves the run no grant,
+    founder or not: what it asks for cannot be read. So does a session between
+    that has no record of the agent it ran (a delivered run's folder is pruned
+    while the parent note still names it; `_parent_template_for_spawn` then
+    answers `""`), and the run's start notice says so. A run left no grant keeps
+    the same record of its own denies, so it still refuses by them.
+  - *Holds, all decided in `_half`.* A grant that names an MCP server (an
+    `@server` or `@server/tool` entry of `allowedTools`, a `match` entry of an
+    `mcp` allow rule) reaches the run by name, as on kiro-cli
+    (`server_grant_reaches`): it covers the server the run's own spec declares
+    under that name, whichever program that is and whether or not the founding
+    agent holds a server of that name. So the run's own server of that name
+    answers without a permission request once the founding agent approved the
+    name; an `ask` or `deny` on that server, in the run's own file or in any
+    agent's above it, still holds. A name the run's spec declares no server for
+    is not reached. A founder's `autoApprove` verbs name no server and are held
+    to a server both specs declare the same way (`_held_alike`: `type`,
+    `command`, `args`, `env`, `url`, `headers`): they approve tools of its own
+    program, so they reach the run only for such a server. An `mcp` allow rule with no
+    `match` and a `*` in `allowedTools` hand the run no MCP grant, whether or not
+    both specs declare a server the same way: the run's entry keeps none from
+    either (`test_kas_parent_grants_server_name.py`).
+    A grant of commands or paths (`allowedCommands`, `allowedPaths`,
+    `autoAllowReadonly`, the `denyByDefault` and `fallbackAction` that read the
+    same lists, and a `permissions` allow with a `match` outside `mcp`,
+    `web_fetch` and `web_search`) reaches it only when the run works in the
+    founding chat's one known directory (`parent_project_dirs`). A founding agent
+    whose own spec carries a PreToolUse hook hands down a grant only when the
+    run's own spec carries that same hook, enabled (`_hooks_run_on_the_run`), and
+    the run works in the founding chat's one known directory: a hook runs where
+    its session runs, and elsewhere the same entry may not find what it runs, and
+    a hook that fails to start blocks nothing (`_has_pre_tool_hooks`, any hook,
+    relative or absolute; `test_kas_parent_grants_hook_dir.py`). A
+    spec's own hooks fire on its own session's calls, so a founder's hook the run
+    lacks would stop a call in the founding chat and not in the run; one the run
+    carries fires on the run's permission request before any grant is read
+    (`tool_permission.SpecHooks`, the first floor of the sub-agent ladder). The
+    same hook is the same whole record the hook runner reads (event, matcher and
+    its mode, command, skills, timeout, output cap; the object and the document
+    form of one entry are one record). Every enabled PreToolUse hook of the
+    founder needs its entry in the run's spec, and the run may carry more. One
+    missing, a difference in any field, a disabled entry, or hooks that cannot be
+    read on either side, and that founder hands down nothing. A script under
+    `~/.kiro/hooks` reaches a shipped agent's spec through
+    `_apply_user_kiro_hooks`, so a shipped pair that both received it keeps the
+    founder's grants and a child agent built without it is handed none. The Hooks
+    page's hooks and the `~/.kiro/hooks/*.json` files fire on both sessions, so
+    they hold nothing back.
+  - *A Bot's worker* keeps its merged spec. It is limited the same way, so it runs
+    unasked only what both its own file and each founder grant, and it gains the
+    chain's `ask` rules.
+  - *Fail closed.* A missing link of the chain, a founding session whose agent no
+    file defines (the session-start notice says so), or a founder that cannot be
+    projected leaves the run no grant. So does a `toolsSettings` value or a
+    `permissions` block that cannot be read whole (`_unreadable`), since what that
+    file asks for or refuses is then unknown: a founder like that hands down
+    nothing, and a run like that keeps its own spec and gains nothing. A parent
+    record that cannot be read refuses the run as above.
+  - *Lifecycle.* Read at the run's session start. A running session keeps the
+    entry it registered until it ends, also when the preview is switched in the
+    meantime; the run's next session reads the switch again. A run on its
+    founder's grants cold-starts as a held run does (`run_is_held`).
+  - *Not carried.* A founder's hooks, tool list, `excludedTools` and
+    `trustedAgents`. Every other harness is unchanged.
+- *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
+  (`acp/kas_engine_subagent_target.py`), exists only in memory, with no hooks. It
+  holds built-in tools and the MCP servers its parent holds
+  (`shared_servers`): a server of the parent's block or a pooled stub of one its
+  spec declares, that the parent's `tools` mount and its `excludedTools` do not
+  withdraw whole. The helper lists each as the parent's `tools` name it, carries
+  every `excludedTools` entry the parent holds for it, and repeats the parent's
+  projected block entry byte for byte: the engine keys a running server by its
+  name and declaration, so the helper is handed the parent's process and adds
+  none (a declaration that differed would start a second one for the call). The
+  repeat takes one more hold on each launch snapshot it names
+  (`kas_env_launch.retain_batch`), so the batch releases a name as often as it
+  holds it. The parent's `permissions` rules reach the helper's calls in the
+  engine, which intersects a sub-agent's policy with its parent's. Kiro Crew's
+  own servers stay excluded whole, by rule (`own_servers`: the managed servers and
+  the builtin app servers): each runs under the parent session's identity, so
+  nothing could refuse a session-bound tool or a spawn for the helper alone. So do
+  a pooled stub the parent's spec does not declare, a sub-agent target's servers,
+  and a server whose name the engine reads as a tag or a pattern. A server from the
+  OS user's `mcp.json` reaches the parent and the helper alike, because Kiro Crew
+  copies it into the default agent's block; a server from a project's
+  `.kiro/settings/mcp.json` reaches neither (measured on a real KAS session).
+- *Its finished calls.* The session agent's spec `postToolUse` hooks fire for a
+  child's finished call (`acp/kas_child_finished.py`, see
+  [acp-client](acp-client.md)), once per call. The three surfaces that fire them
+  read the predicate through the agent-SDK boundary
+  (`agent_sdk/kas_child_finished.py`). On the dashboard turn the same site writes
+  the call's `tool_invocation` audit row (`outcome` `invoked`, the redacted title
+  and the kind a turn's own call records, `metadata.sub_agent`, no argument): a
+  child's frames reach the turn as activity only, so a call the engine ran
+  without a permission request would otherwise leave no row.
+
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
 a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode,
 whose seeded `permission` `"*": "ask"` already makes each call ask; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both
 from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
 `spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell
-lifts `denyByDefault` only when the spec has no `deniedCommands`, and
+lifts `denyByDefault` only when the spec has no `deniedCommands`, whatever
+the `kas_subagents` preview reads, and
 `spec_write_allowlist` anchored at the session directory by `anchor_write_allowlist`)
 as `AcpClient._spec_shell_allowlist` / `_spec_write_allowlist` / `_spec_write_cwd`,
 reset per spawn. A withheld array carries no spec, so the spec is read again rather

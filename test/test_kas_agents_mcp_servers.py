@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from kas_agents_helpers import _spec
+from kas_agents_helpers import _spec, without_own_agents_deny
 
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
@@ -1244,7 +1244,8 @@ class TestRuntimeSuppliesTheStubbedSet:
         from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 
         assert [
-            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+            {k: v for k, v in without_own_agents_deny(a).items() if k != CREW_SETTINGS_MCP_KEY}
+            for a in out.custom_agents
         ] == [{"id": "kirocrew"}]
 
 

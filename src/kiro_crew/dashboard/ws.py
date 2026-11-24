@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Collection
 from contextvars import copy_context
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
@@ -1463,6 +1463,7 @@ async def _serve_ws(
                                                 "task": _r(str(native["task"])),
                                                 "agent": _r(str(native["agent"])),
                                                 "result": _r(str(native["result"])),
+                                                **cast(dict, native.get("frame_extras", {})),
                                             },
                                         }
                                     )
@@ -1478,6 +1479,7 @@ async def _serve_ws(
                                                 "streaming": _r(str(native["streaming"])),
                                                 "last_tool": _r(str(native["last_tool"])),
                                                 "started": native["started"],
+                                                **cast(dict, native.get("frame_extras", {})),
                                             },
                                         }
                                     )

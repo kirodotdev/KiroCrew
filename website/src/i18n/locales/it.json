@@ -6668,6 +6668,10 @@
       "trusted_channel_still_asks": "Approvato questa volta — per la configurazione della shell di questo host, @{{role}} chiederà comunque ogni volta",
       "title_wants_to_run": "<title/> chiede di essere eseguito"
     },
+    "approvalSubagent": {
+      "asked_by": "Richiesto dal sub-agente {{name}}",
+      "task_line": "Attività: {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "Impossibile attivare «Approva per me». Riprova.",
       "approve_for_me_busy": "Aspetta che finisca la risposta in corso, poi scegli di nuovo Approve for me.",
@@ -13612,7 +13616,16 @@
         "artifacts_load_failed": "Impossibile caricare gli artefatti di questa sessione",
         "library_load_failed": "Impossibile caricare la libreria degli artefatti",
         "artifact_save_failed": "Impossibile salvare l’artefatto",
-        "workflow_runs_load_failed": "Impossibile caricare le esecuzioni di workflow"
+        "workflow_runs_load_failed": "Impossibile caricare le esecuzioni di workflow",
+        "engine_usage_not_reported": "Crediti e modello non vengono segnalati per un sub-agent che gira nella chat. I suoi crediti fanno parte del totale della risposta.",
+        "engine_no_output": "(nessun output)"
+      },
+      "engineSubagentRecord": {
+        "title": "Sub-agenti in questo turno: {{n}}",
+        "end_completed": "Completato",
+        "end_failed": "Non riuscito",
+        "end_not_reported": "Fine non segnalata dal motore",
+        "more_children": "Altri sub-agenti non elencati: {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "Impossibile caricare la finestra di condivisione",
@@ -14202,7 +14215,9 @@
         "chip_stalled_other": "{{count}} agenti forse bloccati",
         "more_running_normally_count_one": "{{count}} altro in esecuzione normale…",
         "more_running_normally_count_many": "altri {{count}} in esecuzione normale…",
-        "more_running_normally_count_other": "altri {{count}} in esecuzione normale…"
+        "more_running_normally_count_other": "altri {{count}} in esecuzione normale…",
+        "engine_stops_with_answer": "I sub-agent che girano nella chat si fermano quando fermi la risposta.",
+        "stop_all_and_answer": "Arresta tutti e la risposta"
       },
       "subagentQueued": {
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",
@@ -17018,6 +17033,9 @@
         "chat_runtime_sharing_harness_save_failed": "Impossibile salvare l'interruttore. Riprova.",
         "chat_runtime_sharing_harness_load_failed": "Impossibile caricare questi interruttori.",
         "chat_runtime_sharing_desc_summary": "Risparmia memoria del computer eseguendo più chat in un unico programma in background. Scegli tu quali tipi di chat lo condividono. Rispondono contemporaneamente e non vedono i messaggi delle altre. Disattivalo e ogni nuova chat torna ad avere il proprio programma.",
+        "kas_subagents": "Sub-agent KAS",
+        "kas_subagents_desc": "Attivo, nelle chat KAS: l'agente predefinito affida compiti brevi, dentro il proprio turno, al suo aiutante integrato o a un massimo di 8 dei tuoi agenti, che restano vincolati alle regole dell'agente della chat e si fermano con il turno; un sub-agent che spawn_run avvia su un altro agente esegue senza chiedere solo ciò che la chat che lo ha avviato esegue senza chiedere; un elenco di comandi denyByDefault resta valido anche quando l'agente approva in anticipo la shell; e un agente che esclude lo strumento dei sub-agent, o che usa una di tre forme di deniedCommands, viene letto come lo legge kiro-cli, e la chat lo indica all'avvio. Disattivo: {{productName}} avvia i sub-agent dell'agente predefinito come sessioni a sé, che puoi aprire e arrestare nel pannello dei subagenti.",
+        "kas_subagents_desc_summary": "Su KAS, l'agente predefinito esegue brevi sub-agent dentro il motore e alcuni permessi degli agenti vengono letti come li legge kiro-cli, nelle chat e nei sub-agent avviati dopo il cambio.",
         "visual_refresh": "Rinnovo visivo",
         "visual_refresh_desc": "Attiva il restyling in corso della dashboard. Non è ancora cambiato nulla: le parti compaiono man mano che sono pronte e potrebbero sembrare incomplete o cambiare tra un aggiornamento e l'altro. Disattivalo per tornare all'aspetto attuale.",
         "visual_refresh_desc_summary": "Un nuovo aspetto per la dashboard. Per ora non cambia nulla.",
