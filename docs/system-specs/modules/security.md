@@ -163,7 +163,11 @@ whether or not it exists; the Linux launcher seals a name that exists, so
 `{"mcpServers": {}}` (0o600, exclusive, no-follow, under a kiro home that
 exists). A dangling registry symlink is preserved; its absent referent is published
 only when its resolved parent is an existing real directory, without creating any
-intermediate directories or replacing an existing entry. Unlike a crew-home ceiling,
+intermediate directories or replacing an existing entry. The link is read once with
+`readlink` and the referent comes from that value, never from a second resolve of the
+registry name. A chain of links is walked hop by hop (`_registry_chain_end`), each hop
+read once the same way: a chain that reaches a real file is left alone, and an absent
+far end is published under its folder only when that folder exists. Unlike a crew-home ceiling,
 that step never refuses a spawn: a file it cannot create is logged and left unsealed
 for that spawn. It is not on the delegated-workspace guard, so a
 workspace that holds it keeps working where kiro-cli's own sandbox confines the
