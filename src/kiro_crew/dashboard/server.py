@@ -1605,6 +1605,14 @@ async def start_dashboard(
     from kiro_crew.dashboard import approve_for_me
 
     approve_for_me.install(state)
+    # The account's hidden models can change on another Kiro client, or land after
+    # a picker's first read; an open picker then reads again.
+    from kiro_crew.agent_sdk import kas_model_catalog
+    from kiro_crew.dashboard.handlers.models_cold_probe import MODELS_CHANGED_EVENT
+
+    kas_model_catalog.on_hidden_models_changed(
+        functools.partial(state.broadcast_ws, MODELS_CHANGED_EVENT, {})
+    )
 
     await _notify_restart_dropped_grant(state)
 

@@ -158,6 +158,35 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
+The select stays the account's whole served list because Crew declares the
+sharedModelPicker client capability (`acp/kas_shared_model_picker.py`, added to
+`clientCapabilities._meta.kiro` in `runtime_spawn_launch._handshake_client_capabilities`).
+A Kiro user hides models from the model picker and orders it on Kiro Web or in the
+Kiro CLI, the choice is stored per account, and the engine applies it to the `model`
+select it sends a client that does not declare the capability; a client that
+declares it is sent every served model, in the account's order, and the hidden
+models as the `modelPickerHidden` row of its connection-level configuration view.
+Crew reads that row once after `initialize` (`_kiro/configuration/getState`,
+`observer: connection`; `_read_shared_model_picker`) and on each pushed
+`_kiro/configuration/state` of the connection view (the reader loop's
+`_follow_shared_model_picker`), only from an engine whose `agentCapabilities` carry
+the flag and the method (`serves_shared_picker`), and records it beside the catalog
+under the vault identity (`kas_model_catalog.record_hidden_models`). The bundle-route
+picker marks each such model's row `hidden_by_account: true`
+(`models_kas_bundle._picker_row`); the chat picker leaves those models out on top of
+Crew's own hidden list (`filterInteractiveModels`), the Selectable Models editor
+lists them locked and unticked, the row's description line starting "Hidden
+through your app.kiro.dev settings" with a link to app.kiro.dev/settings/model
+(`MultiSelectOption.lockedReason`), and writes none of them, and the Bot and role pickers keep
+every served model, since hiding is a view preference and a hidden model stays
+usable. The account's order arrives as the select's order, which the picker keeps
+(`withAutoFirst` moves only Auto); the `modelPickerOrder` row is not read, nothing
+is written back, and an engine
+that states no row (an older one, or a view without it) hides nothing from the
+account. On the kiro-cli relay route the picker is `--list-models` narrowed to
+what a live session advertises; the same flags go out there, so the account's
+hidden models stay in that list, and nothing on that route marks them.
+
 A reopened chat's select is not the account's list. From kiro-cli 3.4 (measured on
 3.4.1) `session/load` answers with a select naming one model, the one the session
 runs, while `session/new` on the same account lists every served model, and KAS

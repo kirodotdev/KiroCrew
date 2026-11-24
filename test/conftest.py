@@ -377,6 +377,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 
 # Per-test resets of process-global kiro_crew.acp state.
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _isolate_kas_model_catalog_recording,
     _reset_kas_agent_config_error_reports,
 )
 from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers

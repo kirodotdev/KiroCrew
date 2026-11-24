@@ -247,6 +247,9 @@ interface RawModel {
   /** Set on the one `auto` row of a cold answer: no session has recorded this
    *  account's list yet (`models_kas_bundle._cold_response`). */
   cold?: boolean
+  /** The account hid this model from its Kiro model picker; the row stays listed
+   *  (`models_kas_bundle._picker_row`). */
+  hidden_by_account?: boolean
 }
 
 /** The window a /api/models row reports, or 0 when it reports none. */
@@ -521,6 +524,7 @@ export class AcpAdapter implements ProviderAdapter {
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),
+          ...(m.hidden_by_account === true ? { hiddenByAccount: true } : {}),
         }
       })
       // The account moved while this was in flight: the list (and its health) may be the

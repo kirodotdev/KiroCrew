@@ -54,8 +54,8 @@ from kiro_crew.llm_helpers_parts.model_fallback import (
     ActiveModelLine,
     FallbackState,
     advance_fallback_candidate,
-    first_advertised_fallback,
     probe_fallback_restore,
+    reactive_model_candidate,
 )
 from kiro_crew.llm_helpers_parts.tool_approval import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.llm_helpers_parts.turn_results import parse_llm_json
@@ -658,15 +658,8 @@ async def stream_and_collect(
             # turn where the user picked a model must surface the rejection, not
             # swap underneath them (AGENTS.md), so the default is off.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
-            if (
-                model_fallback
-                and not result_text
-                and rejected
-                and advertised
-                and not _model_fallback_attempted
-            ):
-                fallback = first_advertised_fallback(advertised, rejected)
+            if model_fallback and not result_text and rejected and not _model_fallback_attempted:
+                fallback = reactive_model_candidate(exc, rejected)
                 if fallback:
                     _model_fallback_attempted = True
                     set_model_fn = getattr(provider, "set_model", None)
