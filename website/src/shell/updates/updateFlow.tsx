@@ -212,8 +212,11 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
           One width for both states, so "view full changelog" does not make
           the dialog jump; opening it pins the notes to a shorter box and
           gives the full changelog the rest of the dialog's height. */}
+      {/* The scrim is a `role="button"`, whose pointer cursor every child
+          inherits. `cursor-auto` gives the card the arrow and its notes the
+          text cursor; its own buttons keep the pointer. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach */}
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" onKeyDown={isolateKeys} className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" onKeyDown={isolateKeys} className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl cursor-auto">
         <div className="flex justify-between items-center mb-4 shrink-0">
           <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
           <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={close}><X className="lucide-inline" /></button>
