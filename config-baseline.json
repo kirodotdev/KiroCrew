@@ -13838,7 +13838,7 @@
       "help": "List the sessions this bot opens in your Sessions list. Show all bots in my Sessions lists every bot's, whatever this says.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",

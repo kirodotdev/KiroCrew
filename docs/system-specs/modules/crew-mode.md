@@ -2893,7 +2893,7 @@ Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView
 Settings > Chat > Sessions and at the top of every Bot's Sessions list) lists
 every Bot's sessions, and while it is on no Bot's own switch applies; while it is
 off, **Show {name} in my Sessions** (the Bot's `show_sessions_in_list`, at the top
-of that Bot's Sessions list) decides for that Bot. The server folds the two into
+of that Bot's Sessions list, on by default) decides for that Bot. The server folds the two into
 one stamp on the Bot thread's row (`bot_sessions_listed`,
 `crew_mode.mate_lists_sessions`), which `list_view` and `crewModeView`
 (`mateThreadsHidingSessions`) read; a Bot's own switch reads on and cannot be

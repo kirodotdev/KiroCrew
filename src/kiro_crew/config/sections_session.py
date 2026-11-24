@@ -528,13 +528,13 @@ class KiroCrewAgentConfig:
             "open approval or question.",
         ),
     )
-    # Off by default: the sessions this Bot's thread opens are listed in its side
-    # panel and left out of the person's own session list (``crew_mode.list_view``
-    # and the dashboard's ``crewModeView``). On lists them there too. While
-    # ``dashboard.show_bot_sessions_in_list`` is on, every Bot's are listed and this
-    # switch does not apply.
+    # On by default: the sessions this Bot's thread opens are listed in its side
+    # panel and in the person's own session list too. Off leaves them out of the
+    # person's list (``crew_mode.list_view`` and the dashboard's ``crewModeView``).
+    # While ``dashboard.show_bot_sessions_in_list`` is on, every Bot's are listed
+    # and this switch does not apply.
     show_sessions_in_list: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Show in my Sessions list",
             "List the sessions this bot opens in your Sessions list. Show all "
