@@ -2360,7 +2360,14 @@ the scope, and that wait comes out of the 240 s window of `initialize` (see
 [scope admission](#scope-admission)).
 If the first attempt times out, `ensure_ready()` kills the process and retries once
 with a fresh spawn — this handles slow kiro-cli first launches where MCP servers are
-still initializing. A scope admission timeout is not retried.  `_wait_for_response()` checks `shutdown_event` each iteration
+still initializing. A scope admission timeout is not retried. A child that dies
+after the session was created, while the mode and model frames are applied,
+ is a dead adapter rather than a dropped link: `_initialize_session()`
+marks that part of the handshake, and `ensure_ready()` ends the start on the first
+death with a terminal `AcpError` carrying the child's redacted stderr tail instead of
+respawning into the same failure and letting the chat retry it as "Connection lost".
+An error frame the child answered is not a death and keeps its existing error.
+`_wait_for_response()` checks `shutdown_event` each iteration
 so init aborts promptly on Ctrl+C instead of blocking for the full timeout.
 
 **Activity-based deadline.** `_wait_for_response()`'s deadline is *not* a fixed

@@ -48,7 +48,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     resolve_usable_model,
 )
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, METHOD_SET_MODE
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only APIs (os.kill, /proc, ps, AF_UNIX sockets)"
@@ -657,6 +657,58 @@ class TestEnsureReady:
         assert attempts["init"] == 2
         assert client._session_id == "sid"
         assert client._kill_process.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_adapter_that_dies_applying_a_mode_ends_the_start_once(self, tmp_path):
+        """A child that creates the session and dies on the following mode frame
+        is a dead adapter, not a dropped link: the start must end on one terminal
+        error carrying the adapter's stderr. The old route retried the spawn and
+        let chat read 'process exited' as pipe death, with 'Connection lost' cards
+        until the retry budget ran out.
+        """
+        client = _client(tmp_path)
+        spawns = {"n": 0}
+        ids = {"n": 0}
+
+        async def _spawn():
+            spawns["n"] += 1
+            client._process = _live_process()
+
+        async def _send(method, params):
+            if method == METHOD_SET_MODE:
+                raise AcpProcessDied("ACP process exited (code=1) — adapter: bad mode name")
+            ids["n"] += 1
+            return ids["n"]
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            if req_id == 1:  # initialize is the first request of the handshake
+                return {"protocolVersion": 1, "agentCapabilities": {}}
+            return {"sessionId": "sid"}
+
+        client._spawn = _spawn
+        client._send_request = _send
+        client._wait_for_response = _wait  # type: ignore[assignment]
+        client._stderr_lines = ["adapter: bad mode name"]
+        client._snapshot_process_tree = AsyncMock()
+        client._kill_process = AsyncMock()
+
+        def _reset():
+            client._process = None
+
+        client._reset_state = _reset
+
+        with pytest.raises(AcpError) as caught:
+            await client.ensure_ready()
+
+        error = caught.value
+        assert spawns["n"] == 1, "a dead adapter was respawned"
+        assert error.transient is False
+        assert error.user_worded is True
+        assert "adapter: bad mode name" in str(error)
+        # The pipe-death classifier keys on these phrases; a message carrying
+        # either one sends the chat into its 'Connection lost' retry ladder.
+        assert "process exited" not in str(error)
+        assert "not running" not in str(error)
 
     @pytest.mark.asyncio
     async def test_auth_required_propagates_after_the_retry(self, tmp_path):
