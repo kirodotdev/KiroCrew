@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react'
+import { flushSync } from 'react-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { Brain, Circle, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
 import { api } from '../../api/client'
@@ -260,7 +261,10 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const editTriggers = useRef(new Map<string, HTMLButtonElement>())
   const semValueIdPrefix = useId()
   const closeEdit = (key: string) => {
-    setEditKey(null)
+    // Commit the close now: a save closes after its awaited write, outside any
+    // event, and a frame that ran before React's own commit would still find
+    // the field focused and skip the hand-off below.
+    flushSync(() => setEditKey(null))
     requestAnimationFrame(() => {
       const at = document.activeElement
       if (at === null || at === document.body) editTriggers.current.get(key)?.focus({ preventScroll: true })
@@ -678,9 +682,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
                         aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
-                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal) } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)); return } flushSync(() => setWriteError('')); closeEdit(e.key); load() }, onEscape: () => closeEdit(e.key) })}
                         autoFocus />
-                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }}><Check className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal) } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)); return } flushSync(() => setWriteError('')); closeEdit(e.key); load() }}><Check className="lucide-inline" /></Btn>
                       <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.cancel_edit')} onClick={() => closeEdit(e.key)}><X className="lucide-inline" /></Btn>
                     </div>
                   ) : (
