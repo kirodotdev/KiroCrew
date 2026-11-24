@@ -39,7 +39,7 @@
     "turns": 2760,
     "variant": "locomo10[5i/allq]"
   },
-  "elapsed_s": 1767.17,
+  "elapsed_s": 1772.71,
   "ingest_totals": {
     "attempted": 2760,
     "dropped_fragments": 3,
@@ -185,7 +185,7 @@
     "unattributed_hits": 191
   },
   "warnings": [
-    "996/996 scorable queries face a haystack with distractor sessions",
+    "759/759 scorable queries face a haystack with distractor sessions",
     "ranking backend is 'sqlite_cosine', not FAISS \u2014 faiss is not importable here. Results remain internally consistent, but a comparison is only valid against another run reporting the same backend.",
     "the corpus spans 293 days, so the store's recency decay (exp(-0.03 * days)) penalises its oldest sessions by a factor of ~1.52e-04 relative to its newest. At that magnitude recency dominates semantic similarity outright. Re-run with timeline='now' to isolate ranking from decay."
   ]

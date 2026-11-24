@@ -39,7 +39,7 @@
     "turns": 2760,
     "variant": "locomo10[5i/allq]"
   },
-  "elapsed_s": 1784.25,
+  "elapsed_s": 1498.06,
   "ingest_totals": {
     "attempted": 2760,
     "dropped_fragments": 3,
@@ -227,7 +227,7 @@
     "unattributed_hits": 77
   },
   "warnings": [
-    "996/996 scorable queries face a haystack with distractor sessions",
+    "759/759 scorable queries face a haystack with distractor sessions",
     "ranking backend is 'sqlite_cosine', not FAISS \u2014 faiss is not importable here. Results remain internally consistent, but a comparison is only valid against another run reporting the same backend."
   ]
 }
