@@ -543,8 +543,8 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
 
      `crew_api_auth.APP_SERVED_ROUTES` lists the routes that serve an app credential,
      by their key in the table. It holds `GET /v1/models`, which serves an app
-     credential with an empty list until a grant carries a Bot range or a route
-     lets an app run an agent. The app list comes only from `models_for_grant`;
+     credential with an empty list until a route lets an app run a Bot in its
+     grant or an agent. The app list comes only from `models_for_grant`;
      it reads no owner catalog. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
@@ -630,7 +630,7 @@ maps each such path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
 also passes `app_route`, so a verified app credential from local authorization is
 judged by the route's row in place of the owner gate. The app is served an empty
-list until a grant carries a Bot range or a route lets an app run an agent;
+list until a route lets an app run a Bot in its grant or an agent;
 `models_for_grant` builds that list without reading the owner's catalog. Any other
 caller, an installed app's token included, gets
 `403 owner_only`, including a valid app credential whose API allowlist excludes
