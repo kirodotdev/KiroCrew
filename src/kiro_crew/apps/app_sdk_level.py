@@ -19,7 +19,9 @@ sites the owner added, which the app and its backend read, and the owner's edits
 it; and the SDK's ``useBrowserSites``, whose add asks the owner in the dashboard.
 Level 14 adds backend SDK names, one batch: ``canonical_file_path``, the gateway's
 file path gate (the UNC and link screens and the sensitive-path list, answered as the
-canonical path or None).
+canonical path or None); and ``vet_public_url``, ``UrlRejectedError`` and
+``address_is_not_public``, the gateway's outbound public-address check for a URL, or
+a resolved address, an app's backend fetches.
 """
 
 APP_SDK_LEVEL = 14
