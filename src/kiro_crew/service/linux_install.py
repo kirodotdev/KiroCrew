@@ -418,6 +418,11 @@ def install(*, headless: bool = False) -> apparmor.ProfileOutcome:
             f"{(enable_res.stderr or enable_res.stdout).strip()}"
         )
 
+    # Clear the unit's failed state and start counter first (best-effort): an
+    # install that repairs a unit which just crash-looped would otherwise hit
+    # `StartLimitBurst` and fail with "Start request repeated too quickly".
+    _systemctl("reset-failed", f"{SERVICE_NAME}.service")
+
     # Use restart (not start) so re-running install picks up a unit-file
     # change without manual intervention.
     restart_res = _systemctl("restart", f"{SERVICE_NAME}.service")
