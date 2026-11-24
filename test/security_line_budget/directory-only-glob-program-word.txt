@@ -1,0 +1,5 @@
++23
+Program recognition and the directory-only glob exemption share the same
+redirect-stripped program word in the kill and mint floors. A glob ending in
+a directory slash cannot name a program; a redirect target cannot grant that
+exemption. The shared word parser retains per-call memoization.
