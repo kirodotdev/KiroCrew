@@ -202,6 +202,30 @@ folder. A per-server share that restarts the broker resets open chats even with
 **Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
 The reset defers busy chats until their turn ends and reports `sessions_reset`.
 
+A project's own MCP files are sealed under the same decision
+(`project_mcp_files`): kiro-cli and KAS read `<folder>/.kiro/settings/mcp.json`
+when a session starts in that folder on a spec with `includeMcpJson`, and Claude
+Code reads `<folder>/.mcp.json`. The file-edit tool is refused on either name in any folder
+(`project_mcp_write`, matched by name on every candidate spelling, inside
+`sensitive_write_path_refusal`), with the same remedy. The sandbox seals both
+names in the session's own folder read-only (`project_mcp_targets`, passed as the
+wrap's `project_folder` into its own host field, `PlanHost.project_mcp_targets`),
+under both the folder as given and its resolved path (Seatbelt matches the resolved
+one), plus the resolved path of a file that is a link. A name the seal cannot hold
+(one that resolves to a folder or another non-file, loops, runs through a file, or
+cannot be read) is skipped with a log line, so it never seals a folder or stops a
+chat starting. They and their folders' rename
+guards (`PlanHost.project_ancestor_guards`) are emitted after every window,
+carve-out and operator exception is checked and are never checked against one, so
+an operator's writable exception holding the project never loses to them. Only the folders that exist are guarded
+against rename, so an agent can still create its project's `.kiro` folder. Seatbelt
+denies each name whether or not it exists. Crew never creates a file in the
+person's folder, so the Linux launcher seals only a file that exists at spawn, and
+a file that does not exist yet is fenced by the file-edit refusal alone (#41996).
+No card writes these files: the refusal's way forward is `request_server` with
+the default target, which adds the server to Kiro Crew's own store, the list every
+governed chat's servers come from, or the person adds it on **MCP Servers**.
+
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
 rebuild merges into that template's spec and a spawn merges into a template Crew
