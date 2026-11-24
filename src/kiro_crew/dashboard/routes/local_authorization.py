@@ -166,7 +166,7 @@ async def oauth_authorize(request: web.Request) -> web.Response:
     if _cross_site(request):
         await _audit("local_auth.request", "denied", "cross-site")
         return _error("invalid_request", "open this address from the app, not from a page", 403)
-    result = await _run("authorize", dict(request.query))
+    result = await _run("authorize", dict(request.query), request.query.getall("bots", []))
     if isinstance(result, web.Response):
         return result
     kind, value = result

@@ -38,7 +38,9 @@ from urllib.parse import urlencode, urlsplit
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.crew_teams import TEAM_MEMBERS_MAX
 from kiro_crew.dashboard.token_auth_tokens import _b64url_decode, _b64url_encode, _ct_eq
+from kiro_crew.members import MEMBER_NAME_MAX_CHARS, is_dispatchable_member_name
 from kiro_crew.sel import sel
 
 #: The record kind under ``member-records/``; one of ``member_records.RECORD_KINDS``.
@@ -58,7 +60,7 @@ SCOPES: tuple[str, ...] = (
     "artifacts:write",
 )
 
-# Lifetimes and limits. All but the 5-minute access token are proposals to be confirmed
+# Lifetimes and pending-request limits. All but the 5-minute access token are proposals to be confirmed
 # (the Crew API RFC, "Local authorization").
 REQUEST_TTL_SECS = 600
 CODE_TTL_SECS = 60
@@ -73,6 +75,9 @@ CLIENT_ID_MAX = 128
 CLIENT_NAME_MAX = 80
 REDIRECT_URI_MAX = 512
 STATE_PARAM_MAX = 512
+# The chosen bound for one request and one decision equals TEAM_MEMBERS_MAX (500),
+# the largest Bot list the product keeps elsewhere.
+MAX_REQUESTED_BOTS = TEAM_MEMBERS_MAX
 #: The longest code, verifier, token or scope string the token and revoke routes hash,
 #: compare or parse. An access token this gateway signs stays well under it.
 PRESENTED_MAX = 4096
@@ -110,6 +115,10 @@ class RequestAlreadyAnswered(Exception):
 
 class ScopesNotRequested(Exception):
     """The owner approved scopes that are empty or not a subset of what the app asked."""
+
+
+class BotsNotRequested(Exception):
+    """The owner gave Bots that are not a subset of what the app asked, or one twice."""
 
 
 @dataclass(frozen=True)
@@ -174,6 +183,8 @@ def _request_view(request_id: str, rec: Mapping[str, Any]) -> dict[str, Any]:
         "client_name": rec["client_name"],
         "redirect_uri": rec["redirect_uri"],
         "requested_scopes": list(rec["scopes"]),
+        # A request recorded without the key asked for no Bot.
+        "requested_bots": list(rec.get("bots", ())),
         "namespace": rec["namespace"],
         "created_at": int(rec["created_at"]),
         "expires_at": int(rec["expires_at"]),
@@ -206,7 +217,38 @@ def _request_for_owner(request_id: str, rec: Mapping[str, Any]) -> dict[str, Any
     )
     if status == "approved":
         view["granted_scopes"] = list(rec["granted_scopes"])
+        view["granted_bots"] = list(rec.get("granted_bots", ()))
     return view
+
+
+def _grant_bots(ids: Any) -> dict[str, Any]:
+    """The Bots a grant may use, in the contract's ``GrantBots`` shape. A local grant's
+    range is always the Bots the owner picked."""
+    return {"mode": "selected", "ids": list(ids)}
+
+
+def validate_bots(bots: list[str]) -> None:
+    """Validate exact model ids by the Bot name rule, without reading any roster."""
+    if (
+        len(bots) > MAX_REQUESTED_BOTS
+        or len(set(bots)) != len(bots)
+        or not all(
+            len(bot) <= MEMBER_NAME_MAX_CHARS and is_dispatchable_member_name(bot) for bot in bots
+        )
+    ):
+        raise AuthError("invalid_request", "bots is malformed")
+
+
+def _pending_request(
+    requests: Mapping[str, dict[str, Any]], request_id: str, now: float
+) -> dict[str, Any]:
+    """The decision's request-first check, shared by preflight and the locked write."""
+    rec = requests.get(request_id)
+    if rec is None or rec["expires_at"] <= now:
+        raise UnknownRequest(request_id)
+    if rec["status"] != "pending":
+        raise RequestAlreadyAnswered(rec["status"])
+    return rec
 
 
 class LocalAuthorization:
@@ -266,7 +308,7 @@ class LocalAuthorization:
 
     # ── the app: ask ──────────────────────────────────────────────────
 
-    def authorize(self, query: Mapping[str, str]) -> tuple[str, Any]:
+    def authorize(self, query: Mapping[str, str], bots: list[str] | None = None) -> tuple[str, Any]:
         """Record a request or ask again about one.
 
         Returns ``("created", view)`` when this call recorded a new request,
@@ -292,6 +334,8 @@ class LocalAuthorization:
             raise AuthError("invalid_request", "a PKCE S256 code_challenge is required")
         if not (0 < len(state_param) <= STATE_PARAM_MAX):
             raise AuthError("invalid_request", "state is missing or too long")
+        bots = list(bots or ())
+        validate_bots(bots)
         scopes = query.get("scope", "").split()
         if not scopes or len(set(scopes)) != len(scopes) or not set(scopes) <= set(SCOPES):
             return "redirect", _with_query(
@@ -301,6 +345,7 @@ class LocalAuthorization:
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "scopes": scopes,
+            "bots": bots,
             "state": state_param,
             "code_challenge": challenge,
         }
@@ -340,7 +385,12 @@ class LocalAuthorization:
         rec = state["requests"].get(request_id)
         if rec is None or rec["expires_at"] <= now:
             raise AuthError("invalid_request", "the request is unknown or has expired")
-        same = all(rec[k] == v for k, v in asked.items() if k != "code_challenge")
+        # A request recorded without ``bots`` asked for none.
+        same = all(
+            rec.get(k, []) == v if k == "bots" else rec[k] == v
+            for k, v in asked.items()
+            if k != "code_challenge"
+        )
         if not (same and _ct_eq(rec["code_challenge"], asked["code_challenge"])):
             raise AuthError("invalid_request", "the parameters differ from the first request")
         if now - rec["asked_at"] < POLL_INTERVAL_SECS:
@@ -390,6 +440,13 @@ class LocalAuthorization:
             raise UnknownRequest(request_id)
         return _request_for_owner(request_id, rec)
 
+    def request_for_decision(self, request_id: str) -> dict[str, Any]:
+        """A live pending request; expiry takes precedence over an existing answer."""
+        now = self._clock()
+        with _LOCK:
+            rec = _pending_request(self._load()["requests"], request_id, now)
+        return _request_for_owner(request_id, rec)
+
     def grants(self) -> list[dict[str, Any]]:
         """The grants that work now, oldest first, without a secret. A revoked grant
         keeps nothing to show, so it and an expired one are left out."""
@@ -408,6 +465,8 @@ class LocalAuthorization:
                 "client_id": grant["client_id"],
                 "client_name": grant["client_name"],
                 "scopes": list(grant["scopes"]),
+                # A grant recorded without the key may use no Bot.
+                "bots": _grant_bots(grant.get("bots", {}).get("ids", ())),
                 "status": grant["status"],
                 "created_at": int(grant["created_at"]),
                 "expires_at": int(grant["expires_at"]),
@@ -421,20 +480,19 @@ class LocalAuthorization:
         approve: bool,
         scopes: list[str] | None = None,
         *,
+        bots: list[str] | None = None,
         caller: str,
     ) -> dict[str, Any]:
         """The owner's answer, audited under *caller*, the subject token auth gave whoever
-        answered. Raises :class:`UnknownRequest`, :class:`RequestAlreadyAnswered` or
-        :class:`ScopesNotRequested`; anything else means the record could not be used."""
+        answered. *scopes* left out gives every scope asked for. *bots* left out gives
+        no Bot: a Bot is never given by default. Raises :class:`UnknownRequest`,
+        :class:`RequestAlreadyAnswered`, :class:`ScopesNotRequested` or
+        :class:`BotsNotRequested`; anything else means the record could not be used."""
         _require_subject(caller)
         now = self._clock()
         with _LOCK:
             state = self._load()
-            rec = state["requests"].get(request_id)
-            if rec is None or rec["expires_at"] <= now:
-                raise UnknownRequest(request_id)
-            if rec["status"] != "pending":
-                raise RequestAlreadyAnswered(rec["status"])
+            rec = _pending_request(state["requests"], request_id, now)
             granted = list(rec["scopes"]) if scopes is None else list(scopes)
             if approve and (
                 not granted
@@ -442,8 +500,14 @@ class LocalAuthorization:
                 or not set(granted) <= set(rec["scopes"])
             ):
                 raise ScopesNotRequested("scopes must be a non-empty subset of those requested")
+            given = list(bots or ())
+            if approve and (
+                len(set(given)) != len(given) or not set(given) <= set(rec.get("bots", ()))
+            ):
+                raise BotsNotRequested("bots must be a subset of those requested")
             rec["status"] = "approved" if approve else "denied"
             rec["granted_scopes"] = granted if approve else []
+            rec["granted_bots"] = given if approve else []
             rec["decided_at"] = int(now)
             # The kind of caller, never a token. Only the Owner API answers today.
             rec["decided_by"] = {"kind": "owner", "via": "api"}
@@ -531,6 +595,7 @@ class LocalAuthorization:
                 "client_id": client_id,
                 "client_name": rec["client_name"],
                 "scopes": list(rec["granted_scopes"]),
+                "bots": _grant_bots(rec.get("granted_bots", ())),
                 "status": "active",
                 "created_at": now,
                 "expires_at": now + REFRESH_MAX_SECS,
@@ -702,6 +767,7 @@ __all__ = [
     "NAMESPACE",
     "SCOPES",
     "AuthError",
+    "BotsNotRequested",
     "LocalAuthorization",
     "LocalCredential",
     "RequestAlreadyAnswered",
