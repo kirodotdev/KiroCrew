@@ -827,7 +827,10 @@ class TestSandboxEscapeSshSelf:
                 "echo `echo\\;echo ssh -p 22 localhost id`",
                 "echo\\;echo ssh -p 22 localhost id",
             ),
-            ("echo $(sudo -H ls s* l*)", "sudo -h ls s* l*"),
+            (
+                "echo bash -c 'echo $(echo hi; ssh -p 22 localhost id)'",
+                "echo bash -c 'ssh -p 22 localhost id'",
+            ),
         ],
     )
     def test_known_fail_closed_residuals_are_refused(self, cmd, body):
@@ -837,7 +840,9 @@ class TestSandboxEscapeSshSelf:
         on main: the floor reads a glued ``;echo``, a ``#`` comment, the text a
         ``cat`` prints from an unquoted-tag heredoc, and an escaped ``\\;`` as
         commands.  A substitution body is judged as such a line, so it inherits
-        the same refusal.  A fix to that reading flips this test on purpose.
+        the same refusal.  The ssh floor's payload readers take a ``bash -c`` script
+        that ``echo`` only prints as a payload, on the plain line too.  A fix to that
+        reading flips this test on purpose.
         """
         assert _denied_by(cmd) == self._RULE
         assert _denied_by(body) == self._RULE
@@ -1162,6 +1167,9 @@ class TestSandboxEscapeSshSelf:
             "env -C . s?h local*",
             "sudo -D /tmp s?h local*",
             "xargs -P 4 s?h local*",
+            "sudo -T 5 s?h local*",
+            "xargs -S 5 s?h local*",
+            "env -U root s?h local*",
             # ``sudo -H`` and ``sudo -E`` take no value and run the next word.
             "sudo -H s?h local* id",
             "sudo -E s?h local* id",
