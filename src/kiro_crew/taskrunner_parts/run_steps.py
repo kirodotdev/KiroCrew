@@ -174,7 +174,11 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
             sem = asyncio.Semaphore(max_parallel_steps)
 
             async def _run_bounded(t: Task) -> bool:
-                async with sem:
+                async with sem, git_coord.step_running(run, t.index):
+                    if run.status in ("failed", "paused"):
+                        # A sibling stopped the run while this step queued: it
+                        # must not start, and the run may have no work_dir left.
+                        return False
                     return await self._execute_single_task(
                         run,
                         t,
@@ -386,9 +390,10 @@ async def _execute_single_task(
 
 
 async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool:
-    if run.status == "failed":
+    if run.status in ("failed", "paused"):
         # The step failed the run itself (a force_approval gate with no handler,
-        # a declared status file that says failed): nothing is planned around it.
+        # a declared status file that says failed), or paused it for a person
+        # (a denied approval, a question in its output): nothing is planned around it.
         return False
     if run.replan_count >= _MAX_REPLAN:
         run.status = "failed"

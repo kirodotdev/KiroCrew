@@ -986,6 +986,33 @@ is incomplete. The usual `Error: Task N/M failed` notice and failure lesson foll
 resume (`execute_plan`) runs the step again. Pinned by
 `test/test_taskrunner_status_file.py`.
 
+A step that names no status file can still say it did not finish. When its turn
+succeeds, `task_executor.execute_single_task` reads the result with
+`task_step_ask.step_ask` before the commit and the review, and again after a
+review-rejected retry: a complete
+`[OPTIONS: ...]` trailer, or a last paragraph saying the step is blocked or
+incomplete, is stopping, or cannot finish, is a question no one reads live. The
+question comes from `task.result`, which is already redacted when it is written. On a
+git-backed run the step's edits so far are committed to the run's branch first,
+since the finalizer removes the worktree and Resume recreates it from the branch. If
+that commit fails, the step and run fail instead, with the worktree's path in the
+error, and `run.worktree_path` and `run.work_dir` are cleared so the finalizer leaves
+the edits on disk and a retry cannot resume in them.
+Otherwise the step returns to `PENDING` with `task.error = "Waiting on input: <question>"`, the
+run is `paused` with that question in `run.error`, a `Task N needs input` notice
+names it, and `_try_replan` plans nothing for a `paused` run (nor for a denied
+approval's pause), so dependents never start. A sibling still queued behind
+`taskrunner.max_parallel_steps` does not start once the run is `paused` or `failed`,
+and a review-rejected step is reverted only while its own commit is the branch's last
+(a compare-and-swap `update-ref`), so a sibling's checkpoint committed on top is kept;
+the revert restores only the paths that commit changed, never `reset --hard`.
+While another parallel step runs in the shared worktree (`git_coord.step_running`) the
+revert does nothing: its agent may be writing any path, so the rejected commit is kept
+and the retry runs on top of it. A per-worktree lock keeps a commit, or a parallel
+step's start, from interleaving with a revert, and the revert drops its own sha from
+`commit_hashes`, never another step's. The person edits the step with the
+answer and resumes. Pinned by `test/test_task_step_ask.py`.
+
 ## Test verification
 
 Execution and verification are separate outcomes. `TaskStatus.PASSED` says a

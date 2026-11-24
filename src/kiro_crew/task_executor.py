@@ -99,6 +99,7 @@ from kiro_crew.task_models import (
 )
 from kiro_crew.task_planner import group_parallel_tasks
 from kiro_crew.task_status_file import fail_on_declared_failure
+from kiro_crew.task_step_ask import pause_on_ask
 from kiro_crew.tracing import surfaces as trace_surfaces
 
 if TYPE_CHECKING:
@@ -482,8 +483,12 @@ async def execute_single_task(
     )
     run.last_task_time = _time.time()
 
+    if success and await pause_on_ask(run, task, on_notify):
+        return False
+
     if success:
         committed = commit_failed = False
+        sha = ""
         if run.branch_name:
             try:
                 sha = await git_coord.commit_step(run, task)
@@ -509,9 +514,11 @@ async def execute_single_task(
                 run=run,
             )
         elif not review_ok:
+            # Named by sha: a parallel sibling's commit (a pause checkpoint
+            # among them) may be on top by now, and it must not be dropped.
             if committed and run.branch_name:
                 try:
-                    await git_coord.revert_step(run)
+                    await git_coord.revert_step(run, sha)
                 except Exception:
                     logger.debug("Git revert before retry failed", exc_info=True)
             task.status = TaskStatus.FAILED
@@ -529,6 +536,8 @@ async def execute_single_task(
                 session_key,
                 **_exec_kw,
             )
+            if success and await pause_on_ask(run, task, on_notify):
+                return False
             if success and run.branch_name:
                 try:
                     await git_coord.commit_step(run, task)
