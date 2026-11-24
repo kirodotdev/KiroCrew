@@ -22,6 +22,7 @@ for the spec: keys this backend never receives, and a spec that cannot be read.
 
 from __future__ import annotations
 
+import string
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -88,6 +89,33 @@ async def switched(provider: Any, hooks: ChannelTurnHooks, event: Any) -> Channe
     return renewed if renewed is not None else hooks
 
 
+#: What a printed notice is rebuilt from: printable ASCII without line breaks, and
+#: the notice's own marks.
+_NOTICE_ALPHABET = "".join(c for c in string.printable if c not in "\t\n\r\x0b\x0c") + "ℹ…"
+
+
+def _owned_text(text: str) -> str:
+    """*text* rebuilt from :data:`_NOTICE_ALPHABET`'s own characters, after redaction.
+
+    A notice names spec keys (an MCP server's ``oauth.clientSecret``), never their
+    values, but ``py/clear-text-logging-sensitive-data`` follows the spec-derived
+    dataflow into stderr and models no redactor as a barrier. Returning characters
+    this module owns severs that flow, as ``acp.mcp_ref_guard._log_safe`` does.
+    shortcut: a character outside the alphabet (a non-ASCII agent name) is dropped;
+    upgrade if CodeQL learns to model ``redact_credentials`` as a sanitizer.
+    """
+    from kiro_crew.security import redact_credentials
+
+    cleaned = safe_terminal_line(redact_credentials(text)[0])
+    out: list[str] = []
+    for ch in cleaned:
+        idx = _NOTICE_ALPHABET.find(ch)
+        if idx >= 0:
+            # The alphabet's own character object, not the input's.
+            out.append(_NOTICE_ALPHABET[idx])
+    return "".join(out)
+
+
 def print_session_notices(provider: Any, hooks: ChannelTurnHooks, kiro_agent: str) -> None:
     """Print, to stderr, what a new session's spec hooks cannot do here."""
     from kiro_crew.agent_sdk.spec_hooks import running_agent, spec_keys_notice
@@ -103,7 +131,7 @@ def print_session_notices(provider: Any, hooks: ChannelTurnHooks, kiro_agent: st
     if spec.lost:
         lines.append(spec_keys_notice(agent, list(spec.lost)))
     for line in lines:
-        print(safe_terminal_line(line), file=sys.stderr)
+        print(_owned_text(line), file=sys.stderr)
 
 
 async def stop(hooks: ChannelTurnHooks, reply: str, stop_reason: str) -> None:
