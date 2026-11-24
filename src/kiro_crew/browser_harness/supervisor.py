@@ -52,7 +52,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
 from kiro_crew.browser_harness import governance as browse_governance
-from kiro_crew.browser_harness import install
+from kiro_crew.browser_harness import install, sign_in_guard
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.helper_table import HELPERS
 from kiro_crew.browser_harness.relay import (
@@ -257,6 +257,8 @@ class HarnessSupervisor:
         self._credentials_relay: CdpRelay | None = None
         #: The provider cookies the gateway set in the browser behind that relay.
         self._placed = credentials.PlacedCookies()
+        #: The sign-in guard on the browser behind that relay (``sign_in_guard``).
+        self._guard: sign_in_guard.SignInGuard | None = None
         #: The provider's ``fingerprint()`` and the settings at the last apply; a
         #: navigation re-pulls when either differs.
         self._applied_key: tuple[str | None, credentials.CredentialSettings] | None = None
@@ -729,9 +731,24 @@ class HarnessSupervisor:
             contexts=contexts,
             placed=self._placed,
         )
-        self._applied_key = key
         self._credentials_relay = relay
+        # Held before any await, so a cut run leaves the guard reachable to the next.
+        self._guard = sign_in_guard.prepare(
+            self._guard, relay, provider, key[1], choice, self._credential_settings
+        )
         _audit_injection(self._credentials, reason)
+        if self._guard is not None and not await sign_in_guard.converge(self._guard):
+            if reason == "start":
+                # No op may run on a browser whose sign-in interception is not on:
+                # the start fails and its own cleanup stops the browser.
+                raise BrowserUnavailable("could not turn on the browser's sign-in interception")
+            return  # not all of it landed: not applied; the guard is unsettled, so the
+            # next navigation retries
+        self._applied_key = key
+
+    def active_sign_in_guard(self) -> sign_in_guard.SignInGuard | None:
+        """The live browser's guard while it intercepts, else ``None``."""
+        return sign_in_guard.live(self._guard, self._handle and self._handle.relay)
 
     async def seed_context(self, relay: CdpRelay, browser_context_id: str) -> None:
         """Fill one chat's new browser context from the edition provider.
@@ -792,7 +809,11 @@ class HarnessSupervisor:
         raises for a provider failure.
         """
         handle = self._handle
-        if handle is None or handle.choice.kind != "kiro_chromium" or self._applied_key is None:
+        if handle is None or handle.choice.kind != "kiro_chromium":
+            return False
+        # A guard whose interception did not all land is owed a run, applied key or not.
+        unsettled = self._guard is not None and not self._guard.settled
+        if self._applied_key is None and not unsettled:
             return False
         provider = self._provider()
         if credentials.provider_name(provider) is None:
@@ -801,7 +822,13 @@ class HarnessSupervisor:
         # A ``None`` fingerprint means "cannot tell" (a slow stat): not a change.
         expiry = self._placed.next_expiry()
         due = expiry is not None and expiry <= time.time()
-        if not due and (fingerprint or self._applied_key[0], settings) == self._applied_key:
+        applied = self._applied_key
+        if (
+            not due
+            and not unsettled
+            and applied
+            and (fingerprint or applied[0], settings) == applied
+        ):
             return False
         if not await self._acquire_briefly():
             return False
@@ -859,14 +886,15 @@ class HarnessSupervisor:
         # The provider cookies this browser holds, read before the deletes forget them.
         placed = self._placed.keys() if handle.relay is self._credentials_relay else []
         try:
+            guard = await sign_in_guard.halt(self._guard, handle.relay)  # no sign lands after
+            placed += guard.placed.keys() if guard is not None else []
             if close_tabs and not handle.relay.closed:
                 if handle.relay is self._credentials_relay:
                     # Chromium can keep session cookies in the profile on disk; the
                     # ones the gateway set go before it stops.
                     try:
-                        await asyncio.wait_for(
-                            self._placed.delete_all(handle.relay), _TAB_CLOSE_SECS
-                        )
+                        for held in (self._placed, *([guard.placed] if guard else [])):
+                            await asyncio.wait_for(held.delete_all(handle.relay), _TAB_CLOSE_SECS)
                     except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
                         pass
                 try:

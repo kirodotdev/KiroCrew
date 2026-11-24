@@ -185,7 +185,7 @@ async def test_a_strict_hidden_path_on_a_grant_goes_to_the_card(
     _on_page("https://app.example/form")
     ran: list[bool] = []
 
-    async def _op(op: str, args: dict, ctx: Any, supervisor: Any) -> dict:
+    async def _op(op: str, args: dict, ctx: Any, supervisor: Any, *_caller: Any) -> dict:
         ran.append(bool(ctx.upload_grant_host))
         return {"ok": False, "code": "needs_card", "error": "hidden"}
 
@@ -213,7 +213,7 @@ async def test_a_turned_away_upload_does_not_use_up_the_run_budget(
     monkeypatch.setattr(mod, "_run_limits", lambda: (0, 1, 0))
     answers = iter([{"ok": False, "code": turned_away}, {"ok": True, "ref": "e4"}])
 
-    async def _op(op: str, args: dict, ctx: Any, supervisor: Any) -> dict:
+    async def _op(op: str, args: dict, ctx: Any, supervisor: Any, *_caller: Any) -> dict:
         return next(answers)
 
     monkeypatch.setattr(mod.browser_sign_in, "run_op", _op)
@@ -308,7 +308,7 @@ async def test_the_route_hands_the_op_its_governance_read_check(
     _on_page("https://u/")
     got: list[Any] = []
 
-    async def _op(op: str, args: dict, ctx: Any, supervisor: Any) -> dict:
+    async def _op(op: str, args: dict, ctx: Any, supervisor: Any, *_caller: Any) -> dict:
         got.append(ctx.read_allowed)
         return {"ok": True}
 
@@ -350,7 +350,7 @@ async def test_the_card_lists_the_files_and_its_allow_sends_only_those(
         (photos / name).write_bytes(b"12")
     sent: list[Any] = []
 
-    async def _op(op: str, args: dict, ctx: Any, supervisor: Any) -> dict:
+    async def _op(op: str, args: dict, ctx: Any, supervisor: Any, *_caller: Any) -> dict:
         sent.append(ctx.upload_groups)
         return {"ok": True, "ref": "e4"}
 

@@ -328,13 +328,20 @@ class _GatedRelay:
         self._relay = relay
         self._caller_key = caller_key
 
-    async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+    async def _check(self) -> None:
         if await browse_denied_async(HOST_KEY, audit=False) or await browse_denied_async(
             self._caller_key, audit=False
         ):
             stop_running_harness()
             raise BrowsingDenied()
+
+    async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+        await self._check()
         return await self._relay.send(method, params, sid)
+
+    async def emulate(self, target_id: str, method: str, params: dict[str, Any]) -> None:
+        await self._check()
+        await self._relay.emulate(target_id, method, params)
 
 
 def build_context(
@@ -394,6 +401,13 @@ def build_context(
     def _frames() -> Any:
         return frame_ops(hub, session_key, caller_key=caller_key)
 
+    async def _emulate(target_id: str, method: str, params: dict[str, Any]) -> None:
+        # The relay the session's bind pinned (per-chat isolation), else the live one.
+        relay = hub.bound_relay(session_key) or getattr(supervisor, "relay", None)
+        if relay is None:
+            raise HelperError("the browser is not running")
+        await _GatedRelay(relay, caller_key or session_key).emulate(target_id, method, params)
+
     return harness_ops.OpContext(
         helper=helper,
         step=_step,
@@ -413,6 +427,7 @@ def build_context(
         record=_record,
         frames=_frames,
         report_changes=_report_changes(),
+        emulate=_emulate,
     )
 
 
@@ -420,7 +435,7 @@ def _op_budget(op: str, ctx: harness_ops.OpContext) -> float:
     """The route's budget for *op*: its own, the hooks', the change report's, a sign-in's."""
     own = SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
     report = CHANGE_REPORT_S if ctx.report_changes and op in harness_ops.REPORT_OPS else 0.0
-    # A navigate may go on to finish an edition sign-in (``browser_harness.sign_in``).
+    # A navigate may go on to sign a site in (``browser_harness.sign_in_guard``).
     sign_in = SIGN_IN_WORST_S if op == "navigate" else 0.0
     return own + DECISION_HEADROOM_S + report + sign_in
 
@@ -1655,7 +1670,9 @@ async def _bound_op(
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)
                         return stopped
-            task = asyncio.ensure_future(browser_sign_in.run_op(op, args, ctx, supervisor))
+            task = asyncio.ensure_future(
+                browser_sign_in.run_op(op, args, ctx, supervisor, caller_key)
+            )
             hub.op_started(key, task)
             try:
                 result = await asyncio.wait_for(task, timeout=budget)

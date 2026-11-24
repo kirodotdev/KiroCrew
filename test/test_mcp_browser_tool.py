@@ -645,3 +645,11 @@ def test_a_huge_popup_note_is_capped_in_the_screenshot_and_failure_text() -> Non
     )
     assert failed is not None and failed.startswith("Error (wait_timeout): e")
     assert len(failed) <= len("Error (wait_timeout): e") + mod._RESULT_CAP
+
+
+def test_a_sign_in_reason_reaches_the_agent_on_a_refusal_and_on_a_snapshot() -> None:
+    block = {"outcome": "not_signed", "reason": "not_signed_in", "host": "app.example.com"}
+    refused = {"ok": False, "code": "nav_error", "error": "net::ERR_ABORTED", "sign_in": block}
+    assert "not_signed_in" in mod._settle("navigate", 200, refused)
+    shot = {"ok": True, "result": {"snapshot": "x", "url": "https://a.test/", "sign_in": block}}
+    assert "not_signed_in" in mod._settle("snapshot", 200, shot)

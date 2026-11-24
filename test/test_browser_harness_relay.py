@@ -539,6 +539,89 @@ async def test_a_popup_an_agent_tab_opens_joins_the_ledger_with_its_opener(
         assert client.inbox.empty()
 
 
+def _emulation_sessions(browser: FakeBrowser) -> list[str]:
+    return [
+        str(m.get("sessionId")) for m in browser.seen if m["method"] in relay_mod.EMULATE_METHODS
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emulate_sends_every_override_on_the_one_session_the_tab_was_adopted_with(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    # Chrome keeps an override per session and a reset from another session leaves
+    # it, so a set and its reset must share one session, even when the first call
+    # races the adoption the create reply started.
+    async with Client(relay) as client:
+        await _create_agent_tab(client)
+        dark = {"features": [{"name": "prefers-color-scheme", "value": "dark"}]}
+        await relay.emulate("T-agent", "Emulation.setEmulatedMedia", dark)
+        await relay.emulate("T-agent", "Emulation.setEmulatedMedia", {"features": []})
+        await relay.emulate("T-agent", "Emulation.clearDeviceMetricsOverride", {})
+    attaches = [m for m in browser.seen if m["method"] == "Target.attachToTarget"]
+    assert len(attaches) == 1
+    assert _emulation_sessions(browser) == ["S1", "S1", "S1"]
+    await _until(lambda: browser.focus_calls == ["S1"])
+
+
+@pytest.mark.asyncio
+async def test_emulate_refuses_a_tab_outside_the_ledger_and_any_other_command(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    async with Client(relay) as client:
+        await _create_agent_tab(client)
+        with pytest.raises(CdpError):
+            await relay.emulate("T-user", "Emulation.clearDeviceMetricsOverride", {})
+        with pytest.raises(ValueError):
+            await relay.emulate("T-agent", "Runtime.evaluate", {"expression": "1"})
+    assert _emulation_sessions(browser) == []
+    assert not [m for m in browser.seen if m.get("params", {}).get("targetId") == "T-user"]
+
+
+@pytest.mark.asyncio
+async def test_the_sign_in_guard_hears_the_tabs_session_before_the_daemon_hears_of_the_tab(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    adopted: list[tuple[str, str]] = []
+    heard: list[tuple[str, str, str]] = []
+
+    async def on_adopted(target_id: str, session_id: str) -> None:
+        adopted.append((target_id, session_id))
+
+    async def on_event(target_id: str, session_id: str, msg: dict[str, Any]) -> None:
+        heard.append((target_id, session_id, str(msg.get("method"))))
+
+    relay.on_tab_adopted, relay.on_tab_event = on_adopted, on_event
+    async with Client(relay) as client:
+        await client.send({"id": 1, "method": "Target.createTarget", "params": {}})
+        await client.recv()
+        # The reply was held until the guard had the tab's session.
+        assert adopted == [("T-agent", "S1")]
+        paused = {"sessionId": "S1", "method": "Fetch.requestPaused", "params": {"requestId": "R"}}
+        await browser.emit(paused)
+        await _until(lambda: heard == [("T-agent", "S1", "Fetch.requestPaused")])
+        assert relay.adopted_sessions() == {"T-agent": "S1"}
+        assert client.inbox.empty()
+
+
+@pytest.mark.asyncio
+async def test_a_browser_wide_fetch_pause_reaches_the_guard_and_never_a_client(
+    relay: CdpRelay, browser: FakeBrowser
+) -> None:
+    # A popup's first request is paused on the browser target before the relay can
+    # adopt the popup; that pause carries no session and is the guard's alone.
+    heard: list[str] = []
+
+    async def on_paused(msg: dict[str, Any]) -> None:
+        heard.append(str((msg.get("params") or {}).get("requestId")))
+
+    relay.on_browser_paused = on_paused
+    async with Client(relay) as client:
+        await browser.emit({"method": "Fetch.requestPaused", "params": {"requestId": "R9"}})
+        await _until(lambda: heard == ["R9"])
+        assert client.inbox.empty()
+
+
 @pytest.mark.asyncio
 async def test_the_persons_own_pages_and_non_pages_stay_out_of_the_ledger(
     relay: CdpRelay, browser: FakeBrowser
