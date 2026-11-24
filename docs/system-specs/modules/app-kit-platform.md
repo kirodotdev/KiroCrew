@@ -879,7 +879,13 @@ shipped builtin's execution exemption and leaving the boot-warmed first-party
 name and MCP-server sets stale until the next restart. Symmetrically,
 `register_builtin_apps` stands down when a user-installed app already occupies the
 directory, leaving their install untouched, because taking it over is
-unrecoverable.
+unrecoverable. Until the wheel copy is released (§ Former built-in adoption), that
+built-in still serves the name: its routes register and every hook root chooser
+resolves the shipped package. A local or git build named like a built-in is a
+legitimate way to test one, so it is not refused; `builtin_shadow.shadowed_builtin_notice`
+names the situation instead, appended to the install result's `message` and set as
+`shadowedBuiltin` on the app's `/api/apps` and `kirocrew app info` row, with the App
+Store step added when the name is pinned for adoption.
 
 Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
