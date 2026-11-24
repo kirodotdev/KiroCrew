@@ -17920,6 +17920,7 @@
         "always_allow_undo": "Schalte es aus, um vor jedem Aufruf wieder gefragt zu werden.",
         "always_allow_hint": "Vor jedem Aufruf dieses Tools nicht mehr fragen. Die eigenen Sicherheitsregeln von {{productName}} gelten weiterhin.",
         "always_allow_failed": "„Immer erlauben“ konnte nicht geändert werden. Versuche es erneut.",
+        "always_allow_on_count": "Immer erlaubt: {{on}} von {{total}}",
         "always_allow_refused_asks_every_time": "Deine Einstellungen fragen vor jedem Aufruf der Tools dieses Servers, daher können sie nicht immer erlaubt werden.",
         "always_allow_refused_set_elsewhere": "„Immer erlauben“ wird von einer lokalen Einstellungsdatei auf diesem Computer verwaltet und kann hier nicht geändert werden.",
         "always_allow_refused_crew_owned": "Die eigenen Tools von {{productName}} fragen immer.",

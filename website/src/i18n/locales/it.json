@@ -18389,6 +18389,7 @@
         "always_allow_undo": "Disattiva per confermare di nuovo ogni chiamata.",
         "always_allow_hint": "Non chiedere più prima di ogni chiamata a questo strumento. Le regole di sicurezza di {{productName}} restano valide.",
         "always_allow_failed": "Impossibile modificare Consenti sempre. Riprova.",
+        "always_allow_on_count": "Consentiti sempre: {{on}} su {{total}}",
         "always_allow_refused_asks_every_time": "Le tue impostazioni chiedono prima di ogni chiamata agli strumenti di questo server, quindi non possono essere sempre consentiti.",
         "always_allow_refused_set_elsewhere": "Consenti sempre è gestito da un file di impostazioni locale su questo computer, quindi non si può modificare qui.",
         "always_allow_refused_crew_owned": "Gli strumenti di {{productName}} chiedono sempre.",

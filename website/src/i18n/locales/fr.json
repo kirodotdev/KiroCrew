@@ -18389,6 +18389,7 @@
         "always_allow_undo": "Désactive pour confirmer à nouveau chaque appel.",
         "always_allow_hint": "Ne plus demander avant chaque appel de cet outil. Les règles de sécurité de {{productName}} s’appliquent toujours.",
         "always_allow_failed": "Impossible de modifier « Toujours autoriser ». Réessaie.",
+        "always_allow_on_count": "Toujours autorisés : {{on}} sur {{total}}",
         "always_allow_refused_asks_every_time": "Tes réglages demandent avant chaque appel des outils de ce serveur, ils ne peuvent donc pas être toujours autorisés.",
         "always_allow_refused_set_elsewhere": "« Toujours autoriser » est géré par un fichier de réglages local sur cet ordinateur et ne peut pas être modifié ici.",
         "always_allow_refused_crew_owned": "Les outils de {{productName}} demandent toujours.",

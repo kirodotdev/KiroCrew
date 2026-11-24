@@ -17451,6 +17451,7 @@
         "always_allow_undo": "关闭后，每次调用前会重新询问。",
         "always_allow_hint": "调用这个工具前不再询问。{{productName}} 自己的安全规则仍然有效。",
         "always_allow_failed": "无法更改“始终允许”。请重试。",
+        "always_allow_on_count": "始终允许：{{on}} / {{total}}",
         "always_allow_refused_asks_every_time": "你的设置要求这个服务器的每次工具调用都先询问，所以不能设为始终允许。",
         "always_allow_refused_set_elsewhere": "“始终允许”由这台电脑上的本地设置文件管理，无法在这里更改。",
         "always_allow_refused_crew_owned": "{{productName}} 自己的工具总是会询问。",

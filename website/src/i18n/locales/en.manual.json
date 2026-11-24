@@ -8452,6 +8452,7 @@
         "always_allow_undo": "Turn off to ask before each call again.",
         "always_allow_hint": "Stop asking before each call of this tool. {{productName}}'s own safety rules still apply.",
         "always_allow_failed": "Could not change Always allow. Try again.",
+        "always_allow_on_count": "Always allowed: {{on}} of {{total}}",
         "always_allow_refused_asks_every_time": "Your settings ask before every call of this server's tools, so they can't be always allowed.",
         "always_allow_refused_set_elsewhere": "Always allow is managed by a local settings file on this computer, so it can't be changed here.",
         "always_allow_refused_crew_owned": "{{productName}}'s own tools always ask.",
