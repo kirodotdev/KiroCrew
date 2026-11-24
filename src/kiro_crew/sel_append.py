@@ -27,7 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import platform_compat
+from kiro_crew import append_only, platform_compat
 from kiro_crew.sel_chain_lock import _on_event_loop
 
 if TYPE_CHECKING:
@@ -278,6 +278,14 @@ def _append_lines_locked(
             logger.warning(
                 "SECURITY: Failed to make SEL audit log %s owner-only", self._path, exc_info=True
             )
+    # Re-assert the kernel append-only flag on every append (idempotent, like the
+    # owner-lockdown above). This is what stops the sandboxed agent's own shell --
+    # same namespace as the in-sandbox appenders -- from truncating, overwriting
+    # or unlinking the audit trail, while our O_APPEND write below keeps working.
+    # Best-effort: a no-op that warns once where the gateway lacks the privilege
+    # or the filesystem has no such flag. Rotation clears it around its rename and
+    # the next append (here) re-applies it to the fresh live file.
+    append_only.set_append_only(self._path)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         actual = os.fstat(f.fileno())
         if expect is not None and _identity_changed(expect, actual):

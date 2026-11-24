@@ -60,7 +60,7 @@ import sys
 import time
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import append_only, platform_compat
 from kiro_crew.jsonl_util import rotate_jsonl_at
 
 logger = logging.getLogger(__name__)
@@ -176,8 +176,24 @@ def rotate_shell_audit_log(data_home: Path) -> bool:
         size_before = path.stat().st_size
     except (OSError, ValueError):
         return False
+    # Keep the live audit log kernel-append-only so the sandboxed agent cannot
+    # truncate/rewrite/unlink it; the bundled hook's O_APPEND writes keep working.
+    # Set here, on the gateway's regular cleanup sweep, because the hook (which
+    # may run in-sandbox) creates the file and the gateway cannot set the flag at
+    # that moment. Best-effort: a no-op that warns once without the privilege or
+    # on a filesystem that has no such flag.
+    # warn=False: this runs on every cleanup tick, and an unprivileged gateway
+    # (no CAP_LINUX_IMMUTABLE) is the ordinary case for this convenience log, so
+    # a failure to set the flag here must stay silent -- an under-cap sweep is the
+    # quiet, ordinary path.
+    append_only.set_append_only(path, warn=False)
     if size_before < SHELL_AUDIT_LOG_MAX_BYTES:
         return False
+    # Append-only forbids the rename the rotation does, so clear it first; the
+    # moved-aside ``.1`` generation is left without the flag so the next rotation
+    # can replace it, and the hook's next append re-creates the live file (the
+    # next sweep re-applies the flag).
+    append_only.clear_append_only(path, warn=False)
     rotate_jsonl_at(path, SHELL_AUDIT_LOG_MAX_BYTES)
     try:
         rotated = path.stat().st_size < size_before

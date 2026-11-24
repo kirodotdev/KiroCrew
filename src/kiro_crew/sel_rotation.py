@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
-from kiro_crew import platform_compat
+from kiro_crew import append_only, platform_compat
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 from kiro_crew.sel_reader import _parse_timestamp
@@ -409,6 +409,13 @@ def _rotate_under_lock(self: SecurityEventLog) -> None:
     target = self._next_segment_path()
     if target is None:
         return  # no free name; rotation deferred (see _next_segment_path)
+    # The append path keeps the live log kernel-append-only (FS_APPEND_FL), which
+    # also forbids rename -- so clear the flag before moving it aside. The gateway
+    # runs unsandboxed, so it has the privilege to clear it whenever the set
+    # succeeded; a no-op otherwise. The closed segment is left WITHOUT the flag so
+    # retention can later delete it; the next append re-applies the flag to the
+    # fresh live log.
+    append_only.clear_append_only(self._path)
     try:
         os.replace(self._path, target)
     except OSError:
