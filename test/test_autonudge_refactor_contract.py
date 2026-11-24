@@ -1237,6 +1237,7 @@ _BOUND_AS = {"_serialize_loop": "LoopStore.serialize_loop"}
 _OWNER_ORDER = (
     "boot_pacer",
     "model",
+    "memory_hold",
     "subject",
     "store",
     "maintenance",

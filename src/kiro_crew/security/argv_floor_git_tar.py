@@ -81,6 +81,7 @@ from .argv_floor_ssh import (
     _ssh_floor_unmasked_text,
     _unmask_separators,
 )
+from .argv_floor_ssh_operand import _GIT_WORD
 from .argv_floor_tar import (
     _GLOB_WORDS,
     _RAW_COMMAND,
@@ -300,6 +301,20 @@ def _shell_read_views(source: str) -> "list[str] | None":
 
 
 def _git_remote_targets_self(operand: str) -> bool:
+    """True if a git remote *operand* dials THIS host (``_git_remote_word_dials_self``).
+
+    The word is read as a git word (``_GIT_WORD``): a Windows own-name counts
+    only in a URL authority or an scp-like ``user@host:path``, since a git word
+    may be a refspec or a remote name.
+    """
+    git_word = _GIT_WORD.set(True)
+    try:
+        return _git_remote_word_dials_self(operand)
+    finally:
+        _GIT_WORD.reset(git_word)
+
+
+def _git_remote_word_dials_self(operand: str) -> bool:
     """True if a git remote *operand* dials THIS host over an ssh transport.
 
     Only a transport-shaped operand can dial: a URL (``scheme://``) or a
@@ -345,7 +360,9 @@ def _git_remote_targets_self(operand: str) -> bool:
                 host = before_port
             if _operand_targets_self(host, host_position=True, dns=False, match_globs=False):
                 return True
-    return _operand_targets_self(t, host_position=True, dns=False, match_globs=False)
+    return _operand_targets_self(
+        t, host_position=True, dns=False, match_globs=False, file_operand=True
+    )
 
 
 # A value word longer than this is not split into every glued-option suffix:

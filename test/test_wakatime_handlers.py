@@ -310,7 +310,7 @@ def test_csv_safe_neutralizes_leading_formula_triggers() -> None:
 
 from unittest.mock import AsyncMock  # noqa: E402
 
-import kiro_crew.dashboard.handlers_system as _hsys  # noqa: E402
+import kiro_crew.dashboard.handlers._shared as _shared  # noqa: E402
 import kiro_crew.wakatime.oauth as wt_oauth  # noqa: E402
 
 
@@ -324,7 +324,7 @@ def _oauth_app() -> web.Application:
 
 
 def _allow_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_hsys, "_require_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", AsyncMock(return_value=None))
 
 
 @pytest.mark.asyncio

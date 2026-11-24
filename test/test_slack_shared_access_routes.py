@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import slack_shared_access as mod
+from kiro_crew.dashboard.handlers import _shared
 from kiro_crew.slack import shared_access
 
 OWNER = "UOWNER0001"
@@ -89,7 +90,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     async def _owner_refusal(request: Any, operation: str) -> web.Response | None:
         return None if owner["value"] else web.json_response({"code": "owner_only"}, status=403)
 
-    monkeypatch.setattr(mod, "_owner_refusal", _owner_refusal)
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", _owner_refusal)
     shared_access.reset()
     yield {"cfg": cfg, "sel": sel, "local": local, "owner": owner, "web": web_client}
     shared_access.reset()

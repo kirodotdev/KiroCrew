@@ -48,8 +48,13 @@ def _xml_escape(value: str) -> str:
     )
 
 
-def render_plist() -> str:
+def render_plist(*, headless: bool = False) -> str:
     """Render the launchd LaunchAgent plist contents.
+
+    ``headless`` adds ``--headless`` to ``ProgramArguments``, so every start by
+    launchd serves no dashboard and binds loopback (``dashboard/headless.py``).
+    The arguments are the only place the mode is kept:
+    :func:`kiro_crew.service.controller.installed_headless` reads them back.
 
     ``ProgramArguments[0]`` is the :data:`LIVE_PROGRAM` launcher, not the
     resolved binary, so the agent can be repointed at another checkout (with its
@@ -84,7 +89,8 @@ def render_plist() -> str:
         # new dashboard tab each time. The surface they are already using (a
         # browser tab or the Electron window) reconnects on its own.
         "        <string>--no-open</string>\n"
-        "    </array>\n"
+        + ("        <string>--headless</string>\n" if headless else "")
+        + "    </array>\n"
         "    <key>RunAtLoad</key>\n"
         "    <true/>\n"
         "    <key>KeepAlive</key>\n"
@@ -376,8 +382,11 @@ def _bootout(*, wait: bool) -> bool:
     return False
 
 
-def install() -> None:
+def install(*, headless: bool = False) -> None:
     """Write the plist and bootstrap the agent into ``gui/<uid>``.
+
+    ``headless`` writes the plist that starts the gateway with ``--headless``
+    (:func:`render_plist`).
 
     Idempotent: boots out a loaded agent first (from either domain a legacy
     ``load -w`` used) so the new plist takes effect. Also rewrites
@@ -401,7 +410,7 @@ def install() -> None:
     # gone (an earlier uninstall launchd refused, or a hand-deleted file) is
     # still loaded, and bootstrapping over it fails with "5: Input/output error".
     _bootout(wait=True)
-    _write_plist_atomic(render_plist())
+    _write_plist_atomic(render_plist(headless=headless))
     domain = _pod_launchd.domain()
     load_res = _bootstrap_into(domain)
     if load_res.returncode != 0 and _domain_unavailable(load_res):

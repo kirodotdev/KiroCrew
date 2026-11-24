@@ -2784,7 +2784,7 @@
         "description": "মনে রাখে এমন একটি ইস্যু ট্রায়াজ সহকারী। AI-প্রস্তাবিত লেবেল আর প্রতিটি আইটেমের অনুসন্ধান নোট নিয়ে GitHub ইস্যু, GitLab ইস্যু ও Azure DevOps ওয়ার্ক আইটেম ঘেঁটে দেখো, ছাঁকো ও ট্রায়াজ করো — ফলাফল একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না।",
         "display_name": "Issue Radar",
         "use_case_1": "সংযুক্ত provider-এর issue ও pull request triage করুন এবং summary, প্রস্তাবিত label ও investigation history ধরে রাখুন।",
-        "configuration_1": "একটি repository সংযুক্ত করে gateway host-এ provider CLI প্রমাণীকরণ করুন: GitHub-এর জন্য gh, GitLab-এর জন্য glab, অথবা macOS, Linux বা WSL-এ Azure DevOps extension-সহ az।",
+        "configuration_1": "একটি repository সংযুক্ত করে gateway host-এ provider CLI প্রমাণীকরণ করো: GitHub-এর জন্য gh, GitLab-এর জন্য glab, অথবা Azure DevOps extension-সহ az।",
         "highlight_1": "ইস্যু ও পুল রিকোয়েস্টের জন্য AI সারসংক্ষেপ ও প্রস্তাবিত লেবেল, প্রতিটির সঙ্গে তার যুক্তি",
         "highlight_2": "প্রতি ইস্যুর অনুসন্ধান নোট একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না",
         "highlight_3": "পেজ ছেড়ে না গিয়েই পুল রিকোয়েস্টে কাজ করো: অনুমোদন, বদল চাওয়া, কমেন্ট, মার্জ, বন্ধ বা আবার খোলা, এবং CI বাতিল বা আবার চালানো — একটি একটি করে বা নির্বাচিত সবগুলোতে একসঙ্গে",
@@ -3864,11 +3864,13 @@
         "dismiss": "খারিজ করুন",
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
         "open_image": "ছবি খোলো",
+        "open_image_named": "{{name}} ছবি খোলো",
         "open_in_file_explorer": "File Explorer-এ খুলুন",
         "open_in_finder": "Finder-এ খুলুন",
         "pinned_files": "পিন করা ফাইল",
         "pins": "পিন",
         "preview": "প্রিভিউ",
+        "remove_named": "{{name}} সরাও",
         "remove_screenshot": "স্ক্রিনশট সরাও",
         "screenshot": "স্ক্রিনশট",
         "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
@@ -4110,7 +4112,8 @@
       },
       "pinned": {
         "empty_hint": "আপনি যে ফাইলগুলো ট্র্যাক করতে চান সেগুলো পিন করতে {{name}}-কে বলুন",
-        "unpin": "আনপিন করুন"
+        "unpin": "আনপিন করুন",
+        "unpin_named": "{{name}} আনপিন করো"
       },
       "preset": {
         "black": "কালো",
@@ -9196,7 +9199,15 @@
       "sub_agent_results_ready_one": "{{count}}টি সাবএজেন্ট ফলাফল প্রস্তুত — বর্তমান টার্নের পরে প্রক্রিয়া করা হবে",
       "sub_agent_results_ready_other": "{{count}}টি সাবএজেন্ট ফলাফল প্রস্তুত — বর্তমান টার্নের পরে প্রক্রিয়া করা হবে",
       "queued_count_one": "{{count}}টি সারিতে",
-      "queued_count_other": "{{count}}টি সারিতে"
+      "queued_count_other": "{{count}}টি সারিতে",
+      "discard_all_queued_messages": "সারিতে থাকা সব বার্তা বাদ দিন",
+      "discard_all_title_one": "সারিতে থাকা {{count}}টি বার্তা বাদ দেবেন?",
+      "discard_all_title_other": "সারিতে থাকা {{count}}টি বার্তা বাদ দেবেন?",
+      "discard_all_body": "এগুলো পাঠানো হবে না, এবং এগুলোর লেখা ইনপুট বক্সে ফিরে আসবে না।",
+      "discard_all_confirm": "সব বাদ দিন",
+      "discard_all_open": "সব বাদ দিন…",
+      "discard_all_failed_one": "সারিতে থাকা {{count}}টি বার্তা বাদ দেওয়া যায়নি",
+      "discard_all_failed_other": "সারিতে থাকা {{count}}টি বার্তা বাদ দেওয়া যায়নি"
     },
     "readingWidthToggle": {
       "title_full": "পূর্ণ প্রস্থ",
@@ -21417,6 +21428,10 @@
       "slackPanel": {
         "add": "যোগ করুন",
         "allowed_enterprise_orgs": "অনুমোদিত এন্টারপ্রাইজ অর্গ",
+        "tracked_channels": "ট্র্যাক করা চ্যানেল",
+        "tracked_channels_summary": "যে চ্যানেলগুলোতে এজেন্ট পোস্ট করতে, প্রতিক্রিয়া দিতে ও পড়তে পারে। সেভ করলে প্রযোজ্য হয়।",
+        "tracked_channels_hint": "Slack চ্যানেল ID, যা C বা G দিয়ে শুরু হয়। Slack-এ চ্যানেলের বিবরণ খোলো: ID একদম নিচে থাকে। তুমি Slack-এ /kirocrew channels দিয়েও চ্যানেল যোগ করতে পারো, যেখানে প্রতিটি চ্যানেলের অ্যাক্টিভেশন মোড ও এজেন্টও ঠিক করা হয়।",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode-এর জন্য অ্যাপ-লেভেল টোকেন আবশ্যক (xapp- দিয়ে শুরু)।",
         "auto_link_sessions": "নতুন সেশন Slack-এ নিজে থেকে যুক্ত করো",
         "auto_link_sessions_desc": "প্রতিটি নতুন ড্যাশবোর্ড সেশন প্রথম বার্তায় বটের সাথে তোমার ব্যক্তিগত ডাইরেক্ট মেসেজে একটি Slack থ্রেড পায়। cron, অ্যাপ বা সাব-এজেন্ট দিয়ে শুরু হওয়া সেশন, Slack বা অন্য মেসেজিং অ্যাপে শুরু হওয়া সেশন, এবং ইনকগনিটো বা অস্থায়ী সেশন যেমন আছে তেমনই থাকে। এভাবে যুক্ত সেশন নিচের ফোল্ডার সেটিংয়ের জন্য Slack সেশন হিসেবে গণ্য হয় না: এটি সাইডবারে যেখানে আছে সেখানেই থাকে, আর কেবল Slack-এ শুরু হওয়া কথোপকথনই ফোল্ডারে যায়।",

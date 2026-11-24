@@ -956,7 +956,11 @@ other request on the session. The cards do not change the approval gate: the
 native-crew auto-approve rung (`hooks.auto_approve_subagent_tools` while a crew card
 is open, `tool_approval.py`) skips the claude backend, because a claude request does
 not name the session that sent it, and the rung cannot tell the parent's request
-from a child's. Every request takes the gate it takes with no child running.
+from a child's. The rung runs only on a backend in
+`ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD`
+(`SessionCapabilities.permission_requests_name_child`: kiro-cli and KAS); every
+other backend, an unknown one included, skips it the same way. Every request takes
+the gate it takes with no child running.
 Contract tests: `test_claude_native_subagent_cards.py`.
 
 A Stop on a child's card (`DELETE /api/spawn/native:<child sessionId>`) stops that

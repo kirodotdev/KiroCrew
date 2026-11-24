@@ -2897,7 +2897,7 @@
         "highlight_9": "Funciona com GitHub, GitLab e Azure DevOps; precisa de uma CLI autenticada do provedor que você conectar (`gh`, `glab` ou `az`) no host do gateway — nenhuma CLI específica é necessária para instalar",
         "page_label": "Issue Radar",
         "use_case_1": "Faça a triagem de issues e pull requests entre provedores conectados, preservando resumos, rótulos sugeridos e o histórico de investigação.",
-        "configuration_1": "Conecte um repositório e autentique a CLI do provedor no host do gateway: gh para GitHub, glab para GitLab ou az com a extensão do Azure DevOps no macOS, Linux ou WSL."
+        "configuration_1": "Conecte um repositório e autentique a CLI do provedor no host do gateway: gh para GitHub, glab para GitLab ou az com a extensão do Azure DevOps."
       },
       "views": {
         "comingSoon": {
@@ -3988,11 +3988,13 @@
         "dismiss": "Descartar",
         "edit_resend": "Editar e reenviar",
         "open_image": "Abrir imagem",
+        "open_image_named": "Abrir imagem {{name}}",
         "open_in_file_explorer": "Abrir no Explorador de Arquivos",
         "open_in_finder": "Abrir no Finder",
         "pinned_files": "Arquivos fixados",
         "pins": "Fixados",
         "preview": "Pré-visualização",
+        "remove_named": "Remover {{name}}",
         "remove_screenshot": "Remover captura",
         "screenshot": "Captura de tela",
         "show_in_file_manager": "Mostrar no gerenciador de arquivos",
@@ -4234,7 +4236,8 @@
       },
       "pinned": {
         "empty_hint": "Peça ao {{name}} para fixar os arquivos que você quer acompanhar",
-        "unpin": "Desafixar"
+        "unpin": "Desafixar",
+        "unpin_named": "Desafixar {{name}}"
       },
       "preset": {
         "black": "Preto",
@@ -9427,7 +9430,17 @@
       "sub_agent_results_ready_other": "{{count}} resultados de subagente prontos — serão processados após o turno atual",
       "queued_count_one": "{{count}} na fila",
       "queued_count_many": "{{count}} na fila",
-      "queued_count_other": "{{count}} na fila"
+      "queued_count_other": "{{count}} na fila",
+      "discard_all_queued_messages": "Descartar todas as mensagens na fila",
+      "discard_all_title_one": "Descartar {{count}} mensagem na fila?",
+      "discard_all_title_many": "Descartar {{count}} mensagens na fila?",
+      "discard_all_title_other": "Descartar {{count}} mensagens na fila?",
+      "discard_all_body": "Elas não serão enviadas e o texto delas não voltará para o campo de entrada.",
+      "discard_all_confirm": "Descartar todas",
+      "discard_all_open": "Descartar todas…",
+      "discard_all_failed_one": "Não foi possível descartar {{count}} mensagem na fila",
+      "discard_all_failed_many": "Não foi possível descartar {{count}} mensagens na fila",
+      "discard_all_failed_other": "Não foi possível descartar {{count}} mensagens na fila"
     },
     "readingWidthToggle": {
       "title_full": "Largura total",
@@ -21974,6 +21987,10 @@
       "slackPanel": {
         "add": "Adicionar",
         "allowed_enterprise_orgs": "Organizações enterprise permitidas",
+        "tracked_channels": "Canais monitorados",
+        "tracked_channels_summary": "Canais em que o agente pode publicar, reagir e ler. Aplica-se ao salvar.",
+        "tracked_channels_hint": "IDs de canais do Slack, começando com C ou G. No Slack, abra os detalhes do canal: o ID fica no final. Você também pode adicionar canais no Slack com /kirocrew channels, onde também define o modo de ativação e o agente de cada canal.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Token de nível de app necessário para o Socket Mode (começa com xapp-).",
         "auto_link_sessions": "Conectar novas sessões ao Slack automaticamente",
         "auto_link_sessions_desc": "Cada nova sessão do painel ganha uma thread no Slack na primeira mensagem, na sua mensagem direta privada com o bot. Sessões iniciadas por cron, apps ou subagentes, sessões que começaram no Slack ou em outro app de mensagens, e sessões anônimas ou temporárias ficam como estão. Uma sessão conectada assim não conta como sessão do Slack para a configuração de pasta abaixo: ela fica onde está na barra lateral, e só as conversas que começam no Slack são arquivadas.",

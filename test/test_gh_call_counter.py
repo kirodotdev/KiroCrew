@@ -1,7 +1,8 @@
 """Behavioural tests for the measurement-only ``gh`` call counter.
 
 pr-readiness and the same-repo AI review lanes install a shim as their first
-step: every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
+step, and the fork review lanes as their second, after the egress allowlist:
+every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
 counter file, then ``exec``s the real gh. Their last step folds that file into
 one ``rest-calls:`` log line. These tests run both steps for real against a
 stub ``gh`` and pin that the shim is invisible to the caller: same stdout,
@@ -150,6 +151,46 @@ def test_every_job_that_calls_gh_carries_identical_steps_first_and_last() -> Non
             report_run = report_run or report["run"]
             assert first["run"] == install_run, f"{workflow}/{job_name}: install step drifted"
             assert report["run"] == report_run, f"{workflow}/{job_name}: report step drifted"
+
+
+#: A `gh` invocation on a line of a step's script that is not a comment.
+_GH_CALL = re.compile(r"(?:^|[\s(;|&])gh\s+(?:api|pr|label)\b")
+
+
+def _calls_gh(step: dict) -> bool:
+    code = [line for line in step.get("run", "").splitlines() if not line.lstrip().startswith("#")]
+    return _GH_CALL.search("\n".join(code)) is not None
+
+
+def test_every_fork_review_job_that_calls_gh_counts_its_calls() -> None:
+    counted = 0
+    for path in sorted(WORKFLOWS.glob("fork-*-review.yml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in doc["jobs"].items():
+            where = (path.name, job_name)
+            steps = job["steps"]
+            names = [s.get("name") for s in steps]
+            if not any(_calls_gh(s) for s in steps):
+                assert INSTALL not in names and REPORT not in names, where
+                continue
+            counted += 1
+            assert names.count(INSTALL) == 1 and names.count(REPORT) == 1, where
+            # The egress allowlist stays first; the counter sees every `gh` after it.
+            assert "harden-runner" in steps[0]["uses"], where
+            assert not any(_calls_gh(s) for s in steps[:1]), where
+            install, report = steps[1], steps[-1]
+            assert install["name"] == INSTALL and report["name"] == REPORT, where
+            # The job's own condition already limits it to fork heads. Where the
+            # resolver can find the head obsolete, every later step skips it.
+            obsolete = "steps.pr.outputs.obsolete != 'true'"
+            skips = any(obsolete in str(s.get("if", "")) for s in steps[2:-1])
+            assert "if" not in install, where
+            assert report["if"] == (f"always() && {obsolete}" if skips else "always()"), where
+            assert install["continue-on-error"] is True and report["continue-on-error"] is True
+            assert "env" not in install and "env" not in report, where
+            assert install["run"] == _run_text(INSTALL), f"{where}: install step drifted"
+            assert report["run"] == _run_text(REPORT), f"{where}: report step drifted"
+    assert counted, "no fork review job was found to check"
 
 
 def test_the_shim_preserves_stdout_stderr_and_exit_code(runner: Runner) -> None:

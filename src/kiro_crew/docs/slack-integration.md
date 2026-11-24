@@ -346,6 +346,12 @@ tracked channel is readable. It does not grant inbound access or enable member
 allowlisting: Slack remains owner-only, and member-join events do not prompt for
 new users.
 
+Only the owner changes the list, from either of two places, and both apply
+without a restart: **Settings → Messaging Channels → Slack → Tracked channels**
+in the dashboard (then Save), or `/kirocrew channels` in Slack, which also sets
+each channel's activation mode and agent. A refused post, reaction, pin or
+history read on an untracked channel names both routes.
+
 ### Channel Activation Modes
 
 Each tracked channel has an activation mode:

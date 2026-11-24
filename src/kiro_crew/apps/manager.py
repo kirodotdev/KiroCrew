@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AgentOwner,
         _absence_is_genuine,
         _add_adoption_row,
+        _add_shadowed_builtin_row,
         _adoption_rows_context,
         _app_agent_names,
         _app_agent_registration,

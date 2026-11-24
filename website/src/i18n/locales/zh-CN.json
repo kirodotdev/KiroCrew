@@ -2679,7 +2679,7 @@
       },
       "manifest": {
         "use_case_1": "对已连接服务商中的 issue 和拉取请求进行分类，同时保留摘要、建议标签和调查历史。",
-        "configuration_1": "连接仓库，并在网关主机上认证服务商 CLI：GitHub 使用 gh，GitLab 使用 glab，Azure DevOps 在 macOS、Linux 或 WSL 上使用带扩展的 az。",
+        "configuration_1": "连接仓库，并在网关主机上认证服务商 CLI：GitHub 使用 gh，GitLab 使用 glab，Azure DevOps 使用带扩展的 az。",
         "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 与 GitLab 的 issue，以及 Azure DevOps 工作项，用 AI 建议标签，为每个条目留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
         "display_name": "Issue Radar",
         "highlight_1": "为 issue 和拉取请求生成 AI 摘要与建议标签，每条都附上理由",
@@ -3740,11 +3740,13 @@
         "dismiss": "忽略",
         "edit_resend": "编辑并重新发送",
         "open_image": "打开图片",
+        "open_image_named": "打开图片 {{name}}",
         "open_in_file_explorer": "在文件资源管理器中打开",
         "open_in_finder": "在 Finder 中打开",
         "pinned_files": "已置顶文件",
         "pins": "置顶",
         "preview": "预览",
+        "remove_named": "移除 {{name}}",
         "remove_screenshot": "移除截图",
         "screenshot": "截图",
         "show_in_file_manager": "在文件管理器中显示",
@@ -3986,7 +3988,8 @@
       },
       "pinned": {
         "empty_hint": "让 {{name}} 帮你钉住想追踪的文件",
-        "unpin": "取消钉住"
+        "unpin": "取消钉住",
+        "unpin_named": "取消钉住 {{name}}"
       },
       "preset": {
         "black": "黑猫",
@@ -8965,7 +8968,13 @@
       "wont_survive_a_restart": "重启后会丢失",
       "restored_held": "重启后已恢复。不会自动发送。",
       "sub_agent_results_ready_other": "{{count}} 个子代理结果已就绪，将在当前轮次结束后处理",
-      "queued_count_other": "{{count}} 条已排队"
+      "queued_count_other": "{{count}} 条已排队",
+      "discard_all_queued_messages": "丢弃所有排队消息",
+      "discard_all_title_other": "丢弃 {{count}} 条排队消息？",
+      "discard_all_body": "这些消息不会发送，其文本也不会退回到输入框。",
+      "discard_all_confirm": "全部丢弃",
+      "discard_all_open": "全部丢弃…",
+      "discard_all_failed_other": "无法丢弃 {{count}} 条排队消息"
     },
     "readingWidthToggle": {
       "title_full": "全宽",
@@ -20860,6 +20869,10 @@
       "slackPanel": {
         "add": "添加",
         "allowed_enterprise_orgs": "允许的企业组织",
+        "tracked_channels": "跟踪的频道",
+        "tracked_channels_summary": "智能体可以发帖、回应和读取的频道。保存后生效。",
+        "tracked_channels_hint": "以 C 或 G 开头的 Slack 频道 ID。在 Slack 中打开频道详情，ID 在最下方。你也可以在 Slack 中用 /kirocrew channels 添加频道，并在那里设置每个频道的激活模式和智能体。",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode 所需的应用级令牌（以 xapp- 开头）。",
         "auto_link_sessions": "自动把新会话连接到 Slack",
         "auto_link_sessions_desc": "仪表板里每个新会话发出第一条消息时会得到一个 Slack 话题，开在你与机器人的私信里。由定时任务、应用或子代理发起的会话，从 Slack 或其他聊天应用开始的会话，以及隐身或临时会话，不受影响。这样连接起来的会话在下方文件夹设置中不算 Slack 会话：它留在侧边栏原位，只有从 Slack 开始的对话才会归入文件夹。",

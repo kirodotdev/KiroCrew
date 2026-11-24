@@ -3637,7 +3637,7 @@ initialization drain.
 
 Two `initialize` flags under `agentCapabilities._meta.kiro` are read; only `mcpRegistryPointers` turns on a change to what the KAS projection sends. Only a literal `true` counts, and with the flag absent the request is byte-identical to one built without the module. `runtime_session_setup` hands `kas_engine_features.advertised(self._agent_capabilities)` to every harness's `session_extras` as `engine_features`; only `KasHarness` reads it, down to `kas_agents._project_mcp_servers`.
 
-- `mcpServerOAuth`: read, gates nothing. KAS 0.66.104 (kiro-agent #4599) keeps a `customAgents` entry's `oauth` block and announces no flag; engines before it drop the block and still start the server and the agent (measured on 0.66.33 and 0.66.91). So every remote entry's block is narrowed to `clientId` and `redirectUri` (`carry_oauth`, through `mcp_oauth_projection.wire_oauth`) and sent, whatever the engine announces, and a nested `oauth.oauthScopes` moves to the entry's own `oauthScopes`. `clientMetadataUrl` is not sent: without a `clientId` the engine would key that grant `<url>||cimd:<metadata url>`, and `mcp_grant_kas` reads only `<url>|`. `clientSecret` is never sent: no engine accepts it over ACP, and engines before 0.66.104 write the raw `customAgents` payload into their session file, so a block that carries one names a confidential client the engine cannot complete (it exchanges with PKCE and no secret), and that block is withheld whole, with one log line naming the field; its `clientId` would otherwise stop the engine's own registration for a server that offers it. The session-start "oauth discarded" notice (`turn_spec_hooks`, `discards_mcp_oauth`) is on only where Crew knows the engine is older than 0.66.104 (`kas_engine_features.engine_discards_oauth`): the bundle route, whose engine version the harness records on the session handle (`KasHarness.bundle_engine_version` -> `kas_bundle_engine_version`). The relay's `initialize` carries no `agentInfo`, so its engine version is unknown and the notice stays off there, except for a block Crew sends nothing from (`mcp_oauth_projection.oauth_withheld`: it names a `clientSecret`, or keeps no `clientId`, `redirectUri` or nested `oauthScopes`, such as a `clientMetadataUrl`-only block): that one is withheld on every engine, so every KAS session names its server (`withholds_oauth_secret`). The projection and the notice read the same `mcp_oauth_projection.wire_oauth`. The dashboard reads it through `agent_sdk.kas_engine.discards_mcp_oauth`, its side of the agent-SDK boundary. No session-level element needs `_meta.kiro.oauth`: on KAS the session array carries only stdio servers (`hoist_servers_for_session`), never a remote one.
+- `mcpServerOAuth`: read, gates nothing. KAS 0.66.104 (kiro-agent #4599) keeps a `customAgents` entry's `oauth` block and announces no flag; engines before it drop the block and still start the server and the agent (measured on 0.66.33 and 0.66.91). So every remote entry's block is narrowed to `clientId` and `redirectUri` (`carry_oauth`, through `mcp_oauth_projection.wire_oauth`) and sent, whatever the engine announces, and a nested `oauth.oauthScopes` moves to the entry's own `oauthScopes`. `clientMetadataUrl` is not sent: without a `clientId` the engine would key that grant `<url>||cimd:<metadata url>`, and `mcp_grant_kas` reads only `<url>|`. `clientSecret` is never sent: no engine accepts it over ACP, and engines before 0.66.104 write the raw `customAgents` payload into their session file, so a block that carries one names a confidential client the engine cannot complete (it exchanges with PKCE and no secret), and that block is withheld whole, with one log line naming the field; its `clientId` would otherwise stop the engine's own registration for a server that offers it. The session-start "oauth discarded" notice (`turn_spec_hooks`, `discards_mcp_oauth`) is on only where Crew knows the engine is older than 0.66.104 (`kas_engine_features.engine_discards_oauth`): the bundle route, whose engine version the harness records on the session handle (`KasHarness.bundle_engine_version` -> `kas_bundle_engine_version`). The relay's `initialize` carries no `agentInfo`, so there the spawn reads the engine version from kiro-cli's unpacked engine extract (`chat_runtime_sharing.relay_engine_version`, off the loop; a failed read is unknown and never fails the spawn) and records it the same way (`KasHarness.relay_engine_version` -> `kas_relay_engine_version`), judged by the same `engine_discards_oauth`; the bundle version wins when both are set. With the relay's engine version unread the notice stays off, except for a block Crew sends nothing from (`mcp_oauth_projection.oauth_withheld`: it names a `clientSecret`, or keeps no `clientId`, `redirectUri` or nested `oauthScopes`, such as a `clientMetadataUrl`-only block): that one is withheld on every engine, so every KAS session names its server (`withholds_oauth_secret`). The projection and the notice read the same `mcp_oauth_projection.wire_oauth`. The dashboard reads it through `agent_sdk.kas_engine.discards_mcp_oauth`, its side of the agent-SDK boundary. No session-level element needs `_meta.kiro.oauth`: on KAS the session array carries only stdio servers (`hoist_servers_for_session`), never a remote one.
 - `mcpRegistryPointers`: a user entry carrying the registry marker is sent to `customAgents` as a pointer instead of withheld, with `agent.mcp_registry_mode` on or off. The pointer (`kas_engine_features.registry_pointer`) is `{"type": "registry"}` plus the entry's launch `command` and `args`, because an engine that drops a marker with no command would drop the server; its `env`, `headers` and other fields stay out, and carrying `env` is a follow-up. Crew's own servers are never pointers, in either mode: they stay `stdio` so `hoist_servers_for_session` moves them to the session-level array and stamps the session token, which a pointer has no slot for. In registry mode they therefore keep the "no slot for the marker" warning and the session notice exactly as without the flag. Carrying the session token on a pointer is a follow-up.
 
 ### KAS MCP OAuth sign-in
@@ -5680,22 +5680,34 @@ folder, never a half-engine at the version's name. Removing every version still
 deletes in place. On a Linux
 host whose glibc is below the release's floor for its architecture the install
 refuses up front, before any download, naming the found glibc, the minimum, the
-Node key and why; nothing is published. The floor (`kas_bundle._glibc_floor`) is
-`kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR[<node key>]` for the pinned version and the
+Node key and why; nothing is published. There are two pins, one engine release:
+`KAS_PIN_VERSION` (nodejs.org Node and the npm onnxruntime, floor 2.28) and
+`KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
+release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
+linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
+linux-x64 host whose glibc reads below 2.28; every other host (arm64, macOS,
+Windows, linux-x64 at 2.28+ or with an unreadable glibc) gets `KAS_PIN_VERSION`.
+It is read on every call, so a host that moves to glibc 2.28+ installs the normal
+pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.
+`pinned_version()` is `KIROCREW_KAS_VERSION` when set, else that host pin, and every
+"is this the pin?" check (`install_pinned`, `kirocrew kas install`/`status`, the
+startup and spawn installs, doctor, the dashboard card, diagnostics) compares
+against `host_pin_version()`. The floor (`kas_bundle._glibc_floor`) is
+`kas_pin.KAS_PIN_GLIBC_FLOORS[<version>][<node key>]` for either pin and the
 official nodejs.org floor (`constants._OFFICIAL_NODE_GLIBC_FLOOR`, 2.28, the one
-doctor's Node remedy also uses) for any other version or key. A release on the
-nodejs.org Node needs 2.28 (and the engine's npm onnxruntime library 2.27). The pin
-is a release republished from Amazon Linux 2 builds (`packaging/kas-al2/`, a `-al2`
-version), so `linux-x64` pins 2.26 and Amazon Linux 2 installs it; `linux-arm64`
-has no such build and pins 2.28. The floor moves only in the commit that moves the
-pin.
+doctor's Node remedy also uses) for any other version or key, so `--unpinned`,
+`--from` and the override are held to 2.28. A pin's floor moves only in the
+commit that moves that pin.
 The glibc reader is `constants._host_glibc_version`. The gateway's install (`install_pinned`) runs the same local host checks
 (the glibc floor and the OS and architecture keys) before it fetches the manifest, so
 the refusal names its cause on an offline host too and a spawn that asks again makes
 no network round trip. Which
-version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
+version runs is the host's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
-published `manifest.json`, which in turn pins every artifact). The version is
+published `manifest.json`, which in turn pins every artifact), and
+`KAS_PIN_AL2_MANIFEST_SHA256` for the AL2 pin (`KAS_PIN_MANIFESTS` maps each pin to
+its digest). The desktop, Docker and platform-wheel builds stage `KAS_PIN_VERSION`:
+they target glibc 2.28+. The version is
 an engine release, optionally followed by `-node<N>` when the same engine build
 is republished with a different bundled Node runtime (a Node security fix is
 never an overwrite of a published `kas/<version>/` key); `KAS_PIN_ENGINE_RELEASE`

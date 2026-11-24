@@ -2761,7 +2761,7 @@
       },
       "manifest": {
         "use_case_1": "接続済みプロバイダーの Issue とプルリクエストをトリアージしながら、要約、推奨ラベル、調査履歴を保持します。",
-        "configuration_1": "リポジトリを接続し、ゲートウェイホストでプロバイダーの CLI を認証します。GitHub は gh、GitLab は glab、Azure DevOps は macOS、Linux、WSL 上で拡張機能を追加した az を使用します。",
+        "configuration_1": "リポジトリを接続し、ゲートウェイホストでプロバイダーの CLI を認証します。GitHub は gh、GitLab は glab、Azure DevOps は拡張機能を追加した az を使用します。",
         "description": "覚えているIssueトリアージアシスタント。AIが提案するラベルと項目ごとの調査ノートを使用して、GitHub のIssue、GitLab のIssue、Azure DevOps の作業項目をブラウズ、フィルター、トリアージします。ローカル台帳で調査結果を保持するため、何度も調査されることはありません。",
         "display_name": "Issue Radar",
         "highlight_1": "Issue とプルリクエストのAI要約と推奨ラベル、それぞれの根拠を表示",
@@ -3822,11 +3822,13 @@
         "dismiss": "閉じる",
         "edit_resend": "編集して再送信",
         "open_image": "画像を開く",
+        "open_image_named": "画像「{{name}}」を開く",
         "open_in_file_explorer": "エクスプローラーで開く",
         "open_in_finder": "Finder で開く",
         "pinned_files": "ピン留めファイル",
         "pins": "ピン留め",
         "preview": "プレビュー",
+        "remove_named": "「{{name}}」を削除",
         "remove_screenshot": "スクリーンショットを削除",
         "screenshot": "スクリーンショット",
         "show_in_file_manager": "ファイルマネージャーに表示",
@@ -4068,7 +4070,8 @@
       },
       "pinned": {
         "empty_hint": "{{name}}にファイルをピン留めするよう依頼して、追跡したいファイルを指定してください",
-        "unpin": "ピン留め解除"
+        "unpin": "ピン留め解除",
+        "unpin_named": "「{{name}}」のピン留め解除"
       },
       "preset": {
         "black": "黒",
@@ -8965,7 +8968,13 @@
       "wont_survive_a_restart": "再起動すると失われます",
       "restored_held": "再起動後に復元されました。自動では送信されません。",
       "sub_agent_results_ready_other": "{{count}} 個のサブエージェント結果が準備完了 — 現在のターンの後で処理します",
-      "queued_count_other": "{{count}} 件がキュー内"
+      "queued_count_other": "{{count}} 件がキュー内",
+      "discard_all_queued_messages": "キュー内のメッセージをすべて破棄",
+      "discard_all_title_other": "キュー内の {{count}} 件のメッセージを破棄しますか？",
+      "discard_all_body": "これらは送信されず、テキストも入力欄に戻りません。",
+      "discard_all_confirm": "すべて破棄",
+      "discard_all_open": "すべて破棄…",
+      "discard_all_failed_other": "キュー内の {{count}} 件のメッセージを破棄できませんでした"
     },
     "readingWidthToggle": {
       "title_full": "全幅",
@@ -20860,6 +20869,10 @@
       "slackPanel": {
         "add": "追加",
         "allowed_enterprise_orgs": "許可されたエンタープライズ org",
+        "tracked_channels": "追跡チャンネル",
+        "tracked_channels_summary": "エージェントが投稿、リアクション、閲覧できるチャンネルです。保存すると適用されます。",
+        "tracked_channels_hint": "C または G で始まる Slack チャンネル ID です。Slack でチャンネルの詳細を開くと、一番下に ID があります。Slack の /kirocrew channels でもチャンネルを追加でき、各チャンネルのアクティベーションモードとエージェントもそこで設定します。",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode に必要なアプリレベルトークン（xapp- で始まります）。",
         "auto_link_sessions": "新しいセッションを自動的にSlackへ接続",
         "auto_link_sessions_desc": "ダッシュボードの新しいセッションごとに、最初のメッセージでボットとのプライベートなダイレクトメッセージにSlackスレッドが作られます。cron、アプリ、サブエージェントから始まったセッション、Slackや他のメッセージングアプリで始まったセッション、シークレットや一時的なセッションは対象外です。この方法で接続したセッションは、下のフォルダー設定ではSlackセッションとして数えられません。サイドバーの元の場所に残り、Slackで始まった会話だけがフォルダーに入ります。",

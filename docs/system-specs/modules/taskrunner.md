@@ -866,7 +866,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/refine/answer` | Legacy answer hook; current refine never enters a question wait, so ordinary calls return 409 |
 | POST | `/api/reveal` | Reveal a path in the host file manager for a direct-local caller; remote or launcher-less cases return a clipboard-copy fallback |
 
-The mutating task-runner routes pass `_require_taskrunner_owner`: a dashboard-user
+The mutating task-runner routes pass `require_owner_for_dashboard_caller`: a dashboard-user
 request (`app == ""`) must be the dashboard owner (`require_owner_dashboard_request`,
 403 `owner_only`); an internal-secret loopback caller (the `task_run` MCP tool) and an
 app token keep the controls that already govern them (the app is confined to its

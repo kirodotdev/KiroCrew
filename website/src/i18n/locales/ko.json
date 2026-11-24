@@ -2761,7 +2761,7 @@
       },
       "manifest": {
         "use_case_1": "연결된 제공자의 이슈와 풀 리퀘스트를 트리아지하면서 요약, 제안 레이블, 조사 기록을 유지합니다.",
-        "configuration_1": "저장소를 연결하고 게이트웨이 호스트에서 제공자 CLI를 인증하세요. GitHub에는 gh, GitLab에는 glab, Azure DevOps에는 macOS, Linux 또는 WSL에서 확장을 설치한 az가 필요합니다.",
+        "configuration_1": "저장소를 연결하고 게이트웨이 호스트에서 제공자 CLI를 인증하세요. GitHub에는 gh, GitLab에는 glab, Azure DevOps에는 확장을 설치한 az가 필요합니다.",
         "description": "기억하는 이슈 트리아지 어시스턴트입니다. AI가 제안하는 레이블과 항목별 조사 노트로 GitHub 이슈, GitLab 이슈, Azure DevOps 작업 항목을 살펴보고 필터링하고 트리아지하세요 — 조사 결과는 로컬 원장에 보관되므로 같은 내용을 다시 조사하지 않습니다.",
         "display_name": "Issue Radar",
         "highlight_1": "이슈와 풀 리퀘스트에 대한 AI 요약과 추천 레이블, 각각의 근거 제공",
@@ -3822,11 +3822,13 @@
         "dismiss": "닫기",
         "edit_resend": "편집 후 재전송",
         "open_image": "이미지 열기",
+        "open_image_named": "이미지 {{name}} 열기",
         "open_in_file_explorer": "파일 탐색기에서 열기",
         "open_in_finder": "Finder에서 열기",
         "pinned_files": "고정된 파일",
         "pins": "고정",
         "preview": "미리 보기",
+        "remove_named": "{{name}} 제거",
         "remove_screenshot": "스크린샷 제거",
         "screenshot": "스크린샷",
         "show_in_file_manager": "파일 관리자에서 보기",
@@ -4068,7 +4070,8 @@
       },
       "pinned": {
         "empty_hint": "추적하고 싶은 파일을 {{name}}에게 고정해 달라고 하세요",
-        "unpin": "고정 해제"
+        "unpin": "고정 해제",
+        "unpin_named": "{{name}} 고정 해제"
       },
       "preset": {
         "black": "검정",
@@ -8965,7 +8968,13 @@
       "wont_survive_a_restart": "재시작하면 사라집니다",
       "restored_held": "재시작 후 복원되었습니다. 자동으로 전송되지 않습니다.",
       "sub_agent_results_ready_other": "서브 에이전트 결과 {{count}}개 준비 완료 — 현재 턴이 끝난 뒤 처리합니다",
-      "queued_count_other": "{{count}}개 대기 중"
+      "queued_count_other": "{{count}}개 대기 중",
+      "discard_all_queued_messages": "대기 중인 메시지 모두 삭제",
+      "discard_all_title_other": "대기 중인 메시지 {{count}}개를 삭제하시겠습니까?",
+      "discard_all_body": "이 메시지는 전송되지 않으며, 텍스트도 입력창으로 돌아가지 않습니다.",
+      "discard_all_confirm": "모두 삭제",
+      "discard_all_open": "모두 삭제…",
+      "discard_all_failed_other": "대기 중인 메시지 {{count}}개를 삭제하지 못했습니다"
     },
     "readingWidthToggle": {
       "title_full": "전체 너비",
@@ -20860,6 +20869,10 @@
       "slackPanel": {
         "add": "추가",
         "allowed_enterprise_orgs": "허용된 엔터프라이즈 org",
+        "tracked_channels": "추적 채널",
+        "tracked_channels_summary": "에이전트가 게시하고, 반응하고, 읽을 수 있는 채널입니다. 저장하면 적용됩니다.",
+        "tracked_channels_hint": "C 또는 G로 시작하는 Slack 채널 ID입니다. Slack에서 채널 세부 정보를 열면 맨 아래에 ID가 있습니다. Slack에서 /kirocrew channels로 채널을 추가할 수도 있으며, 각 채널의 활성화 모드와 에이전트도 거기서 설정합니다.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode에 필요한 앱 수준 토큰입니다(xapp-로 시작).",
         "auto_link_sessions": "새 세션을 Slack에 자동으로 연결",
         "auto_link_sessions_desc": "대시보드의 새 세션마다 첫 메시지에서 봇과의 비공개 다이렉트 메시지에 Slack 스레드가 만들어집니다. cron, 앱, 하위 에이전트가 시작한 세션, Slack이나 다른 메시징 앱에서 시작된 세션, 시크릿 세션과 임시 세션은 그대로 둡니다. 이렇게 연결된 세션은 아래 폴더 설정에서 Slack 세션으로 치지 않습니다. 사이드바의 원래 자리에 그대로 남고, Slack에서 시작된 대화만 폴더에 들어갑니다.",

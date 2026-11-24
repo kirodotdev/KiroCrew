@@ -37,6 +37,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** `slack.tracking_channels`, IDs only: the channels the agent may post to.
+   *  Absent on an older gateway. */
+  tracking_channels?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
@@ -202,6 +205,10 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** Tracked channels to add and to remove, as an edit: a channel added in
+   *  Slack since the page loaded, and each entry's activation and agent, stay. */
+  tracking_channels_add?: string[]
+  tracking_channels_remove?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */

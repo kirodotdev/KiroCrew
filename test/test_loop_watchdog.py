@@ -272,6 +272,9 @@ def test_start_stop_thread_lifecycle() -> None:
 # ── A paging loop thread defers the exit ─────────────────────────────────────
 
 _MANAGED_BUDGET = 90.0
+# A paging deferral moves the daemon thread's exit one budget out and the
+# kernel backstop one budget behind that.
+_MANAGED_BACKSTOP = 2 * _MANAGED_BUDGET
 
 
 class _PagingFixture:
@@ -333,7 +336,7 @@ def test_a_paging_loop_thread_re_arms_the_exit_and_says_so_once() -> None:
         fx.poll_at(10.0)  # the baseline
         fx.poll_at(15.0, add_faults=40)
         fx.poll_at(20.0, add_faults=12)
-        assert fx.arms == [_MANAGED_BUDGET, _MANAGED_BUDGET]
+        assert fx.arms == [_MANAGED_BACKSTOP, _MANAGED_BACKSTOP]
         assert fx.fault_reads[-1] == threading.get_native_id()
         assert len(fx.paging_lines()) == 1
         assert "40 major faults" in fx.paging_lines()[0]
@@ -348,7 +351,7 @@ def test_paging_before_the_first_beat_still_defers_the_exit() -> None:
     try:
         fx.poll_at(10.0)  # the baseline
         fx.poll_at(15.0, add_faults=40)  # also crosses enrich_after
-        assert fx.arms == [_MANAGED_BUDGET]
+        assert fx.arms == [_MANAGED_BACKSTOP]
         assert fx.fault_reads[-1] == threading.get_native_id()
         assert len(fx.paging_lines()) == 1
         assert f"loop thread {threading.get_ident():#x} is at" in "\n".join(fx.handler.messages)
@@ -428,7 +431,7 @@ def test_a_beat_ends_the_paging_episode() -> None:
         fx.poll_at(10.0, add_faults=3)  # first counted poll after the beat: baseline only
         assert fx.arms == []
         fx.poll_at(15.0, add_faults=3)
-        assert fx.arms == [_MANAGED_BUDGET]
+        assert fx.arms == [_MANAGED_BACKSTOP]
         assert len(fx.paging_lines()) == 2
     finally:
         fx.wd.stop()
@@ -445,7 +448,8 @@ def test_a_beat_during_the_fault_read_keeps_its_full_deadline(
         fx.poll_at(105.0)
         fx.on_fault_read = fx.wd.beat
         fx.poll_at(115.0, add_faults=5)  # would otherwise arm the 5s remainder
-        assert fx.arms == [_MANAGED_BUDGET]
+        # The beat's backstop: one budget late, capped at the 30s grace.
+        assert fx.arms == [_MANAGED_BUDGET + 30.0]
         assert fx.paging_lines() == []  # nothing was deferred, so nothing says so
     finally:
         fx.wd.stop()
@@ -602,7 +606,7 @@ def test_macos_pressure_and_rising_pageins_defers_and_says_so_once() -> None:
         fx.poll_at(10.0)  # baseline
         fx.poll_at(15.0, add_pageins=40)
         fx.poll_at(20.0, add_pageins=12)
-        assert fx.arms == [_MANAGED_BUDGET, _MANAGED_BUDGET]
+        assert fx.arms == [_MANAGED_BACKSTOP, _MANAGED_BACKSTOP]
         assert len(fx.paging_lines()) == 1
         line = fx.paging_lines()[0]
         assert "40 page-ins" in line

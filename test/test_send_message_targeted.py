@@ -89,6 +89,14 @@ class TestTargetedChannel:
                 assert resp.status == 403
                 data = await resp.json()
                 assert "not in tracked channels" in data["error"]
+                assert data["code"] == "channel_not_tracked"
+                # The refusal names the real owner-only routes, which apply live,
+                # so the agent relays them instead of guessing a Settings path or
+                # asking for a restart (a config edit is hot-applied).
+                assert "Only the Kiro Crew owner can track a channel" in data["error"]
+                assert "Settings → Messaging Channels → Slack → Tracked channels" in data["error"]
+                assert "/kirocrew channels" in data["error"]
+                assert "restart the gateway" not in data["error"]
                 state.notify.assert_not_called()
 
 

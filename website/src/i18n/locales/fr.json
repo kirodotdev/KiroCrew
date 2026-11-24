@@ -2981,7 +2981,7 @@
         "highlight_9": "Fonctionne avec GitHub, GitLab et Azure DevOps; nécessite sur l’hôte du gateway une CLI authentifiée pour le fournisseur que tu connectes (`gh`, `glab` ou `az`) — aucune CLI particulière n’est requise pour l’installation",
         "page_label": "Issue Radar",
         "use_case_1": "Trie les issues et les pull requests de plusieurs fournisseurs connectés tout en conservant les résumés, les labels suggérés et l'historique des enquêtes.",
-        "configuration_1": "Connecte un dépôt et authentifie la CLI de son fournisseur sur l'hôte de la passerelle : gh pour GitHub, glab pour GitLab, ou az avec l'extension Azure DevOps sous macOS, Linux ou WSL."
+        "configuration_1": "Connecte un dépôt et authentifie la CLI de son fournisseur sur l'hôte de la passerelle : gh pour GitHub, glab pour GitLab, ou az avec l'extension Azure DevOps."
       },
       "views": {
         "comingSoon": {
@@ -4072,11 +4072,13 @@
         "dismiss": "Ignorer",
         "edit_resend": "Modifier et renvoyer",
         "open_image": "Ouvrir l'image",
+        "open_image_named": "Ouvrir l'image {{name}}",
         "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
         "open_in_finder": "Ouvrir dans le Finder",
         "pinned_files": "Fichiers épinglés",
         "pins": "Épinglés",
         "preview": "Aperçu",
+        "remove_named": "Supprimer {{name}}",
         "remove_screenshot": "Retirer la capture",
         "screenshot": "Capture d'écran",
         "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
@@ -4318,7 +4320,8 @@
       },
       "pinned": {
         "empty_hint": "Demandez à {{name}} d'épingler les fichiers que vous voulez suivre",
-        "unpin": "Désépingler"
+        "unpin": "Désépingler",
+        "unpin_named": "Désépingler {{name}}"
       },
       "preset": {
         "black": "Noir",
@@ -9427,7 +9430,17 @@
       "sub_agent_results_ready_other": "{{count}} résultats de sous-agent prêts — traitement après le tour en cours",
       "queued_count_one": "{{count}} en file d’attente",
       "queued_count_many": "{{count}} en file d’attente",
-      "queued_count_other": "{{count}} en file d’attente"
+      "queued_count_other": "{{count}} en file d’attente",
+      "discard_all_queued_messages": "Supprimer tous les messages en file d’attente",
+      "discard_all_title_one": "Supprimer {{count}} message en file d’attente ?",
+      "discard_all_title_many": "Supprimer {{count}} messages en file d’attente ?",
+      "discard_all_title_other": "Supprimer {{count}} messages en file d’attente ?",
+      "discard_all_body": "Ils ne seront pas envoyés et leur texte ne reviendra pas dans la zone de saisie.",
+      "discard_all_confirm": "Tout supprimer",
+      "discard_all_open": "Tout supprimer…",
+      "discard_all_failed_one": "Impossible de supprimer {{count}} message en file d’attente",
+      "discard_all_failed_many": "Impossible de supprimer {{count}} messages en file d’attente",
+      "discard_all_failed_other": "Impossible de supprimer {{count}} messages en file d’attente"
     },
     "readingWidthToggle": {
       "title_full": "Pleine largeur",
@@ -21974,6 +21987,10 @@
       "slackPanel": {
         "add": "Ajouter",
         "allowed_enterprise_orgs": "Organisations Enterprise autorisées",
+        "tracked_channels": "Canaux suivis",
+        "tracked_channels_summary": "Canaux où l'agent peut publier, réagir et lire. S'applique à l'enregistrement.",
+        "tracked_channels_hint": "ID de canaux Slack, commençant par C ou G. Dans Slack, ouvre les détails du canal : l'ID se trouve tout en bas. Tu peux aussi ajouter des canaux dans Slack avec /kirocrew channels, où tu choisis aussi le mode d'activation et l'agent de chaque canal.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Jeton de niveau application requis pour Socket Mode (commence par xapp-).",
         "auto_link_sessions": "Connecter automatiquement les nouvelles sessions à Slack",
         "auto_link_sessions_desc": "Chaque nouvelle session du tableau de bord reçoit un fil Slack dès son premier message, dans ton message direct privé avec le bot. Les sessions lancées par cron, des apps ou des sous-agents, celles qui ont commencé dans Slack ou une autre app de messagerie, et les sessions incognito ou temporaires ne sont pas touchées. Une session connectée ainsi ne compte pas comme session Slack pour le réglage de dossier ci-dessous : elle reste à sa place dans la barre latérale, et seules les conversations qui commencent dans Slack sont classées.",

@@ -913,6 +913,29 @@ class TestRmFloorReadsNestedShellPayloads:
         reason = is_denied(command)
         assert reason is None or "component=argv-floor" not in reason
 
+    @pytest.mark.parametrize(
+        ("command", "wipes"),
+        [
+            # F1: in double quotes bash keeps a ``\`` before ``/``: the dir named ``\/``.
+            ('RM -fr "\\/"', False),
+            ('RM -fr "/"', True),
+            ('RM -fr "\\\\/"', False),  # ``\\`` is one literal ``\``, then ``/``
+            ('RM -fr "/\\\n"', True),  # bash drops a quoted backslash-newline
+            ('RM -fr "\\$HOME"', False),
+            ('RM -fr "$HOME"', True),
+            ('RM -fr "\\~"', False),
+            # F2: only the single-quoted ``\$`` reaches the payload as a literal ``$HOME``.
+            ("bash -c 'RM -fr \\$HOME'", False),
+            ('bash -c "RM -fr \\$HOME"', True),
+            ("bash -c 'RM -fr $HOME'", True),
+            ('bash -c "RM -fr $HOME"', True),
+        ],
+    )
+    def test_the_floor_reads_quotes_as_bash_does(self, command, wipes):
+        """A quoted backslash bash keeps names a dir; one bash drops leaves the wipe."""
+        reason = is_denied(command.replace("RM", "r" + "m"))
+        assert (reason is not None and "component=argv-floor" in reason) is wipes
+
     def test_a_quoted_separator_in_a_nested_commit_message_is_data(self):
         """A single quote inside the payload keeps its ``;`` as data, as on main."""
         wipe = "r" + "m -r -f ~"

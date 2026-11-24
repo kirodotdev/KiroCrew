@@ -5508,7 +5508,17 @@ Two subtleties:
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
-  remains only for an event that carries neither field. The default branch comes from
+  remains only for an event that carries neither field. Every `fork-*` workflow that
+  resolves its PR from a `workflow_run` head asks the same one-page question first.
+  The filter only narrows the list: each workflow's own match on head SHA, repository
+  and branch still decides, and a filtered page with no match falls through to the walk,
+  which also finds a PR whose head label differs from its head repository's owner. A
+  failed query ends the step; it is never answered by the walk. The fork review lanes
+  print the `rest-calls:` count as the same-repo lanes do (a `--paginate` read counts
+  once however many pages it took, so a walk shows in the step's "No open PR matched"
+  line, not in the count); `test_fork_pr_resolver_head_filter.py` runs every such
+  resolver against a `gh` that honours the filter and one that ignores it and requires
+  the same ending. The default branch comes from
   the event payload, and `pr_status.py --disposition-gate` reads the PR's comment pages
   once for both the disposition records and the reviewer markers (it walked them twice),
   and `pr_findings.py` uses the same shared read.

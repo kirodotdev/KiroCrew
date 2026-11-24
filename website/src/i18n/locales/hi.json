@@ -2784,7 +2784,7 @@
         "description": "याद रखने वाला इशू ट्रायाज सहायक। GitHub इशू, GitLab इशू और Azure DevOps वर्क आइटम को AI-सुझाए लेबल और हर आइटम के जाँच नोट्स के साथ ब्राउज़ करो, फ़िल्टर करो और ट्रायाज करो — नतीजे लोकल लेजर में रखे जाते हैं ताकि किसी की दोबारा जाँच न हो।",
         "display_name": "Issue Radar",
         "use_case_1": "कनेक्ट किए गए provider के issue और pull request का ट्रायाज करें और सारांश, सुझाए गए label व जाँच का इतिहास बनाए रखें।",
-        "configuration_1": "रिपॉज़िटरी कनेक्ट करें और गेटवे होस्ट पर provider CLI प्रमाणित करें: GitHub के लिए gh, GitLab के लिए glab, या macOS, Linux अथवा WSL पर Azure DevOps extension सहित az।",
+        "configuration_1": "रिपॉज़िटरी कनेक्ट करो और गेटवे होस्ट पर provider CLI प्रमाणित करो: GitHub के लिए gh, GitLab के लिए glab, या Azure DevOps extension सहित az।",
         "highlight_1": "इशू और पुल रिक्वेस्ट के लिए AI सारांश और सुझाए लेबल, हर एक के साथ उसकी वजह",
         "highlight_2": "हर इशू के जाँच नोट्स लोकल लेजर में रखे जाते हैं ताकि किसी की दोबारा जाँच न हो",
         "highlight_3": "पेज छोड़े बिना पुल रिक्वेस्ट पर काम करो: मंज़ूरी दो, बदलाव माँगो, टिप्पणी करो, मर्ज करो, बंद करो या फिर खोलो, और CI रद्द करो या दोबारा चलाओ — एक-एक करके या चुनी हुई कई पर",
@@ -3864,11 +3864,13 @@
         "dismiss": "खारिज करें",
         "edit_resend": "संपादित करके फिर से भेजें",
         "open_image": "छवि खोलो",
+        "open_image_named": "छवि {{name}} खोलो",
         "open_in_file_explorer": "File Explorer में खोलें",
         "open_in_finder": "Finder में खोलें",
         "pinned_files": "पिन की गई फ़ाइलें",
         "pins": "पिन",
         "preview": "पूर्वावलोकन",
+        "remove_named": "{{name}} हटाओ",
         "remove_screenshot": "स्क्रीनशॉट हटाओ",
         "screenshot": "स्क्रीनशॉट",
         "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
@@ -4110,7 +4112,8 @@
       },
       "pinned": {
         "empty_hint": "{{name}} से उन फ़ाइलों को पिन करने के लिए कहो जिन्हें तुम ट्रैक करना चाहते हो",
-        "unpin": "अनपिन करें"
+        "unpin": "अनपिन करें",
+        "unpin_named": "{{name}} अनपिन करो"
       },
       "preset": {
         "black": "काला",
@@ -9196,7 +9199,15 @@
       "sub_agent_results_ready_one": "{{count}} सब-एजेंट परिणाम तैयार — वर्तमान टर्न के बाद प्रोसेस होगा",
       "sub_agent_results_ready_other": "{{count}} सब-एजेंट परिणाम तैयार — वर्तमान टर्न के बाद प्रोसेस होंगे",
       "queued_count_one": "{{count}} कतार में",
-      "queued_count_other": "{{count}} कतार में"
+      "queued_count_other": "{{count}} कतार में",
+      "discard_all_queued_messages": "सभी कतारबद्ध संदेश हटाओ",
+      "discard_all_title_one": "{{count}} कतारबद्ध संदेश हटाओ?",
+      "discard_all_title_other": "{{count}} कतारबद्ध संदेश हटाओ?",
+      "discard_all_body": "ये संदेश नहीं भेजे जाएँगे, और इनका टेक्स्ट इनपुट बॉक्स में वापस नहीं आएगा।",
+      "discard_all_confirm": "सभी हटाओ",
+      "discard_all_open": "सभी हटाओ…",
+      "discard_all_failed_one": "{{count}} कतारबद्ध संदेश नहीं हटाया जा सका",
+      "discard_all_failed_other": "{{count}} कतारबद्ध संदेश नहीं हटाए जा सके"
     },
     "readingWidthToggle": {
       "title_full": "पूरी चौड़ाई",
@@ -21417,6 +21428,10 @@
       "slackPanel": {
         "add": "जोड़ें",
         "allowed_enterprise_orgs": "अनुमत एंटरप्राइज़ संगठन",
+        "tracked_channels": "ट्रैक किए गए चैनल",
+        "tracked_channels_summary": "वे चैनल जिनमें एजेंट पोस्ट कर सकता है, प्रतिक्रिया दे सकता है और पढ़ सकता है। सहेजने पर लागू होता है।",
+        "tracked_channels_hint": "Slack चैनल ID, जो C या G से शुरू होती हैं। Slack में चैनल का विवरण खोलो: ID सबसे नीचे है। तुम Slack में /kirocrew channels से भी चैनल जोड़ सकते हो, जहाँ हर चैनल का सक्रियण मोड और एजेंट भी तय होता है।",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Socket Mode के लिए ऐप-स्तरीय टोकन आवश्यक है (xapp- से शुरू होता है)।",
         "auto_link_sessions": "नई सेशन को Slack से अपने-आप कनेक्ट करो",
         "auto_link_sessions_desc": "हर नई डैशबोर्ड सेशन को पहले संदेश पर बॉट के साथ तुम्हारे निजी डायरेक्ट मैसेज में एक Slack थ्रेड मिलता है। cron, ऐप या सब-एजेंट से शुरू हुई सेशन, Slack या किसी और मैसेजिंग ऐप में शुरू हुई सेशन, और इनकॉग्निटो या अस्थायी सेशन को छुआ नहीं जाता। इस तरह जुड़ी सेशन नीचे की फ़ोल्डर सेटिंग के लिए Slack सेशन नहीं मानी जाती: वह साइडबार में अपनी जगह पर ही रहती है, और सिर्फ़ Slack में शुरू हुई बातचीत ही फ़ोल्डर में जाती है।",
