@@ -825,6 +825,20 @@ describe("window lifecycle tray-close wiring", () => {
     );
   });
 
+  // The Dock click is the only way back to a window the close button hid. A
+  // handler registered after the awaited gateway boot never exists when a boot
+  // step stalls or throws, and the closed window then cannot come back.
+  it("registers the activate show before the awaited gateway boot", () => {
+    const created = MAIN_JS.indexOf("windows.createMainWindow()");
+    const activate = MAIN_JS.search(/app\.on\("activate", \(\) => \{\s*windows\.activateMainWindow\(\)/);
+    const boot = MAIN_JS.indexOf("await gateway.start()");
+    assert.notEqual(created, -1, "could not locate the main window's creation");
+    assert.notEqual(activate, -1, "could not locate the activate handler");
+    assert.notEqual(boot, -1, "could not locate the gateway boot");
+    assert.ok(created < activate, "the handler needs the main window to exist");
+    assert.ok(activate < boot, "the handler must not wait on the gateway boot");
+  });
+
   it("routes both tray show gestures through the app-unhiding helper", () => {
     // The menu item and the icon click are the same user intent; both must use
     // showMainWindow so they clear the durable close intent, call app.show(),
