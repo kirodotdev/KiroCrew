@@ -11,10 +11,10 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import requires_symlinks
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
+from conftest import requires_symlinks
 from kiro_crew import mate_config
 from kiro_crew.portability_bot_crewmates import (
     crewmate_file_notices,

@@ -17,6 +17,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.bounded_read import bounded_read_fd
+
 #: The parts of one Bot an import restores, in the order the summary lists them.
 PARTS: tuple[str, ...] = ("roster", "binding", "crewmate_file", "dashboard", "briefing")
 
@@ -318,32 +320,21 @@ class BoundedReadError(ValueError):
     """A bounded read failed: the file holds more than the limit, or the read raised."""
 
 
-#: Bytes one ``os.read`` call of :func:`read_fd_at_most` asks for at most.
-_READ_CHUNK = 64 * 1024
-
-
 def read_fd_at_most(fd: int, limit: int) -> bytes:
     """Everything from *fd*'s current offset to its end, when that is at most *limit* bytes.
 
-    Reads no further than one byte past *limit*. Raises :class:`BoundedReadError` when
-    there is more, or when a read raises ``OSError`` (chained). The descriptor is
-    neither rewound nor closed: the caller owns it and maps the error onto its own
-    failure shape.
+    Reads through :func:`bounded_read.bounded_read_fd` no further than one byte past
+    *limit*. Raises :class:`BoundedReadError` when there is more, or when a read raises
+    ``OSError`` (chained). The descriptor is neither rewound nor closed: the caller owns
+    it and maps the error onto its own failure shape.
     """
-    chunks: list[bytes] = []
-    total = 0
     try:
-        while total <= limit:
-            chunk = os.read(fd, min(_READ_CHUNK, limit + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
+        data = bounded_read_fd(fd, limit + 1)
     except OSError as exc:
         raise BoundedReadError(f"read failed: {exc}") from exc
-    if total > limit:
+    if len(data) > limit:
         raise BoundedReadError(f"more than {limit} bytes")
-    return b"".join(chunks)
+    return data
 
 
 #: Characters no file name may hold on any platform an install runs on: the path
