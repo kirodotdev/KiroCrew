@@ -35,6 +35,23 @@ def binding_of(channel: str, event: dict[str, Any]) -> Binding | None:
     return None
 
 
+def is_owner_stop(channel: str, event: dict[str, Any], text: str, sender_id: str) -> bool:
+    """Whether *event* is the owner's pure ``!stop`` in a live Conductor thread.
+
+    The inbound route lets it past the activation and mention drops (a channel in
+    review or off mode can still hold a thread, and Stop only removes work), so
+    :func:`decide` sees it. Anyone else's, and any other message, is not exempt.
+    """
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.handler import is_owner
+
+    return (
+        routing.strip_leading_mention(text).strip().lower() == "!stop"
+        and is_owner(sender_id)
+        and binding_of(channel, event) is not None
+    )
+
+
 async def decide(
     orch: Any,
     cfg: Any,

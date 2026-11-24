@@ -3181,7 +3181,9 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   member changes nothing, and the Trust mutation is the same `set_channel_mode` on the
   conductor's slot (its lock and intent are keyed by room id), so a worker never runs above
   the thread. `!stop` in the thread is decided in `routing._inbound_gate` before the
-  code-channel gate: the owner stops the conductor, its recorded workers and their sub-agents
+  code-channel gate (`thread_stop_gate`), whatever the channel's activation: the owner's pure `!stop`
+  in a live thread passes `_route_message`'s activation-off and mention drops
+  (`thread_stop_gate.is_owner_stop`), since Stop only removes work. The owner stops the conductor, its recorded workers and their sub-agents
   (`stop_helpers.stop_channel`, replying in the thread) and fences the stopped turn's dispatch
   (`stop_helpers.fence_thread_dispatch`: the turn is narrowed and its recorded Slack authors
   dropped, so the exemption refuses its further `create` and `send` until the owner writes
