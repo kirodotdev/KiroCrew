@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, Circle, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
@@ -459,7 +460,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // no pointer-blur path to exclude.
   const renameButtons = useRef(new Map<string, HTMLButtonElement>())
   const closeRename = (id: string | null) => {
-    setEditingId(null)
+    // Commit the close now: a save closes from its PATCH callback, outside any
+    // event, and a frame that ran before React's own commit would still find
+    // the field focused and skip the hand-off below.
+    flushSync(() => setEditingId(null))
     if (id === null) return
     // Only take back focus the unmount dropped: a rename can resolve after the
     // user has already moved on to another control, and that control keeps it.

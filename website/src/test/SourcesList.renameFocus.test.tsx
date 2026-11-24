@@ -3,7 +3,7 @@
 // and Cancel buttons all unmount the control that had focus, so each returns
 // focus to the Rename button of the row the rename was opened from.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -70,6 +70,18 @@ describe('knowledge source rename focus', () => {
     // The list still shows the old name until the refetch lands; the row is the same.
     await waitFor(() => expect(renameOf('Second Source')).toHaveFocus())
     expect(patches()).toHaveLength(1)
+  })
+
+  // A save closes from its PATCH callback, outside any event, so React commits
+  // that close on its own schedule; here the frame runs before that schedule.
+  it('Enter saves and returns focus even when the next frame runs first', async () => {
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { queueMicrotask(() => cb(0)); return 0 })
+    onTestFinished(() => raf.mockRestore())
+    const input = await openRename()
+    fireEvent.change(input, { target: { value: 'Renamed' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(nameField()).toBeNull())
+    await waitFor(() => expect(renameOf('Second Source')).toHaveFocus())
   })
 
   it('Enter on an unchanged name closes and returns focus to the Rename button', async () => {
