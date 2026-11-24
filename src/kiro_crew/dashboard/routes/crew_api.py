@@ -40,6 +40,10 @@ def register(app: web.Application) -> None:
         "/v1/crew/owner/grant-requests/{request_id}",
         owner_route(crew_api_grant_requests.get_grant_request, "crew_api.grant_requests.get"),
     )
+    app.router.add_get(
+        "/v1/crew/owner/grants",
+        owner_route(crew_api_grant_requests.list_grants, "crew_api.grants.list"),
+    )
     app.router.add_delete(
         "/v1/crew/owner/grants/{grant_id}",
         owner_route(crew_api_grant_requests.revoke_grant, "crew_api.grants.revoke"),

@@ -133,6 +133,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GrantList'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
         '401':
           $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
         '403':
@@ -146,10 +148,15 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
-      description: revoked grants are not listed by default.
+      description: revoked grants are not listed by default. Served for grants made through local authorization
+        (amendment, 2026-11-24), oldest first. Such a grant is active or gone, so any other `status` lists
+        nothing; each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `status`, `created_at`
+        and `expires_at`.
   /v1/crew/owner/grants/{grant_id}:
     patch:
       operationId: patch_v1_crew_owner_grants_grant_id
@@ -1397,6 +1404,12 @@ components:
           - local
           description: 'remote: issued by the Kiro authorization service; local: local authorization, issued by
             this gateway.'
+        namespace:
+          type: string
+          description: Stored on every record of local authorization; one fixed value, `default`, today.
+        expires_at:
+          type: integer
+          description: 'A local grant only: when the grant ends by itself, in Unix seconds.'
     GrantBots:
       type: object
       required:
