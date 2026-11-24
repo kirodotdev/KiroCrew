@@ -382,6 +382,43 @@ raise SystemExit(1 if not decoder.authentic else 2)
   esac
 }
 
+# Install the `voice-sherpa` extra behind the optional `sherpa_onnx` speech provider.
+#
+# Bundled although the provider is not the default, because a sealed bundle cannot
+# pip-install it later. Its own pip step, like each voice extra, so its resolution
+# cannot take another provider's dependencies down with it. `--only-binary` on both
+# of its distributions: every desktop target has a published wheel, and a target
+# that loses one must fail here rather than start a CMake/C++ source build.
+#   $1 = bundled interpreter, $2 = the requirement (a path or a PEP 508 direct reference)
+install_sherpa_runtime() {
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$1" -m pip install --prefer-binary \
+    --only-binary sherpa-onnx,sherpa-onnx-core \
+    --no-warn-script-location --disable-pip-version-check "$2"
+}
+
+# Prove the bundled sherpa-onnx loads from the PRUNED tree, and that the archive
+# its model ships in can be opened (bz2). Run after pruning, like the gates around
+# it, so it checks what ships.
+#   $1 = bundled interpreter
+sherpa_runtime_gate() {
+  local python="$1"
+  log "Verifying bundled Sherpa-ONNX runtime…"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= "$python" -s -c '
+import sys
+
+import bz2  # noqa: F401
+import sherpa_onnx  # noqa: F401
+
+from kiro_crew.stt.sherpa_engine import probe
+
+state = probe()
+if not state.ok:
+    sys.stderr.write(f"{state.code}: {state.detail}\n")
+    raise SystemExit(1)
+' || { echo "ERROR: bundled Sherpa-ONNX runtime cannot load" >&2; exit 1; }
+}
+
 # Re-stamp every staged backend tree with <dist>, for the Linux multi-format
 # path (see LINUX_TARGET_DISTS). Rewrites one generated module per tree, so it
 # is cheap enough to run between electron-builder invocations. Finding the trees
@@ -555,6 +592,7 @@ build_backend() {
       "$ROOT[voice-codex]"; then
     log "Codex dictation media packages did not install for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without Codex dictation."
   fi
+  install_sherpa_runtime "$out/bin/python3.12" "$ROOT[voice-sherpa]"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -667,6 +705,8 @@ LAUNCH
   if ! is_macos_intel_backend "$want_arch"; then
     local_voice_runtime_gate "$out/bin/python3.12"
   fi
+  # Every backend, macOS Intel included: sherpa-onnx publishes an x86_64 macOS wheel.
+  sherpa_runtime_gate "$out/bin/python3.12"
 
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"
@@ -754,6 +794,7 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
+  install_sherpa_runtime "$out/python.exe" "kirocrew[voice-sherpa] @ $root_uri"
   # The Feishu channel SDK is installed on first use, as in build_backend.
 
   sp="$out/Lib/site-packages"
@@ -816,6 +857,7 @@ build_backend_windows() {
     rm -f DLLs/_tkinter.pyd DLLs/tcl*.dll DLLs/tk*.dll 2>/dev/null || true )
 
   local_voice_runtime_gate "$out/python.exe"
+  sherpa_runtime_gate "$out/python.exe"
 
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"

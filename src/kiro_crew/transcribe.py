@@ -79,7 +79,12 @@ from kiro_crew.transcribe_ffmpeg import (
     _store_ffmpeg,
     _unlink_if_exists,
 )
-from kiro_crew.transcribe_local import _MAX_AUDIO_SECS, _transcribe_apple, _transcribe_local
+from kiro_crew.transcribe_local import (
+    _MAX_AUDIO_SECS,
+    _transcribe_apple,
+    _transcribe_local,
+    _transcribe_sherpa,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +218,10 @@ CODE_DISABLED = "stt_disabled"
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
 
+#: The ``stt.provider`` value that selects the resident sherpa-onnx recogniser.
+#: Pinned equal to ``stt.sherpa.PROVIDER`` by ``test_sherpa_stt``.
+STT_PROVIDER_SHERPA = "sherpa_onnx"
+
 
 def _registered_provider(provider: object) -> Any:
     """The edition-registered STT provider named *provider* (``PlatformContext.speech``).
@@ -298,6 +307,12 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         from kiro_crew.stt import codex
 
         return codex.availability()
+    if provider == STT_PROVIDER_SHERPA:
+        from kiro_crew.stt import sherpa
+
+        # Whether the package imports; a model not on disk downloads on first use,
+        # the same answer `local` gives, unless this Python could not unpack it.
+        return sherpa.availability(stt_config)
     registered = _registered_provider(provider)
     if registered is not None:
         # An edition-registered provider: its own check() answers. BLOCKING, like
@@ -507,6 +522,8 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         from kiro_crew.stt import codex
 
         result = await codex.transcribe_file(audio_path)
+    elif provider == STT_PROVIDER_SHERPA:
+        result = await _transcribe_sherpa(audio_path, stt_config)
     elif (registered := _registered_provider(provider)) is not None:
         # An edition-registered provider. Same contract as every branch here:
         # text, "" for silence, or None -- never an exception. Called on this

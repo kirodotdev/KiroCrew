@@ -31,7 +31,11 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
-from kiro_crew.dashboard.stt_adapted_stream import _run_registered_session, run_codex_session
+from kiro_crew.dashboard.stt_adapted_stream import (
+    _run_registered_session,
+    run_codex_session,
+    run_sherpa_session,
+)
 from kiro_crew.dashboard.stt_stream_transcribe_args import (
     _client_identifies_languages,
     _transcribe_language_kwargs,
@@ -55,11 +59,15 @@ STREAM_SAMPLE_RATE_HZ = 16000
 #: module has to ask "is this the resident-model path", and the ones that decide
 #: whether to download 148 MB of weights must not do it on a bare string literal.
 PROVIDER_LOCAL = "local"
+#: The in-process sherpa-onnx provider (``stt.sherpa.PROVIDER``), named here so this
+#: module does not import numpy to learn it.
+PROVIDER_SHERPA = "sherpa_onnx"
 # Providers with a live streaming implementation behind this endpoint. `local`
 # re-decodes a rolling window on a resident whisper.cpp model in this process,
 # `apple` streams on-device via SpeechAnalyzer (macOS 26+), and `transcribe`
-# streams from AWS. The default is first.
-_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe", "codex")
+# streams from AWS. `sherpa_onnx` re-decodes each utterance on a resident
+# Zipformer model in this process. The default is first.
+_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe", "codex", PROVIDER_SHERPA)
 
 
 def streaming_providers() -> tuple[str, ...]:
@@ -1674,6 +1682,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
 
         if cfg.stt.provider == "codex":
             await run_codex_session(ws, cfg, request, caller)
+            return ws
+
+        if cfg.stt.provider == PROVIDER_SHERPA:
+            await run_sherpa_session(ws, cfg, request, caller)
             return ws
 
         if cfg.stt.provider not in _STREAMING_PROVIDERS:

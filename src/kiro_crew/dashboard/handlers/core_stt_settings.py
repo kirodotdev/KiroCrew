@@ -47,6 +47,7 @@ from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, streaming_providers
 from kiro_crew.speech_languages import COMMON_LANGUAGE_CODES
 from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
+from kiro_crew.stt import sherpa_custom, sherpa_models
 from kiro_crew.stt.limits import (
     MAX_IDLE_EVICT_SECS,
     MAX_INTERVAL_MS,
@@ -308,6 +309,25 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["custom_model_sha256"] = stt_models.valid_custom_sha256(
                     body["custom_model_sha256"]
                 )
+            # A catalog name only, the loader's own rule; anything else is skipped and
+            # the stored model stays.
+            if "sherpa_model" in body:
+                sherpa_model = (
+                    sherpa_custom.CUSTOM_MODEL
+                    if body["sherpa_model"] == sherpa_custom.CUSTOM_MODEL
+                    else sherpa_models.canonical_name(body["sherpa_model"])
+                )
+                if sherpa_model is not None:
+                    stt_section["sherpa_model"] = sherpa_model
+            # Refused above when unusable, so what reaches here is usable or "".
+            if "sherpa_custom_archive" in body:
+                stt_section["sherpa_custom_archive"] = sherpa_custom.valid_archive_name(
+                    body["sherpa_custom_archive"]
+                )
+            if "sherpa_custom_sha256" in body:
+                stt_section["sherpa_custom_sha256"] = sherpa_custom.valid_sha256(
+                    body["sherpa_custom_sha256"]
+                )
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -470,6 +490,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                     "custom_model_path": cfg.stt.custom_model_path,
                     "custom_model_sha256": cfg.stt.custom_model_sha256,
                     "custom_model_dir": str(stt_models.models_dir()),
+                    "sherpa_custom_archive": cfg.stt.sherpa_custom_archive,
+                    "sherpa_custom_sha256": cfg.stt.sherpa_custom_sha256,
                 }
                 if owner_request
                 else {}
@@ -483,6 +505,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "dictation_panel": cfg.stt.dictation_panel,
             "dictation_note": cfg.stt.dictation_note,
             "polish": cfg.stt.polish,
+            "sherpa_model": cfg.stt.sherpa_model,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
             "transcribe_vocabulary": cfg.stt.transcribe_vocabulary,

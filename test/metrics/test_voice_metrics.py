@@ -104,7 +104,7 @@ def test_builtin_provider_lists_match_the_config_sources() -> None:
     assert set(m.TTS_PROVIDER_VALUES) == set(VALID_PROVIDERS)
 
 
-@pytest.mark.parametrize("name", ["local", "apple", "transcribe", "codex", "off"])
+@pytest.mark.parametrize("name", ["local", "apple", "transcribe", "codex", "sherpa_onnx", "off"])
 def test_a_builtin_stt_provider_is_itself(name) -> None:
     assert m.provider_label(m.KIND_STT, name) == name
 
@@ -218,6 +218,8 @@ def test_every_socket_and_recogniser_error_code_is_in_the_closed_list() -> None:
         "stt/decoder.py",
         "stt/codex.py",
         "stt/codex_rpc.py",
+        "stt/sherpa_engine.py",
+        "stt/sherpa_custom.py",
     ):
         text = (src / rel).read_text(encoding="utf-8")
         declared.update(re.findall(r'^_?CODE_\w+ = "([a-z_]+)"', text, flags=re.MULTILINE))
