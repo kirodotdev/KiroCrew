@@ -54,6 +54,8 @@ from dataclasses import dataclass
 
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -81,6 +83,13 @@ MODEL_NAMESPACE_ACP = "acp"
 #: The namespace of claude-agent-acp's ids, the only one besides ``acp`` that the
 #: model registry carries ids for (``model_registry.json`` ``providers``).
 MODEL_NAMESPACE_CLAUDE_CODE = "claude_code"
+
+#: The backends whose transcripts the dashboard's Session Activity parse reads:
+#: kiro-cli's ``cli`` session directory and the KAS records. Read only to answer
+#: ``SessionCapabilities.writes_crew_readable_transcript``. shortcut: kept private
+#: here rather than as a registered ``ACP_BACKENDS_*`` set, because registering one
+#: edits ``agent_sdk/backends.py``; move it there once that file is free.
+_CREW_READABLE_TRANSCRIPT_BACKENDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 
 @dataclass(frozen=True)
@@ -267,6 +276,13 @@ class SessionCapabilities:
     #: included: there the rung is skipped and the request takes the normal gate.
     permission_requests_name_child: bool
 
+    #: Whether a session of this backend leaves a transcript the dashboard's
+    #: Session Activity parse reads: kiro-cli's ``cli`` session directory or the
+    #: KAS records (:data:`_CREW_READABLE_TRANSCRIPT_BACKENDS`). A backend that answers False
+    #: has its sessions counted from the per-turn usage rows instead, so a new
+    #: backend is counted rather than missed.
+    writes_crew_readable_transcript: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -299,6 +315,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
         refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
         permission_requests_name_child=backend in ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
+        writes_crew_readable_transcript=backend in _CREW_READABLE_TRANSCRIPT_BACKENDS,
     )
 
 
@@ -334,6 +351,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     native_workflows=False,
     refines_tool_call_titles=False,
     permission_requests_name_child=False,
+    writes_crew_readable_transcript=False,
 )
 
 
