@@ -12,12 +12,13 @@ import asyncio
 import json
 import logging
 import threading
+from collections.abc import Callable
 from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers import updates
+from kiro_crew.dashboard.handlers import updates, updates_apply
 from kiro_crew.platform import update_layout
 from kiro_crew.platform.update_layout import InstallLayout
 
@@ -766,11 +767,15 @@ class TestRestartEndpoint:
         assert second.status == 200
 
     @staticmethod
-    def _refused(**patches: object) -> tuple[web.Response, MagicMock]:
+    def _refused(
+        *, answered: Callable[[], object] | None = None, **patches: object
+    ) -> tuple[web.Response, MagicMock]:
         """POST /api/restart with the pre-drain checks patched.
 
         Returns the state as the handler leaves it: whether a restart task was
         recorded is settled when the handler returns, so no sleep is needed.
+        ``answered`` runs as soon as the handler returns, before ``asyncio.run``
+        waits for the worker threads it started.
         """
 
         async def _no_restart(_state: object) -> None:
@@ -784,6 +789,8 @@ class TestRestartEndpoint:
                 patch.multiple(updates, create=False, **patches),
             ):
                 resp = await updates.api_gateway_restart(req)
+            if answered is not None:
+                answered()
             return resp, req.app["state"]
 
         return asyncio.run(_run())
@@ -821,5 +828,53 @@ class TestRestartEndpoint:
         # The same refusal `_restart_gateway` makes, with the same release of a
         # deferred restart whose bundle went with the pruned tree.
         cleared.assert_called_once_with()
+        assert state._gateway_restart_task is None
+        assert not state._background_tasks
+
+    @pytest.mark.parametrize("stuck", ["launcher", "resolver", "exec_check"])
+    def test_a_stuck_restart_target_check_is_refused_with_a_reason(self, stuck):
+        """Each worker-thread check runs under the deadline, and running out of it
+        refuses the restart with a sentence the page shows instead of a hang."""
+        release = threading.Event()
+
+        def _blocks(value: object) -> object:
+            # Released once the handler answers. The bound only lets a tree without
+            # the deadline fail on the 200 it then answers instead of hanging.
+            release.wait(30)
+            return value
+
+        def _launcher() -> None:
+            return _blocks(None) if stuck == "launcher" else None
+
+        def _resolver() -> str:
+            return _blocks("/python") if stuck == "resolver" else "/python"
+
+        platform_compat = MagicMock()
+        platform_compat.execv_target_available.side_effect = lambda _exe: (
+            _blocks(True) if stuck == "exec_check" else True
+        )
+        try:
+            with (
+                patch("kiro_crew.platform.wheel_engine.respawn_executable", _resolver),
+                patch.object(updates.update_ownership, "clear_restart_deferral") as cleared,
+                # On the owner, which reads it: through the facade, create=True would
+                # delete the name from every holder on exit. create=True makes a tree
+                # without the deadline fail on the 200 it answers, not on the patch.
+                patch.object(updates_apply, "_RESTART_TARGET_TIMEOUT_SECS", 0.05, create=True),
+            ):
+                resp, state = self._refused(
+                    answered=release.set,
+                    resolve_restart_launcher=_launcher,
+                    platform_compat=platform_compat,
+                )
+        finally:
+            release.set()
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == "restart_target_timeout"
+        assert body["error"].startswith("Cannot restart: ")
+        assert "0.05 seconds" in body["error"]
+        # A slow check proves nothing is missing, so a deferred restart is kept.
+        cleared.assert_not_called()
         assert state._gateway_restart_task is None
         assert not state._background_tasks
