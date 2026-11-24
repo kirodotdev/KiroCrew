@@ -18,7 +18,10 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-from service_helpers import _clear_sudo_user  # noqa: F401 -- an autouse fixture, found by name
+from service_helpers import (  # noqa: F401 -- autouse fixtures, found by name
+    _clear_sudo_user,
+    _posix_installer_path,
+)
 
 from kiro_crew.service import common, controller
 from kiro_crew.service.common import Platform, service_environment

@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from service_helpers import _posix_installer_path  # noqa: F401 -- an autouse fixture, found by name
 
 from kiro_crew.service import common as svc_common
 from kiro_crew.service import linux as svc_linux
