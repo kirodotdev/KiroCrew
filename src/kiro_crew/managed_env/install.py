@@ -22,7 +22,7 @@ import shlex
 from typing import Iterable
 
 from kiro_crew.managed_env import machine
-from kiro_crew.managed_env.remote import CREW_BIN, GATEWAY_PORT, ROOT, WRAPPER
+from kiro_crew.managed_env.remote import CREW_BIN, GATEWAY_PORT, ROOT, WRAPPER, XDG_DATA_HOME
 from kiro_crew.managed_env.settings import ENV_NAME_RE
 
 PUBLIC_URL = "https://download.crew.kiro.dev/cli.sh"
@@ -119,7 +119,7 @@ def hook_text(clear: Iterable[str] = ()) -> str:
     return f"""#!/bin/sh
 # {HOOK_NAME}: start the Kiro Crew gateway from {ROOT}.
 unset {names}
-export XDG_DATA_HOME={ROOT}/.xdg-data
+export XDG_DATA_HOME={XDG_DATA_HOME}
 export PATH={CREW_BIN}:$PATH
 TOKEN='{GATEWAY_TOKEN}'
 mkdir -p {SANDBOX_DIR}/run

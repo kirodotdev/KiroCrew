@@ -8,15 +8,11 @@ line that names what to check on the box.
 
 from __future__ import annotations
 
-import logging
 import threading
 from typing import Any, Callable
 
 from kiro_crew.managed_env import machine
 from kiro_crew.managed_env.remote import SSH_FAILED_EXIT, RemoteResult
-
-logger = logging.getLogger(__name__)
-
 
 MACHINE_ONLY = (
     "A managed environment's Crew runs on its machine sign-in; it cannot sign in as "
