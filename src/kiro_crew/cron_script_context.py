@@ -27,6 +27,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, refuses, scan_exfiltration_urls
+from kiro_crew.security.blocked_links import blocked_links
 from kiro_crew.security.redaction import (
     _ARN_ACCOUNT_ID_12_DIGITS_RE,
     _BOT_ID_LENGTHS,
@@ -501,52 +502,65 @@ def _redact_deep(value: Any, key: str = "") -> Any:
     return value
 
 
+#: Why ``call_tool`` did not send an argument, said after its path: the argument holds
+#: a credential, which is refused rather than sent masked.
+_READS_AS_CREDENTIAL = "reads as a credential, and an argument is sent only as the script wrote it"
+#: Why, when the argument's only finding is a web address the exfiltration scan flags for
+#: its query, so the refusal names what to change instead of a credential that is not there.
+_COULD_CARRY_DATA_OUT = (
+    "holds a web address that could carry data out, because its query is long or holds a "
+    "long run of encoded characters; send a shorter query, for example fewer ids per call"
+)
+
+
 def _scanned_tool_args(server: str, tool: str, args: dict) -> dict:
     """*args* as ``call_tool`` sends them: exactly as the script wrote them, or not at all.
 
     Every string in *args*, keys included, is judged on its own, and a string value also
-    beside its key (:func:`_reads_as_credential`). A call the scan would change anywhere
+    beside its key (:func:`_refusal_reason`). A call the scan would change anywhere
     is refused rather than sent changed: a rewritten argument is one the script did not
     write, which an id parameter rejects with an error of its own that hides the cause and
-    a free-text one stores. The refusal names the argument's path, never its value.
+    a free-text one stores. A web address the exfiltration scan flags is refused too. The
+    refusal names the argument's path and why, never its value.
 
     *args* are serialized first, as the client will send them, so an argument JSON cannot
     hold raises ``TypeError`` here, before a kept server is taken for the call and stopped
     by the failure.
     """
     json.dumps(args)
-    path = _changed_path(args, "", "args")
-    if path:
-        raise ValueError(
-            f"call_tool({server!r}, {tool!r}) not sent: {path} reads as a credential, and "
-            "an argument is sent only as the script wrote it"
-        )
+    refused = _refused_argument(args, "", "args")
+    if refused:
+        path, reason = refused
+        raise ValueError(f"call_tool({server!r}, {tool!r}) not sent: {path} {reason}")
     return args
 
 
-def _changed_path(value: Any, key: str, path: str) -> str:
-    """The path of the first string in *value* the scan would change, or ``""``.
+def _refused_argument(value: Any, key: str, path: str) -> tuple[str, str] | None:
+    """The path of the first string in *value* the scan refuses and why, or ``None``.
 
     *key* is the string key *value* sits under, ``""`` for none. The path is spelled with
     the scanned keys, so a credential-shaped key is not echoed.
     """
     if isinstance(value, str):
-        return path if _reads_as_credential(key, value) else ""
+        reason = _refusal_reason(key, value)
+        return (path, reason) if reason else None
     if isinstance(value, dict):
         for raw_key, inner in value.items():
             name = redact(raw_key) if isinstance(raw_key, str) else raw_key
             inner_path = f"{path}.{name}"
             if isinstance(raw_key, str) and refuses(raw_key, redact):
-                return inner_path
-            found = _changed_path(inner, raw_key if isinstance(raw_key, str) else "", inner_path)
+                return inner_path, _scan_reason(raw_key) or _READS_AS_CREDENTIAL
+            found = _refused_argument(
+                inner, raw_key if isinstance(raw_key, str) else "", inner_path
+            )
             if found:
                 return found
     elif isinstance(value, (list, tuple)):
         for i, inner in enumerate(value):
-            found = _changed_path(inner, key, f"{path}[{i}]")
+            found = _refused_argument(inner, key, f"{path}[{i}]")
             if found:
                 return found
-    return ""
+    return None
 
 
 #: The resource name after an account id, ``MyServiceLambda``: PascalCase words, each a
@@ -568,11 +582,12 @@ _ACCOUNT_RESOURCE_RE = re.compile(
 )
 
 
-def _reads_as_credential(key: str, value: str) -> bool:
-    """Whether the scan would change *value*, sent under *key*.
+def _refusal_reason(key: str, value: str) -> str:
+    """Why the scan refuses *value*, sent under *key*, or ``""`` when it is sent.
 
     Judged alone, then spelled beside its key as :func:`_redact_pair` spells it, so a
-    token only its key reveals (``authorization: Bearer ...``) is found too. The
+    token only its key reveals (``authorization: Bearer ...``) is found too, and a
+    credential found either way is the reason over a flagged web address. The
     Telegram rule reads ``<digits>:<30 or more characters>`` as a bot token, so a name
     that leads with an account id is one to it. Its hit does not count only where it
     positively reads as an account id and a resource name
@@ -580,16 +595,31 @@ def _reads_as_credential(key: str, value: str) -> bool:
     a space, so a credential inside the name is still found.
     """
     texts = (value, f"{key}: {value}") if key else (value,)
-    return any(_changed_by_scan(text) for text in texts)
+    reasons = {_scan_reason(text) for text in texts}
+    return next((r for r in (_READS_AS_CREDENTIAL, _COULD_CARRY_DATA_OUT) if r in reasons), "")
+
+
+def _scan_reason(text: str) -> str:
+    """Why the scan refuses *text* (:func:`_refusal_reason`), or ``""`` when it passes.
+
+    A URL the exfiltration scan flags is always refused, never rewritten. It reads as a
+    credential when the link itself holds one (its :func:`blocked_links` record is
+    withheld as ``credential``); otherwise its query alone is what could carry data out.
+    """
+    if _changed_by_scan(text):
+        return _READS_AS_CREDENTIAL
+    if not scan_exfiltration_urls(text):
+        return ""
+    if any(record["withheld"] == "credential" for record in blocked_links(text)):
+        return _READS_AS_CREDENTIAL
+    return _COULD_CARRY_DATA_OUT
 
 
 def _changed_by_scan(text: str) -> bool:
-    """Whether the scan changes *text* by a span that counts (:func:`_reads_as_credential`).
+    """Whether the credential scan changes *text* by a span that counts.
 
-    A URL the exfiltration scan flags always counts: it is refused, never rewritten.
+    Which spans count is :func:`_refusal_reason`'s rule.
     """
-    if scan_exfiltration_urls(text):
-        return True
     if redact(text) == text:
         return False
     found = redact_credentials_with_records(text)[2]

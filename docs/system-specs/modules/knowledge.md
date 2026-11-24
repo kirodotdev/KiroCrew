@@ -147,7 +147,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
 | `mcp_core.py` | Cached `(KnowledgeStore, embedder)` accessor the tool reads |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API: the facade every route below is imported and patched through; it keeps no code of its own |
-| `dashboard/handlers/knowledge_access.py` | the owner gate on mutating routes (`_require_knowledge_owner`), the SEL audit, the app's store, pipeline and task registry |
+| `dashboard/handlers/knowledge_access.py` | the SEL audit, the app's store, pipeline and task registry |
 | `dashboard/handlers/knowledge_library.py` | namespaces, items (an item `PATCH` reads a null `title` or `item_type`, both NOT NULL columns, as no change), entities and the graph, the source-scoped list and `/source-counts`, statistics |
 | `dashboard/handlers/knowledge_sync.py` | a source's sync status, the sync claim, `POST /api/knowledge/sources/{id}/sync` and the tasks it hands off |
 | `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; editing a folder source's `ignore_patterns` (`PATCH /api/knowledge/sources/{id}`, a list of strings, trimmed, blanks dropped; applied by the next sweep; a write over `_MAX_IGNORE_PATTERNS` patterns (`kiroignore.MAX_RULES`, 1000) or with a pattern over `_MAX_IGNORE_PATTERN_LEN` (1024) characters is refused 400 `ignore_patterns_too_large`, and a `POST /api/knowledge/sources` whose `properties.ignore_patterns` breaks either cap is refused 400 (`_add_source_shape_error`); a stored list over either cap still loads); the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
@@ -1171,7 +1171,7 @@ The dashboard Knowledge list view is **source-first**: it renders one collapsed
 row per source and pages *within* a source, rather than paging all items globally
 and grouping whatever landed on the page. Two pieces of API surface support this.
 
-**Owner gate on every route.** Every `/api/knowledge` route calls `_require_knowledge_owner`
+**Owner gate on every route.** Every `/api/knowledge` route calls `require_owner_for_dashboard_caller`
 before acting: the 17 mutating routes, and the 19 reads too (items, item content and
 export, related items, entities, graphs, sources, source files, counts, namespaces, stats, config, jobs, embedding
 status, `search-for-context` and the whole-library `export`), because a disclosed document

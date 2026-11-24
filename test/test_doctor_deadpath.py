@@ -22,7 +22,7 @@ import pytest
 
 from conftest import host_abs
 from kiro_crew import doctor_deadpath as dp
-from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
 
 
 @pytest.fixture
@@ -490,6 +490,80 @@ class TestIdentifierOperandIgnored:
         assert [d.path for d in report.foreign_dead[0].dead] == [dead]
 
 
+# ── WSL launcher args ignored ────────────────────────────────────────────────
+
+
+class TestWslLauncherArgsIgnored:
+    """``wsl.exe -d <distro> -- /home/...`` names paths inside the Linux distro.
+
+    They are absent from the Windows filesystem by design, so a host stat would report
+    every server launched this way as dead.
+    """
+
+    @pytest.mark.parametrize("command", ["wsl.EXE", "wsl", r"C:\Windows\System32\wsl.exe"])
+    def test_wsl_launcher_args_are_never_stat_ed(
+        self, agents_dir: Path, monkeypatch, command: str
+    ) -> None:
+        # Absolute on this host and absent, so any other command would report it.
+        inside_distro = str(agents_dir / "tools" / "bin" / "notes-mcp")
+        probed: list[str] = []
+        real = dp._path_is_dead
+
+        def spy(path: str) -> bool:
+            probed.append(path)
+            return real(path)
+
+        monkeypatch.setattr(dp, "_path_is_dead", spy)
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"notes-mcp": {"command": command, "args": ["-d", "Ubuntu", "--", inside_distro]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert inside_distro not in probed
+        # The absolute spelling's own command is a host path and may be checked.
+        assert [d.where for r in report.foreign_dead for d in r.dead if d.where != "command"] == []
+
+    @pytest.mark.parametrize("command", ["node", "wslg.exe"])
+    def test_same_args_under_another_command_are_still_flagged(
+        self, agents_dir: Path, command: str
+    ) -> None:
+        dead = str(agents_dir / "tools" / "bin" / "notes-mcp")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": command, "args": ["-d", "Ubuntu", "--", dead]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert [(d.where, d.path) for d in report.foreign_dead[0].dead] == [("args[3]", dead)]
+
+    def test_dead_launcher_and_env_value_are_still_flagged(self, agents_dir: Path) -> None:
+        launcher = str(agents_dir / "System32" / "wsl.exe")
+        dead_env = str(agents_dir / "gone-config")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {
+                "srv": {
+                    "command": launcher,
+                    "args": ["-d", "Ubuntu", "--", str(agents_dir / "inside-distro")],
+                    "env": {"MCP_CONFIG": dead_env},
+                }
+            },
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert {(d.where, d.path) for d in report.foreign_dead[0].dead} == {
+            ("command", launcher),
+            ("env[MCP_CONFIG]", dead_env),
+        }
+
+
 # ── malformed JSON tolerated ─────────────────────────────────────────────────
 
 
@@ -623,6 +697,124 @@ class TestDoctorRenderer:
         assert dp._sanitize_for_terminal("a\tb") == "a\tb"  # tab is kept
         assert dp._sanitize_for_terminal("a\nb\rc") == "a\\x0ab\\x0dc"
         assert dp._sanitize_for_terminal("x\x1by") == "x\\x1by"
+
+
+class TestUserFileSource:
+    """A dead path the user's own MCP file sets is named against that file.
+
+    The rebuild copies a user file's ``args``/``env`` as written, so such a path
+    survives every rebuild. Doctor must say which file to edit and how, not
+    that the rebuild failed.
+    """
+
+    @pytest.fixture
+    def user_files(self, agents_dir: Path, tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+        from kiro_crew import agent as agent_mod
+
+        # The default repair is the real rebuild; it writes back what the user
+        # files say, which for these tests is the spec as written.
+        monkeypatch.setattr("kiro_crew.agent.rebuild_agent_config", lambda *a, **k: None)
+        kiro_global = tmp_path / "settings" / "mcp.json"
+        kiro_global.parent.mkdir()
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", kiro_global)
+        return agent_mod._user_dir() / "mcp.json", kiro_global
+
+    @staticmethod
+    def _write_servers(path: Path, servers: dict) -> None:
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_each_dead_path_is_named_once_under_the_file_that_sets_it(
+        self, agents_dir: Path, user_files: tuple[Path, Path], capsys
+    ) -> None:
+        store, kiro_global = user_files
+        notes_dead = str(agents_dir / "rotated" / "notes_server.py")
+        draw_dead = str(agents_dir / "rotated" / "draw-data")
+        notes = {"command": "python3", "args": [notes_dead]}
+        draw = {"command": "python3", "env": {"DRAW_DATA_DIR": draw_dead}}
+        self._write_servers(kiro_global, {"notes-tool": notes})
+        self._write_servers(store, {"draw-tool": draw})
+        for name in (AGENT_FILENAME, WORKER_AGENT_FILENAME):
+            _write_spec(agents_dir, name, {"notes-tool": notes, "draw-tool": draw})
+
+        issues: list[str] = []
+        dp.doctor_dead_paths(issues)
+
+        out = capsys.readouterr().out
+        assert "rebuild did not clear" not in out
+        global_row = f"{dp._home_relative(kiro_global)}: ❌ sets a path that no longer exists"
+        store_row = f"{dp._home_relative(store)}: ❌ sets a path that no longer exists"
+        assert global_row in out and store_row in out
+        # One row per path, under its own file, although both specs carry it.
+        assert out.count(notes_dead) == 1 and out.count(draw_dead) == 1
+        assert out.index(global_row) < out.index(notes_dead)
+        assert out.index(store_row) < out.index(draw_dead)
+        assert "notes-tool.args[0]" in out and "draw-tool.env[DRAW_DATA_DIR]" in out
+        assert "then run `kirocrew setup --agent-only`." in out
+        assert "`kirocrew setup --agent-only --clean`" in out
+        assert sorted(issues) == sorted(
+            f"missing MCP server path in {dp._home_relative(p)}" for p in (store, kiro_global)
+        )
+
+    def test_the_store_wins_when_both_files_set_the_same_path(
+        self, agents_dir: Path, user_files: tuple[Path, Path]
+    ) -> None:
+        store, kiro_global = user_files
+        dead = str(agents_dir / "rotated" / "server.py")
+        entry = {"command": "python3", "args": [dead]}
+        self._write_servers(kiro_global, {"srv": entry})
+        self._write_servers(store, {"srv": entry})
+        _write_spec(agents_dir, AGENT_FILENAME, {"srv": entry})
+
+        report = dp.check_dead_paths()
+
+        assert [d.source for r in report.repair_failed for d in r.dead] == [store]
+
+    def test_home_reference_in_the_file_matches_the_expanded_spec_value(
+        self, agents_dir: Path, user_files: tuple[Path, Path], tmp_path: Path, monkeypatch
+    ) -> None:
+        _, kiro_global = user_files
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        self._write_servers(kiro_global, {"srv": {"command": "x", "args": ["${HOME}/gone.py"]}})
+        _write_spec(
+            agents_dir, AGENT_FILENAME, {"srv": {"command": "x", "args": [f"{home}/gone.py"]}}
+        )
+
+        report = dp.check_dead_paths()
+
+        assert [d.source for r in report.repair_failed for d in r.dead] == [kiro_global]
+
+    def test_slash_named_server_is_matched_by_the_alias_the_spec_uses(
+        self, agents_dir: Path, user_files: tuple[Path, Path]
+    ) -> None:
+        store, _ = user_files
+        dead = str(agents_dir / "rotated" / "server.js")
+        self._write_servers(store, {"npm:@acme/notes": {"command": "node", "args": [dead]}})
+        _write_spec(agents_dir, AGENT_FILENAME, {"acme-notes": {"command": "node", "args": [dead]}})
+
+        report = dp.check_dead_paths()
+
+        assert [d.source for r in report.repair_failed for d in r.dead] == [store]
+
+    def test_a_path_no_user_file_sets_keeps_the_rebuild_row(
+        self, agents_dir: Path, user_files: tuple[Path, Path], capsys
+    ) -> None:
+        store, _ = user_files
+        stale = str(agents_dir / "rotated" / "old.py")
+        # The file already holds a corrected value; the spec still holds the
+        # dead one, so the file is not where this path comes from.
+        self._write_servers(store, {"srv": {"command": "python3", "args": [str(agents_dir)]}})
+        _write_spec(agents_dir, AGENT_FILENAME, {"srv": {"command": "python3", "args": [stale]}})
+
+        issues: list[str] = []
+        dp.doctor_dead_paths(issues)
+
+        out = capsys.readouterr().out
+        assert f"{AGENT_FILENAME}: ❌ managed spec has dead paths the rebuild did not clear" in out
+        assert stale in out
+        assert dp._home_relative(store) not in out
+        assert issues == [f"agent spec dead paths: {AGENT_FILENAME}"]
 
 
 class TestExplicitAgentsDir:

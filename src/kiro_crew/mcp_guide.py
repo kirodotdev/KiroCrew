@@ -153,8 +153,8 @@ GUIDE_NOT_SHOWN_NOTE = (
 
 
 #: The instruction on every ``find_setting`` result. Some answers are not a
-#: Settings row (auto-approving one MCP tool on KAS is a ``permissions.yaml``
-#: rule), and the packaged docs say so where the registry cannot.
+#: Settings row (always allowing one MCP tool is a switch in MCP Servers and on
+#: its approval card), and the packaged docs say so where the registry cannot.
 _FIND_SETTING_NEXT = (
     "If no row here is what was asked, it may not be a setting: call search_docs "
     "with the same words before answering, and never suggest a config key from memory."

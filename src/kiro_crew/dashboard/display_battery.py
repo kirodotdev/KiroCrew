@@ -47,6 +47,7 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/redaction_switch.py",
     "redaction_seams.py",
     "credential_patterns.py",
+    "default_ignorable.py",
     "jwt_header.py",
     "security/redaction_patterns.py",
     "security/redaction_entropy.py",

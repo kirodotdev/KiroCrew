@@ -7301,7 +7301,9 @@
       "searching": "搜索中…",
       "searching_2": "正在搜索：{{name}}",
       "type_at_least_2_characters_to_search": "至少输入 2 个字符以搜索",
-      "type_to_search_for_more": "输入关键词搜索更多"
+      "type_to_search_for_more": "输入关键词搜索更多",
+      "provider_could_not_search": "无法搜索 {{provider}}：{{reason}}",
+      "provider_did_not_answer": "{{provider}} 没有响应。"
     },
     "embedTabStrip": {
       "close_tab": "关闭标签页",
@@ -8383,7 +8385,6 @@
       "open_app_full_screen": "全屏打开应用"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{total}} 个提供商中有 {{failed}} 个未响应 — 结果可能不完整。",
       "retry": "重试",
       "a_server_named_already_exists": "名为“{{name}}”的服务器已存在，但配置不同。请在已安装服务器表中管理它。",
       "add_server": "添加服务器",
@@ -9389,8 +9390,6 @@
       "reinstall_hint": "重新安装会用 {{provider}} 上的最新版本替换本地副本，你做过的修改也会被覆盖。",
       "reinstalled": "已重新安装",
       "reinstalled_files_other": "已重新安装 {{count}} 个文件",
-      "provider_could_not_search": "无法搜索 {{provider}}：{{reason}}",
-      "provider_did_not_answer": "{{provider}} 没有响应。",
       "select_a_skill_to_preview": "选择技能以预览",
       "skill_search_results": "技能搜索结果",
       "source": "来源",
@@ -15360,7 +15359,7 @@
       "grant_shared_fact": "此连接与以下项共享其存储的授权：{{names}}。",
       "grant_shared_fact_unconfirmed": "此连接存储的授权可能与另一个已配置的服务器共享，但无法读取某个配置源来确认。",
       "grant_unproven_help": "{{provider}} 已保存的登录已失效。请连接以重新登录。",
-      "invalid_return_address": "请粘贴浏览器中的完整 http://127.0.0.1:PORT/…?code=… 地址。",
+      "invalid_return_address": "请粘贴浏览器中的完整地址。它以 http://localhost 或 http://127.0.0.1 开头。",
       "managed_by_connections": "由“连接”管理",
       "managed_in_mcp_servers": "在 MCP 服务器中管理",
       "mint_failure_grant_unproven": "无法确认已保存的登录。请重新连接。",
@@ -15409,7 +15408,7 @@
       "reopen_approval": "重新打开授权",
       "return_address": "返回地址",
       "return_address_delivered": "返回地址已送达。正在检查连接…",
-      "return_address_placeholder": "http://127.0.0.1:PORT/…?code=…",
+      "return_address_placeholder": "http://localhost:PORT/…?code=…",
       "revoke_at_provider": "在 {{provider}} 撤销",
       "search_services": "搜索服务",
       "service_value_prop": "允许 agent 通过 {{provider}} 的官方 MCP 服务器使用该服务。",
@@ -17473,6 +17472,8 @@
         "probe_failing_help": "连续 {{failures}} 次探测失败，{{productName}} 已停止探测此服务器。重启不会恢复。聊天会话仍可使用它。请先修复问题。",
         "agent_dropped_not_found": "在这台电脑上找不到程序“{{command}}”，所以你的智能体无法使用此服务器的工具。",
         "agent_dropped_fix": "请安装它，或在 {{page}} 中把此服务器的命令改为该程序的完整路径。然后重启网关（设置 → 关于 → 重启网关）。",
+        "own_entry_unused": "你在 {{file}} 里用这个名字配置了服务器（“{{command}}”），但它没有被使用：{{productName}} 自带一个同名服务器，你的智能体用的是那个。",
+        "own_entry_unused_fix": "如果也想运行你自己的服务器，请在该文件里给它换一个名字。",
         "reset_failures": "重试服务器",
         "test_server": "测试",
         "testing_server": "测试中…",

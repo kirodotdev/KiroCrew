@@ -6,7 +6,7 @@ refusal is audited under.
 
 Two gates are in play. ``require_owner_dashboard_request`` admits the owner and
 refuses everyone else. ``require_owner_for_dashboard_caller`` (the task-runner
-writes) judges a dashboard session the same way and leaves an app token, an
+writes and every knowledge route) judges a dashboard session the same way and leaves an app token, an
 internal caller and a request with no claims to their own controls.
 
 No handler does its work here. An admitted owner stops at the owner predicate.
@@ -29,7 +29,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew.apps import routes_bot_grants
 from kiro_crew.connected_computers import remote_routes
 from kiro_crew.dashboard import handlers_system, slack_shared_access
-from kiro_crew.dashboard.handlers import guide
+from kiro_crew.dashboard.handlers import guide, knowledge
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.handlers import taskrunner, wakatime
 
@@ -143,6 +143,57 @@ _ROUTES: list[tuple[Handler, str, str, str]] = [
         "dashboard_caller",
         "taskrunner.refine_answer",
     ),
+    (knowledge.get_config, "GET", "dashboard_caller", "knowledge.config.read"),
+    (knowledge.list_items, "GET", "dashboard_caller", "knowledge.items.read"),
+    (knowledge.list_namespaces, "GET", "dashboard_caller", "knowledge.namespaces.read"),
+    (knowledge.get_stats, "GET", "dashboard_caller", "knowledge.stats.read"),
+    (knowledge.list_sources, "GET", "dashboard_caller", "knowledge.sources.read"),
+    (knowledge.source_counts, "GET", "dashboard_caller", "knowledge.source_counts.read"),
+    (knowledge.add_source, "POST", "dashboard_caller", "knowledge.source.add"),
+    (knowledge.pick_folder, "POST", "dashboard_caller", "knowledge.source.pick_folder"),
+    (knowledge.sync_source, "POST", "dashboard_caller", "knowledge.source.sync"),
+    (knowledge.confirm_source, "POST", "dashboard_caller", "knowledge.source.confirm"),
+    (knowledge.pause_source, "POST", "dashboard_caller", "knowledge.source.pause"),
+    (knowledge.resume_source, "POST", "dashboard_caller", "knowledge.source.resume"),
+    (knowledge.list_source_files, "GET", "dashboard_caller", "knowledge.source.files.read"),
+    (knowledge.retry_file, "POST", "dashboard_caller", "knowledge.source.file_retry"),
+    (knowledge.skip_file, "POST", "dashboard_caller", "knowledge.source.file_skip"),
+    (knowledge.ingest_text, "POST", "dashboard_caller", "knowledge.source.ingest_text"),
+    (knowledge.delete_source, "DELETE", "dashboard_caller", "knowledge.source.delete"),
+    (knowledge.rename_source, "PATCH", "dashboard_caller", "knowledge.source.rename"),
+    (knowledge.list_entities, "GET", "dashboard_caller", "knowledge.entities.read"),
+    (knowledge.get_full_graph, "GET", "dashboard_caller", "knowledge.graph.read"),
+    (knowledge.export_all, "GET", "dashboard_caller", "knowledge.export"),
+    (knowledge.ingest_file, "POST", "dashboard_caller", "knowledge.ingest"),
+    (
+        knowledge.add_agent_document_route,
+        "POST",
+        "dashboard_caller",
+        "knowledge.agent_document.add",
+    ),
+    (knowledge.import_bundle, "POST", "dashboard_caller", "knowledge.import"),
+    (knowledge.get_item, "GET", "dashboard_caller", "knowledge.item.read"),
+    (knowledge.update_item, "PATCH", "dashboard_caller", "knowledge.item.update"),
+    (knowledge.delete_item, "DELETE", "dashboard_caller", "knowledge.item.delete"),
+    (knowledge.get_item_content, "GET", "dashboard_caller", "knowledge.item.content.read"),
+    (knowledge.get_related_items, "GET", "dashboard_caller", "knowledge.item.related.read"),
+    (knowledge.export_item, "GET", "dashboard_caller", "knowledge.item.export"),
+    (knowledge.get_entity_items, "GET", "dashboard_caller", "knowledge.entity.items.read"),
+    (knowledge.get_entity_graph, "GET", "dashboard_caller", "knowledge.entity.graph.read"),
+    (knowledge.get_job, "GET", "dashboard_caller", "knowledge.job.read"),
+    (
+        knowledge.get_embedding_status,
+        "GET",
+        "dashboard_caller",
+        "knowledge.embedding.status.read",
+    ),
+    (knowledge.batch_embed_items, "POST", "dashboard_caller", "knowledge.embedding.generate"),
+    (
+        knowledge.search_for_context,
+        "GET",
+        "dashboard_caller",
+        "knowledge.search_for_context.read",
+    ),
 ]
 
 _CASES = [
@@ -178,7 +229,7 @@ def _request(method: str, caller: str) -> web.Request:
     app = web.Application()
     app["state"] = _State()
     request = make_mocked_request(
-        method, "/x", app=app, match_info={"name": "demo", "task_id": "t-1"}
+        method, "/x", app=app, match_info={"name": "demo", "task_id": "t-1", "id": "1"}
     )
     if user is not None:
         request["user"] = user

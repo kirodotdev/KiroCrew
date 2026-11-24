@@ -378,6 +378,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_model": ("function", True, "bcd0cd3aa159", "client_model_selection"),
     "set_resume_session_id": ("function", False, "df97aaea4e38", "client_lifecycle"),
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_class"),
+    "settings_withheld_reason": ("function", False, "e5abe83e2f2f", "client_class"),
     "shutdown": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "spec_zero_tools": ("property", False, "a6632a57e602", "client_class"),
     "steer": ("function", True, "19314a5fce4a", "client_turn_control"),
@@ -507,6 +508,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "new_conversation": ("function", True, "b60c5fea256e", "client_new_conversation"),
     "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_seed_ownership"),
     "settings_withheld_cause": ("function", False, "bb418bb7ece8", "client_seed_ownership"),
+    "settings_withheld_reason": ("function", False, "e5abe83e2f2f", "client_seed_ownership"),
 }
 
 #: ``GooseAcpClient``'s own members: what only a goose session does, bound from the goose

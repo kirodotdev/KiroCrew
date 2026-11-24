@@ -10,9 +10,9 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_worker_builtin_tools``,
-``_last_substitution_model``, ``_model``, ``_resolved_model_id``, ``_session_mcp_cache``,
-``claude_mode_pinned_notice``.
+``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_tools_withheld_reason``,
+``_claude_worker_builtin_tools``, ``_last_substitution_model``, ``_model``,
+``_resolved_model_id``, ``_session_mcp_cache``, ``claude_mode_pinned_notice``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
 ``_launch_mcp_servers``, ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``,
@@ -103,6 +103,27 @@ _CLAUDE_MODE_PINNED_NOTICE = (
     "or switch to the Kiro CLI harness, then start a new session."
 )
 
+#: Why the exclusion left a session without Crew's MCP tools, then what the person can
+#: do (``settings_withheld_reason``). Only the first part reaches a model.
+_CLAUDE_WITHHELD_BELOW_FLOOR = (
+    "the installed claude-agent-acp is too old to leave the folder's "
+    ".claude/settings.local.json out of the session ({floor} or newer can)",
+    "Install the tested release with '{install}', or point CLAUDE_AGENT_ACP_BIN at a "
+    "newer one if you set it, then start a new session.",
+)
+_CLAUDE_WITHHELD_MODE = (
+    "the session asked for the {mode} permission mode, which Crew cannot keep while "
+    "the folder's .claude/settings.local.json is left out",
+    "Choose another permission mode, or work in another folder, then start a new session.",
+)
+_CLAUDE_WITHHELD_PROJECT_FILE = (
+    "the folder's .claude/{name} sets hooks or sandbox settings, or cannot be read "
+    "safely (for example, it is a link), and Crew cannot leave it out without "
+    "dropping what it enforces",
+    "To use Crew's tools here, remove those settings from it, or work in another "
+    "folder, then start a new session.",
+)
+
 #: The ``permissions.ask`` rules a claude Side Chat session carries inline: one per
 #: read built-in it keeps. They send every call to the host gate even where an
 #: allow would pre-approve it, so each gets a READ_ONLY decision and an SEL row.
@@ -184,6 +205,15 @@ _CLAUDE_PROJECT_SETTINGS_FILES: tuple[str, ...] = ("settings.local.json", "setti
 #: left out: the adapter could load its ``permissions.allow`` anyway, so the session
 #: keeps the array withheld.
 CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION = (0, 84, 0)
+
+#: The claude-agent-acp release the Real Adapter Contract lane pins in
+#: ``test/real_adapters/package.json``, which the live claude captures report. Its
+#: releases are 0.x, where each minor line can break, so the tested range is 0.94.x.
+CLAUDE_ACP_TESTED_VERSION = "0.94.0"
+CLAUDE_ACP_TESTED_RANGE = ((0, 94, 0), (0, 95, 0))
+#: The command that installs it, which the tested-version notice and the withheld
+#: tools' remedy both name, so a chat never shows two upgrade commands.
+CLAUDE_ACP_TESTED_INSTALL = f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}@{CLAUDE_ACP_TESTED_VERSION}"
 
 #: The oldest claude-agent-acp whose ``_session/steering`` this client speaks:
 #: 0.65.0, the first release that holds a steered turn open until a result answers
@@ -338,6 +368,12 @@ def _exclude_foreign_local_settings(
     whose = self._foreign_settings_owner(local_settings)
     if self._claude_adapter_below_setting_sources_floor():
         self._log_claude_adapter_below_floor(local_settings, whose)
+        why, fix = _CLAUDE_WITHHELD_BELOW_FLOOR
+        floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
+        self._claude_tools_withheld_reason = (
+            why.format(floor=floor),
+            fix.format(install=CLAUDE_ACP_TESTED_INSTALL),
+        )
         return False
     requested = getattr(self, "_permission_mode", None)
     # A request for the pinned mode is what the pin below sets anyway, so it
@@ -359,6 +395,8 @@ def _exclude_foreign_local_settings(
             whose,
             self._permission_mode,
         )
+        why, fix = _CLAUDE_WITHHELD_MODE
+        self._claude_tools_withheld_reason = (why.format(mode=requested), fix)
         return False
     try:
         inline = json.loads(payload)
@@ -378,6 +416,8 @@ def _exclude_foreign_local_settings(
                 whose,
                 local_settings.parent / name,
             )
+            why, fix = _CLAUDE_WITHHELD_PROJECT_FILE
+            self._claude_tools_withheld_reason = (why.format(name=name), fix)
             return False
         project_rules.extend(found)
     if project_rules:

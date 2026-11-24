@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
 import PastedChip from '../components/PastedChip'
+import { PASTE_MARKDOWN_MAX_CHARS } from '../components/pastePreviewConstants'
 import { i18next } from '../i18n/all'
 import type { PasteBlock } from '../utils/pasteTokens'
 
@@ -36,6 +37,25 @@ describe('PastedChip', () => {
     fireEvent.click(btn)
     expect(btn).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText(/UNIQUE_CONTENT_MARKER/)).toBeInTheDocument()
+  })
+
+  it('renders an expanded paste as markdown, as the rest of a sent message', () => {
+    const md = '| Step | Result |\n| --- | --- |\n| paste | chip |\n\n- first item\n- second item\n\n```\nconst x = 1\n```'
+    const { container } = render(<PastedChip block={{ ...block, content: md }} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('table')).not.toBeNull()
+    expect(screen.getByRole('columnheader', { name: 'Step' })).toBeInTheDocument()
+    expect(container.querySelectorAll('li')).toHaveLength(2)
+    expect(screen.getByText('const x = 1')).toBeInTheDocument()
+    expect(screen.queryByText(/\| Step \|/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a paste past the markdown cap as plain text', () => {
+    const huge = '| a |\n| - |\n' + 'x'.repeat(PASTE_MARKDOWN_MAX_CHARS)
+    const { container } = render(<PastedChip block={{ ...block, content: huge }} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByTestId('pasted-chip-raw')).toBeInTheDocument()
+    expect(container.querySelector('table')).toBeNull()
   })
 
   it('collapses again on a second click', async () => {

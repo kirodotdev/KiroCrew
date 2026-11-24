@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from kiro_crew.acp.frame_payload_sharing import MAX_SERVERS, RepeatedPayloads
 from kiro_crew.acp.types import METHOD_KAS_MCP_STATUS, METHOD_SESSION_UPDATE, JsonRpcMessage
 
@@ -180,3 +182,91 @@ def test_the_held_catalogs_are_bounded_by_server_name():
     sharing.share(late)
     sharing.share(late_again)
     assert late_again.params["servers"][0]["tools"] is not late.params["servers"][0]["tools"]
+
+
+def _schema_catalog(default: object) -> list[dict]:
+    """One tool whose input schema carries *default*, the value the tests flip."""
+    return [
+        {
+            "name": "list",
+            "inputSchema": {"type": "object", "properties": {"depth": {"default": default}}},
+        }
+    ]
+
+
+def _depth_default(msg: JsonRpcMessage) -> object:
+    tool = msg.params["servers"][0]["tools"][0]
+    return tool["inputSchema"]["properties"]["depth"]["default"]
+
+
+@pytest.mark.parametrize(
+    ("first_default", "second_default"),
+    [(True, 1), (1, True), (1, 1.0), (1.0, 1), (False, 0)],
+)
+def test_a_catalog_that_differs_only_in_json_type_is_kept_as_sent(first_default, second_default):
+    """``True == 1 == 1.0`` in Python, but a reader sees three different JSON types."""
+    sharing = RepeatedPayloads()
+    first = _status("s1", {"core": _schema_catalog(first_default)})
+    second = _status("s2", {"core": _schema_catalog(second_default)})
+    third = _status("s3", {"core": _schema_catalog(second_default)})
+
+    for msg in (first, second, third):
+        sharing.share(msg)
+
+    assert type(_depth_default(second)) is type(second_default)
+    assert type(_depth_default(first)) is type(first_default)
+    assert second.params["servers"][0]["tools"] is not first.params["servers"][0]["tools"]
+    # The frame kept as sent becomes the held copy, so a later equal frame shares it.
+    assert third.params["servers"][0]["tools"] is second.params["servers"][0]["tools"]
+
+
+def test_a_json_type_change_in_a_config_option_is_kept_as_sent():
+    sharing = RepeatedPayloads()
+    first = _config("s1", [{"id": "flag", "type": "boolean", "currentValue": True}])
+    second = _config("s2", [{"id": "flag", "type": "boolean", "currentValue": 1}])
+
+    sharing.share(first)
+    sharing.share(second)
+
+    sent = second.params["update"]["configOptions"]
+    assert type(sent[0]["currentValue"]) is int
+    assert sent is not first.params["update"]["configOptions"]
+
+
+def test_equal_catalogs_with_booleans_and_numbers_still_share():
+    sharing = RepeatedPayloads()
+    first = _status("s1", {"core": _schema_catalog(True)})
+    same = _status("s2", {"core": _schema_catalog(True)})
+    numbers = _status("s3", {"core": _schema_catalog(1.5)})
+    numbers_again = _status("s4", {"core": _schema_catalog(1.5)})
+
+    for msg in (first, same, numbers, numbers_again):
+        sharing.share(msg)
+
+    assert same.params["servers"][0]["tools"] is first.params["servers"][0]["tools"]
+    assert numbers_again.params["servers"][0]["tools"] is numbers.params["servers"][0]["tools"]
+
+
+def _nested(depth: int, leaf: object) -> dict:
+    """A schema *depth* levels deep, built without recursion."""
+    node: dict = {"a": leaf}
+    for _ in range(depth):
+        node = {"a": node}
+    return node
+
+
+def test_a_very_deep_schema_is_compared_without_exhausting_the_stack():
+    """The engine's frames are untrusted: depth must not decide whether the reader loop dies."""
+    depth = 10_000
+    sharing = RepeatedPayloads()
+    first, same, flipped = (
+        _status("s1", {"core": [{"name": "t", "inputSchema": _nested(depth, True)}]}),
+        _status("s2", {"core": [{"name": "t", "inputSchema": _nested(depth, True)}]}),
+        _status("s3", {"core": [{"name": "t", "inputSchema": _nested(depth, 1)}]}),
+    )
+
+    for msg in (first, same, flipped):
+        sharing.share(msg)
+
+    assert same.params["servers"][0]["tools"] is first.params["servers"][0]["tools"]
+    assert flipped.params["servers"][0]["tools"] is not first.params["servers"][0]["tools"]

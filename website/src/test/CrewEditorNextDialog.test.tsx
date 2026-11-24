@@ -586,6 +586,27 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(mockCaps.preview.mock.calls[1][1].revision).toBe('r2')
   })
 
+  it('says a Remove refused for an unreadable Bot file in words, never as the code', async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', revision: 'r1',
+      worker: { rows: [{
+        section: 'mcpServers', id: 'github', label: 'github', state: 'local', present: true, value: true,
+        remove: { section: 'mcpServers', id: 'github' },
+      }] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    mockCaps.preview.mockRejectedValueOnce(new ApiError(409, 'invalid_spec', '{"error":"invalid_spec","code":"invalid_spec"}'))
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    fireEvent.click(await within(dialog).findByTestId('next-band-remove-mcpServers-github'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    const notice = await within(dialog).findByTestId('next-builtfrom-remove-error')
+    expect(notice).toHaveTextContent("This bot's config file can't be read. Fix or restore the file, then try again.")
+    expect(notice).not.toHaveTextContent(/invalid_spec/)
+    expect(mockCaps.save).not.toHaveBeenCalled()
+  })
+
   it('asks before removing an added capability, naming it, and sends nothing on cancel', async () => {
     const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
       section, id, label: id, state, present: true, value: true, managed: false, shared_reference: false,
@@ -774,6 +795,16 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const notice = await within(dialog).findByTestId('next-builtfrom-error')
     expect(notice).toHaveTextContent('The gateway log has the details.')
     expect(notice).not.toHaveTextContent(/in time/)
+  })
+
+  it('says a Bot file that no longer parses can be fixed or restored, never as the code', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(409, 'invalid_spec', '{"error":"invalid_spec","code":"invalid_spec"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent(/load this bot.s capabilities/)
+    expect(notice).toHaveTextContent("This bot's config file can't be read. Fix or restore the file, then try again.")
+    expect(notice).not.toHaveTextContent(/invalid_spec/)
   })
 
   it('reads the capabilities again on Try again and shows them once they load', async () => {

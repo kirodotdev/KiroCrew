@@ -1,7 +1,8 @@
 """Tests for how a spec's MCP servers are merged from the global sources.
 
 Source priority and resolution-aware fallback, the effective ``env.PATH`` a
-spec is written with, and the reconcile that keeps an enabled app's servers.
+spec is written with, the reconcile that keeps an enabled app's servers, and
+the session-start rebuild that picks up a source edited after the last rebuild.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from agent_helpers import _pinned_kiro_cli_version  # noqa: F401
 
@@ -16,6 +18,7 @@ from agent_helpers import _pinned_kiro_cli_version  # noqa: F401
 # the repo's convention, since a test module is not importable from another one.
 # Re-exported under the original private names so the call sites below are unchanged.
 from mcp_merge_helpers import bundled_defaults as _bundled_defaults
+from mcp_merge_helpers import mcp_merge_env
 from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 
 from conftest import host_abs
@@ -614,3 +617,44 @@ class TestMcpMergePriority:
             "srv" in config["mcpServers"]
         ), "server dropped: global source dict corrupted by override"
         assert config["mcpServers"]["srv"]["command"] == kiro_cmd
+
+
+class TestASourceEditReachesTheNextSession:
+    """A server added to a source file after the last rebuild reaches the next session.
+
+    Nothing watches ``~/.kiro/settings/mcp.json``, so a server added there by hand or
+    by ``kiro-cli mcp add`` while the gateway runs reaches ``kirocrew.json`` only
+    through the default agent's session start (``ensure_agent_materialized``),
+    which rebuilds when a source file differs from what the last rebuild read.
+    """
+
+    def test_a_server_added_after_the_rebuild_is_merged_at_session_start(
+        self, tmp_path: Path
+    ) -> None:
+        import kiro_crew.agent as agent_mod
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        managed = Path(agent_mod.AGENT_FILENAME).stem
+        with mcp_merge_env(tmp_path, cfg_dir, cc_servers={}, kiro_servers={}) as kiro_mcp:
+            spec_path = agent_mod.install_agent()
+            assert "probe" not in json.loads(spec_path.read_text())["mcpServers"]
+
+            kiro_mcp.write_text(json.dumps({"mcpServers": {"probe": {"command": "probe-mcp"}}}))
+            assert agent_mod.ensure_agent_materialized(managed) is True
+            spec = json.loads(spec_path.read_text())
+
+        assert spec["mcpServers"]["probe"]["command"] == "probe-mcp"
+        assert "@probe" in spec["tools"]
+
+    def test_unchanged_sources_do_not_rebuild(self, tmp_path: Path, monkeypatch) -> None:
+        import kiro_crew.agent as agent_mod
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        managed = Path(agent_mod.AGENT_FILENAME).stem
+        servers = {"probe": {"command": "probe-mcp"}}
+        with mcp_merge_env(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers):
+            agent_mod.install_agent()
+            rebuild = MagicMock()
+            monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+            assert agent_mod.ensure_agent_materialized(managed) is True
+        rebuild.assert_not_called()

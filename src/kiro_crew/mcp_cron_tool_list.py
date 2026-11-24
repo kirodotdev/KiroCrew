@@ -536,6 +536,18 @@ def _list_tools() -> list[dict[str, Any]]:
     return with_titles("kirocrew-cron", tools)
 
 
+def _redeem_pickup() -> None:
+    """Redeem an enforced harness's one-time pickup, when this process carries one.
+
+    As ``kirocrew-core`` does (``mcp_core_tool_list._redeem_pickup``): such a harness
+    withholds the gateway secret, so without it every cron tool is refused, and the
+    listing already reads this session's tool policy from the gateway.
+    """
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
+
+
 #: The server as ``initialize`` describes it. ``kiro_crew.mcp_cron.run_mcp_server``
 #: passes the loop these same values, so the answers written before the handlers load
 #: and the ones the loop writes after cannot differ.
@@ -546,4 +558,5 @@ SERVER = StdioServer(
     advertise_caller_identity=True,
     error_prefix_is_error=True,
     instructions=_INSTRUCTIONS,
+    before_first_request=_redeem_pickup,
 )

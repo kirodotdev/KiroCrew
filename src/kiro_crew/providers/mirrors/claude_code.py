@@ -28,6 +28,7 @@ from typing import Any, Mapping
 from kiro_crew.acp.session_mcp import session_mcp_projection
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
 )
@@ -287,6 +288,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
             in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
             worker_native_tool_limits_honoured=self.backend
             in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+            default_crew_servers=self.backend in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
             session_control_mounted=mounted if isinstance(mounted, bool) else None,
         )
         builtin_tools = _session_builtin_tools(

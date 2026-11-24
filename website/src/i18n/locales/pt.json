@@ -7697,7 +7697,9 @@
       "searching": "Pesquisando...",
       "searching_2": "Pesquisando: {{name}}",
       "type_at_least_2_characters_to_search": "Digite pelo menos 2 caracteres para pesquisar",
-      "type_to_search_for_more": "Digite para pesquisar mais"
+      "type_to_search_for_more": "Digite para pesquisar mais",
+      "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} não respondeu."
     },
     "embedTabStrip": {
       "close_tab": "Fechar aba",
@@ -8807,7 +8809,6 @@
       "open_app_full_screen": "Abrir o aplicativo em tela cheia"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} de {{total}} provedores não responderam — os resultados podem estar incompletos.",
       "retry": "Tentar novamente",
       "a_server_named_already_exists": "Um servidor chamado “{{name}}” já existe com uma configuração diferente.\n          Gerencie-o na tabela de servidores instalados.",
       "add_server": "Adicionar servidor",
@@ -9867,8 +9868,6 @@
       "reinstalled_files_one": "{{count}} arquivo reinstalado",
       "reinstalled_files_many": "{{count}} arquivos reinstalados",
       "reinstalled_files_other": "{{count}} arquivos reinstalados",
-      "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
-      "provider_did_not_answer": "{{provider}} não respondeu.",
       "select_a_skill_to_preview": "Selecione uma habilidade para visualizar",
       "skill_search_results": "Resultados da pesquisa de habilidades",
       "source": "Origem",
@@ -16182,7 +16181,7 @@
       "grant_shared_fact": "Esta conexão compartilha a autorização armazenada com: {{names}}.",
       "grant_shared_fact_unconfirmed": "A autorização armazenada desta conexão pode ser compartilhada com outro servidor configurado, mas não foi possível ler uma fonte de configuração para confirmar.",
       "grant_unproven_help": "O login salvo de {{provider}} não funciona mais. Conecte para entrar de novo.",
-      "invalid_return_address": "Cole o endereço completo http://127.0.0.1:PORT/…?code=… do navegador.",
+      "invalid_return_address": "Cole o endereço completo do navegador. Ele começa com http://localhost ou http://127.0.0.1.",
       "managed_by_connections": "Gerenciado por Conexões",
       "managed_in_mcp_servers": "Gerenciado em Servidores MCP",
       "mint_failure_grant_unproven": "Não foi possível confirmar o login salvo. Tente conectar de novo.",
@@ -16231,7 +16230,7 @@
       "reopen_approval": "Reabrir aprovação",
       "return_address": "Endereço de retorno",
       "return_address_delivered": "Endereço de retorno entregue. Verificando a conexão…",
-      "return_address_placeholder": "http://127.0.0.1:PORT/…?code=…",
+      "return_address_placeholder": "http://localhost:PORT/…?code=…",
       "revoke_at_provider": "Revogar no {{provider}}",
       "search_services": "Buscar serviços",
       "service_value_prop": "Permita que os agentes usem o {{provider}} por meio do servidor MCP oficial.",
@@ -18405,6 +18404,8 @@
         "probe_failing_help": "{{failures}} testes seguidos falharam, então o {{productName}} parou de testar este servidor. Reiniciar não desfaz isso. As sessões de chat ainda podem usá-lo. Corrija a causa primeiro.",
         "agent_dropped_not_found": "O programa '{{command}}' não foi encontrado neste computador, então seu agente não pode usar as ferramentas deste servidor.",
         "agent_dropped_fix": "Instale-o ou informe o caminho completo do programa no comando deste servidor, em {{page}}. Depois reinicie o gateway (Configurações → Sobre → Reiniciar o gateway).",
+        "own_entry_unused": "Seu próprio servidor com este nome em {{file}} ('{{command}}') não é usado: o {{productName}} traz um servidor com o mesmo nome, e é esse que seu agente recebe.",
+        "own_entry_unused_fix": "Para executar o seu também, dê a ele outro nome nesse arquivo.",
         "reset_failures": "Tentar servidor novamente",
         "test_server": "Testar",
         "testing_server": "Testando…",

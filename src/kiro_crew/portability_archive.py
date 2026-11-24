@@ -60,7 +60,8 @@ EXPORT_EXCLUDE = frozenset(
 #: ``ui-prefs.json`` is the host backup of the browser-held Settings (`ui_prefs.py`);
 #: ``notification_settings.json`` holds the Settings > Notifications mutes and priorities
 #: (`notifications/settings.py`). The snapshot ``config`` component carries the same
-#: three, so the two whole-install backups agree on what a setting is.
+#: three, and also ``mcp.json`` (the servers added on the MCP Servers page), which this
+#: export does not carry.
 _SETTINGS_DOCUMENTS: tuple[str, ...] = (
     "config.local.json",
     "ui-prefs.json",

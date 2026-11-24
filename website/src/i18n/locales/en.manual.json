@@ -2641,7 +2641,9 @@
       "found_for_query": "found for “{{query}}”",
       "search": "Search {{subject}}",
       "search_across_providers": "Search {{subject}} across providers...",
-      "searching_2": "Searching: {{name}}"
+      "searching_2": "Searching: {{name}}",
+      "provider_could_not_search": "Could not search {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} did not answer."
     },
     "embedTabStrip": {
       "new_chat_failed": "Couldn't create a new chat.",
@@ -3306,7 +3308,6 @@
       "open_app_full_screen": "Open app full screen"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} of {{total}} providers did not answer — results may be incomplete.",
       "retry": "Retry",
       "a_server_named_already_exists": "A server named “{{name}}” already exists with a different configuration.\n          Manage it from the installed servers table.",
       "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load",
@@ -3705,9 +3706,7 @@
     "skillBrowserModal": {
       "bundle_contents_count": "Bundle contents ({{count}} files)",
       "install_skill": "Install Skill",
-      "no_preview_available": "No preview available.",
-      "provider_could_not_search": "Could not search {{provider}}: {{reason}}",
-      "provider_did_not_answer": "{{provider}} did not answer."
+      "no_preview_available": "No preview available."
     },
     "skillDirectoryBrowser": {
       "failed_to_load_file": "Failed to load file",
@@ -7522,7 +7521,7 @@
       "grant_shared_fact": "This connection shares its stored authorization with: {{names}}.",
       "grant_shared_fact_unconfirmed": "This connection's stored authorization may be shared with another configured server, but a configuration source could not be read to confirm.",
       "grant_unproven_help": "The saved sign-in for {{provider}} no longer works. Connect to sign in again.",
-      "invalid_return_address": "Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.",
+      "invalid_return_address": "Paste the full address from your browser. It starts with http://localhost or http://127.0.0.1.",
       "managed_by_connections": "Managed by Connections",
       "managed_in_mcp_servers": "Managed in MCP Servers",
       "mint_failure_grant_unproven": "The saved sign-in could not be confirmed. Try connecting again.",
@@ -7570,7 +7569,7 @@
       "remote_gateway_help": "If the final browser page could not connect, that is expected when your gateway is on another machine. Copy the full address from the browser and paste it here.",
       "reopen_approval": "Re-open approval",
       "return_address": "Return address",
-      "return_address_placeholder": "http://127.0.0.1:PORT/…?code=…",
+      "return_address_placeholder": "http://localhost:PORT/…?code=…",
       "return_address_delivered": "Return address delivered. Checking the connection…",
       "revoke_at_provider": "Revoke at {{provider}}",
       "search_services": "Search services",
@@ -8499,6 +8498,8 @@
         "probe_failing_help": "{{failures}} probes in a row failed, so {{productName}} stopped probing this server. A restart does not undo this. Chat sessions can still use it. Fix the cause first.",
         "agent_dropped_not_found": "The program '{{command}}' wasn't found on this computer, so your agent can't use this server's tools.",
         "agent_dropped_fix": "Install it, or set the full path to the program as this server's command in {{page}}. Then restart the gateway (Settings → About → Restart gateway).",
+        "own_entry_unused": "Your own server under this name in {{file}} ('{{command}}') isn't used: {{productName}} comes with a server of the same name, and your agent gets that one.",
+        "own_entry_unused_fix": "To run yours too, give it a different name in that file.",
         "reset_failures": "Retry server",
         "test_server": "Test",
         "testing_server": "Testing…",

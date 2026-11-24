@@ -507,10 +507,78 @@ class TestServicePathMiseShims:
 
         assert path == "/home/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-    def test_launchd_path_is_unchanged(self, monkeypatch):
-        monkeypatch.setattr(common.sys, "platform", "darwin")
+
+@pytest.mark.skipif(os.name != "posix", reason="the service PATH is colon-joined POSIX paths")
+class TestLaunchdServicePath:
+    """The plist PATH leads with mise's shims and nvm's dirs, as the unit does.
+
+    A LaunchAgent starts with only this PATH, and every MCP child runs on
+    ``env.augmented_path`` over it. With the installer's nvm dir behind
+    ``/bin``, a Node in ``/opt/homebrew/bin`` or ``/usr/local/bin``, or nvm's
+    newest version, ran the user's servers instead of the Node their shell had
+    selected.
+    """
+
+    _NVM = "/Users/tester/.nvm/versions/node/v22.22.2/bin"
+
+    @pytest.fixture(autouse=True)
+    def _darwin_without_overrides(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(common.sys, "platform", "darwin")
+        for name in ("MISE_DATA_DIR", "XDG_DATA_HOME", "NVM_DIR", "KIROCREW_NODE_BIN_DIR"):
+            _floor_monkeypatch.delenv(name, raising=False)
+
+    def test_without_nvm_only_the_mise_shims_are_added(self, monkeypatch):
         monkeypatch.setenv("PATH", "/usr/bin")
 
         path = common.service_path("/Users/tester")
 
-        assert path == "/Users/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        assert path == (
+            "/Users/tester/.local/bin:/Users/tester/.local/share/mise/shims"
+            ":/usr/local/bin:/usr/bin:/bin"
+        )
+
+    def test_installer_nvm_bin_leads_homebrew_and_the_system_dirs(self, monkeypatch):
+        monkeypatch.setenv("PATH", f"{self._NVM}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        dirs = common.service_path("/Users/tester").split(":")
+
+        assert dirs == [
+            "/Users/tester/.local/bin",
+            "/Users/tester/.local/share/mise/shims",
+            self._NVM,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+
+    def test_sudo_reads_no_nvm_install_from_the_home(self, monkeypatch):
+        monkeypatch.setenv("SUDO_USER", "tester")
+        monkeypatch.setattr(
+            common, "_sudo_user_nvm_bin_dirs", lambda home: pytest.fail("Linux-only lookup")
+        )
+        monkeypatch.setenv("PATH", "/var/root/.local/bin:/usr/bin")
+
+        dirs = common.service_path("/Users/tester").split(":")
+
+        assert "/opt/homebrew/bin" not in dirs
+
+    def test_mcp_children_resolve_the_installers_nvm_node_first(self, monkeypatch, tmp_path):
+        from kiro_crew import env
+
+        home = str(tmp_path)
+        nvm = tmp_path / ".nvm" / "versions" / "node"
+        for version in ("v22.22.2", "v24.1.0"):
+            (nvm / version / "bin").mkdir(parents=True)
+        selected, newer = str(nvm / "v22.22.2" / "bin"), str(nvm / "v24.1.0" / "bin")
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("PATH", f"{selected}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        env._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = env.augmented_path(common.service_path(home)).split(":")
+        finally:
+            env._node_all_bin_dirs.cache_clear()
+
+        first = dirs.index(selected)
+        assert first < dirs.index("/opt/homebrew/bin") < dirs.index("/usr/local/bin")
+        assert first < dirs.index(newer)

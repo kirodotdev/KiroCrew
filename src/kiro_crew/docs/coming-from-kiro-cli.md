@@ -67,8 +67,8 @@ reply rules. A custom agent in `~/.kiro/agents/` can set
 dashboard-tool reminders; some reply-format guidance still comes. On kiro-cli,
 KAS, Codex and Claude Code it is sent with the first message of a conversation,
 and again after anything that empties or restarts it (a compaction, `/clear`, a
-stopped turn, a restart) or when that guidance changes. On every other harness,
-and in a chat with a crew member, it is sent with each message.
+stopped turn, a restart) or when that guidance changes, in a chat with a crew
+member too. On every other harness it is sent with each message.
 To leave memory out of one chat, pick
 **Temporary** in the memory mode button above the message box before the first
 message ([Memory modes](memory-and-learning.md#memory-modes)).

@@ -215,3 +215,26 @@ def mark_reinjecting_providers(providers: Iterable[Any]) -> int:
             mark()
             marked += 1
     return marked
+
+
+def mark_sessions_for_mcp_change(sessions: Any) -> int:
+    """Mark every open and pre-warmed session that applies an MCP change at its next turn.
+
+    *sessions* is the gateway's session manager. Its registered providers and its
+    warm pool are marked through :func:`mark_reinjecting_providers`; a warm-pool fill
+    between its start and its enqueue is in neither snapshot, so the manager's own
+    ``mark_mcp_config_changed`` fence is bumped too and the pool marks that provider
+    at its enqueue. Every other session is left as it is: this never resets one.
+    Returns how many were marked.
+    """
+    marked = mark_reinjecting_providers(
+        list(sessions.active_providers()) + list(sessions.warm_providers())
+    )
+    fence = getattr(sessions, "mark_mcp_config_changed", None)
+    if callable(fence):
+        fence()
+    if marked:
+        logger.info(
+            "MCP config changed: %d live session(s) will apply it at their next turn", marked
+        )
+    return marked

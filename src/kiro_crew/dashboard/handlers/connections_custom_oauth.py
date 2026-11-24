@@ -24,13 +24,9 @@ def _mark_live_sessions_for_new_bridge(app: web.Application) -> None:
     provider that applies an MCP change at its next turn is marked; any other
     picks the bridge up at its next start. Runs on the loop; never resets a session.
     """
-    from kiro_crew.mcp_hot_reload import mark_reinjecting_providers
+    from kiro_crew.mcp_hot_reload import mark_sessions_for_mcp_change
 
-    sessions = app["state"].sessions
-    mark_reinjecting_providers(list(sessions.active_providers()) + list(sessions.warm_providers()))
-    fence = getattr(sessions, "mark_mcp_config_changed", None)
-    if callable(fence):
-        fence()
+    mark_sessions_for_mcp_change(app["state"].sessions)
 
 
 async def crew_sign_in(

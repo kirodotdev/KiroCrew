@@ -760,6 +760,89 @@ class TestCliMergeSaysWhatItKept:
         assert "✅ config" in out
 
 
+#: The data-home store the MCP Servers page writes (`mcp_config_files._kirocrew_mcp_json`).
+#: A server's ``env`` holds credentials, which is why its writer creates the file owner-only.
+_MCP_STORE = {
+    "mcpServers": {"echo": {"command": "python3", "args": ["echo.py"], "env": {"T": "t"}}}
+}
+
+
+class TestTheMcpServersStoreRidesInConfig:
+    """The servers added on the MCP Servers page live in ``<data home>/mcp.json``. A backup
+    restored onto a new machine brings them back, and a merge names the file it keeps."""
+
+    def _bundle(self, tmp_path, monkeypatch, body: str = json.dumps(_MCP_STORE)) -> Path:
+        src = tmp_path / "src"
+        _setup_fake_kirocrew(src)
+        (src / "mcp.json").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        return _make_snapshot(src, tmp_path / "out")
+
+    def _restore(self, tarball: Path, dst: Path, monkeypatch, mode: str) -> int:
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        return restore_main(
+            [str(tarball), "--mode", mode, "--components", "config", "--force"] + unpinnable_argv()
+        )
+
+    def test_a_merge_onto_a_new_machine_restores_it_and_says_so(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        with tarfile.open(tarball) as tar:
+            carried = {"/".join(Path(m.name).parts[1:]) for m in tar.getmembers()}
+        assert "mcp.json" in carried
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        capsys.readouterr()
+
+        ret = self._restore(tarball, dst, monkeypatch, "merge")
+
+        assert ret == 0
+        assert json.loads((dst / "mcp.json").read_text(encoding="utf-8")) == _MCP_STORE
+        assert "mcp.json: restored (was missing)" in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses a DACL")
+    @pytest.mark.parametrize("mode", ["replace", "merge"])
+    def test_it_is_installed_owner_only(self, tmp_path, monkeypatch, mode):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+
+        assert self._restore(tarball, dst, monkeypatch, mode) == 0
+
+        assert stat.S_IMODE((dst / "mcp.json").stat().st_mode) == 0o600
+
+    def test_a_merge_keeps_this_machines_servers_and_names_the_file(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tarball = self._bundle(tmp_path, monkeypatch)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+        local = '{"mcpServers": {"local": {"command": "node"}}}'
+        (dst / "mcp.json").write_text(local, encoding="utf-8")
+        capsys.readouterr()
+
+        ret = self._restore(tarball, dst, monkeypatch, "merge")
+
+        out = capsys.readouterr().out
+        assert ret == 0
+        assert (dst / "mcp.json").read_text(encoding="utf-8") == local
+        assert "mcp.json: kept the existing file" in out
+        assert "✅ config" not in out
+
+    def test_a_store_with_comments_is_restored_as_written(self, tmp_path, monkeypatch):
+        """Its reader accepts comments, so a hand-commented store is a usable one and must
+        not stop the restore the way an unreadable config.json does."""
+        body = "// my servers\n" + json.dumps(_MCP_STORE)
+        tarball = self._bundle(tmp_path, monkeypatch, body)
+        dst = tmp_path / "dst"
+        _setup_fake_kirocrew(dst)
+
+        assert self._restore(tarball, dst, monkeypatch, "replace") == 0
+
+        assert (dst / "mcp.json").read_text(encoding="utf-8") == body
+
+
 class TestNestingBound:
     def test_depth_is_counted_per_container_level(self):
         from kiro_crew.user_json import exceeds_nesting

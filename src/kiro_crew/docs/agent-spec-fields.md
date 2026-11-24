@@ -846,18 +846,25 @@ is withheld, because KAS's own environment holds credentials such as
 `KIRO_API_KEY`. A withheld value still reaches a stdio server, as it does on
 kiro-cli: Crew keeps it in an owner-only launch snapshot under the data home's
 `kas-mcp-launch/` and hands KAS its own launcher in the server's place, which reads
-the snapshot and starts the real command with those values. Only the launcher, the
+the snapshot and starts the real command with those values. A `${NAME}` in such a
+value is filled in from the gateway's environment and `agent.env`; one the gateway
+does not have stays the text `${NAME}`, as on kiro-cli. The exception is a key set
+to a reference to itself, such as `AWS_CONFIG_FILE: ${AWS_CONFIG_FILE}`: KAS hands a
+server its own environment, so when the gateway lacks that variable the key is left
+out of the snapshot and the server keeps the value the engine passes it, if any
+(a per-process variable the engine was started with, for one); at the `INFO` log
+level the gateway log names the server and key once. Only the launcher, the
 agent and server names and a version cross the wire, so `session.json` never holds
 the value. The reference is the same for every session of the agent, because KAS
 runs one copy of a server per engine process and restarts it whenever a session
 declares it differently. The same launcher also gives each stdio server KAS starts
 for you what a server started by kiro-cli inherits from it: the Kerberos cache
 pointer (`KRB5CCNAME`) and, when the agent's sandbox forwards your ssh-agent,
-`SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote streamable-HTTP
-entry's `headers` reach the server the same way: the snapshot holds its `url` and `headers`, and KAS starts
+`SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote entry's `headers`
+(`type` `http` or `sse`) reach the server the same way: the snapshot holds its `url` and `headers`, and KAS starts
 the launcher as a local stdio server that relays each message to that url with
-the headers added and follows no redirect. An `sse` entry's `headers` stay
-withheld. KAS starts any entry that carries a `command` as a local process, so a
+the headers added and follows no redirect. Like KAS, it falls back to the older
+`sse` transport when the server refuses streamable HTTP. KAS starts any entry that carries a `command` as a local process, so a
 remote entry (a `url` with a `type` of `http` or `sse`, or with a blank
 `command`) is sent without its `command`; the placeholder the agent schema
 requires, such as `"http"`, would otherwise start a program by that name, and
@@ -1188,8 +1195,10 @@ spec (one Crew did not write: hand-authored, or installed by a tool) gets
 data-home pin and session identity are Crew-internal and cannot be written into
 a spec by hand. Each one gets the managed `mcpServers` entry and an `@<server>`
 ref in `tools`, at spawn and never in your file, on kiro-cli (through the agent's
-skill view) and KAS (through the projected agent) by one helper,
-`acp/default_crew_servers.py`. When servers are added, the copy's `allowedTools`
+skill view), KAS (through the projected agent), and Claude Code and Codex
+(through the session's MCP server list) by one helper,
+`acp/default_crew_servers.py`. The other harnesses run your spec as written.
+When servers are added, the copy's `allowedTools`
 loses each entry that reaches an added server the governance ceiling withholds
 any tool of (`*`, `@*`, a server glob such as `@kirocrew-*`, `@<server>`,
 `@<server>/...`); every other entry, built-ins such as `fs_read` included, stays
@@ -1204,20 +1213,37 @@ when:
   `permissions` rule denies the `mcp` or `all` capability with no `exclude`, for
   every resource or for `<server>/*` (read as written, even when the KAS
   projection refuses the block); a per-tool exclusion or deny such as
-  `@kirocrew-core/spawn_run` keeps the server and keeps that tool off;
+  `@kirocrew-core/spawn_run` keeps the server and keeps that tool off on kiro-cli
+  and KAS;
+- on Claude Code and Codex, an `excludedTools` entry or a `permissions` deny rule
+  may reach one of its tools (`@kirocrew-core/spawn_run`, `@kirocrew-*/...`, `@*`,
+  `"*"`, any entry that starts with `*`, `?` or `[`, or an `mcp`/`all` deny whose
+  pattern names the server). Those harnesses apply neither and mount a server
+  with all of its tools, so the server is left out instead; a built-in name such
+  as `fs_write` reaches no server;
 - your `mcpServers` already declares it, in any shape (a mute stays a mute);
 - `tools` is absent, malformed or `[]`: an agent that grants no tools stays tool-less;
 - the install is registry-governed (`agent.mcp_registry_mode`), where the admin's
   catalog decides which servers run.
 
-`"*"` gets the entries only; a per-tool grant such as `@kirocrew-core/skill_search`
-is not widened.
+`"*"` gets the entries only; on kiro-cli and KAS a per-tool grant such as
+`@kirocrew-core/skill_search` is not widened.
 
-An agent whose `tools` grants `tool_search` (`tool_search`, `@builtin` or `"*"`,
-and not excluded) also gets the MCP servers of every enabled installed app, the
-same entries Crew's default agent `kirocrew.json` has, under the same rules and
-opt-outs. `excludedTools: ["@<app>:<server>"]` withholds one. The agent
-`agent.crew_mode_agent` names is a Crew Mode conductor and gets none: a
+On Claude Code and Codex those rules cover only the servers Crew adds. When your
+own `tools` names `kirocrew-core` or `kirocrew-cron` (`"*"`, `@kirocrew-core`, or
+one of its tools such as `@kirocrew-core/skill_search`), those harnesses mount that
+server with all of its tools, like any server `tools` names there, and
+`excludedTools` does not narrow it. To keep one of its tools off on them, use the
+server's own `disabledTools` instead:
+`"mcpServers": {"kirocrew-core": {"disabledTools": ["spawn_run"]}}`.
+
+On kiro-cli and KAS, an agent whose `tools` grants `tool_search` (`tool_search`,
+`@builtin` or `"*"`, and not excluded) also gets the MCP servers of every enabled
+installed app, the same entries Crew's default agent `kirocrew.json` has, under the
+same rules and opt-outs. Claude Code and Codex add no app server: they would mount
+it with all of its tools whatever your spec narrows, and Codex runs a tool the
+server marks read-only without asking. `excludedTools: ["@<app>:<server>"]`
+withholds one. The agent `agent.crew_mode_agent` names is a Crew Mode conductor and gets none: a
 conductor mounts only Crew's own servers. A server whose
 declared name has a `/` is not added: `kirocrew.json` keys it by an alias, and an
 alias can be another server's. None of their tools
@@ -1229,6 +1255,17 @@ wildcard never runs an app's tools unasked: to get the server, replace the
 wildcard with the entries you approve. On KAS Crew
 keeps none of their tools direct, not even one you name one by one: none goes on
 its `neverDefer` list.
+
+An edition build can name some of its own servers for your agent too
+(`McpToolingProvider.custom_agent_servers`; the public build names none), such as a
+credential vendor. On kiro-cli and KAS each one it names and supplies on this host
+is added the same way, at spawn and never in your file, with the entry Crew's default agent carries
+and without its `autoApprove`, whether or not your `tools` grants `tool_search`.
+The same opt-outs apply, it is not added while a wildcard in your `allowedTools`
+would cover it, and a Crew Mode conductor gets none. You approve each call unless
+your own `allowedTools` names the server. On KAS its tools follow the rule for
+your own servers, not the deferral of Crew's. Claude Code and Codex add none, for
+the reason they add no app server.
 
 On KAS the tools of `kirocrew-core` and `kirocrew-cron` are deferred: the model
 sees them in the loader's
@@ -1431,10 +1468,23 @@ not recorded, so it is offered on the rebuild that first mounts it. Each added
 ref writes one `mcp_tools_added` SEL record. Slash-containing names use the
 concrete mount alias in refs; the offered record keeps the edition's original name.
 A same-named entry in `~/.kiro/settings/mcp.json` never replaces such a server's
-`command`, `args` or `env`; only its `timeout` and `disabled` reach the spec.
+`command`, `args` or `env`; only its `timeout` and `disabled` reach the spec. The
+placeholder the MCP page writes there when you turn one of the server's tools off
+(`{"disabledTools": [...]}`) launches nothing, so it never grants the server in
+`allowedTools`; an entry with a `command` or `url` is you installing the server and
+grants it like any server you install. A grant already in `allowedTools` stays,
+whoever wrote it: to have that server ask before each call again, delete
+`@<server>` from `kirocrew.json`'s `allowedTools`, and the rebuild keeps the edit.
 A same-named entry in `~/.kiro/crew/mcp.json` never replaces its `command` or
 `args` either. Its other keys reach the spec, and its `env` keys win over the
 edition's while the edition's other keys stay.
+When your same-named entry runs another program (or a `url`), your server never
+starts, so the MCP Servers page says so on that server's row and
+`kirocrew doctor` lists it under MCP Tools, naming the file and your command. To
+keep yours, give your entry a different name to run it beside the edition's, or
+turn the edition's server off, as your edition documents, to run yours in its
+place. An entry for the same program with other `args` is not reported: the
+edition's `args` choose its tools.
 
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
