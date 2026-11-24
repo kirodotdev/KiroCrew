@@ -665,6 +665,10 @@ agent's question cards included. `GET /api/terminal/sessions` answers a teammate
 route refuses them with `owner_only`. A test fails when a Terminal route is
 registered outside those prefixes.
 
+`/api/managed-environments/*` is owner-only for teammates through
+`teammate_access.is_owner_only_for_teammates`; `/api/cloud/*` refuses a teammate on a
+`kiro_managed_env` job.
+
 Three things stay the machine owner's (`is_owner_only_for_teammates`). The
 Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
 and app installs, all open to a teammate, reach the host too. Every route the relay
@@ -700,6 +704,9 @@ Turn off, remote crew management, Channels' connection forms and `/terminal` sho
 the notice; Connect your phone is not offered; Voice drops the host install command;
 Privacy says the data stays on the Crew's computer; People reads "Shared with your
 team" and names an owner known only by machine name "Crew owner".
+
+The managed-environment lane never removes Remote Crew rows; a gone environment's row
+is removed with Remove.
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees

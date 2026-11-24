@@ -102,11 +102,16 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
 #: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
 #: store's tag rules, so both share one pinned table); that one file is the whole rise.
+#: Raised for the managed-environment lane: the default context the composition root
+#: builds wraps its provisioner provider and dashboard contributor in the lane's
+#: (``kiro_crew.managed_env`` and ``.provider``: 2 modules for ``mcp-core`` and ``mcp-mate``,
+#: 1 for the other two, which have no more room). The lane's client, engine and settings load only
+#: when it is used.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 498,
-    "mcp-cron": 365,
-    "mcp-guide": 359,
-    "mcp-mate": 361,
+    "mcp-core": 500,
+    "mcp-cron": 367,
+    "mcp-guide": 361,
+    "mcp-mate": 363,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

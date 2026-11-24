@@ -1200,13 +1200,21 @@ Headers sent with each trace export to `telemetry.traces_otlp_endpoint`.
 | `tunnel.name_override` | Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo'). | `""` |
 | `tunnel.relay_handle_email_domains` | Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do. | `[]` |
 
-### Remote Crew managed environments
+### Kiro Managed Environments
 
-Settings for Kiro managed environments (persistent cloud machines) in Remote Crew. Remote Crew does not offer managed environments yet, so setting them changes nothing today. They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
+Kiro Managed Environments are remote machines that Kiro starts and keeps for you, so Crew can run there. These settings are for using them from Remote Crew, which offers a "Kiro Managed Environments" launch row while the preview is on; the new environment's Crew runs its engine in machine mode (the `agent.kas_*` keys). They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
 
 | Key | Description | Default |
 |-----|-------------|---------|
 | `instances.managed_env_endpoint` | HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty: every call is refused and names this key. | `""` |
+| `instances.managed_env_start_url` | IAM Identity Center start URL whose Crew sign-in (the Kiro account tab in Settings) the lane uses. Only that sign-in's token is sent to the service endpoint. Signing in on this start URL turns off chat with the agent on this computer while that sign-in is active. Empty: the lane is signed out. | `""` |
+| `instances.managed_env_profile_arn` | Kiro profile ARN pinned on the sign-in above, so it asks no control plane for a profile; the lane sends it with every call. Empty: the lane is signed out. | `""` |
+| `instances.managed_env_ssh_region` | AWS Region the Session Manager plugin is started in when ssh reaches a managed environment. Empty: a connect is refused and names this key. | `""` |
+| `instances.managed_env_kas_endpoint` | HTTPS runtime endpoint the Crew on a new managed environment runs its engine against. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_control_plane_endpoint` | HTTPS control-plane endpoint for that engine. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_kas_region` | Region the two engine endpoints serve. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_box_token_path` | Absolute path, on the managed environment, of the machine token file its image keeps fresh. Empty: a launch is refused and names this key. | `""` |
+| `instances.managed_env_box_env_drop` | Environment variable names the image sets (its own credentials, or the machine token's variable) that are cleared before Crew starts there. | `[]` |
 
 ### Messaging channels
 

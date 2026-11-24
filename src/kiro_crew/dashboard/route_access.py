@@ -76,6 +76,20 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
     ("GET", "/v1/crew/owner/grants"): RouteAccess("crew_api.grants.list", PREVIEW),
+    # Managed-environment lane (managed_env/routes.py): owner dashboard, 403 for a
+    # teammate (teammate_access), 404 while the crew_client preview is off. The list
+    # calls the service's List on every read, so it is not a `.read`.
+    ("GET", "/api/managed-environments/list"): RouteAccess("managed_environments.list", UNSTABLE),
+    ("POST", "/api/managed-environments/ssh-config"): RouteAccess(
+        "managed_environments.ssh_config.write", UNSTABLE
+    ),
+    ("POST", "/api/managed-environments/{sandbox_id}/ssh-session"): RouteAccess(
+        "managed_environments.ssh_session.start", UNSTABLE
+    ),
+    # Stop, resume or delete one environment this Crew made.
+    ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
+        "managed_environments.change", UNSTABLE
+    ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
