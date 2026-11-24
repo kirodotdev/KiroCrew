@@ -153,10 +153,7 @@ WORKER_TRUST_CALL_CONFIRM = {
 }
 #: A Conductor thread has no kickoff select: its Trust is undone from the
 #: conductor's chat in the dashboard, and the card names the thread.
-THREAD_UNDO = (
-    "Only Kiro Crew's owner can undo it, from the conductor's chat in the dashboard "
-    "(pick Normal there, and helper sessions follow)."
-)
+THREAD_UNDO = "Only Kiro Crew's owner can undo it, from the conductor's chat in the dashboard."
 TRUST_THREAD_LABEL = "Trust this thread"
 #: :data:`WORKER_TRUST_CALL_CONFIRM` for a Conductor thread's worker card.
 WORKER_TRUST_THREAD_CONFIRM = {

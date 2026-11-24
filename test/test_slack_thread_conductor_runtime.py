@@ -206,6 +206,25 @@ def test_the_runtime_gate_is_the_thread_switch_not_the_code_channel_scope(thread
 # ── Worker approval cards ─────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("thread", [True, False])
+def test_the_cards_confirmation_fits_what_slack_accepts(thread: bool) -> None:
+    """Slack rejects the whole message when a confirmation field is over its limit, which
+    leaves the worker waiting with no card: title 100, text 300, buttons 30."""
+    blocks = wa._blocks("header", "req-1", "Run shell", "npm", thread=thread)
+    confirms = [
+        el["confirm"]
+        for block in blocks
+        if block.get("type") == "actions"
+        for el in block["elements"]
+        if "confirm" in el
+    ]
+    assert confirms
+    for confirm in confirms:
+        limits = {"title": 100, "text": 300, "confirm": 30, "deny": 30}
+        for field, limit in limits.items():
+            assert len(confirm[field]["text"]) <= limit, (field, len(confirm[field]["text"]))
+
+
 def test_a_worker_card_is_posted_in_the_thread_with_trust_this_thread(thread: Any) -> None:
     card, fut = asyncio.run(_relay(thread))
     assert card is not None and not fut.done()
