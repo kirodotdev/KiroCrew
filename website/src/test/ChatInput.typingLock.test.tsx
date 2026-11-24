@@ -7,7 +7,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { act, fireEvent, screen } from '@testing-library/react'
 import ChatInput from '../components/ChatInput'
-import { TYPING_LOCKED_TEXT_COLUMN } from '../components/chat-input/TypingLockBanner'
 import { renderWithProviders } from './helpers'
 import { stubStripHeights } from './stripHeights'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
@@ -72,18 +71,19 @@ describe('ChatInput typing lock', () => {
   })
 
   it('wears the disabled look on the text column only while locked', async () => {
+    const lockedLook = ['bg-bg-hover', 'cursor-not-allowed', '[&_[data-composer-input]]:opacity-40']
     const { rerender } = renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={vi.fn()} typingLock={LOCK} />)
     await settle()
     const column = screen.getByLabelText('Message input').parentElement as HTMLElement
-    for (const cls of TYPING_LOCKED_TEXT_COLUMN.split(' ')) expect(column).toHaveClass(cls)
+    for (const cls of lockedLook) expect(column).toHaveClass(cls)
     // Only the editor dims, so a staged quote's buttons keep their look.
-    expect(TYPING_LOCKED_TEXT_COLUMN).not.toContain('[&>*]')
+    expect(column.className).not.toContain('[&>*]')
     // The row that still works is outside the dimmed column.
     expect(column).not.toContainElement(screen.getByTestId('composer-typing-lock'))
     expect(column).not.toContainElement(screen.getByRole('button', { name: /stop/i }))
     rerender(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} isRunning onStop={vi.fn()} typingLock={null} />)
     const after = screen.getByLabelText('Message input').parentElement as HTMLElement
-    for (const cls of TYPING_LOCKED_TEXT_COLUMN.split(' ')) expect(after).not.toHaveClass(cls)
+    for (const cls of lockedLook) expect(after).not.toHaveClass(cls)
   })
 
   it('keeps Stop for a running turn', async () => {

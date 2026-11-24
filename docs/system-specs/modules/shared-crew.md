@@ -1823,7 +1823,7 @@ an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
 stays as it was, and so does focus), gives its text column the look of a
-disabled input (`TYPING_LOCKED_TEXT_COLUMN`: hover fill, editor at 40%,
+disabled input (hover fill, editor at 40%,
 not-allowed cursor; the draft can still be selected and copied), replaces the button row with
 `TypingLockBanner` ("<name> is typing…", the only place typing is named; the
 box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.

@@ -16,15 +16,6 @@ export function RaisedBy({ name }: { name: string }) {
   return <span role="note" className="shrink-0 rounded-full border border-border px-2 text-[12px] leading-5 text-muted" data-testid="raised-by">{i18nT('sharedCrew.raised_by', { name })}</span>
 }
 
-/** What the composer's text column wears while typing-locked: the disabled
- *  look the app's other inert inputs wear (hover fill, editor at 40%,
- *  not-allowed cursor), so the box cannot be taken for one that accepts
- *  typing. It stays read-only, not disabled: the draft can still be read,
- *  selected and copied. Only the editor dims: a staged quote in the column
- *  and the row under it (who is typing, Take over, Stop, Steer) keep their
- *  normal look, because their controls still work. */
-export const TYPING_LOCKED_TEXT_COLUMN = 'bg-bg-hover cursor-not-allowed [&_[data-composer-input]]:opacity-40 [&_[data-composer-input]]:cursor-not-allowed'
-
 export function TypingLockBanner({ lock }: { lock: ComposerTypingLockView }) {
   const keeps = i18nT('sharedCrew.take_over_keeps_draft', { name: lock.holderName })
   const label = i18nT(lock.tookOver ? 'sharedCrew.composer_taken_over' : 'sharedCrew.composer_locked', { name: lock.holderName })
