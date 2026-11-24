@@ -5,8 +5,9 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
-prompt spelling, ``file://`` expansion and path check here too, and a script cron's
-MCP client (``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
+prompt spelling, ``file://`` expansion and path check here too, the dashboard's
+unread-prompt notice its wording and backend gate, and a script cron's MCP client
+(``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -84,6 +85,29 @@ def is_unsafe_prompt_path(path: Path) -> bool:
     from kiro_crew.acp import kas_prompt_paths
 
     return kas_prompt_paths.is_unsafe_prompt_path(path)
+
+
+def prompt_unread_notice(agent: str, paths: list[Path]) -> str:
+    """The session-start notice for a ``file://`` prompt the session runs without (``acp.kas_prompt``)."""
+    from kiro_crew.acp import kas_prompt
+
+    return kas_prompt.prompt_unread_notice(agent, paths)
+
+
+def prompt_only_in_context_block(provider: object) -> bool:
+    """Whether *provider*'s harness gets a custom agent's prompt from the ``[AGENT SYSTEM PROMPT]`` block alone.
+
+    True for a ``mirror`` projection, whose mirror rules ``prompt`` withheld, and a
+    ``broker-only`` one (pi), which is handed no spec. False for ``native`` (kiro-cli
+    reads the spec's prompt itself), ``external`` (KAS is sent the prompt in its wire
+    spec and names an unread file itself) and a backend whose declaration
+    ``backend_mcp_ability`` cannot read, about which nothing is established.
+    """
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    projection = ability_for(capabilities_of(provider).backend).projection
+    return projection in ("mirror", "broker-only")
 
 
 def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:

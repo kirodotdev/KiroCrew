@@ -57,13 +57,19 @@ def prompt_file_path(ref: str, agents_dir: Path) -> Path:
 
 
 def prompt_unread_notice(agent: str, paths: list[Path]) -> str:
-    """The session-start notice for a ``file://`` prompt the session runs without, or ``""``."""
+    """The session-start notice for a ``file://`` prompt the session runs without, or ``""``.
+
+    One text for every backend. KAS refuses a session whose prompt path is not
+    allowed; the reader the other backends use skips such a file, so the text
+    names that case too.
+    """
     if not paths:
         return ""
     return (
-        f"ℹ Agent {agent}'s prompt file {paths[0]} is missing, unreadable or empty, "
-        "so this session runs on the backend's default prompt. Point the agent's "
-        "prompt at a readable file to use your own."
+        f"ℹ Agent {agent}'s prompt file {paths[0]} is missing, unreadable, empty or "
+        "in a place Kiro Crew does not read prompts from, so this session runs on "
+        "the backend's default prompt. Point the agent's prompt at a readable file "
+        "to use your own."
     )
 
 

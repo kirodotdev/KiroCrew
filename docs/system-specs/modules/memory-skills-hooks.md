@@ -2184,7 +2184,9 @@ is: resolved (symlinks followed), read only when it stays inside that root, and
 otherwise skipped. A user or global spec keeps the absolute-path rule above. A
 file it cannot use
 (missing, refused, unreadable or empty) leaves the block empty and is named in one
-WARNING. An absolute declared
+WARNING and, on a new dashboard chat that is not a resume, on a backend that gets
+the prompt from this block alone (`agent_specs.prompt_only_in_context_block`), in
+the session-start notice KAS shows (`dashboard/chat_turn/prompt_file_notice.py`). An absolute declared
 resource is accepted in either spelling of its declared root: the root is
 compared lexically first and then in the resolved spelling the reader already
 walks and reads under, so a resource recorded in its real path

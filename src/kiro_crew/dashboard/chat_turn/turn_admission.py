@@ -100,6 +100,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.prompt_file_notice import _notice_unread_prompt_file
     from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -1431,6 +1432,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        await _notice_unread_prompt_file(state, slot, client, turn)
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early
