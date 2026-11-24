@@ -2,8 +2,11 @@
 
 :func:`ensure_block` writes (or replaces) the text between its two marker lines, first in the file
 (ssh takes the first value it reads for each option). Every
-other byte of the file stays as it was, including a foreign ``Host crew-sbx-*`` block the
-user wrote by hand (this module never reads inside it). A marker pair that is damaged
+other line of the file is kept, including a foreign ``Host crew-sbx-*`` block the user
+wrote by hand (this module never reads inside it), with two edits: the rest of the file
+loses its leading LF newlines and, when anything is left, follows the block after one blank
+line; and an old block cut from below another section, with lines after it, leaves a
+``Host *`` in its place so those lines stay global. A marker pair that is damaged
 (one marker missing, or markers twice) is refused rather than guessed at. The file is
 written through a temp file and renamed, mode 0600 for a new file, and a symlink is
 followed to its target.
@@ -85,7 +88,10 @@ def _locate(text: str) -> tuple[int, int] | None:
         ):
             raise SshConfigError("a crew-sbx marker is not a line of its own: fix by hand")
     end += len(END)
-    end += 2 if text[end : end + 2] == "\r\n" else 1 if text[end : end + 1] == "\n" else 0
+    if text[end : end + 2] == "\r\n":
+        end += 2
+    elif text[end : end + 1] == "\n":
+        end += 1
     return start, end
 
 

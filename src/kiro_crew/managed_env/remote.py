@@ -131,9 +131,10 @@ def run_script(
         lines.append(f"export {key}={shlex.quote(value)}")
     body = "\n".join(lines) + "\n" + script
     argv = ssh_argv(host)
-    res = _run_once(runner or _default_runner, argv, body, host, timeout)
+    run = runner or _default_runner
+    res = _run_once(run, argv, body, host, timeout)
     if retry and _lone_255(res):
-        res = _run_once(runner or _default_runner, argv, body, host, timeout)
+        res = _run_once(run, argv, body, host, timeout)
     return res
 
 

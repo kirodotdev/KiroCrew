@@ -30,16 +30,6 @@ KEY_KAS_CONTROL_PLANE = "managed_env_kas_control_plane_endpoint"
 KEY_KAS_REGION = "managed_env_kas_region"
 KEY_BOX_TOKEN_PATH = "managed_env_box_token_path"
 KEY_BOX_ENV_DROP = "managed_env_box_env_drop"
-TEXT_KEYS = (
-    KEY_ENDPOINT,
-    KEY_START_URL,
-    KEY_PROFILE_ARN,
-    KEY_SSH_REGION,
-    KEY_KAS_ENDPOINT,
-    KEY_KAS_CONTROL_PLANE,
-    KEY_KAS_REGION,
-    KEY_BOX_TOKEN_PATH,
-)
 
 _ARN_RE = re.compile(r"arn:[a-z-]+:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:\S+")
 #: An environment variable name the image may set (cleared before Crew starts there).
