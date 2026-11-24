@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.acp import client_start
+from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import AcpClient, AcpError, AcpProcessDied
 from kiro_crew.llm_helpers import acp_error_is_pipe_death, acp_error_is_transient
 from kiro_crew.testing.wait import finished
@@ -105,7 +105,7 @@ async def test_a_child_exiting_during_session_load_ends_the_start_without_a_fall
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The resumed session's transcript exists, so the start sends session/load.
-    monkeypatch.setattr(client_start, "kiro_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(acp_client, "kiro_sessions_dir", lambda: tmp_path)
     (tmp_path / "sid-1.json").write_text("{}")
     client = await _client_over(_adapter(load_session=True, then=_SAY_AND_EXIT), tmp_path)
     client._resume_session_id = "sid-1"
