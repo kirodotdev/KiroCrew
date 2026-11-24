@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.bounded_read import bounded_read_fd
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 #: The parts of one Bot an import restores, in the order the summary lists them.
 PARTS: tuple[str, ...] = ("roster", "binding", "crewmate_file", "dashboard", "briefing")
@@ -341,20 +342,13 @@ def read_fd_at_most(fd: int, limit: int) -> bytes:
 #: separators, the ones Windows refuses in a name, and every control character.
 _UNSAFE_NAME_CHARS: frozenset[str] = frozenset('/\\:<>"|?*') | frozenset(map(chr, range(32)))
 
-#: Device names Windows reserves, with or without an extension, in any case.
-_WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{n}" for n in range(1, 10)}
-    | {f"LPT{n}" for n in range(1, 10)}
-)
-
 
 def safe_path_component(name: object) -> bool:
     """Whether *name* can be ONE file name on every platform an install runs on.
 
     Non-empty, no leading dot, none of :data:`_UNSAFE_NAME_CHARS` (separators, NUL
     and the other control characters, and ``:<>"|?*``), and not a Windows reserved
-    device name (``CON``, ``PRN``, ``AUX``, ``NUL``, ``COM1``-``COM9``,
+    device name (``constants.WINDOWS_DEVICE_STEMS``: ``CON``, ``PRN``, ``AUX``, ``NUL``, ``COM1``-``COM9``,
     ``LPT1``-``LPT9``), whatever its case and whether or not an extension follows.
     A plain text rule, the first check before an archive- or config-authored name
     reaches a path. It does not resolve anything on disk.
@@ -363,4 +357,4 @@ def safe_path_component(name: object) -> bool:
         return False
     if any(c in _UNSAFE_NAME_CHARS for c in name):
         return False
-    return name.split(".", 1)[0].rstrip(" ").upper() not in _WINDOWS_RESERVED_NAMES
+    return name.split(".", 1)[0].rstrip(" ").casefold() not in WINDOWS_DEVICE_STEMS
