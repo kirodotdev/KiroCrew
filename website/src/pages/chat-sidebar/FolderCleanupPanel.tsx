@@ -55,10 +55,16 @@ export function folderPath(folders: ChatFolder[], id: string): string {
  * armed loop, ...), and Delete first closes each one as that ✕ does (archived,
  * revivable). The server keeps the folder of a session that stayed open, and
  * every folder above it.
+ *
+ * With `root` and `closeOnly` it is the folder ⋮ → "Close all sessions" panel:
+ * the same session list and per-session close, with no preview and no folder
+ * delete, so every folder stays.
  */
-export default function FolderCleanupPanel({ folders, root, slots = [], onClose }: {
+export default function FolderCleanupPanel({ folders, root, closeOnly = false, slots = [], onClose }: {
   folders: ChatFolder[]
   root?: ChatFolder
+  /** With `root`: close the sessions under it and delete nothing (folder ⋮ → "Close all sessions"). */
+  closeOnly?: boolean
   slots?: Slot[]
   onClose: () => void
 }) {
@@ -75,6 +81,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
     queryKey: ['folder-cleanup-preview', includeTopLevel, root?.id],
     queryFn: () => api.cleanupChatFolders({ dryRun: true, includeTopLevel, root: root?.id }),
     gcTime: 0,
+    enabled: !closeOnly,
   })
   const archived = preview.data?.archived ?? {}
   // The server keeps this root (a cron job's, a channel's or the default
@@ -97,6 +104,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
       for (const s of ordered) {
         if (deleteSlot.rejected.match(await dispatch(deleteSlot(s.key)))) stayedOpen++
       }
+      if (closeOnly) return { res: null, stayedOpen }
       const res = await api.cleanupChatFolders({ includeTopLevel, root: root?.id, ids: previewIds ?? [] })
       return { res, stayedOpen }
     },
@@ -106,6 +114,11 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
       // folder write in the sidebar and snap it back (see CHAT_FOLDERS_WRITE_KEY).
       invalidateFoldersWhenIdle(queryClient)
       queryClient.invalidateQueries({ queryKey: ['folder-cleanup-preview'] })
+      if (!res) {
+        if (stayedOpen > 0) setError(i18nT('pages.chatSidebar.some_sessions_stayed_open_close_all'))
+        else onClose()
+        return
+      }
       // On the panel's own error surface: a later close that succeeds clears
       // the sidebar's refused-close notice, so that one cannot carry it.
       if (stayedOpen > 0) {
@@ -125,9 +138,9 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
   })
   return (
     <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise" data-testid="folder-cleanup-panel">
-      <div className="font-medium text-text-strong mb-2"><FolderX size={14} className="lucide-inline" /> {root ? i18nT(rootKept ? 'pages.chatSidebar.close_sessions_in_title' : 'pages.chatSidebar.close_sessions_and_delete_title', { name: root.name }) : i18nT('pages.chatSidebar.clean_up_empty_folders')}</div>
-      <div className="text-muted text-[12px] mb-2">{i18nT(root ? (rootKept ? 'pages.chatSidebar.close_sessions_explainer' : 'pages.chatSidebar.close_sessions_and_delete_explainer') : 'pages.chatSidebar.empty_folders_explainer')}</div>
-      {root && rootKept && (
+      <div className="font-medium text-text-strong mb-2"><FolderX size={14} className="lucide-inline" /> {root ? i18nT(closeOnly ? 'pages.chatSidebar.close_all_sessions_in_title' : rootKept ? 'pages.chatSidebar.close_sessions_in_title' : 'pages.chatSidebar.close_sessions_and_delete_title', { name: root.name }) : i18nT('pages.chatSidebar.clean_up_empty_folders')}</div>
+      <div className="text-muted text-[12px] mb-2">{i18nT(root ? (closeOnly ? 'pages.chatSidebar.close_all_sessions_explainer' : rootKept ? 'pages.chatSidebar.close_sessions_explainer' : 'pages.chatSidebar.close_sessions_and_delete_explainer') : 'pages.chatSidebar.empty_folders_explainer')}</div>
+      {root && rootKept && !closeOnly && (
         <div className="text-[12px] text-text mb-2" data-testid="folder-cleanup-root-kept">
           {i18nT(ROOT_KEPT_LINE[rootKept], { name: root.name })}
         </div>
@@ -156,7 +169,9 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
         </label>
       )}
       <div className="text-[12px] text-muted mb-3">
-        {preview.isLoading
+        {closeOnly
+          ? toClose.length === 0 && i18nT('pages.chatSidebar.no_sessions_to_close')
+          : preview.isLoading
           ? i18nT('pages.chatSidebar.checking')
           : preview.isError
             ? (
@@ -191,15 +206,17 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
       <div className="flex flex-wrap items-center gap-2 justify-end">
         {/* Disabled mid-run: closing the panel would not stop the run. */}
         <Btn className="text-[12px] px-3 py-1" disabled={cleanup.isPending} onClick={onClose}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-        {preview.isSuccess && (rows.length > 0 || toClose.length > 0) && (
+        {(closeOnly ? toClose.length > 0 : preview.isSuccess && (rows.length > 0 || toClose.length > 0)) && (
           <Btn
             danger
             className="text-[12px] px-2 py-1 whitespace-nowrap"
             data-testid="folder-cleanup-confirm"
-            disabled={cleanup.isPending || preview.isFetching}
+            disabled={cleanup.isPending || (!closeOnly && preview.isFetching)}
             onClick={() => { setError(''); setNotice(''); cleanup.mutate() }}
           >{root
-            ? (rootKept
+            ? (closeOnly
+              ? i18nT(cleanup.isPending ? 'pages.chatSidebar.closing_sessions' : 'pages.chatSidebar.close_all_sessions')
+              : rootKept
               ? i18nT(cleanup.isPending ? 'pages.chatSidebar.closing_sessions' : 'pages.chatSidebar.close_sessions')
               : i18nT(cleanup.isPending ? 'pages.chatSidebar.closing_and_deleting' : 'pages.chatSidebar.close_and_delete'))
             : (cleanup.isPending ? i18nT('pages.chatSidebar.deleting_folders') : i18nT('pages.chatSidebar.delete_empty_folders', { count: rows.length }))}</Btn>

@@ -180,4 +180,36 @@ describe('FolderCleanupPanel on one folder', () => {
     expect(closed).toEqual(['s2', 's3', 's1'])
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it('closeOnly closes every session in the tree and never previews or deletes a folder', async () => {
+    const closed: string[] = []
+    vi.spyOn(api, 'deleteChatSlot').mockImplementation(async (key: string) => { closed.push(key); return {} })
+    const spy = vi.spyOn(api, 'cleanupChatFolders')
+    const onClose = mount(vi.fn(), { root: FOLDERS[0], slots: SLOTS, closeOnly: true })
+    expect(screen.getByText('Close all sessions in oss')).toBeTruthy()
+    expect(screen.getByTestId('folder-cleanup-sessions').textContent).not.toContain('Other')
+    expect(screen.getByTestId('folder-cleanup-confirm').textContent).toBe('Close all sessions')
+    fireEvent.click(screen.getByTestId('folder-cleanup-confirm'))
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+    expect(closed).toEqual(['s1', 's2', 's3'])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('closeOnly with no open sessions offers no confirm', () => {
+    mount(vi.fn(), { root: FOLDERS[0], slots: [], closeOnly: true })
+    expect(screen.getByText('No open sessions in this folder.')).toBeTruthy()
+    expect(screen.queryByTestId('folder-cleanup-confirm')).toBeNull()
+  })
+
+  it('closeOnly stays open saying so when a session would not close', async () => {
+    vi.spyOn(api, 'deleteChatSlot').mockImplementation(async (key: string) => {
+      if (key === 's3') throw new Error('refused')
+      return {}
+    })
+    vi.spyOn(api, 'chatSlots').mockResolvedValue({ slots: [] } as unknown as Awaited<ReturnType<typeof api.chatSlots>>)
+    const onClose = mount(vi.fn(), { root: FOLDERS[0], slots: SLOTS, closeOnly: true })
+    fireEvent.click(screen.getByTestId('folder-cleanup-confirm'))
+    expect((await screen.findByTestId('folder-cleanup-error')).textContent).toContain('Some sessions stayed open.')
+    expect(onClose).not.toHaveBeenCalled()
+  })
 })

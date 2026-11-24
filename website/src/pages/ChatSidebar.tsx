@@ -342,6 +342,7 @@ function ChatSidebarBody({
   const [cleanupOpen, setCleanupOpen] = useState(false)
   const [folderCleanupOpen, setFolderCleanupOpen] = useState(false)  // header ⋮ → "Clean up empty folders" panel
   const [folderCleanupRoot, setFolderCleanupRoot] = useState<ChatFolder | null>(null)  // folder ⋮ → "Close sessions and delete…"
+  const [folderCloseAllRoot, setFolderCloseAllRoot] = useState<ChatFolder | null>(null)  // folder ⋮ → "Close all sessions"
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [broadcastOpen, setBroadcastOpen] = useState(false)  // header ⋮ → "Broadcast message…" panel
   // 'folders': the board notice's Show opened the menu for its folder list (SearchDock).
@@ -1073,7 +1074,7 @@ function ChatSidebarBody({
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused, toggleFilterPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
-    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
+    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderCloseAllRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
     setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
@@ -1159,6 +1160,7 @@ function ChatSidebarBody({
       {/* Clean Up dialog */}
       {/* The full list: the server names folders this list may not draw, such as an empty folder inside a hidden Bot home. */}
       {folderCleanupOpen && <FolderCleanupPanel folders={allFolders} onClose={() => setFolderCleanupOpen(false)} />}
+      {folderCloseAllRoot && <FolderCleanupPanel key={`close-all-${folderCloseAllRoot.id}`} folders={allFolders} root={folderCloseAllRoot} closeOnly slots={localSlots} onClose={() => setFolderCloseAllRoot(null)} />}
       {folderCleanupRoot && <FolderCleanupPanel key={folderCleanupRoot.id} folders={allFolders} root={folderCleanupRoot} slots={localSlots} onClose={() => setFolderCleanupRoot(null)} />}
       {cleanupOpen && renderSessionCleanupPanel(scope)}
 
