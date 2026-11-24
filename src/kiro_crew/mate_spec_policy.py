@@ -17,7 +17,8 @@ would otherwise drop also lands as that list's matching ``@server[/tool]`` refs,
 whether or not the base declares the server, and an unscoped built-in allow
 (``subagent``, ``skill``) as the one tool name KAS derives it from. A field
 that cannot land exactly (an entry for a tool the base already sets
-differently, a ``permissions`` block KAS would refuse whole) raises :class:`SpecPolicyUncarried` naming it. The governance ceiling still
+differently, a ``permissions`` block KAS would refuse whole, an ``allow`` beside a
+``policies`` bundle) raises :class:`SpecPolicyUncarried` naming it. The governance ceiling still
 applies to the merged spec, so a grant the template declares is never wider than
 the ceiling allows; KAS's projection relays a ``deny``/``ask`` rule as written and
 an ``allow`` only where the ceiling permits it (``kas_permissions.merge_user_permissions``).
@@ -37,13 +38,17 @@ from typing import Any
 
 from kiro_crew.agent_sdk.kas_tool_view import (
     allow_granted_by_spec,
+    allows_beside_bundle,
     builtin_allow_tool,
+    bundle_ids,
+    is_allow_rule,
     permission_allow_derivable,
     permissions_block_readable,
     permissions_block_refusal,
     spec_unjudged_denies,
     tools_settings_family,
     tools_settings_unenforced,
+    without_policy_bundle,
 )
 from kiro_crew.mate_worker import WorkerKitUnreadable
 from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
@@ -199,6 +204,17 @@ def _named_permissions(*blocks: Any) -> str:
 def _layer_permissions(
     target: dict[str, Any], perms: Any, lost: list[str], *, worker: bool = False
 ) -> None:
+    beside_bundle = (
+        "permissions (allow rules beside a policies bundle; write them out "
+        "without the bundle, or use allowedTools)"
+    )
+    if allows_beside_bundle(perms):
+        # KAS's projection leaves out an allow beside a bundle, so the worker
+        # could not keep it exactly.
+        lost.append(beside_bundle)
+        return
+    # A bundle alone beside deny and ask rules is left out: they travel without it.
+    perms = without_policy_bundle(perms)
     if not (
         isinstance(perms, dict)
         and set(perms) <= {"rules"}
@@ -216,6 +232,15 @@ def _layer_permissions(
             rules.append(copy_json_document(rule))
             seen.add(_canon(rule))
     merged = {**copy_json_document(have), "rules": rules}
+    held_rules = have.get("rules")
+    held = {_canon(r) for r in held_rules} if isinstance(held_rules, list) else set()
+    if bundle_ids(merged) and any(
+        is_allow_rule(r) and _canon(r) not in held for r in perms.get("rules") or []
+    ):
+        # The file's own bundle sits beside the merged rules, so KAS's projection
+        # would leave a new allow out just the same.
+        lost.append(beside_bundle)
+        return
     if not permissions_block_readable(merged):
         # The template's own block first, so a rule index in the reason is the
         # template's numbering; the merged block only when the template reads alone.
@@ -228,8 +253,6 @@ def _layer_permissions(
         # loss; one it does not is carried as the list's own entries (``mcp``
         # refs, or a built-in tool name); any other would be written while the
         # worker still asks.
-        held_rules = have.get("rules")
-        held = {_canon(r) for r in held_rules} if isinstance(held_rules, list) else set()
         lost.extend(
             f"permissions rule {i} (allow {rule.get('capability')})"
             for i, rule in enumerate(perms.get("rules") or [])

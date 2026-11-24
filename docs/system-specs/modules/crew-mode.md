@@ -5457,8 +5457,11 @@ notice (`spec_keys_notice`) says the worker refuses those commands unless they
 are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
 session keeps the old wording.
 A named bundle (`policies`) beside the agent's `rules` is left behind and the
-rules are carried, as the upgrade path reads it: KAS refuses a block that names
-a bundle, and a bundle only expands into allow rules, so leaving it narrows.
+rules are carried, as the upgrade path reads it: KAS's projection leaves a
+bundle out, and a bundle only expands into allow rules, so leaving it narrows.
+When a Bot's own template policy names one (`mate_spec_policy.layer_policy`),
+the bundle is left out and its `deny` and `ask` rules land; an `allow` beside it,
+or a new `allow` layered onto a file whose own block names a bundle, refuses the add as `permissions (allow rules beside a policies bundle; write them out without the bundle, or use allowedTools)`.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for

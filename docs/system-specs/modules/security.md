@@ -3841,8 +3841,8 @@ or an authored restriction in the RAW spec inputs
 (`kas_permissions.withhold_answered_under_authored_rules`,
 `authored_restricted_capabilities`): any non-`allow` rule in the spec's own
 `permissions` block, all three capabilities when that block is anything but a
-readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
-whole, which a KAS session's start notice names as `permissions`), and any
+readable `{"rules": [...]}` (the shapes the merge refuses whole, which a KAS
+session's start notice names as `permissions`), and any
 `toolsSettings` entry for one of these built-ins. The keys that
 only grant on kiro-cli are not read as a restriction there: a shell entry's
 `allowedCommands` and boolean `autoAllowReadonly`, and a read or write entry's `allowedPaths`

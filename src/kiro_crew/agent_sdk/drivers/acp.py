@@ -520,9 +520,10 @@ def narrowed_agent_permissions(
     """*derived* with the ``deny`` and ``ask`` rules of the authored block *inherited* first.
 
     *inherited* is read with the parser KAS's projection uses
-    (``parse_user_permissions``), so a block it refuses whole on every session -- a
-    named policy bundle, an unknown key, a capability KAS does not define -- yields
-    no rule: none of its rules ever applied. Duplicates are dropped, so a writer
+    (``parse_user_permissions``), so a block it refuses whole on every session -- an
+    unknown key, a capability KAS does not define -- yields no rule: none of its
+    rules ever applied. A named policy bundle is left out with the ``allow`` rules
+    beside it, so its ``deny`` and ``ask`` rules are carried. Duplicates are dropped, so a writer
     that runs over its own output does not grow the list.
 
     The block returned is one that same projection accepts, because a refused block
