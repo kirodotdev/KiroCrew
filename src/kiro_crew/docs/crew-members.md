@@ -105,6 +105,14 @@ with four tabs: **Profile**, **Schedules**, **Sessions** (the ones it is driving
 and **Goals**. **Notes** — what it learned, its own standing notes — opens from
 the Profile tab as a read-only page pushed over the card.
 
+The sessions a Bot opens are listed in its **Sessions** tab and left out of
+your own Sessions list. Two switches at the top of that tab put them back:
+**Show {name} in my Sessions** (the Bot's `show_sessions_in_list`) lists that
+Bot's sessions, and **Show all bots in my Sessions**
+(`dashboard.show_bot_sessions_in_list`, also in Settings > Chat > Sessions)
+lists every Bot's. While the global switch is on, no Bot's own switch applies.
+A listed session sits in its Bot's folder in your Sessions list.
+
 A few situations make Kiro Crew refuse to open a thread rather than guess:
 
 | What you see | What happened |

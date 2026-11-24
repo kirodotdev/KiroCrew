@@ -469,7 +469,10 @@ the feature off entirely.
 
 Only `error` and `timeout` count. A status carrying no verdict is ignored rather than
 counted either way — including `needs_auth`, because counting that would quarantine
-every OAuth server you have not signed into yet.
+every OAuth server you have not signed into yet. An `error` from a server that
+started and answered its handshake with an error (an expired upstream sign-in, say)
+is not counted either: the server is refusing, not hanging, so its row shows the
+error and the next probe tries it again.
 
 **Quarantine reports; it does not unmount.** The server stays configured and stays
 mounted, and nothing writes `disabled` on your behalf — that key is your choice, and
