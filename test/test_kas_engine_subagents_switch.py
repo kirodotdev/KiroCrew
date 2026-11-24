@@ -474,12 +474,9 @@ async def test_the_member_named_default_drops_both_spawn_tools_in_its_own_chat(
 @pytest.mark.parametrize(
     "name",
     [
-        "kirocrew-conductor",
         "kirocrew-research",
-        "kirocrew-mate-conductor",
         "kirocrew-worker",
         "kirocrew-heartbeat",
-        "kirocrew-team-lead",
     ],
 )
 async def test_an_agent_built_from_the_default_template_mounts_and_keeps_both_spawn_tools(

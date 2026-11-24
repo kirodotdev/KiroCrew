@@ -1,9 +1,9 @@
 """The ``kas_subagents`` preview: whether a KAS chat's agent uses the engine's sub-agents.
 
 On (``dashboard.feature_previews.kas_subagents`` is ``true``, set under Settings >
-Developer > Feature previews): in the chats :func:`engine_subagents_on` names, the
-chat agent's projected entry mounts KAS's own sub-agent tool (``invoke_sub_agent``)
-naming the shipped helper (``acp/kas_engine_subagent_target.py``). Only in the chats
+Developer > Feature previews): in the chats :func:`engine_subagents_on` names
+(never a conductor's, :func:`hands_work_to_sessions`), the chat agent's projected
+entry mounts KAS's own sub-agent tool (``invoke_sub_agent``) naming the shipped helper (``acp/kas_engine_subagent_target.py``). Only in the chats
 :func:`engine_replaces_spawn` names do the person's own agents the target projection
 registers join it (:func:`_held_children`) and ``spawn_run`` and ``spawn_sub_agents``
 leave that entry's tools. The operating contract's one ``spawn_sub_agents`` sentence
@@ -168,12 +168,14 @@ def engine_subagents_on(
 ) -> bool:
     """Whether this KAS session's agent mounts the engine's sub-agent tool.
 
-    True for a chat of any agent with the ``kas_subagents`` preview on: a person's
-    dashboard chat (``dashboard:`` / ``dashboard_`` keys, a crew member's, a Bot's, a
-    member dispatch and a Crew panel included), a cron run (``cron:`` / ``cron_``) and
-    a messaging channel's chat. Never a Kiro Crew sub-agent run, a workflow, a task
-    runner or a heartbeat session, and never while the chat-runtime-sharing preview
-    is on: a chat whose agent can start native sub-agents keeps its own process
+    True for a chat of any agent but a conductor with the ``kas_subagents`` preview
+    on: a person's dashboard chat (``dashboard:`` / ``dashboard_`` keys, a crew
+    member's, a member dispatch and a Crew panel included), a cron run (``cron:`` /
+    ``cron_``) and a messaging channel's chat. Never a conductor's chat, a Bot's own
+    thread among them (:func:`hands_work_to_sessions`), never a Kiro Crew sub-agent
+    run, a workflow, a task runner or a heartbeat session, and never while the
+    chat-runtime-sharing preview is on: a chat whose agent can start native
+    sub-agents keeps its own process
     (``chat_runtime_sharing.spec_grants_native_subagents``), and this mount is not
     in the spec that check reads, so the preview keeps it off instead.
     *member_dispatch* and *crew_panel* do not narrow it.
@@ -184,9 +186,29 @@ def engine_subagents_on(
     return (
         kas_subagents_preview_on(cfg)
         and bool(agent)
+        and not hands_work_to_sessions(agent)
         and _is_chat_key(session_key)
         and not chat_runtime_sharing_enabled(cfg)
     )
+
+
+def hands_work_to_sessions(agent: str) -> bool:
+    """Whether *agent* is a conductor, which hands its work to sessions, never to a sub-agent.
+
+    A Bot's own conductor (``mate_worker.MATE_CONDUCTOR_AGENT``) starts no sub-agent:
+    its hand-off is a worker session, so its spec leaves out Kiro Crew's spawn tools
+    (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``) and the spawn gate refuses it
+    (``subagent_parts.agent_policy.conductor_spawn_refusal``). Every conductor
+    ``crew_mode.conductor_agents`` names (the shipped conductor templates, the
+    configured ``agent.crew_mode_agent`` and its aliases) dispatches each work item
+    to a session it can verify and report on. The engine's tool would give each an
+    in-turn sub-agent beside that dispatch, so none of them mounts it. Read from the
+    agent alone, the one fact the batch and the contract renderer share.
+    """
+    from kiro_crew.crew_mode import conductor_agents
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    return agent == MATE_CONDUCTOR_AGENT or agent in conductor_agents()
 
 
 def _is_chat_key(session_key: str) -> bool:
@@ -707,6 +729,7 @@ __all__ = [
     "contract_names_engine_subagents",
     "engine_replaces_spawn",
     "engine_subagents_on",
+    "hands_work_to_sessions",
     "kas_subagents_preview_on",
     "parent_refuses_helper",
     "unmirrored_restriction",

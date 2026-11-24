@@ -169,9 +169,10 @@ With the "KAS sub-agents" feature preview on (Settings > Developer > Feature
 previews, off by default), a KAS chat hands short, independent tasks whose
 results it needs in the same reply to the KAS engine's own sub-agent tool
 (`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. That is every KAS
-chat: your dashboard chats, a crew member's or Bot's chat, a cron run and a
+chat: your dashboard chats, a crew member's chat, a cron run and a
 messaging channel's chat, on any agent Kiro Crew ships or builds (an agent file of
-your own is read as kiro-cli reads it); not a Kiro Crew
+your own is read as kiro-cli reads it); not a conductor's chat (a Bot's own chat,
+which hands its work to the Bot's workers, and a conductor mode chat), a Kiro Crew
 sub-agent run, a workflow or a heartbeat, and not while "Chat runtime sharing" is
 on. Your own dashboard chat on the default agent, and the chat of the crew member
 named `default` on it, use the engine's tool in place of `spawn_run` and

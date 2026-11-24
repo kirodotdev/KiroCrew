@@ -3378,10 +3378,13 @@ spec the same way kiro-cli v2 does where the wire allows it:
   `kas_engine_subagents.kas_subagents_preview_on`): only when it is on and
   `kas_engine_subagents.engine_subagents_on` holds and the session agent is not a
   person's own file (`default_crew_servers.is_custom_agent`; that one is read as
-  kiro-cli reads it, below) (a chat of any agent Kiro Crew wrote: a
-  `dashboard:` / `dashboard_` key, a crew member's, a Bot's, a member dispatch and
+  kiro-cli reads it, below) (a chat of any agent Kiro Crew wrote but a conductor: a
+  `dashboard:` / `dashboard_` key, a crew member's, a member dispatch and
   a Crew panel included, a `cron:` / `cron_` run, or a messaging channel's chat;
-  never a Kiro Crew sub-agent run, a workflow, a task runner or a heartbeat; and
+  never a conductor's chat (`hands_work_to_sessions`: a Bot's own conductor
+  `kirocrew-mate-conductor`, whose chat starts no sub-agent, and every agent
+  `crew_mode.conductor_agents` names, which dispatches each work item to a
+  session), never a Kiro Crew sub-agent run, a workflow, a task runner or a heartbeat; and
   the chat-runtime-sharing preview off, because the sharing check
   `chat_runtime_sharing.spec_grants_native_subagents` reads the spec on disk and
   not this mount), the session agent's entry gains `invoke_sub_agent` in `tools`
