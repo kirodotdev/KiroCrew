@@ -1457,6 +1457,7 @@ class AcpProvider(LLMProvider):
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
     _bind_unbound_effort = _acp_model_effort._bind_unbound_effort
     _advertised_effort_levels = _acp_model_effort._advertised_effort_levels
+    effort_option_reported = _acp_model_effort.effort_option_reported
     accepts_effort_level = _acp_model_effort.accepts_effort_level
     supports_effort = _acp_model_effort.supports_effort
     _resolve_effort = _acp_model_effort._resolve_effort

@@ -64,6 +64,18 @@ def _live_on(state: Any, backend: str, crew: str) -> Any:
     return next((p for p in on if id(p) in mine), next(iter(on), None))
 
 
+def remember_reported_effort(live: Any, backend: str, model: str | None) -> None:
+    """Record the levels *live* advertised for *model*, once its session has reported them.
+
+    Antigravity alone. A session that has not advertised its effort option yet has an
+    empty level list that means "unknown", so it records nothing and clears nothing.
+    """
+    if backend == ACP_BACKEND_ANTIGRAVITY and model and live.effort_option_reported():
+        advertised_effort_cache.remember(
+            backend, model, [lvl for lvl in live.get_valid_effort_levels() if isinstance(lvl, str)]
+        )
+
+
 def _remembered_effort(backend: str, model: str | None) -> dict:
     """The answer with no live session on *model*: what a past session advertised, else unknown.
 
@@ -117,8 +129,7 @@ def harness_effort(
         ):
             return _remembered_effort(backend, model)
         advertised = [lvl for lvl in live.get_valid_effort_levels() if isinstance(lvl, str)]
-        if backend == ACP_BACKEND_ANTIGRAVITY and model:
-            advertised_effort_cache.remember(backend, model, advertised)
+        remember_reported_effort(live, backend, model)
         # A real session registers its own levels (goose's ``off``) into the shared
         # vocabulary, so the vocabulary filter alone cannot tell an off-only option apart.
         levels = [lvl for lvl in advertised if lvl in get_reasoning_effort_values()]

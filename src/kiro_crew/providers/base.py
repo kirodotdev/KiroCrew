@@ -1171,6 +1171,10 @@ class LLMProvider(ABC):
         provider with no effort control."""
         return []
 
+    def effort_option_reported(self) -> bool:
+        """True once the session has advertised its effort option. Default False."""
+        return False
+
     def advertised_commands(self) -> list[dict[str, str]]:
         """The slash commands the live session advertised, as ``name`` and ``description``.
 

@@ -1346,6 +1346,19 @@ def _isolate_message_entry_cache():
         _cp._entry_cache_bounds_read_warned = False
 
 
+@pytest.fixture(autouse=True)
+def _advertised_effort_cache_isolated(monkeypatch):
+    """Start every test with an empty remembered-effort record.
+
+    ``advertised_effort_cache`` keeps its record in module state, so a test that
+    drives a live Antigravity session through ``harness_effort`` would otherwise
+    leave levels that a later test's draft answers from.
+    """
+    from kiro_crew import advertised_effort_cache
+
+    monkeypatch.setattr(advertised_effort_cache, "_LEVELS", {})
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _knowledge_store_cross_thread_close():
     """Let ``KnowledgeStore._close_all_for_tests()`` close other threads' handles.

@@ -229,6 +229,14 @@ def _advertised_effort_levels(self: AcpProvider) -> list[str] | None:
     return self._client.get_valid_effort_levels()
 
 
+def effort_option_reported(self: AcpProvider) -> bool:
+    """True once the session has advertised its effort option, whatever levels it holds.
+
+    Before that, an empty level list means "not reported yet", not "no levels".
+    """
+    return self._client.supports_config_option(effort_config_option_id(self._client.backend))
+
+
 def accepts_effort_level(self: AcpProvider, level: str) -> bool:
     """False when this session's advertised vocabulary has no spelling of *level*.
 
