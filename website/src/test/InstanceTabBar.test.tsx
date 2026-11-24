@@ -31,8 +31,8 @@ vi.mock('../api/client', () => {
 import { api, ApiError } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
-vi.mock('../components/remoteCrewsWindow', () => ({ openRemoteCrewsWindow: vi.fn() }))
-import { openRemoteCrewsWindow } from '../components/remoteCrewsWindow'
+vi.mock('../components/remoteCrewsWindowStore', () => ({ openRemoteCrewsWindow: vi.fn() }))
+import { openRemoteCrewsWindow } from '../components/remoteCrewsWindowStore'
 
 const conn = (over: Partial<InstanceView> = {}): InstanceView => ({
   id: 'cd-1',

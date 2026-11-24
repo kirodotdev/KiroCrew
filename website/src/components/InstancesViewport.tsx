@@ -30,7 +30,7 @@
  *   never arrives within PANE_LOAD_TIMEOUT_MS the error panel surfaces with
  *   Retry, which force-reloads the iframe even for an identical re-minted src.
  */
-import { openRemoteCrewsWindow } from './remoteCrewsWindow'
+import { openRemoteCrewsWindow } from './remoteCrewsWindowStore'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'

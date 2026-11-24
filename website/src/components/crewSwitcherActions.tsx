@@ -12,7 +12,7 @@ import { useLabelTip } from './InstantTip'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from './ui/dropdown-menu'
-import { openRemoteCrewsWindow } from './remoteCrewsWindow'
+import { openRemoteCrewsWindow } from './remoteCrewsWindowStore'
 import { i18nT } from '../i18n/t'
 
 /** `add`: open on Add a Crew. Otherwise open on the crew list. */
@@ -23,11 +23,11 @@ export function CrewMenuActions({ onAction = openRemoteCrewsWindow }: { onAction
   return (
     <>
       <DropdownMenuSeparator />
-      <DropdownMenuItem className="gap-2 text-[13px]" data-testid="crew-add-remote" onSelect={() => onAction(true)}>
+      <DropdownMenuItem data-testid="crew-add-remote" onSelect={() => onAction(true)}>
         <Plus className="lucide-inline shrink-0 text-muted" aria-hidden />
         <span className="flex-1 min-w-0">{i18nT('components.instanceTabBar.add_remote_crew')}</span>
       </DropdownMenuItem>
-      <DropdownMenuItem className="gap-2 text-[13px]" data-testid="crew-settings" onSelect={() => onAction(false)}>
+      <DropdownMenuItem data-testid="crew-settings" onSelect={() => onAction(false)}>
         <Settings2 className="lucide-inline shrink-0 text-muted" aria-hidden />
         <span className="flex-1 min-w-0">{i18nT('components.instanceTabBar.crew_settings')}</span>
       </DropdownMenuItem>
@@ -59,8 +59,8 @@ export function CrewAddButton() {
           {open ? null : tip.bubble}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" aria-label={i18nT('components.instanceTabBar.instances')} className="min-w-[240px]">
-        <DropdownMenuItem className="gap-2 text-[13px]" aria-current="page">
+      <DropdownMenuContent align="start" aria-label={i18nT('components.instanceTabBar.instances')}>
+        <DropdownMenuItem aria-current="page">
           <Check className="lucide-inline shrink-0 text-accent" aria-hidden />
           <span className="flex-1 min-w-0">{i18nT('components.instanceTabBar.local')}</span>
         </DropdownMenuItem>

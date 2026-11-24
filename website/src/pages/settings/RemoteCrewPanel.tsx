@@ -29,9 +29,10 @@
  * `RemoteCrewPanelSections.tsx` (the sections and the Add Crew modal) and
  * `RemoteCrewPanelCrewRow.tsx` (one crew row, the turn-API URL field).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import SharedCrewsCards from '../../components/SharedCrewsCards'
+import { subscribeRemoteCrewPanelAdd } from '../../components/remoteCrewsWindowStore'
 import {
   Server,
   RefreshCw,
@@ -112,11 +113,13 @@ export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 /** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
 const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
 
-export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
+export function RemoteCrewPanel({ openAdd = false, onAddClosed, onAddOpenChange }: {
   /** Open with Add a Crew's first step on top. */
   openAdd?: boolean
-  /** Add a Crew closed; `added` once a crew was added or a launch was accepted. */
-  onAddClosed?: (added: boolean) => void
+  /** Add closed or unavailable; keep the panel for a crew, pending launch, or gate. */
+  onAddClosed?: (keepPanel: boolean) => void
+  /** Let a containing window stand down while Add a Crew owns dismissal/focus. */
+  onAddOpenChange?: (open: boolean) => void
 } = {}) {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
@@ -129,6 +132,20 @@ export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
     const forms = appStore.getState().instances.crewForms
     return forms?.addLink && forms.add === null ? 'connect' : openAdd ? 'choose' : null
   })
+  useEffect(() => subscribeRemoteCrewPanelAdd(() => {
+    setAddMode(mode => mode ?? 'choose')
+  }), [])
+  const addOpen = addMode !== null
+  // Any provisioner's accepted launch keeps progress visible when Add closes.
+  // Reset per opening, independently of the built-in form's de-duplication key.
+  const launchAccepted = useRef(false)
+  useLayoutEffect(() => { if (addOpen) launchAccepted.current = false }, [addOpen])
+  // Match Modal's layout-phase Escape listener: protect the parent before a
+  // keystroke can reach it, and release it if this panel unmounts.
+  useLayoutEffect(() => {
+    onAddOpenChange?.(addOpen)
+    return () => onAddOpenChange?.(false)
+  }, [addOpen, onAddOpenChange])
   // The setup form's queries run only while it is on screen, as they did on its tab.
   const tab = addMode === 'setup' ? 'setup' : 'crews'
 
@@ -383,6 +400,13 @@ export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
   // Keyed on the gateway's `instances_disabled` code, not the message text, so
   // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
   const disabled = isInstancesDisabledError(instancesQuery.error)
+  // Only the window's add-only open steps back to the gate. On Settings an add
+  // link's values wait in the open form until management is turned on.
+  useEffect(() => {
+    if (!openAdd || !disabled || !addOpen) return
+    setAddMode(null)
+    onAddClosed?.(true)
+  }, [openAdd, disabled, addOpen, onAddClosed])
   // The relay answers every remote caller `instances_disabled`, and the switch is the host's own config.
   const { notOwner } = useViewerIsNotOwner()
   // Any OTHER failure is a load error, not "you have no crews": rendering the
@@ -925,6 +949,7 @@ export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
       api.cloudLaunch(body),
     onMutate: () => { setActionErr(null); setSubnetErr(null) },
     onSuccess: job => {
+      launchAccepted.current = true
       setActiveLaunchId(job.id)
       reloadLaunches()
       // The built-in form's draft has been used. Only the built-in Launch sets
@@ -1605,7 +1630,7 @@ export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
         <AddCrewModal
           mode={addMode}
           onMode={setAddMode}
-          onClose={() => { setAddMode(null); onAddClosed?.(launchedKey !== null) }}
+          onClose={() => { setAddMode(null); onAddClosed?.(launchAccepted.current || launchMutation.isPending) }}
           setup={setupForm}
           // A crew added is a row of My Crews, so the modal's job is done.
           connect={<AddInstanceForm onAdded={() => { reloadInstances(); setAddMode(null); onAddClosed?.(true) }} />}
