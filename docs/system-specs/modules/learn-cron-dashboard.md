@@ -686,7 +686,7 @@ database failure. Minimal context keeps required member/project guidance while
 omitting optional context. Temporary execution reads no learning memory, and
 restricted execution cannot persist learning from its work.
 
-Scheduled job execution with three schedule types: `every` (interval, min 60s), `at` (one-shot timestamp), `cron` (5-field expression). Supports natural language parsing via `parse_time_string()`.
+Scheduled job execution with three schedule types: `every` (interval, min 60s), `at` (one-shot timestamp), `cron` (5-field expression). Supports natural language parsing via `parse_time_string()`; an ISO 8601 time that carries its own zone (`Z` or an offset such as `+02:00`) is taken as that instant, whatever the job's timezone.
 
 The Schedule page's job form (`JobForm`) creates all three. Its **Once** option, offered only for a new job, takes a date and time plus the same zone picker as the weekly and cron modes, and sends them to `POST /api/crons` as `at_time` and `timezone`, so `parse_time_string` reads that wall clock in the job's zone. An existing one-shot opens showing its stored run time, and a save leaves the schedule out, because `PATCH /api/crons/{id}` takes no run time.
 
