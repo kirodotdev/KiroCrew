@@ -126,6 +126,7 @@ export const UI_REVEAL_STATES = {
   crewmate_chat_open_phone: 'a Bot chat fills the phone screen, so the roster is behind it',
   crewmate_profile_closed: "the Bot's profile card is closed (pressing the Bot's name in the chat header opens it)",
   crewmate_profile_tab_closed: "the Bot's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
+  crewmate_profile_sessions_tab_closed: "the Bot's profile card is on another tab (its Sessions tab is the first one on the rail)",
   crewmate_settings_closed: "the Bot's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
   crewmate_panel_closed: "the Bot's side panel is closed (the Dashboard & files button in the chat header opens it)",
 } as const
@@ -155,6 +156,7 @@ export const UI_REVEAL_SCOPES = {
   'members.roster-phone': 'crewmate_chat_open_phone',
   'members.profile': 'crewmate_profile_closed',
   'members.profile-tab': 'crewmate_profile_tab_closed',
+  'members.sessions-tab': 'crewmate_profile_sessions_tab_closed',
   'members.settings': 'crewmate_settings_closed',
   'members.panel': 'crewmate_panel_closed',
 } as const satisfies Record<string, UiRevealState>

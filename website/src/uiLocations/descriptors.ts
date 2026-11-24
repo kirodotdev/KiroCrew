@@ -124,6 +124,21 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['account balance', 'credits', 'my account', 'usage'],
     'zh-CN': ['账户余额', '额度', '我的账户', '用量'],
   },
+  // What people ask when their bots' sessions are missing from the Sessions
+  // sidebar; the label alone ("Show all bots in my Sessions") matches none of it.
+  'setting:chat.show-all-bots-in-my-sessions': {
+    en: [
+      "show my bots' sessions in my sessions list", 'show bot sessions in the sidebar', 'bot sessions missing from sidebar',
+      'bot sessions not showing', 'hide bot sessions', 'bot sessions in my sessions list',
+    ],
+    'zh-CN': ['在会话列表显示 bot 的会话', 'bot 的会话不显示', '侧边栏看不到 bot 的会话', '机器人的会话不显示', '隐藏 bot 的会话'],
+  },
+  // The split-view button in the chat header shows only while this is on, so a
+  // question about the missing button has to land here.
+  'setting:chat.split-view-session-grid': {
+    en: ['split view', 'split screen', 'side by side sessions', 'session grid', 'two chats at once', 'split view button'],
+    'zh-CN': ['分屏', '分屏视图', '并排显示会话', '会话网格', '同时看两个聊天'],
+  },
   // The lasting way to silence a kind of notification (the keep-or-mute prompt
   // under a new channel's first notification is one-time).
   'setting:notifications.sources': {

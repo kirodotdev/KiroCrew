@@ -278,6 +278,24 @@ def test_a_zh_answer_found_by_a_term_is_labelled_in_chinese() -> None:
                 ("where do i put my api key", "en", "settings.tab.secrets"),
                 ("messaging", "en", "settings.tab.channels"),
                 ("connect slack", "en", "settings.sub.channels.slack"),
+                # One bot is the common case, so the bot's own switch ranks first.
+                (
+                    "show a bot's sessions in my Sessions list",
+                    "en",
+                    "members.bot-sessions-switch",
+                ),
+                (
+                    "bot sessions not showing in the sidebar",
+                    "en",
+                    "setting:chat.show-all-bots-in-my-sessions",
+                ),
+                ("侧边栏看不到 bot 的会话", "zh-CN", "setting:chat.show-all-bots-in-my-sessions"),
+                ("show this bot in my sessions", "en", "members.bot-sessions-switch"),
+                ("where is the split view button", "en", "setting:chat.split-view-session-grid"),
+                ("two chats at once", "en", "setting:chat.split-view-session-grid"),
+                ("怎么分屏", "zh-CN", "setting:chat.split-view-session-grid"),
+                ("hide a bot from the sidebar", "en", "members.bot-sessions-switch"),
+                ("在侧边栏隐藏这个 bot", "zh-CN", "members.bot-sessions-switch"),
             ],
         ),
         *named_cases(
