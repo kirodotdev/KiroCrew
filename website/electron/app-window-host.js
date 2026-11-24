@@ -191,7 +191,7 @@ function pointInRegions(regions, x, y) {
  *   now?: () => number,
  *   reservations?: {isReserved: (a: string) => boolean, onChange: (fn: () => void) => () => void},
  *   displayMemoryPath?: string,
- *   showDashboardSession?: (slotKey: string) => boolean,
+ *   showDashboardSession?: (slotKey: string, crewId: string) => boolean,
  *   openExternal?: (url: string) => void,
  *   timers?: {setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function},
  *   registerCaptureSurface?: (wc: object, url: string) => boolean,
@@ -1431,7 +1431,8 @@ function createAppWindowHost(deps) {
       if (!rec || suspended || typeof slotKey !== "string" || slotKey.length > MAX_SLOT_KEY_LENGTH) return false;
       if (!deps.showDashboardSession) return false;
       try {
-        return deps.showDashboardSession(slotKey) === true;
+        const crewId = rec.target.instanceId === SELF_GATEWAY ? "" : rec.target.instanceId;
+        return deps.showDashboardSession(slotKey, crewId) === true;
       } catch {
         return false;
       }

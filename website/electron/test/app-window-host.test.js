@@ -844,6 +844,40 @@ test("gatewayChoice: a crew's window is served only what the app holds on BOTH g
   assert.deepStrictEqual(captured, []);
 });
 
+test("gatewayChoice: a window a crew serves names its sessions on that crew", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const shown = [];
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    showDashboardSession: (slotKey, crewId) => { shown.push([slotKey, crewId]); return true; },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [remote] = ctx.fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  remote.webContents.url = remote.loaded[0];
+  remote.webContents.events["input-event"]({}, { type: "mouseDown" });
+  assert.strictEqual(await ctx.fake.ipc[CHANNELS.showSession](fromWindow(remote), "cos-quick-chat"), true);
+  assert.deepStrictEqual(shown, [["cos-quick-chat", "crew"]], "the crew's key is never opened as a local session");
+
+  // Back on this computer, the same call names a local session.
+  assert.deepStrictEqual(await ctx.fake.ipc[CHANNELS.chooseGateway](fromWindow(remote), "self"), { ok: true, chosen: "self", showing: "self" });
+  const local = ctx.fake.created.at(-1);
+  local.webContents.url = local.loaded[0];
+  local.webContents.events["input-event"]({}, { type: "mouseDown" });
+  assert.strictEqual(await ctx.fake.ipc[CHANNELS.showSession](fromWindow(local), "chat-7"), true);
+  assert.deepStrictEqual(shown.at(-1), ["chat-7", ""]);
+});
+
 test("gatewayChoice: a crew that has not approved gatewayChoice never takes the windows, so they can always come back", async (t) => {
   // The app is on there, but its owner there approved nothing (an older build publishes no grant).
   const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, declared: ["gatewayChoice"], caps: [] };
