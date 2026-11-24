@@ -596,5 +596,9 @@
   "pages.mcpManagement.share_diagram_copies",
   "pages.chat.errorCard.repeated_in_a_row",
   "pages.chatSidebar.show_linked_items",
-  "pages.chatSidebar.show_linked_items_failed"
+  "pages.chatSidebar.show_linked_items_failed",
+  "components.mergeBackDialog.covers",
+  "components.mergeBackDialog.covers_partial",
+  "components.mergeBackDialog.remaining",
+  "pages.chat.mergedFromLabel.messages"
 ]
