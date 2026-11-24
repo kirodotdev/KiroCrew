@@ -280,6 +280,15 @@ class TestCliChatSpecObserverHooks:
         assert [command for command, _ in runs] == ["guard"]
         assert provider.rejected == ["r1"]
 
+    @pytest.mark.asyncio
+    async def test_a_native_child_calls_post_tool_use_runs(self, tmp_path, runs):
+        """A KAS sub-agent's finished shell call reaches the turn only as activity."""
+        _write_spec(hooks={"postToolUse": [{"matcher": "execute_bash", "command": "post"}]})
+
+        await self._send(tmp_path, new_session=False, provider=_ChildCallProvider(str(tmp_path)))
+
+        assert [command for command, _ in runs] == ["post"]
+
 
 class _ScriptedKasProvider(_KasProvider):
     """A KAS session whose turn raises one permission request, then completes."""
@@ -361,4 +370,23 @@ class _SwitchProvider(_ScriptedKasProvider):
                 tool_input=json.dumps({"command": "echo hi"}),
                 harness_tool_id="run_command",
             ),
+        ]
+
+
+class _ChildCallProvider(_ScriptedKasProvider):
+    def _frames(self) -> list:
+        from kiro_crew.providers.base import EVENT_SUBAGENT_ACTIVITY, LLMEvent
+
+        return [
+            LLMEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sa-1",
+                tool_call_id="child-tc",
+                title="echo hi",
+                hook_subject="echo hi",
+                tool_final=True,
+                tool_status="completed",
+                tool_output="hi",
+                is_shell=True,
+            )
         ]

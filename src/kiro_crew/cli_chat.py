@@ -57,6 +57,7 @@ from kiro_crew.providers.base import (
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
+    EVENT_SUBAGENT_ACTIVITY,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
@@ -1504,6 +1505,9 @@ async def _send_and_print(
                 await hooks.on_tool_call(event)
             elif event.kind == EVENT_TOOL_RESULT and hooks is not None:
                 await hooks.on_tool_result(event)
+            elif event.kind == EVENT_SUBAGENT_ACTIVITY and hooks is not None:
+                # A native sub-agent's finished call: its PostToolUse, as for the turn's own.
+                await hooks.on_child_result(event)
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
