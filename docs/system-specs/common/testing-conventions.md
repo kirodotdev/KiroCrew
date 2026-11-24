@@ -1895,7 +1895,10 @@ measures, never above.
   `cwd=` under `tmp_path`. Scope the assertion to where the child actually ran, not to
   where you hoped it wrote: an assertion against `tmp_path` passes vacuously while the
   file lands in the repo, and neither the test nor the residue check attributes it to
-  this test.
+  this test. What the residue report does give is each new entry's contents (up to 20
+  paths, 4 levels deep) and every path's last write in UTC and as seconds after the
+  session started; read those against the CI log's `CI_PROGRESS` lines, which name
+  tests that were running near that time.
 
 - **Never name one of the repository's own files by a bare relative path.** A
   structural test that reads the source it pins has to name a file, and

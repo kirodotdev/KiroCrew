@@ -16,6 +16,7 @@ import pathlib
 import shutil
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 import pytest
 from conftest_floor_home import _tmp_root_prefix_for_run
@@ -333,6 +334,67 @@ def _tmp_residue_report(
         "after it -- NOT an rmtree in tearDown, which unittest skips entirely when "
         "setUp raises.\n" + hint
     )
+
+
+#: How many paths under one new checkout-root entry the root residue report lists, and
+#: how many directory levels below the entry it walks to find them.
+_ROOT_RESIDUE_SHOWN = 20
+_ROOT_RESIDUE_DEPTH = 4
+
+
+def _root_entry_stamp(path: pathlib.Path, started: float | None) -> str:
+    """Kind, size and last write of *path*, with the write as UTC and as session time.
+
+    The UTC clock is the one a CI log prefixes each line with, so the write lines up with
+    the progress lines that name the test each worker was running then.
+    """
+    try:
+        st = path.lstat()
+    except OSError as exc:
+        return f"unreadable: {exc.strerror or exc}"
+    if path.is_symlink():
+        kind = "symlink"
+    elif path.is_dir():
+        kind = "dir"
+    else:
+        kind = f"file, {st.st_size} B"
+    written = datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%H:%M:%SZ")
+    if started is not None:
+        written += f", {st.st_mtime - started:+.1f} s after session start"
+    return f"{kind}, written {written}"
+
+
+def _root_residue_lines(root: pathlib.Path, name: str, started: float | None) -> list[str]:
+    """One new entry at the checkout root, and a bounded listing of what it holds.
+
+    The entry's own name rarely names its writer (``tmp``), but what is inside does: a
+    tool's cache layout, or a mirrored ``tmp_path`` that carries the test's own
+    directory name. Walked without following links, depth-limited and cut at
+    :data:`_ROOT_RESIDUE_SHOWN` paths, so a large tree cannot flood the log.
+    """
+    top = root / name
+    lines = [f"    {name}  ({_root_entry_stamp(top, started)})"]
+    if top.is_symlink() or not top.is_dir():
+        return lines
+    shown = 0
+    for current, dirs, files in os.walk(top):
+        here = pathlib.Path(current)
+        depth = len(here.relative_to(top).parts)
+        dirs.sort()
+        children = [*dirs, *sorted(files)]
+        if depth + 1 >= _ROOT_RESIDUE_DEPTH:
+            dirs.clear()  # this level is listed; nothing below it is walked
+        for child in children:
+            if shown == _ROOT_RESIDUE_SHOWN:
+                lines.append(f"        ... more under {name}, listing cut at {shown}")
+                return lines
+            path = here / child
+            rel = path.relative_to(root).as_posix()
+            lines.append(f"        {rel}  ({_root_entry_stamp(path, started)})")
+            shown += 1
+    if shown == 0:
+        lines.append("        (empty)")
+    return lines
 
 
 if _TMP_PER_TEST:

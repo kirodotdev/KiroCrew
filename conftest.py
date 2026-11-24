@@ -446,6 +446,7 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
     _prefer_short_tmp_base,
     _redirect_tempfile_base,
     _remove_tree,
+    _root_residue_lines,
     _stop_git_discovery_above_the_temp_roots,
     _tmp_residue,
     _tmp_residue_report,
@@ -1720,6 +1721,8 @@ def _runner_owned(name: str) -> bool:
 #: Root listing taken before collection, so only what the RUN adds is reported.
 #: A developer's own untracked scratch file must not fail their suite.
 _ROOT_BASELINE: set[str] | None = None
+#: Wall-clock time of that listing, which the report measures each entry's write from.
+_ROOT_BASELINE_AT: float | None = None
 
 
 def _root_entries() -> set[str] | None:
@@ -1777,11 +1780,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     worker. The controller's session brackets all of them, which is exactly the
     window this guard wants.
     """
-    global _ROOT_BASELINE, _WAIT_CLOCKS
+    global _ROOT_BASELINE, _ROOT_BASELINE_AT, _WAIT_CLOCKS
     _WAIT_CLOCKS = (time.monotonic, time.sleep, asyncio.sleep)
     if hasattr(session.config, "workerinput"):
         return
     _ROOT_BASELINE = _root_entries()
+    _ROOT_BASELINE_AT = time.time()
 
 
 def _prune_bytecode_mirror_of_this_runs_temp_roots(session: pytest.Session) -> None:
@@ -1905,14 +1909,17 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         f"{_REPO_ROOT}, left behind by this run:"
     )
     for name in residue:
-        reporter.write_line(f"    {name}")
+        for line in _root_residue_lines(_REPO_ROOT, name, _ROOT_BASELINE_AT):
+            reporter.write_line(line)
     reporter.write_line("")
     reporter.write_line(
         "A test must not write into the checkout. The usual cause is a "
         "subprocess spawned without cwd=: it inherits pytest's CWD, which is "
         "this directory, so every relative write lands here. Pass "
         "cwd=<a directory under tmp_path> to the spawn, and scope any assertion "
-        "about the file to where that child actually ran."
+        "about the file to where that child actually ran. Each write time above is "
+        "UTC, the clock a CI log stamps its lines with: the progress lines nearest "
+        "it name tests that were running then."
     )
 
 
