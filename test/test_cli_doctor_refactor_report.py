@@ -167,6 +167,8 @@ class _Host:
         self.install()
 
     def install(self) -> None:
+        from kiro_crew.doctor_checks import confinement
+
         mp = self.mp
         for var in (
             "KIROCREW_PROJECT_DIR",
@@ -186,6 +188,8 @@ class _Host:
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
+        # A test run from an agent's shell is itself confined: pin the vantage.
+        mp.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.gateway_lock, "lock_holder", self._lock_holder)
