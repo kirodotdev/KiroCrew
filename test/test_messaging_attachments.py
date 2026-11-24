@@ -476,6 +476,45 @@ class TestIngestAttachments:
         assert result.text_blocks == ["[File: n.txt]\n" + "y" * 100 + "\n[End of file]"]
         assert result.temp_paths == []
 
+    @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+    async def test_a_utf16_text_attachment_is_inlined_as_its_text(self, encoding):
+        """Windows PowerShell 5.1's ``>`` and ``Out-File``, and Notepad's
+        "Unicode", save a byte-order mark then UTF-16. The prompt gets the text,
+        with the newline translation a UTF-8 file gets."""
+        data = ("\ufeff" + "hello world\r\n").encode(encoding)
+        result = await ingest_attachments(
+            [Attachment(name="out.txt", mimetype="text/plain", size=len(data), url="u")],
+            download=_writer(data),
+            source="test",
+        )
+        assert result.text_blocks == ["[File: out.txt]\nhello world\n\n[End of file]"]
+        assert result.temp_paths == []
+
+    async def test_a_cut_utf16_attachment_counts_and_hands_over_its_decoded_text(self):
+        """The inline budget and the size marker count decoded characters, and the
+        agent's tools get the decoded text, not UTF-16 bytes read as UTF-8."""
+        text = "a" * 300
+        data = ("\ufeff" + text).encode("utf-16-le")
+        result = await ingest_attachments(
+            [Attachment(name="out.txt", mimetype="text/plain", size=len(data), url="u")],
+            download=_writer(data),
+            source="test",
+            limits=IngestLimits(max_text_inject=100),
+        )
+        try:
+            [kept] = result.file_paths
+            [block] = result.text_blocks
+            marker = "[… truncated: 100 of 300 characters of text shown]"
+            assert block.split("\n")[2] == marker
+            assert block == (
+                f"[File: out.txt]\n{'a' * 100}\n{marker}\n"
+                f"[Its whole text is in {kept} until this turn ends]\n[End of file]"
+            )
+            with open(kept, encoding="utf-8", newline="") as fh:
+                assert fh.read() == text
+        finally:
+            cleanup(result.temp_paths)
+
     @pytest.mark.parametrize(
         "name,mimetype,suffix,payload",
         [

@@ -36,6 +36,8 @@ that; this module owns everything after the bytes arrive.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import io
 import logging
 import mimetypes
 import os
@@ -333,9 +335,19 @@ async def _fetch(download: DownloadFn, url: str, suffix: str) -> str:
 def _read_text_file(path: str, limit: int) -> tuple[str, str]:
     """Read a text attachment and redact+truncate it (blocking; call offloaded).
 
+    A file that starts with a UTF-16 byte-order mark (what Windows PowerShell
+    5.1's ``>`` and ``Out-File`` and Notepad's "Unicode" save) is decoded as
+    UTF-16, any other file as UTF-8, both with ``errors="replace"`` and the
+    newline translation of a text-mode ``open``. One handle serves the sniff
+    and the read, so the bytes sniffed are the bytes decoded.
+
     Returns what :func:`_clean_text` returns."""
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        return _clean_text(fh.read(), limit)
+    with open(path, "rb") as raw:
+        utf16 = raw.read(2) in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+        raw.seek(0)
+        encoding = "utf-16" if utf16 else "utf-8"
+        with io.TextIOWrapper(raw, encoding=encoding, errors="replace") as fh:
+            return _clean_text(fh.read(), limit)
 
 
 def _truncate(content: str, limit: int) -> tuple[str, str]:
