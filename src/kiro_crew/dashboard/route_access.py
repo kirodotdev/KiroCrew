@@ -67,6 +67,12 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Internal secret plus an attested bot turn in its own thread
     # (handlers/member_memory_self.py); reads the bot's own memory, writes nothing.
     ("POST", "/api/member/self/memory/list"): RouteAccess("member.memory.list", UNSTABLE),
+    # Owner dashboard only (handlers/browser_live_views.py); returns the slot's tab list.
+    ("POST", "/api/browser/live/views/tabs"): RouteAccess("browser.live.views.list", UNSTABLE),
+    # Owner dashboard only; starts a second live view of one of the slot's own tabs.
+    ("POST", "/api/browser/live/views/open"): RouteAccess("browser.live.views.open", UNSTABLE),
+    # Owner dashboard only; ends a second live view.
+    ("POST", "/api/browser/live/views/close"): RouteAccess("browser.live.views.close", UNSTABLE),
     # Owner gate (handlers/connections_app_manifest.py); writes nothing.
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
