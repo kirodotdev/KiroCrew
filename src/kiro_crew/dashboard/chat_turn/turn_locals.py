@@ -212,6 +212,7 @@ class _ChatTurn:
     _mirror_stream_tried: "bool"
     _mirror_thinking_ts: "str"
     _mirror_echo_posted: "bool"
+    _mirror_owner_told: "bool"
     _msg: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"

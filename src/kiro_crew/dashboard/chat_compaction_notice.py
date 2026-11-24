@@ -30,6 +30,7 @@ import asyncio
 import logging
 from typing import Any
 
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import SLACK_NAMESPACE, channel_namespace_of
 from kiro_crew.platform.context import PlatformCompositionError
@@ -231,9 +232,8 @@ async def _deliver_slack(
     state: Any, key: str, text: str, tool_name: str = _COMPACTION_TOOL_NAME
 ) -> None:
     """Post into the Slack thread the session is bound to."""
-    client = getattr(state, "slack_client", None)
     sessions = getattr(state, "sessions", None)
-    if client is None or sessions is None:
+    if sessions is None:
         return
     try:
         thread_ts, channel_id = sessions.get_slack_link(key)
@@ -241,6 +241,11 @@ async def _deliver_slack(
         logger.debug("compact notice: slack link lookup failed for %s", key, exc_info=True)
         return
     if not channel_id:
+        return
+    # A reconnect may have taken the client: post through the one it publishes.
+    await wait_for_slack_reconnect(state)
+    client = getattr(state, "slack_client", None)
+    if client is None:
         return
     # Off-loop: the gate walks the profile directory (iterdir + stat, with a
     # possible reload), which is unbounded on slow or networked storage.

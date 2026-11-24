@@ -3971,7 +3971,14 @@ dashboard token auth.
   reply that finishes in it posts with that client, or, when the attempt fails,
   ends in one `Slack: reply not delivered` dashboard notification; a reply
   whose wait ends with the link paused gets neither the post nor the
-  notification. A turn
+  notification. The turn's other sends to its thread wait the same way: the
+  tool-step stream, the turn end's stream close and "Thinking" placeholder
+  removal, and the approval card and its removal. So do a system message
+  mirrored to a linked thread, the owner direct message (`_dm_owner`) and the
+  compaction notice. When the attempt fails, an approval card ends in one
+  `Slack: approval not posted` notification and a turn end that could not tidy
+  its thread in one `Slack: thread not tidied`; a turn gets at most one of these
+  notifications, its reply's included. A turn
   in a session with no Slack link, or a paused one, does not wait. A reconnect that
   retires a published client and fails keeps that hold for the next
   reconnect (the retry) for `HELD_WORK_GIVE_UP_SECS` (300 s); when that

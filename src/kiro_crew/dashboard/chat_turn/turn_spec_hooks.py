@@ -1420,7 +1420,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
         and not _mirror_paused_in_wait
-        and slack_reply_client(state, session_key, _mirror_chan)
+        and slack_reply_client(state, session_key, _mirror_chan, turn=turn)
     ):
         try:
             from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
