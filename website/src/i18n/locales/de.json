@@ -18161,6 +18161,8 @@
         "export_apps_not_included": "Dieser Export enthält diese Apps und ihre Daten nicht: {{names}}. Installiere sie auf dem anderen Rechner erneut oder schalte sie wieder ein; ihre Daten bleiben auf diesem.",
         "export_templates_not_included": "Dieser Export enthält die Agent-Vorlagen deiner Crews nicht: {{names}}. Kopiere sie aus ~/.kiro/agents in denselben Ordner auf dem anderen Rechner.",
         "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt.",
+        "import_apps_missing": "Diese Apps vom anderen Rechner sind hier nicht eingerichtet: {{names}}. Installiere sie erneut oder schalte sie ein; das Archiv enthält keine App-Daten.",
+        "import_apps_unlisted": "Apps vom anderen Rechner, die das Archiv nicht auflistet und die deshalb hier nicht geprüft wurden: {{number}}.",
         "import_items_refused": "Einige Elemente konnten nicht importiert werden und blieben unverändert: {{names}}.",
         "import_settings_kept": "Diese Installation hat ihre eigenen {{files}} behalten. Um stattdessen die aus dem Archiv zu verwenden, stelle neben „Datei auswählen“ „Zusammenführen“ auf „Ersetzen“ um und importiere erneut. „Ersetzen“ sichert diese Installation zuerst und überschreibt dann ihre Einstellungen mit denen aus dem Archiv.",
         "import_reloading_display_settings": "Import abgeschlossen – die Seite wird neu geladen, um deine Anzeigeeinstellungen zu übernehmen…",

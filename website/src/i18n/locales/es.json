@@ -18638,6 +18638,8 @@
         "export_apps_not_included": "Esta exportación no incluye estas apps ni sus datos: {{names}}. En la otra máquina, vuelve a instalarlas o enciéndelas de nuevo; sus datos se quedan en esta.",
         "export_templates_not_included": "Esta exportación no incluye las plantillas de agente que usan tus equipos: {{names}}. Cópialas de ~/.kiro/agents a la misma carpeta en la otra máquina.",
         "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos.",
+        "import_apps_missing": "Estas apps de la otra máquina no están configuradas aquí: {{names}}. Vuelve a instalarlas o enciéndelas; el archivo no incluye datos de apps.",
+        "import_apps_unlisted": "Apps de la otra máquina que el archivo no enumera, por lo que no se comprobaron aquí: {{number}}.",
         "import_items_refused": "Algunos elementos no se pudieron importar y se dejaron sin cambios: {{names}}.",
         "import_settings_kept": "Esta instalación conservó sus propios ajustes: {{files}}. Para usar los del archivo, cambia Combinar a Reemplazar junto a Elegir archivo e importa de nuevo. Reemplazar primero hace una copia de seguridad de esta instalación y después sobrescribe sus ajustes con los del archivo.",
         "import_reloading_display_settings": "Importación completada: recargando para aplicar tus ajustes de visualización…",

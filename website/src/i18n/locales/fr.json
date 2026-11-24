@@ -18638,6 +18638,8 @@
         "export_apps_not_included": "Cet export n'inclut pas ces applications ni leurs données : {{names}}. Sur l'autre machine, réinstalle-les ou réactive-les ; leurs données restent sur celle-ci.",
         "export_templates_not_included": "Cet export n'inclut pas les modèles d'agent utilisés par tes équipes : {{names}}. Copie-les depuis ~/.kiro/agents vers le même dossier sur l'autre machine.",
         "import_templates_missing": "Certaines équipes utilisent un modèle d'agent absent de cette machine (équipe → modèle) : {{crews}}. Copie les modèles manquants dans ~/.kiro/agents avant d'utiliser ces équipes.",
+        "import_apps_missing": "Ces applications de l'autre machine ne sont pas configurées ici : {{names}}. Réinstalle-les ou active-les ; l'archive ne contient aucune donnée d'application.",
+        "import_apps_unlisted": "Applications de l'autre machine que l'archive ne liste pas, donc non vérifiées ici : {{number}}.",
         "import_items_refused": "Certains éléments n'ont pas pu être importés et sont restés inchangés : {{names}}.",
         "import_settings_kept": "Cette installation a conservé ses propres réglages : {{files}}. Pour utiliser ceux de l'archive, passe Fusionner à Remplacer à côté de Choisir un fichier, puis importe à nouveau. Remplacer sauvegarde d'abord cette installation, puis écrase ses réglages avec ceux de l'archive.",
         "import_reloading_display_settings": "Importation terminée — rechargement pour appliquer tes paramètres d'affichage…",
