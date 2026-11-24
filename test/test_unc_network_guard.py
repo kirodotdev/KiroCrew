@@ -104,6 +104,10 @@ def test_a_path_object_is_read_once_and_checked_as_opened(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         os.stat(Shifty())
     assert Shifty.reads == 1
+    Shifty.reads = 0
+    with pytest.raises(FileNotFoundError):
+        os.stat(path=Shifty())
+    assert Shifty.reads == 1
 
 
 @windows_only

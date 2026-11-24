@@ -447,16 +447,13 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
         def refuse_unc(*args, **kwargs):
             # Read ``__fspath__`` once and hand the real call that same value, so the
             # path checked is the path opened.
-            if args:
-                path = args[0]
-                if not isinstance(path, (str, bytes, int)):
-                    try:
-                        path = os.fspath(path)
-                    except Exception:  # noqa: BLE001 - not a path; the real call answers
-                        return real(*args, **kwargs)
+            path = args[0] if args else kwargs.get("path")
+            if path is not None and not isinstance(path, (str, bytes, int)):
+                path = os.fspath(path)  # a non-path raises TypeError, as the real call does
+                if args:
                     args = (path, *args[1:])
-            else:
-                path = kwargs.get("path")
+                else:
+                    kwargs["path"] = path
             share = _unc_share(path)
             if share is not None and share not in allowed:
                 raise UncNetworkPathRefused(
