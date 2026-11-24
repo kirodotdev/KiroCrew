@@ -32,7 +32,8 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
 ``_steer_clear``, ``_steer_confirmed``,
-``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_owner_origin``,
+``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_hold_after``,
+``_steer_owner_origin``,
 ``_steer_possibly_delivered``,
 ``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
@@ -344,6 +345,10 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # A segment cut a permission request owes: paid by ``append`` before the
     # next durable row, dropped when the request lands none. None when idle.
     self._owed_segment_cut = None
+    # The last row before a steer whose cut is held while a construct is open
+    # (``_hold_steer_cut``), boxed so an empty window is told from no hold;
+    # the flush that ends the held segment lands every later row below it.
+    self._steer_hold_after = None
     # Native kiro-cli subagents run inside the parent ACP turn. Keep their
     # live and terminal state on the slot so reconnects can hydrate cards.
     self._native_subagent_tracker = {}

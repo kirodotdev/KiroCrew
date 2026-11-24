@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, chunk_generation, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    TRANSIENT_RETRY_KIND,
+    chunk_generation,
+    open_construct_at_end,
+    slot_history_key,
+)
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.security import redact
@@ -36,6 +41,7 @@ if TYPE_CHECKING:
         _flush_segment,
         _give_back_run,
         _hold_segment_tail,
+        _lift_rows_held_below,
         _open_segment_with,
         _redact_segment,
         _segment_row_meta,
@@ -113,6 +119,9 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
     # settled first: back on its row, or into this text when it is part of it.
     rows_changed = _drop_wire_tail(turn)
     if turn.assistant_text and not turn._reply_flushed:
+        # A steer held while a construct was open lands below the reply here
+        # too, as it does at a normal segment flush.
+        held_below = _lift_rows_held_below(slot)
         slot.purge_chunks()
         # Same glued-marker repair and whole-text redaction as
         # _flush_segment (both inside _redact_segment): the interrupted body
@@ -130,6 +139,9 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
                 meta=_segment_row_meta(slot, _redactions, text=_redacted),
             ),
         )
+        if held_below:
+            slot.messages.extend(held_below)
+            slot._dirty = True
         # Saved once per turn: a recovery arm saves it here, and a cancel
         # landing on the usage write below re-enters this helper.
         turn._reply_flushed = True
@@ -569,9 +581,22 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
 
     Sync on purpose — the handler and this turn share the event loop, so
     the flush cannot interleave with chunk processing.
+
+    A steer that lands inside a construct that renders only whole (an open
+    widget, code fence or options marker, ``open_construct_at_end``) does not
+    cut: the halves would persist as two rows and neither would parse. The
+    cut is held instead (``_hold_steer_cut``) and paid by
+    ``_pay_held_steer_cut`` once the construct closes, or by the turn-end
+    flush if it never does. The steer's row still lands now; the flush that
+    ends the held segment moves it below the finished reply. The clients do
+    the same: they leave a streaming message with an open construct live
+    above the steer bubble, so the widget keeps growing where it started.
     """
     slot = turn.slot
     state = turn.state
+    if interrupted and open_construct_at_end(turn.assistant_text):
+        _hold_steer_cut(turn)
+        return
     # Drop the wire redactor's withheld tail instead of emitting it: a
     # chat_chunk broadcast here would arrive AFTER the clients froze their
     # streaming message at the steer boundary, opening a phantom streaming
@@ -612,6 +637,70 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
         turn._produced_visible_output = True
     # The flush consumes the raw copy; a blank segment does not.
     turn.assistant_text = _cleared_segment_text(slot)
+
+
+def _hold_steer_cut(turn) -> None:
+    """Hold a steer's segment cut while the reply is inside an open construct.
+
+    Records the last row in the window before the steer's own row is
+    appended, so the flush that ends this segment can tell the rows written
+    since (the steer, and any other durable row) from the segment's own
+    chunk and tool rows, and land them below the finished reply. A second
+    steer into the same open construct keeps the first mark: every row after
+    it belongs below.
+    """
+    slot = turn.slot
+    turn._steer_cut_pending = True
+    if getattr(slot, "_steer_hold_after", None) is None:
+        slot._steer_hold_after = (slot.messages[-1] if slot.messages else None,)
+    logger.debug("steer segment cut held on %s while a construct is open", slot.key)
+
+
+def _held_cut_close_offset(turn, text: str) -> int | None:
+    """Where in *text* the construct a held steer cut waits on closes.
+
+    The offset just past the first line end at which the accumulated text plus
+    that much of *text* no longer ends inside an open construct, or None when
+    no cut is held, the construct stays open, or it closes only at the end of
+    *text* (the end-of-chunk payment already lands there).
+    """
+    if not text or not getattr(turn, "_steer_cut_pending", False):
+        return None
+    if getattr(turn.slot, "_steer_hold_after", None) is None:
+        return None
+    head = turn.assistant_text
+    at = text.find("\n")
+    while 0 <= at < len(text) - 1:
+        if not open_construct_at_end(head + text[: at + 1]):
+            return at + 1
+        at = text.find("\n", at + 1)
+    return None
+
+
+def _pay_held_steer_cut(turn) -> None:
+    """End the segment a held steer cut waits on, once its construct has closed.
+
+    The clients kept this text streaming above the steer bubble, so it is
+    finalized out loud: the wire tail goes out, and the flush broadcasts the
+    row and the ``chat_segment`` that freezes the streaming message, which
+    the next chunk then reopens below the bubble.
+    """
+    if not turn._steer_cut_pending:
+        return
+    # Another flush (a tool cut, a compaction reset) already ended the held
+    # segment and spent its mark; paying again would cut a later reply.
+    if getattr(turn.slot, "_steer_hold_after", None) is None:
+        turn._steer_cut_pending = False
+        return
+    if open_construct_at_end(turn.assistant_text):
+        return
+    turn._steer_cut_pending = False
+    if not turn.assistant_text.strip():
+        return
+    _flush_text_stream(turn)
+    _flush_segment(turn.state, turn.slot, turn.assistant_text, interrupted=True)
+    turn._produced_visible_output = True
+    turn.assistant_text = _cleared_segment_text(turn.slot)
 
 
 def _emit_stale(

@@ -21,7 +21,12 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.segment_flush import _accumulate_segment_raw, _redact_delta
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
-    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment, _settle_held
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
+        _cut_segment,
+        _held_cut_close_offset,
+        _pay_held_steer_cut,
+        _settle_held,
+    )
 
 
 async def _on_text_chunk(
@@ -32,6 +37,24 @@ async def _on_text_chunk(
     ``released``: a chunk ``_release_held_text`` replays, past the post-terminal drop.
     ``echo_checked``: a chunk ``_settle_echo_hold`` replays, past the placeholder hold.
     """
+    # A held steer cut is paid where its construct closes, not at the end of
+    # the chunk that closes it: text after the closer in the same chunk (a
+    # steering note, the next sentence) belongs below the steer.
+    at = _held_cut_close_offset(turn, event.text or "")
+    if at is not None:
+        await _on_text_chunk(
+            turn,
+            _event_with_text(event, text=event.text[:at]),
+            released=released,
+            echo_checked=echo_checked,
+        )
+        await _on_text_chunk(
+            turn,
+            _event_with_text(event, text=event.text[at:]),
+            released=released,
+            echo_checked=echo_checked,
+        )
+        return None
     _activity_after_terminal = turn._activity_after_terminal
     _compaction_notice_chunks = turn._compaction_notice_chunks
     _compaction_text_offset = turn._compaction_text_offset
@@ -239,6 +262,9 @@ async def _on_text_chunk(
                 "gen": chunk_generation(),
             },
         )
+    # A steer that landed inside an open construct is cut as soon as the
+    # construct closes, so the text after it starts below the steer bubble.
+    _pay_held_steer_cut(turn)
 
 
 async def _release_held_text(turn: _ChatTurn, *, before_tool: bool = False) -> None:

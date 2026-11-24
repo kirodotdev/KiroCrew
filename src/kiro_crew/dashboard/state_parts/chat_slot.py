@@ -364,6 +364,7 @@ class _ChatSlot:
         "_steer_segment_cut",
         "_compact_command_turn",
         "_owed_segment_cut",
+        "_steer_hold_after",
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_steer_confirmed",
@@ -755,6 +756,7 @@ class _ChatSlot:
     _steer_segment_cut: Callable[[], None] | None
     _compact_command_turn: bool
     _owed_segment_cut: Callable[[], None] | None
+    _steer_hold_after: tuple[dict[str, Any] | None] | None
     _native_subagent_tracker: dict[str, dict[str, Any]]
     _native_subagent_output: dict[str, list[str]]
     _steer_confirmed: set[str]

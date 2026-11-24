@@ -156,6 +156,7 @@ class _ChatTurn:
     _current_replay_message: "dict[Any, Any] | None"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
+    _steer_cut_pending: "bool"
     died_notice: "_TurnDiedNote | None"
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
