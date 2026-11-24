@@ -42,8 +42,8 @@ _NOOP_RESTRICTIONS: Mapping[str, Any] = {"disabled": False, "disabledTools": []}
 def gateway_bound_port() -> str:
     """The gateway's live listener port, or ``""`` when it is not a valid port.
 
-    Native MCP children on KAS do not inherit the gateway's environment, so the
-    port is taken from the gateway itself, never from an editable spec.
+    What a native MCP child on KAS is handed on its entry: taken from the gateway
+    itself, never from an editable spec or the engine's environment.
     """
     # Deferred: launch imports the transport stack this module must not load.
     from kiro_crew.acp.launch import _well_formed_port

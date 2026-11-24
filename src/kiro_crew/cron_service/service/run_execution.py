@@ -261,9 +261,14 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     self.defer_removal(terminal.id)
             except Exception:
                 logger.exception("Failed to merge result for job '%s'", job.name)
-            # A quiet run that ended as it should leaves no row: a gateway job
-            # ticking often would otherwise fill the shared, capped index.
-            quiet = terminal.quiet_run and status == "success"
+            # A quiet run that ended as it should leaves no row, and so does a
+            # quiet one that never started (a wait for the host sign-in that its
+            # notice already reports): a gateway job ticking often, or a one-shot
+            # retried on every timer pass, would otherwise fill the shared,
+            # capped index.
+            quiet = terminal.quiet_run and (
+                status == "success" or (status == "failure" and terminal.run_never_started)
+            )
             # The row's cause is this run's own. A stopped run with no
             # outcome carries the previous run's last_error (close_run),
             # so it gets the interruption note instead.

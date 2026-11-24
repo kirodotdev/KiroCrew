@@ -382,6 +382,368 @@ def test_a_crew_mode_conductor_gets_no_app_server(managed, monkeypatch):
     assert f"@{_APP_KEY}" not in out["tools"]
 
 
+# --- the edition's servers -------------------------------------------------------
+
+_EDITION_ENTRY = {"command": "/opt/edition/vend", "args": ["mcp"]}
+
+
+class _EditionTooling:
+    """An edition naming one of its two servers for custom agents, and one it lacks."""
+
+    def __init__(self, names=("edition-vend", "edition-absent")):
+        self._names = names
+        self.server_reads = 0
+
+    def extra_mcp_servers(self):
+        self.server_reads += 1
+        return {
+            "edition-vend": {**_EDITION_ENTRY, "autoApprove": ["vend"]},
+            "edition-other": {"command": "/opt/edition/other", "args": []},
+        }
+
+    def extra_skills(self):
+        return []
+
+    def custom_agent_servers(self):
+        return self._names
+
+
+class _OlderEditionTooling(_EditionTooling):
+    custom_agent_servers = None
+
+
+@pytest.fixture
+def edition():
+    import dataclasses
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import build_default_context, set_context
+    from kiro_crew.platform.context import reset_context
+
+    def compose(tooling):
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, mcp_tooling=tooling))
+
+    compose(_EditionTooling())
+    yield compose
+    reset_context()
+
+
+def test_a_custom_agent_gets_the_server_the_edition_names(managed, edition):
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY, "no autoApprove is copied"
+    assert out["tools"] == ["fs_read", "@kirocrew-core", "@kirocrew-cron", "@edition-vend"]
+    assert "edition-other" not in out["mcpServers"], "only the named servers ride"
+    assert "edition-absent" not in out["mcpServers"], "a name the host does not supply adds nothing"
+    assert "allowedTools" not in out
+
+
+def test_the_user_s_env_for_the_edition_server_reaches_the_custom_agent(managed, edition):
+    """Built as every spec Crew writes builds it, so the store's env applies too."""
+    store = agent_mod._user_dir() / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"command": "/opt/edition/vend", "env": {"USER_KEY": "mine"}}
+    store.write_text(json.dumps({"mcpServers": {"edition-vend": entry}}), encoding="utf-8")
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert out["mcpServers"]["edition-vend"] == {**_EDITION_ENTRY, "env": {"USER_KEY": "mine"}}
+
+
+def test_the_edition_server_needs_no_loader(managed, edition):
+    """Unlike an app's servers, the edition chose these names, so ``tool_search`` is not asked."""
+    out = defaults.with_default_crew_servers("mine", {"tools": "*"})
+    assert "edition-vend" in out["mcpServers"]
+    assert out["tools"] == "*"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"tools": ["fs_read"], "excludedTools": ["@edition-vend"]},
+        {"tools": ["fs_read"], "managedToolPolicy": {"excludeServers": ["edition-vend"]}},
+        {"tools": ["fs_read"], "mcpServers": {"edition-vend": {"command": "mine"}}},
+        {"tools": ["fs_read"], "allowedTools": ["*"]},
+        {"tools": ["fs_read"], "allowedTools": ["@*"]},
+        {"tools": ["fs_read"], "allowedTools": ["@edition-*", "@edition-vend"]},
+    ],
+    ids=["excluded", "server-excluded", "author-declared", "wildcard", "mcp-wildcard", "glob"],
+)
+def test_the_edition_server_is_not_added(managed, edition, spec):
+    out = defaults.with_default_crew_servers("mine", spec)
+    if "edition-vend" in (spec.get("mcpServers") or {}):
+        assert out["mcpServers"]["edition-vend"] == {"command": "mine"}, "the author's entry stands"
+    else:
+        assert "edition-vend" not in out["mcpServers"]
+    assert "@edition-vend" not in out["tools"]
+
+
+def test_an_edition_server_approved_by_name_is_added(managed, edition):
+    spec = {"tools": ["fs_read"], "allowedTools": ["@edition-vend"]}
+    out = defaults.with_default_crew_servers("mine", spec)
+    assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert out["allowedTools"] == ["@edition-vend"]
+
+
+@pytest.mark.parametrize("tools", [[], None])
+def test_a_tool_less_agent_gets_no_edition_server(managed, edition, tools):
+    spec = {} if tools is None else {"tools": tools}
+    assert defaults.with_default_crew_servers("mine", spec) is spec
+
+
+def test_a_crew_mode_conductor_gets_no_edition_server(managed, edition, monkeypatch):
+    from kiro_crew import crew_mode
+
+    cfg = SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="mine"))
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+
+
+def test_crew_s_own_specs_get_no_edition_server(managed, edition):
+    spec = {"tools": ["fs_read"]}
+    assert defaults.with_default_crew_servers("kirocrew", spec) is spec
+
+
+@pytest.mark.parametrize(
+    "tooling",
+    [_EditionTooling(names=()), _OlderEditionTooling()],
+    ids=["names-none", "predates-the-method"],
+)
+def test_an_edition_naming_nothing_adds_only_crew_s_servers(managed, edition, tooling):
+    edition(tooling)
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"tools": ["fs_read"], "excludedTools": ["@edition-vend", "@edition-absent"]},
+        {"tools": ["fs_read"], "allowedTools": ["*"]},
+    ],
+    ids=["opted-out", "wildcard"],
+)
+def test_a_spec_that_wants_no_edition_server_reads_no_edition_entry(managed, edition, spec):
+    """The names are filtered before ``extra_mcp_servers()`` and ``mcp.json`` are read."""
+    tooling = _EditionTooling()
+    edition(tooling)
+    defaults.with_default_crew_servers("mine", spec)
+    assert tooling.server_reads == 0
+
+
+def test_a_conductor_reads_no_edition_entry(managed, edition, monkeypatch):
+    from kiro_crew import crew_mode
+
+    tooling = _EditionTooling()
+    edition(tooling)
+    cfg = SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="mine"))
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
+    defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert tooling.server_reads == 0
+
+
+def test_the_public_default_names_no_server():
+    from kiro_crew.platform.defaults import DefaultMcpToolingProvider
+
+    assert DefaultMcpToolingProvider().custom_agent_servers() == ()
+
+
+def test_the_edition_server_is_not_counted_as_crew_s(managed, edition):
+    """Its tools are not deferred as Crew's own are: the author's servers' rule applies."""
+    out = defaults.with_default_crew_servers("mine", {"name": "mine", "tools": ["fs_read"]})
+    assert defaults.crew_added_servers("mine", out) == ("kirocrew-core", "kirocrew-cron")
+
+
+# --- the spec a session on each backend runs -------------------------------------
+
+
+@pytest.fixture
+def projects(monkeypatch):
+    """Set what kiro-cli's skill-view admission answers, and count the asks."""
+    from kiro_crew.acp import skill_projection
+
+    asked: list[bool] = []
+
+    def answer(value: bool) -> list[bool]:
+        monkeypatch.setattr(
+            skill_projection,
+            "next_spawn_projects_skill_view",
+            lambda: asked.append(value) or value,
+        )
+        return asked
+
+    return answer
+
+
+@pytest.mark.parametrize("view", [True, False])
+def test_kiro_cli_runs_them_only_while_a_spawn_projects_the_skill_view(
+    managed, edition, projects, view
+):
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+
+    projects(view)
+    spec = {"tools": ["fs_read"]}
+    out = defaults.session_spec_on(ACP_BACKEND_KIRO, "mine", spec)
+    assert ("edition-vend" in (out.get("mcpServers") or {})) is view
+    assert (out is spec) is not view, "a spawn that falls back runs the spec as written"
+
+
+def test_kas_runs_them_after_the_template_s_approved_additions(managed, edition, projects):
+    """As ``resolve_projected_spec``: a ``tools: []`` agent an approval gave a server has
+    a tool, so its session also gets Crew's and the edition's servers."""
+    from kiro_crew import template_mcp_additions as tma
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+
+    projects(False)
+    entry = {"command": "/opt/fetch/bin/mcp-fetch", "args": ["--stdio"]}
+    tma.add_addition("mine", "fetch", entry, approved_by="owner", card_id="c1")
+    out = defaults.session_spec_on(ACP_BACKEND_KAS, "mine", {"tools": []})
+    assert set(out["mcpServers"]) == {"fetch", "kirocrew-core", "kirocrew-cron", "edition-vend"}
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_claude_and_codex_run_their_array_s_copy(managed, edition, projects, backend):
+    """Crew's own two servers only, and not one the spec narrows per tool: those
+    mirrors mount a server whole, so they get no edition server, as no app server."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY
+
+    assert backend in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY
+    projects(False)
+    out = defaults.session_spec_on(backend, "mine", {"tools": ["fs_read"]})
+    assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+    narrowed = {"tools": ["fs_read"], "excludedTools": ["@kirocrew-cron/cron_remove"]}
+    assert set(defaults.session_spec_on(backend, "mine", narrowed)["mcpServers"]) == {
+        "kirocrew-core"
+    }
+    kas = defaults.session_spec_on(ACP_BACKEND_KAS, "mine", narrowed)
+    assert set(kas["mcpServers"]) == {"kirocrew-core", "kirocrew-cron", "edition-vend"}
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_claude_and_codex_run_the_template_s_approved_additions_too(
+    managed, edition, projects, backend
+):
+    """Their spawns merge an approved addition as KAS does, so a check counts it there."""
+    from kiro_crew import template_mcp_additions as tma
+    from kiro_crew.acp_backends import ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN
+
+    assert backend in ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN
+    projects(False)
+    entry = {"command": "/opt/fetch/bin/mcp-fetch", "args": ["--stdio"]}
+    tma.add_addition("mine", "fetch", entry, approved_by="owner", card_id="c1")
+    out = defaults.session_spec_on(backend, "mine", {"tools": ["fs_read"]})
+    assert set(out["mcpServers"]) == {"fetch", "kirocrew-core", "kirocrew-cron"}
+
+
+def test_every_other_backend_runs_the_spec_as_written(managed, edition, projects):
+    """A check that counted the added servers there would report a tool its chat lacks."""
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
+        ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN,
+        selectable_backend_values,
+    )
+
+    projects(True)
+    spec = {"tools": ["fs_read"]}
+    others = set(selectable_backend_values()) - {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+    others -= ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY | ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN
+    assert others, "the selectable set lists more harnesses than the two kiro ones"
+    assert [
+        b for b in sorted(others) if defaults.session_spec_on(b, "mine", spec) is not spec
+    ] == []
+
+
+def test_a_session_spec_that_cannot_be_resolved_is_judged_as_written(managed, monkeypatch):
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+
+    def unreadable(*args, **kwargs):
+        raise OSError("capability state unreadable")
+
+    monkeypatch.setattr(defaults, "with_default_crew_servers", unreadable)
+    spec = {"tools": ["fs_read"]}
+    assert defaults.session_spec_on(ACP_BACKEND_KAS, "mine", spec) is spec
+
+
+@pytest.fixture
+def mirror_agents(tmp_path, monkeypatch, managed):
+    """A hand-written user-level agent the mirrors' shared translation reads."""
+    from kiro_crew.acp import session_mcp
+
+    d = tmp_path / "agents"
+    d.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
+    monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", _managed)
+    monkeypatch.setattr(session_mcp, "_mcp_registry_mode", lambda: False)
+    return d
+
+
+def test_each_mirror_s_array_carries_an_added_server_only_where_session_spec_on_does(
+    mirror_agents, edition, projects
+):
+    """The array a mirrored session gets and the spec a check judges agree per backend.
+
+    So a mirror whose array starts adding a custom agent's servers fails here until
+    :func:`session_spec_on` says so, instead of leaving the edition's doctor to tell a
+    user to hand-edit an agent whose chats already have the tool.
+    """
+    from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.providers.mirrors import has_mirror, mirror_for
+
+    projects(True)
+    spec = {"name": "mine", "tools": ["fs_read"]}
+    (mirror_agents / "mine.json").write_text(json.dumps(spec), encoding="utf-8")
+    added = {"kirocrew-core", "kirocrew-cron", "edition-vend"}
+    mirrored = [b for b in selectable_backend_values() if has_mirror(b)]
+    assert mirrored, "the selectable set lists mirrored harnesses"
+    disagree = {}
+    for backend in mirrored:
+        params = mirror_for(backend).session_params(
+            "mine", permission_surface_owned=True, session_key="dashboard:chat-1"
+        )
+        wire = {e.get("name") for e in params.get("mcpServers") or []} & added
+        judged = set(defaults.session_spec_on(backend, "mine", spec).get("mcpServers") or {})
+        if wire != judged & added:
+            disagree[backend] = (sorted(wire), sorted(judged & added))
+    assert disagree == {}
+
+
+# --- one pass over many agents -----------------------------------------------------
+
+
+def test_one_pass_reads_the_edition_s_servers_once_for_every_agent(managed, edition):
+    tooling = _EditionTooling()
+    edition(tooling)
+    with defaults.one_pass():
+        for name in ("mine", "yours", "theirs"):
+            out = defaults.with_default_crew_servers(name, {"tools": ["fs_read"]})
+            assert out["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+    assert tooling.server_reads == 1
+    defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+    assert tooling.server_reads == 2, "outside a pass every call reads afresh"
+
+
+def test_one_pass_hands_each_agent_its_own_entry(managed, edition):
+    with defaults.one_pass():
+        first = defaults.with_default_crew_servers("mine", {"tools": ["fs_read"]})
+        first["mcpServers"]["edition-vend"]["args"].append("edited")
+        second = defaults.with_default_crew_servers("yours", {"tools": ["fs_read"]})
+    assert second["mcpServers"]["edition-vend"] == _EDITION_ENTRY
+
+
+def test_one_pass_asks_the_skill_view_admission_once(managed, edition, projects):
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+
+    asked = projects(True)
+    with defaults.one_pass():
+        with defaults.one_pass():
+            defaults.session_spec_on(ACP_BACKEND_KIRO, "mine", {"tools": ["fs_read"]})
+        defaults.session_spec_on(ACP_BACKEND_KIRO, "yours", {"tools": ["fs_read"]})
+    assert asked == [True], "a nested pass shares the outer one's reads"
+
+
 # --- KAS: the projected custom agent --------------------------------------------
 
 
@@ -423,6 +785,18 @@ async def test_kas_projects_the_default_servers_with_this_session_s_key(kas_layo
         # store, from this session and nothing the spec chose.
         assert projected["env"]["KIROCREW_SESSION_KEY"] == "chat-abc"
     assert not (user / "mine.json").read_text(encoding="utf-8").count("kirocrew-core")
+
+
+@pytest.mark.asyncio
+async def test_kas_projects_the_edition_server_without_writing_the_file(kas_layout, edition):
+    user, checkout = kas_layout
+    _write(user, "mine", {"name": "mine", "prompt": "p", "tools": ["@kept"]})
+
+    entry = await _kas_entry("mine", checkout, session_key="chat-abc")
+
+    assert "@edition-vend" in entry["tools"]
+    assert entry["mcpServers"]["edition-vend"]["command"] == _EDITION_ENTRY["command"]
+    assert "edition-vend" not in (user / "mine.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -578,6 +952,32 @@ def test_kiro_cli_projection_survives_unopenable_capability_state(
     assert prepared is not None
     assert prepared.specs["custom"]["tools"] == ["read"]
     assert "mcpServers" not in prepared.specs["custom"]
+
+
+def test_kiro_cli_views_read_the_edition_s_servers_once_per_preparation(
+    native_tree, managed, edition, monkeypatch
+):
+    """Every custom agent's view gets the edition server from one read of the host."""
+    from kiro_crew.acp import skill_projection as projection
+
+    tooling = _EditionTooling()
+    edition(tooling)
+    _home, agents, project = native_tree
+    names = ("custom", "helper")
+    for name in names:
+        (agents / f"{name}.json").write_text(
+            json.dumps({"name": name, "tools": ["read"]}), encoding="utf-8"
+        )
+    monkeypatch.setattr(
+        projection,
+        "list_agents",
+        lambda **kw: [
+            SimpleNamespace(name=name, filename=f"{name}.json", scope="global") for name in names
+        ],
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    assert all("edition-vend" in prepared.specs[name]["mcpServers"] for name in names)
+    assert tooling.server_reads == 1
 
 
 def test_kiro_cli_view_honours_the_opt_out(native_tree, managed):

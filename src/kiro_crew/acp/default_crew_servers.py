@@ -11,7 +11,7 @@ every enabled installed app's servers keyed ``<app>:<server>``, the entries Crew
 default agent mounts, without their ``autoApprove``, except one a wildcard of its
 own ``allowedTools`` would approve unasked.
 
-ONE helper, called by both kiro paths, so the two cannot drift:
+ONE helper, called by every path that adds them, so they cannot drift:
 
 * kiro-cli runs the agent's skill view, so the view preparation applies it to the
   authored spec before projecting
@@ -21,11 +21,25 @@ ONE helper, called by both kiro paths, so the two cannot drift:
 * KAS projects the spec it resolved for the session, so
   :func:`kiro_crew.acp.harness.kas.resolve_projected_spec` applies it to a
   user-level spec before :func:`kiro_crew.acp.kas_agents.build_kas_custom_agents`.
+* A mirrored harness in ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` (claude,
+  codex) builds its ``session/new`` array from the spec the shared translation
+  resolves, so that one read applies it to a user-level spec
+  (:func:`with_default_crew_servers_in_array`) where KAS does: before a project
+  checkout's switch-offs are layered on. Those mirrors get Crew's own two servers
+  only, never an app's. The mirror carries identity as it does for
+  ``kirocrew.json``.
 
 Nothing is written to the user's file. The servers add no new identity or memory
 path: their tools resolve the caller from the session's own key, the same way they
 do on Crew's default agent, so memory tools reach the store that session is already
 bound to.
+
+A custom agent that is not a Crew Mode conductor also gets each edition server the
+edition names for custom agents (``McpToolingProvider.custom_agent_servers``), the
+entry every spec Crew writes carries, minus its ``autoApprove`` and under the app
+servers' wildcard rule, loader or not. The spec a session on a given backend runs,
+with whatever that backend's spawn adds, is :func:`session_spec_on`: the one answer
+a read-only check judges a spec by, so the check and the spawns cannot disagree.
 
 ``kirocrew-work`` is deliberately not in the set: it serves only a session the
 conductor bound to a ledger item and answers ``not_bound`` everywhere else.
@@ -34,7 +48,9 @@ conductor bound to a ledger item and answers ``not_bound`` everywhere else.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Iterator, TypeVar
 
 from kiro_crew.agent_spec_format import is_app_agent_launch_name, is_native_skill_alias_name
 from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
@@ -44,6 +60,12 @@ logger = logging.getLogger(__name__)
 
 #: The servers a custom agent gets by default, in mount order.
 DEFAULT_CREW_SERVERS: tuple[str, ...] = ("kirocrew-core", "kirocrew-cron")
+
+_T = TypeVar("_T")
+
+#: What one pass over many agents has read of the host state they share
+#: (:func:`one_pass`); ``None`` outside a pass, where every call reads it afresh.
+_PASS: ContextVar[dict[str, Any] | None] = ContextVar("default_crew_servers_pass", default=None)
 
 
 def is_custom_agent(agent: str | None, spec: object) -> bool:
@@ -99,6 +121,94 @@ def crew_added_servers(agent: str | None, spec: object) -> tuple[str, ...]:
     )
 
 
+@contextmanager
+def one_pass() -> Iterator[None]:
+    """Within the block, read the host state every agent shares once, not once per agent.
+
+    The edition's servers (``extra_mcp_servers()`` and ``mcp.json``) and kiro-cli's
+    skill-view admission are the same for every agent a skill-view preparation or a
+    doctor check walks. Outside a block each call reads them afresh, so nothing a
+    pass read outlives it. A nested block shares the outer one's reads.
+    """
+    if _PASS.get() is not None:
+        yield
+        return
+    token = _PASS.set({})
+    try:
+        yield
+    finally:
+        _PASS.reset(token)
+
+
+def _once(key: str, read: Callable[[], _T]) -> _T:
+    """*read*'s answer, read once per :func:`one_pass` and on every call outside one."""
+    memo = _PASS.get()
+    if memo is None:
+        return read()
+    if key not in memo:
+        memo[key] = read()
+    value: _T = memo[key]
+    return value
+
+
+def _skill_view_projects() -> bool:
+    from kiro_crew.acp.skill_projection import next_spawn_projects_skill_view
+
+    return next_spawn_projects_skill_view()
+
+
+def session_spec_on(backend: str, agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*agent*'s user-level *spec* as a spawn on *backend* hands it to the session.
+
+    For a read-only check that judges a spec by what its session reaches, so a server
+    a spawn adds is counted exactly where it is added. The one place that says where:
+
+    * KAS, on every spawn: the template's approved additions
+      (``template_mcp_additions.merge_at_spawn``), then :func:`with_default_crew_servers`,
+      in the order :func:`kiro_crew.acp.harness.kas.resolve_projected_spec` applies;
+    * kiro-cli: :func:`with_default_crew_servers`, which the skill view applies, but
+      only while a spawn would project one
+      (:func:`kiro_crew.acp.skill_projection.next_spawn_projects_skill_view`);
+      otherwise the spawn falls back to the authored agent;
+    * a mirror in ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` (claude, codex):
+      :func:`with_default_crew_servers_in_array`, the copy its ``session/new`` array
+      is built from: the template's approved additions, then only Crew's own two
+      servers;
+    * any other backend in ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``: the
+      template's approved additions alone;
+    * any other backend: *spec* as written.
+
+    Records no withheld approval (``audit=False``): that is a spawn's decision. Never
+    raises: state that cannot be read judges *spec* as written, so a check never
+    counts a server the session may lack. Blocking; the host state every agent shares
+    is read once per :func:`one_pass`.
+    """
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
+        ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN,
+    )
+
+    try:
+        if backend in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY:
+            return with_default_crew_servers_in_array(agent, spec) or spec
+        if backend in ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN:
+            from kiro_crew.template_mcp_additions import merge_at_spawn
+
+            merged = merge_at_spawn(agent, spec)
+            if backend == ACP_BACKEND_KAS:
+                return with_default_crew_servers(agent, merged, audit=False)
+            return merged
+        if backend == ACP_BACKEND_KIRO and _once("skill_view", _skill_view_projects):
+            return with_default_crew_servers(agent, spec, audit=False)
+    except Exception:
+        logger.debug(
+            "the %r session spec for %r could not be resolved", backend, agent, exc_info=True
+        )
+    return spec
+
+
 def opted_out(spec: dict[str, Any], server: str) -> bool:
     """Whether *spec* withholds *server* whole.
 
@@ -108,7 +218,9 @@ def opted_out(spec: dict[str, Any], server: str) -> bool:
     the ``mcp`` (or ``all``) capability with no ``exclude`` carve-out, for every
     resource or for ``<server>/*``. A per-tool exclusion or deny
     (``@kirocrew-core/spawn_run``) is not an opt-out: the server mounts and the
-    spec's own rule keeps that tool off.
+    spec's own rule keeps that tool off, natively on kiro-cli and KAS. A host that
+    applies neither ``excludedTools`` nor ``permissions`` asks
+    :func:`narrowed_per_tool` instead.
 
     The ``permissions`` block is read as written, before KAS's projection parses
     it: a block that projection refuses whole still says the author withholds the
@@ -161,6 +273,59 @@ def _permissions_deny_server(permissions: object, server: str) -> bool:
     return False
 
 
+def narrowed_per_tool(spec: dict[str, Any], server: str) -> bool:
+    """Whether an ``excludedTools`` entry of *spec* may reach a tool of *server*.
+
+    An MCP tool's id is ``@<server>/<tool>``, so an entry can match one only when
+    its first character can match that ``@``: an ``@`` entry whose server part
+    reaches *server* (``@<server>/<tool>``, ``@kirocrew-*/spawn_*``, ``@*``, the
+    whole-server opt-outs too), or one that starts with a glob (``*``, ``?``,
+    ``[``), which may cross the ``/``. A built-in name such as ``fs_write`` reaches
+    none. A ``permissions`` deny rule for the ``mcp`` (or ``all``) capability
+    counts the same way when it may reach a tool of *server*: no ``match`` (every
+    resource), or a pattern whose server part matches it, with any tool part or
+    ``exclude`` carve-out. A host that applies neither would run those tools, so
+    it must not add the server.
+    """
+    if _permissions_reach_server(spec.get("permissions"), server):
+        return True
+    excluded = spec.get("excludedTools")
+    if not isinstance(excluded, list):
+        return False
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
+    return any(
+        isinstance(ref, str)
+        and (
+            ref[:1] in ("*", "?", "[")
+            or (ref.startswith("@") and entry_reaches(ref.partition("/")[0], f"@{server}"))
+        )
+        for ref in excluded
+    )
+
+
+def _permissions_reach_server(permissions: object, server: str) -> bool:
+    """Whether an authored ``permissions`` deny rule may reach any tool of *server*."""
+    rules = permissions.get("rules") if isinstance(permissions, dict) else None
+    if not isinstance(rules, list):
+        return False
+    from fnmatch import fnmatchcase
+
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("effect") != "deny":
+            continue
+        if rule.get("capability") not in ("mcp", "all"):
+            continue
+        match = rule.get("match")
+        if not match:
+            return True
+        if isinstance(match, list) and any(
+            isinstance(p, str) and fnmatchcase(server, p.partition("/")[0]) for p in match
+        ):
+            return True
+    return False
+
+
 def _registry_mode() -> bool:
     """Whether the install is registry-governed, as the session mount reads it.
 
@@ -192,9 +357,9 @@ def _wildcard_approves(spec: dict[str, Any], server: str) -> bool:
     """Whether a wildcard in *spec*'s own ``allowedTools`` would run *server* unasked.
 
     An entry that reaches ``@<server>`` without naming it (``"*"``, ``@*``,
-    ``@<app>:*``). An app's server is third-party code, so it is not added while
-    one is there, even beside an entry naming it: the wildcard could still run
-    the server's other tools unasked.
+    ``@<app>:*``). An app's server is third-party code, and an edition server is one
+    the author never chose, so neither is added while one is there, even beside an
+    entry naming it: the wildcard could still run the server's other tools unasked.
     """
     allowed = spec.get("allowedTools")
     if not isinstance(allowed, list):
@@ -208,6 +373,58 @@ def _wildcard_approves(spec: dict[str, Any], server: str) -> bool:
         and entry_reaches(ref.partition("/")[0], f"@{server}")
         for ref in allowed
     )
+
+
+def _edition_server_names() -> tuple[str, ...]:
+    """The names ``McpToolingProvider.custom_agent_servers`` returns.
+
+    Read through ``getattr``, so an edition provider that predates the method names
+    none. No I/O of its own: the edition answers from its own state.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    def _read() -> tuple[str, ...]:
+        reader = getattr(current_context().mcp_tooling, "custom_agent_servers", None)
+        names = reader() if callable(reader) else ()
+        return tuple(name for name in names if isinstance(name, str))
+
+    names: tuple[str, ...] = safe_context_call(
+        _read,
+        fallback_factory=tuple,
+        log_message="custom_agent_servers lookup failed; adding no edition server",
+    )
+    return names
+
+
+def _seeded_edition_servers() -> dict[str, Any]:
+    from kiro_crew.agent import seed_edition_servers
+
+    seeded: dict[str, Any] = {}
+    seed_edition_servers(seeded)
+    return seeded
+
+
+def _edition_servers(names: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    """The edition servers *names* a custom agent gets, minus ``autoApprove``.
+
+    Each kept only when ``extra_mcp_servers()`` supplies it on this host, as
+    :func:`kiro_crew.agent.seed_edition_servers` builds
+    it for every spec Crew writes, so the env the user set on it applies here too.
+    The caller filters :func:`_edition_server_names` first, so a spec that wants
+    none costs no ``extra_mcp_servers()`` call and no ``mcp.json`` read, and within
+    a :func:`one_pass` they are read once for every agent. Each entry is a copy, so
+    an edit to one agent's spec never reaches another's.
+    """
+    if not names:
+        return {}
+    seeded = _once("edition", _seeded_edition_servers)
+    return {
+        name: copy_json_document(
+            {field: value for field, value in seeded[name].items() if field != "autoApprove"}
+        )
+        for name in names
+        if isinstance(seeded.get(name), dict)
+    }
 
 
 def _app_servers() -> dict[str, dict[str, Any]]:
@@ -230,15 +447,19 @@ def _app_servers() -> dict[str, dict[str, Any]]:
 
 
 def with_default_crew_servers(
-    agent: str | None, spec: dict[str, Any], *, audit: bool = True
+    agent: str | None,
+    spec: dict[str, Any],
+    *,
+    audit: bool = True,
+    per_tool_limits_applied: bool = True,
 ) -> dict[str, Any]:
     """*spec* with :data:`DEFAULT_CREW_SERVERS` added when *agent* is a custom agent.
 
     A spec that grants the ``tool_search`` loader also gets :func:`_app_servers`,
-    under the same rules, unless *agent* is a Crew Mode conductor: a conductor
-    mounts only Crew's own servers (``crew_mode.conductor_agents``). An app server
-    a wildcard of the spec's own ``allowedTools`` would approve is not added
-    (:func:`_wildcard_approves`).
+    and any spec gets :func:`_edition_servers`, under the same rules, unless *agent*
+    is a Crew Mode conductor: a conductor mounts only Crew's own servers
+    (``crew_mode.conductor_agents``). An app or edition server a wildcard of the
+    spec's own ``allowedTools`` would approve is not added (:func:`_wildcard_approves`).
 
     Returns *spec* itself when nothing is added, else a new dict. Nothing is added
     on a registry-governed install (:func:`_registry_mode`). For each server:
@@ -256,6 +477,13 @@ def with_default_crew_servers(
 
     *audit* false skips the security-event record of a withheld approval, for a
     read-only caller that must judge the spec as a spawn would.
+
+    *per_tool_limits_applied* false is a host that mounts a server Crew adds with
+    every tool, whatever the spec narrows: a default server :func:`narrowed_per_tool`
+    names is not added, and no app or edition server is. An app's server is
+    third-party code and an edition server one the author never chose, so no limit
+    the spec sets on either may be lost, and codex runs a tool it marks
+    ``readOnlyHint`` without asking.
     """
     if not is_custom_agent(agent, spec) or _registry_mode():
         return spec
@@ -281,12 +509,20 @@ def with_default_crew_servers(
         entry = managed_mcp_spec_entry(server) if wanted(server) else None
         if isinstance(entry, dict):
             added[server] = entry
-    if spec_grants_tool_search(spec) and agent not in conductor_agents():
+    if not per_tool_limits_applied:
+        added = {k: e for k, e in added.items() if not narrowed_per_tool(spec, k)}
+    elif spec_grants_tool_search(spec) and agent not in conductor_agents():
         added.update(
             (key, entry)
             for key, entry in _app_servers().items()
             if wanted(key) and not _wildcard_approves(spec, key)
         )
+    if per_tool_limits_applied and agent not in conductor_agents():
+        # Filtered before any entry is built, so a spec that wants none reads nothing.
+        names = (
+            n for n in _edition_server_names() if wanted(n) and not _wildcard_approves(spec, n)
+        )
+        added.update(_edition_servers(tuple(names)))
     if not added:
         return spec
     out = copy_json_document(spec)
@@ -323,3 +559,26 @@ def with_default_crew_servers(
             )
     logger.debug("agent %r: adding Crew's default servers %s", agent, ", ".join(added))
     return out
+
+
+def with_default_crew_servers_in_array(
+    agent: str, spec: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """User-level *spec* as a mirror in ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY`` reads it.
+
+    Called by the read that resolves a mirrored session's spec
+    (``session_mcp._agent_spec_and_snapshot_for``), on the user-level spec only, so
+    a spec only a project checkout declares runs as written, as on KAS. The
+    template's approved additions merge first, as KAS merges them; the array read's
+    own merge after this one then finds each declared and adds nothing. These
+    mirrors mount a server whole and apply no ``excludedTools``, so only Crew's own
+    two servers are added, each only while no ``excludedTools`` entry may reach it.
+    They grant no ``allowedTools`` approval, so a withheld approval is not
+    recorded: the record would name an approval this host never grants. Blocking.
+    """
+    if not isinstance(spec, dict):
+        return spec
+    from kiro_crew.template_mcp_additions import merge_at_spawn
+
+    spec = merge_at_spawn(agent, spec)
+    return with_default_crew_servers(agent, spec, audit=False, per_tool_limits_applied=False)

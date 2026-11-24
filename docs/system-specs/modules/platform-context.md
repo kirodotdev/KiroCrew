@@ -626,7 +626,7 @@ Runtime code reads only the module constant, never the build variable or a confi
 
 The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an LTS build follows `lts`, its own channel, whatever the policy pins (RFC crew-lts-edition D11), and still ignores `$KIROCREW_HOME/channel`.
 
-Each locked config path is in `CONFIG_PATH_LOCKS`, or (for the preview switches) matched by its `dashboard.feature_previews` prefix in `config_path_locked`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A write of a `CONFIG_PATH_LOCKS` value is still stored and is ignored on read, so a saved setting never loops on an error. A preview path is refused instead: `PATCH /api/config/kirocrew` answers 409 `locked_by_policy` and a change card does not offer it, because the dashboard draws no switch for it to save from. A value written another way is still read as off. Tests: `test/test_lts_unkeyed_locks.py`, `test/test_lts_feature_previews_off.py`, `website/src/test/ltsFeaturePreviewsOff.test.tsx`.
+Each locked config path is in `CONFIG_PATH_LOCKS`, or (for the preview switches) matched by its `dashboard.feature_previews` prefix in `config_path_locked`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A lock no enterprise policy term can lift names the edition instead of a policy: `edition_locks.locked_by_edition(scope)` is true in an LTS build when no `enterprise_policy_translate.MANAGED` row lands on or inside the scope, every schema `lockedByPolicy` path belongs to an `UNKEYED_LOCKS` control and so always reads as the edition's, and the computer-use and credential-redaction GETs add `locked_by_edition`; the badge then reads "Not available in this edition". A new `MANAGED` term flips the wording back with no other change. A write of a `CONFIG_PATH_LOCKS` value is still stored and is ignored on read, so a saved setting never loops on an error. A preview path is refused instead: `PATCH /api/config/kirocrew` answers 409 `locked_by_policy` and a change card does not offer it, because the dashboard draws no switch for it to save from. A value written another way is still read as off. Tests: `test/test_lts_unkeyed_locks.py`, `test/test_lts_edition_lock_notice.py`, `test/test_lts_feature_previews_off.py`, `website/src/test/ltsFeaturePreviewsOff.test.tsx`.
 
 ### LTS gate (login half)
 
@@ -982,6 +982,20 @@ Wired sites:
   never hardcodes or interprets any credential path/content — the bytes are
   only hashed. Read through `safe_context_call` (fallback `[]`), so a
   pre-method companion adapter degrades to no-watcher instead of raising.
+- `slack/gateway_runtime/cron_fire.py` — before a scheduled agent turn (a
+  message job, a Bot's goal check-in or stale-wake tick) starts, the cron
+  callback asks `IdentityProvider.credential_freshness()` (v1 method addition;
+  Default returns `None`) through `preflight.expired_host_credential`, on a
+  worker thread under `safe_context_call` (fallback `None`), waiting at most
+  `_CREDENTIAL_FRESHNESS_TIMEOUT_SECS`, or the job's gate budget when that is
+  shorter (an answer later than that holds nothing). The answer is a
+  `CredentialFreshness(expired, remedy)`: an edition whose tools sign in with
+  the host operator's own credential reads it there, and says `expired` only
+  for a credential it READ as expired, never for one it could not read. An
+  expired answer leaves the run unstarted and tells its owner `remedy`, once
+  per wait ([learn-cron-dashboard](learn-cron-dashboard.md)). A manual Run, command and
+  script jobs are not asked. The public build answers `None`, so every run
+  starts as before.
 - `mcp_gateway/gatewayd.py::_compose_and_apply`: **the one exception to "the
   daemon never composes": telemetry only.** On a consenting non-standalone host
   the daemon calls `platform/bootstrap.py::compose_telemetry_provider` on a
@@ -1472,7 +1486,14 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   edition implements OPERATIONS and OWNS its own invocation grammar, output
   parsing, and error translation; the core (`/api/capability/*` handlers +
   `mcp.py` uninstall) calls an operation and only serializes the result / applies
-  side effects (config sync, agent rebuild). Ops: `available() -> bool`;
+  side effects (config sync, agent rebuild). Ops: `available() -> bool`
+  (asked on every request and never cached by the core, so a CLI installed after
+  boot is used from the next request; a manager MAY add an OPTIONAL synchronous,
+  I/O-free `unavailable_reason() -> str` saying why it is unavailable and what to
+  do, asked only right after `available()` returned False so it reads the state
+  that probe left, which `BoundedCapabilityManager` passes through and MCP
+  discovery search shows as the edition provider's `unavailable` outcome, see
+  [mcp.md](../../architecture/mcp.md), "Availability is asked on every search");
   `async list_mcp()/list_skills()/list_agents() -> List[Dict[str, Any]]`
   (structured entries — the manager parses its own output; the core keeps no
   text grammar; **`list_skills()` containment invariant:** every skill row MUST
@@ -1535,7 +1556,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   unbounded read would accumulate pending gateway tasks on every poll (the same
   wedge class the bound exists to prevent), even though reads mutate nothing.
   `sync_plugins` takes the INSTALL bound (it may shell a package manager once per
-  drifted package). Only the synchronous `available()` probe is unwrapped (no I/O). `/api/mcp/apply` orders the two mutations to be both
+  drifted package). Only the synchronous `available()` probe (no subprocess or network call; at most a cheap PATH lookup while a CLI is missing) and the optional, I/O-free `unavailable_reason()` beside it are unwrapped. `/api/mcp/apply` orders the two mutations to be both
   lock-safe and race-safe: it runs the companion `uninstall_mcp` calls FIRST, in
   a phase BEFORE acquiring the process-wide MCP file lock (`_get_mcp_lock`) —
   deduped by name, bounded-concurrent (`_MCP_DEFERRED_UNINSTALL_CONCURRENCY`)
@@ -1635,6 +1656,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   re-emitted, so a manifest round-trip migrates it; ledger keys/types likewise
   resolve the pre-rename `aim/*` / `aim.*` spellings so an upgraded install does
   not orphan tracked dependencies.
+- `McpToolingProvider.custom_agent_servers() -> Tuple[str, ...]` — WIRED:
+  `acp/default_crew_servers.with_default_crew_servers` adds each named
+  `extra_mcp_servers()` entry this host supplies to the spec a custom agent's
+  session runs, at spawn and never in the user's file, built as
+  `mcp_sources.seed_edition_servers` builds it and without `autoApprove`, under
+  the custom-agent opt-outs; not while a wildcard of the agent's own
+  `allowedTools` reaches it, and not for a Crew Mode conductor. An edition check
+  that reports where it is mounted judges the spec
+  `default_crew_servers.session_spec_on(backend, agent, spec)` returns, the one
+  list of the spawns that add it, so it never counts the server where a spawn
+  does not add it. Read through `getattr`, so an edition provider that predates
+  it names none. Default `()`. v1 addition, no `CONTRACT_VERSION` bump.
 - `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
   GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
   each returned scope's `global_json` (and strip its `agent_mcp_file`) IN

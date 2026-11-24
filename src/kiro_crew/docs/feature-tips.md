@@ -8,6 +8,7 @@ Kiro Crew surfaces a compact feature tip above the chat composer while a turn is
 - A tip is an in-flow card in the composer's width wrapper: it takes real layout space and pushes the conversation upward instead of covering chat content.
 - Tips do not fetch or display in temporary sessions, split view, or the embedded sessions view, and they yield to functional above-composer surfaces such as question cards, queued messages, folder suggestions, and active subagent or workflow progress.
 - Candidates include hand-authored actionable tips, generated tips, and a catalog fallback built from allowlisted feature docs. A background model call uses the local context to generate candidates; selection blends random exploration with weighted, newer-biased selection.
+- Hand-authored tips show in the dashboard's language: the tip card and the Settings tip list look up each tip's title, body and button label in the language catalog by tip id. A tip whose served text differs from the catalog's English shows as served.
 - At most one tip is offered at a time. The same offered tip is returned until feedback clears it.
 - Displaying, acknowledging, dismissing, or snoozing a tip starts the cadence gate; the default minimum gap is six hours. The client also applies a 20-minute local display gate unless a shorter configured cadence applies.
 

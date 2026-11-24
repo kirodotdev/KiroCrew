@@ -1642,6 +1642,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.pin-forks-of-pinned-sessions",
+    "label": "Pin forks of pinned sessions",
+    "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
+    "description": "A fork of a pinned session is pinned too, so it stays beside the original.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",
@@ -1853,7 +1865,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.send-follow-ups-with-one-click",
     "label": "Send follow-ups with one click",
     "labelKey": "pages.settings.chatPanel.followup_start_sends",
-    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
+    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -2497,7 +2509,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.connected-computers",
     "label": "Connected computers",
     "labelKey": "connectedComputers.preview.label",
-    "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+    "description": "Chats on this server can work in a folder on your own computer.",
     "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
     "tab": "developer",
     "type": "toggle",
@@ -2666,7 +2678,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Remote dispatch",
     "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
     "description": "Runs conductor mode tasks on connected machines.",
-    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2742,7 +2754,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.use-your-company-s-sign-in",
     "label": "Use your company's sign-in",
     "labelKey": "pages.developer.featurePreviewsTab.crew_client",
-    "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+    "description": "Uses your company's own sign-in for its portal.",
     "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
     "tab": "developer",
     "type": "toggle",

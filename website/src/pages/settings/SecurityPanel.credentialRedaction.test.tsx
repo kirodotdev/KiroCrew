@@ -115,6 +115,12 @@ describe('SecurityPanel - credential redaction toggle', () => {
     expect(screen.getByTitle(/^Hides keys, tokens and passwords in chat, messaging channels/)).toBeTruthy()
   })
 
+  it('says the edition keeps redaction on when no policy can lift the lock', async () => {
+    await renderRedaction({ ...LOCKED, locked_by_edition: true })
+    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByTestId('credential-redaction-locked').textContent).toBe('This edition always redacts credentials, and an admin cannot turn it off.')
+  })
+
   it('is locked, with one line saying an administrator controls it, when policy keeps redaction on', async () => {
     await renderRedaction(LOCKED)
     expect(toggle()).toHaveAttribute('aria-checked', 'true')

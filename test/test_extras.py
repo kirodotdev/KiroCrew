@@ -316,3 +316,31 @@ def test_a_multi_package_extra_quotes_every_specifier() -> None:
     command = extras.pip_install_command("voice")
     for req in extras.REQUIREMENTS["voice"]:
         assert extras.quote_spec(req) in command
+
+
+def test_a_distribution_named_in_several_places_carries_one_specifier() -> None:
+    """The managed-venv update installs the new wheel with every extra the running
+    install has, so a pin that differs between ``install_requires`` and an extra (or
+    between two extras) would be a resolution conflict on every such update."""
+    parser = configparser.ConfigParser()
+    parser.read(SETUP_CFG, encoding="utf-8")
+    places = {"install_requires": parser["options"]["install_requires"]}
+    # Only the extras an update carries: `dev` is never one (see REQUIREMENTS).
+    places.update(
+        (k, v) for k, v in parser["options.extras_require"].items() if k in extras.REQUIREMENTS
+    )
+    specifiers: dict[str, dict[str, str]] = {}
+    for place, raw in places.items():
+        for line in raw.splitlines():
+            req = line.split("#", 1)[0].strip()
+            if not req or re.match(r"^kirocrew\s*\[", req, re.IGNORECASE):
+                continue
+            name = re.match(r"^[A-Za-z0-9._-]+", req)
+            assert name is not None, req
+            key = re.sub(r"[-_.]+", "-", name.group(0)).lower()
+            spec = re.sub(r"^\[[^\]]*\]", "", req[name.end() :].strip()).replace(" ", "")
+            specifiers.setdefault(key, {})[place] = spec
+    shared = {k: v for k, v in specifiers.items() if len(v) > 1}
+    assert shared, "no distribution is named in two places; the guard checks nothing"
+    differing = {k: v for k, v in shared.items() if len(set(v.values())) > 1}
+    assert not differing, f"one distribution, several specifiers: {differing}"

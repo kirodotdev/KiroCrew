@@ -97,8 +97,9 @@ restores your recall without also restoring every unrelated working file in
 `workspace/`. Selections may overlap — asking for both `memory` and `workspace`
 stages the shared paths once.
 
-Restoring `workspace` never installs the bundle's agent config found anywhere under
-`workspace/`, in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
+Restoring `workspace`, or `memory` (which installs `workspace/memory/` and
+`workspace/knowledge/`), never installs the bundle's agent config found anywhere in
+the `workspace/` trees it installs, in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
 `.goosehints`, `.opencode/`, `opencode.json(c)`, `.pi/` and `.mimocode/`, `mimocode.json(c)`.
 An agent session started in `workspace/` or one of its project folders reads them, and a
 bundle can come from someone else. Your own copies are kept, and the result names what was

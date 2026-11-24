@@ -59,7 +59,9 @@ def _failure_alert_due(
     ``delete_after_run`` job is paused after a failed run
     (``auto_pause_failed_one_shot``) and a retained ``at`` job is parked
     (``run_parks_one_shot``), so it alerts too. A silent job reaches nobody
-    either way and keeps its own path. An *auth_expiry* failure never pauses the
+    either way and keeps its own path; the one silent run that is told, a run
+    waiting for the host sign-in, comes here as *denied*, since it does not
+    clear on retry either. An *auth_expiry* failure never pauses the
     job (``record_failure``), so the run at the pause limit is not its last one
     and only ``alert_after_failures`` decides.
     """
@@ -237,9 +239,10 @@ async def _alert_cron_failure(
     detail: str,
     *,
     denied: bool = False,
+    awaiting_sign_in: bool = False,
     exit_code: int | None = None,
     pin: tuple[str, str] | None = None,
-) -> None:
+) -> bool:
     """Tell the user WHY a script/command cron run failed or was denied.
 
     The script and command paths signal failure by mutating the job
@@ -275,28 +278,46 @@ async def _alert_cron_failure(
 
     *pin* is a script run's launch ``(channel_type, target_id)``: its reason
     carries that run's output, so it goes where the run's grant bound it.
+
+    *awaiting_sign_in* is a run that was not started because the host's sign-in
+    expired (the reason says how to sign in again). Nothing of the job runs
+    until the person acts, so this is not run noise: it is sent whatever
+    ``silent`` and the threshold say. A repeat inside the reminder window is the
+    same wait: it tells nothing, not even a bell row, and moves the window on,
+    so a one-shot retried on every timer pass, or a tick every ten minutes, is
+    told once while the sign-in stays expired. A job held again more than
+    ``_FAILURE_REMINDER_SECS`` after it was last held (a nightly job, whose
+    person may have signed in since and seen it expire again) is told again,
+    and so is the first wait after a run that succeeded (``record_success``
+    clears the anchor).
+
+    Returns whether the alert went out: False when nothing did, or only a bell
+    row for an alert held below the threshold or a repeat.
     """
     try:
-        if job.silent:
+        if job.silent and not awaiting_sign_in:
             # Silent jobs still execute and still count toward auto-pause;
             # only the user-facing surfaces are suppressed.
-            return
+            return False
         text = _scrubbed(detail, _CRON_FAILURE_DETAIL_CAP) or "no reason reported"
         # job.name is user-controlled and the reason can carry subprocess
         # output, so both are scrubbed once, ahead of either surface and
         # of either branch below.
         label = _scrubbed(job.name)
-        headline = "Blocked by policy" if denied else "Run failed"
+        headline = (
+            "Not run" if awaiting_sign_in else "Blocked by policy" if denied else "Run failed"
+        )
         if exit_code is not None and not denied:
             # Said once, here, so the fenced body is only what the command wrote.
             headline = f"Run failed with exit code {exit_code}"
         # Denials and failures hash apart so a policy denial does not read
         # as a dup of a same-worded crash (and vice versa); so do exit codes.
         reason = text if exit_code is None else f"{exit_code}:{text}"
-        fh = _result_hash(f"{'denied' if denied else 'failed'}:{reason}")
+        kind = "sign-in" if awaiting_sign_in else "denied" if denied else "failed"
+        fh = _result_hash(f"{kind}:{reason}")
         # Every call site counted the run already, so the streak is the counter.
         streak = job.consecutive_failures
-        if not _failure_alert_due(job, streak, denied=denied):
+        if not _failure_alert_due(job, streak, denied=denied or awaiting_sign_in):
             limit = job.alert_after_limit()
             logger.info(
                 "Cron '%s': failure %d of %d held below alert_after_failures",
@@ -318,8 +339,13 @@ async def _alert_cron_failure(
                     exc_info=True,
                 )
             _log_held_alert(job)
-            return
+            return False
         if self._failure_alert_is_duplicate(job, fh):
+            if awaiting_sign_in:
+                # Still the same wait, and told: the window runs from this run on.
+                job.last_failure_at = time.time()
+                logger.info("Cron '%s': still waiting for the host sign-in; told already", job.name)
+                return False
             logger.info(
                 "Cron '%s': duplicate failure alert suppressed (%s)",
                 job.name,
@@ -341,7 +367,7 @@ async def _alert_cron_failure(
                     "Dashboard notify failed in cron run-failure suppress path",
                     exc_info=True,
                 )
-            return
+            return False
         try:
             if self.dashboard_state:
                 self.dashboard_state.notify(
@@ -370,7 +396,8 @@ async def _alert_cron_failure(
         # channel's dialect, so a shared string would show `&lt;` and
         # stray backticks there.
         plain = f"Cron: {label} — {headline} on {host}\n{text}"
-        # Silent jobs returned above, so this leg is never suppressed here.
+        # A silent job gets here only waiting for the host sign-in, which is
+        # told whatever ``silent`` says, so this leg is never suppressed here.
         channel_delivered, slack_delivered, slack_failed = await self._deliver_failure_alert(
             job,
             mrkdwn=msg,
@@ -398,8 +425,10 @@ async def _alert_cron_failure(
             )
         except Exception:
             logger.debug("SEL logging failed in cron run-failure alert path", exc_info=True)
+        return True
     except Exception:
         logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
+        return False
 
 
 async def _alert_cron_auto_paused(
@@ -407,8 +436,9 @@ async def _alert_cron_auto_paused(
 ) -> None:
     """Tell the user *job* paused ITSELF and does not run again until resumed.
 
-    The one cron notice ``silent`` does not gate. ``silent`` suppresses a run's
-    noise — results and per-run failure alerts — and this is not run noise: the
+    A cron notice ``silent`` does not gate, as the one for a run waiting for the
+    host sign-in is not (:func:`_alert_cron_failure`). ``silent`` suppresses a
+    run's noise — results and per-run failure alerts — and this is not run noise: the
     job's schedule just ended, for every future run, until someone resumes it.
     A silent job is exactly the one whose owner heard none of the failures that
     led here, so this notice is the first and only word they get; without it

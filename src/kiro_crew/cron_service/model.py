@@ -199,8 +199,9 @@ class CronJob:
     refusal_cannot_clear: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run did
     # nothing a person would look for in the run history (a gateway job's quiet
-    # tick, which woke no one), so the run writes no history row. Reset at the
-    # start of every run.
+    # tick, which woke no one, or a wait for the host sign-in that its notice
+    # already reports), so the run writes no history row. Reset at the start of
+    # every run.
     quiet_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was a
     # script's Skip(), so its history row is marked idle and the Logs tab can

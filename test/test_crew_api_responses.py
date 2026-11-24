@@ -147,7 +147,6 @@ def test_a_field_the_contract_refuses_is_a_400(change, code) -> None:
 @pytest.mark.parametrize(
     "change",
     [
-        {"stream": True},
         {"background": True},
         {"conversation": "conv_1"},
         {"previous_response_id": "resp_1"},
@@ -682,16 +681,20 @@ async def test_a_stopped_turn_that_raised_is_an_internal_error(client, monkeypat
     _no_slot_left(client)
 
 
-async def _press_stop(client, outcome: str, *, cancels: bool = False) -> tuple[Any, Any]:
+async def _press_stop(
+    client, outcome: str, *, cancels: bool = False, ask: Any = None
+) -> tuple[Any, Any]:
     """Ask, then press the dashboard's own Stop on the running turn.
 
     ``stop_slot_turn`` is the real one. Only the session manager's ``stop_turn``
     is a stand-in: it answers *outcome*, and cancels the turn when *cancels*.
+    *ask* sends the request; the JSON one unless the caller reads a stream.
     """
     client.turn.release = asyncio.Event()
-    asking = asyncio.ensure_future(_ask(client))
+    client.turn.started = asyncio.Event()
+    asking = asyncio.ensure_future((ask or _ask)(client))
     await await_until(client.turn.started, what="the turn to start")
-    slot = client.turn.entered[0]["slot"]
+    slot = client.turn.entered[-1]["slot"]
 
     async def _stop_turn(_key: str, **_kwargs: Any) -> str:
         if cancels:
@@ -998,7 +1001,7 @@ async def test_a_body_that_is_not_json_is_refused(client) -> None:
     [
         ({"input": ""}, 400, "invalid_request", "invalid_request_error"),
         ({"store": False}, 400, "unsupported_parameter", "invalid_request_error"),
-        ({"stream": True}, 422, "capability_unavailable", "capability_error"),
+        ({"background": True}, 422, "capability_unavailable", "capability_error"),
         ({"model": "nobody"}, 404, "model_not_found", "not_found_error"),
         (
             {"input": "a" * (_MAX_PROMPT_BYTES + 1)},

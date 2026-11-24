@@ -252,6 +252,21 @@ other languages keep, so a shared key forces a translator to guess:
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
 
+## No reassurance lines
+
+**Every line must tell the reader something the control, title or state does
+not.** A sentence like "Nothing is sent until you press send", "Nothing changes
+until you install" or "Nothing is created until you confirm" fails that test: the
+button is right there, and pressing it is the only way anything happens. Delete
+the sentence. When the action has a consequence the reader cannot infer, state
+that consequence directly instead ("Billable.", "the instance keeps running and
+billing until you delete it in AWS").
+
+`src/i18n/noReassuranceCopy.test.ts` fails on any English catalog value with
+"nothing … until you" (or "none of them … until you") inside one clause. When you
+remove such a sentence, remove the matching sentence in every locale too; never
+write new translated text for it.
+
 ## Destructive-confirm operands must be quoted
 
 A confirm string that interpolates a user-supplied name without quotes lets an

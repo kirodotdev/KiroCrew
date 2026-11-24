@@ -10,9 +10,11 @@ data home and surfaces ``internal_auth_mismatch``. Nothing names the dead path.
 This module walks every agent spec JSON in :func:`kiro_agents_dir_path` and
 stats every absolute ``command`` path, absolute path-like arg, and absolute
 path-like env value. Values that only LOOK like paths are screened out first —
-separator-joined lists, and the operands of flags that take an opaque identifier
-(see :data:`_IDENTIFIER_FLAGS`) — because a false "dead path" on a healthy
-install turns the whole check red and teaches operators to ignore it:
+separator-joined lists, the operands of flags that take an opaque identifier
+(see :data:`_IDENTIFIER_FLAGS`), and every arg of the WSL launcher, whose paths
+live inside a Linux distro (see :func:`_runs_in_wsl`) — because a false
+"dead path" on a healthy install turns the whole check red and teaches
+operators to ignore it:
 
 * **Managed specs** (the ones ``install_agent`` / ``rebuild_agent_config`` own,
   i.e. :data:`~kiro_crew.agent_files.OWNED_KIRO_AGENT_FILES`) with dead paths are
@@ -35,6 +37,7 @@ sibling change wiring another sweep into doctor rebases trivially.
 from __future__ import annotations
 
 import logging
+import ntpath
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -290,6 +293,23 @@ def _is_identifier_operand(args: list, i: int) -> bool:
     return isinstance(prev, str) and prev in _IDENTIFIER_FLAGS
 
 
+def _runs_in_wsl(command: object) -> bool:
+    """Whether *command* is the WSL launcher (``wsl``, ``wsl.EXE``, ``...\\wsl.exe``).
+
+    ``wsl.exe -d <distro> -- /home/me/bin/server`` hands everything after its own
+    options to the Linux distro: each arg is a ``wsl`` option or the distro's
+    command line, and its paths resolve inside the distro, never on this host, so
+    none of the args is stat-ed. Looking inside the distro would mean starting
+    ``wsl.exe``, which is slow and can boot the WSL VM, so the check does not.
+    The launcher's own ``command`` path and its ``env`` values are Windows-side
+    and are still checked. ``ntpath.basename`` splits on both separators, so the
+    test reads the same on every platform.
+    """
+    if not isinstance(command, str):
+        return False
+    return ntpath.basename(command).casefold().removesuffix(".exe") == "wsl"
+
+
 def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
     """Collect dead absolute paths from one ``mcpServers`` entry."""
     dead: list[DeadPath] = []
@@ -299,7 +319,7 @@ def _walk_server_paths(server: str, entry: dict) -> list[DeadPath]:
         dead.append(DeadPath(spec="", server=server, where="command", path=command))
 
     args = entry.get("args")
-    if isinstance(args, list):
+    if isinstance(args, list) and not _runs_in_wsl(command):
         for i, arg in enumerate(args):
             if (
                 isinstance(arg, str)

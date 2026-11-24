@@ -446,6 +446,7 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
     _prefer_short_tmp_base,
     _redirect_tempfile_base,
     _remove_tree,
+    _root_residue_leaves,
     _stop_git_discovery_above_the_temp_roots,
     _tmp_residue,
     _tmp_residue_report,
@@ -1906,6 +1907,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     )
     for name in residue:
         reporter.write_line(f"    {name}")
+        for leaf in _root_residue_leaves(_REPO_ROOT / name):
+            reporter.write_line(f"        {leaf}")
     reporter.write_line("")
     reporter.write_line(
         "A test must not write into the checkout. The usual cause is a "

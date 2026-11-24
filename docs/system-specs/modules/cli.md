@@ -1090,7 +1090,10 @@ before another action can start.
 
 An auto-created `config.json` alone does not mark first-run setup complete; a
 successful authenticated probe writes the setup marker, while existing
-session/history state preserves established-install migration behavior. Fresh
+session/history state preserves established-install migration behavior. Under
+`sessions/` only a transcript holding a message counts (an unreadable one
+counts too): the session index a gateway start writes and the empty default
+chat the dashboard opens do not, so a restart alone never completes setup. Fresh
 installs receive the full-screen flow. Established dashboards remain navigable
 and fully usable when signed out — no controls are paused. Readiness is probed
 once at gateway boot and thereafter only on explicit user action, so no path runs
@@ -2193,6 +2196,10 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
 
 1. The code goes in: `dep_sync.sync_or_reinstall` into the checkout's venv, or
    the shadow tree the wheel engine builds and verifies beside the running one.
+   The shadow tree is installed with every optional extra the running tree has
+   (each `kiro_crew.extras.REQUIREMENTS` entry whose distributions are all
+   installed, as `<wheel>[extra,...]` in the one pip command); a carried extra
+   that cannot be installed fails the update.
 2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
    interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
    it installs is the new release's, never the one the updating process
@@ -3493,6 +3500,16 @@ pins the contract.
     that exit (`RestartPreventExitStatus`) is systemd-only.
   - Stdout and stderr are written to
     `~/Library/Logs/KiroCrew/gateway.{log,err}`.
+  - **Environment**: the plist's `EnvironmentVariables` come from the same
+    `service_environment()` as the Linux unit. `PATH` is built as on Linux
+    (`~/.local/bin`, mise's shims, the nvm version bin dirs found on the
+    installer's `PATH`, the system dirs, then the installer's `PATH`), and
+    when an nvm dir was promoted `/opt/homebrew/bin` follows it: the MCP search
+    path inserts Homebrew's dir right after the shims, so without that entry a
+    Homebrew `node` would run the user's Node MCP servers instead of the nvm
+    Node their shell selected. There is no `sudo` case. An installed plist
+    keeps the `PATH` it was written with until `kirocrew service install` runs
+    again.
   - Install, restart, stop and uninstall name the domain explicitly, so an
     install from SSH lands where `restart` and `stop` address it; the legacy
     `load`/`unload` verbs act on the caller's domain (`user/<uid>` from SSH).

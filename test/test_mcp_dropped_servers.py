@@ -3,7 +3,8 @@
 Without the record the drop reaches only the gateway log: the dashboard lists the
 server while the agent has none of its tools. The rebuild records each
 command-not-found drop, and ``GET /api/mcp`` stamps it onto the server's row as
-``agentDropped``.
+``agentDropped``. The same record carries the user's own entries an edition server
+of the same name outranks, stamped as ``ownEntryUnused`` and printed by doctor.
 """
 
 from __future__ import annotations
@@ -266,3 +267,101 @@ async def test_probe_response_carries_current_agent_drops(monkeypatch, tmp_path,
     body = refreshed.body
     assert isinstance(body, (bytes, bytearray))
     assert "agentDropped" not in json.loads(body)[0]
+
+
+_UNUSED = {"file": "~/.kiro/settings/mcp.json", "command": "/opt/own/example-mcp"}
+
+
+@pytest.mark.asyncio
+async def test_an_unused_own_entry_is_shown_on_its_row_until_the_record_clears(
+    monkeypatch, tmp_path
+) -> None:
+    mcp_dropped_servers.record_rebuild_drops({}, unused_own={"example-server": _UNUSED})
+    assert mcp_dropped_servers.load_unused_own() == {"example-server": _UNUSED}
+    row = (await _rows(monkeypatch, tmp_path))["example-server"]
+    assert row["ownEntryUnused"] == _UNUSED
+    assert "agentDropped" not in row
+
+    mcp_dropped_servers.record_rebuild_drops({})
+    assert "ownEntryUnused" not in (await _rows(monkeypatch, tmp_path))["example-server"]
+
+
+def test_an_unused_own_entry_under_a_slash_name_is_shown_on_its_canonical_row() -> None:
+    """Recorded under the source key, listed under its alias, exact name first."""
+    mcp_dropped_servers.record_rebuild_drops(
+        {}, unused_own={"ns/notes": _UNUSED, "plain": {**_UNUSED, "command": "exact"}}
+    )
+    rows: list[dict] = [{"name": "ns-notes"}, {"name": "plain"}, {"name": "other"}]
+
+    mcp_mod._annotate_agent_drops(rows)
+
+    assert rows[0]["ownEntryUnused"] == _UNUSED
+    assert rows[1]["ownEntryUnused"]["command"] == "exact"
+    assert "ownEntryUnused" not in rows[2]
+
+
+def test_a_malformed_unused_record_is_left_out() -> None:
+    mcp_dropped_servers.store_path().write_text(
+        json.dumps(
+            {
+                "version": mcp_dropped_servers.STORE_VERSION,
+                "servers": {},
+                "unused_own": {"ok": _UNUSED, "no-file": {"command": "x"}, "bad": ["x"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert mcp_dropped_servers.load_unused_own() == {"ok": _UNUSED}
+
+
+def test_doctor_names_the_unused_own_entry(capsys) -> None:
+    from kiro_crew import cli_doctor
+
+    mcp_dropped_servers.record_rebuild_drops({}, unused_own={"example-server": _UNUSED})
+
+    cli_doctor._doctor_unused_own_entries()
+
+    out = capsys.readouterr().out
+    assert "@example-server: ⚠️  your own entry in ~/.kiro/settings/mcp.json" in out
+    assert "(/opt/own/example-mcp) is not used" in out
+    assert "Give yours a different name in that file to run it too." in out
+    assert "in its place" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_unused_url_entry_reaches_the_inventory_without_its_credentials(
+    monkeypatch, tmp_path
+) -> None:
+    """``GET /api/mcp`` serves the record as stored, so the URL is cut before it is stored."""
+    from kiro_crew.testing.synthetic_credentials import synth
+
+    password, token = synth(12, seed=7), synth(24, seed=8)
+    url = f"https://alice:{password}@mcp.example.test/v1/{token}/mcp?token={token}#frag"
+    mcp_dropped_servers.record_rebuild_drops(
+        {}, unused_own={"example-server": {"file": "~/.kiro/crew/mcp.json", "command": url}}
+    )
+
+    row = (await _rows(monkeypatch, tmp_path))["example-server"]
+    assert row["ownEntryUnused"]["command"] == "https://mcp.example.test"
+    stored = mcp_dropped_servers.store_path().read_text(encoding="utf-8")
+    for secret in ("alice", password, token, "#frag"):
+        assert secret not in json.dumps(row)
+        assert secret not in stored
+
+
+def test_doctor_prints_an_unused_url_entry_without_its_credentials(capsys) -> None:
+    from kiro_crew import cli_doctor
+    from kiro_crew.testing.synthetic_credentials import synth
+
+    password, token = synth(12, seed=5), synth(24, seed=6)
+    url = f"https://alice:{password}@mcp.example.test/v1/{token}/mcp?token={token}#frag"
+    mcp_dropped_servers.record_rebuild_drops(
+        {}, unused_own={"example-server": {"file": "~/.kiro/crew/mcp.json", "command": url}}
+    )
+
+    cli_doctor._doctor_unused_own_entries()
+
+    out = capsys.readouterr().out
+    assert "(https://mcp.example.test) is not used" in out
+    for secret in ("alice", password, token, "#frag"):
+        assert secret not in out

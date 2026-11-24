@@ -3684,6 +3684,22 @@ per-sub-agent completion note. Dashboard chat only.
   `served_model_unverified` on `GET /api/spawn/{id}` (`constants.UNVERIFIED_MODEL_NOTE`).
   The dashboard's downgrade chip cannot fire there, since it needs a served id.
   The pin is not refused at spawn: the backend's model list can be stale.
+- **Crew's tools withheld** — a claude run whose folder holds a `.claude` settings
+  file Crew cannot govern starts with no `mcpServers` array at all (claude-code-provider
+  spec, "A project-owned settings file"). When the session is established the run reads
+  the session's `settings_withheld_reason` (off the loop): one clause saying why, without
+  the remedy, since the parent is a model and the remedy is the person's. It is recorded
+  as `SubagentInfo.crew_tools_withheld` (`_crew_tools_withheld_reason`) with no log line
+  of its own, since the refusal already logged one. The run's own prompt then says Crew's
+  tools are not in the session and why, in place of the MCP report's per-server list,
+  which would call each withheld server "not configured" (`_spawn_mcp_notice`). On ANY
+  outcome, not only a completed one, the lone completion event and the member's digest
+  entry end with one ``Warning: Agent `<id>` ran without Crew's own tools… because …``
+  line (`run_record.CREW_TOOLS_WITHHELD_NOTE`); the prompt and that line name the tools
+  in the same words (`run_record.CREW_OWN_TOOLS`). `GET /api/spawn/{id}` reports it as
+  `crew_tools_withheld` for a finished run, the `spawn_sub_agents` completed record carries
+  it under the same key, and `spawn_status` puts the `This agent …` line ahead of the
+  result.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.
