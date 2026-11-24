@@ -1449,6 +1449,14 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                     if _proxyjump_value_targets_self(_unmask_separators(stripped)):
                         return True
                 elif ">" in stripped or "<" in stripped:
+                    # A quoted ``>``/``<`` can sit inside an option's value
+                    # (``-o proxycommand='ssh h >x'``): check that value as the
+                    # option and operand branches below do.
+                    option_word = not opts_terminated and stripped.startswith("-")
+                    if _routing_option_value_targets_self(
+                        _unmask_separators(stripped), value_slot=option_shadow or option_word
+                    ):
+                        return True
                     # A redirection construct.  The part before the operator is
                     # an ordinary word when non-numeric
                     # (``localhost>/dev/null``); a bare or fd-prefixed operator
