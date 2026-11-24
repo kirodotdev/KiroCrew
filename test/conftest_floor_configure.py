@@ -442,7 +442,16 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
         sys.base_prefix,
         sys.executable,
     )
-    allowed = frozenset(share for share in map(_unc_share, homes) if share)
+    # A mapped drive (``Z:\`` on ``\\server\share``) resolves to its share, and
+    # ``realpath`` then stats that share, so the resolved form is allowed too. Resolved
+    # here, before the wrappers exist.
+    resolved = []
+    for home in homes:
+        try:
+            resolved.append(os.path.realpath(home))
+        except (OSError, ValueError):
+            pass
+    allowed = frozenset(share for share in map(_unc_share, (*homes, *resolved)) if share)
 
     def guard(real, module_name: str, attr: str, name: str):
         @functools.wraps(real)

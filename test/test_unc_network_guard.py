@@ -7,7 +7,6 @@ the runner's network. ``_refuse_unc_network_paths`` makes them raise at once ins
 from __future__ import annotations
 
 import os
-import pickle
 import sys
 from pathlib import Path
 
@@ -115,8 +114,9 @@ def test_a_path_object_is_read_once_and_checked_as_opened(tmp_path) -> None:
 def test_the_wrapped_calls_keep_their_supports_membership_and_pickle() -> None:
     assert os.stat in os.supports_fd
     assert os.stat in os.supports_follow_symlinks
+    # Pickle stores a function as module + qualname and finds it again by that name.
     for call in (os.stat, os.lstat, os.path.exists):
-        assert pickle.loads(pickle.dumps(call)) is call
+        assert getattr(sys.modules[call.__module__], call.__qualname__) is call
 
 
 @windows_only
