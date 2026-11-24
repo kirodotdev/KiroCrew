@@ -355,9 +355,22 @@ export function useWindowOperations<T>(ctx: {
         // internally consistent: the last row is always mounted and the window
         // extends upward one viewport + overscan, in tree coordinates only.
         const viewTop = Math.max(0, idx.totalHeight() - Math.max(0, el.clientHeight))
+        const firstVisible = idx.indexAt(viewTop)
         next = {
-          start: Math.max(0, idx.indexAt(viewTop) - overscanN),
+          start: Math.max(0, firstVisible - overscanN),
           end: count,
+        }
+        const cap = leadingCapRef.current
+        if (cap !== null && cap < overscanN) {
+          // Staged entry at the tail: the same split as the staged landing
+          // below, so opening a session mounts its overscan over a few frames.
+          const cappedStart = Math.max(0, firstVisible - cap)
+          const fullStart = next.start
+          setWindowRange((prev) => mergeWindowRange(prev, {
+            start: Math.min(cappedStart, Math.max(fullStart, prev.start)),
+            end: count,
+          }, grow))
+          return
         }
       } else {
         // Convert the scroller's scrollTop into LIST content coordinates before
