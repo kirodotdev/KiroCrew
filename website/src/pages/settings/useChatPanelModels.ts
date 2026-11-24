@@ -496,6 +496,24 @@ export function useChatPanelModelDefaults({
   const subagentEffortMut = useMutation(
     optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
+
+  // Optimize prompt's own pair. Unset, it runs on what background work runs on,
+  // so the unset value of each row reads "Same as Background" rather than Auto
+  // or Model default, and the effort gate follows the Background row when no
+  // model is picked here.
+  const optimizerModel = mcCfg?.agent?.role_models?.optimizer || 'auto'
+  const shownOptimizerModel = overlay.shown('agent.role_models.optimizer', optimizerModel)
+  const optimizerModelOpts = roleModelOptions(shownOptimizerModel, optimizerModel)
+  const optimizerModelLabels = optimizerModelOpts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.same_as_background') : m))
+  const optimizerModelMut = useMutation(
+    optimisticConfigOpts('agent.role_models.optimizer', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
+  )
+  const shownOptimizerEffort = overlay.shown('agent.role_efforts.optimizer', mcCfg?.agent?.role_efforts?.optimizer ?? '')
+  const optimizerEffortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.same_as_background') : effortLabel(l)))
+  const optimizerEffortSupported = shownOptimizerModel !== 'auto' ? modelSupportsEffort(shownOptimizerModel) : bgEffortSupported
+  const optimizerEffortMut = useMutation(
+    optimisticConfigOpts('agent.role_efforts.optimizer', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
+  )
   return {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
     selectAllModels, deselectAllModels, shownDefaultModel, modelOptions, defaultModelMut, agentsQ,
@@ -506,6 +524,8 @@ export function useChatPanelModelDefaults({
     subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
     subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
     memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
-    clearAgentEffortPinError,
+    clearAgentEffortPinError, shownOptimizerModel, optimizerModelOpts, optimizerModelLabels,
+    optimizerModelMut, shownOptimizerEffort, optimizerEffortLabels, optimizerEffortSupported,
+    optimizerEffortMut,
   }
 }

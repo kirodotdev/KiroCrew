@@ -1642,6 +1642,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-prompt-effort",
+    "label": "Optimize Prompt Effort",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_effort",
+    "hint": "The reasoning effort “Optimize prompt” runs at. 'Same as Background' uses your Background Effort under Model. Applies only on reasoning-capable models.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.optimize-prompt-model",
+    "label": "Optimize Prompt Model",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_model",
+    "hint": "The model “Optimize prompt” runs on. 'Same as Background' runs it on the model your background work uses; pick a model to run only Optimize prompt on it.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-forks-of-pinned-sessions",
     "label": "Pin forks of pinned sessions",
     "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
