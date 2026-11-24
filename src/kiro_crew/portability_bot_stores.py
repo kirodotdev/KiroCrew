@@ -760,6 +760,25 @@ def _record_state_ok(slug: str) -> bool:
         return False
 
 
+def _template_served(slug: str) -> bool:
+    """Whether the installed unpinned record's template is one this install will run.
+
+    A record naming no template is the empty state and counts as served. Otherwise the
+    rule is the dashboard tab's own (``member_dashboard._trusted_page``): the catalog
+    serves the id, it loads, and its origin matches the record's ``source``.
+    """
+    from kiro_crew.dashboard.handlers.member_dashboard import _trusted_page
+    from kiro_crew.dashboard_templates import instance
+
+    try:
+        record = instance.read(slug)
+    except (OSError, ValueError, instance.InstanceError):
+        return False
+    if not str(getattr(record, "template_id", "") or ""):
+        return True
+    return _trusted_page(slug, record) is not None
+
+
 def _present(bot: ImportedBot, part: str, owned: bool) -> PartOutcome:
     """The row for a store the destination already has: kept when it is this Bot's own."""
     if owned:
@@ -977,16 +996,23 @@ def _restore_kept_records_artifact(
     write failing after its package was published) leaves the part not whole:
     ``page_not_rebuilt`` with that reason. ``kept`` with no reason only when there was
     nothing to bring back: the page is in place, or the package is missing and the
-    archive holds nothing to restore it from.
+    archive holds nothing to restore it from. A kept record that cannot be read, or
+    reads in the error state, stays as it is and the part is ``not_restored`` /
+    ``unreadable_record``.
     """
     from kiro_crew.artifacts import slug_is_well_formed
     from kiro_crew.dashboard_templates import instance
 
     kept = PartOutcome(bot.name, "dashboard", "kept")
+    # A kept record that cannot be read (or reads as an error) is left as it is, add-only,
+    # but the dashboard does not open, so the part is not whole.
+    unreadable = PartOutcome(bot.name, "dashboard", "not_restored", "unreadable_record")
     try:
         record = instance.read(bot.slug)
     except (OSError, ValueError, instance.InstanceError):
-        return kept
+        return unreadable
+    if record.state == instance.STATE_ERROR:
+        return unreadable
     package, version, digest = record.package_slug, record.package_version, record.package_digest
     if not package or not digest or not slug_is_well_formed(package):
         return kept
@@ -1193,7 +1219,11 @@ def _install_dashboard(
         roll_back_package()
         return row("not_restored", "unreadable_record")
     if not package:
-        return row("restored")
+        # An unpinned record runs a catalog template: the archive never carries one, so
+        # it is whole only when this install serves that template.
+        if _template_served(slug):
+            return row("restored")
+        return row("page_not_rebuilt", "artifact_missing")
     page = staged.page or _write_page(slug, staged.checked or staged.here)
     return row("page_not_rebuilt", page) if page else row("restored")
 

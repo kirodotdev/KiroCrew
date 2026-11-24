@@ -264,11 +264,50 @@ def test_existing_dashboard_is_kept_whole(world: tuple[_Source, _Import]) -> Non
     live.mkdir(parents=True)
     (live / "instance.json").write_bytes(b'{"live": true}')
     rows = _run(snap, dst.mc)
-    assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "kept")
+    # Left as it is (add-only), but a record that does not read is not a whole dashboard.
+    assert rows["dashboard"] == PartOutcome(
+        BOT.name, "dashboard", "not_restored", "unreadable_record"
+    )
     assert (live / "instance.json").read_bytes() == b'{"live": true}'
     assert sorted(p.name for p in live.iterdir()) == ["instance.json"]
     assert not (dst.mc / "artifacts" / src.package).exists()
     assert _page_snapshots() == []
+
+
+def _unpinned_snap(tmp_path: Path, mp: pytest.MonkeyPatch) -> Path:
+    """An archive whose Bot runs the catalog template ``fixture-board``, with no package."""
+    mp.setenv("KIROCREW_HOME", str(tmp_path / "unpinned-src"))
+    src_home = data_home()
+    instance.adopt(SLUG, "fixture-board")
+    mp.setenv("KIROCREW_HOME", str(tmp_path / "dst-home"))
+    snap = data_home() / "import-staging" / "unpinned" / "snap"
+    snap.mkdir(parents=True)
+    shutil.copytree(src_home / "members", snap / "bot-members")
+    return snap
+
+
+def test_an_unpinned_template_record_this_install_serves_is_restored(
+    tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snap = _unpinned_snap(tmp_path, _floor_monkeypatch)
+    rows = _run(snap, data_home())
+    assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "restored")
+
+
+def test_an_unpinned_template_record_this_install_does_not_serve_is_not_whole(
+    tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The archive never carries a catalog template; one this install lacks leaves the
+    # tab with no page to run, so the part says so instead of reading as whole.
+    snap = _unpinned_snap(tmp_path, _floor_monkeypatch)
+    empty = tmp_path / "no-templates"
+    empty.mkdir()
+    _floor_monkeypatch.setattr(catalog, "builtin_dir", lambda: empty)
+    rows = _run(snap, data_home())
+    assert rows["dashboard"] == PartOutcome(
+        BOT.name, "dashboard", "page_not_rebuilt", "artifact_missing"
+    )
+    assert (data_home() / "members" / SLUG / "dashboard" / "instance.json").is_file()
 
 
 def test_existing_artifact_is_not_overwritten(world: tuple[_Source, _Import]) -> None:
