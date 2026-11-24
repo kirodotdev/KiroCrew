@@ -6060,9 +6060,11 @@ setup's `restartGateway({ keepTab: true })`, skips it), so the page reloads on
 reconnect and that reload ends the flow; the card keeps no state across it, as
 Settings → About does. The endpoint runs the restart's
 pre-drain refusals (`_resolve_restart_target` in `dashboard/handlers/updates_apply.py`:
-an invalid launcher or interpreter path) BEFORE its 200 and answers them as a
-409 with the same sentence and a `code` (`restart_launcher_invalid`,
-`restart_interpreter_missing`), so every restart control (this card, Settings →
+an invalid launcher or interpreter path, or its worker-thread checks outlasting
+`_RESTART_TARGET_TIMEOUT_SECS`, 10 s, which keeps a deferred restart) BEFORE
+its 200 and answers them as a 409 with the same sentence and a `code`
+(`restart_launcher_invalid`, `restart_interpreter_missing`,
+`restart_target_timeout`), so every restart control (this card, Settings →
 About, the speech settings) sees them as an ordinary failure on the request
 instead of a progress step it never reads; `_restart_gateway` re-checks when it
 commits. Only an exception past that point still arrives as a progress step
