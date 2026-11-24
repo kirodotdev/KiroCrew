@@ -17904,7 +17904,7 @@
       "footprint_owner_only": "Solo el propietario de la crew puede ver las cifras de memoria.",
       "share_risk": "Fuera del sandbox, un servidor compartido puede leer y cambiar tus archivos, como un programa que inicias tú.",
       "cwd_question_title": "¿Compartir {{name}} entre chats?",
-      "cwd_question_help": "Un servidor compartido se inicia una vez, en una sola carpeta, para todos los chats. Si el servidor MCP está pensado para una carpeta concreta, como git o la búsqueda de archivos, puede leer el proyecto equivocado.",
+      "cwd_question_help": "Un servidor compartido se inicia una vez, en una sola carpeta, para todos los chats. Los servidores que llaman a un servicio en línea, como Slack o Jira, se pueden compartir. Los servidores pensados para una carpeta concreta, como git o la búsqueda de archivos, pueden leer el proyecto equivocado.",
       "cwd_question_keep": "Mantener uno por chat",
       "cwd_question_share": "Compartir entre chats",
       "cwd_question_not_sure": "¿No estás seguro? Mantén uno por chat.",

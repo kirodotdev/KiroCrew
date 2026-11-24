@@ -8190,7 +8190,7 @@
       "footprint_owner_only": "Memory figures are visible to the crew owner only.",
       "share_risk": "Outside the sandbox, a shared server can read and change your files, like a program you start yourself.",
       "cwd_question_title": "Share {{name}} across chats?",
-      "cwd_question_help": "A shared server starts once, in one folder, for all chats. If the MCP server is designed to be folder specific, like git or file search, it may read the wrong project.",
+      "cwd_question_help": "A shared server starts once, in one folder, for all chats. Servers that call an online service, like Slack or Jira, can be shared. Servers designed to be folder specific, like git or file search, may read the wrong project.",
       "cwd_question_keep": "Keep one per chat",
       "cwd_question_share": "Share across chats",
       "cwd_question_not_sure": "Not sure? Keep one per chat.",

@@ -17443,7 +17443,7 @@
       "footprint_owner_only": "Die Speicherwerte sieht nur der Crew-Eigentümer.",
       "share_risk": "Außerhalb der Sandbox kann ein geteilter Server deine Dateien lesen und ändern, wie ein Programm, das du selbst startest.",
       "cwd_question_title": "{{name}} für alle Chats teilen?",
-      "cwd_question_help": "Ein geteilter Server startet einmal, in einem Ordner, für alle Chats. Ist der MCP-Server für einen bestimmten Ordner gebaut, wie git oder Dateisuche, liest er vielleicht das falsche Projekt.",
+      "cwd_question_help": "Ein geteilter Server startet einmal, in einem Ordner, für alle Chats. Server, die einen Onlinedienst aufrufen, wie Slack oder Jira, können geteilt werden. Server, die für einen bestimmten Ordner gebaut sind, wie git oder Dateisuche, lesen vielleicht das falsche Projekt.",
       "cwd_question_keep": "Einen pro Chat behalten",
       "cwd_question_share": "Für alle Chats teilen",
       "cwd_question_not_sure": "Nicht sicher? Behalte einen pro Chat.",

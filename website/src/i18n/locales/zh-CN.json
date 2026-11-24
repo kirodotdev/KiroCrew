@@ -16982,7 +16982,7 @@
       "footprint_owner_only": "只有团队所有者可以查看内存数据。",
       "share_risk": "在沙盒之外，共享服务器可以像你自己启动的程序一样读取和修改你的文件。",
       "cwd_question_title": "在所有聊天间共享 {{name}}？",
-      "cwd_question_help": "共享的服务器只启动一次，在同一个文件夹里，供所有聊天使用。如果 MCP 服务器是为特定文件夹设计的，比如 git 或文件搜索，就可能读到错误的项目。",
+      "cwd_question_help": "共享的服务器只启动一次，在同一个文件夹里，供所有聊天使用。调用在线服务的服务器，比如 Slack 或 Jira，可以共享。为特定文件夹设计的服务器，比如 git 或文件搜索，可能会读到错误的项目。",
       "cwd_question_keep": "每个聊天各用一个",
       "cwd_question_share": "在聊天间共享",
       "cwd_question_not_sure": "不确定？选“每个聊天各用一个”。",
