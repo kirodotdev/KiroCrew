@@ -25,6 +25,7 @@ import { store } from '../store'
 import { setUpdateProgress, sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { i18nT } from '../i18n/t'
 
 /** A minimal-but-valid status payload; `sseStatus` dereferences it, so never null. */
 const BLANK_STATUS = {
@@ -605,6 +606,31 @@ describe('AboutPanel gateway restart', () => {
     fireEvent.click(screen.getByTestId('gateway-restart-standing'))
     fireEvent.click(screen.getByTestId('gateway-restart-standing'))
     await waitFor(() => expect(posts.some(p => p.url.includes('/api/restart'))).toBe(true))
+  })
+
+  // An armed update is installed by exactly this restart, so the row must not
+  // say it restarts "without updating".
+  it.each([
+    { armed: '', key: 'restart_row_note' },
+    { armed: '9.9.9', key: 'restart_row_note_armed' },
+  ])('labels the standing Restart for armed=$armed', async ({ armed, key }) => {
+    stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_latest_version: '9.9.9',
+      update_channel: 'stable',
+      update_can_arm: true,
+      update_managed_by: 'kirocrew',
+      update_armed_version: armed,
+    })
+    mountWeb()
+
+    const note = await screen.findByTestId('gateway-restart-row-note')
+    expect(note.textContent).toBe(i18nT(`pages.settings.aboutPanel.${key}`))
+    // A real sentence, not the key echoed back by a missing catalog entry.
+    expect(note.textContent).not.toContain(key)
   })
 
   it('treats the connection drop after a restart as success, not failure', async () => {
