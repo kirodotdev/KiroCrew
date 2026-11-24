@@ -7,6 +7,7 @@
 //   "uses the folder" and shares nothing
 // - a server shared before the question existed keeps its switch, and its row
 //   asks once; "Keep one per chat" takes it off sharing in the same request
+// - the dialog opens with focus on "Keep one per chat", the safe choice
 // - Kiro Crew's own servers and servers already answered "No" are never asked
 // - the bulk share never offers a server that waits for the answer
 //
@@ -90,6 +91,11 @@ describe('the working-folder question', () => {
     expect(dialog.textContent).toContain(M('cwd_question_title', { name: 'alpha-mcp' }))
     expect(dialog.textContent).toContain(M('cwd_question_help'))
     expect(dialog.textContent).toContain(M('cwd_question_not_sure'))
+    // Opening focus is on the safe choice, so Enter never shares by accident.
+    await waitFor(
+      () => expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: M('cwd_question_keep') })),
+      { timeout: 5000 },
+    )
     expect(api.mcpGatewayLaunchPreview).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: M('cwd_question_share') }))

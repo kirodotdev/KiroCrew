@@ -16987,7 +16987,7 @@
       "cwd_question_share": "여러 채팅에서 공유",
       "cwd_question_not_sure": "잘 모르겠다면 \"채팅마다 하나씩\"을 고르세요.",
       "cwd_kept_per_chat": "{{name}}은(는) 계속 채팅마다 따로 실행됩니다.",
-      "cwd_unanswered_hint": "이 서버를 여러 채팅에서 공유해도 되는지 확인하세요.",
+      "cwd_unanswered_hint": "이 서버를 여러 채팅에서 공유해도 되나요?",
       "cwd_unanswered_answer": "답하기",
       "stub_error_cwd_unanswered": "먼저 {{name}}을(를) 여러 채팅에서 공유해도 되는지 확인하세요."
     },

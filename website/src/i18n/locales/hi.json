@@ -17448,7 +17448,7 @@
       "cwd_question_share": "सभी चैट में साझा करो",
       "cwd_question_not_sure": "पक्का नहीं पता? हर चैट में एक अलग रखो।",
       "cwd_kept_per_chat": "{{name}} हर चैट के अंदर चलता रहेगा।",
-      "cwd_unanswered_hint": "पक्का करो कि यह सर्वर सभी चैट में साझा हो सकता है।",
+      "cwd_unanswered_hint": "क्या यह सर्वर सभी चैट में साझा हो सकता है?",
       "cwd_unanswered_answer": "जवाब दो",
       "stub_error_cwd_unanswered": "पहले पक्का करो कि {{name}} सभी चैट में साझा हो सकता है।"
     },

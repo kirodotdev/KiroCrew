@@ -1,3 +1,5 @@
+import { useRef } from 'react'
+
 import type { McpCwdUse } from '../../api/client'
 import {
   Dialog,
@@ -29,6 +31,8 @@ export function CwdQuestionDialog({
   onAnswer: (answer: McpCwdUse) => void
   onCancel: () => void
 }) {
+  // Opening focus goes to the safe choice, so Enter never shares by accident.
+  const keepRef = useRef<HTMLButtonElement>(null)
   const choices: Array<{ answer: McpCwdUse; label: string }> = [
     { answer: 'not_used', label: i18nT('pages.mcpManagement.cwd_question_share') },
     { answer: 'uses_cwd', label: i18nT('pages.mcpManagement.cwd_question_keep') },
@@ -40,7 +44,13 @@ export function CwdQuestionDialog({
         if (!next && !busy) onCancel()
       }}
     >
-      <DialogContent maxWidth={520}>
+      <DialogContent
+        maxWidth={520}
+        onOpenAutoFocus={e => {
+          e.preventDefault()
+          keepRef.current?.focus()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{i18nT('pages.mcpManagement.cwd_question_title', { name: name ?? '' })}</DialogTitle>
         </DialogHeader>
@@ -50,6 +60,7 @@ export function CwdQuestionDialog({
             {choices.map(c => (
               <button
                 key={c.label}
+                ref={c.answer === 'uses_cwd' ? keepRef : undefined}
                 type="button"
                 disabled={busy}
                 onClick={() => onAnswer(c.answer)}

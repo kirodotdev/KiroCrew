@@ -17448,7 +17448,7 @@
       "cwd_question_share": "Für alle Chats teilen",
       "cwd_question_not_sure": "Nicht sicher? Behalte einen pro Chat.",
       "cwd_kept_per_chat": "{{name}} läuft weiter in jedem Chat selbst.",
-      "cwd_unanswered_hint": "Bestätige, dass dieser Server für alle Chats geteilt werden kann.",
+      "cwd_unanswered_hint": "Kann dieser Server für alle Chats geteilt werden?",
       "cwd_unanswered_answer": "Antworten",
       "stub_error_cwd_unanswered": "Bestätige zuerst, dass {{name}} für alle Chats geteilt werden kann."
     },

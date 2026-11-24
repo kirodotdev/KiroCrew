@@ -17909,7 +17909,7 @@
       "cwd_question_share": "Compartir entre chats",
       "cwd_question_not_sure": "¿No estás seguro? Mantén uno por chat.",
       "cwd_kept_per_chat": "{{name}} sigue corriendo dentro de cada chat.",
-      "cwd_unanswered_hint": "Confirma que este servidor se puede compartir entre chats.",
+      "cwd_unanswered_hint": "¿Se puede compartir este servidor entre chats?",
       "cwd_unanswered_answer": "Responder",
       "stub_error_cwd_unanswered": "Primero confirma que {{name}} se puede compartir entre chats."
     },

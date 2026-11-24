@@ -16987,7 +16987,7 @@
       "cwd_question_share": "チャット間で共有",
       "cwd_question_not_sure": "わからない場合は「チャットごとに 1 つ」を選んでください。",
       "cwd_kept_per_chat": "{{name}} は各チャットの中で動き続けます。",
-      "cwd_unanswered_hint": "このサーバーをチャット間で共有できるか確認してください。",
+      "cwd_unanswered_hint": "このサーバーはチャット間で共有できますか？",
       "cwd_unanswered_answer": "回答する",
       "stub_error_cwd_unanswered": "先に {{name}} をチャット間で共有できるか確認してください。"
     },

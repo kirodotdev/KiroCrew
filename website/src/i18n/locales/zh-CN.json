@@ -16987,7 +16987,7 @@
       "cwd_question_share": "在聊天间共享",
       "cwd_question_not_sure": "不确定？选“每个聊天各用一个”。",
       "cwd_kept_per_chat": "{{name}} 继续在每个聊天里各自运行。",
-      "cwd_unanswered_hint": "请确认这个服务器可以在聊天间共享。",
+      "cwd_unanswered_hint": "这个服务器可以在聊天间共享吗？",
       "cwd_unanswered_answer": "回答",
       "stub_error_cwd_unanswered": "请先确认 {{name}} 可以在聊天间共享。"
     },

@@ -17448,7 +17448,7 @@
       "cwd_question_share": "সব চ্যাটে শেয়ার করো",
       "cwd_question_not_sure": "নিশ্চিত না? প্রতিটা চ্যাটে আলাদা রাখো।",
       "cwd_kept_per_chat": "{{name}} প্রতিটা চ্যাটের ভেতরে চলতে থাকবে।",
-      "cwd_unanswered_hint": "নিশ্চিত করো যে এই সার্ভার সব চ্যাটে শেয়ার করা যায়।",
+      "cwd_unanswered_hint": "এই সার্ভার কি সব চ্যাটে শেয়ার করা যায়?",
       "cwd_unanswered_answer": "উত্তর দাও",
       "stub_error_cwd_unanswered": "আগে নিশ্চিত করো যে {{name}} সব চ্যাটে শেয়ার করা যায়।"
     },
