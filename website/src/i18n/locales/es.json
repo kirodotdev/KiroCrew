@@ -374,7 +374,8 @@
       "create_returned_no_session": "La sesión se creó, pero el servidor no la devolvió. Inténtalo de nuevo."
     },
     "refusal": {
-      "ask_agent": "Pedir al agente que lo explique"
+      "ask_agent": "Pedir al agente que lo explique",
+      "ask_agent_prompt": "Explícame este mensaje de una app: qué no puede hacer la app y qué tendría que cambiar su desarrollador para activarlo. Solo explícalo; no cambies nada.\n\n{{message}}"
     },
     "pullRequestPanel": {
       "not_declared": "Esta app no puede mostrar pull requests. Solo el desarrollador de la app puede activarlo. Desarrollador: añade {{path}} a los permisos de la app."

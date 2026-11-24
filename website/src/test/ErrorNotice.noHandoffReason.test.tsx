@@ -37,7 +37,7 @@ describe('ErrorNotice noHandoffReason', () => {
     // The pins are checked by `tsc`, not here; rendering them keeps the file
     // exercised and shows the reason prop alone never adds a hand-off.
     render(<ErrorNoticeHandoffTypePins />)
-    expect(screen.getAllByRole('alert')).toHaveLength(7)
+    expect(screen.getAllByRole('alert')).toHaveLength(8)
     expect(screen.queryAllByRole('button', { name: ASK })).toHaveLength(2)
   })
 })

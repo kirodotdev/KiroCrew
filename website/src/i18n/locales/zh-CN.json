@@ -340,7 +340,8 @@
       "create_returned_no_session": "会话已创建，但服务器没有返回它。请重试。"
     },
     "refusal": {
-      "ask_agent": "请代理解释原因"
+      "ask_agent": "请代理解释原因",
+      "ask_agent_prompt": "请解释这条应用显示的消息：这个应用不能做什么，以及开发者需要修改什么才能开启它。只解释，不要做任何修改。\n\n{{message}}"
     },
     "pullRequestPanel": {
       "not_declared": "此应用无法显示拉取请求。只有应用开发者可以开启此功能。开发者：在应用权限中添加 {{path}}。"

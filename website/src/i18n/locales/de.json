@@ -357,7 +357,8 @@
       "create_returned_no_session": "Die Sitzung wurde erstellt, aber der Server hat sie nicht zurückgegeben. Versuche es erneut."
     },
     "refusal": {
-      "ask_agent": "Den Agenten bitten, das zu erklären"
+      "ask_agent": "Den Agenten bitten, das zu erklären",
+      "ask_agent_prompt": "Erkläre mir diese Meldung einer App: was die App nicht kann und was ihr Entwickler ändern müsste, um das freizuschalten. Erkläre nur, ändere nichts.\n\n{{message}}"
     },
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen. Nur der Entwickler der App kann das freischalten. Entwickler: Füge {{path}} zu den Berechtigungen der App hinzu."

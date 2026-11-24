@@ -65,7 +65,8 @@
       "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
     },
     "refusal": {
-      "ask_agent": "Ask the agent to explain this"
+      "ask_agent": "Ask the agent to explain this",
+      "ask_agent_prompt": "Explain this message an app showed me: what the app can't do, and what its developer would change to turn it on. Only explain it; don't change anything.\n\n{{message}}"
     },
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests. Only its developer can turn this on. Developer: add {{path}} to the app's permissions."

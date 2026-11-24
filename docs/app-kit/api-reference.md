@@ -842,7 +842,9 @@ The panel reads and writes through your app's scoped client, and needs
 `/api/source/pull-request` in your manifest's `permissions.api`. Without it the panel
 renders the refusal "This app can't show pull requests. Only its developer can turn this
 on. Developer: add `/api/source/pull-request` to the app's permissions.", with the
-**Ask the agent to explain this** hand-off, and sends nothing.
+**Ask the agent to explain this** hand-off, and sends nothing. The hand-off opens a chat
+whose draft asks the agent to explain the refusal and change nothing; the `IssueList`
+and `SessionChanges` refusals offer the same one.
 With it, the panel uses every endpoint below:
 
 | Endpoint | What it backs |

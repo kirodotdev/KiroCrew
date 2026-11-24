@@ -28,6 +28,8 @@ export function ErrorNoticeHandoffTypePins() {
       <ErrorNotice message={message} noHandoffReason={reason} askAgent={false} />
       {/* @ts-expect-error a hand-off label means a hand-off */}
       <ErrorNotice message={message} noHandoffReason={reason} askAgentLabel={message} />
+      {/* @ts-expect-error a hand-off draft means a hand-off */}
+      <ErrorNotice message={message} noHandoffReason={reason} askAgentPrompt={message} />
       {/* @ts-expect-error onHandoff means a hand-off */}
       <ErrorNotice message={message} noHandoffReason={reason} onHandoff={noop} />
     </>

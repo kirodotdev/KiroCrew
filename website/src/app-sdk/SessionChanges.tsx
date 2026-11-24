@@ -73,18 +73,21 @@ export interface AppSessionChangesProps {
 /** The refusal for an undeclared read. The list's fills the component's area
  *  on its own; the diff's names the one file, since the list beside it shows. */
 function refusal(key: 'not_declared' | 'diff_not_declared', path: string, testId: string) {
+  const message = key === 'diff_not_declared'
+    ? i18nT('appSdk.sessionChanges.diff_not_declared', { path })
+    : i18nT('appSdk.sessionChanges.not_declared', { path })
   const notice = (
     <ErrorNotice
       variant="inline"
       className="whitespace-normal max-w-full"
       testId={testId}
-      message={key === 'diff_not_declared'
-        ? i18nT('appSdk.sessionChanges.diff_not_declared', { path })
-        : i18nT('appSdk.sessionChanges.not_declared', { path })}
+      message={message}
       askAgent
       // Says what the agent does here, so it does not read as a second
       // person to fix what only the app's developer can change.
       askAgentLabel={i18nT('appSdk.refusal.ask_agent')}
+      // The draft asks for that explanation, not the error hand-off's fix.
+      askAgentPrompt={i18nT('appSdk.refusal.ask_agent_prompt', { message })}
       // The longer label beside the message squeezes it to a word per line on a phone.
       actionPlacement="below-on-phone"
     />

@@ -35,6 +35,7 @@ import { AppApiProvider, DiffView, SessionChanges, type AppApi } from '../app-sd
 import { AppScopedApiProvider, apiPathAllowed } from '../app-sdk/scopedApi'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { SESSION_CHANGES_PATHS, scopedSessionFilesClient } from '../app-sdk/SessionChanges'
+import { consumeChatHandoff, installSoftNavigate } from '../utils/errorReport'
 
 const SLOT = 'dashboard:chat-7-1787502679'
 const DIR = '/home/u/proj'
@@ -87,6 +88,17 @@ function externalApp(allowedApiPaths: string[], children: ReactNode) {
 }
 
 const changes = <SessionChanges slotKey={SLOT} projectDir={DIR} />
+
+/** Clicks a refusal's hand-off and returns the draft it staged for the new chat. */
+function draftOf(refusal: HTMLElement): string | null {
+  installSoftNavigate(() => {})
+  try {
+    fireEvent.click(within(refusal).getByRole('button', { name: 'Ask the agent to explain this' }))
+  } finally {
+    installSoftNavigate(null)
+  }
+  return consumeChatHandoff()
+}
 
 async function showChanges() {
   const row = await screen.findByTestId('session-file-row', undefined, LAZY)
@@ -166,6 +178,28 @@ describe('the App SDK SessionChanges', () => {
     expect(paths).toContain(SESSION_CHANGES_PATHS.sessionFiles)
     expect(paths).not.toContain(SESSION_CHANGES_PATHS.sessionFileDiff)
     expect(Object.values(mockApi).every(fn => fn.mock.calls.length === 0)).toBe(true)
+  })
+
+  it('both refusals hand off a request to explain them, and put the hand-off under the message on a phone', async () => {
+    const list = render(externalApp([], changes))
+    const listRefusal = await screen.findByTestId('app-session-changes-not-declared')
+    const listDraft = draftOf(listRefusal)
+    list.unmount()
+    render(externalApp([SESSION_CHANGES_PATHS.sessionFiles], changes))
+    await showChanges()
+    const diffRefusal = await screen.findByTestId('app-session-changes-diff-not-declared')
+    for (const [refusal, draft, path] of [
+      [listRefusal, listDraft, SESSION_CHANGES_PATHS.sessionFiles],
+      [diffRefusal, draftOf(diffRefusal), SESSION_CHANGES_PATHS.sessionFileDiff],
+    ] as const) {
+      // The label says "explain", so the draft asks for that, not the error
+      // hand-off's fix: only the app's developer can change this.
+      expect(draft).toMatch(/^Explain this message an app showed me/)
+      expect(draft).toContain(`Developer: add ${path} to the app's permissions.`)
+      expect(draft).not.toMatch(/Diagnose the root cause/)
+      // actionPlacement="below-on-phone": the longer label wraps under the message.
+      expect(refusal.className).toContain('sm:flex-nowrap')
+    }
   })
 
   it('shows the picked file\'s recorded change once both reads are declared, through the app transport', async () => {
