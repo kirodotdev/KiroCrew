@@ -1281,7 +1281,9 @@ class TestFailedWriteRecordsNoChange:
     ):
         # "~/cfg" names a file that exists: the absence probe reads the same
         # file the snapshot read, so the partial write still shows.
+        # Path.home() reads USERPROFILE on Windows and never HOME; pin both.
         monkeypatch.setenv("HOME", str(short_tmp_dir))
+        monkeypatch.setenv("USERPROFILE", str(short_tmp_dir))
         f = short_tmp_dir / "cfg"
         f.write_text("old\n")
         call = _write_call(1, Path("~/cfg"), "old\n")[0]
