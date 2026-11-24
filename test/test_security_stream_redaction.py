@@ -16,7 +16,12 @@ import pytest
 import security_helpers
 
 from kiro_crew import security
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_and_truncate, scan_history
+from kiro_crew.security import (
+    REDACTED_CREDENTIAL_TAG,
+    deny_gate,
+    redact_and_truncate,
+    scan_history,
+)
 from kiro_crew.testing.synthetic_credentials import github_classic
 
 # A synthetic 40-character GitHub token with a valid checksum. AWS key IDs
@@ -94,7 +99,7 @@ class TestSELEmittersRedactBeforeTruncate:
             def log(self, event: object) -> None:
                 logged.append(event)
 
-        monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
+        monkeypatch.setattr(deny_gate, "sel", lambda: _RecorderLog())
 
         # Build a push command whose token starts a few chars before index 200
         # so the 20-char key straddles the 200-char cut, and the total length
@@ -125,7 +130,7 @@ class TestSELEmittersRedactBeforeTruncate:
             def log(self, event: object) -> None:
                 logged.append(event)
 
-        monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
+        monkeypatch.setattr(deny_gate, "sel", lambda: _RecorderLog())
 
         # The space keeps the secret a run of its own; glued to the pad it
         # would be one long run and no 40-character secret.

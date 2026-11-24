@@ -694,6 +694,8 @@ def prune(self: SecurityEventLog, keep_days: int = _RETENTION_DAYS) -> int:
     first record's ``prev_hash``). Their entries are included in the
     returned count.
     """
+    if self._no_write:  # a process with no signing key rewrites nothing
+        return 0
     self.flush()  # don't rewrite the file out from under queued appends
     cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=keep_days)
 

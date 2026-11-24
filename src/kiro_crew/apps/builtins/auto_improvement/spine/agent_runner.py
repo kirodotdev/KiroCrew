@@ -24,6 +24,7 @@ the original framework end-to-end.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import importlib as _importlib
 import json
@@ -1039,9 +1040,24 @@ class SessionAgentRunner:
                     # — the enterprise ceiling, builtin denied rules, and sensitive-path
                     # (~/.aws/~/.ssh) blocks that the dashboard/Slack paths honor. This
                     # unattended runner must not rely only on the app-local checks below.
-                    gov = _governance_denial(
-                        ev, session_key=session_key, agent=governance_agent, tool_kind=tool
-                    )
+                    # The gate can write a critical audit row (a deny exception), which
+                    # is synchronous and, in a spawned backend, network I/O: off the loop.
+                    # A failure of the call itself (no thread to run it on) denies, like a
+                    # hook fault; a cancel here ends the run before ``approve_tool``, so the
+                    # request is never approved.
+                    try:
+                        gov = await asyncio.to_thread(
+                            lambda: _governance_denial(
+                                ev, session_key=session_key, agent=governance_agent, tool_kind=tool
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001 - a broken gate must DENY
+                        logger.warning(
+                            "governance gate failed; denying (fail-closed)", exc_info=True
+                        )
+                        gov = _GovernanceDeny(
+                            f"governance hook unavailable: {exc}", cause=DENY_CAUSE_HOOK_ERROR
+                        )
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)
                         # The gate names its own cause: a hook's deny judged
@@ -1281,16 +1297,26 @@ class SessionAgentRunner:
         try:
             from kiro_crew.sel import sel
 
-            sel().log_tool_invocation(
-                session_key=session_key or "auto-improvement",
-                agent="auto-improvement",
-                source="auto_improvement_loop",
-                tool_name=tool or "tool",
-                tool_kind=tool,
-                outcome=OUTCOME_PENDING_APPROVAL,
-                request_id=rid,
-                metadata={"unattended": True, "containment": "worktree+allowlist+gate"},
-                critical=True,
+            # The write is synchronous (and, in a spawned backend, network I/O), so it runs
+            # on a worker thread; the approval still waits for it, and a failure still
+            # lands in the deny path below. If this task is cancelled while the write is in
+            # flight, ``CancelledError`` leaves here before ``approve_tool``: the tool is
+            # never approved (denied by omission). The thread may still finish its write,
+            # which then records an approval that never happened: an over-report, the safe
+            # direction.
+            await asyncio.to_thread(
+                functools.partial(
+                    sel().log_tool_invocation,
+                    session_key=session_key or "auto-improvement",
+                    agent="auto-improvement",
+                    source="auto_improvement_loop",
+                    tool_name=tool or "tool",
+                    tool_kind=tool,
+                    outcome=OUTCOME_PENDING_APPROVAL,
+                    request_id=rid,
+                    metadata={"unattended": True, "containment": "worktree+allowlist+gate"},
+                    critical=True,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - audit failure must deny, not approve
             logger.warning("SEL audit failed for tool %r — rejecting instead of approving", tool)

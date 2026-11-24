@@ -9,19 +9,27 @@ namespace shows.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from app_backend_helpers import app_env_fixture  # noqa: F401
 from app_manager_helpers import _make_app_source
 
 from kiro_crew import sandbox, sandbox_plan
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.sandbox import SandboxCeilingUnsealable, userns_available
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.sel import SecurityEventLog, sel_hmac_key_path
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX sandbox only")
 _NAMESPACE = [
@@ -468,3 +476,152 @@ class TestInTheNamespaceSandbox:
         report = _report(agent.stdout)
         assert report["marker"] == "1"
         assert report["first"] == [] and report["after"] == [], report
+
+
+# A stand-in app backend: report whether it can read the key, then serve until stopped.
+_KEY_PROBE_BACKEND = """
+import errno, http.server, json, os
+try:
+    with open({key!r}, "rb") as fh:
+        data = fh.read()
+    res = "read:" + str(len(data)) + (":KEY" if data == b"K" * 32 else ":other")
+except OSError as exc:
+    res = errno.errorcode.get(exc.errno, str(exc.errno))
+try:
+    from kiro_crew.sel import sel
+    sel().log_api_access(operation="probe.row", outcome="ok", critical=True)
+    row = "written"
+except Exception as exc:
+    row = type(exc).__name__ + ":" + str(exc)[:60]
+print("REPORT " + json.dumps({{"key_read": res, "row": row}}), flush=True)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
+"""
+
+
+@contextlib.contextmanager
+def _running_gateway() -> Iterator[int]:
+    """The real ``_sel`` route and token exchange on a loopback port, in its own thread."""
+    from aiohttp import web
+
+    from kiro_crew.apps import sel_routes
+    from kiro_crew.dashboard.handlers.core import api_app_token
+
+    app = web.Application(middlewares=[token_auth.token_auth_middleware()])
+    sel_routes.register_sel_routes(app)
+    app.router.add_post("/api/apps/{name}/token", api_app_token)
+    ready, box = threading.Event(), {}
+
+    async def _serve() -> None:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        box["port"] = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        box["loop"], box["stop"] = asyncio.get_running_loop(), asyncio.Event()
+        ready.set()
+        await box["stop"].wait()
+        await runner.cleanup()
+
+    thread = threading.Thread(target=lambda: asyncio.run(_serve()), daemon=True)
+    thread.start()
+    assert ready.wait(FALLBACK_TIMEOUT_SECS), "the gateway did not start"
+    try:
+        yield box["port"]
+    finally:
+        box["loop"].call_soon_threadsafe(box["stop"].set)
+        thread.join(FALLBACK_TIMEOUT_SECS)
+
+
+class TestASpawnedBackendCannotReadTheSelKey:
+    """The real spawn path (``start_app_backend`` -> ``wrap_argv`` -> namespace sandbox)."""
+
+    pytestmark = _NAMESPACE
+
+    def test_the_backend_cannot_read_the_key(self, app_env, tmp_path, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # The gateway's own log lives in the tmp dir, so the key and the rows are synthetic.
+        monkeypatch.setattr(SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+        monkeypatch.delenv("KIROCREW_SEL_CLIENT_PID", raising=False)
+        sel_dir = tmp_path / "sel"
+        SecurityEventLog(base_dir=sel_dir, sync=True)
+        monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
+        # The gateway half runs in this process: one signing key and fresh token state.
+        monkeypatch.setattr(token_auth, "_get_secret", lambda: b"key-probe-gateway-key")
+        monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
+        monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+        monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
+        monkeypatch.setattr(revocation_gen, "_gen", 0)
+        # A token minted in the second of the install would not postdate it: no wall-clock wait.
+        monkeypatch.setattr("kiro_crew.apps.manager.app_token_cutoff", lambda _n: 0.0)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.replace_legacy_app_secret", lambda _n: "per-app-secret"
+        )
+        monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+        key = sel_hmac_key_path()
+        assert str(key).startswith(str(sel_dir)), "the key path must be inside the tmp dir"
+        key.write_bytes(b"K" * 32)  # a stand-in; no real secret is read
+        name = "key-probe-app"
+        src = tmp_path / "source" / name
+        (src / "backend").mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "key read probe",
+                    "backend": {"entryPoint": "backend/server.py", "healthCheck": "/health"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (src / "backend" / "server.py").write_text(
+            _KEY_PROBE_BACKEND.format(key=str(key)), encoding="utf-8"
+        )
+        install_app(src)
+        # After the install, which mints its own secret: the spawn hands the backend this one.
+        protected_app_state.write_secret(name, "per-app-secret")
+        with _running_gateway() as port:
+            monkeypatch.setenv("KIROCREW_BOUND_PORT", str(port))
+            try:
+                proc = bmod.start_app_backend(name)
+                if proc is None:
+                    pytest.fail("the stand-in backend did not start under the real sandbox")
+                app_log = Path(proc.log_path)
+
+                def _report_line() -> str:
+                    text = (
+                        app_log.read_text(encoding="utf-8", errors="replace")
+                        if app_log.exists()
+                        else ""
+                    )
+                    return next((ln for ln in text.splitlines() if ln.startswith("REPORT ")), "")
+
+                line = wait_until(
+                    _report_line,
+                    timeout=FALLBACK_TIMEOUT_SECS,
+                    describe=lambda: app_log.read_text(encoding="utf-8", errors="replace")[-500:],
+                )
+            finally:
+                bmod.stop_app_backend(name)
+        report = json.loads(line[len("REPORT ") :])
+        assert report["key_read"] != "read:32:KEY", report
+        assert report["row"] == "written", report
+        rows = [
+            json.loads(ln)
+            for ln in (sel_dir / "security_events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        landed = [
+            (r["caller_identity"], r["event_type"])
+            for r in rows
+            if r["operation"] == f"{name}.probe.row"
+        ]
+        assert landed == [(f"app:{name}", "api_access")], landed

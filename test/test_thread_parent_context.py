@@ -970,6 +970,6 @@ class TestContainsInjectionHelper:
         def _boom(*_a, **_k):
             raise RuntimeError("sel down")
 
-        monkeypatch.setattr(security_module, "SecurityEventLog", _boom)
+        monkeypatch.setattr(security_module.deny_gate, "sel", _boom)
         # Should swallow the error, not raise.
         security_module.audit_injection_dropped(surface="slack_thread_meta")
