@@ -38,9 +38,9 @@ from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
-# Page size per request. The listing follows ``nextToken`` until a page lists a
-# profile: the service may answer a page with no profiles and a token, and stopping
-# there would report zero profiles for an account that has one.
+# Page size per request. The listing follows ``nextToken`` to the last page: the
+# service may answer a page with no profiles and a token, and a later page may list
+# a profile the first did not.
 _MAX_RESULTS = 10
 # Bound on pages per listing, so a service that keeps handing out fresh tokens
 # cannot hold a sign-in open. 20 pages of 10 is far beyond any real account.
@@ -189,26 +189,28 @@ async def list_available_profiles(
     session: aiohttp.ClientSession,
     viewer_cps_url: str = "",
 ) -> ProfileListing:
-    """Return the caller's Kiro profiles from the first control plane that has any.
+    """Return every Kiro profile the caller can use, deduped by ARN in first-seen order.
 
-    Every CPS host is asked, *region*'s own first, because the Identity Center region
-    does not name the control plane serving the profile (a us-east-1 instance can
-    hold an eu-central-1 profile). Each host's listing follows ``nextToken`` until a
-    page lists a profile (:func:`_list_profiles_at`). A host that refuses, answers
-    malformed or reaches neither a profile nor its last page is skipped;
-    ControlPlaneError is raised when a host refused and none had profiles, since the
-    refusing host may hold the profile and an empty list would wrongly say there is
-    none. A transport error is not caught here, except at *viewer_cps_url*. When
-    every host answered and listed none, the empty result names those hosts and the
-    pages they took, for the diagnostic log.
+    Every CPS host is asked, one after another, *region*'s own first, because the
+    Identity Center region does not name the control plane serving the profile (a
+    us-east-1 instance can hold an eu-central-1 profile), and one account can hold
+    profiles on several. Each host's listing reads every page
+    (:func:`_list_profiles_at`). Before any profile has been read, a host that
+    refuses or answers malformed is logged and skipped, and a transport error
+    raises; once one has, any failure only ends that host's listing. A non-empty
+    result is returned whatever failed. An empty one raises the first refusal, since
+    the refusing host may hold the profile and an empty list would wrongly say there
+    is none; when every host answered and listed none, the empty result names those
+    hosts and the pages they took, for the diagnostic log.
 
     *viewer_cps_url* is the relay viewer's own control plane
     (``tunnel.relay_viewer_cps_url``, held to https:// or a loopback http:// when the
     config is read), passed only while the viewer is on. It is asked before the hosts
     above, because a non-prod control plane (gamma) holds profiles the prod hosts do
-    not list. The viewer already sends this sign-in to that host, so asking it here
-    shares the token with no new party. Any failure there, a transport error included,
-    counts as a refusal and the prod hosts are asked next.
+    not list, and a listing there with any profile is final. The viewer already sends
+    this sign-in to that host, so asking it here shares the token with no new party.
+    Any failure there, a transport error included, counts as a refusal and the prod
+    hosts are asked next.
     """
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []
@@ -216,26 +218,31 @@ async def list_available_profiles(
         try:
             listing = await _list_profiles_at(viewer_cps_url, access_token, session)
         except (ControlPlaneError, aiohttp.ClientError, asyncio.TimeoutError) as err:
-            # Type only for a transport error: its message can carry the resolver's text.
-            detail = err if isinstance(err, ControlPlaneError) else type(err).__name__
+            detail = _failure_detail(err)
             logger.warning("ListAvailableProfiles at %s failed: %s", viewer_cps_url, detail)
             errors.append(ControlPlaneError(f"the relay viewer control plane failed: {detail}"))
         else:
             if listing.profiles:
-                return listing
+                return _deduped(listing.profiles, [listing])
             empty.append(listing)
+    found: list[KiroProfile] = []
+    listed: list[ProfileListing] = []
     for url in control_plane_urls(region):
         if url.rstrip("/") == viewer_cps_url.rstrip("/"):
             continue  # already asked above
         try:
-            listing = await _list_profiles_at(url, access_token, session)
+            listing = await _list_profiles_at(url, access_token, session, listed=bool(found))
         except ControlPlaneError as err:
             logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
             errors.append(err)
             continue
         if listing.profiles:
-            return listing
-        empty.append(listing)
+            found.extend(listing.profiles)
+            listed.append(listing)
+        else:
+            empty.append(listing)
+    if found:
+        return _deduped(found, listed)
     if errors:
         raise errors[0]
     return ProfileListing(
@@ -245,29 +252,63 @@ async def list_available_profiles(
     )
 
 
-async def _list_profiles_at(
-    url: str, access_token: str, session: aiohttp.ClientSession
-) -> ProfileListing:
-    """The profiles of the first page of CPS host *url* that lists any.
+def _deduped(profiles: list[KiroProfile], listings: list[ProfileListing]) -> ProfileListing:
+    """*profiles* with each ARN once, first-seen order, read from *listings*' hosts."""
+    by_arn: dict[str, KiroProfile] = {}
+    for profile in profiles:
+        by_arn.setdefault(profile.arn, profile)
+    return ProfileListing(
+        profiles=list(by_arn.values()),
+        url=", ".join(listing.url for listing in listings),
+        pages=sum(listing.pages for listing in listings),
+    )
 
-    Follows ``nextToken`` past empty pages and stops at the first page with a
-    profile, since sign-in uses only the first. Before that page, raises
-    ControlPlaneError on a non-200 or malformed page, on a token the service already
-    handed out (a loop), and after :data:`_MAX_PAGES` pages.
+
+def _failure_detail(err: Exception) -> object:
+    """What a listing failure logs: type only for a transport error, whose message
+    can carry the resolver's text."""
+    return err if isinstance(err, ControlPlaneError) else type(err).__name__
+
+
+async def _list_profiles_at(
+    url: str, access_token: str, session: aiohttp.ClientSession, *, listed: bool = False
+) -> ProfileListing:
+    """Every profile CPS host *url* lists, following ``nextToken`` to the last page.
+
+    A page fails on a non-200 or malformed body, on a token the service already
+    handed out (a loop), and past :data:`_MAX_PAGES` pages. Such a failure, or a
+    transport error, raises while no profile has been read, here or by an earlier
+    host (*listed*); after that it is logged and ends this host's listing with the
+    profiles already read.
     """
     headers = cps_headers(_TARGET, access_token)
     seen_tokens: set[str] = set()
     next_token: str | None = None
-    for page in range(1, _MAX_PAGES + 1):
-        body: dict[str, object] = {"maxResults": _MAX_RESULTS}
-        if next_token is not None:
-            body["nextToken"] = next_token
-        profiles, next_token = await _profiles_page(url, body, headers, session)
-        if profiles or next_token is None:
-            return ProfileListing(profiles=profiles, url=url, pages=page)
-        if next_token in seen_tokens:
-            raise ControlPlaneError(
-                f"ListAvailableProfiles repeated a page token after {page} page(s)"
-            )
-        seen_tokens.add(next_token)
-    raise ControlPlaneError(f"ListAvailableProfiles did not finish within {_MAX_PAGES} pages")
+    profiles: list[KiroProfile] = []
+    page = 0
+    try:
+        for page in range(1, _MAX_PAGES + 1):
+            body: dict[str, object] = {"maxResults": _MAX_RESULTS}
+            if next_token is not None:
+                body["nextToken"] = next_token
+            page_profiles, next_token = await _profiles_page(url, body, headers, session)
+            profiles.extend(page_profiles)
+            if next_token is None:
+                return ProfileListing(profiles=profiles, url=url, pages=page)
+            if next_token in seen_tokens:
+                raise ControlPlaneError(
+                    f"ListAvailableProfiles repeated a page token after {page} page(s)"
+                )
+            seen_tokens.add(next_token)
+        raise ControlPlaneError(f"ListAvailableProfiles did not finish within {_MAX_PAGES} pages")
+    except (ControlPlaneError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+        if not (profiles or listed):
+            raise
+        logger.warning(
+            "ListAvailableProfiles at %s stopped after page %d, keeping %d profile(s): %s",
+            url,
+            page,
+            len(profiles),
+            _failure_detail(err),
+        )
+        return ProfileListing(profiles=profiles, url=url, pages=page)
