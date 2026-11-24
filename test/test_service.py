@@ -602,7 +602,8 @@ class TestLinuxUnitRendering:
 
         privileged = self._linger_host(monkeypatch, linger=linger)
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
-        monkeypatch.setattr(svc_linux, "install", lambda: apparmor.ProfileOutcome(False, ""))
+        monkeypatch.setattr(svc_linux, "install", lambda **_kw: apparmor.ProfileOutcome(False, ""))
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
         assert controller.install_service() == 0
         assert privileged == [("/usr/bin/loginctl", "enable-linger", "1000")]
         out = capsys.readouterr().out

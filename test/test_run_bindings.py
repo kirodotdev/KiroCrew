@@ -255,12 +255,21 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_fire_queue_depth_retry": ("function", "(self, parent_session_key: 'str') -> 'None'", "run"),
     "_disarm_queue_depth_retry": ("function", "(self, parent_session_key: 'str') -> 'None'", "run"),
     "_read_queue_depth": ("coroutine", "(self, parent_session_key: 'str') -> 'int | None'", "run"),
+    "_crew_tools_withheld_reason": (
+        "coroutine",
+        "(self, info: 'SubagentInfo', client: 'LLMProvider') -> 'str'",
+        "run",
+    ),
     "_warn_unusable_mcp_servers": (
         "function",
         "(self, info: 'SubagentInfo', client: 'LLMProvider') -> 'str'",
         "run",
     ),
-    "_spawn_mcp_notice": ("function", "(self, summary: 'str') -> 'str'", "run"),
+    "_spawn_mcp_notice": (
+        "function",
+        "(self, summary: 'str', withheld: 'str' = '') -> 'str'",
+        "run",
+    ),
     "_crew_log_approval_id": (
         "function",
         "(self, info: 'SubagentInfo', request_id: 'object') -> 'str'",

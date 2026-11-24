@@ -121,8 +121,36 @@ class McpProvider(Protocol):
         ...
 
     def is_available(self) -> bool:
-        """Return True if this provider is configured and ready to use."""
+        """Return True if this provider is configured and ready to use.
+
+        Asked on every search, so a provider that becomes ready later (a CLI
+        installed after the gateway started) is searched from the next request.
+        A provider may also offer ``unavailable_reason() -> str`` (see
+        :func:`unavailable_reason`) to say why it is not ready.
+        """
         ...
+
+
+def unavailable_reason(provider: McpProvider) -> str:
+    """Why a registered *provider* cannot be searched right now, or ``""``.
+
+    An OPTIONAL provider method, feature-detected so a provider without it keeps
+    working: a provider that is not ready for a reason the user can act on (its
+    package manager is not installed yet) says so, and the search reports it as
+    an ``unavailable`` outcome instead of leaving the catalog out silently. Asked
+    only after ``is_available()`` returned False, so a provider answers from the
+    state that probe left, without I/O. A provider that says nothing, or whose
+    answer raises, gets no outcome.
+    """
+    read = getattr(provider, "unavailable_reason", None)
+    if not callable(read):
+        return ""
+    try:
+        reason = read()
+    except Exception:
+        logger.debug("MCP provider unavailable_reason raised", exc_info=True)
+        return ""
+    return reason.strip() if isinstance(reason, str) else ""
 
 
 @dataclass(frozen=True)
@@ -131,7 +159,13 @@ class McpProviderOutcome:
 
     name: str
     status: str
-    """One of ``ok``, ``timeout``, or ``error``."""
+    """One of ``ok``, ``timeout``, ``error``, or ``unavailable``.
+
+    ``unavailable`` is a provider that was not asked because it is not ready,
+    and said why (:func:`unavailable_reason`)."""
+
+    message: str = ""
+    """For ``unavailable``: the provider's reason, unscrubbed."""
 
 
 @dataclass(frozen=True)
@@ -190,7 +224,9 @@ class ProviderRegistry:
 
         Results stay merged in provider order. A timeout or error contributes no
         rows but remains visible in ``provider_outcomes`` so callers can distinguish
-        an incomplete search from a complete search with zero matches.
+        an incomplete search from a complete search with zero matches. So does a
+        registered provider that is not ready and says why: its ``unavailable``
+        outcome follows those of the providers that were searched.
         """
 
         async def _search_one(name: str, p: McpProvider) -> McpSearchResponse:
@@ -215,20 +251,37 @@ class ProviderRegistry:
                     provider_outcomes=[McpProviderOutcome(name=name, status="error")],
                 )
 
+        def _not_ready(name: str, p: McpProvider) -> list[McpProviderOutcome]:
+            reason = unavailable_reason(p)
+            if not reason:
+                return []
+            return [McpProviderOutcome(name=name, status="unavailable", message=reason)]
+
         if provider:
             p = self._providers.get(provider)
-            if p is None or not p.is_available():
+            if p is None:
                 return McpSearchResponse(results=[], provider_outcomes=[])
+            # Off the loop: a provider's availability check may stat or probe.
+            if not await asyncio.to_thread(p.is_available):
+                return McpSearchResponse(results=[], provider_outcomes=_not_ready(provider, p))
             return await _search_one(provider, p)
 
-        providers = self.available_providers
-        if not providers:
-            return McpSearchResponse(results=[], provider_outcomes=[])
+        def _split() -> tuple[list[tuple[str, McpProvider]], list[McpProviderOutcome]]:
+            ready: list[tuple[str, McpProvider]] = []
+            not_ready: list[McpProviderOutcome] = []
+            for name, p in self._providers.items():
+                if p.is_available():
+                    ready.append((name, p))
+                else:
+                    not_ready.extend(_not_ready(name, p))
+            return ready, not_ready
 
-        responses = await asyncio.gather(*[_search_one(p.name, p) for p in providers])
+        ready, not_ready = await asyncio.to_thread(_split)
+
+        responses = await asyncio.gather(*[_search_one(name, p) for name, p in ready])
         merged: list[McpSearchResult] = []
         outcomes: list[McpProviderOutcome] = []
         for response in responses:
             merged.extend(response.results)
             outcomes.extend(response.provider_outcomes)
-        return McpSearchResponse(results=merged[:limit], provider_outcomes=outcomes)
+        return McpSearchResponse(results=merged[:limit], provider_outcomes=outcomes + not_ready)

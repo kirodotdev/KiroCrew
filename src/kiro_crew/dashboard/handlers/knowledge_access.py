@@ -1,5 +1,12 @@
-"""The helpers the Knowledge Library routes share: the owner gate on the mutating routes,
-the SEL audit, and the app's store, pipeline and task registry.
+"""The helpers the Knowledge Library routes share: the SEL audit, and the app's store,
+pipeline and task registry.
+
+Every knowledge route, read or write, calls ``require_owner_for_dashboard_caller`` first:
+the library is the owner's, and a disclosed document cannot be taken back. That check
+gates dashboard-user requests (``app == ""``) only. An app token (the Notes app declares
+``/api/knowledge``) stays confined to its manifest's declared paths by
+``_enforce_app_scope``, and an ``X-Internal-Secret`` loopback caller is admitted on the
+secret itself.
 
 Served through :mod:`kiro_crew.dashboard.handlers.knowledge`, which callers and tests import
 and patch; this module never imports it.
@@ -55,27 +62,6 @@ async def _audited_write(fn, *, event: str, fields=None):
         return result
 
     return await asyncio.to_thread(_write_and_audit)
-
-
-async def _require_knowledge_owner(request: web.Request, operation: str) -> web.Response | None:
-    """Owner gate for the knowledge routes, reads and writes alike, or ``None`` to proceed.
-
-    The library is the owner's: its items, sources, graph and exports. A read is
-    gated like a write, because a disclosed document cannot be taken back.
-
-    Owner identity is a property of a dashboard-user request: ``app == ""`` is
-    the class ``is_owner_dashboard_request`` can rule on at all, so only that
-    class is gated here. Every caller whose ``app`` is not ``""`` passes this
-    gate and stays under the control that already governs it:
-
-    - an app token (the Notes app declares ``/api/knowledge``) is confined to
-      its manifest's declared paths by ``_enforce_app_scope``;
-    - an ``X-Internal-Secret`` loopback caller is admitted on the secret
-      itself. ``token_auth`` leaves ``app`` absent for a caller acting as the
-      person, and sets ``app`` to the owning app's id for a caller it resolves
-      to an app; neither arm runs ``_enforce_app_scope``.
-    """
-    return await require_owner_for_dashboard_caller(request, operation)
 
 
 def _store(request: web.Request):

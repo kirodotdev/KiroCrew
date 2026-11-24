@@ -17,6 +17,11 @@ from kiro_crew.dashboard.deny_override import (
     deny_override_enabled,
     override_decision,
 )
+from kiro_crew.dashboard.slack_reconnect_wait import (
+    APPROVAL_NOTICE,
+    slack_reply_client,
+    wait_for_slack_reconnect,
+)
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -253,6 +258,18 @@ async def _on_permission_prompt(
     # optional there: a card missing them still renders its command.
     perm_meta["tool_kind"] = _redact_tool_field(event.tool_kind or "", limit=64)
     perm_meta.update(_tool_identity_fields(event))
+    # Imported here: this body runs on the chat runner module's globals.
+    from kiro_crew.dashboard.engine_subagent_cards import APPROVAL_TASK_MAX, approval_card_fields
+    from kiro_crew.security import redact_and_truncate
+
+    # Display only: a KAS engine sub-agent's task, or the sub-agent that asked.
+    # Model-written, so redacted before the cut, like every field of the card.
+    perm_meta.update(
+        {
+            key: redact_and_truncate(value, APPROVAL_TASK_MAX)
+            for key, value in approval_card_fields(turn, event).items()
+        }
+    )
     # A file grant is offered only for a path that names no link on this host,
     # read off the loop (it touches the file system); the trusted-pattern tier
     # checks the same before it honours one.
@@ -381,6 +398,28 @@ async def _on_permission_prompt(
         # Only a card someone can still answer gets the held notices.
         for _notice in _declined_grant_notices.values():
             slot.append("system", _notice, "msg msg-info")
+    if (
+        # A reconnect took the client this turn mirrors through: wait for it
+        # BEFORE the card's future exists, so a turn cancelled in the wait leaves
+        # no approval pending, and the card then posts through the client it
+        # publishes. A turn that started with no client has no live mirror
+        # (``turn._mirror_chan``) and neither waits nor is told. The post's own
+        # checks below run again after the wait.
+        "resolved" not in perm_meta
+        and _override_offer is None
+        and turn._mirror_chan
+        and turn._mirror_thread
+        and slot._slack_linked
+        and slot._slack_channel
+        and slot._slack_thread_ts
+        and not state.slack_client
+        and not slack_mirror_is_paused(state, session_key)
+    ):
+        await wait_for_slack_reconnect(state)
+        if not slack_mirror_is_paused(state, session_key):
+            slack_reply_client(
+                state, session_key, slot._slack_channel, turn=turn, notice=APPROVAL_NOTICE
+            )
     permission_row = slot.append(
         "permission",
         f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
@@ -915,6 +954,8 @@ async def _on_permission_prompt(
                 resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
                 # A code-channel card its Trust answered says so in
                 # place; every other card goes once decided.
+                # A reconnect may have taken the client the card posted with.
+                await wait_for_slack_reconnect(state)
                 if state.slack_client and not keep_code_channel_card(
                     slot._slack_channel, _slack_approval_ts
                 ):

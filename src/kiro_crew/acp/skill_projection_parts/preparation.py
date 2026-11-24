@@ -627,7 +627,7 @@ def prepare_native_skill_projection(
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
     # Call-time: a module-level name here would be served by the facade as well.
     from kiro_crew import agent as agent_mod
-    from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+    from kiro_crew.acp.default_crew_servers import one_pass, with_default_crew_servers
     from kiro_crew.acp.kas_auto_approve import grant_in_skill_view
 
     # A crew-bound spec's view carries only the grants the governance ceiling
@@ -694,58 +694,65 @@ def prepare_native_skill_projection(
             "element can bind under the admin catalog); agents are left as authored and skill "
             "discovery falls back to kiro-cli's native resource inheritance."
         )
-    for agent in list_agents(project_dir=str(work_dir)):
-        if not agent.filename:
-            continue
-        source_dir = (
-            project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
-        )
-        filename = agent.filename
-        # A pinned name goes through the resolver even with one file left: the pin
-        # may name a file that is gone, which refuses rather than view another one.
-        if agent.scope != SCOPE_PROJECT and (agent.name in contested or _has_spec_pin(agent.name)):
-            chosen = _pinned_source(directory, agent.name, errors, refusals)
-            if chosen is None:
+    # The host state every agent's default servers read (the edition's servers) is
+    # the same for all of them, so it is read once for the whole pass.
+    with one_pass():
+        for agent in list_agents(project_dir=str(work_dir)):
+            if not agent.filename:
                 continue
-            filename = chosen or filename
-        source = source_dir / filename
-        spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
-        if spec is None:
-            # A spec ``list_agents`` yielded but the reader refuses here changed
-            # between the two reads; skip it, exactly as an absent spec is skipped.
-            continue
-        display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
-        if agent.scope != SCOPE_PROJECT:
-            # The knowledge agent must run with zero tools. When the only change to its
-            # file is an injection a filter registered by the edition removes exactly
-            # (the tool writes it back on every launch), the view is built from the
-            # template instead of the file being rewritten.
-            spec = agent_mod.knowledge_view_without_registered_injection(agent.name, spec, source)
-            # A user-level custom agent gets Crew's default servers in its view; the
-            # KAS projection applies the same helper (acp/default_crew_servers.py).
-            spec = with_default_crew_servers(agent.name, spec)
-        view, search, refusal = project_agent_view(
-            spec,
-            source,
-            agent.name,
-            crew_home_id=crew_home_id,
-            inherits_skills=bool(inherited_globs),
-            per_session_element=per_session_element,
-            registry_ceiling=registry_ceiling,
-        )
-        if view is None:
-            errors[agent.name] = refusal or ""
-            continue
-        if governed_names is None or agent.name in governed_names:
-            agent_mod.govern_shared_template_view(agent.name, view)
-        # kiro-cli has no `autoApprove` field, so a verb governance keeps runs without
-        # a prompt only as an `allowedTools` entry. Every agent's view gets that grant,
-        # the one the KAS projection derives, after the pass above.
-        grant_in_skill_view(agent.name, view)
-        if search:
-            search_agents.add(agent.name)
-        specs[agent.name] = view
-        sources[agent.name] = source.absolute().as_posix()
+            source_dir = (
+                project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
+            )
+            filename = agent.filename
+            # A pinned name goes through the resolver even with one file left: the pin
+            # may name a file that is gone, which refuses rather than view another one.
+            if agent.scope != SCOPE_PROJECT and (
+                agent.name in contested or _has_spec_pin(agent.name)
+            ):
+                chosen = _pinned_source(directory, agent.name, errors, refusals)
+                if chosen is None:
+                    continue
+                filename = chosen or filename
+            source = source_dir / filename
+            spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
+            if spec is None:
+                # A spec ``list_agents`` yielded but the reader refuses here changed
+                # between the two reads; skip it, exactly as an absent spec is skipped.
+                continue
+            display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
+            if agent.scope != SCOPE_PROJECT:
+                # The knowledge agent must run with zero tools. When the only change to its
+                # file is an injection a filter registered by the edition removes exactly
+                # (the tool writes it back on every launch), the view is built from the
+                # template instead of the file being rewritten.
+                spec = agent_mod.knowledge_view_without_registered_injection(
+                    agent.name, spec, source
+                )
+                # A user-level custom agent gets Crew's default servers in its view; the
+                # KAS projection applies the same helper (acp/default_crew_servers.py).
+                spec = with_default_crew_servers(agent.name, spec)
+            view, search, refusal = project_agent_view(
+                spec,
+                source,
+                agent.name,
+                crew_home_id=crew_home_id,
+                inherits_skills=bool(inherited_globs),
+                per_session_element=per_session_element,
+                registry_ceiling=registry_ceiling,
+            )
+            if view is None:
+                errors[agent.name] = refusal or ""
+                continue
+            if governed_names is None or agent.name in governed_names:
+                agent_mod.govern_shared_template_view(agent.name, view)
+            # kiro-cli has no `autoApprove` field, so a verb governance keeps runs without
+            # a prompt only as an `allowedTools` entry. Every agent's view gets that grant,
+            # the one the KAS projection derives, after the pass above.
+            grant_in_skill_view(agent.name, view)
+            if search:
+                search_agents.add(agent.name)
+            specs[agent.name] = view
+            sources[agent.name] = source.absolute().as_posix()
 
     _warn_on_display_text(display_sizes)
     try:

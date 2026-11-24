@@ -132,8 +132,10 @@ Two things it deliberately does not take:
   boundary it was written in, and a fork must stay inside it. A session bound to
   a different agent is `session_create`'s job. Like a human fork, it also keeps
   the source's sidebar color, so it sits in the same color group. One difference:
-  a person's fork of a pinned session is pinned, but a fork you make is never
-  pinned.
+  a person's fork of a pinned session is pinned (unless the owner turned off
+  `dashboard.fork_inherits_pin`), but a fork you make is never pinned. A person can also fork into a stricter memory mode (**Fork as
+  incognito**, **Fork as temporary**); `session_fork` sends no memory mode, so
+  your fork keeps the source's.
 - **No tail fork.** Only the head (everything up to the fork point) is offered.
 
 Forking another session is a **read** of its transcript, so naming a `source`

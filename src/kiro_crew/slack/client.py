@@ -1000,6 +1000,10 @@ class RealSlackClient(SlackClientOps):
         if turn_muted(channel, ts=ts):
             return False
         try:
+            # The same blocks check as every other method here that takes a tree;
+            # a refused tree returns False with no call made, so the caller's
+            # retry without blocks still closes the stream.
+            _refuse_remote_media(blocks)
             # Each chunk is new content; see update_message.
             require_channel(channel)
             body: dict[str, Any] = {"channel": channel, "ts": ts}

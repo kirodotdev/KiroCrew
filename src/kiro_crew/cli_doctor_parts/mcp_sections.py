@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         sel,
         user_json,
         warm_backend,
+        withheld_by_auto_deny_tools,
         withheld_by_confirm_tools,
         without_mcp_refs,
     )
@@ -238,12 +239,18 @@ def _doctor_mcp_tools(
         # both whether doctor may mint a grant and whether an existing one stands.
         # A grant is the bare ref or any per-tool ``@server/tool`` spelling of it.
         granted = any(mcp_ref_owned_by(t, (name,)) for t in allowed)
-        # The operator's own ``hooks.confirm_tools`` withholds through the same
-        # chokepoint; name it, so it does not read as an enterprise ceiling.
-        by_confirm = withheld_by_confirm_tools(ref)
+        # The operator's own ``hooks.confirm_tools`` and ``hooks.auto_deny_tools``
+        # withhold through the same chokepoint; name them, so they do not read as
+        # an enterprise ceiling.
+        if withheld_by_confirm_tools(ref):
+            operator_key: str | None = "hooks.confirm_tools"
+        elif withheld_by_auto_deny_tools(ref):
+            operator_key = "hooks.auto_deny_tools"
+        else:
+            operator_key = None
         if not may_skip_gate_now(ref) and granted and declined:
             config_changed = True
-            cause = "withheld by hooks.confirm_tools" if by_confirm else "forbidden by ceiling"
+            cause = f"withheld by {operator_key}" if operator_key else "forbidden by ceiling"
             issues.append(f"{ref} auto-approve {cause} (repair from the owning install)")
         elif not may_skip_gate_now(ref):
             # REVOKE, not merely "do not add". A grant can predate the ceiling —
@@ -272,7 +279,7 @@ def _doctor_mcp_tools(
                         source="cli_doctor",
                         resources=(
                             f"{ref} auto-approve revoked "
-                            f"({'hooks.confirm_tools' if by_confirm else 'governance ceiling'}); "
+                            f"({operator_key or 'governance ceiling'}); "
                             "calls go through the approval gate"
                         ),
                     )
@@ -281,7 +288,7 @@ def _doctor_mcp_tools(
             # Governed hosts otherwise give no reason why a server the user
             # enabled still prompts on every call — say it once, here, so
             # `kirocrew doctor` explains it.
-            source = "hooks.confirm_tools" if by_confirm else "security policy"
+            source = operator_key or "security policy"
             print(f"  {ref}: 🔒 auto-approve withheld by {source} — calls will prompt")
         elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS and not gate_closed:
             # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
@@ -408,6 +415,27 @@ def _doctor_mcp_tools(
             for line in detail.splitlines():
                 print(f"      {line}")
         issues.append(f"{ref} probe")
+
+
+def _doctor_unused_own_entries() -> None:
+    """One MCP Tools row per own server entry the default agent does not run.
+
+    The latest rebuild's record (``mcp_dropped_servers.load_unused_own``): an entry
+    in the user's MCP file under the name of a server the edition ships, naming
+    another program or a URL. The edition's server runs under that name, so the
+    probe above reports that one healthy while the user's own is never started.
+    Advisory, not an issue: the precedence is by design and which server to keep is
+    the user's call. The record already holds a URL cut to its scheme and host
+    (``mcp_dropped_servers._shown_command``), so it is printed as stored.
+    """
+    from kiro_crew.mcp_dropped_servers import load_unused_own
+
+    for name, rec in load_unused_own().items():
+        print(
+            f"  @{name}: ⚠️  your own entry in {rec['file']} ({rec['command']}) is not used: "
+            "Kiro Crew comes with a server of the same name and runs that one. "
+            "Give yours a different name in that file to run it too."
+        )
 
 
 def _doctor_whoami_governance() -> bool | None:

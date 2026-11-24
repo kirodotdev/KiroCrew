@@ -1730,7 +1730,9 @@ limits (`portability._in_rebuildable_dir`, read by both sides).
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
-component carries the same set.
+component carries the same set, and also `mcp.json`, the servers added on the
+MCP Servers page, which this export does not carry. A restore installs that file
+owner-only and names it when a merge keeps this install's copy.
 
 Every archive settings document is vetted before either mode applies one
 (`portability._vet_archive_settings`): a document that is not its reader's shape
@@ -2977,7 +2979,7 @@ name:
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
-  already sit in the file (owner-only, one link) is skipped, and
+  already sit in the file (this user's, mode `0600`, one link) is skipped, and
   `begin_managed_write` records no pending digest for bytes that reproduce the
   finalized one, so a rebuild that changes nothing keeps the file's inode. The
   sandbox pins this file for every spawn and refuses one whose pinned file was

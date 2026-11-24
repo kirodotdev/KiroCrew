@@ -40,7 +40,8 @@ Portability export and import use direct fetches rather than the API client's
 transport. Their error branches pass the response status and parsed refusal to
 `noteStaleOwnerResponse`, raising the existing re-authentication prompt only for
 `401 stale_session_reauth`. Inline refusals remain visible; generic 401 and owner-only
-403 responses do not raise that prompt. The non-owner-gated import preview is unchanged.
+403 responses do not raise that prompt. The import preview runs the same owner gate
+but goes through the API client's transport, so its refusal stays inline.
 
 The browser half of refresh and re-authentication is split by responsibility
 across a few frontend owners. None of them authorizes anything: authorization
@@ -217,6 +218,18 @@ goes to the owner of its responsibility:
 `generate_token` always emits these six claims: `nonce` makes each token distinct,
 and `gen` is the revocation generation `validate_token` compares against the persisted
 value. `app`, `prompt`, `peer_key` and the scoping claims below are added only when set.
+
+A token that carries a `prompt` is capped at `LINK_TOKEN_MAX_CHARS` (3,000)
+characters. The prompt is signed into the URL as ASCII-escaped JSON, so a long or
+non-ASCII message makes a long link, and Slack splits a message line at about
+4,000 bytes. A cut link fails its signature, so it signs nobody in, and a channel
+challenge link never opens its window. When the token would pass the cap,
+`generate_token` drops the `prompt` claim and logs a warning; the other claims
+stay. The dashboard still reconnects to the signed `session_key`, or creates a
+session and links it to the signed `channel` + `thread_ts`. It skips prompt
+prefill and auto-send when no prompt is present; the message is still in the
+chat it came from (`test_token_auth_link_prompt_size.py`). A token with neither
+a prompt nor Slack context does not route a session.
 
 `kind` is `"session"` only on a token minted as a session: the middleware's
 link→session exchange and the refresh rotation pass `generate_token(...,
@@ -604,7 +617,7 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-An owner-only Public route (`/v1/models`) registers through
+An owner-only Public route (`/v1/models`, `/v1/responses`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each owner-only Public path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. Any other caller, an app token included, gets
@@ -899,7 +912,7 @@ published, even when the file cannot be read
 
 #### App-token scope confinement (CWE-269)
 
-**Who can mint one.** `validate_app_secret` first requires the owner-enable marker `<crew-home>/host-exec-grants/<name>` (`apps/host_exec_grants.py`), which only an owner-authenticated action writes (`enable_app`, a first owner `POST /api/apps/register`) and every disabling write and uninstall revoke. The directory is a top-level crew-home leaf, sealed read-only in the sandbox, pre-created and no-follow, so no record written under the agent-writable `apps/<name>/` can mint a token for an app the owner did not enable. Only then is the secret compared with the gateway's own record, `member-records/app-secrets/<name>` (`read_app_secret`), which every sandbox masks; the agent-readable `apps/<name>/` holds no secret. An `apps/<name>/.app_secret` an older version left is never read, and a read never replaces it. Only the places where the app gets what the secret grants do: the backend spawn (`replace_legacy_app_secret`, delivered as `KIROCREW_PROXY_SECRET`), the load of an app's in-process hooks (`hooks_integration._prepare_hook_load`), and an owner registration (returned in its response). Code that runs in the gateway process holds no secret: its `AppContext.app_token()` mints the same app token behind the same owner-enable marker (`issue_in_process_app_token`), audited as `app_token_exchange` with source `app_context`. The app-scope check re-reads the marker on every request (off the event loop), so a disable ends an existing token's API grants at once. An app enabled before the marker existed cannot mint until the owner enables it again.
+**Who can mint one.** `validate_app_secret` first requires the owner-enable marker `<crew-home>/host-exec-grants/<name>` (`apps/host_exec_grants.py`), which only an owner-authenticated action writes (`enable_app`, a first owner `POST /api/apps/register`, and the next owner registration of a self-managed record carried over from a release that kept the secret in the app's folder) and every disabling write and uninstall revoke. The directory is a top-level crew-home leaf, sealed read-only in the sandbox, pre-created and no-follow, so no record written under the agent-writable `apps/<name>/` can mint a token for an app the owner did not enable. Only then is the secret compared with the gateway's own record, `member-records/app-secrets/<name>` (`read_app_secret`), which every sandbox masks; the agent-readable `apps/<name>/` holds no secret. An `apps/<name>/.app_secret` an older version left is never read, and a read never replaces it. Only the places where the app gets what the secret grants do: the backend spawn (`replace_legacy_app_secret`, delivered as `KIROCREW_PROXY_SECRET`), the load of an app's in-process hooks (`hooks_integration._prepare_hook_load`), and an owner registration (returned in its response). Code that runs in the gateway process holds no secret: its `AppContext.app_token()` mints the same app token behind the same owner-enable marker (`issue_in_process_app_token`), audited as `app_token_exchange` with source `app_context`. The app-scope check re-reads the marker on every request (off the event loop), so a disable ends an existing token's API grants at once. An app enabled before the marker existed cannot mint until the owner enables it again. A self-managed app registered by a release that kept its secret in the app's folder gets the marker from its next owner registration instead, when its record has no stored secret, the upgrade's one-time import sealed its grant set, no owner disable stands, and governance permits the app. A record planted after the upgrade under a name with no sealed set does not qualify, and neither does one this route registered, which has a stored secret.
 
 An **app token** (payload carries a non-empty `app` claim, minted by the `X-App-Secret` exchange at `POST /api/apps/<name>/token`) must not have the same reach as a dashboard-user token. `_enforce_app_scope(request, app_name, path)` applies least privilege, **deny-by-default**:
 

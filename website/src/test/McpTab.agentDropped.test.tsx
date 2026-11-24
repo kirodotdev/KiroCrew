@@ -80,3 +80,30 @@ describe('McpTab: a server the agent rebuild dropped', () => {
     expect(screen.queryByTestId('mcp-agent-dropped')).toBeNull()
   })
 })
+
+describe("McpTab: the user's own entry under a shipped server's name", () => {
+  it('says the own entry is not used, which file holds it, and the fix the page can name', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      server({
+        ownEntryUnused: { file: '~/.kiro/settings/mcp.json', command: '/opt/own/example-mcp' },
+      }),
+    ])
+    renderTab()
+    const note = await screen.findByTestId('mcp-own-entry-unused', undefined, ROW_WAIT)
+    expect(note).toHaveTextContent(
+      "Your own server under this name in ~/.kiro/settings/mcp.json ('/opt/own/example-mcp') isn't used",
+    )
+    expect(note).toHaveTextContent('comes with a server of the same name, and your agent gets that one.')
+    expect(note).toHaveTextContent('To run yours too, give it a different name in that file.')
+    // Turning the shipped server off has no control on this page, so the note does not ask for it.
+    expect(note).not.toHaveTextContent('in its place')
+    expect(within(rowOf('example-server')).getByTestId('mcp-own-entry-unused')).toBe(note)
+  })
+
+  it('shows no note when no own entry is shadowed', async () => {
+    mockApi.mcpServers.mockResolvedValue([server({})])
+    renderTab()
+    await screen.findByText('example-server', { selector: 'code' }, ROW_WAIT)
+    expect(screen.queryByTestId('mcp-own-entry-unused')).toBeNull()
+  })
+})

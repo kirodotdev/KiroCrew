@@ -99,11 +99,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: floor reads the Windows by-name kill programs through its own
 #: ``kiro_crew.security.self_kill_windows``, which ``argv_floor_self`` imports; the module
 #: count rose by that one file and nothing else loads (``mcp-cron`` and ``mcp-guide`` had room).
+#: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
+#: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
+#: store's tag rules, so both share one pinned table); that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 497,
-    "mcp-cron": 364,
-    "mcp-guide": 358,
-    "mcp-mate": 360,
+    "mcp-core": 498,
+    "mcp-cron": 365,
+    "mcp-guide": 359,
+    "mcp-mate": 361,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

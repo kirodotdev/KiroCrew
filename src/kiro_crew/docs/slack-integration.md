@@ -436,6 +436,11 @@ exactly as with the switch off, and the page says why under the switch.
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  Kiro Crew opens one when a request in Slack takes several steps, or when someone asks
+  for one ("put that in a code channel"); anything unclear is answered where it was
+  asked. Asking again in the same thread opens a channel that starts with that thread; a
+  new top-level message starts without it. Slack can't open a code channel from a Slack
+  Connect conversation.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
   up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),

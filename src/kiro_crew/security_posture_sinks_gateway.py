@@ -988,6 +988,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
+        "Crew API responses",
+        "dashboard/crew_api_responses.py",
+        "The reply text and the failure reason of a POST /v1/responses turn, redacted "
+        "before the answer leaves. `metadata`, the model name and the names of ignored "
+        "fields go back as the caller sent them.",
+    ),
+    (
+        "Crew API response stream",
+        "dashboard/crew_api_response_stream.py",
+        "The text deltas of a streamed POST /v1/responses turn pass through "
+        "StreamRedactor with the route's _redact before they leave. Its final text "
+        "is the concatenation of those deltas, including on failure. Held text is "
+        "redacted at the turn's end; oversized sensitive runs are replaced and their "
+        "continuations discarded. Approved links' token values are redacted too.",
+    ),
+    (
         "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "

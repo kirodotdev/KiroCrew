@@ -1315,11 +1315,13 @@ notifications, and whether the queued frame surfaces before or after the next
 prompt is written, has not been established by a live run (see "Native harness
 notifications relied on" below).
 
-A delivery holds one envelope. A turn that carries member essentials binds
-those. A turn with no member owner, on a provider that reports its compaction
-(`LLMProvider.reports_compaction`), binds its `[REPLY FORMAT RULES]` block
-instead, so the same receipt keeps the engine from being sent the rules on every
-message; that bind is forced only by `needs_reinjection` (see
+A delivery holds one envelope per slot, each with its own acknowledgment. A turn
+that carries member essentials binds those (`ESSENTIALS_SLOT`, the default). Any
+turn that carries the `[REPLY FORMAT RULES]` block, on a provider that reports its
+compaction (`LLMProvider.reports_compaction`), binds the block in `RULES_SLOT`, so
+the engine is not sent the rules on every message, in a member's chat too. A
+forced bind drops only its own slot's acknowledgment; invalidation and a failed
+attempt drop every slot's. The rules bind is forced only by `needs_reinjection` (see
 [context-management](../../architecture/context-management.md)). It shares the
 limit in the paragraph above.
 

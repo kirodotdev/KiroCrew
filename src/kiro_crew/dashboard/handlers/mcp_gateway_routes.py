@@ -271,7 +271,8 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     live: the broker is started/stopped and all agent sessions are dropped +
     relinked to the new stub set — without restarting the gateway process,
     so the dashboard session stays authenticated.  Returns the verified state
-    ``{ok, enabled, running, ping_ok}``.
+    ``{ok, enabled, running, ping_ok, restart_required}``; ``restart_required``
+    says a marked server is served only from the next gateway start.
     """
     # Body-scope import, like the sibling gates in this package
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
@@ -735,8 +736,8 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # The operator's answer to "does it work on the project's
-                # files?" (null when unanswered), and whether it is never asked.
+                # The operator's answer to "share this server across chats?"
+                # (null when unanswered), and whether it is never asked.
                 # A ``not_used`` answer given for a different launch than the one
                 # this name declares now reads as unanswered, so the page asks.
                 "cwd_use": effective_cwd_answer(

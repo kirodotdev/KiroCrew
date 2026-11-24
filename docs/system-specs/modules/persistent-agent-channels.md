@@ -133,6 +133,8 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 
 ## API Endpoints
 
+Every route asks the owner gate first (`require_owner_for_dashboard_caller`): the owner and an admitted Shared Crew teammate pass, any other dashboard session gets 403 `owner_only`, and an app token keeps its own controls.
+
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/channels/presets` | Return configured or built-in channel presets. |

@@ -105,8 +105,9 @@ class BoundedCapabilityManager:
     :data:`CAPABILITY_READ_TIMEOUT`. Bounding reads too keeps the guarantee
     symmetric — the dashboard polls the list endpoints, so a stalled unbounded
     read would accumulate pending gateway tasks, the same wedge class the bound
-    exists to prevent. Only the sync ``available()`` probe passes straight
-    through (it does no I/O).
+    exists to prevent. Only the sync ``available()`` probe (no subprocess or
+    network call) and the optional, I/O-free ``unavailable_reason()`` beside it
+    pass straight through.
 
     An explicit proxy (not a ``__getattr__`` delegator) so a Protocol method
     added later surfaces as a loud ``AttributeError`` here rather than silently
@@ -119,6 +120,16 @@ class BoundedCapabilityManager:
 
     def available(self) -> bool:
         return self._inner.available()
+
+    def unavailable_reason(self) -> str:
+        """The inner manager's OPTIONAL reason for ``available() → False``, or ``""``.
+
+        Synchronous and I/O-free, so it passes straight through; a manager
+        without the op says nothing.
+        """
+        read = getattr(self._inner, "unavailable_reason", None)
+        reason = read() if callable(read) else ""
+        return reason if isinstance(reason, str) else ""
 
     async def list_mcp(self) -> List[Dict[str, Any]]:
         return await asyncio.wait_for(self._inner.list_mcp(), timeout=CAPABILITY_READ_TIMEOUT)

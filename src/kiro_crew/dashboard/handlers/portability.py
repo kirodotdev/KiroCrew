@@ -679,11 +679,18 @@ async def api_portability_import(request: web.Request) -> web.Response:
 
 
 async def api_portability_preview(request: web.Request) -> web.Response:
-    """POST /api/portability/preview — validate and preview a zip without applying."""
+    """POST /api/portability/preview — validate and preview a zip without applying.
+
+    Owner-gated like export and import, whose step it is: the preview reports which
+    of the archive's agent templates are already installed on this Crew.
+    """
     if "user" not in request or not request["user"]:
         return web.json_response(
             {"error": "authentication required", "code": "auth_required"}, status=401
         )
+    denied = await require_owner_dashboard_request(request, "portability.preview")
+    if denied is not None:
+        return denied
     caller = request["user"]
 
     zip_path, err_resp = await _read_upload_file(request)

@@ -123,6 +123,25 @@ async def test_a_waiting_send_evicted_from_the_window_reuses_its_written_row(fix
 
 
 @pytest.mark.asyncio
+async def test_a_waiting_send_keeps_its_paste_blocks_on_the_entry_and_the_row(fixture):
+    """A bot's chat queues every send, so the queue entry is the only way the
+    collapsed paste reaches the row; without it the row draws the whole paste."""
+    _, slot, request, *_ = fixture
+    _busy(slot)
+    pasted = "| a | b |\n| - | - |\n| 1 | 2 |\n- item one\n- item two"
+    block = {"id": "p1", "seq": 1, "lines": 5, "content": pasted}
+    message = f"{pasted}\nplease look"
+    stray = {"id": "p2", "seq": 2, "lines": 1, "content": "text the message never held"}
+    await rc.accept(request, slot, message, {"sendId": "send-a", "pastes": [block]})
+    await rc.accept(request, slot, message + "!", {"sendId": "send-b", "pastes": [block, stray]})
+    first, second = slot._queue
+    assert first["meta"]["pastes"] == [block]
+    assert "pastes" not in second["meta"], "a list with a block outside the text is refused whole"
+    assert first["_responsive_row"]["meta"]["pastes"] == [block]
+    slot.task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_a_waiting_send_whose_row_left_the_window_without_eviction_writes_again(fixture):
     state, slot, request, *_ = fixture
     _busy(slot)

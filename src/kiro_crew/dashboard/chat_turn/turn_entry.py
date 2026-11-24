@@ -823,6 +823,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # (past a bound, or not listed yet) cannot act on this turn's own session.
     _native_child_tc: set[str] = set()
     turn._native_child_tc = _native_child_tc
+    turn._engine_children = None
+    turn._engine_dispatch_tasks = {}
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.

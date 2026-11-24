@@ -154,7 +154,7 @@ async def test_an_inheriting_agent_keeps_the_default_trees_and_gets_no_rule(home
 
     entry = await _entry("plain", checkout)
 
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
     assert _kas_offers(kiro, entry) == _v2_skills("plain", checkout)
     assert len(_kas_offers(kiro, entry)) == 5
 
@@ -170,6 +170,13 @@ async def test_an_agent_that_may_not_inherit_loads_no_skill(home):
     assert _kas_offers(kiro, entry) == set()
 
 
+def _skill_rules(entry: dict) -> list[dict]:
+    """*entry*'s rules other than the deny on Kiro Crew's own agents every
+    sub-agent tool carries (``kas_subagent_targets.deny_own_agents``)."""
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    return [r for r in rules if r.get("capability") != "subagent"]
+
+
 @pytest.mark.asyncio
 async def test_the_whole_catalog_worker_is_not_narrowed(home):
     kiro, checkout, _package = home
@@ -178,7 +185,7 @@ async def test_the_whole_catalog_worker_is_not_narrowed(home):
     entry = await _entry("kirocrew-worker", checkout)
 
     assert _v2_skills("kirocrew-worker", checkout) is None
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio
@@ -441,7 +448,7 @@ async def test_a_default_tree_skill_kas_refuses_loads_as_a_fixed_copy(home):
     assert str(kiro / "skills" / "No_Front") in copies["no-front"]["body"]
     assert copies["my-skill"]["description"] == "d"
     assert copies["colon"]["description"] == "body"
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio

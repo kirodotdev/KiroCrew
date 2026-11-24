@@ -1186,6 +1186,22 @@ class McpSessionReport:
         clean = sanitize_sink_text(str(name or ""), _NAME_CAP)
         return any(clean in b for b in (self._ready, self._failed, self._awaiting_auth))
 
+    def server_claim(self, name: str) -> str:
+        """Whether this session holds the server *name*, as far as the report can tell.
+
+        ``"held"``: a host frame for this session reported it. ``"maybe"``: the
+        report is partial, has heard nothing from the host yet, or names it only
+        from what Crew recorded itself (the wire roster, a pruned server).
+        ``"no"``: otherwise. *name* is compared as already cleaned.
+        """
+        if name in self._reported:
+            return "held"
+        if self.left_out or not self._heard:
+            return "maybe"
+        if name in self.configured or name in self._tracked():
+            return "maybe"
+        return "no"
+
     def record_not_mounted(self, names: Any) -> list[str]:
         """Record servers the harness never started, as the mount check found them.
 

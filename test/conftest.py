@@ -356,6 +356,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_kas_machine_fence_config,
+    _reset_kas_parent_notes,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
     _reset_persisted_truncation_reports,
@@ -380,6 +381,12 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
 )
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
+)
+from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_kas_env_left_out_marks,
+    _reset_managed_server_tool_spellings,
+    _reset_mcp_probe_same_process_locks,
+    _reset_mcp_sources_read_snapshot,
 )
 
 # The in-memory Slack client and the Slack state resets.

@@ -4,7 +4,9 @@ The argument scan judges every string in the arguments and refuses a call it wou
 change anywhere, naming the argument's path and never its value. An opaque id under an
 id-named key and a resource name after a 12-digit account id, a CodeDeploy target's
 CloudFormation-named application included, are identifiers, so they reach the server
-byte-identical. ``kirocrew cron preview`` shares the scan; its leg is pinned in
+byte-identical. A web address the exfiltration scan flags for its query alone is refused
+too, and its refusal says so rather than naming a credential it does not hold.
+``kirocrew cron preview`` shares the scan; its leg is pinned in
 ``test_cron_preview_cmd.py``.
 """
 
@@ -20,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.cron_script import ScriptContext
-from kiro_crew.testing.synthetic_credentials import github_classic
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 # A Microsoft Graph message id: base64 of an Exchange id.
 GRAPH_MESSAGE_ID = (
@@ -46,6 +48,18 @@ BOT_SECRET = "AA" + "Hq7Tcv1vGWJxfSeofSAs0K5PALDs" + "aw3Xy"
 # exfiltration scan flags and the credential redactor leaves as written.
 _COLLECTOR = "https://collector.example.net/ingest?data="
 DATA_QUERY_URL = _COLLECTOR + (string.ascii_lowercase * 11)[: 320 - len(_COLLECTOR)]
+# A ticket search for ten-digit ids joined with %20: 20 ids make a 259-character query,
+# which the length rule flags, and 10 make a 129-character one, which passes.
+_TICKET_IDS = [str(1_000_000_000 + 7 * n) for n in range(20)]
+_TICKETS = "https://issues.example.com/issues?q="
+TICKET_SEARCH_URL = _TICKETS + "%20".join(_TICKET_IDS)
+SHORT_TICKET_SEARCH_URL = _TICKETS + "%20".join(_TICKET_IDS[:10])
+# A query that is one run of 27 percent-encoded octets.
+ENCODED_QUERY_URL = _TICKETS + "%41" * 27
+# An AWS access key id: the credential redactor keeps it visible, the URL scan flags it.
+AWS_KEY_ID = "AKIA" + synth(16, string.ascii_uppercase + string.digits, seed=5)
+CREDENTIAL = "reads as a credential"
+WEB_ADDRESS = "holds a web address that could carry data out"
 
 
 @pytest.fixture
@@ -143,13 +157,49 @@ def test_a_url_the_exfiltration_scan_flags_is_refused_and_never_sent(
     assert len(DATA_QUERY_URL) == 320
     assert scan_exfiltration_urls(DATA_QUERY_URL)
     assert redact(DATA_QUERY_URL) == DATA_QUERY_URL
-    with pytest.raises(ValueError, match=rf"not sent: {path} reads as a credential"):
+    with pytest.raises(ValueError, match=rf"not sent: {path} {WEB_ADDRESS}") as refused:
         _ctx().call_tool("srv", "post", args)
+    assert CREDENTIAL not in str(refused.value)
+    assert sent == []
+
+
+@pytest.mark.parametrize("url", [TICKET_SEARCH_URL, ENCODED_QUERY_URL])
+def test_a_flagged_ticket_search_is_refused_as_a_web_address_with_its_fix(
+    sent: list[dict], url: str
+) -> None:
+    """Worded as a credential, a long id list would send its author looking for a secret."""
+    with pytest.raises(ValueError, match=rf"not sent: args\.inputs\[0\] {WEB_ADDRESS}") as e:
+        _ctx().call_tool("srv", "get", {"inputs": [url]})
+    message = str(e.value)
+    assert CREDENTIAL not in message
+    assert "send a shorter query, for example fewer ids per call" in message
+    assert url not in message
+    assert sent == []
+
+
+def test_a_ticket_search_with_fewer_ids_reaches_the_server(sent: list[dict]) -> None:
+    args = {"inputs": [SHORT_TICKET_SEARCH_URL]}
+    assert _ctx().call_tool("srv", "get", copy.deepcopy(args)) == "ok"
+    assert sent == [args]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://issues.example.com/issues?token=" + GITHUB_TOKEN,
+        "https://issues.example.com/issues?key=" + AWS_KEY_ID,
+        f"{TICKET_SEARCH_URL} {GITHUB_TOKEN}",
+    ],
+)
+def test_a_flagged_url_that_holds_a_credential_reads_as_one(sent: list[dict], text: str) -> None:
+    with pytest.raises(ValueError, match=rf"not sent: args\.text {CREDENTIAL}") as refused:
+        _ctx().call_tool("srv", "post", {"text": text})
+    assert WEB_ADDRESS not in str(refused.value)
     assert sent == []
 
 
 def test_a_flagged_url_as_a_key_is_refused(sent: list[dict]) -> None:
-    with pytest.raises(ValueError, match="reads as a credential"):
+    with pytest.raises(ValueError, match=WEB_ADDRESS):
         _ctx().call_tool("srv", "post", {DATA_QUERY_URL: "value"})
     assert sent == []
 

@@ -2470,9 +2470,11 @@
         "dismiss": "Dismiss",
         "edit_resend": "Edit & resend",
         "open_image": "Open image",
+        "open_image_named": "Open image: {{name}}",
         "pinned_files": "Pinned Files",
         "pins": "Pins",
         "preview": "Preview",
+        "remove_named": "Remove: {{name}}",
         "remove_screenshot": "Remove screenshot",
         "screenshot": "Screenshot",
         "watchlist": "Watchlist"
@@ -2713,7 +2715,8 @@
       },
       "pinned": {
         "empty_hint": "Ask {{name}} to pin files you want to track",
-        "unpin": "Unpin"
+        "unpin": "Unpin",
+        "unpin_named": "Unpin {{name}}"
       },
       "preset": {
         "black": "Black",
@@ -4566,6 +4569,10 @@
       "tool_approval_requested": "Tool approval requested:",
       "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls",
       "title_wants_to_run": "<title/> wants to run"
+    },
+    "approvalSubagent": {
+      "asked_by": "Asked by sub-agent {{name}}",
+      "task_line": "Task: {{task}}"
     },
     "approvalModePicker": {
       "nudge_body": "This is where you adjust how {{productName}} asks for approval. Choosing \"Trust\" here lets it work in this chat without asking first — you can switch back anytime.",
@@ -7327,7 +7334,7 @@
       "more_actions": "More actions",
       "created_at_value": "Created {{date}}",
       "updated_at_value": "Updated {{date}}",
-      "action_by_actor": "<0>{{action}}</0> by {{name}}",
+      "action_by_actor": "<0/> by <1/>",
       "content_copied_from_version": "content copied from v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
@@ -7478,7 +7485,16 @@
         "tool_calls_not_listed_one": "{{count}} earlier call not shown",
         "tool_calls_not_listed_other": "{{count}} earlier calls not shown",
         "waiting_for_output": "Waiting for output…",
-        "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit"
+        "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit",
+        "engine_usage_not_reported": "Credits and model are not reported for a sub-agent that runs inside the chat. Its credits are part of the answer's total.",
+        "engine_no_output": "(no output)"
+      },
+      "engineSubagentRecord": {
+        "title": "Sub-agents in this turn: {{n}}",
+        "end_completed": "Completed",
+        "end_failed": "Failed",
+        "end_not_reported": "End not reported by the engine",
+        "more_children": "More sub-agents not listed: {{n}}"
       },
       "assistantMessage": {
         "applied_to_tasks": "Applied to Tasks",
@@ -7726,7 +7742,7 @@
         "no_response_returned": "No response returned",
         "nudge_cap_reached": "nudge cap reached",
         "recovered_continuing": "continuation sent automatically",
-        "resuming_the_interrupted_turn": "resuming the interrupted turn",
+        "sent_without_a_new_instruction": "sent without a new instruction",
         "safety_policy_continuing": "safety policy blocked the call · continuation sent automatically",
         "safety_policy_told_in_turn": "safety policy blocked the call · the agent was told why, in this turn",
         "invalid_name_told_in_turn": "tool name validation blocked the call · the agent was told why, in this turn",
@@ -7804,7 +7820,9 @@
         "waiting_for_your_approval_to_start": "Waiting for your approval to start",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit",
         "more_running_normally_count_one": "{{count}} more running normally…",
-        "more_running_normally_count_other": "{{count}} more running normally…"
+        "more_running_normally_count_other": "{{count}} more running normally…",
+        "engine_stops_with_answer": "Sub-agents that run inside the chat stop when you stop the answer.",
+        "stop_all_and_answer": "Stop all and the answer"
       },
       "subagentQueued": {
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",
@@ -9695,6 +9713,8 @@
       "profile_dashboard_card_send_failed_off": "Couldn't turn off one-click send. It's still on. Try again.",
       "goals_loading": "Loading goals…",
       "goals_load_failed": "Couldn't load the goals.",
+      "bot_sessions_all_switch": "Show all bots in my Sessions",
+      "bot_sessions_this_switch": "Show {{name}} in my Sessions",
       "goals_save_failed": "Couldn't save that change. Please try again.",
       "goals_page_gone": "This was removed somewhere else, so it can't be saved. Copy your text if you want to keep it.",
       "goals_page_gone_draft": "Your unsaved text",
@@ -11200,6 +11220,8 @@
         "session_folder_root_saved": "Saved",
         "subagents": "Subagents",
         "tail_only_fork": "Tail-only Fork",
+        "pin_forks_of_pinned_sessions": "Pin forks of pinned sessions",
+        "pin_forks_of_pinned_sessions_desc": "A fork of a pinned session is pinned too, so it stays beside the original.",
         "technical_comfort": "Technical Comfort",
         "text_streaming_style": "Text Streaming Style",
         "time_window_for_session_restoration": "Time window for session restoration",
@@ -11921,7 +11943,7 @@
       "remoteControlCard": {
         "title": "Remote Control",
         "on": "Remote Control is on. Your Kiro account can reach {{productName}} from your other devices.",
-        "restart_to_connect": "Remote Control is set to on but not connected. Restart {{productName}} to connect.",
+        "not_connected": "Remote Control is on but not connected. If Remote Control was turned on or set up since {{productName}} last started, restart {{productName}}. If the Tunnel tile on Overview shows an error, that error says why. If Remote Control uses this Crew's Kiro sign-in and that isn't a current company SSO sign-in, sign in with your company SSO from Settings → Kiro account.",
         "connecting": "Remote Control is on and connecting. It connects on its own, so you don't need to restart.",
         "locked": "Remote Control is managed by this build and cannot be turned on here.",
         "turn_off": "Turn off",

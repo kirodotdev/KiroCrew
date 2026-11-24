@@ -18,6 +18,7 @@ import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { wearsRefusedLinkCue } from '../../../../components/markdown/refusedLinkCue'
 import { ImgWithFallback } from '../../../../components/markdown/ImgWithFallback'
+import { DeferredMedia, MdSourceEl } from '../../../../components/markdown/remoteMedia'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { WidgetFrame, parseWidgets, hasWidgets } from './WidgetFrame'
@@ -295,24 +296,40 @@ const mdComponents: Components = {
     }
     // A remote http(s) image goes through the core renderer's click-to-load
     // gate, imported rather than copied, so nothing is fetched from another
-    // host before the reader clicks. The chip and image are styled with
-    // Tailwind classes this panel does not load, so the scoped rules below
-    // give them the panel's own look: one line per fact on the chip, and the
-    // loaded image capped at the bubble width.
+    // host before the reader clicks. RemoteMediaFrame gives the chip and the
+    // loaded image the panel's own look.
     const remote = remoteImageHref(src)
     if (remote) {
-      return (
-        <span className="mochi-remote-media" style={{ display: 'block', maxWidth: '100%', color: 'var(--text)', fontSize: 11 }}>
-          <style>{`.mochi-remote-media button{display:block;max-width:100%;margin:4px 0;padding:4px 8px;font:inherit;color:inherit;text-align:start;background:var(--bubble-assistant);border:1px solid var(--border, currentColor);border-radius:6px;cursor:pointer;}.mochi-remote-media button:hover{border-color:var(--accent);}.mochi-remote-media button>svg{vertical-align:-2px;margin-inline-end:4px;}.mochi-remote-media button>span~span{display:block;color:var(--text-muted);}.mochi-remote-media img{max-width:100%;height:auto;border-radius:4px;margin-top:4px;}`}</style>
-          <ImgWithFallback {...p} src={remote} />
-        </span>
-      )
+      return <RemoteMediaFrame><ImgWithFallback {...p} src={remote} /></RemoteMediaFrame>
     }
     // The markdown author's own alt text, defaulting to '' — an image written
     // without one is decorative, and an explicit empty alt is what tells a screen
     // reader to skip it instead of falling back to reading out the URL.
     return <img {...p} alt={p.alt ?? ''} style={{ maxWidth: '100%', borderRadius: 4, marginTop: 4, cursor: 'zoom-in' }} />
   },
+  // Raw-HTML video, audio and source go through the core renderer's own
+  // handlers, as the main chat's do, so remote media waits for the same click
+  // as a remote image. `<picture>` needs no entry: the main chat does not
+  // override it either, its `<source>` children land on MdSourceEl and its
+  // `<img>` on the img handler above.
+  video: ({ node, children }) => <RemoteMediaFrame><DeferredMedia tag="video" node={node}>{children}</DeferredMedia></RemoteMediaFrame>,
+  audio: ({ node, children }) => <RemoteMediaFrame><DeferredMedia tag="audio" node={node}>{children}</DeferredMedia></RemoteMediaFrame>,
+  source: MdSourceEl,
+}
+
+/**
+ * The core click-to-load chip and loaded media are styled with Tailwind classes
+ * this panel does not load, so these scoped rules give them the panel's own
+ * look: one line per fact on the chip, and loaded media capped at the bubble
+ * width.
+ */
+function RemoteMediaFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="mochi-remote-media" style={{ display: 'block', maxWidth: '100%', color: 'var(--text)', fontSize: 11 }}>
+      <style>{`.mochi-remote-media button{display:block;max-width:100%;margin:4px 0;padding:4px 8px;font:inherit;color:inherit;text-align:start;background:var(--bubble-assistant);border:1px solid var(--border, currentColor);border-radius:6px;cursor:pointer;}.mochi-remote-media button:hover{border-color:var(--accent);}.mochi-remote-media button>svg{vertical-align:-2px;margin-inline-end:4px;}.mochi-remote-media button>span~span{display:block;color:var(--text-muted);}.mochi-remote-media :is(img,video,audio){max-width:100%;border-radius:4px;margin-top:4px;}.mochi-remote-media img{height:auto;}`}</style>
+      {children}
+    </span>
+  )
 }
 
 /**

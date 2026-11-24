@@ -685,9 +685,14 @@ def _file_write_blocking(path: str, content: str) -> str | None:
         # the replace installs a fresh inode. The
         # carry is allowlisted to the ACL and user.* names -- it must NOT replay a
         # privilege-bearing security.capability onto caller-supplied content.
+        # newline="" writes the editor's text byte for byte: the read side
+        # decodes the file's own endings unchanged, so the default translation
+        # would turn LF into CRLF on Windows and add a CR per line to a CRLF
+        # file on every save.
         atomic_write(
             path,
             content,
+            newline="",
             mode=_stat_mod.S_IMODE(src_stat.st_mode),
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,

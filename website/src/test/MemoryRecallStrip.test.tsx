@@ -47,6 +47,18 @@ const WIRE = {
   error: null,
 }
 
+/**
+ * A recall on this machine: 8 recalled, the decision model asked about the first 2
+ * and kept 1. The 6 it never saw stay in `jev_keys`, because nobody may drop them.
+ */
+const UNASKED_WIRE = {
+  ...WIRE,
+  baseline_keys: ['mem-a', 'mem-b', 'mem-c', 'mem-d', 'mem-e', 'mem-f', 'mem-g', 'mem-h'],
+  jev_keys: ['mem-a', 'mem-c', 'mem-d', 'mem-e', 'mem-f', 'mem-g', 'mem-h'],
+  unasked_keys: ['mem-c', 'mem-d', 'mem-e', 'mem-f', 'mem-g', 'mem-h'],
+  candidates: 2,
+}
+
 /** The skill record, for the mutual-refusal pair. */
 const SKILL_WIRE = {
   turn_id: 't-1',
@@ -76,6 +88,7 @@ describe('readMemoryRecallRecord', () => {
       store: 'default',
       baselineKeys: ['mem-a', 'mem-b', 'mem-c', 'mem-d', 'mem-e', 'mem-f'],
       jevKeys: ['mem-a', 'mem-c', 'mem-f'],
+      unaskedKeys: [],
       agree: false,
       p: 0.81,
       charsSaved: 2100,
@@ -442,6 +455,47 @@ describe('the expanded body', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+})
+
+describe('the memories the decision model was never asked about', () => {
+  // They are in `jev_keys` because nobody may drop them, not because the decision
+  // model kept them. Read as its choice, this recall said it kept 7 of what it was
+  // asked about 2 of, listed 6 it never saw as kept, and the thumbs rated that.
+  const record = readMemoryRecallRecord(UNASKED_WIRE)!
+
+  it('reads them, and none on a record that did not name them or failed', () => {
+    expect(record.unaskedKeys).toEqual(UNASKED_WIRE.unasked_keys)
+    expect(readMemoryRecallRecord(WIRE)!.unaskedKeys).toEqual([])
+    expect(readMemoryRecallRecord({ ...UNASKED_WIRE, error: 'timeout' })!.unaskedKeys).toEqual([])
+  })
+
+  it('counts them apart from what it kept, on the line', () => {
+    render(<MemoryRecallStrip record={record} />)
+    const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
+    expect(text).toContain('recalled: 8')
+    expect(text).toContain('Decision model kept: 1 of 2 asked')
+    expect(text).toContain('not asked: 6')
+    expect(text).not.toContain('Decision model kept: 7')
+  })
+
+  it('lists them apart in the body and says the count is of the memories asked about', () => {
+    render(<MemoryRecallStrip record={record} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    const kept = screen.getByText('Kept by the decision model').parentElement?.textContent ?? ''
+    expect(kept).toContain('mem-a')
+    expect(kept).not.toContain('mem-c')
+    const unasked = screen.getByText('Not asked about').parentElement?.textContent ?? ''
+    for (const key of UNASKED_WIRE.unasked_keys) expect(unasked).toContain(key)
+    expect(screen.getByText('Memories asked about').parentElement?.textContent).toContain('2')
+  })
+
+  it('names both in the dropped-to-fit row, whose total counts both', () => {
+    render(<MemoryRecallStrip record={readMemoryRecallRecord({ ...UNASKED_WIRE, bounded_omitted: 2 })!} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    expect(screen.getByTestId('memory-recall-strip').textContent).toContain(
+      '2 of the 7 the decision model kept or was not asked about did not fit the response',
+    )
   })
 })
 

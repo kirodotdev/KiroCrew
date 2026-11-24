@@ -1543,6 +1543,16 @@ no longer destroy older turns.
   lands while a save writes (`slot_transcript._fold_head`) is subtracted when
   the save commits (`write_guards.saved_rows_still_held`, rows matched by
   identity), so the folded rows are not counted as the window's on-disk part.
+  A native clear (`_keep_cleared_turns`) saves the slot, then folds the same
+  way, up to the row that was last before the save, the rows `_disk_window_len`
+  counts as saved (normally all of them) and, when no row stays in the window,
+  the other writers' lines `_frozen_prefix_cache` holds. When a row stays beside
+  such lines it folds nothing: the save merged them among the window's rows by
+  time, so no count of rows is the boundary, and every row stays in the window
+  for the next flush. The folded turns are then read from the transcript like
+  any folded row. A refused or failed save does not raise that count, and the
+  rows past it stay in the window for the next flush, as do the rows that
+  arrived during the save.
 - **Idle window release** (`dashboard/slot_window_release.py`): the flush loop,
   at most once a minute and after its flush, folds every saved row older than
   the newest `_WINDOW_ROWS` of a slot idle for ten minutes into the frozen
@@ -1603,6 +1613,17 @@ no longer destroy older turns.
   meanwhile it stays an ordinary fork. Until a pick the child runs on the parent's
   model and effort, and a pick on a child with copied history appends the usual
   model-switch notice row. The agent `session_fork` path is unchanged.
+- **Fork as incognito / Fork as temporary**: the same message menu lists, after
+  "Fork with another model", one entry per mode stricter than the open chat's
+  (`stricterForkMemoryModes` in `website/src/utils/forkMemoryModes.ts`): a
+  persistent chat offers both, an incognito chat only "Fork as temporary", and
+  a temporary chat neither. Each sends the `direction="head"` request with
+  `memory_mode`, and the new chat shows the usual incognito or temporary badge
+  from the response's `memory_mode`.
+- **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
+  stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
+  (default true) gates this; when it is false the fork starts unpinned. Agent
+  `session_fork` children are never pinned either way.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
@@ -1611,14 +1632,23 @@ no longer destroy older turns.
   would buy no privacy, for the reason the titling section below gives -- the
   parent's full transcript is already in its session JSONL, and a fork copies
   transcript while engaging neither guarantee the modes make (`is_restricted`,
-  `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
-  child from a restricted parent -- that would hand no-write content to
-  consolidation -- so the request body carries no `memory_mode` and the
-  parent's value is the only source; promotion (below) is the one deliberate,
-  consent-gated exception. A temporary child still receives its copied turns:
+  `blocks_reads`). What an ORDINARY fork must not do is produce a child LESS
+  private than its parent -- a persistent child of a restricted parent would
+  hand no-write content to consolidation. The body's optional `memory_mode`
+  may therefore name the parent's mode or a stricter one in
+  `execution_context.MEMORY_MODES` order (persistent, incognito, temporary).
+  `chat_fork_memory_mode.fork_child_memory_mode` decides it in `fork_slot`
+  before the transcript snapshot: a looser mode answers 409
+  `fork_memory_mode_looser` (SEL `denied`) and a value outside the three 400
+  `invalid_memory_mode`, with no child. A stricter mode is passed to
+  `get_or_create_slot` at birth and bound through `ExecutionContext.with_mode`,
+  which only tightens. Without the field the parent's value is the only
+  source. Promotion (below) is the one deliberate, consent-gated exception,
+  and it ignores the field. A temporary child still receives its copied turns:
   `build_session_context` assembles the thread-history block before any
   `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
-  report the inherited (or, for a promotion, forced) mode. The inherited value
+  report the child's mode: the inherited or stricter requested one, or for a
+  promotion the forced one. The inherited value
   is validated against `VALID_MEMORY_MODES` before the child is allocated:
   rehydration copies the transcript header's `memory_mode` onto the slot as
   written, so a hand-edited or partially written header can leave a value
@@ -2631,8 +2661,9 @@ shared by both vocabulary stores.
   restores the same object still naming the deleted id, which the periodic flush makes
   durable with no later pass able to reach it. EVERY path that pops a slot and may put it
   back therefore wraps its whole frame, restore included, in `close_in_flight` — the
-  single-tab close, the bulk stale-tab archive and History resume's reserved build alike —
-  and both sweeps iterate that registry alongside `state._slots`. A second popping path
+  single-tab close, the bulk stale-tab archive, History resume's reserved build and the
+  Spec Builder worker teardown (whose failed-archive and still-running-orphan put-backs
+  restore the popped slot) alike — and both sweeps iterate that registry alongside `state._slots`. A second popping path
   left unwrapped reopens the hole in full, so the pairing is pop-with-restore, not
   close-the-tab.
   The registry is keyed per REGISTRATION rather than by slot name or by object: by name,
@@ -3803,6 +3834,10 @@ derived `<agent>--readonly` spec; claude, goose and Strands: a `side_read_only`
 session, with the boundary `THREAD_BOUNDARY_PROMPT_NO_SHELL`,
 `THREAD_BOUNDARY_PROMPT_LISTING` and `THREAD_BOUNDARY_PROMPT_FILE_READS`
 respectively); elsewhere `REJECT_ALL` with `THREAD_BOUNDARY_PROMPT_NO_TOOLS`. Actions go through the main chat, and the boundary prompt says so.
+A finished turn's stored reply loses each line that only quotes a directive tool's marker
+(`session_directive.strip_quoted_markers`; the interrupted partial answer keeps it): under
+`REJECT_ALL` the slot's own spec runs,
+and a directive tool it pre-grants runs without a permission request.
 A shell-capable thread turn also gets `THREAD_BOUNDARY_PROMPT_NO_SHELL` while
 `name_grant.environment_refusal()` refuses every program name, since each shell
 read is then declined; the check runs off the loop.
@@ -3821,10 +3856,11 @@ then disk prefix plus window -- so a parent only disk holds is found. The Bot's 
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
 an `assistant` reply and broadcast; it goes through the main chat's credential
 pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
-text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+text stays `redact()` of the marker-stripped answer byte for byte and the row keeps the `redactions` records
 its placeholders need, and the removed values are kept for the owner's reveal
 (`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
-interrupted partial answer below is stored the same way. The thread read
+interrupted partial answer below goes through the same credential pass and reveal rule,
+unstripped. The thread read
 (`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
 its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
 `reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`

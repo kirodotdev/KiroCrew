@@ -635,8 +635,10 @@ export default function AgentTemplatesTab() {
     openDetail()
   }
 
+  // The MCP server names are searched too, so typing a server's name finds
+  // every agent whose spec lists it.
   const matches = useCallback((r: TemplateRow) =>
-    !filter || `${r.name} ${r.description} ${r.package} ${r.source}`.toLowerCase().includes(filter.toLowerCase()), [filter])
+    !filter || `${r.name} ${r.description} ${r.package} ${r.source} ${r.mcp_servers.join(' ')}`.toLowerCase().includes(filter.toLowerCase()), [filter])
   const grouped = useMemo(() => {
     const g: Record<GroupKey, TemplateRow[]> = { custom: [], private: [], package: [], builtin: [] }
     for (const r of rows) if (matches(r)) g[templateSourceKind(r)].push(r)
@@ -1161,7 +1163,11 @@ export default function AgentTemplatesTab() {
                           ? <span className="text-[12px] text-muted italic">{i18nT('pages.overview.agentTemplatesTab.none')}</span>
                           : <ul className="text-[12px] font-mono text-text space-y-0.5">{resources.map(u => <li key={u} className="truncate">{u}</li>)}</ul>}
                       </Section>
-                      <Section title={i18nT('pages.overview.agentTemplatesTab.mcp_servers')} hint={<><Lock className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.mcp_read_only_hint')}</>}>
+                      {/* Servers added on the MCP Servers page are merged into the built-in
+                          default agent and the specs mirroring it, so a built-in row keeps
+                          pointing there; any other agent gets them only through Kiro's global
+                          mcp.json, and only when it loads that file. */}
+                      <Section title={i18nT('pages.overview.agentTemplatesTab.mcp_servers')} hint={<><Lock className="lucide-inline" aria-hidden /> {templateSourceKind(selected) === 'builtin' ? i18nT('pages.overview.agentTemplatesTab.mcp_read_only_hint') : i18nT('pages.overview.agentTemplatesTab.mcp_reach_via_kiro_global_hint')}</>}>
                         {mcpServers.length === 0 ? (
                           <span className="text-[12px] text-muted italic">{i18nT('pages.overview.agentTemplatesTab.none')}</span>
                         ) : (

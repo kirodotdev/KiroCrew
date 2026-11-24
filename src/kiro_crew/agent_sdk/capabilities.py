@@ -78,6 +78,10 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_
 #: "is this the native namespace?" without spelling the literal.
 MODEL_NAMESPACE_ACP = "acp"
 
+#: The namespace of claude-agent-acp's ids, the only one besides ``acp`` that the
+#: model registry carries ids for (``model_registry.json`` ``providers``).
+MODEL_NAMESPACE_CLAUDE_CODE = "claude_code"
+
 
 @dataclass(frozen=True)
 class SessionCapabilities:
@@ -364,6 +368,7 @@ def capture_prompt_timeout(provider: object, deadline: float) -> float | None:
 
 __all__ = [
     "MODEL_NAMESPACE_ACP",
+    "MODEL_NAMESPACE_CLAUDE_CODE",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",

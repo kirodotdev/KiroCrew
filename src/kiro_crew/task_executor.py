@@ -86,6 +86,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.task_models import (
     MAX_RECOVERIES,
     MAX_RETRIES,
@@ -1027,8 +1028,9 @@ async def execute_task(
                     _complete_event = event
                     break
 
-            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
-            result_text = strip_steering_markers(result_text)
+            # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+            # protocol, not the step's result.
+            result_text = strip_quoted_markers(strip_steering_markers(result_text))
             final_result = "\n\n".join([*refusals, result_prefix + result_text])
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the

@@ -6,8 +6,8 @@ own list: ``hooks.auto_approve_tools`` is the operator's, and these surfaces nev
 write it), which the gate's ``operator-grants`` tier (``hook_runtime/gate_tiers``)
 matches against the call's VERIFIED MCP identity only, never a title. It is written to ``config.json``
 through the locked, endorsed config writer and applied by the config watcher, so
-the next call is answered by it without a restart, and Settings -> Security lists
-and removes it (``handlers/tool_grants``).
+the next call is answered by it without a restart, and the MCP Servers tool list
+shows and removes it (``handlers/tool_grants``).
 
 The grant never skips Kiro Crew's own gate. It is answered by the gate's grant
 tier, which runs only after every deny tier and governance (``POLICY ∩ PROFILE``)

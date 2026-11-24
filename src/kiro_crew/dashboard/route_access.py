@@ -68,7 +68,15 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
     ),
+    # Dashboard user only (chat_folders._toggle_slot_user_flag): 403 for an app token
+    # and an internal caller.
+    ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
+        "chat.source_links_off.change", UNSTABLE
+    ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
+    # Owner gate, then the machine owner alone (crew_api_responses).
+    # Contract test: test_crew_api_responses.py.
+    ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
 }

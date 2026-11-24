@@ -1,13 +1,37 @@
 # Tool approvals: auto-approve one MCP tool so it stops asking
 
-In Normal mode Kiro Crew asks you to authorize each MCP tool call. On the KAS
-engine you can always allow one tool, for example a Slack server's search or
-read tools, so it stops asking while every other tool keeps asking. This page
-shows the place that works (an `allow` rule in `permissions.yaml`), and the
-settings that look like they should auto-approve a tool (`autoApprove`,
-`allowedTools`) but do not.
+In Normal mode Kiro Crew asks you to authorize each MCP tool call. To stop one
+tool asking, for example a Slack server's search, turn on **Always allow** for
+that tool in the dashboard. Every other tool keeps asking, and Kiro Crew still
+checks each call of that tool against its safety rules. This page also covers
+the settings that look like they should auto-approve a tool but do not.
 
-## Auto-approve an MCP tool on KAS
+## Always allow one tool
+
+Either of these turns it on, and the next call no longer asks. No restart is
+needed.
+
+- **In MCP Servers** (`/mcp`): on the server's row, click the tool count (for
+  example "12 tools") to open its list, then turn on **Always allow** beside the
+  tool.
+- **On the approval card** in a chat: open **Trust** on the card and choose
+  **Always allow this tool**. This call runs, and later calls of the tool do not
+  ask.
+
+Both set the same switch. To make the tool ask again, turn **Always allow** off
+beside it in MCP Servers.
+
+Always allow covers one tool by its exact name. When it is greyed out, the
+reason is shown above the tool list (on the card, under the choice). For
+example, Kiro Crew's own tools always ask, and so does a server your settings
+say must ask before every call.
+
+## Many tools at once on KAS: a `permissions.yaml` rule
+
+Prefer Always allow. Use a rule file only when you need a pattern, such as
+every tool whose name starts with `get_`. A rule here lets KAS run the tool
+without asking Kiro Crew first, so Kiro Crew's own checks on those calls are
+skipped.
 
 KAS reads its permission rules from one file in your home folder:
 
@@ -42,11 +66,8 @@ rules:
 - If the file does not parse, KAS ignores its rules and every tool asks again.
   Check the indentation first.
 
-## Add the rule yourself
-
-A rule in `permissions.yaml` lets a tool run without asking you, so it is your
-decision to make. Ask the agent for the exact lines, then add them to the file
-yourself.
+A rule in this file lets a tool run without asking you, so it is your decision
+to make. Ask the agent for the exact lines, then add them to the file yourself.
 
 ## What does not stop the approval prompts
 

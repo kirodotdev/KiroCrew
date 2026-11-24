@@ -11,6 +11,7 @@ const {
   forceStopPort,
   classifyPortOwner,
   isKirocrewCommand,
+  markUserStop,
 } = require("../gateway-stop");
 const { listenerSecretPath } = require("../local-token");
 
@@ -144,6 +145,32 @@ test("a Quit leaves the user-stop mark even when the gateway is only signalled",
       if (proc.exitCode === null) proc.kill("SIGKILL");
       fs.rmSync(home, { recursive: true, force: true });
     }
+  }
+});
+
+test("the user-stop mark is synced, file then directory, so a power loss keeps it", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kc-userstop-sync-"));
+  const steps = [];
+  const fsSpy = {
+    ...fs,
+    fsyncSync: (fd) => {
+      steps.push(fs.fstatSync(fd).isDirectory() ? "sync dir" : "sync file");
+      return fs.fsyncSync(fd);
+    },
+    renameSync: (from, to) => {
+      steps.push("rename");
+      return fs.renameSync(from, to);
+    },
+  };
+  try {
+    assert.strictEqual(markUserStop({ kirocrewHome: home, fsMod: fsSpy }), true);
+    assert.strictEqual(fs.existsSync(path.join(home, "kept-grants", "user-stop")), true);
+    // Windows refuses to sync a directory, so there the file sync is the guarantee.
+    const expected = ["sync file", "rename", "sync dir"];
+    assert.deepStrictEqual(steps.slice(0, 2), expected.slice(0, 2));
+    if (process.platform !== "win32") assert.deepStrictEqual(steps, expected);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

@@ -603,7 +603,7 @@ class TestBothWritePointsConsultTheCeiling:
 
         assert "mcp_sources.sync_shared_server_refs(" in inspect.getsource(agent.install_agent)
         src = inspect.getsource(mcp_sources.sync_shared_server_refs)
-        marker = 'if "allowedTools" not in keys:'
+        marker = 'if not may_auto_approve:\n                # A grant written before the ceiling'
         assert marker in src, "the sync must also strip a pre-existing grant"
 
 

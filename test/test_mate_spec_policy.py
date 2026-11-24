@@ -519,13 +519,15 @@ def test_a_template_with_a_subagent_allowlist_and_trusted_agents_is_added(home):
 
 def test_the_kit_copy_carries_a_deny_kas_cannot_enforce_and_names_it(home):
     user, mates = home
-    bad = {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}}
+    bad = {"execute_bash": {"deniedCommands": ["git push origin .*|git push upstream .*"]}}
     _use(user, {**TEMPLATE, "toolsSettings": bad})
     preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
-    assert preview["unenforced_denies"] == ["git push (origin|upstream) .*"]
+    assert preview["unenforced_denies"] == ["git push origin .*|git push upstream .*"]
     mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
     assert _file(mates)["toolsSettings"] == bad
-    assert mate_worker_kit.view("pixel")["unenforced_denies"] == ["git push (origin|upstream) .*"]
+    assert mate_worker_kit.view("pixel")["unenforced_denies"] == [
+        "git push origin .*|git push upstream .*"
+    ]
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,10 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared_access import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared_access import (
+    require_owner_dashboard_request,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.handlers._shared_member_scope import (
     member_request_scope,
     require_private_memory_session,
@@ -140,9 +143,12 @@ async def resolve_requested_memory_store(
 ) -> tuple[str, web.Response | None]:
     """Route internal tools through their captured execution; owners may select a store.
 
-    Browser requests without a store retain the Global default. An explicit
-    store parameter always requires the ordinary owner permission, including
-    when it names Global. Unknown selections never fall back to another store.
+    Browser requests without a store retain the Global default, for the owner
+    and an admitted teammate only: the Global store is the owner's, so any other
+    dashboard session is refused. An app caller keeps the controls that already
+    govern it. An explicit store parameter always requires the ordinary owner
+    permission, including when it names Global. Unknown selections never fall
+    back to another store.
     """
     from kiro_crew.memory_stores import (
         DEFAULT_MEMORY_STORE,
@@ -163,6 +169,10 @@ async def resolve_requested_memory_store(
                     status=409,
                 )
             store = scope.store or ""
+        else:
+            denied = await require_owner_for_dashboard_caller(request, operation)
+            if denied is not None:
+                return "", denied
         refusal = (
             memory_startup_refusal(store, allow_failed=allow_failed) if require_ready else None
         )

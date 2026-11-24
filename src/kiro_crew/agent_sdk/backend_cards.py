@@ -406,6 +406,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "accepts a write that leaves the model unchanged, so it is a defect rather "
         "than a missing feature a user would choose a harness by"
     ),
+    "ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY": (
+        "whether a custom agent's session/new array gets Crew's own servers, as Crew's "
+        "default agent's does on every array host (the Crew-tools line). A non-member "
+        "runs that spec as written, a parity gap the agent-host contract names per "
+        "harness rather than a feature anyone picks a harness by"
+    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "
@@ -875,7 +881,9 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "client) reaches the engine. The Connections page already says it where "
         "it matters, on each pre-registered provider's card, and the answer "
         "covers only those providers: a server that registers its own client "
-        "signs in on every backend that serves remote MCP at all"
+        "signs in on every backend that serves remote MCP at all. KAS from "
+        "0.66.104 takes a public client but withholds a confidential one, and "
+        "every pre-registered provider is confidential, so KAS is not a member"
     ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
         "whether the drain after session/new folds only the frames already "

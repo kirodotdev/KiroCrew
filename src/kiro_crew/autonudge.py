@@ -452,7 +452,7 @@ class AutoNudgeService:
         base_dir: Path | None = None,
         on_fire: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
         on_monitor_tick: Callable[[NudgeLoop], Awaitable[None]] | None = None,
-        collect_judge_evidence: Callable[[NudgeLoop], Awaitable[Any]] | None = None,
+        collect_judge_evidence: Callable[[NudgeLoop, list[str]], Awaitable[Any]] | None = None,
         emit_judge_notice: Callable[[NudgeLoop, str], Awaitable[None]] | None = None,
         worker_running: Callable[[str], bool] | None = None,
         worker_closed: Callable[[str], bool] | None = None,
@@ -519,6 +519,13 @@ class AutoNudgeService:
         #: The loops due at boot, released one at a time as the host allows. Built
         #: by ``start()``; a timer waits its turn here before its countdown.
         self._boot_pacer = BootPacer()
+        #: Loop id -> why its tick is held while host memory is critical
+        #: (``autonudge_service.memory_hold``). Logged once on entry and once on
+        #: release; the held time counts toward the runtime budget.
+        self._memory_held: dict[str, str] = {}
+        #: Loop ids whose ARMED tick a person's Fire now press armed; the memory hold
+        #: lets that tick run. Dropped by any other arm and by the tick itself.
+        self._manual_ticks: set[str] = set()
         #: Work-ledger loops whose boot replay has not run yet. Any re-arm before that
         #: tick (a turn's end, a settings update) replays at delay zero instead of at
         #: the deadline (``_arm_from_deadline``); the tick drops it.

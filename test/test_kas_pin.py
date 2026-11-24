@@ -51,6 +51,7 @@ def test_the_manifest_digest_is_a_lowercase_sha256() -> None:
 def test_pinned_version_is_the_pin_unless_the_gateway_env_overrides_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(kas_pin, "host_pin_version", lambda: kas_pin.KAS_PIN_VERSION)
     monkeypatch.delenv(kas_pin.KAS_VERSION_OVERRIDE_ENV, raising=False)
     assert kas_pin.pinned_version() == kas_pin.KAS_PIN_VERSION
     monkeypatch.setenv(kas_pin.KAS_VERSION_OVERRIDE_ENV, "  ")
@@ -64,18 +65,79 @@ def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
     assert kas_pin.KAS_PIN_VERSION.startswith(kas_pin.KAS_PIN_ENGINE_RELEASE)
 
 
-def test_the_glibc_floor_covers_only_linux_keys_and_never_drops_below_al2() -> None:
+def test_the_glibc_floors_cover_only_the_two_pins_and_linux_keys() -> None:
     # 2.26 is the lowest glibc any published build (the AL2 one) is linked for;
-    # arm64 has no AL2 build, so it stays at the nodejs.org floor.
-    floors = kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR
-    assert set(floors) <= {k for k in kas_pin.KAS_PIN_NODE_BUILDS if k.startswith("linux-")}
-    assert all((2, 26) <= f <= (2, 28) for f in floors.values()), floors
-    assert floors["linux-arm64"] == (2, 28)
+    # the normal pin keeps nodejs.org's 2.28, and arm64 has no AL2 build.
+    floors = kas_pin.KAS_PIN_GLIBC_FLOORS
+    assert set(floors) == {kas_pin.KAS_PIN_VERSION, kas_pin.KAS_PIN_AL2_VERSION}
+    linux = {k for k in kas_pin.KAS_PIN_NODE_BUILDS if k.startswith("linux-")}
+    for by_key in floors.values():
+        assert set(by_key) <= linux
+        assert all((2, 26) <= f <= (2, 28) for f in by_key.values()), by_key
+    assert floors[kas_pin.KAS_PIN_VERSION] == {"linux-x64": (2, 28), "linux-arm64": (2, 28)}
+    assert floors[kas_pin.KAS_PIN_AL2_VERSION] == {"linux-x64": (2, 26)}
+
+
+def test_both_pins_name_one_engine_release_and_their_own_digest() -> None:
+    # One engine release (and so one engine minimum-version check) serves both.
+    assert kas_pin.KAS_PIN_AL2_VERSION == f"{kas_pin.KAS_PIN_VERSION}-al2"
+    assert kas_pin.KAS_PIN_AL2_VERSION.split("-node", 1)[0] == kas_pin.KAS_PIN_ENGINE_RELEASE
+    assert kas_pin.KAS_PIN_MANIFESTS == {
+        kas_pin.KAS_PIN_VERSION: kas_pin.KAS_PIN_MANIFEST_SHA256,
+        kas_pin.KAS_PIN_AL2_VERSION: kas_pin.KAS_PIN_AL2_MANIFEST_SHA256,
+    }
+    assert _SHA256_HEX.match(kas_pin.KAS_PIN_AL2_MANIFEST_SHA256)
+    assert kas_pin.KAS_PIN_AL2_MANIFEST_SHA256 != kas_pin.KAS_PIN_MANIFEST_SHA256
+    assert _PIN_VERSION.match(kas_pin.KAS_PIN_AL2_VERSION)
+
+
+@pytest.mark.parametrize(
+    "system, machine, glibc, want",
+    [
+        ("Linux", "x86_64", (2, 25), "al2"),
+        ("Linux", "x86_64", (2, 26), "al2"),
+        ("Linux", "x86_64", (2, 27), "al2"),
+        ("Linux", "x86_64", (2, 28), "normal"),
+        ("Linux", "x86_64", (2, 34), "normal"),
+        ("Linux", "x86_64", None, "normal"),
+        ("Linux", "amd64", (2, 26), "al2"),
+        ("Linux", "aarch64", (2, 26), "normal"),
+        ("Linux", "aarch64", (2, 34), "normal"),
+        ("Darwin", "arm64", (2, 26), "normal"),
+        ("Darwin", "x86_64", (2, 26), "normal"),
+        ("Windows", "AMD64", (2, 26), "normal"),
+    ],
+)
+def test_only_a_linux_x64_host_below_glibc_2_28_picks_the_al2_pin(
+    monkeypatch: pytest.MonkeyPatch, system: str, machine: str, glibc, want: str
+) -> None:
+    from kiro_crew import constants
+
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: glibc)
+    expected = kas_pin.KAS_PIN_AL2_VERSION if want == "al2" else kas_pin.KAS_PIN_VERSION
+    assert kas_pin.host_pin_version(system, machine) == expected
+
+
+def test_pinned_version_follows_the_host_unless_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import constants
+
+    monkeypatch.delenv(kas_pin.KAS_VERSION_OVERRIDE_ENV, raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: (2, 26))
+    assert kas_pin.pinned_version() == kas_pin.KAS_PIN_AL2_VERSION
+    # The same host after an upgrade to glibc 2.28+ moves back to the normal pin.
+    monkeypatch.setattr(constants, "_host_glibc_version", lambda: (2, 34))
+    assert kas_pin.pinned_version() == kas_pin.KAS_PIN_VERSION
+    monkeypatch.setenv(kas_pin.KAS_VERSION_OVERRIDE_ENV, "0.70.1")
+    assert kas_pin.pinned_version() == "0.70.1"
 
 
 def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
         "KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION",
+        "KAS_PIN_AL2_MANIFEST_SHA256",
+        "KAS_PIN_AL2_VERSION",
         "KAS_PIN_ENGINE_RELEASE",
         "KAS_PIN_MANIFEST_SHA256",
         "KAS_PIN_VERSION",
@@ -83,6 +145,7 @@ def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
         "KAS_VERSION_OVERRIDE_ENV",
         "engine_checks_auto_approvals",
         "engine_spec_permissions_supported",
+        "host_pin_version",
         "pinned_version",
     ]
 

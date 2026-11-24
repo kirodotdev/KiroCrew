@@ -22,6 +22,18 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     expect(copyToClipboard).toHaveBeenCalledWith('npm test')
   })
 
+  it('keeps its status region out of the line so a triple-click selects the whole line', async () => {
+    // Any hidden sibling of the chip (`sr-only`'s position:absolute, or
+    // user-select:none) makes Chromium split the paragraph at the chip, and a
+    // selectable one pastes "Copied!" into a copy across it. The live region
+    // lives outside the rendered text instead.
+    const { container } = render(<MarkdownRenderer content={'- `npm test`, and the rest of the line.'} />)
+    await screen.findByText('npm test')
+    const status = screen.getByRole('status')
+    expect(container.contains(status)).toBe(false)
+    expect(status.parentElement).toBe(document.body)
+  })
+
   it('copies on Enter keydown', async () => {
     render(<MarkdownRenderer content={'Try `curl -s https://example.com`.'} />)
     const code = await screen.findByText('curl -s https://example.com')

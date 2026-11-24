@@ -397,6 +397,7 @@ def _cached_rewrite_result(
     # byte-identical to a fresh rewrite.
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
+    target_key_owners: dict[str, str] = {}
     # The agents first, then the crewmates, the full pass's order.
     served = [(n, overlay_dir / n) for n in sorted(overlay_sigs)] + [
         (f"{MATE_OVERLAY_SUBDIR}/{n}", mate_dir / n) for n in sorted(mate_sigs)
@@ -418,7 +419,7 @@ def _cached_rewrite_result(
             )
             if wrapped:
                 results[name] = wrapped
-            _collect_target_env(servers, target_env)
+            _collect_target_env(servers, target_env, target_key_owners)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
@@ -765,6 +766,7 @@ def rewrite_agents(
     written_sidecars = _SidecarLedger()
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
+    target_key_owners: dict[str, str] = {}
     notes = _RewritePassNotes()
     overlay_write_failed = False
 
@@ -1022,7 +1024,7 @@ def rewrite_agents(
                 approvals=approvals,
                 scope_muted=scope_muted,
             )
-            _collect_target_env(new_spec.get("mcpServers", {}), target_env)
+            _collect_target_env(new_spec.get("mcpServers", {}), target_env, target_key_owners)
             target = overlay_dir / overlay_name
             try:
                 # Atomic + owner-only: temp-file + os.replace (via atomic_write) so a
@@ -1140,7 +1142,7 @@ def rewrite_agents(
                         with contextlib.suppress(OSError):
                             (sidecar_dir / orphan).unlink()
                     return None
-                _collect_target_env(new_spec.get("mcpServers", {}), target_env)
+                _collect_target_env(new_spec.get("mcpServers", {}), target_env, target_key_owners)
                 if not written_sidecars.commit():
                     notes.sidecar_write_failed = True
                 return wrapped
@@ -1230,7 +1232,7 @@ def rewrite_agents(
         if isinstance(kept_spec, dict):
             servers = kept_spec.get("mcpServers", {})
             if isinstance(servers, dict):
-                _collect_target_env(servers, target_env)
+                _collect_target_env(servers, target_env, target_key_owners)
 
     # Prune stale env sidecars (server removed / renamed / flipped
     # non-poolable) so old credential files don't accumulate on disk.

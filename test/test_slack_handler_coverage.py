@@ -161,6 +161,26 @@ class TestYoloCommand:
         assert "already off" in _texts(slack)
 
     @pytest.mark.asyncio
+    async def test_off_is_confirmed_only_once_its_record_is_gone_for_good(
+        self, slack, sessions, owner, monkeypatch
+    ):
+        from kiro_crew import kept_grants
+
+        await _slash("!yolo on", slack, sessions)
+        slack.actions.clear()
+        seen_at_sync: list[tuple[bool, bool]] = []
+
+        async def _settled() -> bool:
+            seen_at_sync.append((h.is_yolo_mode(), "disabled" in _texts(slack)))
+            return True
+
+        monkeypatch.setattr(kept_grants, "settle", _settled, raising=False)
+        await _slash("!yolo off", slack, sessions)
+        # Off already, and not yet confirmed, when the removal is made durable.
+        assert seen_at_sync == [(False, False)]
+        assert "disabled" in _texts(slack)
+
+    @pytest.mark.asyncio
     async def test_renew_requires_active_grant(self, slack, sessions, owner):
         await _slash("!yolo renew", slack, sessions)
         assert "not active" in _texts(slack)

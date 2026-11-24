@@ -338,6 +338,7 @@ class AgentTurnSDK:
         async def _run_turn() -> str:
             from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
             from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+            from kiro_crew.session_directive import strip_quoted_markers
 
             # An app turn is not a person's, and no session applier reads its
             # stream: a person-only directive it calls is refused out loud.
@@ -353,7 +354,8 @@ class AgentTurnSDK:
                 on_tool_approval=approver,
                 on_event=person_only_directive_refuser(key, refusals),
             )
-            return "\n\n".join([*refusals, reply])
+            # A directive tool result the reply quotes is protocol, not reply text.
+            return "\n\n".join([*refusals, strip_quoted_markers(reply)])
 
         from kiro_crew.shared_crew.admission import OperationKind
         from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise

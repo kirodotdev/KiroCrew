@@ -520,7 +520,9 @@ def main() -> None:
     print(f'  KAS_PIN_VERSION = "{args.version}"')
     print(f'  KAS_PIN_MANIFEST_SHA256 = "{sha256_of(release / "manifest.json")}"')
     if local_node is not None and overlay is not None:
-        print('  KAS_PIN_LINUX_GLIBC_FLOOR["linux-x64"] = (2, 26)  # only if both are AL2 builds')
+        print(
+            "  (an AL2 build: set KAS_PIN_AL2_MANIFEST_SHA256 instead; KAS_PIN_AL2_VERSION follows KAS_PIN_VERSION)"
+        )
     if args.s3:
         print("Upload:")
         upload(args.out, args.version, args.s3, dry_run=args.dry_run)

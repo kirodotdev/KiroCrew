@@ -89,7 +89,10 @@ click uses) for a box magnified up to four times so small text is readable, and
 `max_dim` for the longest side in pixels (64 to 4096). Give at most one of
 `full`, `ref` and `region`. With none, the visible page is saved as before. An
 option that is not valid, or that conflicts with another, is skipped and named in
-a warning on the result, and the screenshot is still saved. The
+a warning on the result, and the screenshot is still saved. With `inline`
+set to true the agent also gets the picture in the same step instead of opening
+the file, at the cost of carrying it in the conversation from then on; the path
+is still returned, and without `inline` nothing changes. The
 same checks for passwords and filled fields apply to every form.
 
 A page can open a JavaScript dialog (an alert, a confirm, a prompt, or a

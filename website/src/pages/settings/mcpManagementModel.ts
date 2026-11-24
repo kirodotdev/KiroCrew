@@ -441,8 +441,8 @@ export function autoShareCandidates(
 }
 
 /**
- * Whether sharing this server first needs the operator to say it does not work
- * on the project's files. Kiro Crew's own servers are never asked. A row from a
+ * Whether sharing this server first needs the operator to say it can be shared
+ * across chats. Kiro Crew's own servers are never asked. A row from a
  * gateway that sends no answer field at all reads as not needing one, since that
  * gateway does not ask.
  */

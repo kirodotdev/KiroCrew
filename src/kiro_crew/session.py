@@ -60,7 +60,7 @@ from kiro_crew.acp_backends import selectable_backends  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
-from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.cold_start_sizing import (
@@ -273,6 +273,19 @@ def _is_claude_backend(provider: Any) -> bool:
     return is_claude_backend_name(backend)
 
 
+def _provider_model_id_namespace(provider: Any) -> str:
+    """The model-id namespace of the harness *provider* drives.
+
+    Read as ``SessionCapabilities.model_id_namespace`` of the backend id the
+    provider's client carries, so a provider with no client, or a client naming
+    no backend, answers the native ``acp`` namespace.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    backend = getattr(getattr(provider, "client", provider), "backend", "") or ""
+    return capabilities_for(backend).model_id_namespace
+
+
 def _provider_label(provider: Any) -> str:
     """Backend identity key for *provider* — see ``providers.acp.provider_label``.
 
@@ -459,9 +472,7 @@ class SessionManager:
                 namespace,
                 advertised=advertised,
             ),
-            provider_model_namespace=lambda provider: model_registry_namespace(
-                getattr(getattr(provider, "client", provider), "backend", "") or ""
-            ),
+            provider_model_namespace=lambda provider: _provider_model_id_namespace(provider),
             resolve_pin_spelling=lambda model, advertised, provider: resolve_pin_spelling_on(
                 model,
                 advertised,

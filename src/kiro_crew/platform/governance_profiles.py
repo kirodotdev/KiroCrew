@@ -386,6 +386,16 @@ def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     publish (the warm unreadable-profile arm) must not move a token senders compare
     against.
 
+    Nor does a reload whose snapshot EQUALS the one it replaces. The fingerprint also
+    misses on changes that decide nothing: the empty ``profiles`` directory the first
+    sandboxed spawn creates where none was (``sandbox_precreate``), a ``chmod`` that
+    only moves a file's ctime, a rewrite with the same bytes. Each reloads to the same
+    answer, and bumping for it reads as a profile move to every consumer: the gateway's
+    profile watch then rebuilds the agent config on a governance change that never
+    happened, and the rebuild replaces files the sandbox pins. Equality is the
+    dataclass's field-by-field compare, so a value that compares by identity reads as
+    a change and bumps, the direction this token already errs in.
+
     Atomic on purpose: a reader could otherwise observe the NEW snapshot under the OLD
     generation and re-confirm an authority already replaced. A reader taking neither
     lock can still interleave, so this pairing is what senders compare tokens under
@@ -395,8 +405,10 @@ def _publish_snapshot(store: "ProfileStore", snap: "_Snapshot") -> None:
     """
     global _PROFILE_GENERATION
     with _PROFILE_GENERATION_LOCK:
+        moved = snap != store._snap
         store._snap = snap
-        _PROFILE_GENERATION += 1
+        if moved:
+            _PROFILE_GENERATION += 1
 
 
 def poll_profiles_fresh() -> None:

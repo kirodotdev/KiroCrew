@@ -114,7 +114,7 @@ def _env(tmp_path, _floor_monkeypatch):
         lambda: SimpleNamespace(nodes=lambda: nodes, seeded_for_current_store=True),
     )
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
-    _floor_monkeypatch.setattr(routes, "_owner_only", _none)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", _none)
     # The write gate's own vetting, opened: each is tested where it is defined, and
     # what is under test here is the root-session branch after them.
     _floor_monkeypatch.setattr(panel_routes, "_recognize_session", _none)
@@ -215,7 +215,7 @@ async def test_the_slot_read_is_owner_only(monkeypatch):
     async def _deny(_request, _op):
         return web.json_response({"error": "owner only", "code": "owner_only"}, status=403)
 
-    monkeypatch.setattr(routes, "_owner_only", _deny)
+    monkeypatch.setattr(routes, "require_owner_dashboard_request", _deny)
     async with _client() as client:
         resp = await client.get(_read(ROOT))
         assert resp.status == 403

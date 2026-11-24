@@ -55,6 +55,10 @@ _EXTRA_PATH_DIRS = (
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins
     "/usr/local/bin",  # Intel Homebrew + pkg-installer symlink dir
+    # Linuxbrew's default prefix, then its per-user one. A terminal gets them
+    # from ``brew shellenv``; a gateway started as a service does not.
+    "/home/linuxbrew/.linuxbrew/bin",
+    "{home}/.linuxbrew/bin",
     # n's node dir is also its ``npm i -g`` bin, so a global adapter lands here.
     # Last, so a ``node`` the Homebrew dirs above already resolve keeps winning.
     "{home}/n/bin",
@@ -836,7 +840,8 @@ def user_tool_bin_dirs(home: str) -> list[str]:
 def _extra_path_templates() -> tuple[str, ...]:
     """:data:`_EXTRA_PATH_DIRS`, minus the fixed POSIX roots on Windows.
 
-    ``/opt/homebrew/bin`` and ``/usr/local/bin`` name nothing on Windows, where
+    ``/opt/homebrew/bin``, ``/usr/local/bin`` and Linuxbrew's
+    ``/home/linuxbrew/.linuxbrew/bin`` name nothing on Windows, where
     Python 3.12's ``isabs`` still accepts them and they resolve against the
     current drive (``C:\\opt\\homebrew\\bin``), a folder any local account can
     create. Every ``{home}``/``{mise_data}`` template stays.

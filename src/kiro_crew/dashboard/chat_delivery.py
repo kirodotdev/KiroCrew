@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_AUTOMATION
 from kiro_crew.config import live
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -1365,6 +1366,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    pastes: list[dict[str, Any]] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1443,6 +1445,10 @@ def queue_for_next_turn(
 
     *knowledge* is the send's :func:`knowledge_meta`, stamped on the entry and its
     ``queue_push`` frame so the queue card finds the knowledge envelope exactly.
+
+    *pastes* is the send's :func:`~kiro_crew.dashboard.chat_paste_meta.paste_meta`:
+    the drained row keeps them, so it draws the paste chips a dispatched send's
+    row draws.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
@@ -1487,6 +1493,8 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if pastes:
+        meta[PASTES_META_KEY] = pastes
     qid = slot.queue_append(
         message,
         meta=meta,

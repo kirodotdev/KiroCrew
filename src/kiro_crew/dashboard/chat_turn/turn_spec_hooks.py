@@ -899,45 +899,29 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         append_and_surface(state, slot, "notice", text, "msg msg-info")
 
 
-#: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
-_SEED_DECLINED_NOTICES = {
-    "session": (
-        "ℹ Crew's tools are off in this session. Another open Crew session in this "
-        "folder uses a different model or permission mode, and its "
-        ".claude/settings.local.json is in use here. To get the tools back, close "
-        "that session, then start a new session here."
-    ),
-    "project": (
-        "ℹ Crew's tools are off in this session. This folder's own "
-        ".claude/settings.local.json controls tool approvals here, and Crew could "
-        "not safely set it aside. The gateway log names the reason."
-    ),
-}
-
-
 async def _notice_seed_declined(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose MCP tools are withheld by a settings file.
 
-    Reads the live governed state off the client, the same predicate that
-    withholds the array, so the row shows exactly when the tools are off and
-    names whose file holds the path. Best-effort: a client without the read, or
-    a read that fails, renders no row rather than failing the turn.
+    Reads the client's own answer (``settings_withheld_reason``), which follows the
+    same live predicate that withholds the array, so the row shows exactly when the
+    tools are off and says why, with the remedy, since only a person reads this row.
+    Best-effort: a client without the read, or a read that fails, renders no row
+    rather than failing the turn.
     """
-    read = getattr(client, "settings_withheld_cause", None)
+    read = getattr(client, "settings_withheld_reason", None)
     if not callable(read):
         return
     try:
-        cause = await asyncio.to_thread(read)
+        reason = await asyncio.to_thread(read, with_fix=True)
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
-        logger.debug("settings-withheld cause could not be read for the notice", exc_info=True)
+        logger.debug("settings-withheld reason could not be read for the notice", exc_info=True)
         return
-    notice = _SEED_DECLINED_NOTICES.get(cause) if isinstance(cause, str) else None
-    if notice:
+    if isinstance(reason, str) and reason:
         append_and_surface(
             state,
             slot,
             "notice",
-            notice,
+            f"ℹ Crew's tools are off in this session because {reason}",
             "msg msg-info",
             meta={"kind": SEED_DECLINED_NOTICE_KIND},
         )
@@ -1420,7 +1404,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
         and not _mirror_paused_in_wait
-        and slack_reply_client(state, session_key, _mirror_chan)
+        and slack_reply_client(state, session_key, _mirror_chan, turn=turn)
     ):
         try:
             from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
