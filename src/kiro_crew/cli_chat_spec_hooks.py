@@ -106,8 +106,16 @@ def print_session_notices(provider: Any, hooks: ChannelTurnHooks, kiro_agent: st
         print(safe_terminal_line(line), file=sys.stderr)
 
 
-async def stop(hooks: ChannelTurnHooks, reply: str) -> None:
-    """Fire ``Stop`` with *reply*, redacted as the dashboard's Stop hook gets it."""
+async def stop(hooks: ChannelTurnHooks, reply: str, stop_reason: str) -> None:
+    """Fire ``Stop`` with *reply*, redacted as the dashboard's Stop hook gets it.
+
+    Only for a turn that landed (*stop_reason* classifies ``succeeded``), as the
+    channel driver judges it: not one the user stopped, or one that ended on an error.
+    """
+    from kiro_crew.acp.types import STOP_CLASS_SUCCEEDED, classify_stop_reason
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    if classify_stop_reason(stop_reason).name != STOP_CLASS_SUCCEEDED:
+        return
 
     await hooks.stop(redact_credentials(redact_exfiltration_urls(reply)[0])[0])

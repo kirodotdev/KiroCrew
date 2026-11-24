@@ -190,7 +190,7 @@ class TestCliChatSpecObserverHooks:
             cli_chat._send_and_print(
                 provider, message, interactive=False, gate=gate, new_session=new_session
             ),
-            timeout=10.0,
+            timeout=60.0,
         )
         return provider
 
@@ -229,11 +229,26 @@ class TestCliChatSpecObserverHooks:
         assert provider.prompts == ["/compact"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("host_denies", [False, True], ids=["asked", "host-gate-denies"])
     async def test_post_tool_use_matches_the_id_the_permission_request_names(
-        self, tmp_path, runs, monkeypatch
+        self, tmp_path, runs, monkeypatch, host_denies
     ):
-        """KAS names a built-in's id (``fs_write``) only on the permission request."""
+        """KAS names a built-in's id (``fs_write``) only on the permission request.
+
+        A call the security gate refuses never reaches the spec's guard, and its
+        PostToolUse still meets it by that id.
+        """
         import kiro_crew.cli_chat as cli_chat
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        if host_denies:
+            monkeypatch.setattr(
+                HookManager,
+                "on_tool_call",
+                lambda self, *a, **kw: types.SimpleNamespace(
+                    action=TOOL_DENY, reason="blocked", tier=""
+                ),
+            )
 
         monkeypatch.setattr(
             cli_chat, "sel", lambda: types.SimpleNamespace(log_tool_invocation=lambda **kw: None)

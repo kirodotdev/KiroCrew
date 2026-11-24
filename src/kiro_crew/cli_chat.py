@@ -1068,8 +1068,7 @@ async def _spec_hook_refusal(
     covers here. The agent-channel member's gate (:mod:`kiro_crew.channel_spec_hooks`):
     the spec's hooks alone, through an empty store, so the CLI runs none of the Hooks
     page's, and a spec that cannot be read refuses. *hooks* are the ones the turn
-    read (:mod:`kiro_crew.cli_chat_spec_hooks`), which also learn the id the request
-    names the tool by, for its PostToolUse; ``None`` reads the spec here.
+    read (:mod:`kiro_crew.cli_chat_spec_hooks`); ``None`` reads the spec here.
     """
     # Deferred, as in messaging.tool_hooks: the agent_sdk package reaches acp.client.
     from kiro_crew.agent_sdk.capabilities import capabilities_of
@@ -1079,7 +1078,6 @@ async def _spec_hook_refusal(
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return None
     if hooks is not None:
-        hooks.note_permission_request(event)
         spec = hooks.spec
     else:
         spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
@@ -1130,6 +1128,10 @@ async def _answer_permission(
     """
     gate = gate or _build_tool_gate()
     title = event.title or "tool call"
+    if hooks is not None:
+        # First, so a call refused on any path below still fires its PostToolUse
+        # matched by the id the request names (KAS states ``fs_write`` only here).
+        hooks.note_permission_request(event)
 
     # Fail-close FIRST for a child event with unverified context: opting into
     # the child-fidelity contract (``child_fidelity_aware`` in ``_chat``) makes
@@ -1471,7 +1473,6 @@ async def _send_and_print(
     first of a session, which fires ``AgentSpawn`` and prints the spec's notices.
     """
     from kiro_crew.cli_chat_spec_hooks import start, stop, switched
-    from kiro_crew.messaging.turn_bracket import stop_reason_landed
 
     session_key = gate.session_key if gate is not None else _CLI_SESSION_KEY
     hooks, message = await start(
@@ -1523,8 +1524,8 @@ async def _send_and_print(
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
-                if hooks is not None and stop_reason_landed(str(event.stop_reason or "")):
-                    await stop(hooks, "".join(reply))
+                if hooks is not None:
+                    await stop(hooks, "".join(reply), str(event.stop_reason or ""))
                 break
         print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
