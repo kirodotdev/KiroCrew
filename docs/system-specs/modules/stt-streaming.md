@@ -371,12 +371,24 @@ Either one releases the microphone and ends the start.
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
 | Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, holds the one-mic mutex (`setMicOwner`, `readMicOwner`, `subscribeMic`, exported so the comment boxes' mic takes the same lock) and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
-| Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
+| Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, which keeps the live text visible above the hold target during touch dictation, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Message-box hold | `website/src/hooks/usePointerHoldToTalk.ts` | Opt-in (`PttConfig.pointerHold`, off by default; its own `pointerHoldMs`): a primary-button press with no modifier held on the composer's text box past `pointerHoldMs` starts dictation through the push-to-talk session core, and letting go finishes. A quick click still places the caret, a drag before the cutoff stays a drag-select, and the capture opens only at the cutoff. Set on Settings > Voice (`SttPointerHoldSettings.tsx`) |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
 | Comment dictation | `website/src/components/CommentVoiceButton.tsx` | The mic in the document comment boxes: press to record, press again to stop, and the words are added to the box's draft. Props `onText(text)`, `onError(message \| null)`, `disabled`, `className`. See [Comment-box dictation](#comment-box-dictation) |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
+
+On desktop the ordinary composer editor stays mounted and displays both provisional
+and committed recognition text with its normal typography; the panel adds capture
+status and the waveform without creating a second transcript. While the active
+transport is streaming, text edits are locked because each partial replaces the
+recognised region from its capture snapshot; Enter-to-send and file-only clipboard
+attachments remain available. During touch hold-to-talk the hold target replaces
+that editor, so the panel renders an `aria-hidden` copy of the current composer value
+in a bounded region that follows the newest words. Scrolling that copy upward pauses
+following until it returns to the bottom. After capture, the cancellable drain notice
+stays unmounted for 0.8 seconds so ordinary short drains do not flash; a longer drain
+mounts the notice and its Discard action together.
 
 ### Comment-box dictation
 

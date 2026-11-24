@@ -296,6 +296,8 @@ export default function ChatTitleOverlay({
             fullText={pinned.full}
             images={pinned.images}
             bodyBeyondPreview={pinned.bodyBeyondPreview}
+            meta={pinned.meta}
+            slotKey={activeSlot || undefined}
             pushUp={pinned.push}
             liveH={pinned.liveH}
             maxH={pinned.maxH}

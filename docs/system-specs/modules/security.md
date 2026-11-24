@@ -206,6 +206,30 @@ folder. A per-server share that restarts the broker resets open chats even with
 **Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
 The reset defers busy chats until their turn ends and reports `sessions_reset`.
 
+A project's own MCP files are sealed under the same decision
+(`project_mcp_files`): kiro-cli and KAS read `<folder>/.kiro/settings/mcp.json`
+when a session starts in that folder on a spec with `includeMcpJson`, and Claude
+Code reads `<folder>/.mcp.json`. The file-edit tool is refused on either name in any folder
+(`project_mcp_write`, matched by name on every candidate spelling, inside
+`sensitive_write_path_refusal`), with the same remedy. The sandbox seals both
+names in the session's own folder read-only (`project_mcp_targets`, passed as the
+wrap's `project_folder` into its own host field, `PlanHost.project_mcp_targets`),
+under both the folder as given and its resolved path (Seatbelt matches the resolved
+one), plus the resolved path of a file that is a link. A name the seal cannot hold
+(one that resolves to a folder or another non-file, loops, runs through a file, or
+cannot be read) is skipped with a log line, so it never seals a folder or stops a
+chat starting. They and their folders' rename
+guards (`PlanHost.project_ancestor_guards`) are emitted after every window,
+carve-out and operator exception is checked and are never checked against one, so
+an operator's writable exception holding the project never loses to them. Only the folders that exist are guarded
+against rename, so an agent can still create its project's `.kiro` folder. Seatbelt
+denies each name whether or not it exists. Crew never creates a file in the
+person's folder, so the Linux launcher seals only a file that exists at spawn, and
+a file that does not exist yet is fenced by the file-edit refusal alone (#41996).
+No card writes these files: the refusal's way forward is `request_server` with
+the default target, which adds the server to Kiro Crew's own store, the list every
+governed chat's servers come from, or the person adds it on **MCP Servers**.
+
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
 rebuild merges into that template's spec and a spawn merges into a template Crew
@@ -1563,7 +1587,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   The fixed tail hold ends at the last
   word, and a word ends at a blank or at a non-ASCII character that no reader folds
   onto ASCII (`compat.ends_word`; `ſ`, the Kelvin sign or `ß` fold onto letters and
-  stay inside the word): every anchor and credential is ASCII, and unspaced Chinese
+  stay inside the word, and so does a default-ignorable character such as `U+200B`,
+  which the credential plan reads a token through): every anchor and credential is ASCII, and unspaced Chinese
   or Japanese prose would otherwise be held whole until its next blank. The stream
   snaps the hold back to the start of that word (`compat.word_start`) and holds a
   hit the cut would end exactly at while more text follows it (its closing quote
@@ -1789,7 +1814,9 @@ Security properties:
   (`SecretVault.add_item_under_free_name` picks a free name under the store
   lock, so nothing is overwritten, and skips every name `POST /api/secrets` would
   refuse the same caller, through `secrets.reserved_name_check`: a Connections
-  client secret, the WakaTime OAuth tokens, and for a remote caller a channel
+  client secret, the WakaTime OAuth tokens, connected computers' own state
+  (`CONNECTED_COMPUTERS_LOCAL`, `CONNECTED_COMPUTERS_DEVICES`, which the routes
+  also leave out of the listing), and for a remote caller a channel
   credential, so a remote session cannot plant one from the browser card; the
   route and that check share `_managed_name_owned` and `_remote_channel_reserved`,
   so each rule is written once). One SEL row per vault fill and per save
@@ -5098,6 +5125,58 @@ re-parsed into GUI sub-effects; and the **web terminal PTY**
 (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no `is_denied` /
 `is_sensitive_bash_command` / governance call at all, so it is an operator-only,
 ungoverned plane.
+
+### Connected computers: a second, local OS fence
+
+Feature preview `connected_computers` (owner: `connected_computers/`, spec:
+[providers.md](providers.md)). A chat on a remote gateway can run its workspace tools
+and the user's explicitly exposed local MCP servers on the user's own computer. That
+computer runs them under its OWN fence, separate from `sandbox.py`, which this
+feature does not widen or change:
+
+- **An allow-list, not a mask** (`confinement.py`): a child may write only the
+  granted root and a private scratch, and read only those plus its runtime.
+  TLS trust reads mount only `/etc/ssl/certs`, `/etc/ssl/cert.pem`,
+  `/etc/ca-certificates`, `/etc/pki/tls/certs` and `/etc/pki/ca-trust` when
+  present, never the enclosing SSL/PKI trees or their private-key directories. Linux
+  uses `bwrap` with new user, PID, IPC and UTS namespaces and a seccomp filter
+  (`seccomp.py`) that refuses AF_UNIX sockets (abstract X11 and session-bus
+  sockets), io_uring, and `keyctl`/`add_key`/`request_key` (the user's session
+  keyring). Sharing is Linux-only for now: macOS, Windows and any processor
+  without a seccomp table refuse; nothing falls back to an unconfined run.
+- **Proved before each connect** (`self_test`): one probe runs unconfined and then
+  confined against fresh witnesses outside the root; any witness the confined run
+  reaches fails the connect.
+- **Consent is native only**: a desktop dialog and folder picker; no CLI verb, page,
+  HTTP route or agent tool can share a folder. The one grant path is the desktop
+  host on the stdio pipe the desktop app's main process holds, so a local process
+  that holds the gateway's internal secret (an app backend) still cannot grant.
+  The host binds the connection coordinates at `describe` and refuses a different
+  target at `share`.
+  Saved grants and queued revokes keep those coordinates across restarts; renewal,
+  reconnect and queued remote cleanup refuse changed or missing approvals before
+  sending to a destination. A changed target needs fresh native consent.
+  Remote forgets also carry the retired enrollment's saved generation. The remote
+  registry compares device, fingerprint and generation in its existing atomic
+  update; delayed or legacy unscoped cleanup cannot revoke a newer enrollment.
+  Probe writes use fresh private subdirectories and exclusive no-follow opens;
+  neither the unconfined control nor the confined probe follows planted links.
+  The connector credential is per device and
+  gateway, sealed under an OS keyring key (`protected_store.py`, tools resolved
+  with `trusted_system_bin_quiet`), and sent only after the gateway proved itself.
+- **Shared local permission audits:** local grant operations emit once after their
+  committed mutation with the entry point's HTTP subject, `cli` or `desktop-host`
+  when known. Remote HTTP Disconnect/Remove keeps its request-aware audit;
+  remote CLI mutations emit at their entry point, not in the registry. Local
+  HTTP success duplicates are removed.
+- **Every narrowing is immediate**: a revoke or Off from any local process stops
+  new input at the next frame and the process tree within a bound.
+- **Auth surface**: `GET /api/connected-computers/connect` bypasses the dashboard
+  token and checks its own credential; no internal path is added
+  ([dashboard-token-auth](dashboard-token-auth.md)). `@connected-computer-*` and
+  `@workspace` tools are never pre-authorized past Kiro Crew's own gate
+  (`platform.governance.may_skip_gate` answers False for both; for `@connected-computer-*`
+  while the preview is on, the only time such a server is mounted).
 
 ### Suspicious Bash Patterns (`security/`)
 

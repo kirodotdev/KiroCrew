@@ -4029,7 +4029,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",
-    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
+    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1

@@ -10401,6 +10401,7 @@
       "esc_to_cancel_click_mic_to_finish": "Échap pour annuler, cliquez sur le micro pour terminer",
       "esc_to_cancel_click_mic_to_send": "Échap pour annuler, Maj+clic garde un brouillon, clique sur le micro pour envoyer",
       "esc_to_cancel_enter_to_send": "Échap pour annuler, Entrée pour envoyer",
+      "editing_resumes_when_you_stop": "La modification reprend à l’arrêt",
       "listening": "Écoute en cours",
       "muted": "Micro coupé"
     },
@@ -22552,7 +22553,7 @@
         "provider_off": "Désactivé (pas de reconnaissance vocale)",
         "ready": "prêt",
         "run_these_commands_in_your_terminal_first": "Exécutez d'abord ces commandes dans votre terminal :",
-        "show_an_animated_panel_while_recording_instead_of": "Afficher un panneau animé pendant l'enregistrement au lieu de la barre d'état fine. Revient à la barre si le navigateur ne prend pas en charge WebGL2 ou si votre système demande de réduire les animations.",
+        "show_an_animated_panel_while_recording_instead_of": "Afficher un panneau animé pendant l'enregistrement au lieu de la barre d'état fine. Revient à la barre si ton système demande de réduire les animations.",
         "status": "Statut",
         "streaming": "Diffusion en continu",
         "system_default": "Valeur par défaut du système",
@@ -25098,7 +25099,8 @@
       "chat_model_picker": "Le bouton du modèle dans la zone de message. Il affiche le modèle de cette discussion et ouvre le sélecteur de modèle.",
       "chat_session_title": "Le titre de la session en haut de la discussion. Il affiche le nom de la session ; clique dessus pour la renommer.",
       "composer_approval_mode": "Le sélecteur du mode d'approbation dans la rangée de commandes de la zone de message. Il définit si seules les consultations s'exécutent sans demander, si ses propres recherches dans la mémoire, les chats, les compétences et les connaissances s'exécutent aussi, si cette session est approuvée ou si tout est approuvé automatiquement (YOLO).",
-      "composer_voice_input": "Le bouton du micro dans la zone de message. Appuie dessus pour dicter au lieu de taper ; sur un écran tactile, il bascule entre le clavier et le maintien pour parler."
+      "composer_voice_input": "Le bouton du micro dans la zone de message. Appuie dessus pour dicter au lieu de taper ; sur un écran tactile, il bascule entre le clavier et le maintien pour parler.",
+      "members_bot_sessions_switch": "L’interrupteur en haut de l’onglet Sessions sur la fiche de profil d’un bot. Son libellé nomme le bot ; activé, les sessions de ce bot apparaissent aussi dans ta propre liste de sessions."
     }
   },
   "sessionEnvironments": {

@@ -9921,6 +9921,7 @@
       "esc_to_cancel_click_mic_to_finish": "Escキーでキャンセル、マイクをクリックして終了",
       "esc_to_cancel_click_mic_to_send": "Escキーでキャンセル、Shift+クリックで下書きを保持、マイクをクリックして送信",
       "esc_to_cancel_enter_to_send": "Escキーでキャンセル、Enterキーで送信",
+      "editing_resumes_when_you_stop": "停止すると編集を再開できます",
       "listening": "リッスン中",
       "muted": "ミュート中"
     },
@@ -21420,7 +21421,7 @@
         "provider_off": "オフ（音声認識なし）",
         "ready": "準備完了",
         "run_these_commands_in_your_terminal_first": "まずターミナルでこれらのコマンドを実行してください:",
-        "show_an_animated_panel_while_recording_instead_of": "記録中に細いステータスバーの代わりにアニメーションパネルを表示。ブラウザーにWebGL2がない場合、またはシステムが低減動作をリクエストする場合はバーにフォールバック。",
+        "show_an_animated_panel_while_recording_instead_of": "記録中に細いステータスバーの代わりにアニメーションパネルを表示。システムが低減動作をリクエストする場合はバーにフォールバック。",
         "status": "ステータス",
         "streaming": "ストリーミング",
         "system_default": "システムのデフォルト",
@@ -23904,7 +23905,8 @@
       "chat_model_picker": "メッセージ入力欄のモデルボタンです。このチャットのモデルを表示し、モデルピッカーを開きます。",
       "chat_session_title": "チャット上部のセッションタイトルです。表示はセッション名で、クリックするとセッション名を変更できます。",
       "composer_approval_mode": "メッセージ入力欄のコントロール行にある承認モードの選択ボタンです。調べものだけを確認なしで実行するか、自分のメモリ、チャット、スキル、ナレッジの検索も実行するか、このセッションを信頼するか、すべて自動承認するか（YOLO）を設定します。",
-      "composer_voice_input": "メッセージ入力欄のマイクボタンです。押すと入力の代わりに音声で話せます。タッチスクリーンではキーボードと長押しで話すモードを切り替えます。"
+      "composer_voice_input": "メッセージ入力欄のマイクボタンです。押すと入力の代わりに音声で話せます。タッチスクリーンではキーボードと長押しで話すモードを切り替えます。",
+      "members_bot_sessions_switch": "bot のプロフィールカードの「セッション」タブ上部にあるスイッチです。ラベルにはその bot の名前が入ります。オンにすると、その bot のセッションがあなた自身のセッション一覧にも表示されます。"
     }
   },
   "sessionEnvironments": {

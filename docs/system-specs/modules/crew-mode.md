@@ -2566,7 +2566,11 @@ Settings row carries the `members.settings` find_ui location and is the
 `members.settings` reveal scope (state `crewmate_settings_closed`); the card's
 Profile tab carries `members.profile-tab` (a `Tablist` `segments` marker) and is
 the `members.profile-tab` scope (state `crewmate_profile_tab_closed`), since the
-card opens on Sessions and the row lives on Profile; the Permissions row carries
+card opens on Sessions and the row lives on Profile; the Sessions tab, first on
+the rail, carries `members.sessions-tab` and is that scope (state
+`crewmate_profile_sessions_tab_closed`), and the Bot's own switch on it
+(`BotSessionListSwitches`) carries `members.bot-sessions-switch`, described rather
+than quoted because its label names the Bot; the Permissions row carries
 `members.permissions` (its accessible name is the label alone; the value is its
 description), reached by a guide through the card, its Profile tab and then the
 Settings row, and sits with its page in a `GuideTrustRootRegion`, so no guide

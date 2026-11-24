@@ -101,6 +101,7 @@ components:
       - invalid_request
       - unsupported_parameter
       - unsupported_tool_type
+      - invalid_scope
       - invalid_token
       - token_revoked
       - stale_session_reauth
@@ -117,6 +118,7 @@ components:
       - method_not_supported
       - response_in_progress
       - approval_already_resolved
+      - grant_request_already_resolved
       - resync_required
       - payload_too_large
       - capability_unavailable

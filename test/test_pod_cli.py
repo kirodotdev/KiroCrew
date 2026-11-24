@@ -23,6 +23,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
     requires_posix_pod_lifecycle,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -684,10 +685,17 @@ class TestUpVerb:
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
         monkeypatch.setattr(pod_cli, "_wait_healthy", lambda *_a, **_kw: -1)
         monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        trusted_journalctl = "/usr/bin/journalctl"
+        real_trusted = platform_compat.trusted_system_bin
+        monkeypatch.setattr(
+            platform_compat,
+            "trusted_system_bin",
+            lambda name: trusted_journalctl if name == "journalctl" else real_trusted(name),
+        )
         real_run = rt.subprocess.run
 
         def _run(argv, *a, **kw):
-            if argv and argv[0] == "journalctl":
+            if argv and argv[0] == trusted_journalctl:
                 raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
             return real_run(argv, *a, **kw)
 

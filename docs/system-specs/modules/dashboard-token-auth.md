@@ -543,8 +543,8 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
 
      `crew_api_auth.APP_SERVED_ROUTES` lists the routes that serve an app credential,
      by their key in the table. It holds `GET /v1/models`, which serves an app
-     credential with an empty list until a grant carries a Bot range or a route
-     lets an app run an agent. The app list comes only from `models_for_grant`;
+     credential with an empty list until a route lets an app run a Bot in its
+     grant or an agent. The app list comes only from `models_for_grant`;
      it reads no owner catalog. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
@@ -630,7 +630,7 @@ maps each such path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. `GET /v1/models`
 also passes `app_route`, so a verified app credential from local authorization is
 judged by the route's row in place of the owner gate. The app is served an empty
-list until a grant carries a Bot range or a route lets an app run an agent;
+list until a route lets an app run a Bot in its grant or an agent;
 `models_for_grant` builds that list without reading the owner's catalog. Any other
 caller, an installed app's token included, gets
 `403 owner_only`, including a valid app credential whose API allowlist excludes
@@ -1063,6 +1063,15 @@ from `dashboard/server_internal_paths.py`, the
 second read through `_mixed_internal_api_paths()` so an edition's mixed paths join
 it — so the headless server (below) binds to the **same** sets and the two
 entrypoints cannot drift.
+
+Connected computers (feature preview `connected_computers`) adds no internal
+path. No HTTP route creates or widens a sharing grant, whatever the caller
+holds (a dashboard session, the internal secret, an agent IPC capability):
+native consent runs on the stdio pipe between the desktop app's main process
+and the `kirocrew connected-computer desktop-host` child it spawned (see
+[providers](providers.md), Connected computers desktop host). The local routes
+it adds only list or narrow (`GET .../local/grants`,
+`DELETE .../local/grants/{grant_id}`, `POST .../local/off`), owner only.
 
 #### `start_api_server()` — headless (`--slack-only`) parity
 

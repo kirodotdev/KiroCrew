@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:deb046e28fa25ddb753dca89d3089fe565e7924180db12ac5f53796ffad353e9"
+export const GUIDE_BUILD_DIGEST = "sha256:eec5f91025114e069e0c65f44ae6a99a2a57a81fabc8796b4fb03743c3ddad1d"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -82,6 +82,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.bot-sessions-switch",
   "members.dashboard-tab",
   "members.details",
   "members.edit",
@@ -93,6 +94,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.profile-tab",
   "members.roster-list",
   "members.schedule-tab",
+  "members.sessions-tab",
   "members.settings",
   "members.switcher",
   "members.switcher.import",
@@ -204,6 +206,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "state",
     "revealer": "members.back",
     "state": "crewmate_chat_open_phone"
+  },
+  "members.sessions-tab": {
+    "kind": "state",
+    "revealer": "members.sessions-tab",
+    "state": "crewmate_profile_sessions_tab_closed"
   },
   "members.settings": {
     "kind": "state",
@@ -2262,6 +2269,38 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:members.schedule-tab",
             "location": "members.schedule-tab",
             "label_key": "pages.membersPage.schedules_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.sessions-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_sessions_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.sessions-tab",
+            "location": "members.sessions-tab",
+            "label_key": "pages.membersPage.profile_sessions_tab"
           }
         ]
       }

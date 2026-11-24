@@ -91,6 +91,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: bots:manage
       x-crew-phase: 1b
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-wraps: GET /api/members
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
@@ -257,6 +259,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
@@ -404,7 +408,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -457,6 +462,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -501,7 +508,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/GrantRequest'
         '400':
-          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+          description: 'invalid_request: a malformed body or field, or bots of an approval that are not a subset of
+            the requested Bots or name a Bot this Kiro Crew does not have. invalid_scope: the scopes of an approval are
+            empty, repeat a scope, or name a scope the app did not ask for'
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Error
         '401':
           $ref: ./components.yaml#/components/responses/OwnerUnauthorized
         '403':
@@ -526,7 +544,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -602,7 +621,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/sessions_parts/live_turn.py (GET /api/approvals), state only
       x-crew-coverage: done
@@ -655,7 +675,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -724,7 +745,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - the resolvers behind POST /api/approvals/{id}/{action} and POST /api/chat/slots/{slot}/approve
       x-crew-coverage: done

@@ -111,7 +111,7 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(inline()).toBe(false)
   })
 
-  // Without the dictation panel (setting off, no WebGL2, or reduced motion) a
+  // Without the dictation panel (setting off, or reduced motion) a
   // recording draws the voice bar's Recording strip; on the single row it would
   // sit beside the text and squeeze both.
   it('opens to two rows while recording draws the Recording strip', () => {

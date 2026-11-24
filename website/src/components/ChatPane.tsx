@@ -1012,6 +1012,7 @@ export default function ChatPane({
                 fullText={pinnedState.full}
                 images={pinnedState.images}
                 bodyBeyondPreview={pinnedState.bodyBeyondPreview}
+                meta={pinnedState.meta}
                 pushUp={pinnedState.push}
                 liveH={pinnedState.liveH}
                 maxH={pinnedState.maxH}

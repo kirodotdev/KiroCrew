@@ -1594,8 +1594,8 @@ preview is on but Crew's sign-in does not serve the configured `slack` entry
 (`crew_oauth.owns` is False: the entry sends its own credential header or points
 at another url, so the mint answers `crew_sign_in_required`), the status row
 carries `crewSignInNotOwned` (`status._crew_sign_in_not_owned_slugs`) instead:
-the card offers no Connect, no setup steps and no OAuth app form, says in one line that the entry
-signs in by itself, links to MCP Servers, and the MCP Servers row keeps its
+the card offers no Connect, no setup steps and no OAuth app form, says in one line that the server
+listed in MCP Servers handles its own sign-in, links to MCP Servers, and the MCP Servers row keeps its
 own sign-in path. A url that differs only by a trailing slash or letter case
 (`status.card_url`, as `normalizedUrl` in `registry.ts`) is the card's row and keeps
 Connect, which writes the registry url onto the entry before minting.

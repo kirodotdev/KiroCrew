@@ -28,7 +28,9 @@ info:
     - Webhooks: the address comes only from the manifest. The webhooks section below gives the
       callback body and signature headers.
     - Extensions: x-crew-tier, x-crew-scope, x-crew-entitlement, x-crew-phase (1a / 1b / 2 / 3),
-      x-crew-stability (preview: a phase 1b operation whose shape may still change, with notice for
+      x-crew-status (available: the gateway serves the operation; an operation without it is
+      planned), x-crew-available-to (on an available operation: the callers the gateway serves
+      it to, owner alone or owner and app; both are used in crew-owner.yaml too), x-crew-stability (preview: a phase 1b operation whose shape may still change, with notice for
       the preview deprecation period before it does), x-crew-reuses (existing code that can be built
       on, at commit 8da9c340eb), x-crew-coverage (done/partial), x-crew-depends-on (open questions
       in the RFC).
@@ -195,6 +197,8 @@ paths:
       x-crew-tier: public
       x-crew-scope: responses:write
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/chat_runner.py:765 (_run_chat)
       - src/kiro_crew/dashboard/openai_compat.py:757 (how _stream_response reads the queue)
@@ -955,6 +959,10 @@ paths:
       x-crew-tier: public
       x-crew-scope: any
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to:
+      - owner
+      - app
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/agents.py:1388 (api_models)
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
