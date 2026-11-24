@@ -225,6 +225,7 @@ from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     MIRROR_ECHO_OWED_META_KEY,
     _authorize_recipient,
     _mirror_upload_roots,
+    _name_local_attachments,
     _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
