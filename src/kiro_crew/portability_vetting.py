@@ -380,6 +380,15 @@ def _sanitize_cron_text(
                 "Error: an imported job that runs a command or script is "
                 "restored paused until it is enabled by hand",
             )
+        # Rule 4: grants this install never made stay out. A Bot's carried Profile
+        # grant (owner_approval_mode) and a person-tab mark (person_owner_key) were
+        # recorded on the install that wrote the archive; kept, they let the job
+        # auto-approve or run its cron session here without a check on this install.
+        # owner_member_id stays: it names who made the job and grants nothing alone.
+        for field in ("owner_approval_mode", "person_owner_key"):
+            if field in job:
+                del job[field]
+                changed = True
         kept.append(job)
 
     if changed:
