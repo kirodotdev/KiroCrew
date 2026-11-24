@@ -44,11 +44,17 @@ from kiro_crew.security.readonly_bash import _EXTGLOB_RE
 # Bounded on purpose: an open-ended segment run made a body such as `a:\a:\a:\...`
 # quadratic. `:` stays out of a segment so a `x:\` run cannot chain. The drive letter
 # must not follow `?`, `\` or `-`, so an inline flag such as `(?i:\.aws\b)` is no drive.
+# A Windows segment may hold a space (`C:\Users\Jane Doe\`), never another whitespace,
+# and inside a Windows path a multi-component name such as `.kube/config` may use one
+# lone backslash for each `/` (`C:\Users\u\.kube\config`).
+_WIN_NAME_SEP = r"(?(win)(?:/|\\(?!\\))|/)"
 _CRON_CRED_PATH_RE = re.compile(
     r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?"
-    r"|(?P<win>(?<![\w?\\-])[A-Za-z]:\\(?:[^\s'\"\\:]{1,255}\\){0,32}"
+    r"|(?P<win>(?<![\w?\\-])[A-Za-z]:\\(?:[^\t\n\r\f\v'\"\\:]{1,255}\\){0,32}"
     r"|%[A-Za-z_][\w()]{0,255}%\\))"
-    r"(?P<name>" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
+    r"(?P<name>"
+    + "|".join(_WIN_NAME_SEP.join(map(re.escape, d.split("/"))) for d in _SENSITIVE_HOME_DIRS)
+    + r")"
     r"(?:/|\s|['\"]|$|(?(win)\\(?!\\)|(?!)))",
     re.IGNORECASE,
 )
@@ -74,7 +80,8 @@ def _matched_sensitive_name(text: str, pattern: re.Pattern[str] = _CRON_CRED_PAT
     m = pattern.search(text)
     if m is None:
         return None
-    return _SENSITIVE_HOME_DIRS_BY_LOWER.get(m.group("name").lower(), m.group("name"))
+    name = m.group("name")
+    return _SENSITIVE_HOME_DIRS_BY_LOWER.get(name.replace("\\", "/").lower(), name)
 
 
 def _protected_path_refusal(surface: str, matched: str | None) -> str:

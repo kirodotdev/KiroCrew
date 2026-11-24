@@ -190,7 +190,39 @@ SINGLE_BACKSLASH_PROTECTED_PATH_BODIES = [
     ("%USERPROFILE%\\.ssh\\id_rsa", ".ssh"),
     ("C:\\.aws\\credentials", ".aws"),
     ("open(r'C:\\Users\\u\\.ssh')", ".ssh"),
+    ('open(r"C:\\Users\\Jane Doe\\.aws\\credentials")', ".aws"),
+    ('open(r"C:\\Users\\Jane\\.kube\\config")', ".kube/config"),
+    ('open(r"C:\\Users\\Jane Doe\\.kube\\config")', ".kube/config"),
+    ("%USERPROFILE%\\.docker\\config.json", ".docker/config.json"),
 ]
+
+
+def test_every_multi_component_protected_name_is_refused_in_a_windows_path():
+    """Each entry with a `/` is also refused when a Windows path writes that `/`
+    as one backslash, with or without a space in an earlier segment."""
+    from kiro_crew.mcp_cron_shell_scan import _SENSITIVE_HOME_DIRS
+
+    multi = [d for d in _SENSITIVE_HOME_DIRS if "/" in d]
+    assert multi
+    for name in multi:
+        win = name.replace("/", "\\")
+        for body in (f'open(r"C:\\Users\\Jane Doe\\{win}")', f"%USERPROFILE%\\{win}"):
+            assert _matched_sensitive_name(body) == name, body
+            assert _vet_script_contents(body) is not None, body
+
+
+WINDOWS_PATH_ALLOWED_BODIES = [
+    'open(r"C:\\Users\\Jane Doe\\Documents\\report.txt")',
+    'open(r"C:\\Program Files\\App\\config.json")',
+    'open(r"C:\\Users\\Jane Doe\\.kube-old\\config")',
+    'open("C:\\\\Users\\\\Jane\\\\.kube\\\\config")',
+    'open("C:\\\\Users\\\\Jane Doe\\\\.aws\\\\credentials")',
+]
+
+
+@pytest.mark.parametrize("body", WINDOWS_PATH_ALLOWED_BODIES)
+def test_vet_script_contents_allows_a_benign_or_doubled_backslash_windows_path(body):
+    assert _vet_script_contents(body) is None, f"should allow: {body!r}"
 
 
 @pytest.mark.parametrize("body,name", SINGLE_BACKSLASH_PROTECTED_PATH_BODIES)
