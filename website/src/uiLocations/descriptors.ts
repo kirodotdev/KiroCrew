@@ -80,6 +80,15 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['reminder', 'reminders', 'scheduled jobs', 'scheduled tasks', 'cron', 'cron jobs', 'recurring tasks'],
     'zh-CN': ['提醒', '定时任务', '计划任务', '定时提醒'],
   },
+  // The catch-up brief a bot or conductor chat posts on return; people name it by
+  // its headings (Goal / Needs you / Doing), not by the setting's label.
+  'setting:chat.since-you-left-briefs': {
+    en: [
+      'goal needs you doing message', 'catch-up message', 'recap when I come back', 'welcome back summary',
+      'turn off the recurring status message', 'stop the bot recap', 'recurring goal needs you doing check-ins message',
+    ],
+    'zh-CN': ['回来时的进度简报', '目标 需要你 正在做 消息', '关闭回来时的总结', '欢迎回来的总结'],
+  },
   'setting:display.mode': {
     en: ['dark mode', 'light mode', 'night mode', 'dark theme', 'light theme'],
     'zh-CN': ['深色模式', '暗色模式', '浅色模式', '夜间模式', '暗黑模式'],
