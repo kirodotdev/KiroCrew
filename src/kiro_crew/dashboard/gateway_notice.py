@@ -137,6 +137,11 @@ GATEWAY_NOTICE_SEND_DISCARDED = "send_discarded"
 GATEWAY_NOTICE_EAGER_SPAWN_STOPPED = "eager_spawn_stopped"
 GATEWAY_NOTICE_TURN_FAILED_BEFORE_START = "turn_failed_before_start"
 GATEWAY_NOTICE_LOCAL_COMMAND_FAILED_BEFORE_START = "local_command_failed_before_start"
+# The ACP handle's auto-rejected sub-agent permission notice (``native_cards``).
+GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_STRANDED = "permission_auto_rejected_stranded"
+GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_NO_SECURITY_CONTEXT = (
+    "permission_auto_rejected_no_security_context"
+)
 
 # Terminal turn-limit and never-started cards (``turn_dispatch``). Their numbers
 # (the limit, the wait) ride in ``notice_args``.

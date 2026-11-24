@@ -13602,6 +13602,8 @@
         "eager_spawn_stopped_other": "此聊天的代理连续 {{count}} 次启动失败，因此不会再在后台启动。发送一条消息以重试。上次错误：{{detail}}",
         "turn_failed_before_start": "此消息在开始前就失败了。详情见网关日志。",
         "local_command_failed_before_start": "`{{command}}` 失败了。详情见网关日志。",
+        "permission_auto_rejected_stranded": "权限请求已被自动拒绝（滞留在两个轮次之间）：{{tool}}",
+        "permission_auto_rejected_no_security_context": "权限请求已被自动拒绝（缺少安全上下文）：{{tool}}",
         "turn_timeout": "此轮次达到了 {{limit}} 限制并已停止。已写入磁盘的工作仍然保留——没有回滚任何内容。发送一条消息以从中断处继续。{{hint}}",
         "turn_timeout_native_pending": "此轮次达到了 {{limit}} 限制。原生代理未确认停止请求，因此它之前的工具可能仍在收尾。在此会话空闲之前，请勿恢复它。已写入磁盘的工作仍然保留——没有回滚任何内容。{{hint}}",
         "background_turn_abandoned": "此轮次从未开始：它等待了 {{waited}} 以获取空闲的后台轮次名额，然后放弃了。没有运行任何内容，也没有回滚任何内容；下一条消息或循环周期会开始一个新轮次。如果轮次持续在上限处排队，请提高 `dashboard.max_background_turns`。",
