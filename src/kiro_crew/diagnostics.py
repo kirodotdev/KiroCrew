@@ -835,7 +835,7 @@ _FRAME_BODY_MARKER = re.compile(r'"jsonrpc"\s*:|"params"\s*:\s*[{\[]|"result"\s*
 #: rather than being spelled twice.
 _TRUNCATION_NOTE_PREFIX = "...[truncated"
 
-#: The shape that STARTS a log record, on a text line's left edge or as a 3.x JSON
+#: The shape that STARTS a log record, at column 0 of a text line or as a 3.x JSON
 #: event's ``timestamp`` value: an ISO calendar date, then ``T`` or a space before
 #: the time. Any other line is a continuation of the record above it.
 #:
@@ -854,12 +854,12 @@ def _record_timestamp(line: str) -> str | None:
 
     One predicate for both :func:`_begin_at_event_boundary` and
     :func:`_filter_since`, which each need the same event/continuation split. Two
-    copies would drift, and here they would drift on a security boundary.
+    copies would drift, and here they would drift on a security boundary. The line is
+    judged as written: a record starts at column 0, and an indented line continues one.
     """
-    head = line.lstrip()
-    if _RECORD_START.match(head):
-        return head
-    return diagnostics_kiro_home_logs.json_event_timestamp(head)
+    if _RECORD_START.match(line):
+        return line
+    return diagnostics_kiro_home_logs.json_event_timestamp(line)
 
 
 def _begin_at_event_boundary(text: str) -> str:

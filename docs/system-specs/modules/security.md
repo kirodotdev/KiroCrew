@@ -4322,6 +4322,10 @@ channel carries a **fail-closed tripwire** rather than a standing assumption.
 reads as serialized frames, so a kiro-cli that starts logging bodies produces a refusal
 instead of a silent widening, and `_begin_at_event_boundary` closes the matching bypass
 where a truncated window strands a frame's argument lines after its envelope was cut away.
+That trim and the `since` filter share one record-start predicate, `_record_timestamp`,
+which judges a line as written: a record starts at column 0, so an indented line, even one
+that begins with a date or is a one-line object with a `timestamp` field, continues the
+record above it.
 Neither tries to separate one session's frames from another's, deliberately: a per-line
 filter over interleaved sessions would look scoped without being scoped, which is worse
 than nothing.
