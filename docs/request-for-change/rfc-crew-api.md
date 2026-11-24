@@ -636,6 +636,15 @@ accepted by a maintainer):
    local authorization. Every token under the grant is refused from the next request. A second
    call answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside
    issuer, so nothing is sent over the control channel.
+4. `GET /v1/crew/owner/grants`, already in this RFC, is served for grants made through local
+   authorization (amendment, 2026-11-24; proposed, to be accepted by a maintainer). It lists the
+   grants that work now, oldest first, paged with `after` and `limit`. A revoked or expired grant
+   is not listed, under any `status`. An `after` that names no grant in the list, one revoked
+   since the last page included, is 400 `invalid_request`; the caller starts again from the
+   first page. A row carries `id`, `kind` (`local`), `namespace`,
+   `client_id`, `app.name` (as the app reported it), `scopes`, `status`, `created_at` and
+   `expires_at`, and no token. Usage, quota and Bot range are not kept for such a grant and are
+   left out.
 
 ### 9. Versioning and compatibility
 

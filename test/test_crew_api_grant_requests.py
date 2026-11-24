@@ -502,3 +502,126 @@ def test_the_owner_view_keeps_the_stores_statuses_to_the_contracts_four():
     stored = {"pending", "approved", "denied", "code_issued", "exchanged"}
     shown = {la._OWNER_STATUS.get(status, status) for status in stored}
     assert shown == {"pending", "approved", "denied"}
+
+
+GRANTS = "/v1/crew/owner/grants"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_lists_the_grants_that_work_now(client, clock):
+    empty = await client.get(GRANTS, headers=AS_OWNER)
+    assert empty.status == 200
+    assert await empty.json() == {
+        "object": "list",
+        "data": [],
+        "first_id": None,
+        "last_id": None,
+        "has_more": False,
+    }
+    _, first = await _approved_tokens(client, clock, ["conversations:read"])
+    clock.now += 10
+    _, second = await _approved_tokens(client, clock)
+    # Asked and approved, never redeemed: not a grant.
+    waiting = await _ask(client)
+    await client.post(_decision(waiting), json={"decision": "approve"}, headers=AS_OWNER)
+
+    listed = await client.get(GRANTS, headers=AS_OWNER)
+    body = await listed.json()
+    assert listed.status == 200
+    _valid("GrantList", body)
+    assert listed.headers["X-Request-Id"].startswith("req_")
+    assert listed.headers["Crew-API-Version"]
+    assert [g["id"] for g in body["data"]] == [first["grant_id"], second["grant_id"]]
+    assert (body["first_id"], body["last_id"], body["has_more"]) == (
+        first["grant_id"],
+        second["grant_id"],
+        False,
+    )
+    row = body["data"][0]
+    assert row == {
+        "id": first["grant_id"],
+        "object": "grant",
+        "kind": "local",
+        "namespace": "default",
+        "client_id": ASK["client_id"],
+        "app": {"name": row["app"]["name"], "icon_url": None},
+        "scopes": ["conversations:read"],
+        "status": "active",
+        "created_at": row["created_at"],
+        "expires_at": row["created_at"] + la.REFRESH_MAX_SECS,
+    }
+    # No token, code or digest is in the answer.
+    text = json.dumps(body)
+    for secret in (first["access_token"], first["refresh_token"], VERIFIER):
+        assert secret not in text
+
+    paged = await client.get(GRANTS, params={"limit": "1"}, headers=AS_OWNER)
+    page = await paged.json()
+    assert [g["id"] for g in page["data"]] == [first["grant_id"]] and page["has_more"] is True
+    rest = await client.get(GRANTS, params={"after": first["grant_id"]}, headers=AS_OWNER)
+    assert [g["id"] for g in (await rest.json())["data"]] == [second["grant_id"]]
+
+    # A revoked grant is not listed, under any status.
+    await client.delete(_grant(first["grant_id"]), headers=AS_OWNER)
+    for params in ({}, {"status": "active"}):
+        after = await (await client.get(GRANTS, params=params, headers=AS_OWNER)).json()
+        assert [g["id"] for g in after["data"]] == [second["grant_id"]]
+    for status in ("revoked", "paused", "throttled"):
+        other = await client.get(GRANTS, params={"status": status}, headers=AS_OWNER)
+        assert other.status == 200 and (await other.json())["data"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"status": "gone"},
+        {"limit": "0"},
+        {"limit": "101"},
+        {"limit": "1e1"},
+        {"limit": "٣"},
+        {"after": "grt_nope"},
+    ],
+)
+async def test_a_bad_grants_query_is_400(client, clock, params):
+    await _approved_tokens(client, clock)
+    refused = await client.get(GRANTS, params=params, headers=AS_OWNER)
+    body = await refused.json()
+    assert refused.status == 400
+    _valid("Error", body)
+    assert body["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caller",
+    [AS_APP, {"X-Test-User": "123456789"}, {}, {"X-Test-Teammate": "relay"}],
+    ids=["app-token", "another-user", "no-credential", "teammate"],
+)
+async def test_only_the_host_owner_lists_grants(client, clock, monkeypatch, caller):
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+    _, tokens = await _approved_tokens(client, clock)
+    denial_audit = Mock(spec=["log_api_access"])
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: denial_audit)
+    # The store is not read for a refused caller.
+    monkeypatch.setattr(client.store, "grants", Mock(side_effect=AssertionError("read")))
+    refused = await client.get(GRANTS, headers=caller)
+    body = await refused.json()
+    assert refused.status == 403
+    _valid("Error", body)
+    assert (body["error"]["type"], body["error"]["code"]) == ("permission_error", "owner_only")
+    assert set(body) == {"error"} and tokens["grant_id"] not in json.dumps(body)
+    rows = [call.kwargs for call in denial_audit.log_api_access.call_args_list]
+    assert rows and all(row["outcome"] == "denied" for row in rows)
+    if "X-Test-Teammate" in caller:
+        assert [row["operation"] for row in rows] == ["crew_api.grants.list"]
+
+
+@pytest.mark.asyncio
+async def test_grants_that_cannot_be_read_are_503(client, clock, monkeypatch):
+    await _approved_tokens(client, clock)
+    monkeypatch.setattr(client.store, "_load", Mock(side_effect=OSError("disk")))
+    unreadable = await client.get(GRANTS, headers=AS_OWNER)
+    body = await unreadable.json()
+    assert unreadable.status == 503
+    assert body["error"]["code"] == "instance_unavailable"

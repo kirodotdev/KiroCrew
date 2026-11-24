@@ -87,6 +87,34 @@
         }
       }
     },
+    "/v1/crew/owner/grants": {
+      "get": {
+        "operationId": "get_v1_crew_owner_grants",
+        "summary": "The grants that work now, oldest first; a revoked grant is not listed",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "status", "in": "query", "required": false, "schema": {"enum": ["active", "throttled", "paused", "revoked"]}},
+          {"name": "after", "in": "query", "required": false, "schema": {"type": "string", "pattern": "^grt_"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The grants",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GrantList"}}}
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/crew/owner/grants/{grant_id}": {
       "delete": {
         "operationId": "delete_v1_crew_owner_grants_grant_id",
@@ -324,6 +352,40 @@
         "properties": {
           "object": {"const": "list"},
           "data": {"type": "array", "items": {"$ref": "#/components/schemas/GrantRequest"}},
+          "first_id": {"type": ["string", "null"]},
+          "last_id": {"type": ["string", "null"]},
+          "has_more": {"type": "boolean"}
+        }
+      },
+      "Grant": {
+        "type": "object",
+        "required": ["id", "object", "kind", "namespace", "client_id", "scopes", "status", "created_at", "expires_at"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^grt_"},
+          "object": {"const": "grant"},
+          "kind": {"const": "local", "description": "Made through local authorization, by this gateway"},
+          "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
+          "client_id": {"type": "string", "maxLength": 128, "description": "As the app reported it"},
+          "app": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "maxLength": 80, "description": "As the app reported it"},
+              "icon_url": {"type": "null"}
+            }
+          },
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "status": {"const": "active", "description": "A revoked grant is not listed"},
+          "created_at": {"type": "integer"},
+          "expires_at": {"type": "integer", "description": "When the grant ends by itself"}
+        }
+      },
+      "GrantList": {
+        "type": "object",
+        "required": ["object", "data", "has_more"],
+        "properties": {
+          "object": {"const": "list"},
+          "data": {"type": "array", "items": {"$ref": "#/components/schemas/Grant"}},
           "first_id": {"type": ["string", "null"]},
           "last_id": {"type": ["string", "null"]},
           "has_more": {"type": "boolean"}

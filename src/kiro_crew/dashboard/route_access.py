@@ -73,6 +73,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
         "chat.source_links_off.change", UNSTABLE
     ),
+    # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
+    # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
+    ("GET", "/v1/crew/owner/grants"): RouteAccess("crew_api.grants.list", PREVIEW),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
