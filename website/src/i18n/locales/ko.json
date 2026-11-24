@@ -17179,6 +17179,7 @@
       "review_approved": "공유됨",
       "review_skipped": "공유 안 됨",
       "review_skip": "공유 안 함",
+      "review_sharing": "공유 중…",
       "diff_added": "추가: {{tokens}}",
       "diff_removed": "제거: {{tokens}}",
       "diff_env_added": "추가된 환경 변수: {{names}}",

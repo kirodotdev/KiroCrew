@@ -17648,6 +17648,7 @@
       "review_approved": "Geteilt",
       "review_skipped": "Nicht geteilt",
       "review_skip": "Nicht teilen",
+      "review_sharing": "Wird geteilt…",
       "diff_added": "Hinzugefügt: {{tokens}}",
       "diff_removed": "Entfernt: {{tokens}}",
       "diff_env_added": "Env hinzugefügt: {{names}}",

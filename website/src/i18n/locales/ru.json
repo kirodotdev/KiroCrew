@@ -18586,6 +18586,7 @@
       "review_approved": "Сделан общим",
       "review_skipped": "Не сделан общим",
       "review_skip": "Не делать общим",
+      "review_sharing": "Делаем общим…",
       "diff_added": "Добавлено: {{tokens}}",
       "diff_removed": "Удалено: {{tokens}}",
       "diff_env_added": "Добавлены переменные: {{names}}",

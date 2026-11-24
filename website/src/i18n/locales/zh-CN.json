@@ -17179,6 +17179,7 @@
       "review_approved": "已共享",
       "review_skipped": "未共享",
       "review_skip": "不共享",
+      "review_sharing": "正在共享…",
       "diff_added": "新增：{{tokens}}",
       "diff_removed": "删除：{{tokens}}",
       "diff_env_added": "新增环境变量：{{names}}",
