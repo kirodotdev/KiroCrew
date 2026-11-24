@@ -66,15 +66,21 @@ def grant_host_exec(name: str) -> bool:
     return True
 
 
-def revoke_host_exec(name: str) -> None:
+def revoke_host_exec(name: str) -> bool:
     """Remove *name*'s grant. Safe to call for any app on any write that disables it
-    and on uninstall: a no-op when no grant exists."""
+    and on uninstall: a no-op when no grant exists.
+
+    ``False`` when the marker is still there (it could not be removed), so a caller that
+    reports an uninstall or a disable says so instead of reporting success. Never raises.
+    """
     try:
         _grant_path(name).unlink()
     except FileNotFoundError:
         pass
     except OSError:
         logger.warning("could not revoke host-exec grant for %r", name, exc_info=True)
+        return False
+    return True
 
 
 def host_exec_granted(name: str) -> bool:
