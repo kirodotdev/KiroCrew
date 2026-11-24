@@ -1451,7 +1451,13 @@ A Bot's worker (`members.is_crewmate_worker_session`) is started with
 and the wire array carries them. Without the option every worker also started each
 server in the user's own Claude config, the project's `.mcp.json` and installed
 plugins, once per worker, so a host with many such servers and several workers ran
-out of memory. Ordinary and member chats keep the adapter's default.
+out of memory.
+
+A `spawn_run` sub-agent (session key `subagent:<id>`) is started with
+`strictMcpConfig` too (`_claude_session_meta`). Its wire array already carries the
+servers its spec's `tools` allowlist grants; without the option the harness also
+added the user's, the project's and plugins' servers, including ones the spec leaves
+out. Ordinary and member chats keep the adapter's default.
 
 ### An incognito or temporary chat
 

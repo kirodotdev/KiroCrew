@@ -6325,7 +6325,8 @@
       "sign_out_link_config_unreadable": "Einstellungen konnten nicht geladen werden, daher kann der Abmelde-Link nicht angezeigt werden.",
       "switch_in_settings": "In den Einstellungen Konto wechseln",
       "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen",
-      "kiro_account_in_settings": "Kiro-Konto in den Einstellungen"
+      "kiro_account_in_settings": "Kiro-Konto in den Einstellungen",
+      "credit_usage_not_ready": "Dein Guthaben ist noch nicht bereit."
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
@@ -8185,7 +8186,8 @@
       "pending_cancel_unsettled": "Angemeldet, aber die hier gestartete Anmeldung konnte nicht abgebrochen werden. Sie bleibt offen, bis sie abläuft.",
       "card_intro": "Kiro Agent und andere Kiro-Funktionen laufen mit diesem Kiro-Konto, egal welchen Agent-Harness du nutzt. Kiro CLI behält seine eigene kiro-cli-Anmeldung, daher ändert eine Anmeldung hier sie nicht.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
-      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
+      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung.",
+      "use_another_way": "Anderen Weg wählen"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Anmeldebefehl kopieren",
@@ -16696,19 +16698,15 @@
         "engine_sign_in_reason": "Melde dich bei {{productName}} an, um zur integrierten Engine zu wechseln."
       },
       "kiroSignInCard": {
-        "title": "Kiro-Anmeldung",
         "checking": "Anmeldung wird geprüft…",
         "signed_in_with": "Angemeldet mit {{provider}}",
-        "signed_in_body": "Agenten laufen unter diesem Kiro-Konto. Das Zugriffstoken wird automatisch erneuert.",
         "access_token_expires": "Zugriffstoken läuft {{when}} ab ({{at}}).",
-        "expired_renews_on_next_use": "Das Zugriffstoken ist abgelaufen und wird erneuert, sobald ein Agent es das nächste Mal benötigt.",
         "sign_in_expired": "Anmeldung abgelaufen.",
         "sign_in_expired_body": "Melde dich erneut an, um Sitzungen und die Arbeit der Agenten fortzusetzen.",
         "sign_in_expired_body_account": "Melde dich erneut an, um Funktionen zu nutzen, die dein Kiro-Konto brauchen.",
         "sign_in_again": "Erneut anmelden",
         "switch_account": "Konto wechseln",
         "sign_out": "Abmelden",
-        "takes_effect_next_process": "Gilt für ab jetzt gestartete Agentenprozesse; laufende Sitzungen übernehmen es beim nächsten Durchlauf.",
         "could_not_sign_out": "Abmelden nicht möglich",
         "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an.",
         "search_label": "Abmelden oder Kiro-Konto wechseln",
@@ -16732,7 +16730,10 @@
         "use_kiro_cli_account": "Konto von Kiro CLI verwenden",
         "use_kiro_cli_explain": "Dadurch wird die hier gespeicherte Anmeldung entfernt. Kiro Agent läuft dann unter dem Konto von Kiro CLI. Um das rückgängig zu machen, melde dich hier erneut an.",
         "remove_this_sign_in": "Diese Anmeldung entfernen",
-        "keep_it": "Behalten"
+        "keep_it": "Behalten",
+        "signed_out_hint": "Deine Agenten laufen mit deinem Kiro-Konto.",
+        "code_step_hint": "Öffne die Seite und prüfe, ob sie diesen Code zeigt.",
+        "loading_account": "Konto wird geladen"
       },
       "kiroAccountUnlocks": {
         "list_heading": "Mit einem Kiro-Konto",

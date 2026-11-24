@@ -1059,7 +1059,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         if _wait_if_busy
         else not state.sessions.resumable_hint(session_key)
     )
-    if _starts_fresh and not is_slash and not _message_rewritten_before_build(slot, message):
+    if _starts_fresh and not is_slash and not _message_rewritten_before_build(message):
         await _prewarm_startup_query(
             state,
             slot,

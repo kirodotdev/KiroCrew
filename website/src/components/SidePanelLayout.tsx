@@ -25,6 +25,12 @@ export interface SidePanelTab {
    *  in `--muted`, as every other host of this layout renders it. */
   tile?: string
   description?: string
+  /** The pane draws its own visible header (Settings > Kiro account's centered
+   *  account header), so the layout's title row with `label`, `description`
+   *  and a `header`-docked `headerRight` is left out. The label stays as a
+   *  visually hidden heading, so a screen reader still meets the tab's title
+   *  first. */
+  ownHeader?: boolean
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
   /** The dot's accessible name; defaults to "update available". */
@@ -661,7 +667,8 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
 
       <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {isMobile && !subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
-        {!subDrilled && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
+        {!subDrilled && meta?.ownHeader && <h2 className="sr-only" data-testid="side-panel-header-hidden">{meta.label}</h2>}
+        {!subDrilled && !meta?.ownHeader && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
           <div>
             {/* A heading, so the tab's title is the page's first heading for a
                 screen reader rather than plain text above its cards. */}

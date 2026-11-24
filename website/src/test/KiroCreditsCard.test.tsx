@@ -79,6 +79,28 @@ describe('KiroCreditsCard', () => {
     expect(screen.queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
   })
 
+  it('with no reading yet, says so in one gray line with a small outlined Refresh, and no notice box', () => {
+    renderWithProviders(<KiroCreditsCard usage="none" handoff={false} showIdentity={false} />)
+
+    const line = screen.getByTestId('kiro-credits-no-reading')
+    expect(line).toHaveTextContent('Your balance isn’t ready yet.')
+    const refresh = within(line).getByRole('button', { name: 'Refresh' })
+    // The compact shape: outlined, never the accent fill.
+    expect(refresh.className).not.toMatch(/bg-accent/)
+    expect(screen.queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
+    // The account is named by the page header above the card, not again here.
+    expect(screen.queryByTestId('account-identity')).not.toBeInTheDocument()
+  })
+
+  it('names the account above the usage unless the header already does', () => {
+    const { unmount } = renderWithProviders(<KiroCreditsCard usage={ACCOUNT_A} handoff={false} />)
+    const identity = screen.getByTestId('account-identity')
+    expect(identity.compareDocumentPosition(screen.getByTestId('credit-usage')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    unmount()
+    renderWithProviders(<KiroCreditsCard usage={ACCOUNT_A} handoff={false} showIdentity={false} />)
+    expect(screen.queryByTestId('account-identity')).not.toBeInTheDocument()
+  })
+
   it('offers the agent hand-off on a failed reading when no sign-in card is beside it', () => {
     renderWithProviders(<KiroCreditsCard usage="failed" handoff />)
 

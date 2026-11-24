@@ -6605,7 +6605,8 @@
       "sign_out_link_config_unreadable": "설정을 불러오지 못해 로그아웃 링크를 표시할 수 없습니다.",
       "switch_in_settings": "설정에서 계정 전환",
       "bots_sign_in_in_settings": "설정에서 Bot용 Kiro 로그인",
-      "kiro_account_in_settings": "설정의 Kiro 계정"
+      "kiro_account_in_settings": "설정의 Kiro 계정",
+      "credit_usage_not_ready": "잔액이 아직 준비되지 않았습니다."
     },
     "artifactChatPanel": {
       "agent_chat": "에이전트 채팅",
@@ -7973,7 +7974,8 @@
       "pending_cancel_unsettled": "로그인했지만 여기서 시작한 로그인을 취소할 수 없습니다. 시간이 초과될 때까지 열려 있습니다.",
       "card_intro": "Kiro Agent와 다른 Kiro 기능은 어떤 에이전트 하네스를 사용하든 이 Kiro 계정으로 실행됩니다. Kiro CLI는 자체 kiro-cli 로그인을 유지하므로 여기서 로그인해도 바뀌지 않습니다.",
       "previous_sign_in_not_removed": "로그인했지만 이전 로그인을 제거할 수 없음",
-      "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요."
+      "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요.",
+      "use_another_way": "다른 방법 사용"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "로그인 명령 복사",
@@ -16259,19 +16261,15 @@
         "engine_sign_in_reason": "내장 엔진으로 바꾸려면 {{productName}}에 로그인하세요."
       },
       "kiroSignInCard": {
-        "title": "Kiro 로그인",
         "checking": "로그인 상태 확인 중…",
         "signed_in_with": "{{provider}}(으)로 로그인됨",
-        "signed_in_body": "에이전트는 이 Kiro 계정으로 실행됩니다. 액세스 토큰은 자동으로 갱신됩니다.",
         "access_token_expires": "액세스 토큰이 {{when}} 만료됩니다 ({{at}}).",
-        "expired_renews_on_next_use": "액세스 토큰이 만료되었으며 다음에 에이전트가 필요로 할 때 갱신됩니다.",
         "sign_in_expired": "로그인이 만료됨.",
         "sign_in_expired_body": "세션과 에이전트 작업을 재개하려면 다시 로그인하세요.",
         "sign_in_expired_body_account": "Kiro 계정이 필요한 기능을 사용하려면 다시 로그인하세요.",
         "sign_in_again": "다시 로그인",
         "switch_account": "계정 전환",
         "sign_out": "로그아웃",
-        "takes_effect_next_process": "지금부터 시작되는 에이전트 프로세스에 적용됩니다. 실행 중인 세션은 다음 턴에서 적용됩니다.",
         "could_not_sign_out": "로그아웃할 수 없음",
         "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요.",
         "search_label": "로그아웃 또는 Kiro 계정 전환",
@@ -16295,7 +16293,10 @@
         "use_kiro_cli_account": "Kiro CLI 계정 사용",
         "use_kiro_cli_explain": "여기에 저장된 로그인을 삭제합니다. 그러면 Kiro Agent는 Kiro CLI 계정으로 실행됩니다. 되돌리려면 여기서 다시 로그인하세요.",
         "remove_this_sign_in": "이 로그인 삭제",
-        "keep_it": "유지"
+        "keep_it": "유지",
+        "signed_out_hint": "에이전트는 내 Kiro 계정으로 실행됩니다.",
+        "code_step_hint": "페이지를 열고 이 코드가 표시되는지 확인하세요.",
+        "loading_account": "계정 불러오는 중"
       },
       "kiroAccountUnlocks": {
         "list_heading": "Kiro 계정으로 할 수 있는 것",

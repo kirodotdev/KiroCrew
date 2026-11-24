@@ -2054,7 +2054,11 @@ budgeted `[Memory activity]` block
 (`get_activity_context`); the facts and episodes are ranked against the request,
 and the lessons block reuses that vector, so a fresh first turn embeds the
 request once — three embed calls on the same text through the shared embedder,
-one inference. With the switch off, that material
+one inference. The request is the user's own span of the turn
+(`context_assembly.turn.recall_query`, the `user_text_range` slice the
+per-message and post-compaction lesson paths also read): a notice or context a
+dispatcher put in front of it ranks nothing, and an `@prompt` turn's empty span
+ranks the prompt body after the prefix. With the switch off, that material
 is on demand through the store-bound `memory_recall` route and startup performs
 no query embedding. Warm follow-ups do not repeat startup memory injection. The
 prompt-build embedding deadline bounds that first-turn inference; past it the three

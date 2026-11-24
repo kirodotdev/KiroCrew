@@ -265,8 +265,9 @@ Thread history has its own reference base, `_HISTORY_REFERENCE_BASE`, and takes
 21% of it on the fallback path (`_HISTORY_BUDGET_CHARS`) and 27% compressed
 (`_COMPRESSED_HISTORY_CAP`), each then scaled by the model window. One embedding
 deadline covers a whole prompt build: `_PROMPT_BUILD_EMBED_TIMEOUT_SECS`, five
-seconds; a missed embedding is ranked by keyword. A dashboard turn starts the first
-message's embedding before the build (`embed_startup_query`), beside session startup
+seconds; a missed embedding is ranked by keyword. A dashboard turn starts the
+embedding of the text the build ranks, the user's own span of the first message
+(`recall_query`), before the build (`embed_startup_query`), beside session startup
 when the turn has to start the session itself. A build that finds that embedding
 cached reads it at once, and one that finds it still running joins it and waits
 `memory.startup_recall_timeout_secs` (one second) instead. On that same cold start
