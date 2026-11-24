@@ -107,7 +107,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_parse_ui_contents": ("function", False, "cfabfdc984f2", "backend_mcp_apps"),
     "_pending_requests": ("annotation", False, "", ""),
     "_read_ui_resource": ("function", True, "ad837865fef2", "backend_mcp_apps"),
-    "_record_hazard": ("function", False, "bdef4dec7d1f", "backend_routing"),
+    "_record_hazard": ("function", False, "398422c29dc6", "backend_routing"),
     "_rekey_generation": ("annotation", False, "", ""),
     "_release_upstream_subscriptions": ("function", True, "cc3d421ddfc2", "backend_leases"),
     "_reply_locally": ("function", True, "f8a4fcb66c0f", "backend_stubs"),

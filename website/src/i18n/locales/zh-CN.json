@@ -16939,6 +16939,8 @@
       "why_shared": "所有新聊天共用一份。",
       "why_credentials": "它会发放凭证，所以每个聊天各留一份。",
       "why_no_stdio": "它没有 stdio 管道，所以每个聊天各自连接。",
+      "why_roots": "它向聊天要过项目文件夹，所以每个聊天各自运行一份。",
+      "stub_error_cwd_roots": "{{name}} 向聊天要过项目文件夹，所以每个聊天各自运行一份。",
       "hero_title": "在聊天之间共享 MCP 服务器",
       "share_switch_label": "开启 MCP 服务器共享",
       "share_diagram_label": "关闭共享：每个聊天各自运行一份服务器。开启共享：所有聊天共用一份。",

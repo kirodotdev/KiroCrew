@@ -85,6 +85,9 @@ export type McpManagedServer = {
   // Optional: an older gateway does not send them.
   cwd_use?: McpCwdUse | null
   cwd_proven?: boolean
+  // The gateway saw this server ask a chat for its roots (`roots/list`): it reads
+  // the chat's project folder, so it cannot share and is never asked.
+  cwd_roots?: boolean
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as

@@ -16939,6 +16939,8 @@
       "why_shared": "모든 새 채팅이 복사본 하나를 사용합니다.",
       "why_credentials": "자격 증명을 내주므로 채팅마다 자체 복사본을 유지합니다.",
       "why_no_stdio": "stdio 파이프가 없어서 채팅마다 따로 연결합니다.",
+      "why_roots": "채팅에 프로젝트 폴더를 요청했으므로 채팅마다 따로 실행됩니다.",
+      "stub_error_cwd_roots": "{{name}}이(가) 채팅에 프로젝트 폴더를 요청했으므로 채팅마다 따로 실행됩니다.",
       "hero_title": "채팅 간 MCP 서버 공유",
       "share_switch_label": "MCP 서버 공유 켜기",
       "share_diagram_label": "공유 끔: 채팅마다 서버를 하나씩 실행합니다. 공유 켬: 모든 채팅이 하나를 함께 씁니다.",

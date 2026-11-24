@@ -17843,6 +17843,8 @@
       "why_shared": "Todos los chats nuevos usan una sola copia.",
       "why_credentials": "Entrega credenciales, así que cada chat conserva su propia copia.",
       "why_no_stdio": "No tiene canal stdio, así que cada chat se conecta por su cuenta.",
+      "why_roots": "Pidió a un chat la carpeta de su proyecto, así que cada chat ejecuta su propia copia.",
+      "stub_error_cwd_roots": "{{name}} pidió a un chat la carpeta de su proyecto, así que cada chat ejecuta su propia copia.",
       "hero_title": "Compartir servidores MCP entre chats",
       "share_switch_label": "Activar el uso compartido de servidores MCP",
       "share_diagram_label": "Uso compartido desactivado: cada chat ejecuta su propia copia de un servidor. Activado: todos los chats usan una sola copia.",
