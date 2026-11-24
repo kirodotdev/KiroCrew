@@ -200,6 +200,9 @@ def _for_list_directory_globs(tokens: "list[str]", text: str) -> "frozenset[int]
     """
     if "|" in text or ">" in text or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
         return frozenset()
+    # The loop must BE the command: an outer frame could define a function named ``ln``.
+    if not text.lstrip().startswith("for ") or not text.rstrip().rstrip(";").endswith("done"):
+        return frozenset()
     if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
         return frozenset()
     if not tokens[1].isidentifier() or "do" not in tokens:

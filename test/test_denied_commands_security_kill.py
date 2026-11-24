@@ -735,6 +735,12 @@ class TestSelfProtectionKillTargetScoping:
                 _RULE_KILL,
             ),
             (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # An outer frame shadows a body program, then a nested shell runs the loop.
+            (
+                "ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln $w {_NAME}; done'",
+                _RULE_KILL,
+            ),
             # A body program that stores its output (`printf -v`) and then runs it.
             (
                 f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
