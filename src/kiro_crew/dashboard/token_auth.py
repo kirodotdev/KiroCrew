@@ -1538,6 +1538,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
         _REVOKED_NONCES_FILE,
+        LINK_TOKEN_MAX_CHARS,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,
