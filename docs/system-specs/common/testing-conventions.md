@@ -143,6 +143,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   does not see it: on Windows `os.path.realpath`, `Path.resolve`, `stat` and `exists` on
   one open an SMB connection to `host`, and the answer (WinError 53, 64 or 67, or a
   stall) depends on the runner's network. `realpath` swallows 53 and 67 but raises 64.
+  So on Windows the rootdir floor wraps those calls (`_refuse_unc_network_paths` in
+  `test/conftest_floor_configure.py`): one given `\\host\share`, `//host/share` or
+  `\\?\UNC\` raises `UncNetworkPathRefused` at once, on every runner, while `\\?\C:\`
+  long paths, `\\.\` devices and the share holding the checkout or temp dir pass.
   A test whose data is a UNC path makes the resolve lexical at the seam the product
   calls (`test_an_absolute_workspace_folder_keeps_the_whole_config` patches
   `os.path.realpath` for UNC input only) or asserts a result no resolve reaches.

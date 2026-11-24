@@ -1,6 +1,7 @@
 """Process-wide redirects ``pytest_configure`` installs once per run (the
 hypothesis database, bytecode, child ``PYTHONPATH``, the real ``node`` on ``PATH``, the
-pytest-asyncio scan gate, the crew-log switch), and the hook that trims every recorded warning.
+pytest-asyncio scan gate, the crew-log switch, the Windows UNC refusal), and the hook that
+trims every recorded warning.
 
 Part of the rootdir ``conftest.py``'s host-mutation floor. That file loads this module by
 path and binds the names it needs, so pytest registers every fixture and hook here as
@@ -367,6 +368,106 @@ def _hide_the_hosts_companion_plugins() -> None:
 
     discovery.plugin_entry_points = without_host_companions
     bootstrap.plugin_entry_points = without_host_companions
+
+
+class UncNetworkPathRefused(BaseException):
+    """A test asked Windows to open a UNC share, which is a network connection.
+
+    A ``BaseException`` so the product's own ``except OSError`` / ``except Exception``
+    around the call cannot swallow it and turn the refusal into a quiet pass.
+    """
+
+
+def _unc_share(path) -> str | None:
+    """The ``\\\\host\\share`` Windows would open SMB to for *path*, else ``None``.
+
+    Lexical only. ``\\\\?\\`` and ``\\\\.\\`` paths are local (a long path, a volume, a
+    device) unless they continue with ``UNC\\``; forward slashes count as backslashes.
+    """
+    if isinstance(path, int):
+        return None  # a file descriptor
+    try:
+        text = os.fsdecode(path)
+    except (TypeError, UnicodeDecodeError):
+        return None
+    if text[:1] not in ("\\", "/") or text[1:2] not in ("\\", "/"):
+        return None  # the common case: a drive path, or a relative one
+    text = text.replace("/", "\\")
+    if text[2:3] in ("?", ".") and text[3:4] == "\\":
+        if text[4:8].upper() != "UNC\\":
+            return None
+        text = "\\\\" + text[8:]
+    host, _, rest = text[2:].partition("\\")
+    if not host:
+        return None
+    share = rest.partition("\\")[0]
+    return ("\\\\" + host + "\\" + share).lower()
+
+
+_UNC_GUARD_INSTALLED = False
+
+
+def _refuse_unc_network_paths(rootdir: str) -> None:
+    """On Windows, refuse a stat or resolve of a UNC path instead of opening SMB to it.
+
+    ``os.path.realpath``, ``Path.resolve``, ``os.stat`` and ``os.path.exists`` on
+    ``\\\\host\\share\\x`` connect to ``host``. The answer (WinError 53, 64 or 67, or a
+    stall) follows the runner's network, so a test that reaches one is flaky by
+    construction (testing-conventions D10). The wrapped calls raise
+    ``UncNetworkPathRefused`` at once instead, which is the same on every runner. A
+    test stubs the seam the product calls, as a ``monkeypatch`` that replaces the
+    guarded function does. A share holding the checkout, the temp dir, the home or the
+    interpreter stays allowed, so a run started from a network drive still works.
+
+    shortcut: a name bound by ``from os.path import exists`` before ``pytest_configure``
+    keeps the unguarded call, and ``open``/``listdir`` are not wrapped; widen the set
+    when a flake shows one.
+    """
+    global _UNC_GUARD_INSTALLED
+    if os.name != "nt" or _UNC_GUARD_INSTALLED:
+        return
+    _UNC_GUARD_INSTALLED = True
+    import ntpath
+    import tempfile
+
+    homes = (rootdir, os.getcwd(), tempfile.gettempdir(), os.path.expanduser("~"), sys.prefix)
+    allowed = frozenset(share for share in map(_unc_share, homes) if share)
+
+    def guard(real, name: str):
+        @functools.wraps(real)
+        def refuse_unc(*args, **kwargs):
+            path = args[0] if args else kwargs.get("path")
+            share = _unc_share(path)
+            if share is not None and share not in allowed:
+                raise UncNetworkPathRefused(
+                    f"{name}({path!r}) would open an SMB connection to {share} on Windows, "
+                    "and the answer depends on the runner's network. Stub the seam the "
+                    "product calls (for example monkeypatch os.path.realpath to "
+                    "os.path.normpath for UNC input) or assert without resolving "
+                    "(testing-conventions D10)."
+                )
+            return real(*args, **kwargs)
+
+        return refuse_unc
+
+    for module, attr, name in (
+        (os, "stat", "os.stat"),
+        (os, "lstat", "os.lstat"),
+        (ntpath, "_getfinalpathname", "os.path.realpath"),
+        (ntpath, "exists", "os.path.exists"),
+        (ntpath, "isdir", "os.path.isdir"),
+        (ntpath, "isfile", "os.path.isfile"),
+        (ntpath, "islink", "os.path.islink"),
+    ):
+        real = getattr(module, attr, None)
+        if real is None:
+            continue
+        wrapped = guard(real, name)
+        setattr(module, attr, wrapped)
+        # ``os.stat in os.supports_fd`` must still answer as it did for the real call.
+        for supports in (os.supports_fd, os.supports_dir_fd, os.supports_follow_symlinks):
+            if real in supports:
+                supports.add(wrapped)
 
 
 @pytest.hookimpl(trylast=True)
