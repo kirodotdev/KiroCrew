@@ -810,6 +810,8 @@ is the first thing the operator sees. Only the refused class carries it: a
 gateway that answered 403 or is busy is running. A loop thread starved of the GIL
 answers in 12-14 s while healthy, and calling that unreachable sends the
 operator to restart a gateway that works.
+The pod token mint (`kirocrew pod up`, `pod token`, `pod api`) gives a pod's
+gateway the same 20 s to answer, on both of its transports.
 
 The same busy-vs-unreachable split applies to the other CLI calls that reach the
 local gateway (`TimeoutError` is an `OSError`, so a timeout must be told apart
