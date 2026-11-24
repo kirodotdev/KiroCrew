@@ -144,9 +144,16 @@ class TestEveryTreeRootSiteUsesTheChokepoint:
         for node in ast.walk(tree):
             if not isinstance(node, ast.For):
                 continue
-            # `for tree in <...>.trees:`
+            # `for tree in <...>.trees:`, or the run's trees through `component_trees(...)`
+            # (restore) and `_staged_trees(...)` (staging), which `named-workspaces` needs.
             it = node.iter
-            if not (isinstance(it, ast.Attribute) and it.attr == "trees"):
+            is_trees = isinstance(it, ast.Attribute) and it.attr == "trees"
+            is_call = (
+                isinstance(it, ast.Call)
+                and isinstance(it.func, ast.Name)
+                and it.func.id in ("component_trees", "_staged_trees")
+            )
+            if not (is_trees or is_call):
                 continue
             found += 1
             body = ast.dump(ast.Module(body=node.body, type_ignores=[]))

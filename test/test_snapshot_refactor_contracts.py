@@ -432,7 +432,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.mark.parametrize(
     ("extra", "root_prefix", "components", "members"),
     [
-        ([], "kirocrew-snapshot-", list(snap.COMPONENTS), _COMPLETE_MEMBERS),
+        (
+            [],
+            "kirocrew-snapshot-",
+            # Every component but the opt-in `named-workspaces`.
+            [c for c in snap.COMPONENTS if c != "named-workspaces"],
+            _COMPLETE_MEMBERS,
+        ),
         (
             ["--components", "memory,crons"],
             "kirocrew-partial-",

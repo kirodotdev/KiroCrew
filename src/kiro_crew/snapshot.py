@@ -122,9 +122,11 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
     _caller_name,
+    _configured_named_workspace_trees,
     _estimate_selected_bytes,
     _fsize,
     _report_named_workspaces_left_out,
+    _staged_trees,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _BOM_TOLERANT_JSON_OBJECTS,
@@ -137,6 +139,9 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _MERGE_NEVER_INSTALLS_FILES,
+    _NAMED_WORKSPACE_PREFIX,
+    _NAMED_WORKSPACE_TREES,
+    _OPT_IN_COMPONENTS,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -146,6 +151,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
+    NAMED_WORKSPACES,
     NEVER_SNAPSHOT_FILES,
     PRODUCT_TREE_DATABASES,
     SECURITY_SENSITIVE_FILES,
@@ -162,9 +168,13 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _never_ships,
     _tree_roots_replace_clears,
     _want,
+    component_trees,
+    is_named_workspace_tree,
     is_product_tree_database,
+    named_workspace_scope,
     resolve_components,
     safe_tree_root,
+    set_named_workspace_trees,
 )
 from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _MERGE_ALLOWED_TABLES,
@@ -734,7 +744,8 @@ def snapshot_main(
     # The TARBALL keeps the familiar name so `--list`, pruning and `--keep` still glob it.
     # Filled by the staging pass below, and read by the retention guard after it.
     omissions: list[dict[str, str]] = []
-    complete = set(selected) == set(COMPONENTS)
+    # Complete means every default component; an opt-in one added on top keeps it complete.
+    complete = {c for c in COMPONENTS if c not in _OPT_IN_COMPONENTS} <= set(selected)
     name = f"kirocrew-snapshot-{ts}"
     root_name = name if complete else f"kirocrew-partial-{ts}"
 
@@ -1022,8 +1033,7 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
     if held.get("agent_config"):
         # The held list names what the ARCHIVE carried; a current copy exists only where
         # the live tree has one, so the two cases are not worded alike.
-        live_root = mc / "workspace"
-        kept = [n for n in held["agent_config"] if os.path.lexists(live_root / n)]
+        kept = [n for n in held["agent_config"] if os.path.lexists(mc / n)]
         absent = [n for n in held["agent_config"] if n not in kept]
         for heading, names in (
             ("Not restored, kept your current copy of these agent-config files:", kept),
@@ -1032,11 +1042,11 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
             if names:
                 print(heading)
                 for name in names:
-                    print(f"     {_safe_name(_terminal_safe('workspace/' + name))}")
+                    print(f"     {_safe_name(_terminal_safe(name))}")
         print("   They set permissions, hooks and MCP servers for the next agent session.")
         print("   Copy anything you want from the archive by hand after reading it.")
     for name in held.get("notes", []):
-        print(f"Restored notes: {_safe_name(_terminal_safe('workspace/' + name))}")
+        print(f"Restored notes: {_safe_name(_terminal_safe(name))}")
 
 
 def _is_interactive() -> bool:
@@ -1231,7 +1241,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
         return 1
 
-    with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
+    with (
+        closing(tar),
+        tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str,
+        named_workspace_scope(),
+    ):
         work = Path(work_str)
         # Staged under the data home's ``staging`` leaf, not the system temp dir: the
         # bundle can be GBs and would sit in RAM on a tmpfs /tmp. It is no more exposed
@@ -1246,7 +1260,10 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         try:
             with tar:
                 rejected_entries: list[str] = []
-                _filter = _rejection_recording_filter(rejected_entries)
+                # Kept apart: a named workspace tree is only restored when the manifest
+                # declares it, so a drop there refuses only such a restore.
+                rejected_named: list[str] = []
+                _filter = _rejection_recording_filter(rejected_entries, rejected_named)
                 try:
                     tar.extractall(work, filter=_filter)
                 except TypeError:
@@ -1316,6 +1333,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             _audit("state_restore_rejected", f"reason=manifest_unreadable from={snap_path.name}")
             return 1
+        if declared is not None and NAMED_WORKSPACES in declared:
+            # Its trees are the bundle's own top-level `workspace-<name>/` folders, and only
+            # in a bundle that declares the component: an older one restores none of them.
+            # Extraction already dropped every link, so a directory here is the bundle's own.
+            set_named_workspace_trees(tuple(d.name for d in snap.iterdir() if d.is_dir()))
         if partial_root and declared is None and components is None:
             # A partial root with no component map would fall through to all-components,
             # so replace would displace live components it never held. Only a COMPLETE
@@ -1424,6 +1446,15 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                         f"reason=partial_replace_absent_tree from={snap_path.name}",
                     )
                     return 1
+        if rejected_named and components is not None and NAMED_WORKSPACES in components:
+            print(
+                f"❌ This archive contains {len(rejected_named)} entr"
+                f"{'ies' if len(rejected_named) > 1 else 'y'} in its named workspace folders "
+                f"that cannot be extracted safely ({', '.join(sorted(rejected_named)[:3])}"
+                f"{', ...' if len(rejected_named) > 3 else ''}).\n   Nothing was restored."
+            )
+            _audit("state_restore_rejected", f"reason=unsafe_archive_entries from={snap_path.name}")
+            return 1
         if components:
             print(f"🔧 Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)

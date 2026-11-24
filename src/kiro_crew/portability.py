@@ -995,7 +995,7 @@ def apply_import_zip(
             snap, mc, None, mode, allow_unpinned=not staging_pinned
         )
         if held_config:
-            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+            summary["held_agent_config"] = held_config
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
