@@ -585,6 +585,25 @@ class TestDoctorKasBundle:
         assert "also installed" not in out
         assert issues == []
 
+    def test_an_al2_host_reads_the_al2_pin_as_its_pin(self, monkeypatch, capsys, tmp_path):
+        """On a host whose pin is the AL2 one, that install is the pin (no ⚠), and
+        the normal pin left from before is listed as kept, not judged."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        al2 = kas_bundle.KAS_PIN_AL2_VERSION
+        installed = self._installed(tmp_path, al2)
+        monkeypatch.setattr(kas_bundle, "host_pin_version", lambda: al2)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(
+            kas_bundle, "installed_versions", lambda: [kas_bundle.KAS_PIN_VERSION, al2]
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert f"pin:         ✅ KAS {al2} is this release's pin" in out
+        assert f"also installed: {kas_bundle.KAS_PIN_VERSION}" in out
+        assert issues == []
+
     def test_an_overridden_engine_is_a_warning_naming_the_variable(
         self, monkeypatch, capsys, tmp_path
     ):
