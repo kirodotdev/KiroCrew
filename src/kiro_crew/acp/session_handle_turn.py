@@ -29,7 +29,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_drained_child_events``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
+``_mcp_sign_in_needed``, ``_mcp_sign_in_wanted``, ``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
 ``_steering_cancel_tasks``.
 """
 
@@ -109,6 +109,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.context_assembly.mcp_servers import sign_in_started_block
 from kiro_crew.metrics.chat_runtime_share import (
     chat_leases_on,
     on_shared_process,
@@ -433,6 +434,22 @@ async def stream_command(
             yield event
     finally:
         await turn.aclose()
+
+
+def _tell_sign_in_started(method: str, params: dict[str, Any], started: tuple[str, ...]) -> None:
+    """Put the sign-in block first in a prompt whose turn started *started*'s sign-in.
+
+    The turn's ``[MCP SERVERS]`` block was built before the start, so the model
+    would otherwise read the server as waiting and say it cannot sign in, while
+    the sign-in card shows in the same chat. A command or compaction request
+    carries no prompt and is left as it is.
+    """
+    blocks = params.get("prompt")
+    if not started or method != METHOD_PROMPT or not isinstance(blocks, list):
+        return
+    text = sign_in_started_block(started)
+    if text:
+        blocks.insert(0, {"type": "text", "text": text})
 
 
 async def _run_turn(
@@ -973,7 +990,11 @@ async def _run_turn(
         if sign_in_ask:
             self.want_mcp_sign_in_named(sign_in_ask)
         self._match_mcp_sign_in_ask()
+        # An accepted start leaves the wanted set; the prompt built below is
+        # told of it (see ``_tell_sign_in_started``).
+        _wanted_before = self._mcp_sign_in_wanted & self._mcp_sign_in_needed
         self._offer_mcp_sign_in()
+        _sign_in_started = tuple(sorted(_wanted_before - self._mcp_sign_in_wanted))
         # A server that failed for want of a credential, or lost its
         # connection, is connected again here, after the sign-in offer: the
         # offer takes the runtime's one consent-URL slot first, and a
@@ -998,6 +1019,7 @@ async def _run_turn(
             req_id = AGENT_STARTED_REQUEST_ID
         else:
             _method, _params = await build_request()
+            _tell_sign_in_started(_method, _params, _sign_in_started)
             _mark = getattr(self._runtime, "mark_turn_active", None)
             if _mark is not None:
                 _mark(self._session_id, True)
