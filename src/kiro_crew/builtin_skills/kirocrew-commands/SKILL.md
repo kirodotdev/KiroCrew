@@ -67,7 +67,7 @@ Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle
 | `kirocrew gateway --seed-replace` | Wipe a non-empty target home and re-seed it (paired with `--seed`) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel for this process's whole life, whatever `tunnel.enabled` says. Scoped to TUNNELS: it does not change where the dashboard binds |
 | `kirocrew gateway --json-ready` | Print one `KIROCREW_READY:{...}` line (port, token, pid, KIROCREW_HOME) once the dashboard is bound |
-| `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --approval reads` |
+| `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --no-tunnel --approval reads` |
 | `kirocrew stop` | Stop a running gateway |
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
 | `kirocrew restart` | Restart gateway (service-aware) |
@@ -98,7 +98,8 @@ transcripts.
 ## Pods (Isolated Worktree Test Instances)
 
 Read `references/pods-and-browsing.md` for every `kirocrew pod` command (up,
-down, ls, status, logs, provision, install, token, restart, exec, api, prune).
+down, ls, status, logs, provision, install, token, restart, exec, api, prune,
+url, scenarios).
 
 ## Dashboard Access
 
@@ -129,8 +130,8 @@ type a reply to the agent instead. Anything else denies.
 
 ## Browsing (`browser` MCP tool)
 
-Read `references/pods-and-browsing.md` for the `browser` tool's actions and the
-`kirocrew browser` commands.
+Read `references/pods-and-browsing.md` for the `browser` tool's actions.
+Browsing is not a `kirocrew` subcommand.
 
 ## Autonomous Task Runner
 

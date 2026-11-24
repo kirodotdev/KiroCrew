@@ -192,9 +192,9 @@ def resolve_ledger_aliases(loader: SkillsLoader) -> dict[str, list[str]]:
     endpoint does not build the map itself. It still reads other loader
     internals to assemble its rows, so this is one step out of that coupling,
     not the end of it. It deliberately does NOT live inside ``list_skills()``
-    — that method guarantees one stat per skill and runs on the hot path
-    during context assembly; filesystem resolution here is acceptable only
-    at dashboard-refresh frequency.
+    — that method runs on the hot path during context assembly, and
+    resolving every served file is acceptable only at dashboard-refresh
+    frequency.
     """
     if loader._usage is None:
         return {}
@@ -268,8 +268,7 @@ def resolve_ledger_aliases(loader: SkillsLoader) -> dict[str, list[str]]:
             served_key = realpath_to_served.get(rp)
             if served_key is None:
                 continue
-            if ledger_key != served_key:
-                alias_map.setdefault(served_key, []).append(ledger_key)
+            alias_map.setdefault(served_key, []).append(ledger_key)
             break  # First root that resolves wins; a key names one file.
 
     for aliases in alias_map.values():

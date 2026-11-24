@@ -578,7 +578,8 @@ async def create_session(
     # The host's last word on the request and on the agent it activates
     # (harness-parity H13): every served host returns both unchanged, except
     # that KAS names the customAgents batch's first entry, the session's own
-    # agent, as _meta.kiro.modeId on session/new.
+    # agent, as _meta.kiro.modeId on session/new, and codex asks its adapter to
+    # wait for the array's MCP startup (_meta.mcpStartupAwaitTimeoutMs).
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )

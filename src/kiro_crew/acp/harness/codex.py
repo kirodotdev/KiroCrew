@@ -168,6 +168,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_NEW,
     METHOD_SESSION_UPDATE,
 )
 from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
@@ -1010,6 +1011,34 @@ class CodexHarness(MembershipHarness):
         if not isinstance(advertised, dict) or not advertised:
             return requested
         return drop_unadvertised_transports(list(requested), dict(advertised))
+
+    #: How long codex-acp may hold a ``session/new`` reply for the array's servers.
+    #: Under the runtime's own ``session/new`` floor, so a server that never
+    #: reports still leaves the session time to start.
+    MCP_STARTUP_AWAIT_MS = 30_000
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Ask codex-acp to answer ``session/new`` only once its MCP servers started.
+
+        Otherwise codex gives MCP startup about one second at the first turn, and
+        a server still starting then, a gateway stub most often, is offered on no
+        tool of that turn. ``mcpStartupAwaitTimeoutMs`` holds the reply until every
+        server in the array is ready or failed, up to the cap.
+        """
+        if method != METHOD_SESSION_NEW or not params.get("mcpServers"):
+            return params, agent
+        meta = {
+            **(params.get("_meta") or {}),
+            "mcpStartupAwaitTimeoutMs": self.MCP_STARTUP_AWAIT_MS,
+        }
+        return {**params, "_meta": meta}, agent
 
     @property
     def wants_session_file_on_load(self) -> bool:
