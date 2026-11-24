@@ -678,6 +678,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/mcp/apply"),
         ("POST", "/api/mcp/toggle"),
         ("POST", "/api/mcp/toggle-tool"),
+        ("POST", "/api/mcp/project-servers/approve"),
         ("POST", "/api/connections/mint"),
         ("GET", "/api/connections/mint"),
         ("POST", "/api/connections/disconnect"),
@@ -707,6 +708,7 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     # is the record.
     ("POST", "/api/agents/detail/{name}/mcp-additions"),
     ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
+    ("POST", "/api/mcp/project-servers/approve"),
     ("POST", "/api/agents/{name}/capabilities/preview"),
     # The hook reads a base64url twin as its path-form route
     # (``change_cards.route_key``), so only the path form is looked up here.
@@ -779,6 +781,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         GATEWAY_RESOLVED_KINDS,
         HEARTBEAT_HOURS_KEY,
         KIND_MCP_SERVER,
+        KIND_PROJECT_MCP_SERVER,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
         KIND_WORKFLOW_SAVE,
@@ -879,6 +882,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import change_card_project_mcp as _project_mcp_kind  # noqa: F401
     from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401

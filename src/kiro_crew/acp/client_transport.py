@@ -13,7 +13,7 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stale_eligible``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_active_tool_calls``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_session_id``, ``_stderr_lines``,
 ``_stderr_task``, ``_turn_done``, ``memory_mode``.
@@ -59,6 +59,7 @@ from kiro_crew.acp.transport_framing import (
 from kiro_crew.acp.types import (
     METHOD_AGENT_SWITCHED,
     METHOD_MCP_OAUTH_REQUEST,
+    METHOD_SESSION_FORK,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
@@ -245,6 +246,15 @@ async def _send_request(
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
 
+    if method in {
+        METHOD_SESSION_NEW,
+        METHOD_SESSION_LOAD,
+        METHOD_SESSION_RESUME,
+        METHOD_SESSION_FORK,
+    }:
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+        params = await hold_session_params(self.backend, self._agent, params)
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         params = projection.request(method, params)

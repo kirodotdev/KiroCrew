@@ -159,6 +159,24 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     sync verifies user-owned trees before replacing them, so it runs as a
     tracked background task in a worker thread and never gates readiness.)
     """
+    from kiro_crew.project_mcp_approvals import begin_boot_migration
+
+    # The folder list is read here, before any project pick can add to it; the
+    # scan of those folders scales with them, so it runs on a tracked task. A
+    # session check waits briefly for it and otherwise holds.
+    migration_scan = await asyncio.to_thread(begin_boot_migration)
+    if migration_scan is not None:
+        # Handed to the executor now, so a check that waits for it is never left
+        # waiting on a scan that did not start.
+        scan_done = asyncio.get_running_loop().run_in_executor(None, migration_scan)
+
+        async def _await_migration() -> None:
+            await scan_done
+
+        migration_task = asyncio.create_task(_await_migration())
+        self._background_tasks.add(migration_task)
+        migration_task.add_done_callback(self._background_tasks.discard)
+
     if not self._slack_enabled:
         logger.info("Slack not configured — starting without the Slack gateway")
 
