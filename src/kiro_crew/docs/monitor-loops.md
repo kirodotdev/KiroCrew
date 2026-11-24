@@ -79,8 +79,13 @@ request's typed facts to the decision service, so it is off until you turn it
 on. With the scope off, such a loop runs as a plain timer. A loop whose
 instruction names no session and no pull request, such as a conductor's patrol,
 gives the built-in brief nothing to read, so it runs as it does with the scope off.
-So does a loop whose named sessions have all been closed or deleted. A session
-that is still open but cannot be read on a cycle still makes that cycle fire.
+The built-in brief also leaves out a named session that has been closed or
+deleted and judges the loop on what is still open. Once a session the judge has
+already read is closed, the next cycle still fires, because nothing that session
+wrote since the last read can be read; later cycles leave it out. A loop
+whose named sessions have all gone runs as it does with the scope off too. A
+session that is still open but cannot be read on a cycle still makes that cycle
+fire.
 
 A loop never switches its session to a cheaper model for a check. The judge is a
 separate small call, not a turn of the loop's own session, and every cycle that

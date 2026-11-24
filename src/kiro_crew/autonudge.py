@@ -452,7 +452,7 @@ class AutoNudgeService:
         base_dir: Path | None = None,
         on_fire: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
         on_monitor_tick: Callable[[NudgeLoop], Awaitable[None]] | None = None,
-        collect_judge_evidence: Callable[[NudgeLoop], Awaitable[Any]] | None = None,
+        collect_judge_evidence: Callable[[NudgeLoop, list[str]], Awaitable[Any]] | None = None,
         emit_judge_notice: Callable[[NudgeLoop, str], Awaitable[None]] | None = None,
         worker_running: Callable[[str], bool] | None = None,
         worker_closed: Callable[[str], bool] | None = None,
