@@ -191,6 +191,28 @@ class TestTheUserStopMark:
             kept_grants.run_user_stop(_no_gateway, via="cli")
         assert _record_path(home, kept_grants.USER_STOP_FILE).exists()
 
+    @pytest.mark.parametrize("rc", [0, 1, 2, 3])
+    @pytest.mark.parametrize("earlier", [False, True])
+    def test_service_disable_marks_before_stopping_and_keeps_possible_stops(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, rc: int, earlier: bool
+    ) -> None:
+        from kiro_crew import cli_server
+
+        mark = _record_path(home, kept_grants.USER_STOP_FILE)
+        if earlier:
+            assert kept_grants.mark_user_stop("cli")
+
+        def _disable() -> int:
+            assert json.loads(mark.read_text(encoding="utf-8"))["via"] == "service_disable"
+            return rc
+
+        disable = MagicMock(side_effect=_disable)
+        monkeypatch.setattr(cli_server.service_controller, "disable_service", disable)
+        monkeypatch.setattr(cli_server, "sel", MagicMock())
+        assert cli_server._service_cmd(SimpleNamespace(service_action="disable")) == rc
+        disable.assert_called_once_with()
+        assert mark.exists() == (earlier or rc in (0, 1))
+
     def test_a_gateway_without_a_dashboard_keeps_and_records_yolo_too(self) -> None:
         # The headless server boot runs the same restore, which arms the recorder.
         import inspect

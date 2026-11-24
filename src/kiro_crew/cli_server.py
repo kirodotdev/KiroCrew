@@ -626,11 +626,17 @@ def _service_cmd(args: argparse.Namespace) -> int:
         )
         return rc
     if action in ("disable", "enable"):
-        rc = (
-            service_controller.disable_service()
-            if action == "disable"
-            else service_controller.enable_service()
-        )
+        if action == "disable":
+            from kiro_crew import kept_grants
+
+            earlier = (kept_grants.kept_dir() / kept_grants.USER_STOP_FILE).exists()
+            marked = kept_grants.mark_user_stop("service_disable")
+            rc = service_controller.disable_service()
+            # Exit 1 may have stopped a service before another step failed.
+            if marked and not earlier and rc in (2, 3):
+                kept_grants.withdraw_user_stop()
+        else:
+            rc = service_controller.enable_service()
         sel().log_api_access(
             caller="cli",
             operation=f"service_{action}",
