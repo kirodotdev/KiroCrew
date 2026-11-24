@@ -148,6 +148,10 @@ class LessonWriteResult:
     #: Read from the row, not the submission. The route turns it into the delete
     #: selector for that row before it leaves the process.
     winner_repo_scope: str | None = None
+    #: The semantic key of the row this call wrote, on ``INSERTED`` and
+    #: ``ENRICHED``. The chat row for a saved lesson carries it so the dashboard
+    #: can open that row. ``None`` on every outcome that wrote nothing.
+    key: str | None = None
 
     def __bool__(self) -> bool:
         """``wrote`` -- the exact predicate the old ``bool`` return answered.
