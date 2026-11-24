@@ -185,8 +185,21 @@ def test_a_relative_workspace_folder_that_is_the_data_home_is_refused(tmp_path):
         r"\\host\share\..\y",
     ],
 )
-def test_an_absolute_workspace_folder_keeps_the_whole_config(tmp_path, workspace_dir):
+def test_an_absolute_workspace_folder_keeps_the_whole_config(tmp_path, monkeypatch, workspace_dir):
     """An absolute folder is a supported placement; it must not drop agents and settings."""
+    import os
+
+    real_realpath = os.path.realpath
+
+    def lexical_for_unc(path, *args, **kwargs):
+        # On Windows realpath of "\\host\share\..." opens an SMB connection to "host", and
+        # its answer (WinError 53, 64, 67, or a slow timeout) depends on the runner's network.
+        spelled = os.fspath(path)
+        if os.path.splitdrive(spelled)[0][:2] in ("\\\\", "//"):
+            return os.path.normpath(spelled)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", lexical_for_unc)
     cfg = {"agents": {"keep": {}}, "workspaces": {"proj": {"dir": workspace_dir}}}
     snap = _stage(tmp_path, cfg)
     vetted, summary = _vet(snap)
