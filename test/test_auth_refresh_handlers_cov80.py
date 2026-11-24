@@ -368,6 +368,18 @@ async def test_me_reports_whether_the_requests_own_query_token_authenticated() -
 
 
 @pytest.mark.asyncio
+async def test_me_tells_a_delegated_token_only_whether_it_was_accepted() -> None:
+    """A ``via_app`` token gets one bit: no user id, principal id or display name."""
+    delegated = _mk("GET", "/api/auth/me", user="alice")
+    delegated["via_app"] = "tunnel-like"
+    delegated["auth_from_query_token"] = True
+    assert _body(await h.api_auth_me(delegated)) == {"token_accepted": True}
+    unaccepted = _mk("GET", "/api/auth/me", user="alice")
+    unaccepted["via_app"] = "tunnel-like"
+    assert _body(await h.api_auth_me(unaccepted)) == {"token_accepted": False}
+
+
+@pytest.mark.asyncio
 async def test_me_reports_owner_authorization_separately_from_token_acceptance() -> None:
     """A VALID token can be accepted and still be denied by the owner gate.
 
@@ -575,6 +587,69 @@ async def test_require_peer_rotation_preserves_signed_device_on_both_cookies(
     assert required_peer_key_unverified(new_access) == PHONE_PEER_KEY
     assert refresh_token_peer_key(new_refresh) == PHONE_PEER_KEY
     assert refresh_token_requires_peer(new_refresh) is True
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_chain_rotates_only_under_the_grant_it_was_opened_under(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.token_auth_tokens import token_via_grant_unverified
+
+    live = {"claim": "claim-of-grant-one"}
+    monkeypatch.setattr(
+        dashboard_proxy, "grant_current", lambda _app, claim: claim == live["claim"]
+    )
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "owner", via_app="tunnel-like", via_grant="claim-of-grant-one"
+    )
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+    assert (
+        token_via_grant_unverified(response.cookies[f"mc_token_{PORT}"].value)
+        == "claim-of-grant-one"
+    )
+    assert rt.refresh_token_via_grant(response.cookies[refresh_cookie_name(str(PORT))].value) == (
+        "claim-of-grant-one"
+    )
+    # The owner revoked and granted again: the chain opened under grant one is over.
+    live["claim"] = "claim-of-grant-two"
+    old, _c, _j, _e = generate_refresh_token(
+        "owner", via_app="tunnel-like", via_grant="claim-of-grant-one"
+    )
+    ended = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): old}))
+    assert ended.status == 401
+    assert _body(ended)["code"] == "delegated_grant_ended"
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_refresh_renews_the_same_claims_and_never_drops_via_app(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rotated pair says what the presented chain said, on both halves, every time."""
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.token_auth_tokens import (
+        token_via_app_unverified,
+        token_via_grant_unverified,
+    )
+
+    monkeypatch.setattr(dashboard_proxy, "grant_current", lambda _app, _claim: True)
+    claims = ("tunnel-like", "claim-of-grant-one")
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "owner", via_app=claims[0], via_grant=claims[1]
+    )
+    assert (rt.refresh_token_via_app(token), rt.refresh_token_via_grant(token)) == claims
+    for _rotation in range(2):
+        response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+        assert response.status == 200
+        access = response.cookies[f"mc_token_{PORT}"].value
+        token = response.cookies[refresh_cookie_name(str(PORT))].value
+        assert (token_via_app_unverified(access), token_via_grant_unverified(access)) == claims
+        assert (rt.refresh_token_via_app(token), rt.refresh_token_via_grant(token)) == claims
 
 
 @pytest.mark.asyncio

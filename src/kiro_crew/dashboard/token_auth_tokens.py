@@ -857,7 +857,11 @@ def _signed_app_claim(token: str) -> str:
 
 
 def claims_an_app_unverified(token: str) -> bool:
-    """Whether *token* CLAIMS an ``app`` identity, without verifying its signature.
+    """Whether *token* CLAIMS an ``app`` or ``via_app`` identity, unverified.
+
+    A delegated (``via_app``) token answers ``True`` as well: it is scoped by
+    ``delegated_scope.enforce_delegated``, which only the token flow runs, so it
+    must never adopt the owner's cookie nor take the tailnet owner path either.
 
     Used only to REFUSE — never to grant. The cookie fallback in the middleware
     treats an invalid ``?token=`` as absent so a dead link token cannot veto a
@@ -879,7 +883,7 @@ def claims_an_app_unverified(token: str) -> bool:
         data = json.loads(_b64url_decode(token.split(".")[0]))
     except Exception:
         return False
-    return bool(isinstance(data, dict) and data.get("app"))
+    return bool(isinstance(data, dict) and (data.get("app") or data.get("via_app")))
 
 
 def requires_verified_peer_unverified(token: str) -> bool:
@@ -929,6 +933,36 @@ OWNER_MINT_CLAIM = "owner_mint"
 def owner_mint_extra(extra: dict[str, str] | None = None) -> dict[str, str]:
     """``extra`` plus the owner-mint claim, for an owner-identity mint site."""
     return {**(extra or {}), OWNER_MINT_CLAIM: "1"}
+
+
+def token_via_app_unverified(token: str) -> str:
+    """The ``via_app`` claim of a delegated token, or ``""`` when it carries none.
+
+    Read only after normal signature validation, and used only to make the request
+    STRICTER (``delegated_scope.enforce_delegated``). A token that validated always
+    decodes; an undecodable one answers ``""`` because it was refused on its own merits
+    before this is asked.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = data.get("via_app") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def token_via_grant_unverified(token: str) -> str:
+    """The ``via_grant`` claim (the grant a delegated token was minted under), or ``""``.
+
+    Same read-only, validate-first contract as :func:`token_via_app_unverified`. A delegated
+    token with no claim answers ``""``, which matches no grant, so it is refused.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = data.get("via_grant") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else ""
 
 
 def token_owner_minted_unverified(token: str) -> bool:

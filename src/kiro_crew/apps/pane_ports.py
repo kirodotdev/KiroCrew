@@ -173,6 +173,10 @@ async def note_pane_request(request: web.Request, token: str) -> None:
         # The claim first: it is the cheap test, and this runs on every
         # authenticated request.
         claims = _claims(token)
+        # A delegated (``via_app``) token acts for an app, and this record is gateway-wide
+        # and outlives a revoke: it never records, whatever claims it carries.
+        if claims.get("via_app"):
+            return
         parent = _port(claims.get("embed_parent_port"))
         if parent is None:
             return

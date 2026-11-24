@@ -446,6 +446,10 @@ async def _may_cancel_cron_run(
     job_id = cancel_key.removeprefix("cron:")
     if job_id == cancel_key or not job_id or ":" in job_id:
         return False
+    # A delegated (``via_app``) token passes the owner gate, but its stop row ends the
+    # running turn only: the cron service's cancel pauses the job, a control-plane write.
+    if request.get("via_app"):
+        return False
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.dashboard.handlers.cron_shared import _refuse_foreign_app_job
 
@@ -1060,6 +1064,15 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
+    # A delegated (``via_app``) stop ends the running turn and nothing more: its repeat
+    # never escalates to the hard kill that clears the owner's queue and pending steers.
+    via_app = request.get("via_app", "")
+    if request_app:
+        source = f"app:{request_app}"
+    elif via_app:
+        source = f"delegated:{via_app}"
+    else:
+        source = "dashboard"
     # The audit has to name who asked: ``stop_slot_turn`` defaults its
     # ``source`` to ``dashboard`` and logs it as the SEL line's ``via``, so the
     # default would audit an app's stop — soft, force or the escalated second
@@ -1072,7 +1085,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
             slot,
             force=force,
             cancel_key=cancel_key,
-            source=f"app:{request_app}" if request_app else "dashboard",
+            source=source,
+            escalate=not via_app,
             cron_cancel=await _may_cancel_cron_run(request, state, cancel_key),
         )
     )

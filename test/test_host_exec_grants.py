@@ -137,3 +137,49 @@ def test_pod_gate_denies_without_a_grant_and_allows_with_one(crew_home, monkeypa
     allowed = asyncio.run(_handler(_Req()))
     assert allowed == "OK"
     assert calls == ["ran"]
+
+
+class _RefusingPath:
+    """A path whose unlink is refused, as on a read-only or locked directory."""
+
+    def __init__(self, error: type[OSError]) -> None:
+        self._error = error
+
+    def unlink(self) -> None:
+        raise self._error("refused")
+
+    def is_file(self) -> bool:
+        return False
+
+
+def _dashboard_revoke_outcome(monkeypatch, *, tombstone: bool, record_unlink: bool) -> None:
+    """Make ``dashboard_proxy.revoke`` meet a grant on disk with the given disk answers."""
+    from kiro_crew.apps import dashboard_proxy
+
+    monkeypatch.setattr(dashboard_proxy, "_grant_on_disk", lambda name: True)
+    monkeypatch.setattr(dashboard_proxy, "_stored_grant_id", lambda name: "g1")
+    monkeypatch.setattr(dashboard_proxy, "_put_grant_tombstone", lambda *a, **k: tombstone)
+    error = FileNotFoundError if record_unlink else PermissionError
+    monkeypatch.setattr(dashboard_proxy, "_path", lambda name, suffix: _RefusingPath(error))
+
+
+def test_a_marker_that_cannot_be_removed_is_not_a_durable_revoke(crew_home, monkeypatch):
+    _dashboard_revoke_outcome(monkeypatch, tombstone=True, record_unlink=True)
+    monkeypatch.setattr(heg, "_grant_path", lambda name: _RefusingPath(PermissionError))
+    assert heg.revoke_host_exec("dev-fleet") is False
+
+
+def test_a_dashboard_grant_without_its_tombstone_is_not_a_durable_revoke(crew_home, monkeypatch):
+    """The record stays and no tombstone outranks it, so a restart brings the grant back."""
+    _dashboard_revoke_outcome(monkeypatch, tombstone=False, record_unlink=False)
+    assert heg.revoke_host_exec("dev-fleet") is False
+
+
+def test_a_tombstoned_dashboard_grant_is_durable_even_if_its_record_stays(crew_home, monkeypatch):
+    """The tombstone wins over any record on disk after a restart, so the revoke holds."""
+    _dashboard_revoke_outcome(monkeypatch, tombstone=True, record_unlink=False)
+    assert heg.revoke_host_exec("dev-fleet") is True
+
+
+def test_a_revoke_with_nothing_to_remove_is_durable(crew_home):
+    assert heg.revoke_host_exec("dev-fleet") is True

@@ -12,6 +12,8 @@ import and patch; this module never imports it."""
 from __future__ import annotations
 
 import asyncio
+import re
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
@@ -26,6 +28,9 @@ from kiro_crew.dashboard.token_auth import (
 from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 from kiro_crew.executors import local_auth_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
+
+if TYPE_CHECKING:
+    from kiro_crew.member_memory_auth import LocalOwnerProvenance
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────
 
@@ -71,7 +76,7 @@ async def api_token_local(request: web.Request) -> web.Response:
     Each refusal carries a machine-readable ``code`` beside its ``error`` —
     ``loopback_only``, ``invalid_secret``, ``member_owner_token_refused``, and
     ``session_kind_refused_for_app`` for an app backend asking for ``kind=session``
-    — mirroring the distinction already in the SEL record, so a caller reports the
+    (``delegated_session_refused`` when it asks with its derived value) — mirroring the distinction already in the SEL record, so a caller reports the
     gate that refused rather than listing the ones that might have. The codes
     restate what the ``error`` text already says and widen no gate.
     """
@@ -91,20 +96,53 @@ async def api_token_local(request: web.Request) -> web.Response:
     if not expected:
         return web.json_response({"error": "not available"}, status=503)
     provided = request.headers.get("X-Local-Secret", "")
+    via_app = ""
+    provenance: LocalOwnerProvenance | None
     if not provided or not _ct_eq(expected, provided):
-        _sel().log_api_access(
-            caller=request.remote or "unknown",
-            operation="token.local",
-            outcome="denied",
-            source="local-bootstrap",
-            resources="invalid-secret",
-        )
-        return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)
-    from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
+        # Leg 2 is for a value shaped like a derived one (64 hex digits; the local secret
+        # is 32). Anything else is the refusal it has always been.
+        if not _DERIVED_SHAPE.fullmatch(provided):
+            await _note_refused_mint(request)
+            _sel().log_api_access(
+                caller=request.remote or "unknown",
+                operation="token.local",
+                outcome="denied",
+                source="local-bootstrap",
+                resources="invalid-secret",
+            )
+            return web.json_response(
+                {"error": "invalid secret", "code": "invalid_secret"}, status=403
+            )
+        delegated = await _delegated_leg(request, provided)
+        if isinstance(delegated, web.Response):
+            return delegated
+        provenance, via_app = delegated, delegated.app or ""
+    else:
+        from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.get_running_loop().run_in_executor(
-        local_auth_executor(), local_owner_bootstrap_provenance, request
-    )
+        provenance = await asyncio.get_running_loop().run_in_executor(
+            local_auth_executor(), local_owner_bootstrap_provenance, request
+        )
+        if provenance is not None and provenance.basis == "spawned-app":
+            # An app backend holds no real secret where a sandbox masks it. One that
+            # presents it anyway got it past the mask, and mints nothing with it; only
+            # a host with no sandbox (no boundary to hold) keeps the earlier behaviour.
+            from kiro_crew.apps import dashboard_proxy
+
+            if await asyncio.to_thread(dashboard_proxy.sandboxed_backend):
+                _sel().log_api_access(
+                    caller=request.remote or "unknown",
+                    operation="token.local",
+                    outcome="denied",
+                    source="local-bootstrap",
+                    resources=(
+                        f"denied real-secret-from-app app={provenance.app or 'none'} "
+                        f"basis={provenance.basis}"
+                    ),
+                )
+                return web.json_response(
+                    {"error": "invalid secret", "code": "invalid_secret"}, status=403
+                )
     if provenance is None:
         _sel().log_api_access(
             caller="local-process",
@@ -134,8 +172,10 @@ async def api_token_local(request: web.Request) -> web.Response:
     # port, so the embedded remote can authorize exactly that loopback parent
     # origin in CSP frame-ancestors (see server._extra_frame_ancestors). Minted
     # only via this local-secret-gated endpoint; validated as a loopback port.
+    # Never for a delegated (``via_app``) mint: the claims publish a loopback origin into
+    # the gateway-wide framing record (``apps.pane_ports``), which an app must not widen.
     extra: dict[str, str] = {}
-    epp = request.query.get("embed_parent_port", "")
+    epp = "" if via_app else request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
         # The pane's own forward port on this machine, which binds the app web
@@ -144,6 +184,20 @@ async def api_token_local(request: web.Request) -> web.Response:
         efp = request.query.get("embed_forward_port", "")
         if efp.isdigit() and 1 <= int(efp) <= 65535:
             extra["embed_forward_port"] = str(int(efp))
+    if via_app:
+        # The delegated leg: an owner token scoped by ``dashboard.delegated_scope``. The
+        # app is named in ``via_app``, never in ``app``: an ``app`` claim would put the
+        # token under app scope, which is not what this grant is.
+        extra["via_app"] = via_app
+        # And the id of the grant it was minted under: the token ends with that grant.
+        from kiro_crew.apps import dashboard_proxy
+
+        grant_claim = await asyncio.to_thread(dashboard_proxy.grant_claim, via_app)
+        if not grant_claim:
+            return web.json_response(
+                {"error": "invalid secret", "code": "invalid_secret"}, status=403
+            )
+        extra["via_grant"] = grant_claim
     # The provenance gate knows WHICH app's backend owns the calling process, so
     # the audit row names it: a token minted by an app is attributed to that app,
     # and any later per-app scoping of this grant is a data change here rather
@@ -160,6 +214,25 @@ async def api_token_local(request: web.Request) -> web.Response:
     # is for the owner's own client, not for code an app runs.
     subject, claims = owner_id or "local-app", owner_mint_extra(extra)
     if request.query.get("kind", "") == "session":
+        if via_app:
+            # A delegated grant is a link the owner's browser exchanges, never a bearer
+            # session: refused here so no bearer path has to remember to refuse it.
+            _sel().log_api_access(
+                caller="local-process",
+                operation="token.local",
+                outcome="denied",
+                source="local-bootstrap",
+                resources=f"denied delegated-session app={app_name} "
+                f"basis={provenance.basis or 'unknown'} via=delegated",
+            )
+            return web.json_response(
+                {
+                    "error": "A delegated grant cannot mint a session token. "
+                    "Request the link without kind=session.",
+                    "code": "delegated_session_refused",
+                },
+                status=403,
+            )
         if app_name:
             _sel().log_api_access(
                 caller="local-process",
@@ -189,6 +262,65 @@ async def api_token_local(request: web.Request) -> web.Response:
         # The admitting leg, from a fixed vocabulary with no space or ``=`` in it, so
         # a mint no host check verified (``basis=win32-unverified``) is visible.
         resources=(f"token-issued app={app_name}" if app_name else "token-issued")
-        + f" basis={provenance.basis or 'unknown'}",
+        + f" basis={provenance.basis or 'unknown'}"
+        + (" via=delegated" if via_app else ""),
     )
     return web.json_response({"token": token, "expires_in": ttl})
+
+
+#: What a derived value looks like: a hex HMAC-SHA256 digest.
+_DERIVED_SHAPE = re.compile(r"[0-9a-f]{64}")
+
+
+async def _note_refused_mint(request: web.Request) -> None:
+    """Record that a spawned app backend asked for a token and was refused, for the UI.
+
+    An app without the grant holds no usable value (its masks are empty), so the refusal
+    arrives before leg 2; the peer, not the value, says which app asked. Never raises.
+    """
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.member_memory_auth import delegated_app_provenance
+
+    try:
+        provenance, _reason = await asyncio.get_running_loop().run_in_executor(
+            local_auth_executor(), delegated_app_provenance, request
+        )
+        if provenance is not None and provenance.app:
+            await asyncio.to_thread(dashboard_proxy.note_refused_mint, provenance.app)
+    except Exception:
+        return
+
+
+async def _delegated_leg(
+    request: web.Request, provided: str
+) -> LocalOwnerProvenance | web.Response:
+    """Leg 2: the provenance when *provided* is the derived value of the calling app.
+
+    Otherwise the 403 (``invalid_secret``, so the body says no more than the first leg
+    does) with its SEL row, which names the app when the caller is a spawned backend.
+    Neither the value nor a token is ever logged.
+    """
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.member_memory_auth import delegated_app_provenance
+
+    loop = asyncio.get_running_loop()
+    provenance, reason = await loop.run_in_executor(
+        local_auth_executor(), delegated_app_provenance, request
+    )
+    if provenance is not None and provenance.app:
+        reason = await asyncio.to_thread(dashboard_proxy.verify_leg_two, provenance.app, provided)
+        if not reason:
+            return provenance
+        if reason == "not-granted":
+            await asyncio.to_thread(dashboard_proxy.note_refused_mint, provenance.app)
+    _sel().log_api_access(
+        caller=request.remote or "unknown",
+        operation="token.local",
+        outcome="denied",
+        source="local-bootstrap",
+        resources=(
+            f"denied {reason} app={provenance.app if provenance else 'none'} "
+            f"basis={provenance.basis if provenance else 'none'} via=delegated"
+        ),
+    )
+    return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)

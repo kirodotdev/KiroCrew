@@ -155,9 +155,10 @@ def _is_dashboard_owner(request: web.Request) -> bool:
     Delegates to the shared predicate rather than re-deriving it: the rule (a
     configured owner matched exactly, or a signed machine-local bootstrap subject
     when none is configured) belongs in one place, and a second copy is how the
-    two drift apart.
+    two drift apart. A delegated (``via_app``) token carries the owner's identity but is
+    the app's: never the owner here, so it reads the non-owner payload.
     """
-    return is_owner_dashboard_request(request)
+    return is_owner_dashboard_request(request) and not request.get("via_app")
 
 
 async def _dashboard_owner_only(request: web.Request) -> web.Response | None:

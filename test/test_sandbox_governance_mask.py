@@ -404,6 +404,9 @@ class TestSecretsAreMaskedInEveryMode:
         # Each crewmate's rules, goals and DM binding: written by the gateway on a
         # person's action and read by nothing in a sandbox.
         "member-records",
+        # The dashboard-access revoke tombstones: an app backend (the same crew-home masks,
+        # every mode) can neither create, remove nor edit one, and read none.
+        "app-dashboard-revoked",
         "backup",
         "browser-cookies.txt",
         "playwright-storage-state.json",

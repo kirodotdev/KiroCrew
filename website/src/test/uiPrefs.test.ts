@@ -242,6 +242,17 @@ describe('uiPrefs', () => {
       expect(localStorage.getItem('kiro_crew_token')).toBeNull()
     })
 
+    it('boots on defaults when a delegated token is refused (403): restores nothing, writes nothing', async () => {
+      // A delegated app token has no ui-prefs row: the GET answers 403 and the shell must
+      // still start. hydrateUiPrefs resolves 0 (main.tsx then boots without sync).
+      mockFetch(() => ({ ok: false, status: 403, json: () => Promise.resolve({}) }))
+      const before = localStorage.length
+      await expect(hydrateUiPrefs()).resolves.toBe(0)
+      expect(localStorage.getItem('mc-font-family')).toBeNull()
+      expect(needsHydrate()).toBe(true)
+      expect(localStorage.length).toBeLessThanOrEqual(before + 1) // the failure marker only
+    })
+
     it('ignores non-string values', async () => {
       mockFetch(() => okJson({ prefs: { 'mc-font-family': 1.5 } }))
       expect(await hydrateUiPrefs()).toBe(0)

@@ -79,4 +79,16 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate, then the machine owner alone (crew_api_responses).
     # Contract test: test_crew_api_responses.py.
     ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
+    # Owner dashboard only (apps/dashboard_proxy_routes.py): 403 for an app token, and a
+    # delegated (via_app) token is refused because no READ_ALLOW row names these paths.
+    ("GET", "/api/apps/{name}/dashboard-proxy"): RouteAccess("apps.dashboard_proxy.read", UNSTABLE),
+    ("PUT", "/api/apps/{name}/dashboard-proxy"): RouteAccess(
+        "apps.dashboard_proxy.grant", UNSTABLE
+    ),
+    ("DELETE", "/api/apps/{name}/dashboard-proxy"): RouteAccess(
+        "apps.dashboard_proxy.revoke", UNSTABLE
+    ),
+    ("POST", "/api/apps/{name}/dashboard-proxy/restart"): RouteAccess(
+        "apps.dashboard_proxy.restart", UNSTABLE
+    ),
 }

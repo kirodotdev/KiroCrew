@@ -420,25 +420,119 @@ Request flow:
 1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
 2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, `/sandbox-doc/`, `/app-frame/`, and `/app-frame-fetch/` (an app frame and its fetch carry their own HMAC path token or capability header, see `apps/app_frame.py`); exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`), the four local authorization routes `GET /.well-known/oauth-authorization-server`, `GET /oauth/authorize`, `POST /oauth/token` and `POST /oauth/revoke` (`LOCAL_AUTH_*_PATH`: an app with no credential yet asks for a grant; each handler in `routes/local_authorization.py` admits only a direct loopback request and grants nothing until the owner answers on an Owner route), `GET /api/connections/oauth/callback` (`CREW_OAUTH_CALLBACK_PATH`: a vendor's redirect back to a DCR Connection sign-in, admitted in `crew_oauth_dcr.gateway_callback` only by a pending sign-in's `state`, single use, 600 s), and `POST /api/relay-viewer/token` (`RELAY_VIEWER_TOKEN_PATH`: the desktop app's relay access token mint, admitted in `api_relay_viewer_token` by loopback or the same-user unix socket, `X-Local-Secret` and a verified host process, like `/api/token/local`), and `GET /api/connected-computers/connect` (`CONNECTOR_CONNECT_PATH`, feature preview `connected_computers`: a connected computer's connector socket. Not in `_BYPASS_EXACT_METHODS`: `_exact_method_bypass` grants it only while the preview is on in the live configuration, so with it off, or before a configuration is loaded, the path meets this gate like any path, and an authenticated caller gets the router's 404 (`remote_routes.api_connector_connect`, registered for every method), exactly as on a gateway without the feature. With it on, `ws_route.api_connector_connect` refuses the upgrade while the Session Environments developer flag is off, when an `Origin` or an `Authorization` header is present, or when the named device is not active here; on the socket the gateway proves itself first, then the connector sends only the unsigned credential payload and a nonce-bound proof of possession, never the bearer signature. `connector_token.verify_auth` checks that proof in constant time against a locally reconstructed credential, then `connector_token.verify` checks the credential in full (signature, audience, gateway id, device record and its status, owner, credential generation, then expiry). Revocation is the device record's, never the dashboard's revocation generation or nonce denylist. Every subsequent frame in both directions, including ready and stop, has a session-key MAC and consecutive sequence number bound to both identities and nonces; tampering or replay closes the socket before dispatch. No dashboard cookie or token is read there, and the connector credential is accepted nowhere else: `validate_token` refuses a token whose `aud` is `CONNECTOR_AUDIENCE` (reason `connector credential`), so every cookie, link and app-token path and `POST /api/auth/logout` (`revoke_access_cookie`) refuse it, and a logout cannot revoke it or end sharing) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
 
-   **App backends mint through the local secret.** A running app backend can
-   read `.local_secret` and every `run/gateway-<port>.secret` file, and
-   `/api/token/local` admits it (basis `spawned-app`). The external Crew Tunnel
-   app (registry `Crew Tunnels`, package `PdebieKiroCrewTunnelDist`) depends on
-   both: it reads `run/gateway-<port>.secret`, falls back to `.local_secret`,
-   mints an owner token and proxies the dashboard to a remote browser. Two
-   tightenings broke it and were reverted: #38113 refused the mint to app
-   backends (reverted by #40360), and #38182 bound empty stand-ins over the
-   secret files in the backend's sandbox, so the tunnel sent an empty
-   `X-Local-Secret` and every start failed with `token mint failed: 403
-   Forbidden` (`invalid-secret` in the SEL). Do not hide the files from the
-   running backend or refuse its mint until an app-scoped token path exists and
-   Crew Tunnel has moved to it. The spawns that run app code BEFORE the backend
-   starts (`npm install`, `pip install -r`, the interpreter probe, install and
-   discovery probes) still mask the files through
-   `sandbox.app_backend_secret_mask_targets()`, which also creates this
-   gateway's listener files and `.local_secret` empty before a boot-time spawn
-   so a helper an install leaves behind cannot read them once the gateway
-   writes them; that mask stays.
+   **App backends mint through a delegated value, not the local secret.** A
+   running app backend reads none of `.local_secret` and `run/gateway-<port>.secret`:
+   its spawn passes `sandbox.app_backend_secret_mask_targets()` as masks, as every
+   spawn that runs app code does (`npm install`, `pip install -r`, the interpreter
+   probe, install and discovery probes). The helper creates this gateway's
+   listener files and `.local_secret` empty before a boot-time spawn, so a
+   helper an install leaves behind cannot read them once the gateway writes them.
+   An app WITHOUT the grant finds the empty stand-in and `/api/token/local` answers
+   it `403 invalid_secret`. The external Crew Tunnel app (registry `Crew Tunnels`,
+   unchanged) reads
+   `run/gateway-<port>.secret`, falls back to `.local_secret` and sends what it
+   read as `X-Local-Secret`; it keeps working once the owner grants it
+   `dashboard_proxy` (`apps.dashboard_proxy`). An install made before the gateway
+   sealed install records has no record, so no offer is made and the masks stay on
+   until one owner update from the App Store seals it. History: #38113 refused the mint to
+   app backends (reverted by #40360), and #38182 masked the files with no
+   replacement, so the tunnel failed with `token mint failed: 403 Forbidden`
+   (reverted by #40690). This is the replacement path.
+
+   **The `dashboard_proxy` grant.** An app the owner granted gets, bound over each
+   masked path in its backend's sandbox, `D(app)` = hex HMAC-SHA256 keyed by the
+   local secret over `dashboard-proxy`, the app name, the install id and the boot
+   id (each separated by a NUL byte). The install id is `install_identity`: the
+   install record id with the version and the registry provenance the gateway
+   recorded, so a reinstall or another package under the same name derives a new
+   value; the boot id ends every value at a gateway restart. The Linux namespace
+   launcher writes it into the stand-in it binds (`extra_stand_ins`, never the
+   real file). Only that backend can bind content, so the grant is refused
+   (`platform-unsupported`) and never offered on Seatbelt (macOS) or any other
+   backend, every mask stays for every app there, and Crew Tunnel on macOS waits for
+   an API path. On such a backend a spawned app that presents the REAL secret is
+   refused too (`denied real-secret-from-app app=<app> basis=spawned-app`). A host
+   with no sandbox has no boundary, so it stays as it was; Windows has no mask at
+   all (`win32-unverified`), so there the secret files stay readable and the HIGH
+   stays open until the owner accepts the risk in writing. The grant is the owner's:
+   `PUT /api/apps/<name>/dashboard-proxy` with `{"confirm": true}`, offered only
+   for an app the gateway recorded as installed from a registry, with text naming
+   the registry and source and saying plainly what the access is: the app can show
+   the dashboard page with the owner's theme and a list of the chats (only their
+   titles, whether they run and when they last changed) and stop a running chat
+   turn, it can use its own backend, and it cannot read chat messages, send them,
+   read the preferences, change settings, credentials, apps, the terminal or approvals (the same
+   words as the card on the app's page and the confirm,
+   `dashboard_proxy.DASHBOARD_ACCESS_SCOPE`). Chat is read-only on
+   purpose: a message sent through the tunnel would run an agent as the owner, and
+   that agent can do whatever the owner's agents can do, so such a grant would not
+   be a secret boundary. A delegated send stays refused until the owner approves
+   that exposure by name. It is stored in `member-records/app-dashboard-proxy/` (masked in every
+   sandbox mode), never pre-granted, counts only while the owner-enable marker
+   stands and the owner has not disabled the app, and is removed on a disable and
+   an uninstall. It reaches a backend at its next start. A revoke is durable across
+   restarts: it first writes a tombstone naming the ended grant id in the gateway's own
+   `app-dashboard-revoked/` leaf (outside `member-records/`, masked in every sandbox
+   mode; the file and its directory are fsynced), then removes the records. A
+   tombstone wins over any record on disk, in `granted()` and in the install-record
+   read; one that cannot be read or parsed counts as ended, never as absent. Only a
+   new grant, after its new record is written, clears it, and it keeps the ended ids,
+   so an old record with one of them never stands again. When the tombstone cannot be
+   written, the grant is ended in memory, the delete is still tried, and the route
+   answers `500 revoke_incomplete`: if the record stayed too, the access returns after
+   a gateway restart until a revoke succeeds.
+
+   **The delegated leg of `/api/token/local`.** A value of 64 hex digits that is
+   not the local secret takes leg 2, which admits ONLY a process that descends
+   from a backend this gateway spawned whose pid AND start id still match the
+   spawn record (`member_memory_auth.delegated_app_provenance`; never a host
+   process, a process outside the backend's group, or `win32-unverified`), for an
+   app holding the grant, presenting its own `D(app)`. It mints an owner token
+   with the claim `via_app=<app>` (never the `app` claim), TTL as before. The
+   success row is `token-issued app=<app> basis=spawned-app via=delegated`; every
+   refusal is `denied <reason> app=<name or none> basis=<basis> via=delegated`
+   (`not-granted`, `wrong-value`, `not-spawned-app`, `unverified-peer`,
+   `unverified-platform`) with the same `403 invalid_secret` body; neither the
+   value nor the token is logged. An empty or other value stays
+   `403 invalid_secret` / `invalid-secret`. The real secret from a verified host
+   process mints as before.
+
+   **What a `via_app` token reaches.** `dashboard/delegated_scope.py` runs after
+   authentication: every request re-reads the grant and the enable marker for
+   the app (off the loop), so a disable or an uninstall ends the token at once,
+   and the refresh chain stops rotating. The token and its refresh chain carry
+   `via_grant`, an HMAC of the gateway secret and the id of the grant they were
+   minted under (`dashboard_proxy.grant_claim`); each grant has a new id, so a
+   revoke, disable, uninstall, reinstall or gateway-secret change leaves an old
+   cookie matching no grant, even after the app is granted again. Provenance and
+   the grant identity come from the gateway's sealed install record under
+   `member-records/app-dashboard-proxy/`, never from `apps/<name>/installed.json`.
+   One rule, deny by default for EVERY method and EVERY channel (a plain read, a
+   write, a WebSocket upgrade, an SSE stream): a request is allowed only when
+   `delegated_scope.READ_ALLOW` has a row for its method and route, and a route
+   nobody listed is refused (`403 delegated_credential_refused`). Each row names its
+   handler (`file:line`) and what it does at most. The rows are the page's boot
+   reads (`GET /`, `/api/auth/me`, `/api/kiro-prerequisite`, `/api/dashboard/branding`,
+   `/api/theme/boot`, and `/api/chat/slots`, which answers this token key, title,
+   running and last activity only; `/api/ui-prefs` is not a row, it names host
+   paths, and the page boots on its defaults when it answers 403), the token's own
+   `POST /api/auth/refresh` and `/api/auth/logout`, `POST /api/chat/slots/<slot>/stop`
+   (no body, no query), and the token's own app routes (`/apps/<name>/api/*`,
+   `/app-frame-fetch/<name>/*`). No WebSocket, no SSE stream, no file read, no
+   export, no chat message body and no write but those is a row. A row that can stay
+   open (the two app routes) is registered while it runs and ended within seconds
+   when its grant ends (revoke, disable, uninstall, reinstall, new gateway secret).
+   The refresh chain only ever renews the same `via_app` and `via_grant` claims.
+   `test_delegated_read_allow.py` walks every route and method the gateway mounts
+   (the page table, the MCP tool routes, the dist and static routes, the edition
+   routes), pins the set of rows, checks each row's handler line, requires an
+   allowed GET to answer a plain response, and pins the grant prompt and the card
+   text to the rows (`DASHBOARD_ACCESS_SCOPE`), so a new row needs a security review
+   and new words first. A delegated request is never the owner's own view:
+   `is_host_owner_dashboard_request` answers False for it, so every redaction seam
+   redacts in full. Each refusal and each allowed write leaves a SEL row
+   (`delegated_scope`) that names the app and the route template, never the raw
+   path.
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each

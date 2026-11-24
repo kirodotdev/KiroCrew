@@ -467,6 +467,10 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # The SSM listener's last answer: every boot replaces it with a new value from its
     # own config (off, or the port it bound), so no earlier boot's answer carries over.
     ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
+    # The dashboard-access derivation's gateway secret: start_dashboard draws a new random
+    # value on every boot and hands it over before the first backend spawns, so no earlier
+    # boot's secret carries over (a delegated token minted under it ends with it).
+    ("kiro_crew.apps.dashboard_proxy", "_gateway_secret"): "rebuilt by each boot",
     # Which apps have a public id, mapped to their version: each boot's
     # refresh_public_app_ids swaps in a new dict read from that boot's install
     # records, so no earlier boot's map carries over.

@@ -193,9 +193,15 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   #38182 (masking `.local_secret` and `run/gateway-*.secret` in the running app
   backend's sandbox): both broke the external Crew Tunnel app, which reads
   `run/gateway-<port>.secret` and mints an owner token to proxy the dashboard.
-  Do not re-add either until an app-scoped token path exists and Crew Tunnel uses
-  it ([dashboard-token-auth](docs/system-specs/modules/dashboard-token-auth.md),
-  "App backends mint through the local secret").
+  The running backend's spawn masks those files again, and the app-scoped path
+  exists: an app the owner granted `dashboard_proxy` finds its own derived value
+  in each masked file, and `/api/token/local` mints it a `via_app` token that
+  reaches only the routes `dashboard/delegated_scope.py` lists in `READ_ALLOW`. Keep
+  that mask, and never hand a backend the real secret; a new dashboard route is
+  refused for a `via_app` token until it has a row, and the walk in
+  `test_delegated_read_allow.py` pins the set
+  ([dashboard-token-auth](docs/system-specs/modules/dashboard-token-auth.md),
+  "App backends mint through a delegated value, not the local secret").
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
   ([rfc-crew-lts-edition](docs/request-for-change/rfc-crew-lts-edition.md),

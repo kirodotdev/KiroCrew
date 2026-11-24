@@ -25,6 +25,7 @@ export const CORE_APP_ROUTE_SEGMENTS = new Set([
   'bot-grants',
   'browser-sites',
   'config',
+  'dashboard-proxy',
   'dev',
   'disable',
   'enable',

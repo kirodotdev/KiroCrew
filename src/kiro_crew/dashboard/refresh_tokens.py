@@ -972,6 +972,8 @@ def generate_refresh_token(
     require_peer: bool = False,
     peer_key: str = "",
     owner_mint: bool = False,
+    via_app: str = "",
+    via_grant: str = "",
     embed_parent_port: str = "",
     embed_forward_port: str = "",
 ) -> tuple[str, str, str, float]:
@@ -1033,6 +1035,13 @@ def generate_refresh_token(
         # Carried across rotation like ``boot`` so the access token a refresh
         # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
         payload_dict["owner_mint"] = "1"
+    if via_app:
+        # The delegated scope (``delegated_scope``) rides every rotation of the chain, so
+        # a refresh never widens a delegated session into a plain owner one.
+        payload_dict["via_app"] = via_app
+    if via_grant:
+        # The grant id the chain was opened under (``dashboard_proxy.grant_claim``).
+        payload_dict["via_grant"] = via_grant
     if embed_parent_port:
         # The embedding parent dashboard's port (``token_embed_parent_port``).
         # Carried across rotation so the access token a refresh mints keeps the
@@ -1147,6 +1156,29 @@ def refresh_token_boot(token: str) -> str:
     if not isinstance(payload, dict):
         return ""
     value = payload.get("boot", "")
+    return value if isinstance(value, str) else ""
+
+
+def refresh_token_via_app(token: str) -> str:
+    """A refresh chain's ``via_app`` claim, or ``""`` when it has none.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = payload.get("via_app") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def refresh_token_via_grant(token: str) -> str:
+    """A refresh chain's ``via_grant`` claim, or ``""`` when it has none."""
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = payload.get("via_grant") if isinstance(payload, dict) else None
     return value if isinstance(value, str) else ""
 
 

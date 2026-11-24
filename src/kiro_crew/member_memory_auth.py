@@ -300,18 +300,42 @@ def _verified_host_process(pid: int) -> bool:
     return sys.platform == "win32"
 
 
-def _gateway_spawned_app_backend(pid: int) -> str | None:
+def _gateway_spawned_app_backend(pid: int, *, verify_start: bool = False) -> str | None:
     """Name the live app backend launched and tracked by this gateway that owns *pid*.
 
     ``None`` when no spawned backend owns the process, and when the backend
     registry cannot be imported at all: an unanswerable question is a refusal of
-    this leg, never an admission.
+    this leg, never an admission. With *verify_start* the registry record must also
+    match the live process start id (no recycled pid).
     """
     try:
         from kiro_crew.apps.backend import spawned_backend_owner
     except Exception:
         return None
-    return spawned_backend_owner(pid)
+    return spawned_backend_owner(pid, verify_start=verify_start)
+
+
+def delegated_app_provenance(request: Any) -> tuple[LocalOwnerProvenance | None, str]:
+    """``(provenance, "")`` for the delegated leg, or ``(None, reason)`` when it is refused.
+
+    The delegated owner-token leg admits ONLY a process that descends from a backend this
+    gateway spawned, and whose pid AND start id still match that spawn record. A host
+    process, a process outside every backend's group and a platform with no host check
+    (``win32-unverified``, where nothing is masked) never take it. The reason is a fixed
+    word for the audit row.
+    """
+    try:
+        if _host_process_basis() == "win32-unverified":
+            return None, "unverified-platform"
+        pid = _request_peer_pid(request)
+        if not (isinstance(pid, int) and platform_compat.get_process_start_id(pid)):
+            return None, "unverified-peer"
+        app = _gateway_spawned_app_backend(pid, verify_start=True)
+    except Exception:
+        return None, "unverified-peer"
+    if not app:
+        return None, "not-spawned-app"
+    return LocalOwnerProvenance(app=str(app), basis="spawned-app"), ""
 
 
 # (pid, start id) per live loopback TCP connection: the transport key dies with the

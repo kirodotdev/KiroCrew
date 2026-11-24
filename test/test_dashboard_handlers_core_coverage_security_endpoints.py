@@ -328,11 +328,13 @@ class TestLocalToken:
         """The owning app's name reaches the audit row, not the response or the token.
 
         The token carries no ``app`` claim because the owner-dashboard check refuses an
-        app-scoped token.
+        app-scoped token. The backend here is unsandboxed (no boundary), the only place the
+        real secret from an app backend still mints.
         """
         from kiro_crew import member_memory_auth as auth
 
         peer_pid = 4242
+        monkeypatch.setattr("kiro_crew.apps.dashboard_proxy.sandboxed_backend", lambda: False)
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: peer_pid)
         monkeypatch.setattr(

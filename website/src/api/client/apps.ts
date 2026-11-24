@@ -62,6 +62,24 @@ export type ExternalRegistryRow = {
   review?: string
 }
 
+/** `GET/PUT/DELETE /api/apps/{name}/dashboard-proxy`: the owner's dashboard-access grant. */
+export interface AppDashboardAccess {
+  granted: boolean
+  /** The words to show the owner before granting; `null` when no grant may be offered. Its
+   * `identity` names the install shown, and the grant sends it back (`offer_changed` if not). */
+  offer: { app: string; registry: string; source: string; version: string; identity: string; text: string } | null
+  /** `false` where the sandbox cannot bind the access (every host but the Linux namespace one). */
+  platform_supported: boolean
+  /** The app's last token request was refused for want of this grant. */
+  needs_access: boolean
+  /** The gateway holds no install record of this app, so no grant can be offered until one owner update. */
+  update_to_enable?: boolean
+  /** Granted, but the running backend was not started with it: a restart applies it. */
+  restart_required?: boolean
+  /** Set by the restart: whether the backend came back up. */
+  restarted?: boolean
+}
+
 /** `GET/PUT /api/apps/{name}/bot-grants`: the ticked Bot slugs and the Bot scopes. */
 export interface AppBotGrants {
   bots: string[]
@@ -129,6 +147,10 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // The Bots the owner ticked for an app (`permissions.bots`), and its approved scopes.
     getAppBotGrants: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/bot-grants').then(j) as Promise<AppBotGrants>,
     setAppBotGrants: (name: string, bots: string[]) => put('/api/apps/' + encodeURIComponent(name) + '/bot-grants', { bots }).then(j) as Promise<AppBotGrants>,
+    getAppDashboardAccess: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy').then(j) as Promise<AppDashboardAccess>,
+    grantAppDashboardAccess: (name: string, identity: string) => put('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy', { confirm: true, identity }).then(j) as Promise<AppDashboardAccess>,
+    restartAppForDashboardAccess: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy/restart').then(j) as Promise<AppDashboardAccess>,
+    revokeAppDashboardAccess: (name: string) => del('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy').then(j) as Promise<AppDashboardAccess>,
     // The pages an app's own agent may browse (`permissions.browserSites` and the
     // owner's own edits). The change is owner-only on the gateway.
     getAppBrowserSites: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/browser-sites').then(j) as Promise<AppBrowserSites>,

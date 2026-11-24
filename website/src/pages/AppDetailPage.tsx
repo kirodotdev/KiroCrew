@@ -62,7 +62,7 @@ import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
-import AppDetailBrowserSites from './AppDetailBrowserSites'
+import AppDetailAppAccess from './AppDetailAppAccess'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -1844,7 +1844,7 @@ export default function AppDetailPage() {
             </Card>
           )}
 
-          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailBrowserSites appName={app.name} onChanged={() => void load({ keepView: true })} /></>}
+          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailAppAccess appName={app.name} displayName={appDisplayName(app)} onChanged={() => void load({ keepView: true })} onUpdate={isRegistrySourced(app) ? () => handleAction('update') : undefined} /></>}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 

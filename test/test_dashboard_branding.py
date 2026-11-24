@@ -162,6 +162,17 @@ class TestLogoHandler:
         assert resp.status == 200
 
 
+def _owner_request(via_app: str | None = None) -> MagicMock:
+    """A request the owner's own session sends, or, with *via_app*, a delegated token's.
+
+    A bare ``MagicMock`` answers ``request.get("via_app")`` with a truthy mock, which the
+    route reads as a delegated token; the owner's request carries no such key.
+    """
+    req = MagicMock()
+    req.get.side_effect = lambda key, default=None: via_app if key == "via_app" else default
+    return req
+
+
 class TestBrandingEndpoint:
     """api_branding() returns correct JSON."""
 
@@ -170,7 +181,7 @@ class TestBrandingEndpoint:
         from kiro_crew.dashboard.handlers import api_branding
 
         cfg = KiroCrewConfig()
-        req = MagicMock()
+        req = _owner_request()
         with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
             resp = await api_branding(req)
         body = json.loads(resp.body)
@@ -182,11 +193,53 @@ class TestBrandingEndpoint:
         from kiro_crew.dashboard.handlers import api_branding
 
         cfg = KiroCrewConfig(dashboard=DashboardConfig(bot_name="Jarvis"))
-        req = MagicMock()
+        req = _owner_request()
         with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
             resp = await api_branding(req)
         body = json.loads(resp.body)
         assert body["bot_name"] == "Jarvis"
+
+    @pytest.mark.asyncio
+    async def test_a_delegated_token_reads_only_the_name_and_the_logo(self):
+        # READ_ALLOW lists this route for a ``via_app`` token (the app's dashboard
+        # view). The answer is an allowlist: the owner's editor host, origin posture
+        # and desktop facts never reach the app.
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig(
+            dashboard=DashboardConfig(
+                bot_name="Jarvis",
+                instance_label="pod-a",
+                remote_editor={"editor": "vscode", "host": "dev-box"},
+            )
+        )
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(_owner_request(via_app="tunnel-like"))
+        assert json.loads(resp.body) == {
+            "bot_name": "Jarvis",
+            "instance_label": "pod-a",
+            "avatar": "/logo.png",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_owner_reads_every_branding_field(self):
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig(
+            dashboard=DashboardConfig(remote_editor={"editor": "vscode", "host": "dev-box"})
+        )
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(_owner_request())
+        body = json.loads(resp.body)
+        assert set(body) == {
+            "bot_name",
+            "instance_label",
+            "avatar",
+            "direct_local",
+            "desktop_launcher",
+            "remote_editor",
+        }
+        assert body["remote_editor"] == {"editor": "vscode", "host": "dev-box"}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -208,7 +261,7 @@ class TestBrandingEndpoint:
 
         cfg = KiroCrewConfig(dashboard=DashboardConfig(remote_editor=stored))
         with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
-            resp = await api_branding(MagicMock())
+            resp = await api_branding(_owner_request())
         assert json.loads(resp.body)["remote_editor"] == served
 
     @pytest.mark.asyncio
@@ -222,7 +275,7 @@ class TestBrandingEndpoint:
         (tmp_path / "config.json").write_text(
             json.dumps({"dashboard": {"instance_label": " pod\u200b-a "}})
         )
-        resp = await api_branding(MagicMock())
+        resp = await api_branding(_owner_request())
         assert json.loads(resp.body)["instance_label"] == "pod-a"
 
     @pytest.mark.asyncio
@@ -235,7 +288,7 @@ class TestBrandingEndpoint:
         from kiro_crew import platform_compat
         from kiro_crew.dashboard.handlers import api_branding
 
-        req = MagicMock()
+        req = _owner_request()
         with patch(
             "kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()
         ), patch.object(platform_compat, "desktop_launcher_available", return_value=present):
@@ -276,7 +329,7 @@ class TestBrandingEndpoint:
             platform_compat_trust, "_user_manager_environment", lambda: manager, raising=False
         )
         monkeypatch.setattr(platform_compat_trust, "_desktop_session_cache", None, raising=False)
-        req = MagicMock()
+        req = _owner_request()
         with patch(
             "kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()
         ), patch("sys.platform", "linux"), patch.object(
@@ -312,7 +365,7 @@ class TestBrandingReadsTheLiveConfig:
         with self._count_builds() as build:
             await live.watch().refresh_now()
             for _ in range(100):
-                resp = await api_branding(MagicMock())
+                resp = await api_branding(_owner_request())
                 assert json.loads(resp.body)["bot_name"] == "Jarvis"
         assert build.call_count == 1
 
@@ -325,7 +378,7 @@ class TestBrandingReadsTheLiveConfig:
         watcher = live.watch()
         await watcher.start()
         try:
-            resp = await api_branding(MagicMock())
+            resp = await api_branding(_owner_request())
             assert json.loads(resp.body)["bot_name"] == "Kiro Crew"
 
             def _rename(doc: dict) -> dict:
@@ -339,7 +392,7 @@ class TestBrandingReadsTheLiveConfig:
                 lambda: (snap := live.snapshot()) is not None
                 and snap.dashboard.bot_name == "Jarvis"
             )
-            resp = await api_branding(MagicMock())
+            resp = await api_branding(_owner_request())
             assert json.loads(resp.body)["bot_name"] == "Jarvis"
         finally:
             await watcher.stop()
@@ -349,10 +402,10 @@ class TestBrandingReadsTheLiveConfig:
         from kiro_crew.dashboard.handlers import api_branding
 
         _write(cfg_file, {"dashboard": {"bot_name": "Jarvis"}})
-        resp = await api_branding(MagicMock())
+        resp = await api_branding(_owner_request())
         assert json.loads(resp.body)["bot_name"] == "Jarvis"
         _write(cfg_file, {"dashboard": {"bot_name": "Friday"}})
-        resp = await api_branding(MagicMock())
+        resp = await api_branding(_owner_request())
         assert json.loads(resp.body)["bot_name"] == "Friday"
 
 

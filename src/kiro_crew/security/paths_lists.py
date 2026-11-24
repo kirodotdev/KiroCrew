@@ -508,6 +508,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # operator's own ``kirocrew agent create`` / ``delete``, never by an agent tool.
     "crew-teams",
     "member-records",  # crewmate rules/goals/DM bindings; mirror: sandbox._CREW_HIDDEN_LEAVES
+    "app-dashboard-revoked",  # dashboard-access revoke tombstones; mirror: sandbox._CREW_HIDDEN_LEAVES
     # Subagent panel dismissals (``subagent_persistence.record_panel_dismissal``):
     # one file per run whose finished card the operator dismissed, which the
     # panel's durable reader consults to keep that card hidden. It decides what

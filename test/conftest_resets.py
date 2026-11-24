@@ -33,6 +33,24 @@ def _ledger_create_ignores_live_memory(_floor_monkeypatch):
 
 
 @per_test_guard
+def _reset_dashboard_proxy_state(_floor_monkeypatch):
+    """No test inherits a gateway secret or a refused-mint mark an earlier test left.
+
+    ``apps.dashboard_proxy`` keeps both in module globals; a leftover secret makes a
+    later test's derived value and grant claim match, or not, by test order.
+    """
+    from kiro_crew.apps import dashboard_proxy
+
+    _floor_monkeypatch.setattr(dashboard_proxy, "_gateway_secret", "")
+    _floor_monkeypatch.setattr(dashboard_proxy, "_refused_mints", set())
+    dashboard_proxy.reset_marks()
+
+    from kiro_crew.dashboard import delegated_scope
+
+    delegated_scope.reset()
+
+
+@per_test_guard
 def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
     """The autonudge boot pacer never waits on this runner's memory.
 

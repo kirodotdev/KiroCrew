@@ -66,15 +66,30 @@ def grant_host_exec(name: str) -> bool:
     return True
 
 
-def revoke_host_exec(name: str) -> None:
+def revoke_host_exec(name: str) -> bool:
     """Remove *name*'s grant. Safe to call for any app on any write that disables it
-    and on uninstall: a no-op when no grant exists."""
+    and on uninstall: a no-op when no grant exists.
+
+    ``False`` when the revoke is not durable: the marker could not be removed, or the
+    ``dashboard_proxy`` grant it carries ended in memory only and a restart could bring
+    it back (``dashboard_proxy.revoke``). Both steps always run. A caller that reports
+    a disable or an uninstall says so instead of reporting success.
+    """
+    durable = True
     try:
         _grant_path(name).unlink()
     except FileNotFoundError:
         pass
     except OSError:
         logger.warning("could not revoke host-exec grant for %r", name, exc_info=True)
+        durable = False
+    # The dashboard_proxy grant stands only while this marker does, so it ends with it, on
+    # every disable and uninstall path that already calls this function.
+    from kiro_crew.apps.dashboard_proxy import revoke as revoke_dashboard_proxy
+
+    if not revoke_dashboard_proxy(name):
+        durable = False
+    return durable
 
 
 def host_exec_granted(name: str) -> bool:

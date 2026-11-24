@@ -242,6 +242,9 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
         return PRINCIPAL_AGENT_TOOL, ""
     if request.get("app"):
         return PRINCIPAL_APP_TOKEN, ""
+    # A delegated (``via_app``) token acts for an app, not for the owner: never owner-session.
+    if request.get("via_app"):
+        return PRINCIPAL_NONE, ""
     if request.get("is_dashboard_user") is True and request.get("auth_from_query_token") is False:
         from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
