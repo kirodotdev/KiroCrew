@@ -91,6 +91,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: bots:manage
       x-crew-phase: 1b
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-wraps: GET /api/members
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
@@ -257,6 +259,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - None; new work.
       x-crew-coverage: done
@@ -404,7 +408,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -457,6 +462,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -526,7 +533,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: grants:manage
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -602,7 +610,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/sessions_parts/live_turn.py (GET /api/approvals), state only
       x-crew-coverage: done
@@ -655,7 +664,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
@@ -724,7 +734,8 @@ paths:
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
-      x-crew-status: planned
+      x-crew-status: available
+      x-crew-available-to: owner
       x-crew-reuses:
       - the resolvers behind POST /api/approvals/{id}/{action} and POST /api/chat/slots/{slot}/approve
       x-crew-coverage: done
