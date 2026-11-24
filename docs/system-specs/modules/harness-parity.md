@@ -654,10 +654,15 @@ is not sent.
 
 ### KAS engine sub-agents (the `kas_subagents` feature preview)
 
-With the `kas_subagents` feature preview on (default off) a KAS dashboard chat of the default agent mounts the
-engine's own sub-agent tool with the shipped `kirocrew-helper` and the person's own
-registered agents reachable, and
-its entry excludes `spawn_sub_agents` (`acp/kas_engine_subagents.py`). In the same
+With the `kas_subagents` feature preview on (default off) every KAS chat on an agent Kiro
+Crew ships or builds (a dashboard chat, a crew member's, a cron run, a messaging
+channel's; never a conductor's, a Kiro Crew sub-agent run, a workflow or a heartbeat)
+mounts the engine's own sub-agent tool with the shipped `kirocrew-helper` reachable
+(`acp/kas_engine_subagents.py:engine_subagents_on`). Only a person's own dashboard chat
+on the default agent, and the crew member named `default`'s own chat on it, also reach
+the person's own registered agents, and only there does the entry exclude `spawn_run`
+and `spawn_sub_agents` (`engine_replaces_spawn`); every other mounted chat keeps both.
+In the same
 chats on a person's own agent, a file that excludes the sub-agent tool the way a
 file run on kiro-cli did is read as kiro-cli read it
 (`acp/kas_excluded_tool_cli.py`). The gate is

@@ -154,10 +154,12 @@ Four cases, and the difference between them is the whole answer:
   of its grants (only the built-in `kirocrew-helper` is judged as the chat's own
   agent is, grants included). The chat's own agent's `postToolUse` hooks run on a sub-agent's
   finished calls too. With the "KAS sub-agents" feature preview on (Settings >
-  Developer > Feature previews, off by default) a dashboard chat on the default
-  agent also reaches Kiro Crew's built-in `kirocrew-helper` (the default agent's
-  built-in tools and MCP servers under its rules, none of Kiro Crew's own
-  servers), and your own agents, up to 8 in name order, under the
+  Developer > Feature previews, off by default) a KAS chat on any agent Kiro Crew
+  ships or builds (not a conductor's) also reaches Kiro Crew's built-in
+  `kirocrew-helper` (the chat agent's built-in tools and MCP servers under its
+  rules, none of Kiro Crew's own servers). Your own dashboard chat on the default
+  agent, and the crew member named `default`'s chat on it, also reach your own
+  agents, up to 8 in name order, under the
   same rules as a listed agent above: one with a `denyByDefault` or
   `fallbackAction: "deny"` allowlist, a granted tool beside write `deniedPaths` or
   beside a `deniedCommands` entry the engine cannot hold as a rule, a
