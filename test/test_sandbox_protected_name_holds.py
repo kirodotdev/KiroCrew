@@ -370,6 +370,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/crew-teams": "standard",
         "<crew>/cron-history": "standard",
         "<crew>/cron-running": "standard",
+        "<crew>/cron-session-bindings": "standard",
         "<crew>/data.sqlite3": "standard",
         "<crew>/data.sqlite3-journal": "standard",
         "<crew>/data.sqlite3-shm": "standard",

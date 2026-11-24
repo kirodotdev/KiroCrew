@@ -25,6 +25,10 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import cron_script
 from kiro_crew.cron_service.model import CronJob
+from kiro_crew.cron_service.session_bindings import (
+    list_session_bindings,
+    revoke_session_bindings,
+)
 from kiro_crew.cron_service.store import CronStoreUnreadable
 
 if TYPE_CHECKING:
@@ -32,6 +36,23 @@ if TYPE_CHECKING:
 
 #: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
 logger = logging.getLogger("kiro_crew.cron")
+
+
+def _revoke_removed_session_bindings(
+    removed_ids: Iterable[str], released: Iterable[tuple[CronJob, str]]
+) -> None:
+    """Strictly revoke removed jobs and every child their principals own."""
+    from kiro_crew import cron as seams  # the facade owns the shared owner matcher
+
+    removed = {job_id for job_id in removed_ids if job_id}
+    targets = {f"cron:{job_id}" for job_id in removed}
+    recorded_children = {
+        job_id
+        for job_id, session_key in list_session_bindings()
+        if any(seams.cron_owner_matches(session_key, target) for target in targets)
+    }
+    released_children = {job.id for job, _owner in released}
+    revoke_session_bindings(removed | recorded_children | released_children)
 
 
 def _remember_deleted_app_jobs(removed: Iterable[CronJob], *, actor: str) -> None:
@@ -299,10 +320,11 @@ def _drain_pending_removals_locked(self: CronService) -> list[str]:
     # store must not abort the tick and stop every other job. The deferred
     # delete simply stays pending until the store is readable again.
     try:
+        _revoke_removed_session_bindings(to_remove, restore)
         self._save()
     except BaseException as exc:
-        # EVERY save failure rolls back, not just CronStoreUnreadable. _save
-        # also raises bare OSError (ENOSPC/EROFS/EIO out of atomic_write),
+        # EVERY revocation or save failure rolls back, not just
+        # CronStoreUnreadable. Both operations can raise bare OSError
         # which a narrow `except CronStoreUnreadable` let past this block
         # entirely: the child owners stayed cleared in memory while disk still
         # named the old owner, the queue stayed empty, and the fingerprint
@@ -477,6 +499,7 @@ def _remove_jobs_locked(self: CronService, job_ids: list[str]) -> tuple[list[Cro
             self._bump_grant_epochs_for(targets)
             restore = self._remove_job_rows(targets)
             try:
+                _revoke_removed_session_bindings(targets, restore)
                 self._save()
             except BaseException:
                 for child, previous_owner in restore:
@@ -625,6 +648,7 @@ def _remove_jobs_by_owner_locked(
             self._bump_grant_epochs_for(targets)
             restore = self._remove_job_rows(targets)
             try:
+                _revoke_removed_session_bindings(targets, restore)
                 self._save()
             except BaseException:
                 for child, previous_owner in restore:

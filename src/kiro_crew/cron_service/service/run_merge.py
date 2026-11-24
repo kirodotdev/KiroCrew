@@ -31,6 +31,7 @@ from kiro_crew.cron_service.execution import (
     pause_changed_since_start,
 )
 from kiro_crew.cron_service.model import CronJob
+from kiro_crew.cron_service.service.job_removal import _revoke_removed_session_bindings
 from kiro_crew.cron_service.settlement import (
     TerminalSettlementPending,
     apply_settlement_record,
@@ -330,11 +331,13 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
         # must not surface as a job-runner crash. The run result is lost,
         # which is strictly better than clobbering the store.
         try:
+            if consumed_row:
+                _revoke_removed_session_bindings({job.id}, restore)
             self._save()
         except BaseException as exc:
-            # EVERY save failure rolls back the child release, not just
-            # CronStoreUnreadable: the release lives in memory only until the
-            # save lands it, so a bare OSError (ENOSPC/EROFS/EIO out of
+            # EVERY revocation or save failure rolls back the child release,
+            # not just CronStoreUnreadable: the release lives in memory only
+            # until the save lands it, so a bare OSError (ENOSPC/EROFS/EIO out of
             # atomic_write) that left the cleared owners in place while disk
             # still named the old owner would let the next successful save
             # persist a release nothing asked for, from a consume that never

@@ -1025,6 +1025,7 @@ class CronService:
             if row is not None:
                 restore = self._remove_job_rows({job_id})
                 try:
+                    _job_removal._revoke_removed_session_bindings({job_id}, restore)
                     self._save()
                 except BaseException:
                     for child, previous_owner in restore:
@@ -1064,6 +1065,7 @@ class CronService:
             self._bump_grant_epochs_for({job_id})
             restore = self._remove_job_rows({job_id})
             try:
+                _job_removal._revoke_removed_session_bindings({job_id}, restore)
                 self._save()
             except BaseException:
                 for child, previous_owner in restore:

@@ -272,6 +272,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
     "vouched-executions",  # member-store vouches; also sandbox-masked
+    "cron-session-bindings",  # gateway-only cron bindings; also sandbox-masked
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is
