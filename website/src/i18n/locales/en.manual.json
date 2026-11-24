@@ -5463,6 +5463,7 @@
       "toggle_side_terminal": "Toggle side-panel terminal",
       "previous_terminal": "Previous terminal",
       "next_terminal": "Next terminal",
+      "clear_terminal": "Clear terminal",
       "toggle_dictation_mute": "Mute or unmute dictation"
     },
     "useNativeNotification": {
@@ -11132,7 +11133,8 @@
         "clear_shortcut": "Clear",
         "panel_toggles": "Panel toggles",
         "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R.",
-        "skips_shell_hint_mac": "Works inside the terminal too, so your shell stops receiving this key — do not pick ⌃C (Ctrl+C) or ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Works inside the terminal too, so your shell stops receiving this key — do not pick ⌃C (Ctrl+C) or ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Works only while a terminal has focus, so it can share a key with Search Everywhere. Your shell stops receiving this key."
       },
       "reportProblemCard": {
         "support": "Support",

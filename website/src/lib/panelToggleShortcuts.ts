@@ -37,7 +37,7 @@ export const PANEL_TOGGLE_SHORTCUTS_KEY = 'mc-panel-toggle-shortcuts'
 export const PANEL_TOGGLE_SHORTCUTS_EVENT = 'mc-panel-toggle-shortcuts-changed'
 
 export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel' | 'terminal' | 'terminal-new'
-  | 'terminal-close' | 'terminal-prev' | 'terminal-next' | 'side-terminal'
+  | 'terminal-close' | 'terminal-prev' | 'terminal-next' | 'side-terminal' | 'terminal-clear'
 
 /**
  * The rebindable panel commands, in display order. All but the terminal tab
@@ -50,11 +50,30 @@ export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel' | 't
  * survives terminal focus). `side-terminal`
  * shows this session's terminal in the side panel, or hides the panel when that
  * terminal is already showing; hiding never closes the tab, so the shell lives.
+ * `terminal-clear` is VS Code's "Terminal: Clear" — see
+ * {@link TERMINAL_FOCUS_PANEL_TOGGLE_IDS} for why it is matched by the focused
+ * terminal rather than by the dashboard. It is last so that, being unanswered
+ * outside a terminal, it never shadows another id bound to the same chord
+ * ({@link matchPanelToggleEvent} is first-match).
  */
-export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new', 'terminal-close', 'terminal-prev', 'terminal-next', 'side-terminal']
+export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new', 'terminal-close', 'terminal-prev', 'terminal-next', 'side-terminal', 'terminal-clear']
 
 /** The ids that act on the docked terminal — hidden wherever the terminal is disabled. */
-export const TERMINAL_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new', 'terminal-close', 'terminal-prev', 'terminal-next', 'side-terminal'])
+export const TERMINAL_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new', 'terminal-close', 'terminal-prev', 'terminal-next', 'side-terminal', 'terminal-clear'])
+
+/**
+ * The ids answered by the FOCUSED terminal's own key handler, and by nothing
+ * else. This is VS Code's `when: terminalFocus` keybinding context: clearing acts
+ * on one particular shell, the one holding focus, so outside a terminal the chord
+ * is not the dashboard's to claim and falls through to whatever else is bound to
+ * it. That is what lets ⌘K / Ctrl+K clear the terminal while Search Everywhere
+ * keeps ⌘K everywhere else: the terminal's handler runs at the xterm textarea,
+ * before the window-level palette listener, and stops the keystroke there.
+ *
+ * Unlike {@link PANEL_TOGGLES_SKIPPING_SHELL} these need no capture-phase
+ * listener, because the handler that owns them IS the terminal's.
+ */
+export const TERMINAL_FOCUS_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal-clear'])
 
 /**
  * Factory-default binding per panel. `mod` is the platform primary modifier —
@@ -91,6 +110,10 @@ export const DEFAULT_PANEL_TOGGLE_BINDINGS: Record<PanelToggleId, Chord | null> 
   'terminal-prev': null,
   'terminal-next': null,
   'side-terminal': null,
+  // Unbound: ⌘K is Search Everywhere's default, and off macOS Ctrl+K is the
+  // shell's kill-line. The user opts in, typically after moving Search
+  // Everywhere to a custom chord such as ⌘⇧P.
+  'terminal-clear': null,
 }
 
 /**
@@ -170,6 +193,7 @@ export function resolvePanelToggleBindings(overrides: PanelToggleOverrides): Rec
     'terminal-prev': resolvePanelToggleBinding('terminal-prev', overrides),
     'terminal-next': resolvePanelToggleBinding('terminal-next', overrides),
     'side-terminal': resolvePanelToggleBinding('side-terminal', overrides),
+    'terminal-clear': resolvePanelToggleBinding('terminal-clear', overrides),
   }
 }
 
@@ -208,6 +232,24 @@ export function matchPanelToggleEvent(
     if (binding && chordMatchesEvent(e, binding, mac)) return id
   }
   return null
+}
+
+/**
+ * Whether this keydown, aimed at a focused terminal, is the user's
+ * `terminal-clear` chord. Checked against that one binding rather than through
+ * {@link matchPanelToggleEvent}'s first-match walk: inside a terminal every other
+ * dashboard-side id either yields to the shell or was already taken by the
+ * capture-phase skip-shell listener, so the terminal's own command wins there
+ * whatever order the ids are listed in. Overrides are read live by default so a
+ * Settings change takes effect on the next keystroke.
+ */
+export function isTerminalClearEvent(
+  e: Pick<KeyboardEvent, 'code' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+  overrides: PanelToggleOverrides = loadPanelToggleOverrides(),
+  mac: boolean = isMac,
+): boolean {
+  const binding = resolvePanelToggleBinding('terminal-clear', overrides)
+  return !!binding && chordMatchesEvent(e, binding, mac)
 }
 
 /** A ready, visible panel toggles its terminal; otherwise the chat page reveals

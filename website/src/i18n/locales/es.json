@@ -12448,6 +12448,7 @@
       "toggle_side_terminal": "Mostrar u ocultar el terminal del panel lateral",
       "previous_terminal": "Terminal anterior",
       "next_terminal": "Terminal siguiente",
+      "clear_terminal": "Borrar el terminal",
       "toggle_dictation_mute": "Silenciar o activar el dictado"
     },
     "useNativeNotification": {
@@ -22226,7 +22227,8 @@
         "clear_shortcut": "Borrar",
         "panel_toggles": "Alternar paneles",
         "skips_shell_hint": "También funciona dentro del terminal, por lo que tu shell deja de recibir esta tecla: no elijas Ctrl+C ni Ctrl+R.",
-        "skips_shell_hint_mac": "También funciona dentro del terminal, por lo que tu shell deja de recibir esta tecla: no elijas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "También funciona dentro del terminal, por lo que tu shell deja de recibir esta tecla: no elijas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Solo funciona mientras un terminal tiene el foco, así que puede compartir tecla con Buscar en todo. Tu shell deja de recibir esta tecla."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando la sesión demuestra un procedimiento recurrente — uno que una sesión futura, trabajando sobre un objetivo distinto, volvería a ejecutar. Desactivado por defecto. Los borradores pasan a la cola de pendientes de Personalizar → Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",

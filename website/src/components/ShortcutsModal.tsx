@@ -312,6 +312,7 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'terminal-prev': 'hooks.useKeyboardShortcuts.previous_terminal',
   'terminal-next': 'hooks.useKeyboardShortcuts.next_terminal',
   'side-terminal': 'hooks.useKeyboardShortcuts.toggle_side_terminal',
+  'terminal-clear': 'hooks.useKeyboardShortcuts.clear_terminal',
 }
 
 /**

@@ -12,6 +12,9 @@ import { dropTerminalDataForThisKey, sendRawToTerminalSession } from '../utils/t
 import { isMac } from '../utils/platform'
 import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
 import { getTerminalFont } from '../hooks/useTerminalFont'
+import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { isTerminalClearEvent } from '../lib/panelToggleShortcuts'
+import { safeGetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 import { apiTransport } from '../api/apiTransport'
@@ -528,6 +531,23 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       if (Date.now() - imeEndAt.current < IME_GRACE_MS) {
         if (e.key === 'Enter') return true
         if (e.key === 'Tab') return claim(e)
+      }
+      // The user's "Clear terminal" chord (Settings → Shortcuts), VS Code's
+      // Terminal: Clear. Matched HERE, in this terminal's handler, because it
+      // acts on this shell only, like VS Code's `terminalFocus` context: the
+      // claim stops the keystroke at the xterm textarea, before the window-level
+      // Search Everywhere listener, so a chord shared with it (⌘K) clears inside
+      // a terminal and searches everywhere else. `clear()` keeps the prompt row
+      // and drops the scrollback, as VS Code does; the shell is not told. An
+      // open menu describes rows that just went away, so it closes. Both prefs
+      // are read live, the same way the palette reads its own per keystroke, and
+      // only for a modifier chord, the only kind a binding can hold.
+      if ((e.metaKey || e.ctrlKey || e.altKey)
+          && safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0'
+          && isTerminalClearEvent(e)) {
+        close()
+        term.clear()
+        return claim(e)
       }
       // Ctrl+Shift+C copies the selection. Nothing in this app answers the
       // chord: xterm's evaluateKeyboardEvent yields no key for

@@ -849,6 +849,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     'terminal-prev': onPrevTerminalTab,
     'terminal-next': onNextTerminalTab,
     'side-terminal': onToggleSideTerminal,
+    // Answered by the focused terminal's own key handler (TerminalCompletion),
+    // never here: outside a terminal the chord stays unbound and falls through,
+    // so a shared ⌘K still reaches Search Everywhere. See
+    // `TERMINAL_FOCUS_PANEL_TOGGLE_IDS`.
+    'terminal-clear': undefined,
   }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onCloseTerminalTab, onPrevTerminalTab, onNextTerminalTab, onToggleSideTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {

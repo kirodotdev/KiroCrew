@@ -18,6 +18,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   let row = line
   let wrapped = false
   let hasSel = false
+  let clears = 0
   /** Cell widths, sparse: anything unset is an ordinary single-width cell. */
   const widths = new Map<number, number>()
   /** Cell strings, sparse: anything unset is one code unit wide. */
@@ -71,9 +72,12 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
     hasSelection: () => hasSel,
     clearSelection: () => { hasSel = false },
+    clear: () => { clears += 1 },
   }
   return {
     term: term as unknown as Terminal,
+    /** How many times `term.clear()` (Terminal: Clear) has run. */
+    clears: () => clears,
     /** Give (or clear) an active selection, the way a mouse drag does for real. */
     setSelection: (v: boolean) => { hasSel = v },
     /** Rewrite the cursor's screen row (what the shell's echo does for real). */
@@ -102,6 +106,13 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
       const handled = keyHandler(e)
       return { passedThrough: handled, prevented: e.defaultPrevented }
+    },
+    /** `key`, also reporting whether propagation was stopped (`cancelBubble`
+     *  reads the DOM's stop-propagation flag). */
+    keyStopped: (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
+      keyHandler(e)
+      return e.cancelBubble
     },
     osc,
   }
@@ -1422,5 +1433,73 @@ describe('TerminalCompletion — find/fullscreen chords, non-macOS (#10176/#9906
     expect(h.key({ key: 'f', code: 'KeyF', metaKey: true, ctrlKey: true }).passedThrough).toBe(true)
     expect(onOpenSearch).not.toHaveBeenCalled()
     expect(onToggleFullscreen).not.toHaveBeenCalled()
+  })
+})
+
+/* The user's "Clear terminal" chord (Settings → Shortcuts). It is answered by
+ * this handler alone, so these tests pin the three things that make sharing ⌘K
+ * with Search Everywhere work: the terminal clears, the keystroke stops here
+ * (no shell byte, no bubbling to the window-level palette listener), and an
+ * unbound or disabled chord is left exactly as before. */
+describe('TerminalCompletion — Clear terminal chord', () => {
+  const bindClear = (chord: Record<string, unknown> | null) =>
+    localStorage.setItem('mc-panel-toggle-shortcuts', JSON.stringify({ 'terminal-clear': chord }))
+
+  beforeEach(() => { platformMock.isMac = true })
+  afterEach(() => {
+    platformMock.isMac = false
+    localStorage.clear()
+  })
+
+  it('leaves ⌘K alone while Clear terminal is unbound (the default)', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+    expect(r.prevented).toBe(false)
+  })
+
+  it('clears on the bound chord and stops the keystroke at the terminal', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(1)
+    // Not sent to the shell, and not bubbled to the window-level Search
+    // Everywhere listener that also answers ⌘K.
+    expect(r.passedThrough).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(h.keyStopped({ key: 'k', code: 'KeyK', metaKey: true })).toBe(true)
+    expect(h.clears()).toBe(2)
+  })
+
+  it('does not clear on the opposite primary modifier (Ctrl+K on a Mac is the shell\'s kill-line)', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', ctrlKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('honours the global "Enable shortcuts" toggle', () => {
+    bindClear({ key: 'k', mod: true })
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('picks up a binding recorded after mount, with no remount', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    expect(h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true }).passedThrough).toBe(true)
+    bindClear({ key: 'p', mod: true, shift: true })
+    const r = h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true })
+    expect(h.clears()).toBe(1)
+    expect(r.prevented).toBe(true)
   })
 })
