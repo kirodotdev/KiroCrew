@@ -202,6 +202,51 @@ async def test_an_approval_after_a_failed_reconnect_tells_the_owner_once() -> No
     assert notices.count(APPROVAL_NOTICE[0]) == 1
 
 
+@pytest.mark.asyncio
+async def test_an_approval_waits_for_the_reconnect_before_its_card_is_pending() -> None:
+    """A turn cancelled in the wait must leave no approval future behind."""
+    new, pending_in_wait, notices = _Slack(), [], []
+
+    def _reconnect_watching_the_slot(ctx: TurnContext) -> None:
+        ctx.state.slack_client = None
+
+        async def _wait() -> None:
+            pending_in_wait.append(dict(ctx.slot._approval_futures))
+            ctx.state.slack_client = new
+
+        ctx.state.slack_reconnect_wait = _wait
+
+    await run_turn(
+        TurnScript(
+            events=[Do(_reconnect_watching_the_slot), _PROMPT, _DONE],
+            answers={_REQUEST: APPROVED},
+            setup=_linked_slot(_Slack(), notices),
+        )
+    )
+
+    assert pending_in_wait == [{}]
+    assert "post_blocks" in new.names()
+
+
+@pytest.mark.asyncio
+async def test_an_approval_in_a_turn_that_started_without_slack_is_not_reported() -> None:
+    waited, notices = [], []
+
+    def _linked_without_slack(ctx: TurnContext) -> None:
+        _linked_slot(_Slack(), notices)(ctx)
+        _waits_for(ctx.state, None, waited)
+
+    await run_turn(
+        TurnScript(
+            events=[_PROMPT, _DONE],
+            answers={_REQUEST: APPROVED},
+            setup=_linked_without_slack,
+        )
+    )
+
+    assert APPROVAL_NOTICE[0] not in notices
+
+
 # ── system messages, the owner DM and the compaction notice ─────────────────
 
 

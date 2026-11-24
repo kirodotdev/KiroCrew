@@ -386,6 +386,28 @@ async def _on_permission_prompt(
         # Only a card someone can still answer gets the held notices.
         for _notice in _declined_grant_notices.values():
             slot.append("system", _notice, "msg msg-info")
+    if (
+        # A reconnect took the client this turn mirrors through: wait for it
+        # BEFORE the card's future exists, so a turn cancelled in the wait leaves
+        # no approval pending, and the card then posts through the client it
+        # publishes. A turn that started with no client has no live mirror
+        # (``turn._mirror_chan``) and neither waits nor is told. The post's own
+        # checks below run again after the wait.
+        "resolved" not in perm_meta
+        and _override_offer is None
+        and turn._mirror_chan
+        and turn._mirror_thread
+        and slot._slack_linked
+        and slot._slack_channel
+        and slot._slack_thread_ts
+        and not state.slack_client
+        and not slack_mirror_is_paused(state, session_key)
+    ):
+        await wait_for_slack_reconnect(state)
+        if not slack_mirror_is_paused(state, session_key):
+            slack_reply_client(
+                state, session_key, slot._slack_channel, turn=turn, notice=APPROVAL_NOTICE
+            )
     permission_row = slot.append(
         "permission",
         f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
@@ -415,23 +437,6 @@ async def _on_permission_prompt(
     # The Slack click resolves THIS future on this slot (request ids recur
     # across slots); we remain the sole caller of approve_tool/reject_tool below.
     _slack_approval_ts: str | None = None
-    if (
-        # A reconnect took the client: wait for it, so the card posts through
-        # the one it publishes. The checks below run again after the wait, and
-        # a pre-declined row (see below) never waits.
-        "resolved" not in perm_meta
-        and _override_offer is None
-        and slot._slack_linked
-        and slot._slack_channel
-        and slot._slack_thread_ts
-        and not state.slack_client
-        and not slack_mirror_is_paused(state, session_key)
-    ):
-        await wait_for_slack_reconnect(state)
-        if not slack_mirror_is_paused(state, session_key):
-            slack_reply_client(
-                state, session_key, slot._slack_channel, turn=turn, notice=APPROVAL_NOTICE
-            )
     if (
         # A row pre-declined at its append is not mirrored. The
         # post is the one cancellable await between the future's
