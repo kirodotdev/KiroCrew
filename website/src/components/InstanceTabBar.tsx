@@ -55,7 +55,7 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { postToHost } from '../lib/hostRelay'
-import { quietNextFocus } from '../lib/quietFocusReturn'
+import { CrewAddButton, CrewMenuActions, type CrewAction } from './crewSwitcherActions'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
@@ -646,7 +646,7 @@ function SwitcherRow({
         ) : null}
         </span>
       </DropdownMenuRadioItem>
-      <DropdownMenuItem
+      {isLocal ? <span className="shrink-0 w-[26px]" aria-hidden /> : <DropdownMenuItem
         className="shrink-0 px-1.5 justify-center"
         role={entry.close ? undefined : 'menuitemcheckbox'}
         aria-checked={entry.close ? undefined : pinned}
@@ -681,7 +681,7 @@ function SwitcherRow({
           className={`lucide-inline shrink-0 ${pinned ? 'text-accent fill-current' : 'text-muted'}`}
           aria-hidden
         />}
-      </DropdownMenuItem>
+      </DropdownMenuItem>}
     </div>
   )
 }
@@ -711,10 +711,9 @@ function SwitcherMenu({
   showStableOrderToggle,
   extraGroups,
   extraNew = false,
+  onAction,
   open,
   onOpenChange,
-  onInteractOutside,
-  onCloseAutoFocus,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -728,11 +727,10 @@ function SwitcherMenu({
   extraGroups?: SwitcherExtraGroups
   /** An extra group holds something new (a Team Crew not seen yet): a dot on the caret. */
   extraNew?: boolean
-  /** Owned by `Switcher`, so the leading active chip opens this same menu. */
+  /** Add remote crew / Settings; `null` leaves them out (a pane whose host cannot open them). */
+  onAction?: CrewAction | null
   open: boolean
   onOpenChange: (open: boolean) => void
-  onInteractOutside: (event: Event) => void
-  onCloseAutoFocus: (event: Event) => void
 }) {
   // Unread the user cannot see: everything that is neither the active pane nor a
   // chip currently on screen. A pinned crew whose chip got cut off counts, since
@@ -760,7 +758,7 @@ function SwitcherMenu({
           type="button"
           {...tip.handlers}
           aria-label={label}
-          className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring"
+          className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-border text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring"
         >
           <ChevronDown className="lucide-inline shrink-0" />
           {open ? null : tip.bubble}
@@ -788,8 +786,6 @@ function SwitcherMenu({
         align="start"
         aria-label={i18nT('components.instanceTabBar.instances')}
         className="min-w-[240px] max-w-[340px]"
-        onInteractOutside={onInteractOutside}
-        onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {shownEntries.map((entry, i) => (
@@ -816,6 +812,7 @@ function SwitcherMenu({
           ))}
         </DropdownMenuRadioGroup>
         {extraGroups ? extraGroups(() => onOpenChange(false), shownEntries.length > 1) : null}
+        {onAction === null ? null : <CrewMenuActions onAction={onAction} />}
         {/* A row-order preference, not a destination: it sits below the crew list
             behind a separator so it never reads as one more crew to switch to.
             `onSelect`'s preventDefault keeps the menu open — the user sees the
@@ -1185,10 +1182,13 @@ function Switcher({
   embedded = false,
   extraGroups,
   extraNew = false,
+  onAction,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
+  /** Passed to the menu: the relay for a pane, `null` to leave the actions out. */
+  onAction?: CrewAction | null
   /** The Remote Crews group: the top bar's own, or in an SSH Crew's pane the rows its window relays. */
   extraGroups?: SwitcherExtraGroups
   /** Top-level bar only: an extra group holds something not seen yet. */
@@ -1219,7 +1219,9 @@ function Switcher({
   embedded?: boolean
 }) {
   const [storePinned, storeTogglePin] = useCrewPins()
-  const pinned = pinnedProp ?? storePinned
+  // Local is always a tab (#41685): it is where every crew is reached from.
+  const pinnedRaw = pinnedProp ?? storePinned
+  const pinned = useMemo(() => new Set([LOCAL_VALUE, ...pinnedRaw]), [pinnedRaw])
   const togglePin = onTogglePinProp ?? storeTogglePin
   const [storeStableOrder, storeToggleStableOrder] = useCrewSwitcherStableOrder()
   // The stable-order preference is parent-owned. An embedded pane receives it as
@@ -1235,11 +1237,8 @@ function Switcher({
   const stableOrder = (stableOrderProp ?? (embedded ? false : storeStableOrder)) === true
   const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
-  // The leading active chip toggles the same menu as the caret. When the chip
-  // opened it, closing it hands focus back to the chip rather than the caret.
+  // Only the caret opens the menu; the crew tabs switch (#41685).
   const [menuOpen, setMenuOpen] = useState(false)
-  const chipRef = useRef<HTMLButtonElement>(null)
-  const chipOpened = useRef(false)
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
   // Two orderings for the always-visible chips:
   //  • Default: the crew on screen LEADS the row and is never also a pinned chip
@@ -1270,13 +1269,8 @@ function Switcher({
         <SwitcherChip
           entry={active}
           active
-          onSelect={() => {
-            chipOpened.current = true
-            setMenuOpen(o => !o)
-          }}
+          onSelect={() => {}}
           className="tb-crew-active-chip"
-          buttonRef={chipRef}
-          menuOpen={menuOpen}
         />
       ) : null}
       {chips.length > 0 ? (
@@ -1299,24 +1293,9 @@ function Switcher({
         showStableOrderToggle={!relayUnsupported}
         extraGroups={extraGroups}
         extraNew={extraNew}
+        onAction={onAction}
         open={menuOpen}
         onOpenChange={setMenuOpen}
-        onInteractOutside={e => {
-          // A press that reaches the chip (the menu is non-modal on touch devices)
-          // is the chip's own toggle, not a dismissal, or the menu would close on
-          // pointerdown and the chip's click reopen it. A modal menu blocks the
-          // press from reaching the chip and closes on it by itself.
-          if (chipRef.current?.contains(e.target as Node)) e.preventDefault()
-          else chipOpened.current = false
-        }}
-        onCloseAutoFocus={e => {
-          if (chipOpened.current && chipRef.current) {
-            e.preventDefault()
-            quietNextFocus(chipRef.current)
-            chipRef.current.focus()
-          }
-          chipOpened.current = false
-        }}
       />
     </div>
   )
@@ -1405,6 +1384,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         onToggleStableOrder={onToggleStableOrder}
         embedded
         extraGroups={embeddedTeamCrewsGroups(host.relayCrews, host.relayCrewsFailed)}
+        onAction={host.crewActions ? (add => postToHost({ type: 'mc-open-remote-crews', v: 1, add })) : null}
       />
     </div>
   )
@@ -1542,7 +1522,10 @@ export default function InstanceTabBar({
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.
-  if (!extraGroups && !extraNotice && relayTabs.length === 0 && (disabled || (tabInstances.length === 0 && !listFailure))) return null
+  if (!extraGroups && !extraNotice && relayTabs.length === 0 && (disabled || (tabInstances.length === 0 && !listFailure))) {
+    // Only once the list loaded: a crew list on its way, or the feature turned off, shows no `+`.
+    return disabled || !instancesQuery.isSuccess ? null : <div className={barCls(variant)} style={style}><CrewAddButton /></div>
+  }
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is

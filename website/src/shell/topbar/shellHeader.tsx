@@ -13,6 +13,7 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
+import { RemoteCrewsWindow } from '../../components/remoteCrewsWindow'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
@@ -189,6 +190,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
           and the milestone notice all open it. */}
       {explore && <MilestonesSheet />}
+      {/* The crew switcher's Remote Crews window; a pane asks this window for it. */}
+      {!isEmbeddedPane() && <RemoteCrewsWindow />}
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header

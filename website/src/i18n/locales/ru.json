@@ -8305,7 +8305,10 @@
       "instances_load_failed": "Не удалось загрузить удалённые команды.",
       "unreachable": "недоступен",
       "unreachable_via": "недоступен — {{via}} не работает",
-      "switch_crew_new_team_crew": "Сменить команду, новая общая Crew"
+      "switch_crew_new_team_crew": "Сменить команду, новая общая Crew",
+      "add_remote_crew": "Добавить удалённую команду",
+      "crew_settings": "Настройки",
+      "remote_crews_window": "Удалённые команды"
     },
     "relayCrews": {
       "list_label": "Удалённые Crew, которые можно открыть через ретранслятор",

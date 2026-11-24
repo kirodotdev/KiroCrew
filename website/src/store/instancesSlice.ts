@@ -141,6 +141,8 @@ export interface HostModel {
    *  unless that storage holds an explicit choice (`loadChatCompleteNotify`).
    *  An older parent sends none, read as `false`. */
   chatCompleteNotify: boolean
+  /** The host opens its Remote Crews window on `mc-open-remote-crews`. False from an older host. */
+  crewActions?: boolean
 }
 
 /**

@@ -136,6 +136,8 @@ export function parseHostModel(data: unknown): HostModel | null {
     // Absence -> false, like `winInset`: an older host relays no opt-in, and
     // the pane's own storage then decides, as it always did.
     chatCompleteNotify: d.chatCompleteNotify === true,
+    // Absence -> false: an older host would drop the pane's request.
+    crewActions: d.crewActions === true,
   }
 }
 

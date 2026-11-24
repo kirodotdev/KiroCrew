@@ -5160,7 +5160,10 @@
       "switch_crew_unread": "Switch crew, {{n}} unread elsewhere",
       "unreachable": "unreachable",
       "unreachable_via": "unreachable — {{via}} is down",
-      "switch_crew_new_team_crew": "Switch crew, new Shared Crew"
+      "switch_crew_new_team_crew": "Switch crew, new Shared Crew",
+      "add_remote_crew": "Add remote crew",
+      "crew_settings": "Settings",
+      "remote_crews_window": "Remote Crews"
     },
     "relayCrews": {
       "list_label": "Remote Crews you can open through the relay",

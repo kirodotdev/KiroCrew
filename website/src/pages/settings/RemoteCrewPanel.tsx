@@ -112,7 +112,12 @@ export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 /** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
 const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
 
-export function RemoteCrewPanel() {
+export function RemoteCrewPanel({ openAdd = false, onAddClosed }: {
+  /** Open with Add a Crew's first step on top. */
+  openAdd?: boolean
+  /** Add a Crew closed; `added` once a crew was added or a launch was accepted. */
+  onAddClosed?: (added: boolean) => void
+} = {}) {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   // The Add Crew modal: closed (null), choosing, or showing one of its forms.
@@ -122,7 +127,7 @@ export function RemoteCrewPanel() {
   const appStore = useAppStore()
   const [addMode, setAddMode] = useState<AddCrewMode | null>(() => {
     const forms = appStore.getState().instances.crewForms
-    return forms?.addLink && forms.add === null ? 'connect' : null
+    return forms?.addLink && forms.add === null ? 'connect' : openAdd ? 'choose' : null
   })
   // The setup form's queries run only while it is on screen, as they did on its tab.
   const tab = addMode === 'setup' ? 'setup' : 'crews'
@@ -1600,10 +1605,10 @@ export function RemoteCrewPanel() {
         <AddCrewModal
           mode={addMode}
           onMode={setAddMode}
-          onClose={() => setAddMode(null)}
+          onClose={() => { setAddMode(null); onAddClosed?.(launchedKey !== null) }}
           setup={setupForm}
           // A crew added is a row of My Crews, so the modal's job is done.
-          connect={<AddInstanceForm onAdded={() => { reloadInstances(); setAddMode(null) }} />}
+          connect={<AddInstanceForm onAdded={() => { reloadInstances(); setAddMode(null); onAddClosed?.(true) }} />}
         />
       )}
     </div>

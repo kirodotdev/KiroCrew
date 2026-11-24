@@ -30,6 +30,7 @@
  *   never arrives within PANE_LOAD_TIMEOUT_MS the error panel surfaces with
  *   Retry, which force-reloads the iframe even for an identical re-minted src.
  */
+import { openRemoteCrewsWindow } from './remoteCrewsWindow'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
@@ -737,6 +738,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // panes) via the module store, keeping the set one shared value.
         const id = (data as { id?: unknown }).id
         if (typeof id === 'string' && id) toggleCrewPin(id)
+      } else if (data.type === 'mc-open-remote-crews') {
+        // The pane's Add remote crew / Settings: this window owns the Remote Crews window.
+        openRemoteCrewsWindow((data as { add?: unknown }).add === true)
       } else if (data.type === 'mc-set-stable-order') {
         // The "keep tab order fixed" toggle was flipped inside an embedded pane.
         // Like the pin, it has no access to the parent's preference store from
@@ -1447,6 +1451,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // Its switcher says so too: the top bar's notice is hidden behind the pane.
         relayCrewsFailed: !!relayPaneBridge() && id === activeId && relayCrewsFailed,
         stableOrder,
+        crewActions: true,
         chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
         // Advertised so a pane relays only to a host that will answer.

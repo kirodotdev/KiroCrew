@@ -8094,7 +8094,10 @@
       "instances_load_failed": "Não foi possível carregar as equipes remotas.",
       "unreachable": "sem acesso",
       "unreachable_via": "sem acesso — {{via}} está fora",
-      "switch_crew_new_team_crew": "Trocar de crew, nova Crew compartilhada"
+      "switch_crew_new_team_crew": "Trocar de crew, nova Crew compartilhada",
+      "add_remote_crew": "Adicionar crew remoto",
+      "crew_settings": "Configurações",
+      "remote_crews_window": "Crews remotos"
     },
     "relayCrews": {
       "list_label": "Crews remotas que você pode abrir pelo relay",

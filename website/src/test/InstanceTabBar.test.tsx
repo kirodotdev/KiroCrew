@@ -31,6 +31,8 @@ vi.mock('../api/client', () => {
 import { api, ApiError } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
+vi.mock('../components/remoteCrewsWindow', () => ({ openRemoteCrewsWindow: vi.fn() }))
+import { openRemoteCrewsWindow } from '../components/remoteCrewsWindow'
 
 const conn = (over: Partial<InstanceView> = {}): InstanceView => ({
   id: 'cd-1',
@@ -77,11 +79,21 @@ describe('InstanceTabBar', () => {
     expect(api.listInstances).not.toHaveBeenCalled()
   })
 
-  it('renders nothing when no instance is connected (single-instance experience)', async () => {
+  it('shows only a + with no remote crew, whose menu is Local and the two crew actions', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    const u = userEvent.setup()
     const { container } = renderWithProviders(<InstanceTabBar />)
-    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    const plus = await screen.findByTestId('crew-switcher-add')
     expect(container.querySelector('[aria-label^="Switch crew"]')).toBeNull()
+    // Drawn in the page: a native title never paints in the desktop drag band.
+    expect(plus).not.toHaveAttribute('title')
+    act(() => { plus.focus() })
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Add remote crew')
+    act(() => { plus.blur() })
+    await u.click(plus)
+    expect(await screen.findByRole('menuitem', { name: /Local/i })).toBeInTheDocument()
+    await u.click(screen.getByTestId('crew-add-remote'))
+    expect(openRemoteCrewsWindow).toHaveBeenCalledWith(true)
   })
 
   it('renders Local + a tab per connected instance and switches to Local', async () => {
@@ -357,9 +369,9 @@ describe('InstanceTabBar', () => {
     renderWithProviders(<InstanceTabBar />)
 
     await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
-    // One pin per destination (Local + the crew), each naming its own crew.
-    expect(await screen.findByTestId('crew-pin-__local__')).toHaveAccessibleName(/Pin Local/i)
+    // One pin per remote crew, naming its own crew. Local is always a tab, so it has none.
     expect(await screen.findByTestId('crew-pin-cd-1')).toHaveAccessibleName(/Pin Cloud One/i)
+    expect(screen.queryByTestId('crew-pin-__local__')).toBeNull()
     // ...and each crew is listed once, as one switch target.
     expect(screen.getAllByRole('menuitemradio', { name: /Cloud One/i })).toHaveLength(1)
   })
@@ -413,7 +425,7 @@ describe('InstanceTabBar', () => {
     expect(api.connectInstance).not.toHaveBeenCalled()
   })
 
-  it('opens the crew menu from the active chip instead of re-selecting the crew', async () => {
+  it('keeps the active chip a plain tab: only the caret opens the menu', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
@@ -422,12 +434,9 @@ describe('InstanceTabBar', () => {
     renderWithProviders(<InstanceTabBar />, { store })
 
     const chip = await screen.findByRole('button', { name: /Cloud One/i })
-    expect(chip).toHaveAttribute('aria-haspopup', 'menu')
-    expect(chip).toHaveAttribute('aria-expanded', 'false')
-
+    expect(chip).not.toHaveAttribute('aria-haspopup')
     await u.click(chip)
-    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
-    expect(chip).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(store.getState().instances.activeId).toBe('cd-1')
   })
 
@@ -457,15 +466,7 @@ describe('InstanceTabBar', () => {
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
-  it('closes a non-modal menu on a second click of the active chip instead of reopening it', async () => {
-    // A touch device gets a non-modal menu, so a mouse press reaches the chip.
-    const media = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-      matches: query === '(pointer: coarse)' || query === '(hover: none)',
-      media: query, onchange: null,
-      addListener: () => {}, removeListener: () => {},
-      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
-    }) as MediaQueryList)
-    onTestFinished(() => media.mockRestore())
+  it('always shows Local as a tab, even when nothing is pinned', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
@@ -473,37 +474,21 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
 
-    const chip = await screen.findByRole('button', { name: /Cloud One/i })
-    await u.click(chip)
-    await screen.findByRole('menu')
-    // Radix arms its outside-press listener in a zero-delay timeout after the
-    // menu mounts; flush it so the second press meets it, as a person's would.
-    await act(() => new Promise(r => setTimeout(r, 0)))
-    // A close-then-reopen on the same press would flip aria-expanded three times.
-    const flips: MutationRecord[] = []
-    const watch = new MutationObserver(records => flips.push(...records))
-    watch.observe(chip, { attributes: true, attributeFilter: ['aria-expanded'] })
-    onTestFinished(() => watch.disconnect())
-    await u.click(chip)
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
-    expect(chip).toHaveAttribute('aria-expanded', 'false')
-    expect(flips).toHaveLength(1)
+    await u.click(await screen.findByRole('button', { name: /^Local/i }))
+    expect(store.getState().instances.activeId).toBeNull()
   })
 
-  it('returns focus to the active chip when the menu it opened closes on Escape', async () => {
+  it('ends the crew menu with Add remote crew and Settings, which open the Remote Crews window', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
-    const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
-    })
     const u = userEvent.setup()
-    renderWithProviders(<InstanceTabBar />, { store })
+    renderWithProviders(<InstanceTabBar />)
 
-    const chip = await screen.findByRole('button', { name: /Cloud One/i })
-    await u.click(chip)
-    await screen.findByRole('menu')
-    await u.keyboard('{Escape}')
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
-    await waitFor(() => expect(chip).toHaveFocus())
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByTestId('crew-settings'))
+    expect(openRemoteCrewsWindow).toHaveBeenCalledWith(false)
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByTestId('crew-add-remote'))
+    expect(openRemoteCrewsWindow).toHaveBeenLastCalledWith(true)
   })
 
   it('leads with the active crew and keeps it out of the pinned row', async () => {
