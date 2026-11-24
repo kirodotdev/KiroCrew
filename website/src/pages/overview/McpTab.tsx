@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, Lock, ToggleLeft, ToggleRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -174,13 +174,15 @@ function disabledInConfigVariant(s: McpServer): 'muted' | 'err' | null {
  * This table has no control that writes the shared config (that switch is a
  * separate decision, and the line says it is planned), so the honest
  * affordance for "edit this file" is the path itself, one click away from a
- * terminal or editor. Rendered through `Trans`, so `children` is the path text
- * the catalog string wraps in `<file>...</file>`. The chip owns only its
+ * terminal or editor. Rendered through `Trans` as the catalog's `<file/>`
+ * slot; it shows `path` itself, never children, so `Trans` never parses the
+ * path. A slot child would also remount the chip on every render (react-i18next
+ * wraps a self-closing slot's children in a fresh component). The chip owns only its
  * "Copied" flash; a refusal is handed to `onFailed`, because the notice for it
  * belongs UNDER the sentence (see `DisabledWhereLine`), not mid-sentence where
  * the chip sits.
  */
-function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (report: ErrorReport | null) => void; children?: ReactNode }) {
+function CopyPathChip({ path, onFailed }: { path: string; onFailed: (report: ErrorReport | null) => void }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -223,7 +225,7 @@ function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (r
       data-testid="mcp-disabled-in-config-path"
       data-copied={copied ? 'true' : undefined}
     >
-      {children ?? path}
+      {path}
     </button>
   )
 }
@@ -241,7 +243,9 @@ function DisabledWhereLine({ whereKey, file, reason, text }: { whereKey: string;
   return (
     <div className="text-muted text-[12px]" data-testid="mcp-disabled-in-config-where" data-disabled-reason={reason ?? undefined}>
       {file
-        ? <Trans i18nKey={whereKey} values={{ file }} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
+        // The path is the chip's child, never a value: <Trans> parses its
+        // string as markup, so a value would be parsed with it.
+        ? <Trans i18nKey={whereKey} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
         : text}
       {copyFailed && (
         <ErrorNotice
@@ -1054,9 +1058,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const whereKey = invalidValue
               ? (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_invalid_where' : 'pages.overview.mcpTab.disabled_in_config_invalid_where_unknown')
               : (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_where' : 'pages.overview.mcpTab.disabled_in_config_where_unknown')
-            // Plain-text twin for `title` attributes: the catalog wraps the path
-            // in `<file>` for `Trans`, which a string attribute must not carry.
-            const disabledInConfigWhereText = i18nT(whereKey, { file: s.disabledInFile ?? '' }).replace(/<\/?file>/g, '')
+            // Plain-text twin for `title` attributes: the catalog marks the path
+            // with a `<file/>` slot for `Trans`, which this fills with the path.
+            const disabledInConfigWhereText = i18nT(whereKey).replace(/<file\s*\/>/g, () => s.disabledInFile ?? '')
             const rowBorder = pendingUninstall
               ? 'border-l-2 border-[var(--danger)]'
               : (hasPendingScopeChange(s, p) || hasToolOverrides)

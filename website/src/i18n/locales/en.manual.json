@@ -3318,7 +3318,7 @@
       "save": "Save",
       "server_spec_json": "Server spec JSON",
       "servers_json": "Servers JSON",
-      "stored_header_values_are_hidden": "Headers that still show <marker>{{marker}}</marker> keep their saved value. Replace one to change only that header. The URL and header names can't change here. To change them, remove and re-add the server. It comes back disabled and without its tool restrictions, so re-apply them after re-adding."
+      "stored_header_values_are_hidden": "Headers that still show <marker/> keep their saved value. Replace one to change only that header. The URL and header names can't change here. To change them, remove and re-add the server. It comes back disabled and without its tool restrictions, so re-apply them after re-adding."
     },
     "messageErrorBoundary": {
       "hide_raw": "hide raw",
@@ -8393,9 +8393,9 @@
         "path_copied": "Copied",
         "copy_path_failed": "Copy failed",
         "disabled_in_config_help": "Disabled in the shared Kiro MCP config, which the Kiro IDE also reads. It is never started, and this panel cannot re-enable it: change the flag in that config.",
-        "disabled_in_config_where": "Disabled in <file>{{file}}</file>. Editing this file lifts its disable; another config may still keep the server off.",
+        "disabled_in_config_where": "Disabled in <file/>. Editing this file lifts its disable; another config may still keep the server off.",
         "disabled_in_config_where_unknown": "Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off.",
-        "disabled_in_config_invalid_where": "Disabled: invalid \"disabled\" value in <file>{{file}}</file>. Set it to true or false there.",
+        "disabled_in_config_invalid_where": "Disabled: invalid \"disabled\" value in <file/>. Set it to true or false there.",
         "disabled_in_config_invalid_where_unknown": "Disabled: invalid \"disabled\" value in the shared MCP config. Set it to true or false there.",
         "uninstall_disabled_in_config_help": "Removes this server from every MCP config, including the shared one it is disabled in.",
         "scope_disabled_in_config": "{{label}}: off (disabled in the shared MCP config; change it there)",
@@ -10465,7 +10465,7 @@
           "grant": "Trust this registry",
           "grant_confirm_body": "“{{name}}” will use your own Git credentials when it downloads the repositories it lists. The trust covers every branch of this registry's repository, not just the one shown. The people who write that registry choose which repositories those are, so they choose which of your private repositories get downloaded. You can remove this trust again at any time.",
           "grant_confirm_ok": "Trust it with my Git credentials",
-          "grant_confirm_repo": "Registry address: <url>{{repo}}</url>",
+          "grant_confirm_repo": "Registry address: <url/>",
           "grant_confirm_title": "Trust “{{name}}” with your Git credentials?",
           "not_served": "Not listed — this registry is not shown in the App Store, so it cannot be trusted.",
           "not_served_not_configured": "Not configured — this registry is not in your config any more, but it is still trusted. Remove trust to clear it.",

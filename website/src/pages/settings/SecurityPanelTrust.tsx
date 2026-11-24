@@ -649,8 +649,9 @@ export function TrustedRegistriesCard() {
               {confirm ? (
                 <Trans
                   i18nKey="pages.settings.securityPanel.trustedRegistries.grant_confirm_repo"
-                  values={{ repo: confirm.repo }}
-                  components={{ url: <span className="font-mono [overflow-wrap:anywhere]" /> }}
+                  // The address is the chip's child, never a value: <Trans>
+                  // parses its string as markup, so a value would be parsed with it.
+                  components={{ url: <span className="font-mono [overflow-wrap:anywhere]">{confirm.repo}</span> }}
                 />
               ) : null}
             </div>
