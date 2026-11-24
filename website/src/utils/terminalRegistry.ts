@@ -292,8 +292,21 @@ interface Conn {
    * clears the flag); the online/visibility revive listeners leave it alone.
    */
   displaced: boolean
+  /** Set by `dropTerminalDataForThisKey` until the key event being dispatched is handled. */
+  dropData?: boolean
 }
 const conns = new Map<string, Conn>()
+
+/**
+ * Drop what xterm sends to the shell while it handles the key event being dispatched now; the
+ * flag clears when this task's microtasks run, before any later event or timer.
+ */
+export function dropTerminalDataForThisKey(sessionId: string): void {
+  const c = conns.get(sessionId)
+  if (!c) return
+  c.dropData = true
+  queueMicrotask(() => { c.dropData = false })
+}
 
 /**
  * The session's live socket for TYPING, or null if it has none.
@@ -713,6 +726,7 @@ export function ensureTerminalConnection(
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).
   term.onData((data) => {
+    if (c.dropData) return
     if (c.ws?.readyState === WebSocket.OPEN) {
       c.ws.send(new TextEncoder().encode(data))
       return
