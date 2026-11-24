@@ -8,6 +8,7 @@ install's workspace root, skips the whole document; the rest of the import conti
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -188,6 +189,27 @@ def test_a_relative_workspace_folder_that_is_the_data_home_is_refused(tmp_path):
 def test_an_absolute_workspace_folder_keeps_the_whole_config(tmp_path, workspace_dir):
     """An absolute folder is a supported placement; it must not drop agents and settings."""
     cfg = {"agents": {"keep": {}}, "workspaces": {"proj": {"dir": workspace_dir}}}
+    snap = _stage(tmp_path, cfg)
+    vetted, summary = _vet(snap)
+    assert vetted["config.json"] == cfg
+    assert not summary.get("refused_merges")
+
+
+def test_an_absolute_folder_the_os_cannot_resolve_keeps_the_whole_config(tmp_path, monkeypatch):
+    """Resolving a folder on an unreachable share raises (WinError 64 on Windows).
+
+    The data-home check must not let that escape: the import keeps the config, and the
+    runtime resolves the folder again at use, where an unjudgeable one is not used.
+    """
+    real_realpath = os.path.realpath
+
+    def _realpath(path, *args, **kwargs):
+        if "unreachable-share" in str(path):
+            raise OSError(64, "The specified network name is no longer available")
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", _realpath)
+    cfg = {"agents": {"keep": {}}, "workspaces": {"proj": {"dir": "/unreachable-share/y"}}}
     snap = _stage(tmp_path, cfg)
     vetted, summary = _vet(snap)
     assert vetted["config.json"] == cfg
