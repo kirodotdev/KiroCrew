@@ -5502,7 +5502,40 @@ call is placed under a capability by the tool the harness stamped on it
 gives it) and its ACP kind; a `fetch` call
 whose tool was not told falls under `web_search` as well as `web_fetch`. A
 call whose capability cannot be told falls under every
-held restriction; every other call behaves as before. The governance ceiling still
+held restriction; every other call behaves as before. A restriction is held as
+narrowly as Crew can read it (`mate_held_scope`): a hook whose matcher, folded through
+kiro-cli's own aliases (`useAws` and `aws` are `use_aws`), names a known built-in no
+capability covers (only `use_aws` today) is recorded as `tool:<kiro-cli name>` and
+holds that tool's calls only, and strips only that tool's pre-approval in any
+spelling (a `toolsSettings` entry on such a tool still holds every call, since a
+harness with no such tool reaches what it limits through the shell); a `permissions` deny or ask on `fs_read`/`fs_write` with only a `match`
+list, and a read or write `toolsSettings` entry whose one limiting key is
+`deniedPaths`, keep those `paths` when every one is absolute after `~` (no variable,
+no glob character Crew does not read). Such a limit holds only the calls of that
+capability whose target, as written or through any link, is the folder each pattern
+starts in (the path itself, or the folder before its first wildcard), lies below it,
+or is a folder above it; the call's own folder anchors a relative params target when
+the shared extractor permits it. That holds more than a glob matches, never less.
+Targets come from the shared `edit_target_candidates` extractor: params paths, every
+`patchText` file header and the diff block; an unanchored or truncated result stays held,
+and so does a read with an Image entry (`image_paths`, or `paths` in kiro-cli's agent
+engine) or a batch entry that names no scanned path, since the extractor does not read those.
+A matcher that is a tag, a case variant, an
+unknown name or more than one tool, a rule or setting that limits more than paths or
+names a relative path, and a call whose target cannot be told (no path, a variable, a
+relative path with no folder, a cut-short scan, a link resolution that stalls, a
+Windows path with no drive) are
+held as before. Records an earlier release wrote wider are narrowed once at
+startup from the old agent (`mate_held_rescope.rescope_held_limits`, ledger key
+`held_scope_rechecked`); the recorded text must itself name the same tool in its
+hook matcher or every candidate path of the same capability. A recorded
+`toolsSettings` text names only its tool, so its paths are read from the old agent's file.
+It never widens a record, and a Bot whose old agent cannot be read keeps its record
+and is tried again. A dashboard card a held limit raised carries a notice naming
+the limit (`mate_held_rules.card_notice`, with each complete text redacted at the
+call site before truncation, and the final notice redacted too), so
+a person under Trust can tell why it asked; it points to no list, since no dashboard
+surface shows held limits yet (#40596). The governance ceiling still
 governs the merged worker spec. A Bot an earlier release moved without its old
 agent's restrictions gets the same carry at startup
 (`mate_policy_repair.restore_dropped_policy`, run from `migrate_existing_crewmates`
