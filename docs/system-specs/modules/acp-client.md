@@ -3376,12 +3376,32 @@ spec the same way kiro-cli v2 does where the wire allows it:
   (`dashboard.feature_previews.kas_subagents`, Settings > Developer > Feature
   previews, read through `edition_locks.feature_previews` by
   `kas_engine_subagents.kas_subagents_preview_on`): only when it is on and
-  `kas_engine_subagents.engine_subagents_on` holds (a `dashboard:` /
-  `dashboard_` key that is not a crew member's, the default agent `kirocrew`, no
-  member dispatch or Crew panel, the chat-runtime-sharing preview off), the default
-  agent's entry gains `invoke_sub_agent` in `tools`, a `subagent` deny on every name
-  but `kirocrew-helper`, and `@kirocrew-core/spawn_sub_agents` in `excludedTools`,
-  and the in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
+  `kas_engine_subagents.engine_subagents_on` holds and the session agent is not a
+  person's own file (`default_crew_servers.is_custom_agent`; that one is read as
+  kiro-cli reads it, below) (a chat of any agent Kiro Crew wrote: a
+  `dashboard:` / `dashboard_` key, a crew member's, a Bot's, a member dispatch and
+  a Crew panel included, a `cron:` / `cron_` run, or a messaging channel's chat;
+  never a Kiro Crew sub-agent run, a workflow, a task runner or a heartbeat; and
+  the chat-runtime-sharing preview off, because the sharing check
+  `chat_runtime_sharing.spec_grants_native_subagents` reads the spec on disk and
+  not this mount), the session agent's entry gains `invoke_sub_agent` in `tools`
+  and a `subagent` deny on every name but `kirocrew-helper`. Only in a person's own
+  dashboard chat on the default agent `kirocrew`, and the crew member named
+  `default`'s own chat on it (`engine_replaces_spawn`, read from the agent and the
+  key alone, so the batch and the contract renderer, which holds only those two,
+  agree), does that entry also get `@kirocrew-core/spawn_run` and
+  `@kirocrew-core/spawn_sub_agents` in `excludedTools`, and only there does the
+  mount register the person's own agents as children (`own_agents`); every other
+  mounted chat keeps both spawn tools, for the shipped flows that pin a model, a
+  backend or a folder for a run, and runs the shipped helper only, because an own
+  agent's MCP servers beyond the chat agent's are held by an `ask` alone, which an
+  auto-approving chat answers. The contract's sub-agent bullet follows the same
+  decision (`contract_engine_subagent_mode`): `replace` names the engine's tool
+  first and `spawn_run` / `spawn_sub_agents` only for a chat whose mount was
+  refused, `beside` keeps the `spawn_sub_agents` sentence and adds one that names
+  `kirocrew-helper` alone and sends every other agent to `spawn_run`, and a person's
+  own agent file, which the mount skips, reads the contract of before. Nothing is written to an agent file: the mount goes only into the batch
+  handed to KAS (`test_kas_engine_subagents_every_chat.py`). The in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
   carrying every `deny` and `ask` rule of the default agent's entry (never an
   allow) and withholding auto-approval for what that agent's own spec PreToolUse
   hooks cover, as a registered target's entry does. The helper also holds the
