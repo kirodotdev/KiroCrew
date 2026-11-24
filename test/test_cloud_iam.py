@@ -897,6 +897,84 @@ class TestReachabilityCheck:
         assert r["credential_helper_missing"] == ""
         assert "did not resolve" in r["note"]
 
+    _NO_CLI = "sandbox: FATAL — cannot exec aws (No such file or directory)"
+    _NO_PROFILE = "aws: [ERROR]: The config profile (kirocrew-test) could not be found"
+    _BAD_TOKEN = (
+        "aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the "
+        "GetCallerIdentity operation: The security token included in the request is invalid"
+    )
+
+    @pytest.mark.parametrize(
+        "rc, err",
+        [
+            (255, _NO_CLI),
+            (127, "aws CLI not found — install it (https://example.test/install), then retry"),
+        ],
+        ids=["sandbox-cannot-exec", "spawn-failed"],
+    )
+    def test_a_missing_cli_says_so_and_does_not_send_the_user_to_the_cli(
+        self, monkeypatch, rc, err
+    ):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (rc, "", err))
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("kirocrew-test", "us-east-1")
+        assert r["cause"] == "cli_missing"
+        assert "AWS CLI is not installed" in r["note"]
+        assert aws.AWS_CLI_INSTALL_URL in r["note"]
+        assert "aws configure" not in r["note"]
+        assert r["detail"] == err.strip()
+
+    def test_an_unknown_profile_is_named_with_its_own_fix(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", self._NO_PROFILE))
+        r = iam.reachability_check("kirocrew-test", "us-east-1")
+        assert r["cause"] == "profile_not_found"
+        assert r["profile_missing"] == "kirocrew-test"
+        assert "no AWS profile named kirocrew-test" in r["note"]
+        assert "aws configure sso --profile kirocrew-test" in r["note"]
+
+    def test_a_region_the_account_has_not_enabled_is_not_called_bad_credentials(self, monkeypatch):
+        calls = []
+
+        def fake_run(args, profile="", region="", **_kw):
+            calls.append((args[0], region))
+            if region == "us-east-1":
+                return 0, json.dumps({"Account": "123"}), ""
+            return 255, "", self._BAD_TOKEN
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        r = iam.reachability_check("kirocrew-test", "af-south-1")
+        assert r["cause"] == "region_not_enabled"
+        assert "Region af-south-1 is not enabled" in r["note"]
+        assert "InvalidClientTokenId" in r["detail"]
+        assert calls == [("sts", "af-south-1"), ("sts", "us-east-1")]
+
+    @pytest.mark.parametrize("region", ["us-east-1", ""])
+    def test_invalid_token_stays_a_credentials_failure_when_no_other_region_is_tried(
+        self, monkeypatch, region
+    ):
+        calls = []
+
+        def fake_run(args, profile="", region="", **_kw):
+            calls.append(region)
+            return 255, "", self._BAD_TOKEN
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("work", region)
+        assert r["cause"] == ""
+        assert "did not resolve" in r["note"]
+        assert calls == [region]
+
+    def test_invalid_token_in_every_region_stays_a_credentials_failure(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", self._BAD_TOKEN))
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("work", "af-south-1")
+        assert r["cause"] == ""
+        assert "did not resolve" in r["note"]
+
     def test_all_reachable(self, monkeypatch):
         def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
             if args[0] == "sts":

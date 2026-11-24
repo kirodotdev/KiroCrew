@@ -223,6 +223,11 @@ def assert_chokepoint_allowed(args: list[str]) -> None:
         )
 
 
+AWS_CLI_INSTALL_URL = (
+    "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+)
+
+
 class AWSError(Exception):
     """An ``aws`` CLI call failed.
 
@@ -375,11 +380,7 @@ def run_aws(
             return (
                 127,
                 "",
-                (
-                    "aws CLI not found — install it first "
-                    "(https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) "
-                    "or run cloud-install.sh / install.ps1, then retry"
-                ),
+                f"aws CLI not found — install it ({AWS_CLI_INSTALL_URL}), then retry",
             )
         try:
             out, err = proc.communicate(timeout=timeout)

@@ -1630,6 +1630,17 @@ checked yet" with a hollow mark and no Copy policy JSON, never as a missing
 permission, the same as `kirocrew cloud doctor`, which lists them only
 when AWS is reachable.
 
+**A failed credentials check names its cause.** `iam.reachability_check` sets `cause`
+to `cli_missing`, `profile_not_found` (with `profile_missing`, the name the CLI could
+not find) or `region_not_enabled`, and puts the fix in plain words in `note`;
+`detail` stays the CLI's own text. The Region verdict is `InvalidClientTokenId` from
+STS in the chosen Region while the same read-only call succeeds in `us-east-1`; with no
+Region, or `us-east-1`, it stays a credentials failure. The setup form leads the
+credentials row with that sentence and shows `detail` under it. `cloud doctor` prints
+`note`, a launch job's pre-flight failure leads with it, `cloud list` prints the same
+sentence in place of `tag:GetResources failed: ...`,
+and both name the one AWS CLI install guide (`aws.AWS_CLI_INSTALL_URL`).
+
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |

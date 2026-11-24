@@ -1160,6 +1160,68 @@ def credential_helper_hint(name: str) -> str:
     )
 
 
+# The Region a Region-not-enabled verdict is checked against: every account has it.
+_ALWAYS_ENABLED_REGION = "us-east-1"
+
+
+def cli_missing(rc: int, stderr: str) -> bool:
+    """True when the ``aws`` program itself could not be started.
+
+    ``aws.run_aws`` answers 127 with its own text when the spawn fails; the sandbox
+    wrapper says "cannot exec aws (No such file or directory)" when it cannot.
+    """
+    low = (stderr or "").lower()
+    return (
+        rc == 127 or "aws cli not found" in low or ("cannot exec" in low and "no such file" in low)
+    )
+
+
+def missing_profile(stderr: str) -> str:
+    """The profile name the CLI says it could not find ("The config profile (x) could not be
+    found"), or "".
+
+    shortcut: reads the CLI's English text, so a localized CLI falls back to the generic note.
+    """
+    _head, found, tail = (stderr or "").partition("The config profile (")
+    name = tail.partition(")")[0] if found and "could not be found" in tail else ""
+    return name.strip()
+
+
+def _region_not_enabled(stderr: str, profile: str, region: str) -> bool:
+    """True when the chosen Region rejects credentials that work in a default Region.
+
+    ``InvalidClientTokenId`` from STS in an opt-in Region the account has not enabled reads
+    like bad credentials, so the same read-only call is repeated in :data:`_ALWAYS_ENABLED_REGION`.
+    """
+    if "InvalidClientTokenId" not in (stderr or "") or region in ("", _ALWAYS_ENABLED_REGION):
+        return False
+    rc, _out, _err = aws.run_aws(
+        ["sts", "get-caller-identity", "--output", "json"], profile, _ALWAYS_ENABLED_REGION
+    )
+    return rc == 0
+
+
+def plain_credential_failure(rc: int, stderr: str) -> tuple[str, str]:
+    """``(cause, note)`` for a failure whose cause needs no further AWS call, else ``("", "")``.
+
+    ``cause`` is ``"cli_missing"`` or ``"profile_not_found"``; ``note`` says what is wrong
+    and the fix in plain words, for ``cloud doctor`` and ``cloud list`` as well as the
+    dashboard.
+    """
+    if cli_missing(rc, stderr):
+        return "cli_missing", (
+            f"The AWS CLI is not installed on this computer. Install it ({aws.AWS_CLI_INSTALL_URL}), "
+            "then retry."
+        )
+    if name := missing_profile(stderr):
+        return "profile_not_found", (
+            f"There is no AWS profile named {name} on this computer. Run "
+            f"`aws configure sso --profile {name}` (or `aws configure --profile {name}`), "
+            "then retry."
+        )
+    return "", ""
+
+
 def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
     """Read-only reachability (NOT full verification).
 
@@ -1176,6 +1238,8 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
         "ssm_reachable": False,
         "note": "",
         "detail": "",
+        "cause": "",
+        "profile_missing": "",
         "credential_helper_missing": "",
         "env_credentials": False,
     }
@@ -1187,12 +1251,26 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
         env_hint = aws.env_credentials_hint()
         # An explicit --profile drops the CLI's environment-credential step.
         result["env_credentials"] = not profile and bool(env_hint)
-        result["note"] = env_hint or (
-            credential_helper_hint(helper)
-            if helper
-            else (
-                "Profile did not resolve — run `aws configure sso --profile <name>` "
-                "(or `aws configure --profile <name>`) and retry."
+        cause, note = plain_credential_failure(rc, err)
+        if not cause and _region_not_enabled(err, profile, region):
+            cause = "region_not_enabled"
+            note = (
+                f"Region {region} is not enabled for this AWS account: the same credentials "
+                f"work in {_ALWAYS_ENABLED_REGION}. Pick another Region, or enable {region} "
+                "in the account settings."
+            )
+        result["cause"] = cause
+        result["profile_missing"] = missing_profile(err)
+        result["note"] = (
+            note
+            or env_hint
+            or (
+                credential_helper_hint(helper)
+                if helper
+                else (
+                    "Profile did not resolve — run `aws configure sso --profile <name>` "
+                    "(or `aws configure --profile <name>`) and retry."
+                )
             )
         )
         return result

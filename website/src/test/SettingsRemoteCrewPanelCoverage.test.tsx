@@ -807,6 +807,47 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     }
   })
 
+  it.each([
+    {
+      name: 'no AWS CLI',
+      fields: { cause: 'cli_missing', detail: 'sandbox: FATAL — cannot exec aws (No such file or directory)' },
+      sentence: /The AWS CLI is not installed on the computer that runs/,
+      raw: 'sandbox: FATAL — cannot exec aws (No such file or directory)',
+    },
+    {
+      name: 'a profile that does not exist',
+      fields: { cause: 'profile_not_found', profile_missing: 'kirocrew-test', detail: 'aws: [ERROR]: The config profile (kirocrew-test) could not be found' },
+      sentence: /There is no AWS profile named kirocrew-test on the computer that runs .*aws configure sso --profile kirocrew-test/,
+      raw: 'aws: [ERROR]: The config profile (kirocrew-test) could not be found',
+    },
+    {
+      name: 'a Region the account has not enabled',
+      fields: { cause: 'region_not_enabled', detail: 'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation' },
+      sentence: /Region .+ is not enabled for this AWS account\. Pick another Region/,
+      raw: 'aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation',
+    },
+  ])('names the cause in plain words when the credentials check fails on $name', async ({ fields, sentence, raw }) => {
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({
+      ...PREFLIGHT_OK,
+      reachable: false,
+      account: '',
+      ec2_reachable: false,
+      cloudformation_reachable: false,
+      ssm_reachable: false,
+      ...fields,
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    const row = (await screen.findByText(sentence)).closest('li') as HTMLElement
+    // The CLI's own text stays under the sentence as a detail, and no row asks for an IAM policy.
+    expect(within(row).getByText(raw)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Copy policy JSON/ })).toBeNull()
+    expect(screen.queryByText(/Profile did not resolve|needs permission for this service/)).toBeNull()
+  })
+
   it('offers a re-check when the preflight request itself fails', async () => {
     // No preflight object at all means the checklist cannot render — the panel
     // must still say why and give the user a way to try again.

@@ -14,7 +14,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { parseErrorCode, parseErrorField, reportForError, type ErrorReport } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 import {
-  awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, envCredentialsSentence, pluginMissingSteps, pluginRefusalCopy, pluginRefusalReport,
+  awsCliRefusalCopy, awsCliRefusalReport, awsCredentialCauseCopy, credentialHelperMissingSentence, envCredentialsSentence, pluginMissingSteps, pluginRefusalCopy, pluginRefusalReport,
 } from './remoteCrewPluginRefusal'
 import { PRICE_REGION, PRICING_CALCULATOR_URL, SIZE_TIERS, X86_TIERS, type SizeTier } from './remoteCrewPanelModel'
 import { PrereqRow, SizeCard } from './RemoteCrewPanelLaunch'
@@ -60,6 +60,9 @@ export function PrereqCard({
   // The same for an `aws` CLI the gateway found and refused: the credentials row
   // says why, instead of the CLI's "not found" error and its install link.
   const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
+  // A cause the gateway named (no CLI, no such profile, a Region not enabled) leads the
+  // credentials row in plain words, with the CLI's own text under it.
+  const credentialCause = preflight ? awsCredentialCauseCopy(preflight, checkedRegion) : null
   // The service calls run with the profile's credentials, so when those did not
   // resolve none of them ran: the rows say so instead of blaming a permission.
   // A call that ran and failed is an error, so it goes through `failure`.
@@ -183,6 +186,8 @@ export function PrereqCard({
               ? undefined
               : cliRefusal
                 ? cliRefusal.failure
+              : credentialCause
+                ? credentialCause.failure
               : preflight.credential_helper_missing
                 // The helper's name is the actionable part, so the sentence
                 // leads; the CLI's own error sits under it (failureDetail)
@@ -195,9 +200,11 @@ export function PrereqCard({
               ? undefined
               : cliRefusal
                 ? cliRefusal.failureDetail
+                : credentialCause
+                  ? preflight.detail || undefined
                 : ((preflight.credential_helper_missing || preflight.env_credentials) && preflight.detail) || undefined}
             failureReport={cliRefusal ? awsCliRefusalReport(preflight, cliRefusal) : undefined}
-            steps={cliRefusal?.steps}
+            steps={cliRefusal?.steps ?? credentialCause?.steps}
             onRecheck={runCheck}
             rechecking={preflightQuery.isFetching}
           />
