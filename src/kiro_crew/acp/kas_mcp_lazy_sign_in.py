@@ -13,8 +13,7 @@ Each function here whose first parameter is ``self`` takes an ``AcpRuntime``.
 Instance fields written: ``_mcp_lazy_sign_in_flows``.
 
 Instance fields read: ``_announced_children``, ``_fold_mcp_frame``, ``_mcp_reports``,
-``_mcp_sign_in``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
-``_subagent_owner``, ``_subagent_sessions``.
+``_mcp_sign_in``, ``_session_queues``, ``session_tenancy``.
 """
 
 from __future__ import annotations
@@ -102,8 +101,9 @@ def lone_holder(self: AcpRuntime, server_name: str) -> tuple[str, str]:
     The holder is the one session whose MCP report has a host frame for the server
     (``McpSessionReport.server_claim``). Every other session the engine may run
     must be shown not to hold it, so anything that might hold it unseen fails the
-    answer closed: a session still starting (its queue and report come after the
-    engine answers), a child session announced to a different owner, another
+    answer closed: an engine session with no queue here (a start still running, an
+    unconfirmed teardown, a native subagent), a child session announced to a
+    different owner, another
     session whose report is missing, partial, not yet heard from the host, or names
     the server only from Crew's own records, and a name the report would have cut
     or rewritten (it is compared as the report stores it).
@@ -111,8 +111,6 @@ def lone_holder(self: AcpRuntime, server_name: str) -> tuple[str, str]:
     clean = sanitize_sink_text(server_name, NAME_CAP)
     if not clean or clean != server_name or len(clean) >= NAME_CAP:
         return "", "the MCP server name is not a plain name"
-    if self._session_inits_in_flight or self._start_collectors:
-        return "", "a session is still starting on this runtime"
     reports = self._mcp_reports()
     holders: list[str] = []
     unknown = False
@@ -127,10 +125,12 @@ def lone_holder(self: AcpRuntime, server_name: str) -> tuple[str, str]:
         if holders or unknown:
             return "", "more than one session may hold that MCP server"
         return "", "no session holds that MCP server"
-    owners = set(self._announced_children.values())
-    if self._subagent_sessions and self._subagent_owner is not None:
-        owners.add(self._subagent_owner)
-    if owners - {holders[0]}:
+    # The same unseen tenants process cleanup refuses on: a start still running, a
+    # timed-out start collector, a teardown the host never confirmed, a native
+    # subagent roster (``runtime_liveness.session_tenancy``).
+    if self.session_tenancy(holders[0]) is None:
+        return "", "a session this runtime cannot see may hold that MCP server"
+    if set(self._announced_children.values()) - {holders[0]}:
         return "", "another session's child session may hold that MCP server"
     return holders[0], ""
 

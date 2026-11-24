@@ -327,17 +327,85 @@ async def test_the_reader_routes_the_link_and_its_end_to_the_holder_only():
 # ── what might hold the server unseen fails delivery closed ──────────────────
 
 
+def _start_in_flight(runtime: AcpRuntime) -> None:
+    runtime._session_inits_in_flight = 1
+
+
+def _start_collector(runtime: AcpRuntime) -> None:
+    runtime._start_collectors[99] = object()
+
+
+def _unconfirmed_teardown(runtime: AcpRuntime) -> None:
+    runtime._unconfirmed_teardowns.add("gone")
+
+
+def _subagent(runtime: AcpRuntime) -> None:
+    runtime._subagent_sessions.add("child")
+    runtime._subagent_owner = "s1"
+
+
+def _roster_overflow(runtime: AcpRuntime) -> None:
+    runtime._subagent_roster_overflow = 1
+
+
 @pytest.mark.asyncio
-async def test_a_session_still_starting_blocks_delivery(monkeypatch):
-    """Its queue and report come after the engine answers, so it could hold the server."""
+@pytest.mark.parametrize(
+    "unseen",
+    [_start_in_flight, _start_collector, _unconfirmed_teardown, _subagent, _roster_overflow],
+    ids=[
+        "session-new-or-load",
+        "start-collector",
+        "unconfirmed-teardown",
+        "subagent",
+        "roster-overflow",
+    ],
+)
+async def test_an_engine_session_with_no_queue_here_blocks_delivery(monkeypatch, unseen):
+    """Each could hold the server with no report here, so nobody gets the link."""
     runtime = _runtime(("s1", ["remote"]))
     replies = _answers(runtime, monkeypatch)
-    runtime._session_inits_in_flight = 1
+    unseen(runtime)
 
     await runtime._answer_open_external_url(5, _lazy())
 
-    assert replies == [("error", 5, "a session is still starting on this runtime")]
+    assert replies == [("error", 5, "a session this runtime cannot see may hold that MCP server")]
     assert _frames(runtime, "s1") == []
+
+
+@pytest.mark.asyncio
+async def test_a_capped_report_elsewhere_blocks_delivery(monkeypatch):
+    runtime = _runtime(("s1", ["remote"]), ("s2", ["other"]))
+    runtime._mcp_reports()["s2"]._cut["reports"] = 1
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert [kind for kind, _id, _msg in replies] == ["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_control_characters_is_refused(monkeypatch):
+    runtime = _runtime(("s1", ["remote"]))
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy(server="remote\x07"))
+
+    assert replies == [("error", 5, "the MCP server name is not a plain name")]
+
+
+@pytest.mark.asyncio
+async def test_a_connection_status_link_with_a_server_name_keeps_the_slot_rule(monkeypatch):
+    runtime = _runtime(("s1", ["remote"]))
+    replies = _answers(runtime, monkeypatch)
+    params = {**_lazy(), "oauthCompletion": "connection-status"}
+
+    await runtime._answer_open_external_url(5, params)
+    assert replies == [("error", 5, "no MCP sign-in is in flight")]
+
+    runtime._mcp_sign_in = ("s1", "remote")
+    await runtime._answer_open_external_url(6, params)
+    assert replies[-1] == ("result", 6, {"success": True})
+    assert len(_frames(runtime, "s1")) == 1
 
 
 @pytest.mark.asyncio
