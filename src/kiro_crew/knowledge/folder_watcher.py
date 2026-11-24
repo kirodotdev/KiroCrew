@@ -21,6 +21,10 @@ from kiro_crew.sel import sel
 
 from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
+from .folder_extraction_backfill import (
+    needs_extraction_backfill,
+    select_backfill,
+)
 from .ingestion import FileTooLargeError, run_to_completion
 from .kiroignore import KIROIGNORE_FILENAME
 from .kiroignore import load as load_kiroignore
@@ -483,8 +487,18 @@ class FolderWatcher:
         # whole event loop for that wait -- past the loop-stall watchdog on a slow
         # disk. The store's on-loop guard names this exact frame. The state comes
         # first because the walk reports which TRACKED files only the ignore
-        # patterns exclude (step 4 keeps those).
+        # patterns exclude (step 4 keeps those). Backfill selection reads current
+        # item state each sweep, so an archive or tag edit is never queued on disk.
         existing = await asyncio.to_thread(self._load_state, source_id)
+        check_backfill = needs_extraction_backfill(props) and bool(
+            getattr(getattr(self.pipeline, "extractor", None), "_pool", None)
+        )
+        selected = (
+            await asyncio.to_thread(select_backfill, self.store, source_id)
+            if check_backfill
+            else None
+        )
+        backfill = selected or set()
         screened: set[str] = set()
         pattern_ignored: set[str] = set()
         unlisted: set[str] = set()
@@ -496,6 +510,7 @@ class FolderWatcher:
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
+        backfill.intersection_update(all_discovered_paths)
         # An AsciiDoc ``include::`` may inline only a file this walk selected, so
         # every walk rule holds for included text at the time the includer is
         # read; an includer whose recorded targets are not all in a later walk
@@ -588,6 +603,7 @@ class FolderWatcher:
             and (existing[fp].get("status") == "scanning"
                  or not existing[fp].get("content_hash"))}
         reread.update(fp for fp in gone if existing[fp].get("status") not in ("failed", "skipped"))
+        reread.update(backfill)
         if reread:
             discovered = ([f for f in walked if f[0] in reread]
                           + [f for f in discovered if f[0] not in reread])
