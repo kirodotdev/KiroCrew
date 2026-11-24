@@ -87,6 +87,7 @@ from kiro_crew.dashboard.token_auth_paths import (
     _deny,
     _is_spa_shell_request,
     _log_auth,
+    _log_query_token_refused,
 )
 from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export through this facade
     APP_IAT_CLAIM,
@@ -202,10 +203,11 @@ def token_auth_middleware(
 
     async def _extract_and_validate_token(
         request: web.Request, _port: int
-    ) -> tuple[bool, str, str, str, str, bool]:
+    ) -> tuple[bool, str, str, str, str, bool, str]:
         """Extract token from query param or cookie and validate it.
 
-        Returns ``(valid, user_id, reason, app_name, token, from_query)``. Used by
+        Returns ``(valid, user_id, reason, app_name, token, from_query,
+        refused_query_reason)``. Used by
         internal-path browser/app auth (no secret header). The main auth flow
         has its own extraction with peer-binding and from_cookie tracking that
         this helper intentionally does not replicate — but its callers still
@@ -217,12 +219,17 @@ def token_auth_middleware(
         cookie adopted after a failed query token. It is the main flow's
         ``not from_cookie``, so a caller can publish the same
         ``auth_from_query_token`` mark from the credential actually validated.
+
+        ``refused_query_reason`` is the ``?token=`` refusal reason when a valid
+        cookie was adopted in its place, else empty. The helper does not log it:
+        it has no request's resolved peer, so the caller writes the row with
+        ``_audit_uid`` and names the same identity as its sibling rows.
         """
         cookie_name = f"mc_token_{_cookie_port_from_host(request, _port)}"
         query_token = request.query.get("token") or ""
         cookie_token = request.cookies.get(cookie_name, "")
         if not query_token and not cookie_token:
-            return False, "", "no token", "", "", False
+            return False, "", "no token", "", "", False, ""
         if query_token:
             valid, uid, reason, app = await validate_token_with_app_off_loop(
                 query_token, use_session_exp=True
@@ -244,11 +251,12 @@ def token_auth_middleware(
             # gate below. An expired app token must be refused as an expired
             # app token, so the caller re-exchanges its app secret.
             if valid or not cookie_token or claims_an_app_unverified(query_token):
-                return valid, uid, reason, app, query_token, True
+                return valid, uid, reason, app, query_token, True, ""
+        query_reason = reason if query_token else ""
         valid, uid, reason, app = await validate_token_with_app_off_loop(
             cookie_token, use_session_exp=True
         )
-        return valid, uid, reason, app, cookie_token, False
+        return valid, uid, reason, app, cookie_token, False, query_reason if valid else ""
 
     def _current_direct_gate() -> tailnet_direct_types.DirectGate | None:
         if tailnet_direct is None:
@@ -706,9 +714,17 @@ def token_auth_middleware(
             # at the decision point rather than deferring to downstream.
             # NOTE: uses _extract_and_validate_token helper (defined above)
             # for cookie/query-param validation.
-            _valid, _uid, _reason, _app, _tok, _from_query = await _extract_and_validate_token(
-                request, port
-            )
+            (
+                _valid,
+                _uid,
+                _reason,
+                _app,
+                _tok,
+                _from_query,
+                _refused_query,
+            ) = await _extract_and_validate_token(request, port)
+            if _refused_query:
+                _log_query_token_refused(request, _audit_uid(_uid), _refused_query)
             if not _valid:
                 _sel = _sel_fn()
                 _sel.log_api_access(
@@ -812,9 +828,17 @@ def token_auth_middleware(
                         if not request.headers["X-Internal-Secret"]:
                             return _deny(request, "Forbidden", "internal_secret_missing")
                         return _deny(request, "Forbidden", "internal_auth_mismatch")
-                _valid, _uid, _reason, _app, _tok, _from_query = await _extract_and_validate_token(
-                    request, port
-                )
+                (
+                    _valid,
+                    _uid,
+                    _reason,
+                    _app,
+                    _tok,
+                    _from_query,
+                    _refused_query,
+                ) = await _extract_and_validate_token(request, port)
+                if _refused_query:
+                    _log_query_token_refused(request, _audit_uid(_uid), _refused_query)
                 if not _valid:
                     _sel = _sel_fn()
                     _sel.log_api_access(
@@ -995,6 +1019,7 @@ def token_auth_middleware(
                     _cookie_token, use_session_exp=True
                 )
                 if _c_valid:
+                    _log_query_token_refused(request, _audit_uid(_c_uid), reason)
                     token = _cookie_token
                     from_cookie = True
                     valid, user_id, reason, app_name = (
