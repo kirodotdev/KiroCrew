@@ -5953,7 +5953,7 @@
         "files_empty_body": "Ce dossier contient les fichiers que vous importez depuis votre ordinateur. Il est distinct de Bibliothèque d’artefacts, qui contient les éléments créés par Kiro pour vous.",
         "library_remove": "Retirer",
         "library_remove_confirm": "Retirer « {{name}} » de la bibliothèque cloud ?",
-        "library_remove_confirm_slug": "Cela vide le dossier cloud <folder/>.",
+        "library_remove_confirm_slug": "Cela vide le dossier cloud <folder>{{folder}}</folder>.",
         "library_actions": "Actions sur l'élément de bibliothèque",
         "library_remove_action": "Retirer la copie",
         "library_removing": "Retrait…",

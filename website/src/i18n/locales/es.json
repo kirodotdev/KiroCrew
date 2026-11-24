@@ -5953,7 +5953,7 @@
         "files_empty_body": "Esta carpeta contiene archivos que subes desde tu equipo. Está separada de Biblioteca de artefactos, que contiene las cosas que Kiro creó para ti.",
         "library_remove": "Quitar",
         "library_remove_confirm": "¿Quitar “{{name}}” de la biblioteca en la nube?",
-        "library_remove_confirm_slug": "Esto vacía la carpeta en la nube <folder/>.",
+        "library_remove_confirm_slug": "Esto vacía la carpeta en la nube <folder>{{folder}}</folder>.",
         "library_actions": "Acciones del elemento de la biblioteca",
         "library_remove_action": "Quitar la copia",
         "library_removing": "Quitando…",

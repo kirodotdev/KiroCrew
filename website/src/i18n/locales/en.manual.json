@@ -318,7 +318,7 @@
   "apps": {
     "awsControl": {
       "console": {
-        "library_remove_confirm_slug": "This empties the cloud folder <folder/>.",
+        "library_remove_confirm_slug": "This empties the cloud folder <folder>{{folder}}</folder>.",
         "setup_searched_region": "No drive found in {{region}}. Only this region was searched, so a drive in another region of this account will not show here."
       }
     },

@@ -5629,7 +5629,7 @@
         "files_empty_body": "此文件夹存放你从电脑上传的文件。它与“产物库”是分开的，“产物库”存放 Kiro 为你生成的内容。",
         "library_remove": "移除",
         "library_remove_confirm": "从云端库中移除“{{name}}”？",
-        "library_remove_confirm_slug": "此操作会清空云端文件夹 <folder/>。",
+        "library_remove_confirm_slug": "此操作会清空云端文件夹 <folder>{{folder}}</folder>。",
         "library_actions": "库项目操作",
         "library_remove_action": "移除副本",
         "library_removing": "正在移除…",
