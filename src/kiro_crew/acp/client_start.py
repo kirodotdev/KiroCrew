@@ -16,7 +16,8 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_mode_frame_superseded``, ``_native_skill_projection``, ``_pid``, ``_process``,
 ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_scope_unit``, ``_session_id``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
+``_session_open_in_progress``, ``_spawn_start_token``, ``_start_time``,
+``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``,
 ``_channel_id``, ``_extra_env``, ``_model``, ``_modes_advertised``, ``_sandbox_mode``,
@@ -1138,8 +1139,14 @@ async def _initialize_session(self: AcpClient) -> None:
         _model_log, _ = redact_exfiltration_urls(str(self._model))
         _model_log, _ = redact_credentials(_model_log)
         logger.info("ACP session created: %s (model=%s)", self._session_id, _model_log)
+        # The session exists; the frames below only apply its mode and model. A
+        # child death from here is a dead adapter, not a dropped link. The marker
+        # stays set on the exception path so ensure_ready ends the start instead
+        # of respawning into the same crash and retrying it as pipe death.
+        self._session_open_in_progress = True
         if self._pins_starting_mode:
             await self._pin_starting_mode(session_resp)
+    self._session_open_in_progress = True
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
@@ -1281,6 +1288,7 @@ async def _initialize_session(self: AcpClient) -> None:
     # The drain usually reads step 4's agent/switched frame; judge the model
     # it named before the first prompt can run on it.
     await self._judge_activated_model()
+    self._session_open_in_progress = False
 
 
 async def ensure_ready(self: AcpClient) -> None:
@@ -1345,6 +1353,9 @@ async def ensure_ready(self: AcpClient) -> None:
         # Retry once — kiro-cli first launch can be slow (MCP server init),
         # and transient failures (MCP crash, bad config read) are recoverable.
         for attempt in range(2):
+            # A previous attempt's session-open marker must not survive into a
+            # fresh spawn: only a death on THIS attempt's handshake is terminal.
+            self._session_open_in_progress = False
             try:
                 if self._process and self._process.returncode is not None:
                     await self._discard_bound_workspace()
@@ -1397,6 +1408,26 @@ async def ensure_ready(self: AcpClient) -> None:
                 self._reset_state()
                 raise
             except (AcpTimeoutError, AcpError, OSError) as exc:
+                if isinstance(exc, AcpProcessDied) and self._session_open_in_progress:
+                    # The adapter created the session and then died applying its
+                    # mode or model. A fresh process reads the same broken adapter,
+                    # and the raw "process exited" text makes chat treat it as a
+                    # dropped link and retry until the budget runs out. End the
+                    # start here, with one terminal error carrying the stderr the
+                    # child wrote. Read the ring before cleanup clears it.
+                    _startup_outcome = "adapter_died_activating_session"
+                    detail = safe_stderr_tail(self._stderr_lines, "; ")
+                    if not detail:
+                        code = self._process.returncode if self._process else None
+                        detail = f"exit code {code}" if code is not None else "no exit status"
+                    failure = AcpError(
+                        f"The agent adapter stopped while activating the session: {detail}",
+                        transient=False,
+                        user_worded=True,
+                    )
+                    await self._cleanup_failed_live_spawn()
+                    self._reset_state()
+                    raise failure from exc
                 # A sandbox that refused to initialize is DETERMINISTIC, so
                 # the second attempt below would rebuild the same profile on
                 # the same host and be refused identically -- paying a spawn
@@ -1491,6 +1522,7 @@ async def ensure_ready(self: AcpClient) -> None:
         _startup_outcome = cancel_outcome(exc) or _startup_outcome
         raise
     finally:
+        self._session_open_in_progress = False
         try:
             # circular import: importing get_recorder at module top would
             # form config.loader -> acp.types -> acp.client -> metrics.provider
