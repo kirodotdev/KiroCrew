@@ -74,3 +74,20 @@ def _reset_kas_secret_storage_unknown_kind_warnings():
         yield
     finally:
         clear()
+
+
+@per_test_guard
+def _reset_kas_skill_facts():
+    """No skill file's facts kept yet: ``kas_skill_scope._skill_facts`` keeps them
+    across session starts by path, so a test's files must not answer a later test's."""
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_skill_scope")
+        if module is not None:
+            module._SKILL_FACTS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

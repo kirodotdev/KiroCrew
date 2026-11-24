@@ -23,6 +23,7 @@ import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
+from kiro_crew import build_reuse
 from kiro_crew.acp import kas_skill_scope
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.agent_discovery import session_skill_globs
@@ -713,3 +714,97 @@ async def test_one_deeply_nested_skill_does_not_cost_the_other_copies(home, lang
     entry = await _entry("plain", checkout)
 
     assert "no-front" in _copies(entry)
+
+
+@pytest.fixture
+def screened(home, monkeypatch):
+    """The default-tree skill folders each screened read opened, in call order.
+
+    Facts are kept from a file this test just wrote (no age floor).
+    """
+    import kiro_crew.hooks as hooks
+
+    kiro, _checkout, _package = home
+    monkeypatch.setattr(kas_skill_scope, "_SETTLED_NS", 0)
+    seen: list[str] = []
+    real = hooks.safe_read_prefix
+    tree = str(kiro / "skills")
+
+    def _spy(raw, n, **kwargs):
+        if "refuse" in kwargs and raw.startswith(tree):
+            seen.append(Path(raw).parent.name)
+        return real(raw, n, **kwargs)
+
+    monkeypatch.setattr(hooks, "safe_read_prefix", _spy)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_tree_is_screened_once_across_session_starts(home, screened):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "No_Front", "no front matter\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+
+    first = await _entry("plain", checkout)
+    second = await _entry("plain", checkout)
+
+    assert "no-front" in _copies(first) and "no-front" in _copies(second)
+    # The copied skill is read for its copy at every start; the others once.
+    assert sorted(screened) == sorted([f"global-{i}" for i in range(5)] + ["No_Front"] * 2)
+
+
+@pytest.mark.asyncio
+async def test_an_edited_skill_is_screened_again_on_the_next_start(home, screened):
+    kiro, checkout, _package = home
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+    await _entry("plain", checkout)
+    screened.clear()
+    # A longer text, so the size moves whatever the clock's resolution.
+    _raw_skill(kiro / "skills", "global-1", "---\nname: Global_One\ndescription: d\n---\nlonger\n")
+
+    entry = await _entry("plain", checkout)
+
+    # One read serves both its facts and its copy within a start.
+    assert screened == ["global-1"]
+    assert set(_copies(entry)) == {"global-one"}
+
+
+@pytest.mark.asyncio
+async def test_a_copy_passes_the_read_fence_at_every_start(home, screened, monkeypatch):
+    kiro, checkout, _package = home
+    _raw_skill(kiro / "skills", "No_Front", "no front matter\n")
+    _agent(kiro, "plain", {"tools": ["fs_read"]})
+    assert "no-front" in _copies(await _entry("plain", checkout))
+    real = kas_skill_scope._unsafe_to_copy
+    # The file is unchanged; only the fence's answer for it is.
+    monkeypatch.setattr(
+        kas_skill_scope,
+        "_unsafe_to_copy",
+        lambda opened: Path(opened).parent.name == "No_Front" or real(opened),
+    )
+
+    entry = await _entry("plain", checkout)
+
+    assert _copies(entry) == {}
+
+
+def test_a_skill_edited_during_a_start_is_screened_again_on_the_next_start(home, screened):
+    kiro, _checkout, _package = home
+    path = kiro / "skills" / "global-1" / "SKILL.md"
+    with build_reuse.one_build():
+        facts = kas_skill_scope._skill_facts(path)
+        assert facts is not None and facts[2]
+        # A longer text, so the size moves whatever the clock's resolution.
+        _raw_skill(
+            kiro / "skills",
+            "global-1",
+            "---\nname: Edited_Now\ndescription: test skill global-1, edited\n---\nlonger\n",
+        )
+        # A later target of the same start reuses the first read.
+        facts = kas_skill_scope._skill_facts(path)
+        assert facts is not None and facts[2]
+
+    facts = kas_skill_scope._skill_facts(path)
+
+    assert screened == ["global-1", "global-1"]
+    assert facts is not None and not facts[2]
