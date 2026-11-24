@@ -79,6 +79,7 @@ from kiro_crew.constants import (  # noqa: F401
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.dashboard.loop_watchdog import disarm_inherited_alarm
 from kiro_crew.env import git_build_info
+from kiro_crew.executors import mark_gateway_process as _size_gateway_pools
 from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator  # noqa: F401
 from kiro_crew.knowledge import store as knowledge_store  # noqa: F401
@@ -713,6 +714,9 @@ def main() -> None:
     arena_cap = platform_compat.MallocArenaCap()
     if args.command == "gateway":
         arena_cap = platform_compat.limit_malloc_arenas()
+        # The gateway's path-resolver pool keeps its full size; every other
+        # process stays at the floor. Before any path gate can build the pool.
+        _size_gateway_pools()
 
     # The mcp-* stdio servers run one per agent session, so a gateway hosts
     # dozens. If any import reaches numpy, OpenBLAS/OpenMP start one spinning

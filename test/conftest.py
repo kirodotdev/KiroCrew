@@ -340,6 +340,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _no_managed_venv_override,
     _no_release_feed_network,
     _no_restart_ready_timeout_override,
+    _path_resolver_pool_keeps_its_import_size,
     _published_redaction_verdict_on,
     _release_source_corpus_after_module,
     _release_stt_engine,

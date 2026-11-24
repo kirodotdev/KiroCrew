@@ -141,6 +141,30 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
 
 
 @per_test_guard
+def _path_resolver_pool_keeps_its_import_size():
+    """Start and end every test with the resolver pool size a fresh import reads.
+
+    ``kirocrew gateway`` calls ``executors.mark_gateway_process()``, which raises
+    the process's pool size to the gateway's, so a test that runs ``cli.main()`` as
+    ``gateway`` would otherwise size every later test's pool on the same worker.
+    Reset to the cold size on BOTH sides rather than restored, so a gateway size
+    already present at setup is never put back at teardown. Imported rather than
+    looked up in ``sys.modules`` so a test that first loads the CLI in its own body
+    is still reset.
+    """
+    from kiro_crew import executors
+
+    def reset():
+        executors._MAX_PATH_RESOLVE_WORKERS = executors._path_resolve_worker_count()
+
+    reset()
+    try:
+        yield
+    finally:
+        reset()
+
+
+@per_test_guard
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
