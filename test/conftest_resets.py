@@ -1411,6 +1411,7 @@ def _reset_kas_parent_notes():
         if module is not None:
             module._NOTED.clear()
             module._NOTED_DIRS.clear()
+            module._INCOMPLETE.clear()
 
     clear()
     try:
