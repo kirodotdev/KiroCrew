@@ -6411,6 +6411,20 @@ managed servers: a pooled app server is not handed the token. KAS never reaches
 `kiro_control_plane_servers`; its hoist tokens the same app servers from the
 same manifest launch (`acp/kas_app_identity.py`, see
 [acp-client](../system-specs/modules/acp-client.md)).
+On a centrally governed host the per-session element Crew builds for such a
+server also carries the gateway's cache-only policy markers, as a managed
+server's does, because under a `cc` or `strict` agent tier the harness
+environment does not carry them: on kiro through the managed env the element is
+built with, on KAS in the tokened element `kas_app_identity.tokened_app_element`
+builds, and in the session-level array the other ACP harnesses receive through
+`session_mcp_env_refs.with_app_policy_markers`, which marks only an entry whose
+`command` and `args` are the shipped launch and drops that entry's own copies
+first (goose's `keep_env_references` matches such an element with the marker
+keys left out and keeps the element's own marker pairs, reading no gateway or
+manifest state, so a `${VAR}` reference still survives onto its disk). Two cases get no markers: a
+KAS hoist with no session token, which sends the app element as projected, and
+an array entry that is not on the pinned shipped launch. The registered entry
+never carries them: its declared env is part of a shared-launch approval.
 
 A server that is NOT Kiro Crew's code can opt into a much smaller grant: a session
 LABEL, never the token (`acp/session_label.py`). Its `mcpServers` entry carries
