@@ -66,10 +66,11 @@ export function useViewerIsNotOwner() {
 /** Whether this Crew shows who did what (bylines, decision attribution,
  *  presence), decided the way the session list decides it: only with the
  *  Shared Crew preview on and someone besides the owner joined
- *  (`showsTeamAttribution`). The read failures are SessionCollabStrip's to
- *  show, once per chat. */
-export function useTeamAttribution(): boolean {
-  const { capabilities } = useSharedCrewCapabilities()
+ *  (`showsTeamAttribution`). `null` while that is not known: a read it rests
+ *  on (capabilities, then mode and people) has no answer yet, or failed with
+ *  none. The read failures are SessionCollabStrip's to show, once per chat. */
+export function useTeamAttributionState(): boolean | null {
+  const { capabilities, data: answered } = useSharedCrewCapabilities()
   const previewOn = sharedCrewPreviewOn(capabilities)
   const attributes = previewOn && capabilityUsable(capabilities.attribution)
   const modeQuery = useSharedCrewMode(attributes)
@@ -79,7 +80,16 @@ export function useTeamAttribution(): boolean {
     teamPath: sharedAccessConfigured(capabilities),
     othersSeen: (rows ?? []).some(row => !row.is_viewer),
   })
-  return showsTeamAttribution({ previewOn, attributes, mode, joined: someoneJoined(rows) })
+  if (showsTeamAttribution({ previewOn, attributes, mode, joined: someoneJoined(rows) })) return true
+  if (answered === undefined) return null
+  if (attributes && (modeQuery.data === undefined || people.data === undefined)) return null
+  return false
+}
+
+/** `useTeamAttributionState` for a surface that stays hidden until the Crew is
+ *  known to attribute. */
+export function useTeamAttribution(): boolean {
+  return useTeamAttributionState() === true
 }
 
 export function useSharedCrewCapacity(enabled = true) {

@@ -1406,6 +1406,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["durable"] = False
         if _hold_knowledge:
             _hold_push.setdefault("meta", {}).update(_hold_knowledge)
+        from kiro_crew.dashboard.chat_delivery import queue_author_meta
+
+        if _hold_author := queue_author_meta(_hold_meta):
+            _hold_push.setdefault("meta", {}).update(_hold_author)
         from kiro_crew.dashboard import responsive_chat as _rc
 
         _rc.mark_written_on_push(slot, qid, _hold_push)

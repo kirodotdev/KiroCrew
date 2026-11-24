@@ -103,11 +103,12 @@ describe('kiro-light shell hooks', () => {
     // tones (#17839: the crewmate chat's accent fill and the default) keep the
     // hook leading, so the kiro-light tint rule still selects the default one
     // and the accent rules (keyed on `.user-bubble.user-bubble-accent`) win
-    // over it on the other. A Shared Crew teammate's outlined bubble keeps the
-    // hook too, and `.user-bubble.user-bubble-other` clears the tint.
+    // over it on the other. An outlined bubble (a Shared Crew teammate's, or
+    // one nobody can place yet) keeps the hook too, and
+    // `.user-bubble.user-bubble-other` clears the tint.
     const src = read('pages', 'chat', 'UserMessage.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(
-      /isSteer \? 'bg-accent-subtle text-text' : other \? 'user-bubble user-bubble-other [^']*' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
+      /isSteer \? 'bg-accent-subtle text-text' : outlined \? 'user-bubble user-bubble-other [^']*' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
     )
   })
 
@@ -122,11 +123,12 @@ describe('kiro-light shell hooks', () => {
     // The banner is a pixel-for-pixel copy of the bubble so the hand-off reads as
     // the bubble sticking, not being replaced; a theme that tints one must tint
     // the other or the swap becomes visible. The hook leads both tones: the
-    // viewer's own filled card, and a teammate's outlined one, whose
-    // `user-bubble-other` clears the tint as it does on the bubble.
+    // viewer's own filled card, and the outlined one (a teammate's, or a held
+    // prompt's), whose `user-bubble-other` clears the tint as it does on the
+    // bubble.
     const src = read('pages', 'chat', 'PinnedPrompt.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'PinnedPrompt.tsx'])).toMatch(
-      /className=\{`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 [^`]*\$\{other \? 'user-bubble-other [^']*' : 'bg-card text-card-fg ring-border'\}`\}/,
+      /className=\{`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 [^`]*\$\{other \? 'user-bubble-other [^']*' : held \? 'user-bubble-other [^']*' : 'bg-card text-card-fg ring-border'\}`\}/,
     )
   })
 

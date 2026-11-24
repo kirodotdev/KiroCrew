@@ -204,6 +204,12 @@ async def _post(state, slot_key, message, meta, **extra):
         return await resp.json()
 
 
+def _frame_meta(frame):
+    """A ``queue_push`` frame's meta without the sender stamp a person's send
+    carries (``test_queue_author_meta.py`` covers that stamp)."""
+    return {k: v for k, v in (frame.get("meta") or {}).items() if k != "author"}
+
+
 class TestQuoteThroughTheHandler:
     @pytest.mark.asyncio
     async def test_busy_slot_entry_and_push_frame_carry_the_bounded_quote(
@@ -216,7 +222,7 @@ class TestQuoteThroughTheHandler:
         entry = next(i for i in slot._queue if i["content"] == "> q\n\nwhy?")
         assert entry["meta"]["quote"] == _QUOTE
         frames = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
-        assert frames and frames[-1]["meta"] == {"quote": _QUOTE, "sendId": "s-1"}
+        assert frames and _frame_meta(frames[-1]) == {"quote": _QUOTE, "sendId": "s-1"}
 
     @pytest.mark.asyncio
     async def test_an_oversized_quote_is_dropped_on_the_busy_path_too(self, tmp_path, monkeypatch):

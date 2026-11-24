@@ -10,6 +10,7 @@ import {
   messageAuthor,
   bylineFor,
   bylineSelfId,
+  queueEntryAuthor,
   continuesAuthorRun,
   setupPathStates,
   sharedAccessConfigured,
@@ -140,41 +141,48 @@ describe('limits', () => {
 
 describe('message bylines', () => {
   const person = (id: string, kind: 'human' | 'unknown' = 'human') => ({ id, kind, display: { name: id, login: '', captured_at: null } })
-  const attribution = (id: string, kind: 'human' | 'unknown' = 'human') => ({ creator: person(id, kind), availability: 'recorded' as const, created_at: 1 })
 
   it('leaves only the viewer\'s own messages unlabelled', () => {
-    const self = bylineSelfId(person('p_viewer'), attribution('p_creator'))
+    const self = bylineSelfId(person('p_viewer'))
     expect(self).toBe('p_viewer')
     expect(bylineFor(person('p_viewer'), self)).toBeNull()
   })
 
   it('names the session creator to a viewer who did not create it', () => {
-    const self = bylineSelfId(person('p_viewer'), attribution('p_creator'))
+    const self = bylineSelfId(person('p_viewer'))
     expect(bylineFor(person('p_creator'), self)?.id).toBe('p_creator')
     expect(bylineFor(person('p_bob'), self)?.id).toBe('p_bob')
   })
 
-  it('the creator reading their own session sees only the others named', () => {
-    const self = bylineSelfId(person('p_creator'), attribution('p_creator'))
-    expect(bylineFor(person('p_creator'), self)).toBeNull()
-    expect(bylineFor(person('p_bob'), self)?.id).toBe('p_bob')
+  it('nobody stands in for a viewer who is not known yet', () => {
+    expect(bylineSelfId(undefined)).toBe('')
+    expect(bylineSelfId(null)).toBe('')
+    expect(bylineSelfId(person('unknown', 'unknown'))).toBe('')
   })
 
-  it('stands the creator in for the viewer until the viewer is known', () => {
-    expect(bylineSelfId(undefined, attribution('p_creator'))).toBe('p_creator')
-    expect(bylineSelfId(person('unknown', 'unknown'), attribution('p_creator'))).toBe('p_creator')
-    expect(bylineFor(person('p_creator'), bylineSelfId(null, attribution('p_creator')))).toBeNull()
+  it('names every stamped message while the viewer is not known', () => {
+    // Never the reader's own by default: a teammate reading the creator's
+    // session must not see the creator's messages drawn as theirs.
+    expect(bylineFor(person('p_creator'), '')?.id).toBe('p_creator')
+    expect(bylineFor(person('p_bob'), '')?.id).toBe('p_bob')
   })
 
   it('an Unknown author stays Unknown and is labelled', () => {
     expect(bylineFor(person('unknown', 'unknown'), 'p_viewer')?.kind).toBe('unknown')
+    expect(bylineFor(person('unknown', 'unknown'), '')?.kind).toBe('unknown')
   })
 
-  it('labels nothing until the viewer or the creator is known', () => {
-    expect(bylineSelfId(null, null)).toBe('')
-    expect(bylineSelfId(null, attribution('unknown', 'unknown'))).toBe('')
-    expect(bylineFor(person('p_bob'), '')).toBeNull()
+  it('labels nothing without an author stamp', () => {
     expect(bylineFor(null, 'p_viewer')).toBeNull()
+    expect(bylineFor(null, '')).toBeNull()
+  })
+
+  it('reads a queue entry\'s author the way a sent row\'s is read', () => {
+    expect(queueEntryAuthor({ author: { id: 'p_bob', kind: 'human', display: { name: 'Bob' } } }).author?.id).toBe('p_bob')
+    expect(queueEntryAuthor({ author: { id: '' } })).toEqual({})
+    expect(queueEntryAuthor({ sendId: 's1' })).toEqual({})
+    expect(queueEntryAuthor(undefined)).toEqual({})
+    expect(queueEntryAuthor('author')).toEqual({})
   })
 
   describe('continuesAuthorRun', () => {

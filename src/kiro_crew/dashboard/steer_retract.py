@@ -55,6 +55,7 @@ from kiro_crew.dashboard.chat_delivery import (
     banner_meta,
     find_written_steer_row,
     knowledge_meta,
+    queue_author_meta,
     queue_for_next_turn,
     quote_meta,
     steer_origin_kwargs,
@@ -410,6 +411,9 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             quote=quote_meta(held).get("quote"),
             banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
             knowledge=knowledge_meta(held),
+            # The steer's own server-named author, so the queued entry, its frame
+            # and its drained row still name the person who sent it.
+            author=queue_author_meta(held).get("author"),
             admission=record.admission,
         )
         crew_steer_requeued(

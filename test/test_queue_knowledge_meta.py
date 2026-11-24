@@ -72,6 +72,12 @@ async def _post(state, **body):
         return await resp.json()
 
 
+def _frame_meta(frame):
+    """A ``queue_push`` frame's meta without the sender stamp a person's send
+    carries (``test_queue_author_meta.py`` covers that stamp)."""
+    return {k: v for k, v in (frame.get("meta") or {}).items() if k != "author"}
+
+
 def _pushes(state):
     return [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
 
@@ -83,8 +89,8 @@ async def test_busy_slot_entry_frame_and_queue_view_carry_the_mark(tmp_path, mon
     entry = next(i for i in slot._queue if i["content"] == "kb\n\nwhy?")
     assert entry["meta"]["knowledgeEnvelope"] == _MARK
     assert "knowledge" not in entry["meta"]
-    assert _pushes(state)[-1]["meta"] == {"knowledgeEnvelope": _MARK}
-    assert queue_entry_view(entry)["meta"] == {"knowledgeEnvelope": _MARK}
+    assert _frame_meta(_pushes(state)[-1]) == {"knowledgeEnvelope": _MARK}
+    assert _frame_meta(queue_entry_view(entry)) == {"knowledgeEnvelope": _MARK}
 
 
 @pytest.mark.asyncio
@@ -97,4 +103,4 @@ async def test_a_steer_the_turn_never_took_requeues_with_the_mark(tmp_path, monk
     _requeue_unconsumed_steers(state, slot)
     entry = next(i for i in slot._queue if i["content"] == "kb\n\nwhy?")
     assert entry["meta"]["knowledgeEnvelope"] == _MARK
-    assert _pushes(state)[-1]["meta"] == {"knowledgeEnvelope": _MARK, "requeuedSteer": True}
+    assert _frame_meta(_pushes(state)[-1]) == {"knowledgeEnvelope": _MARK, "requeuedSteer": True}

@@ -71,13 +71,11 @@ function read(container: HTMLElement, messages: ChatMessage[]) {
  *  queries enabled. Waits that span that chain get this ceiling. */
 const CHAIN_TIMEOUT_MS = 5000
 
-/** Rendered once any teammate's byline shows: the mode and viewer are known,
- *  so every absent byline and filled bubble after it is a decision. Both waits
- *  span the capabilities -> mode/people chain, so both carry its ceiling. */
-async function settled(container: HTMLElement, messages: ChatMessage[]) {
-  await screen.findAllByTestId('message-byline', {}, { timeout: CHAIN_TIMEOUT_MS })
-  await waitFor(() => expect(container.querySelectorAll('.user-bubble-other').length).toBeGreaterThan(0), { timeout: CHAIN_TIMEOUT_MS })
-  return read(container, messages)
+/** Waits for the transcript to read as `expected`. A byline can show before
+ *  the mode and viewer are known (every stamped message is named until then),
+ *  so the first byline is not a settled state; the expected reading is. */
+async function settled(container: HTMLElement, messages: ChatMessage[], expected: string[][]) {
+  await waitFor(() => expect(read(container, messages)).toEqual(expected), { timeout: CHAIN_TIMEOUT_MS })
 }
 
 beforeEach(() => {
@@ -96,7 +94,7 @@ describe('a shared chat draws other people apart from the viewer', () => {
   it('own messages stay filled and unlabelled; a teammate is outlined and named once per run', async () => {
     const msgs = [said(OWNER, 'mine'), said(ANA, 'a1'), said(ANA, 'a2')]
     const { container } = mount(msgs)
-    expect(await settled(container, msgs)).toEqual([
+    await settled(container, msgs, [
       ['mine', '', 'filled'],
       ['a1', 'ana@example.com', 'outlined'],
       ['a2', '', 'outlined'],
@@ -106,7 +104,7 @@ describe('a shared chat draws other people apart from the viewer', () => {
   it('two teammates alternating each start a run of their own', async () => {
     const msgs = [said(ANA, 'a1'), said(BO, 'b1'), said(ANA, 'a2'), said(BO, 'b2'), said(BO, 'b3')]
     const { container } = mount(msgs)
-    expect(await settled(container, msgs)).toEqual([
+    await settled(container, msgs, [
       ['a1', 'ana@example.com', 'outlined'],
       ['b1', 'bo@example.com', 'outlined'],
       ['a2', 'ana@example.com', 'outlined'],
@@ -118,7 +116,7 @@ describe('a shared chat draws other people apart from the viewer', () => {
   it('an agent reply between two of the same teammate\'s messages starts a new run', async () => {
     const msgs = [said(ANA, 'a1'), reply('agent'), said(ANA, 'a2')]
     const { container } = mount(msgs)
-    expect(await settled(container, msgs)).toEqual([
+    await settled(container, msgs, [
       ['a1', 'ana@example.com', 'outlined'],
       ['a2', 'ana@example.com', 'outlined'],
     ])
@@ -128,7 +126,7 @@ describe('a shared chat draws other people apart from the viewer', () => {
     viewer.mockResolvedValue(ANA)
     const msgs = [said(OWNER, 'o1'), said(OWNER, 'o2'), said(ANA, 'mine')]
     const { container } = mount(msgs)
-    expect(await settled(container, msgs)).toEqual([
+    await settled(container, msgs, [
       ['o1', 'owner@example.com', 'outlined'],
       ['o2', '', 'outlined'],
       ['mine', '', 'filled'],
@@ -151,11 +149,11 @@ describe('only the viewer\'s own messages sit on the end side', () => {
   it('the viewer\'s own message stays on the end side; a teammate\'s moves to the start side with its name', async () => {
     const msgs = [said(OWNER, 'mine'), reply('agent'), said(ANA, 'a1')]
     const { container } = mount(msgs)
-    expect(await settled(container, msgs)).toEqual([
+    await settled(container, msgs, [
       ['mine', '', 'filled'],
       ['a1', 'ana@example.com', 'outlined'],
     ])
-    expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a1', 'start']])
+    await waitFor(() => expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a1', 'start']]), { timeout: CHAIN_TIMEOUT_MS })
   })
 
   it('a teammate\'s steer into the running turn is named and on the start side too', async () => {
@@ -165,15 +163,14 @@ describe('only the viewer\'s own messages sit on the end side', () => {
     await screen.findAllByTestId('message-byline', {}, { timeout: CHAIN_TIMEOUT_MS })
     const row = container.querySelector('[data-row="a-steer"]')!
     expect(row.querySelector('[data-testid="message-byline"]')?.textContent).toBe('ana@example.com')
-    expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a-steer', 'start']])
+    await waitFor(() => expect(sides(container, msgs)).toEqual([['mine', 'end'], ['a-steer', 'start']]), { timeout: CHAIN_TIMEOUT_MS })
   })
 
   it('the same message is on the end side for its author and the start side for everyone else', async () => {
     viewer.mockResolvedValue(ANA)
     const msgs = [said(OWNER, 'o1'), said(ANA, 'a1')]
     const { container } = mount(msgs)
-    await settled(container, msgs)
-    expect(sides(container, msgs)).toEqual([['o1', 'start'], ['a1', 'end']])
+    await waitFor(() => expect(sides(container, msgs)).toEqual([['o1', 'start'], ['a1', 'end']]), { timeout: CHAIN_TIMEOUT_MS })
   })
 
   it('a chat only the viewer writes to looks as it did: every row on the end side, no side mark', async () => {
@@ -183,8 +180,26 @@ describe('only the viewer\'s own messages sit on the end side', () => {
     // never shows here, so wait for the queries the side rule reads.
     await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
     await waitFor(() => expect(viewer).toHaveBeenCalled())
-    expect(sides(container, msgs)).toEqual([['m1', 'end'], ['m2', 'end']])
+    await waitFor(() => expect(sides(container, msgs)).toEqual([['m1', 'end'], ['m2', 'end']]))
     expect(container.querySelector('[data-user-side]')).toBeNull()
+  })
+})
+
+describe('a row nobody can place yet', () => {
+  it('keeps the end side, outlined and unnamed, with a heading that names its stamp', () => {
+    // Neither read answers: the page knows neither the Crew's mode nor the viewer.
+    vi.mocked(api.sharedCrewCapabilities).mockReturnValue(new Promise(() => {}))
+    viewer.mockReturnValue(new Promise(() => {}))
+    const msgs = [said(OWNER, 'o1'), reply('agent'), said(ANA, 'a1')]
+    const { container } = mount(msgs)
+    expect(read(container, msgs)).toEqual([
+      ['o1', '', 'outlined'],
+      ['a1', '', 'outlined'],
+    ])
+    expect(sides(container, msgs)).toEqual([['o1', 'end'], ['a1', 'end']])
+    expect(container.querySelector('[data-user-side]')).toBeNull()
+    const headings = msgs.filter(m => m.role === 'user').map(m => container.querySelector(`[data-row="${m.content}"] h2`)?.textContent)
+    expect(headings).toEqual(['owner@example.com', 'ana@example.com'])
   })
 })
 
