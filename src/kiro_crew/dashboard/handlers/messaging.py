@@ -211,6 +211,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
+    _open_engine_subagents,
     _queue_unreadable,
     _queued_lookup,
     _queued_not_started,

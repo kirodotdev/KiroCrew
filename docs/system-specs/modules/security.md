@@ -114,8 +114,8 @@ outside every session sandbox, as the user, while the same command run per
 chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
-text under an approved name (agent specs and kiro-cli's `~/.kiro/settings/mcp.json`
-are still writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
+text under an approved name (a project's agent specs and MCP files are still
+writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
 session's sandboxed path until the operator presses **Approve update**, which
 reads the new launch and pins it. Only a `${VAR}` expansion moving under
 unchanged declared text is re-recorded (the rebind), because its values come
@@ -149,11 +149,34 @@ every sandbox (`_CREW_READONLY_LEAVES`, pre-created as `{}` so an absent store c
 be created from inside one). Its gateway saves go through
 `mcp_config_files._atomic_write`, which records each one in `config.write_provenance`
 like a `config.json` save, so a page save landing between a spawn's pre-pass and its
-pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` stays on the file-tool tier
-only (see the discovery-endpoint residual below). A refusal on either path names the
+pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` is on the file-tool tier
+too, and read-only on both of Kiro Crew's launchers
+([decision](../../decisions/2026-11-23-agents-ask-before-changing-kiro-cli-project-and-app-mcp-files.md)):
+`sandbox_seals._resolved_kiro_mcp_registry_targets` names both spellings (`$HOME/.kiro`,
+which the gateway writes, and `KIRO_HOME`, which kiro-cli reads) and they ride the
+kiro agents tree's host field, so each is sealed with its parents guarded against
+rename, including the unresolved spelling of an accepted `KIRO_HOME` override so its
+symlinks are pinned beside the resolved path. Every spelling's resolved path is also
+listed and sealed. Seatbelt denies the path
+whether or not it exists; the Linux launcher seals a name that exists, so
+`sandbox_seals._materialize_kiro_mcp_registry` creates an absent one as
+`{"mcpServers": {}}` (0o600, exclusive, no-follow, under a kiro home that
+exists). A dangling registry symlink is preserved; its absent referent is published
+only when its resolved parent is an existing real directory, without creating any
+intermediate directories or replacing an existing entry. Unlike a crew-home ceiling,
+that step never refuses a spawn: a file it cannot create is logged and left unsealed
+for that spawn. It is not on the delegated-workspace guard, so a
+workspace that holds it keeps working where kiro-cli's own sandbox confines the
+spawn, and there the file-tool refusal is the only fence. Its gateway saves are not
+vouched for the pin, because the pin compares only a file the pre-pass established,
+and this one is not. kiro-cli's in-chat `/mcp` command shares the harness's sandbox
+and is refused on it, as its writes to the agents tree already are; `kiro-cli mcp add`
+in a terminal runs outside every sandbox. A refusal on either path names the
 way forward (`paths_lists.MCP_REGISTRY_REMEDY`): the agent calls `request_server`
 with `action` `add` (`source` `custom` and the entry), `change` or `remove`, which
-raises an `mcp.server` card showing the entry's change (env and header values go
+raises an `mcp.server` card showing the entry's change (an add with `target`
+`kiro-cli` also writes kiro-cli's file through the MCP page's `kiroGlobal` toggle, and
+the card names that file) (env and header values go
 through the credential redactor, and an env change marks the card as running new
 code, like a launch-line change); Apply runs the MCP page's own routes, then `POST
 /api/sessions/restart` while **Restart open chats to use it** is checked
@@ -390,12 +413,17 @@ the list, and the code admits only the row marked PROCEEDS.
 
 Because the "any other atomic rewrite" row refuses, a writer that rewrites a sealed leaf on a
 schedule must not rewrite it when nothing changed. Every agent-config rebuild writes
-`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode and single
-link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
+`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode, owner and
+single link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
 (`agent_parts/spec_files._atomic_json_write_unguarded`) does the same for `kirocrew.json`, whose
 inode the worker records in that sidecar. A rebuild that changes nothing therefore keeps every
 sealed file leaf's identity (`test/test_rebuild_keeps_pinned_files.py`); one that changes the
-sidecar still refuses a spawn whose pass and pin straddle the write, as the table says.
+sidecar still refuses a spawn whose pass and pin straddle the write, as the table says. A
+rebuild must also not RUN for nothing: the profile watch rebuilds when the governance answer
+generation moves, and that generation moves only for a profile snapshot that differs from the
+one it replaces (governance.md, the profile watch). The empty `profiles` directory the first
+sandboxed spawn creates on a fresh home is therefore not a move, and the first tick after that
+start leaves both files alone even when the rebuild it would have run had new content to write.
 
 **The gateway's own config save, admitted on its publication record.** The two runtime-config
 files are sealed as files (they sit at the data-home root and cannot move into a directory),
@@ -1196,6 +1224,13 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     reading and the main-reading pass keep a body's quotes as origin/main read them,
     so the reset pass only ADDS a denial and never removes one. The here-document
     body readers and the untracked fallback are unchanged.
+    `_reaches_self_over_ssh` also reads each nested shell payload that spans lines
+    (`_shell_payload_sources`) as a command line of its own, because the line's frame
+    walk reads a payload from text whose quoted newlines are masked to data. As for a
+    substitution body, the text of a quoted-tag body that a bare `cat` prints is cut
+    first (`_without_quoted_heredoc_text`), and the payload's slice of the submitted
+    text goes to `raw_text`, so a body that no program runs stays data. This pass,
+    too, only adds a denial.
   - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
     (`_reaches_self_over_ssh`). The static splice reads only the first command of a
     `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
@@ -1274,12 +1309,12 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   The default stays the stopping read, for callers that do not ask.
   `read_commands` resumes after a tag line in a CLOSED quote state, so a floor that
   reads through it (the rm floor) already reads the text after a here-document's
-  closing line as the fresh command bash runs. The self and ssh floors do not read
-  through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
+  closing line as the fresh command bash runs. The self, ssh and git/tar floors do not
+  read through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
   scan it with the ssh floor's own quote mask, both quote-blind to a here-document,
   so a quote left open in a body would pair with a quote after the closing line and
   bury the command on it (`cat <<EOF` NL `it's` NL `EOF` NL `kirocrew restart` NL
-  `# '`). So each of those two floors evaluates the command through TWO INDEPENDENT
+  `# '`). So each of those floors evaluates the command through TWO INDEPENDENT
   readings and refuses if EITHER reading does: the command as written, and a second
   reading with `shell_normalizer._heredoc_body_quotes_literal` applied. Each reading
   runs the floor in FULL on its own — its own tokenization, alias and assignment
@@ -1317,7 +1352,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   its own tokens and descent, deduping nested payloads per reading so each reading walks
   every one — alongside the as-written pass whenever a `<<` is present;
   the ssh floor adds its reset reading the same way, through its own `_HEREDOC_RESET`
-  flag. The second reading runs only when the command contains `<<`, so a command with
+  flag. The git/tar floor (`_is_git_tar_to_self`) reads the same way too: when the
+  as-written read allows, its outermost read runs once more on the helper's output
+  (found on `raw_text` when that is the submitted command, then lowered), with that
+  output as the command it keeps as submitted. The second reading runs only when the command contains `<<`, so a command with
   no here-document keeps the single reading and its linear cost. The quote-reset applies
   only to a reader-CONFIRMED here-document: a `<<` the reader held inside an open
   `$(( ))` / `(( ))` is a left SHIFT, not a body (`HereDoc.arith_held`), so its fictional
@@ -2426,7 +2464,7 @@ transfer may hold its worker for a long time on a healthy mount.
 
 **Sensitive path protection** — blocks at the hook layer before tool execution:
 - `is_sensitive_path(path)` — checks `fs_read`/`ReadFile` targets against sensitive dirs
-- `is_sensitive_resolved_path(resolved)` — the same decision for a path the CALLER has already canonicalised (`os.path.realpath` on its own worker thread). Same targets and the same TTL target cache, with no `mc-pathres` submission on either half: the candidate is matched lexically, and the anchors are resolved inline on the calling thread (`_home_dir_targets(inline=True)`, the stance `sandbox_credential_targets` already takes off the loop; mechanically, a `realpath` asked for with no `_run_resolution_bounded` deadline armed on the thread runs in this interpreter -- `_outside_bounded_call` -- and never reaches the child pool, so an unbounded caller can neither hold a child to the pool's ceiling nor queue ahead of the loop) — still fresh on every call and still keying the cache, so a repointed root still invalidates. A wedged mount blocks that thread instead of raising a stall, which is what its own `os.walk` on the mount does anyway; nothing is admitted while it blocks. **For two shapes of caller only**: a bulk walk on a worker thread that already resolves every entry to detect link loops and prove containment (`skills_discovery._iter_skill_files`, one call per directory and per `SKILL.md`), and a reader that has just canonicalised its own path, which asks through `is_sensitive_canonical_path(resolved)` -- the entry point that probes the calling thread itself, answering with this gate off the event loop and with `is_sensitive_path` on it, so a caller earns the off-pool gate by offloading and never by declaring anything (the agent-spec readers `agent_discovery._read_agent_spec` / `read_agent_spec_strict`, which the native skill projection runs under `asyncio.to_thread`; and the dashboard's file-search and listing walks -- `FileIndex._walk`, the `/api/file-search` fallback walk, `_browse_dirs_sync` and `_browse_files_sync` -- each asking about the `realpath` of the entry it just computed on its worker thread, so an index rebuild of up to 100k entries queues nothing ahead of the loop). The artifact store's file helpers enter through `security.canonical_path_refusal(resolved)`, its reason-or-`None` form (the same per-thread gate; on the loop a stall keeps its own wording), with `GET /api/artifacts` running `store.list()` on a worker so the listing takes the off-pool gate. `hooks.safe_read_file(path, canonical_gate=True)` takes the same pair on the `realpath` it computes itself, `canonical_path_refusal` for the name before the open and `is_sensitive_canonical_path` for the opened descriptor's kernel path after it; its caller is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`), which reads every spec in both agents directories on a worker, where the bounded gate costs about 8 pool resolutions per spec. `hooks.safe_read_file_bytes_nolink(..., canonical_gate=True)` asks `is_sensitive_canonical_path` about the `realpath` its `validate_file_path` computes and about the opened descriptor's kernel path (the identity check and the within-root checks); its caller is `agent_capabilities._read_spec`, the spec read behind the member start and the Capabilities pane. The member start's two other checks of a path it resolved itself ask `is_sensitive_canonical_path` directly: `agent._spec_path_shape_refusal` on the spec's `Path.resolve()` and `config.loader_pipeline.default_project_dir` on the workspace's `realpath`. Both are shared helpers, so every caller that runs them off the loop gets the inline answer, where a wedged mount blocks that thread instead of refusing within the bound, and a caller on the loop keeps the bounded gate. The member start runs all three off the loop (`session_capabilities.prepare_runtime`, under `asyncio.to_thread`), so a resolver child that misses its deadline cannot refuse a member its own spec: on macOS the pool has no syscall sample, so each miss is charged as a mount stall, and the bounded gate then refuses every path under that prefix for the cooldown. The dashboard's new-chat default, `dashboard/chat_api/slot_create._birth_default_project`, asks `is_sensitive_canonical_path` about the `realpath` of `dashboard.default_project` it computes under `asyncio.to_thread`, so a stall cannot swap a healthy configured project for the workspace default. The favourite-project add, `dashboard/chat_api/project_lists._probe_favorite_candidate`, asks it about the `realpath` it computes under `asyncio.to_thread`, so a stall cannot refuse a healthy directory as sensitive; the favourites and recents display filters pass the stored spelling and keep the bounded gate. The reverse-direction check has the same claim: `path_contains_sensitive(dir, pre_resolved=True)` resolves its anchors inline on the caller's worker thread with no resolver hop, takes a `realpath` the caller computed there, and forfeits the bound on the event loop; the project-tree walk (`dashboard/file_api/project_tree.py`) is its claimant. Why it exists: the resolver pool of child interpreters is sized for the event loop (eight children by default, FIFO; `KIROCREW_PATH_RESOLVE_WORKERS` widens it), and a bulk walk issues one candidate resolution it has already performed plus an anchor resolution per entry; routed through the pool, every one would queue ahead of the loop's own latency-critical resolutions without any single wait crossing the 2 s budget, so the stall breaker would never trip. Handing this gate an unresolved spelling is a link bypass, and calling it from the loop forfeits the bound, which is why it is a separate name and not a flag on `is_sensitive_path`; `test_pathres_loop_starvation.py` pins that the walk passes only `realpath` output and that neither half reaches `_run_resolution_bounded`
+- `is_sensitive_resolved_path(resolved)` — the same decision for a path the CALLER has already canonicalised (`os.path.realpath` on its own worker thread). Same targets and the same TTL target cache, with no `mc-pathres` submission on either half: the candidate is matched lexically, and the anchors are resolved inline on the calling thread (`_home_dir_targets(inline=True)`, the stance `sandbox_credential_targets` already takes off the loop; mechanically, a `realpath` asked for with no `_run_resolution_bounded` deadline armed on the thread runs in this interpreter -- `_outside_bounded_call` -- and never reaches the child pool, so an unbounded caller can neither hold a child to the pool's ceiling nor queue ahead of the loop) — still fresh on every call and still keying the cache, so a repointed root still invalidates. A wedged mount blocks that thread instead of raising a stall, which is what its own `os.walk` on the mount does anyway; nothing is admitted while it blocks. **For two shapes of caller only**: a bulk walk on a worker thread that already resolves every entry to detect link loops and prove containment (`skills_discovery._iter_skill_files`, one call per directory and per `SKILL.md`), and a reader that has just canonicalised its own path, which asks through `is_sensitive_canonical_path(resolved)` -- the entry point that probes the calling thread itself, answering with this gate off the event loop and with `is_sensitive_path` on it, so a caller earns the off-pool gate by offloading and never by declaring anything (the agent-spec readers `agent_discovery._read_agent_spec` / `read_agent_spec_strict`, which the native skill projection runs under `asyncio.to_thread`; and the dashboard's file-search and listing walks -- `FileIndex._walk`, the `/api/file-search` fallback walk, `_browse_dirs_sync` and `_browse_files_sync` -- each asking about the `realpath` of the entry it just computed on its worker thread, so an index rebuild of up to 100k entries queues nothing ahead of the loop). The artifact store's file helpers enter through `security.canonical_path_refusal(resolved)`, its reason-or-`None` form (the same per-thread gate; on the loop a stall keeps its own wording), with `GET /api/artifacts` running `store.list()` on a worker so the listing takes the off-pool gate. `hooks.safe_read_file(path, canonical_gate=True)` takes the same pair on the `realpath` it computes itself, `canonical_path_refusal` for the name before the open and `is_sensitive_canonical_path` for the opened descriptor's kernel path after it; its caller is the materialized-agent snapshot scan (`config/loader_snapshots._scan_materialized_index`), which reads every spec in both agents directories on a worker, where the bounded gate costs about 8 pool resolutions per spec. `hooks.safe_read_file_bytes_nolink(..., canonical_gate=True)` asks `is_sensitive_canonical_path` about the `realpath` its `validate_file_path` computes and about the opened descriptor's kernel path (the identity check and the within-root checks); its caller is `agent_capabilities._read_spec`, the spec read behind the member start and the Capabilities pane. The member start's two other checks of a path it resolved itself ask `is_sensitive_canonical_path` directly: `agent._spec_path_shape_refusal` on the spec's `Path.resolve()` and `config.loader_pipeline.default_project_dir` on the workspace's `realpath`. Both are shared helpers, so every caller that runs them off the loop gets the inline answer, where a wedged mount blocks that thread instead of refusing within the bound, and a caller on the loop keeps the bounded gate. The member start runs all three off the loop (`session_capabilities.prepare_runtime`, under `asyncio.to_thread`), so a resolver child that misses its deadline cannot refuse a member its own spec: on macOS the pool has no syscall sample, so each miss is charged as a mount stall, and the bounded gate then refuses every path under that prefix for the cooldown. The dashboard's new-chat default, `dashboard/chat_api/slot_create._birth_default_project`, asks `is_sensitive_canonical_path` about the `realpath` of `dashboard.default_project` it computes under `asyncio.to_thread`, so a stall cannot swap a healthy configured project for the workspace default. The favourite-project add, `dashboard/chat_api/project_lists._probe_favorite_candidate`, asks it about the `realpath` it computes under `asyncio.to_thread`, so a stall cannot refuse a healthy directory as sensitive; the favourites and recents display filters pass the stored spelling and keep the bounded gate. The dashboard's project tree and prompt scans ask `is_sensitive_canonical_path` the same way about the path they resolved on a worker, so a stall cannot refuse or hide a healthy path there: the tree's root and `?dir=` checks (`dashboard/file_api/project_tree.api_project_tree` and `_project_tree_subdir`, under `asyncio.to_thread`), and the prompt scans (`dashboard/handlers._prompt_dir_entry` and the edition `*.sop.md` scan in `_build_prompt_base`, which `GET /api/prompts` runs on the discovery pool and the `/prompts` slash command under `asyncio.to_thread`). The reverse-direction check has the same claim: `path_contains_sensitive(dir, pre_resolved=True)` resolves its anchors inline on the caller's worker thread with no resolver hop, takes a `realpath` the caller computed there, and forfeits the bound on the event loop; the project-tree walk (`dashboard/file_api/project_tree.py`) is its claimant. Why it exists: the resolver pool of child interpreters is sized for the event loop (eight children by default, FIFO; `KIROCREW_PATH_RESOLVE_WORKERS` widens it), and a bulk walk issues one candidate resolution it has already performed plus an anchor resolution per entry; routed through the pool, every one would queue ahead of the loop's own latency-critical resolutions without any single wait crossing the 2 s budget, so the stall breaker would never trip. Handing this gate an unresolved spelling is a link bypass, and calling it from the loop forfeits the bound, which is why it is a separate name and not a flag on `is_sensitive_path`; `test_pathres_loop_starvation.py` pins that the walk passes only `realpath` output and that neither half reaches `_run_resolution_bounded`
   - **The anchor cache's expiry tracks what the rebuild COST, not a constant.** The rebuild resolves the anchor set in one batched request to a resolver child (`OP_REALPATH_MANY`), and its duration varies with host load; a fixed expiry sized against an idle host would let a loaded host spend a rising share of the wall clock rebuilding. `_home_targets_ttl` therefore returns `clamp(cost * _HOME_TARGETS_TTL_COST_RATIO, _HOME_TARGETS_TTL_SECS, _HOME_TARGETS_TTL_MAX_SECS)`: the ratio (50) is the reciprocal of the share of the wall clock the gate may spend rebuilding, so that share is held at 2% at every load level rather than only at the one the constant was picked on, and the rebuild's own duration is the load signal — no separate metric is read and nothing is configured per host. At idle the ratio lands exactly on the floor (2 ms x 50 = 0.1 s), so an unloaded host selects the same 0.1 s expiry it selects today. Only that duration is unchanged: because the expiry starts at the clock read taken AFTER the build, an entry's total age is the expiry plus the build that measured it, which for a 2 ms build is the same to within those 2 ms. Both inputs are operator knobs read once at import (`KIROCREW_PATH_GATE_TTL_COST_RATIO`, `KIROCREW_PATH_GATE_TTL_MAX_SECS`), each fail-soft to its reviewed default on an absent, unparseable or out-of-range value; a ratio of 0 pins one fixed 0.1 s expiry at every load level, which is the revert, and the ceiling's DEFAULT is 30 s (`_TTL_MAX_SECS_DEFAULT`) while an operator may raise it only as far as 60 s (`_TTL_MAX_SECS_MAX`, the largest expiry the committed sweep found any serveable load level demanded, 54.4 s, rounded up with a small margin; this ceiling was 300 s before, so a host that had set the knob to a value above 60 s now hits the out-of-range path and falls back to the 30 s default with a warning); the stale window the ceiling bounds is that expiry PLUS the rebuild that measured the entry, since the expiry starts at the clock read taken AFTER the build, so the shipped default's worst case is about 42 s rather than 30 s for a BOUNDED (`mc-pathres`) rebuild, which can run its full 12 s deadline — the 8 s `_PATH_RESOLVE_REBUILD_TIMEOUT_SECS` budget plus its `min(budget*1.5, 4.0)` = 4 s grace; an INLINE rebuild (`_cached_home_dir_targets(inline=True)`, off the loop) runs with no such deadline, so a slow one adds its own unbounded duration to the served age — the ceiling bounds the expiry, not that build's wall time. The ceiling bounds the symlink-free case described next and nothing else: an install that resolved a target through a symlink is pinned to the floor by the flag below, so no env value reaches it. **The trade, and what keeps it off the install where it would bite:** a longer expiry would lengthen the window in which a symlink swapped DEEPER inside the crew home (a keystone leaf, or an intermediate directory on the way to one), or a protected entry under `$HOME` that is itself a link, is still answered from the stale set, the residual this cache always carried. So the build reports whether it traversed one. `_home_dir_targets_uncached` returns a `_BuiltTargets` set carrying `resolution_differed`, read off the resolve memo the build already filled: true when one of the paths the build RESOLVED came back spelled differently, which is exactly the resolution-derived entry a repoint can move out from under a cached set. **Which paths reach that memo is the flag's whole scope, and it is narrower than the target set.** The build resolves six classes of path and no others — `$HOME`, `KIROCREW_OS_HOME`, every entry of the CALLER'S `home_dirs` list anchored under `$HOME`, each such entry that carries a crew prefix re-anchored under `KIROCREW_HOME`, each kiro-cli path in `_KIRO_CLI_WRITE_TIER_LEAVES` (the agents dir, the MCP registry leaf `.kiro/settings/mcp.json`, the permission-rule leaves, the mates agents dir and the mates state files) re-anchored under `KIRO_HOME`, and each harness credential leaf re-anchored under its own home override — `$HOME` plus one entry per `home_dirs` entry on a host with no home override set, and about eighty more with every one set. The copies of the set re-anchored under the logical home, the home's realpath and `KIROCREW_OS_HOME` come from `_anchor` or `_anchor_both_separators`, neither of which touches the filesystem, so those copies cannot report a traversal at all. **A symlinked dotfile under `$HOME` sets the flag whenever it is a protected entry or sits on the path to one, so a dotfile-managed home is a case to look for, and the commonest one.** The trigger is the union the build resolves: a `home_dirs` entry under `$HOME` (a linked `~/.ssh`, `~/.aws` or `~/.kiro` pins every tier whose list carries an entry under it), a crew-prefixed entry of the caller's `home_dirs` under `KIROCREW_HOME`, a kiro-cli path under `KIRO_HOME`, or a declared credential leaf under whichever harness variable relocates it. A symlinked `sessions` or `models` leaf under a `KIROCREW_HOME` below `$HOME` pins the write tier; a symlinked `goose` directory pins the tier handed that leaf whether it sits under `~/.config` or under whatever `XDG_CONFIG_HOME` resolves to, because `.config/goose/secrets.yaml` is a declared leaf resolved under `$HOME` and goose declares that variable. A dotfile that is neither a protected entry nor on the path to one still cannot set it. Nor can the roots: `_resolve_root_anchors` canonicalises each root first, so the symlink has to sit BELOW the resolved root — relocating the exported config root itself does not trip it while a symlinked `goose` directory under it does. The LEAF-BEARING override roots are `KIROCREW_HOME`, `KIRO_HOME` and every variable in `host_auth.home_override_env_vars()`; `_OVERRIDE_ROOT_ENVS` carries one more, `KIROCREW_OS_HOME`, which is resolved as a root but bears no leaf class of its own; that table is the enumeration, and naming the variables or their count here would be a second place to forget the next harness — the documentation defect this section exists to remove. **The crew-prefix class is the caller's list, not a fixed set of leaves, so no one class of leaf describes the resolved population.** The crew-prefix arm loops over the `home_dirs` it was handed and resolves every entry carrying a prefix, and the three callers hand it three different lists: the read gate passes `_SENSITIVE_HOME_DIRS`, `is_sensitive_write_path` passes `_SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS`, and `_is_keystone_publish_artifact` passes `_KEYSTONE_ARTIFACT_PARENTS`. So a symlinked write-protected crew leaf that holds no secret (`models`, `sessions`, `app-sources`) pins the WRITE tier just as a secret leaf pins the read tier, and the three builds can disagree on one host. Two consequences worth stating rather than leaving to be discovered: naming any single class ("credential leaf", or the secret leaf set) is wrong for at least one of the three lists, and because `_home_targets_pin_state` keys on the `home_dirs` list itself while `_report_expiry_pin` runs once per cache entry, a host whose builds disagree settles to one line per tier and both messages name the tier they describe — read a line as the state of the tier it names, not of the whole gate. `_home_targets_ttl` pins the floor whenever that flag is true, so the install where the stale-credential path is reachable keeps its 0.1 s window and does not grow one. Where no target resolved differently there is no such entry, and reaching the case at all would require first creating a symlink at a protected entry or inside the crew home, a write `is_sensitive_write_path` refuses; the adaptive expiry applies in full there, which is the availability this is for. The flag defaults to true in two places (the class attribute, and the cache's own `getattr`), so a test double or a future builder that returns a plain `set` gets the floor rather than the long expiry. The roots cannot trip it: `_resolve_root_anchors` has already canonicalised every root, so a host whose `$HOME` is itself a symlink still earns the adaptive expiry. Neither reproduced bypass is widened either, because both repoint an *anchor* and every anchor is part of the cache KEY, so a repointed `$HOME` or `KIROCREW_HOME` re-keys and misses at any expiry; `test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry` pins that at the cap as well as at the floor. **What it does not fix, stated rather than implied:** an expiry controls how OFTEN the rebuild is paid, never what one costs; a BOUNDED (`mc-pathres`) rebuild's cost is bounded by `_PATH_RESOLVE_REBUILD_TIMEOUT_SECS`, and such a rebuild that misses it refuses, but an INLINE rebuild (`_realpath_inline`, off the loop) runs with no such deadline, so its cost is unbounded (`scripts/measure_path_gate_ttl.py` measures the cost on a host).
   - The chat project pick, `dashboard/chat_api/session_relaunch.api_chat_slot_project`,
     is a reader of the second shape: one `asyncio.to_thread` call computes the
@@ -3134,7 +3172,7 @@ remote-shell environment inputs to the `tar` executable. Every one of those comm
     - **Why the floor exists.** These rules must distinguish a dangerous *invocation* from an incidental *mention*, and raw-text matching cannot: the gap between the product name and the dangerous verb has to tolerate ordinary shell noise (a quoted verb `kirocrew "token"`, global flags, a redirection — bash accepts one anywhere in a simple command, so `kirocrew >/tmp/out token` is a mint), but any character class wide enough for that also spans a filesystem path, and a product-named worktree path (`…/kirocrew-wt-x/test_token_auth.py`) is the false positive the rules must not produce. Quoting cuts the other way too: `pkill -f '[;]*kirocrew'` is a working by-name kill whose quoted `;` textual splitting misreads as a command separator. The floor therefore tokenizes with `normalize_shell_command()` (resolving quoting, empty-string concatenation, `$HOME`/tilde) and matches on **argv**: lifecycle rules recognize both the console script and the documented `python -m kiro_crew` entrypoint, begin after the module operand, and compare the first non-flag CLI words exactly; a Python script, another module, or an ordinary command that merely contains `kiro_crew` remains a mention rather than an invocation. For the mint, a token whose whole *program name* is `kiro[-.]?crew` followed by a later token in the same argv that is exactly `token`; for the kill, `pkill`/`killall` with the name in any argument (unbounded — the target is a pattern, not a path), the Windows by-name programs (`_WINDOWS_KILL_BY_NAME_PROGRAMS`: `taskkill`, `Stop-Process`, `spps`, `wmic`, `.exe` optional) in command position as `argv_rules._win_program_index` reads it (the first word of a statement, past `VAR=value` words, the `argv_rules` wrappers such as `sudo`, `env`, `timeout`, `start` and `call`, and `cmd /c`; or any position when the line pipes printed words into a shell) with the name at the one place each names its target, read by `self_kill_windows.py` (the `taskkill` `/im` operand or an `imagename eq` filter; the `Stop-Process` `-Name` operand, or for a piped `Stop-Process` an operand of the `Get-Process`/`gps` stage that starts the pipeline; a `wmic` `delete`/`terminate` whose `where` clause has an `=` or `like` comparison not under `not`, for `executablepath` and `commandline` on the last path segment only), so the program named in heredoc prose, a message or a comment, and the name in a `ne` or `not` exclusion, a product-named checkout folder, a later stage or command, or a `Write-Host` message are mentions, `-WhatIf` is a dry run, a word glued to `|` or `;` is split first, and the PID forms carry no name and stay allowed, or a bare `kill` whose PID comes from a command-substitution **body** naming it (walked with paren nesting, so `$(pgrep …)`, `$(pidof …)`, a pidfile read and backticks are all covered without allowlisting a resolver binary). The bare-kill bodies are read through TWO windows with complementary blind spots — a token walk (whose depth counter mis-scores a `case` pattern's `)` as a closer, losing a lookup placed after `case … esac`) and a quote-aware raw-text window (which reaches that clause but sees the quotes) — so each raw body is searched raw, with parameter defaults resolved, and per WORD of its `_self_tokens` view (which folds continuations and swallows an untokenizable body instead of raising out of the gate), each word BARE and through `_resolved_word_view` (defaults resolved, empty substitutions collapsed, bracket classes removed — quote removal composes with the remaining transforms, and the bare member keeps a name a pattern-substitution expansion like `${PATH/usr/|'kiro''crew'|zz-}` would destroy); the per-word transform deliberately avoids `_normalize_operand` (the `pkill` leg keeps it only as one additive member and searches each argument through `_resolved_word_view` too, so `'zz|kiro'${x:-crew}` and `'zz|kiro'$()crew` — a pattern bash passes as `zz|kirocrew` — are denied there as well), because an operand view truncates at a de-quoted ERE pattern's own characters (`'zz|kiro'crew`) and would discard the protected alternative. Without the composed per-word leg an adjacent-quote concatenation of the name after `esac` (`kill $(case x in x) :;; esac; pgrep -f 'kiro''crew')`) — or the same splice composed with a `[c]` bracket class, an empty `$()`, or a `${x:-crew}` default — sat in the two windows' intersection and was allowed. Neither a `pkill`/`killall` operand nor a bare kill's lookup target is worked out when the command assembles it, from what a command substitution prints or from a brace expansion in the target word, and a target the floor cannot work out is not refused, because a lookup by a pattern variable is ordinary: a stated residual of this floor (`test_an_assembled_lookup_target_remains_residual`, `test_a_lookup_by_a_pattern_variable_or_another_name_allowed`). A same-line assignment of literal text is resolved, so a name joined from such assignments is refused like the name itself (`test_a_name_joined_from_literal_assignments_is_a_kill`).
     - **Why the regex stays.** A shell's `-c` argument is a *command*, so `bash -c "kirocrew token"` hands the tokenizer one opaque token. The floor closes that class by re-tokenizing literal `sh`/`bash`/`zsh` `-c` payloads and `eval` arguments and checking those argvs too (`_self_token_frames`, depth-capped). A quoted script that opens with an assignment is also walked whole, read from the tokens before the assignment resolver splits it at its inner operator (`_quoted_assignment_scripts`), so `bash -c 'X=<name>; $X <verb>'` resolves inside its own frame (`_self_frames`). The ssh self-target floor reads each such script as a command line of its own (`_reaches_self_over_ssh`), since its separator mask would turn the script's separators into data, and the git-publish source list (`_shell_payload_sources`) does not read them. A payload that is not literal (`eval "$CMD"`) has no visible script, and the tokenizer itself can fail (unbalanced quotes). Keeping both `pattern`s in `regex_patterns` means a tokenizer failure or an unseen payload **fails closed** on raw text rather than open. `test_denied_commands_security_rows.py::TestSelfProtectionFloorIsAdditive` pins this: the patterns must stay in the effective set, each pattern must be a true **subset** of its predicate (so the posture-UI text cannot drift from enforcement), and a simulated tokenizer failure must still deny.
     - **Inline interpreter programs are judged on what they NAME, not on whether they mention us.** `python -c` and the stdin forms (`python - <<'PY'`, `echo … | python -`, `python < file`) run arbitrary Python, so the `token` argv word cannot be the mint gate there (the payload can build the verb). The gate is `_inline_payload_reaches_cli`: the payload is a mint when it names the **mint surface** (`_MINT_SURFACE_RE`) — the CLI dispatch (`kiro_crew.cli`, `kiro_crew.__main__`, the console-script entry `kiro_crew._bootstrap`, `from kiro_crew import cli`), the module implementing the `token` subcommand (`kiro_crew.cli_server`, with its `cli_server_<role>` owners, which hold that command and the stop, restart and update commands that read the local secret and print fresh token URLs), a product module whose path names a token producer (`kiro_crew.dashboard.token_auth`, `kiro_crew.instances.token_mint`, `kiro_crew.dashboard.token_secret`, `kiro_crew.connected_computers.connector_token`, which signs the connector credential), as an import or as a file path — `secret` is not a path word, since `kiro_crew/dashboard/handlers/secrets.py` is an ordinary module a patch script names — a product import statement together with a **credential word**, `token` or `secret`, anywhere in the payload (`_PRODUCT_IMPORT_RE` + `_MINT_VERB_RE`: `from kiro_crew.slack.gateway import generate_token`, `import kiro_crew.slack.gateway as g; g.generate_token()`, and the second credential — `from kiro_crew.config.loader import read_local_secret` reads the internal secret `/api/token/local` accepts through product code, past the sensitive-path floor that fences `.local_secret` itself; every reader of it carries `secret`, as every producer carries `token`, and `test_the_credential_word_covers_every_local_secret_reader_in_the_tree` derives the reader set from every function that names the file), or the bare package name handed to a dynamic module runner (`_DYNAMIC_RUNNER_NAMES`: `runpy.run_module('kiro_crew', run_name='__main__')` is `python -m kiro_crew` spelled as a call, and `importlib.import_module('kiro_crew')` / `__import__('kiro_crew')` reach the same dispatch by attribute; the runner handed any OTHER name, `__import__('os').environ` next to a product import, is generic code), or the installed console script named as a program next to a code loader (`_INLINE_CODE_LOADER_NAMES` + `_CONSOLE_SCRIPT_LITERAL_RE`: `exec(open(shutil.which('kirocrew')).read())`, `exec(open('/venv/bin/kirocrew').read())` or `runpy.run_path(shutil.which('kirocrew'))` runs the entry point's `_bootstrap.main()` in-process against a `sys.argv` the payload chose; the loader on any other file, `exec(open('patch.py').read())`, is a patch-script idiom, and the program name in a `subprocess` argv is the interpreter-argv companion rule's sink). `test_the_mint_surface_covers_every_token_producer_in_the_tree` derives the producer set from the tree (the function that opens `token_signing.key`, then two import hops) and asserts each is a reach. Before matching, `_fold_inline_literals` joins `'a' + 'b'` literal runs and `_decoded_b64_literals` decodes every base64-shaped literal of the folded command **as submitted** (`is_denied` hands the mint predicate `raw_text=` for this: base64 does not survive the lower-casing the rest of the floor reads), so `__import__('kiro_crew.c'+'li')` and `os.system(b64decode('a2lyb2NyZXcgdG9rZW4='))` (`kirocrew token`) are read as what they hide. A payload that merely mentions the package (a `Path(...)` under `src/kiro_crew/` in a patch script), imports an unrelated product module (`from kiro_crew.acp import x`), or uses `getattr`/`eval`/`importlib` with no product name in reach is **not** a mint. The earlier reading — any `kiro_crew` mention, or any dynamic-exec primitive at all, denied the whole inline program as opaque — produced 143 of the audit log's 179 bash-gate denials over eight days with zero mints among them; the un-disableable guarantee for the credential was always the sensitive-path floor over the signing key, which this heuristic sits in front of. Pinned by `test_argv_floor_inline_and_brace_scope.py::TestInlinePayloadNamesTheMintSurface`.
-    - **A glob in a token is what bash would make of it, and only in a position bash would run it.** `_glob_to_regex` mirrors brace expansion exactly: `{a,b}` is one word per alternative, `{c..c}` / `{a..z}` a sequence, and a brace group with no top-level comma and no `..` (`{state}`, `{print $1}`, `{directory}`) is **left literal**, braces included — it used to read as `.*`, so every quoted jq filter or awk program was a word that "could expand to `pkill`", and a product-named path later in the same argv denied the command. Nesting is capped at `_BRACE_NESTING_CAP` (past it a group reads as `.*`, the fail-closed direction), and brace pairs are resolved once per word in one linear pass (`_brace_pairs`), so a word of thousands of unbalanced braces is judged in linear time rather than the quadratic per-brace scan that stalled the synchronous gate long enough for the loop watchdog to hard-exit the gateway. The regex the translation produces is bounded too: a word spends at most `_BRACE_GROUP_BUDGET` alternation groups (past it a group is `.*`), identical alternatives (`{*,*}`) collapse to one branch before the budget is charged, and consecutive `.*` pieces collapse to one — so `{*,*}{*,*}…` or `{*,**}{*,**}…` fifteen deep, which as a naive regex has 2^15 ways to fail a five-letter name and takes seconds per protected name, answers in milliseconds. Only glob and brace syntax is read; a **command substitution** (`$(...)`, a backtick) is literal text to this reader: what it prints is outside a static floor -- exactly as at program position, where `$(printf pk)ill -f <name>` is the documented residual -- and its BODY is judged on its own by the payload walk, which descends into every substitution wherever it sits (`tar czf x_$(pkill -f kirocrew).tgz` is denied for the body). Reading the substitution as `.*` instead made every host-stamped filename (`logs_$(hostname)_*.tar.gz` under `tar`, `zip`, `gh`, `install`, `Copy-Item`) and every brace group with a substituted alternative (`mv {$(date +%F),current}.log <dir>`, `rsync -a {$(date +%F),default}.conf <dir>`) a word that "could be `pkill`" whenever a product-named path followed -- three rounds of scope-review regressions, no kill among them. Parameter expansion (`${X}`, `$X`) stays literal, as it already is at program position (`$X -f <name>` is a residual outside this floor): reading it as anything turned every awk field list (`{print $6,$7}`) and every prose heredoc naming `${name}` into a possible verb. Two argv facts complete it: a filesystem inspector (`ls`, `stat`, `file`, `du`, `readlink`, `realpath`, `dirname`, `basename`) and a filesystem mover (`cp`, `mv`, `ln`, `rm`, `mkdir`, `rmdir`, `touch`, `chmod`, `chown`; `tar` deliberately not, its `-I` runs a program) are `_DATA_CONSUMER_PROGRAMS` entries, so a glob among their arguments (`ls -d dir/*`, `cp $dir/*`) is a filename, not a program; and `_data_consumer_exempt` keeps that exemption for an argument glued to a TRAILING operator (`cp $dir/*;`), because the operator starts no program inside the token, while it still refuses one with a program after the operator (`echo x;kirocrew`) and one that OPENS with a command substitution (`ls $(kirocrew update)`, `cat `kirocrew token``: the word's basename reading is the body's program, which runs). A substitution LATER in the word (`cp report_$(hostname)_*.log <dir>`) or inside a brace group (`mv {$(date +%F),current}.log <dir>`) keeps the exemption: the word is a filename around a body, and the body is judged on its own by the payload walk (`echo foo_$(pkill -f kirocrew)` and `ls {$(pkill -f kirocrew),y}` are denied for the body). The exemption is gated on the program being a data consumer on purpose: the tokens it reads have had their quotes removed, so a trailing operator at PROGRAM position (`'/tmp/kirocrew;' token`, a symlink literally named with the semicolon) is never read as an argv boundary — the verb after it is still scanned and the mint denied; `x;pkill -f kirocrew` still runs `pkill` and is still denied. 13 denials in the same eight days came from the old reading, 8 of them on commands containing no `kill` at all. The exemption is withdrawn for a whole command when any word can make a consumer run text (`_SCRIPT_EXECUTES_RE`: awk's `system()` and pipe-to-command, sed's `e` command as a script word such as `e`, `p;e`, `--expression=e`, or a custom-delimiter address `\-.-e` whose terminal `e` runs); the bare `-e`/`-E` option is not that word, since its `-` sits at the token start and no consumer runs it. Reading it as one withdrew the exemption for every `grep -E`, `sed -E`, `echo -e` and `cat -E`, so `grep -c -E <pat> "$C"/transcripts/* "$C"/gateway/*` over a product-named `$C` was a self-kill. A wildcard word in a position that runs it (`* -f <name>`, `sudo * -f <name>`) is still read as a possible `pkill`. Pinned by `TestBraceExpansionMirrorsBash`, `TestAGlobArgumentIsNotAKillProgram` and `TestAnOptionDashEIsNotSedsExecuteCommand` in the same file.
+    - **A glob in a token is what bash would make of it, and only in a position bash would run it.** `_glob_to_regex` mirrors brace expansion exactly: `{a,b}` is one word per alternative, `{c..c}` / `{a..z}` a sequence, and a brace group with no top-level comma and no `..` (`{state}`, `{print $1}`, `{directory}`) is **left literal**, braces included — it used to read as `.*`, so every quoted jq filter or awk program was a word that "could expand to `pkill`", and a product-named path later in the same argv denied the command. Nesting is capped at `_BRACE_NESTING_CAP` (past it a group reads as `.*`, the fail-closed direction), and brace pairs are resolved once per word in one linear pass (`_brace_pairs`), so a word of thousands of unbalanced braces is judged in linear time rather than the quadratic per-brace scan that stalled the synchronous gate long enough for the loop watchdog to hard-exit the gateway. The regex the translation produces is bounded too: a word spends at most `_BRACE_GROUP_BUDGET` alternation groups (past it a group is `.*`), identical alternatives (`{*,*}`) collapse to one branch before the budget is charged, and consecutive `.*` pieces collapse to one — so `{*,*}{*,*}…` or `{*,**}{*,**}…` fifteen deep, which as a naive regex has 2^15 ways to fail a five-letter name and takes seconds per protected name, answers in milliseconds. Only glob and brace syntax is read; a **command substitution** (`$(...)`, a backtick) is literal text to this reader: what it prints is outside a static floor -- exactly as at program position, where `$(printf pk)ill -f <name>` is the documented residual -- and its BODY is judged on its own by the payload walk, which descends into every substitution wherever it sits (`tar czf x_$(pkill -f kirocrew).tgz` is denied for the body). Reading the substitution as `.*` instead made every host-stamped filename (`logs_$(hostname)_*.tar.gz` under `tar`, `zip`, `gh`, `install`, `Copy-Item`) and every brace group with a substituted alternative (`mv {$(date +%F),current}.log <dir>`, `rsync -a {$(date +%F),default}.conf <dir>`) a word that "could be `pkill`" whenever a product-named path followed -- three rounds of scope-review regressions, no kill among them. Parameter expansion (`${X}`, `$X`) stays literal, as it already is at program position (`$X -f <name>` is a residual outside this floor): reading it as anything turned every awk field list (`{print $6,$7}`) and every prose heredoc naming `${name}` into a possible verb. Two argv facts complete it: a filesystem inspector (`ls`, `stat`, `file`, `du`, `readlink`, `realpath`, `dirname`, `basename`) and a filesystem mover (`cp`, `mv`, `ln`, `rm`, `mkdir`, `rmdir`, `touch`, `chmod`, `chown`; `tar` deliberately not, its `-I` runs a program) are `_DATA_CONSUMER_PROGRAMS` entries, so a glob among their arguments (`ls -d dir/*`, `cp $dir/*`) is a filename, not a program; and `_data_consumer_exempt` keeps that exemption for an argument glued to a TRAILING operator (`cp $dir/*;`), because the operator starts no program inside the token, while it still refuses one with a program after the operator (`echo x;kirocrew`) and one that OPENS with a command substitution (`ls $(kirocrew update)`, `cat `kirocrew token``: the word's basename reading is the body's program, which runs). A substitution LATER in the word (`cp report_$(hostname)_*.log <dir>`) or inside a brace group (`mv {$(date +%F),current}.log <dir>`) keeps the exemption: the word is a filename around a body, and the body is judged on its own by the payload walk (`echo foo_$(pkill -f kirocrew)` and `ls {$(pkill -f kirocrew),y}` are denied for the body). The exemption is gated on the program being a data consumer on purpose: the tokens it reads have had their quotes removed, so a trailing operator at PROGRAM position (`'/tmp/kirocrew;' token`, a symlink literally named with the semicolon) is never read as an argv boundary — the verb after it is still scanned and the mint denied; `x;pkill -f kirocrew` still runs `pkill` and is still denied. 13 denials in the same eight days came from the old reading, 8 of them on commands containing no `kill` at all. The exemption is withdrawn for a whole command when any word can make a consumer run text (`_SCRIPT_EXECUTES_RE`: awk's `system()` and pipe-to-command, sed's `e` command as a script word such as `e`, `p;e`, `--expression=e`, or a custom-delimiter address `\-.-e` whose terminal `e` runs); the bare `-e`/`-E` option is not that word, since its `-` sits at the token start and no consumer runs it. Reading it as one withdrew the exemption for every `grep -E`, `sed -E`, `echo -e` and `cat -E`, so `grep -c -E <pat> "$C"/transcripts/* "$C"/gateway/*` over a product-named `$C` was a self-kill. A `for NAME in` list word ending in `/` (`for w in /opt/x/*/; do ln -s … "$w/z"; done`) expands only to directories, which nothing can execute, so neither the kill scan nor the mint scan reads it as a program (`_for_list_directory_globs`); the basename reader drops that slash, so the word used to read as a bare `*` and the loop body's product-named path or `token` word as its argument (`test_directory_only_glob_is_not_a_kill_verb`, `test_directory_only_glob_is_not_the_cli`). The exemption is narrow on purpose, because a loop value can be turned back into a program: it holds only when the frame is exactly one plain `for NAME in WORDS; do CMD; …; done` loop and that frame is the ROOT frame, the command as typed (a loop in a nested `bash -c` payload is never exempt, since an outer frame could export a function named `ln`), no word carries an operator before its end (`echo for w in x;p*ll/` is not a loop), every CMD's program is in `_DIR_LOOP_BODY_PROGRAMS` (file movers and `echo`; `printf -v`, `eval` and shells are out), and the command text has no pipe, no output redirect (printed loop text piped through `sed` into a shell is a program), and no operator expansion or substitution (`${w%/}`, `${!x}`, `$(dirname $w/z)`). Outside a `for` list a trailing slash proves nothing (bash runs a function named `p*ll/`), so `'p*ll/' -f <name>` and a redirect-glued `/usr/bin/p*ll/>/tmp/` stay refused (`test_directory_glob_whose_value_can_run_still_denied`). A wildcard word in a position that runs it (`* -f <name>`, `sudo * -f <name>`) is still read as a possible `pkill`. Pinned by `TestBraceExpansionMirrorsBash`, `TestAGlobArgumentIsNotAKillProgram` and `TestAnOptionDashEIsNotSedsExecuteCommand` in the same file.
     - **Platform note.** `normalize_shell_command()` expands `$HOME` via `re.sub` with a **callable** replacement, not a string. A str replacement is parsed as a template, and on Windows the home path (`C:\Users\…`) contains `\U` — an invalid escape — so a string replacement raised `re.error` for *every* input on that platform, silently emptying the token list and disabling both this floor and the git-publish normalizer second-pass.
   - **Interpreter argv literal (`credential-exfil-kirocrew-token-argv`):** a separate, narrow rule for the one shape neither half above can reach — an interpreter payload that spawns the CLI through a **library call** rather than as a shell word (`python -c "subprocess.run(['kirocrew','token'])"`, `node -e 'execFileSync("kirocrew",["token"])'`, `perl -e 'system("kirocrew","token")'`). The floor cannot help: the payload is one opaque token to the shell tokenizer and its contents are Python/JS, not shell. Scoped to the two words as **adjacent quoted arguments**, with a separator class admitting only what appears *between* argv elements (quote, comma, whitespace, opening bracket/paren) and deliberately excluding `.`, `*`, `/` and `>` — that exclusion is what keeps a regex **literal** quoting this very rule (`re.search(r'.*kirocrew.*token', cmd)`) and prose naming both words from matching, both recorded false positives. It carries a second alternative for the **single-string** spelling (`os.system("kirocrew token")`), which is **sink-qualified**: the two words inside one quoted string match only when that string is the argument of a call that EXECUTES it (`os.system`, `os.popen`, `subprocess.run`, `shell_exec`, `execSync`, `system`, `popen`, …). The sink prefix is what makes this safe — it is precisely what a regex literal, a commit message and `console.log(...)` lack, so those stay allowed while the executing form does not. A sibling rule `self-protection-kill-interpreter` does the same for a kill command (`os.system("pkill -f kirocrew")`). **Residual gap:** an interpreter that ASSEMBLES the name at runtime (string concatenation, a base64 blob, an HTTP call to the gateway) never contains it for any pattern to find. The un-disableable guarantee for this credential remains the sensitive-path floor over `token_signing.key`, which these rules do not replace. The sink set includes the asyncio spawners (`asyncio.create_subprocess_shell` / `_exec`, with the module prefix optional since the bare name is importable), which execute their argument the same way. The subprocess-style call names (`run`, `call`, `check_output`, `popen`, …) stand bare, with no `\w+\.` in front: a search finds `subprocess.run(` from `run(` anyway, and an optional prefix there rescans one long word (a hex blob, say) from every start. `test_interpreter_rules_stay_linear_on_one_plain_long_word` pins both rows linear on such a word. Both rows also read a copy of the command in which each use of a name bound to a quoted literal (`n = "kirocrew"; run([n, v])`) is replaced by that literal. It is built only when the collapsed command (after the concatenation and `%` collapse) holds `crew`, which every alternative of both rows spells (`deny_gate._INTERP_ROW_NEEDS`), so a command without it keeps its answer (#34875). Pinned by `TestInterpreterViewIsBuiltOnlyWhenItCanMatch` (`test_denied_commands_security_cost.py`).
   - **Pass 1 (whole-string glob):** every deny glob is matched against the full input. If a pattern matches and no exception pattern also matches the full input, the command is denied immediately. This closes evasion vectors where the deny string spans a shell separator boundary.
@@ -3437,7 +3475,14 @@ splice words across the newline segment boundary, so `origin ma\` + newline +
 sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
-visible to the superset scan. The invariant
+visible to the superset scan. A newline inside quotes ends a segment too, so a push
+written after a multi-line quoted argument on the same line (`git commit -m
+"a<newline><newline>b" && git push origin feature`) is refused on the ungated
+sentinel: its segment `b" && git push origin feature` reads the closing quote as an
+opening one, so no `git` word stands outside the quote and the push does not parse.
+That is a stated residual (see [Stated residuals of the command-text
+checks](#stated-residuals-of-the-command-text-checks)): a `-m` value kept on one
+line, `-F <file>`, or the push on its own line passes. The invariant
 has two different strengths, stated honestly: the OPTION-ARITY axis fails
 protective by construction (an unrecognised option lands in the fallback), while
 the SHELL-SYNTAX axis rests on the metacharacter inventory being complete — a
@@ -3881,6 +3926,55 @@ only an unmatched command (`kas_grant_only_settings.without_shell_grant_keys`, t
 reading `kas_agents._allowed_commands_withheld` gives them). The KAS deny rules the translation carries
 are unchanged.
 
+A `deniedCommands` entry with alternation travels as one KAS deny per branch
+(`kas_deny_alternatives.deny_alternatives`), the globs kiro-cli's own upgrade of a
+legacy agent file writes: `(touch|mkdir) .*` becomes `touch *, mkdir *` and
+`rm .*|shred .*` becomes `rm *, shred *`. A `|` outside every group and class
+splits the entry into its branches (an empty branch is dropped: it matches only an
+empty command line); inside a branch, a `( )` or `(?: )` group holding no group or
+class, with no repeat after it, splits into one regex per combination, up to
+`kas_deny_alternatives.MAX_ALTERNATIVES` in all. A group whose whole body is one
+such group, `((rm|shred)) .*`, splits as the inner one. Each branch keeps its text
+as written, a space at either end included, as kiro-cli keeps it: `rm .* | shred .*`
+travels as `rm * ` and ` shred *`, and `(sudo|) rm .*` as `sudo rm *` and ` rm *`,
+so neither refuses `rm x`, as the entry's own regex does not. A class anywhere, a
+group holding anything beside one inner group, a repeated or flagged group, or
+unbalanced parentheses keep the entry (or that branch) whole, handled below as
+before; the branches that do have a glob still travel. A split entry is carried only when every branch has a glob and reaches
+the policy (`kas_permissions.shell_deny_carried`); then the notice does not name
+it, and a Bot worker's `spec-unjudged-denies` row does not hold for a group split.
+It still holds for a top-level split (`kas_spec_denies.denied_command_items`,
+`top_level_split_carries=False`): the branch globs are narrower than the entry's
+own regex, which anchors only its outer ends (`^a|b$`), so the worker's hold on
+every command that is not read-only stays, stricter than kiro-cli. A split entry never counts as carried for lifting
+`denyByDefault` under an `allowedTools` shell grant or for recording
+`autoAllowReadonly` (`shell_denies_carried(..., splits=False)`): kiro-cli keeps the
+allowlist as its own engine rule (`deny shell ["*"] exclude [<allowedCommands>]`)
+beside the split deny, so a command outside `allowedCommands` stays refused at the
+gate. Crew's gate still cannot read alternation (`allowed_commands.parse_deny`), so
+no grant beside it is lifted.
+
+With the `kas_subagents` feature preview on, three entries travel as kiro-cli
+3.5.0 wrote them into the agent files it upgraded, which is not what their regex
+names (`kas_deny_cli_forms.CLI_WRITTEN_GLOBS`): `rm \| .*` as `*`, so every shell
+command is refused (kiro-cli 3.5.0's engine then leaves the shell tool out of the
+agent's tool list, which the notice says as "may have no shell tool");
+`rm [|] .*` as `rm * *`; and `rm .*|shred +x` as `rm *` and
+`shred *x`. Only an entry whose text is one of the three is sent this way, since
+kiro-cli's conversion is not published and no other entry is guessed at. Off or
+never set, the first travels as `rm | *` and the other two as before (`rm [|] .*`
+with no rule, `rm .*|shred +x` as `rm *` alone). The key stays named as not
+carried, and the session-start notice says what each entry refuses in place of
+"no effect" (`kas_deny_cli_forms.split_sent_as_cli`, read by
+`spec_hooks.spec_keys_notice`). Every gate reading above still takes its answer
+from the entry's own split and glob, so each of the three counts as not carried
+and the gate refuses nothing less: for `rm \| .*`, which counted as carried
+while it travelled as `rm | *`, a `denyByDefault` allowlist is now kept, no
+`autoAllowReadonly` is recorded and a Bot worker's shell is held. The preview is
+read by the translation itself, each time a spec is translated, and only for a
+spec that holds one of the three; a config that cannot be read keeps the
+translation of the preview off.
+
 A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect
 character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
 is refused by the same row with no grant beside it
@@ -3939,12 +4033,39 @@ recorded when the spec's `allowedTools` names the shell by name
 `@builtin/` only `execute_bash`, `execute_cmd` and `shell`; an entry holding
 `*` or `?` grants nothing) AND every
 `deniedCommands` entry rides the projected policy as a KAS shell `deny` rule
-(`kas_permissions.shell_denies_carried`): kiro-cli's
+(`kas_permissions.shell_denies_carried`), each as one glob (a split alternation
+keeps the allowlist, see above): kiro-cli's
 `eval_perm` allows every command of such an agent that `deniedCommands` does not
 deny, before it reads `denyByDefault`. Its commands take the gate's usual path
 and prompt or are answered there. A deny with no glob spelling, a redirect, a
 malformed value, or one a merge dropped keeps the allowlist, since lifting it
 would let the command that deny names run.
+
+That lift follows the `kas_subagents` feature preview
+(`dashboard.feature_previews.kas_subagents`), the preview the engine's sub-agents
+follow, through its one reader (`kas_engine_subagents.kas_subagents_preview_on`,
+asked by `kas_shell_grant_lift.shell_grant_lifts_deny_by_default`, which only
+`kas_agents` imports):
+
+| The preview | A `denyByDefault` spec whose `allowedTools` names the shell |
+|---|---|
+| on (a stored `true`) | The allowlist is recorded as for an agent that does not list the shell, whatever its `deniedCommands` entries are (none, one glob each, a split alternation, one KAS receives no rule for), and so is the read-only pass. kiro-cli's agent engine keeps `denyByDefault` for such an agent: its upgrade of the file writes `deny shell ["*"] exclude [<allowedCommands>]` beside `allow shell`, and the deny wins. A person who wants the other commands to run adds them to `allowedCommands` or removes `denyByDefault`. |
+| off or never set, an LTS build, a config that cannot be read | The lift above: no allowlist while every `deniedCommands` entry travels as one glob. |
+
+`kas_shell_grant_lift.kas_shell_allowlist` is the one reading. The projection
+(`kas_agents.to_client_custom_agent`) and the session-start notice
+(`kas_agents.spec_keys_without_carrier`) call it; the session handle's stamp, a
+mode switch, the engine sub-agent target check
+(`kas_subagent_targets._gate_only_limits`) and the remote-workspace check
+(`runtime_remote_workspace._carries_spec_allowlist`) read the record the
+projection wrote, so each gives the answer of the value the projection read. The
+preview is read when the agent is projected, which is at session start, and only
+for a spec the grant would lift: a session already open keeps its record, the
+gate reads that record on every call and never the preview, and a changed value
+reaches a session at its next projection. A config that cannot be read is handed
+to the reader as none, which it reads as off. A spec without `denyByDefault`, or
+one that does not list the shell, is projected the same on every value. On claude
+the preview is not read (§ claude spec allowlists).
 
 **KAS spec write allowlist (`fallbackAction: "deny"`)** — a spec that sets
 `toolsSettings.fs_write.fallbackAction` (or `write`) to `"deny"` (any case, or a
@@ -4029,13 +4150,505 @@ It refuses the session for its own entry only; a sub-agent registered beside it
 (`acp/kas_subagent_targets.py`) that carries either is left out of the batch and
 named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
 
+**KAS native sub-agent ceiling** — a sub-agent the KAS engine runs
+(`invoke_sub_agent`) gets its parent's ceiling or a tighter one, never a wider one,
+and every gap fails closed:
+
+- *Which agents.* Every batch entry, whether or not it selects `invoke_sub_agent`
+  (a per-agent `subagent_<id>` tool reaches the same name check), carries a `subagent` deny
+  naming `agent_files.OWNED_KIRO_AGENT_NAMES` (the stems of `OWNED_KIRO_AGENT_FILES`),
+  with or without an `availableAgents` list (`kas_subagent_targets.deny_own_agents`,
+  applied by `acp/kas_native_batch.py`). A deny only narrows. Each entry that gains
+  it records one `kas_subagent_own_agents_denied` security event (source
+  `kas_agent_projection`) naming the entry (`kas_subagent_targets.audit_subagent_policy`).
+  An entry whose `excludedTools` withhold the sub-agent tool carries an
+  unconditional `subagent` deny (`kas_subagent_targets.deny_every_subagent`)
+  whether the `kas_subagents` feature preview is on or off
+  (`kas_subagent_targets.deny_excluded_subagent_tool`,
+  recorded as `kas_subagent_tool_excluded`), so the engine's per-agent
+  `subagent_<id>` tools, which that exclusion does not reach, start nothing
+  either, Kiro Crew's own agents included. With the preview on, one entry gets no
+  such deny and is read as kiro-cli reads it: the session's own agent, in a
+  person's dashboard chat the preview reaches, when it is a person's own file in
+  one of the two shapes run on kiro-cli
+  (`kas_excluded_tool_cli.hold_excluded_as_cli`; recorded as
+  `kas_subagent_exclusion_read_as_cli`). The deny on Kiro Crew's own agents stays
+  on it, and so does any `subagent` deny its file writes.
+- *The person's own agents under the default agent's mount.* The mount's deny
+  (`kas_engine_subagents._mounted`: every name but the helper) also spares each of
+  the person's user-level and project agents the target projection registers
+  (`project_subagent_targets(every_agent=True)`, the first `MAX_SUBAGENT_TARGETS`
+  in name order, Kiro Crew's own names taking no place). Every refusal of
+  `_project_target` holds for them: one of Kiro Crew's own agents, a reserved id,
+  an agent whose shell or write limits only the gate applies, one with its own
+  `preToolUse` hooks. One more holds for them alone: an agent whose file sets
+  the shell's `denyByDefault` is left out whatever else it grants
+  (`_denies_by_default`). The projection records no allowlist where the file's
+  own `allowedTools` names the shell, and a sub-agent's own grant answers
+  nothing, so that allowlist would bind no one. And the finished entry is read
+  whole (`_left_to_the_gate`), because the gate hands a sub-agent's request its
+  parent's limits and none of its own: each key that never reaches the engine
+  (`kas_permissions.CREW_ONLY_ENTRY_KEYS`) either holds a sub-agent to nothing
+  (`_BINDS_NO_CHILD`: the grants the gate answers the session agent's own request
+  by, and the `mcp.json` stamp) or leaves the agent out, and the deny record is
+  read field by field (`_record_refuses`). So a `web_fetch.blocked` URL that only
+  the gate refuses leaves the agent out, as a denied command beside a grant does;
+  an entry the engine holds as a host deny does not. A key or a record field
+  nobody has judged, and a record that cannot be read, leave it out too. So does
+  a shell `deniedCommands` entry of the file that no engine rule carries whole,
+  record or not (`_spec_denies_uncarried`, read as the Bot worker's hold reads it,
+  `kas_spec_denies.denied_command_items` with `top_level_split_carries=False`):
+  `touch|mkdir` reaches the engine only as the globs `touch` and `mkdir`, the gate
+  cannot read a top-level alternation, and admitted, the agent's `touch scratch`
+  would run on its parent's shell grant.
+  `test_kas_engine_child_gate_only.py` pins the judged keys to
+  `CREW_ONLY_ENTRY_KEYS` and the judged fields to what the projection writes and
+  to what `spec_denied_grant.denies_only` keeps for a sub-agent. A custom
+  parent's listed agent is read as before (`_gate_only_limits`). One field of
+  the record is read narrower: a granted tool beside `deniedCommands` keeps the
+  agent out only when an entry reached its `permissions` as no engine deny rule
+  (`_engine_holds_denied_commands`, `kas_permissions.shell_denies_carried`).
+  Where every entry is a rule the engine refuses what they name for a sub-agent
+  too, and the grant the deny record lifts answers nothing for one, so no limit
+  is left to the gate alone (`test_kas_engine_child_kinds.py`). A refused agent, the engine's bundled agents
+  (`general-task-execution`, whose tools are `*`, and `semantic_reviewer`) and
+  every name not registered stay under the `*` deny. A registered entry is held
+  five ways: it carries every `deny` and `ask` rule of the default agent's entry
+  (`_with_parent_restrictions`, as the helper does); every Kiro Crew server is
+  excluded whole (`@server` in `excludedTools`, `for_default_mount`), since each
+  runs under the parent session's identity, and one it declares is dropped
+  rather than launched; it asks for every MCP call (`_asking_for_mcp`), because
+  the parent's `mcp` allow names a server and would otherwise answer for the
+  entry's own server of that name, whatever that one launches, and that ask
+  spares only the servers the entry declares byte for byte as the parent's does
+  and of which the parent's `excludedTools` name nothing
+  (`kas_engine_child_grants.asking_outside`, `shared_servers_of`: an equal
+  declaration is the same program, and the engine hands it the parent's
+  process). Before that reading, a server the entry's file sets up as the
+  parent's file does is declared as the parent's entry declares it
+  (`holding_parents_servers`), so both launch one thing. The rebuild rewrites
+  the default agent's declaration and no other agent's (a bare `command`
+  becomes the path it resolved to, beside the `x-kirocrew-derived` record of
+  both values), so `set_up_alike` compares like with like and takes either
+  match: the entry's declaration against the parent's as stored, the record
+  aside, or against the parent's as its file was written
+  (`mcp_provenance.source_view`, which restores the command only while the
+  stored one is the value the record says was emitted). A record in the
+  entry's own file is never read, the name alone never matches, and a
+  declaration the projection moved behind Kiro Crew's launcher (one with its
+  own `env` values or `headers`) names its agent, so it matches no other
+  agent's and stays asked. The same comparison decides whether a pooled server
+  the entry declares refuses it (`kas_subagent_targets._pooled_elsewhere`;
+  `test_kas_engine_child_shared_launch.py`). It withholds what the session's
+  PreToolUse hooks cover; and its
+  requests reach the gate with the parent's limits. They carry the parent's
+  grants too, as kiro-cli gives a sub-agent its parent's, only when the engine
+  names the entry on the request as a direct child of the session's agent
+  (`_stamp_own_agent_grants`, `kas_engine_child_grants.named_own_agent`: a string
+  name the mount's deny spares, with an entry in the registered batch, at the
+  integer depth 1, in a session whose registration mounted the helper), and
+  less two things (`narrow`): every grant on an MCP tool of a server it does not
+  share or that an `ask` rule of the entry's own covers (a `match` naming that
+  server, or an unscoped one that does not spare the server whole; an `ask` whose
+  servers cannot be read exactly covers them all: `_asked_servers`, for the
+  gate-answered writes and the hook-held refs alike), and every grant on a
+  built-in whose capability an `ask` rule of the entry's own names, so its own
+  "ask me" is never answered by its parent's grant (its own denies the engine
+  refuses before it asks). A sub-agent another
+  sub-agent started (the engine reports a depth above 1; the helper counts
+  there too) is given the same grants under every rule above it. The engine
+  applies each sub-agent's rules to the calls of those it starts (a deny of the
+  one in between refuses the call, an ask of it raises the request), so an
+  `ask` rule of an agent between it and the session's agent holds the grant
+  back, and no grant on an MCP tool is kept below the first level. Which
+  agents are between is the engine's word on each start, never a guess: a
+  start's `tool_call` frame (`kind: agent-subtask`) carries the id of the
+  sub-agent it starts, and the permission request for that same tool call
+  names the sub-agent that asked and the name it asked to start
+  (`kas_engine_child_grants.note_start_frame`, `note_start_request`, kept per
+  session handle under ids the engine minted). What is kept is bounded as the
+  handle's roster of native sub-agents is, by the roster's own numbers
+  (`_bounds`): at most `NATIVE_CHILD_ROSTER_CAP` of each, the oldest going
+  first; a sub-agent id no longer than the roster admits
+  (`MAX_ACP_SESSION_ID_LEN`); a tool call id and an agent name no longer than
+  the roster stores one at (`NATIVE_CHILD_LABEL_CAP`); a depth no greater than
+  the roster's count. A start with any field past its bound, and a start of a
+  sub-agent the roster refuses (its own session's id, no room left this turn),
+  is not kept; nothing is cut to fit, since a cut id or name could read as
+  another one. Each start that is not kept, and each one that leaves to make
+  room, is counted on the handle (`_Starts.dropped`), and the first is logged.
+  The chain
+  is followed link by link (`started_by`): each start must name the agent it
+  started by the name the request carries, and its asker must run exactly one
+  level above. A link that is missing or does not fit (a start nobody was
+  asked about, a frame not seen, a start that was not kept or has left to
+  make room, two different words for one id) leaves the
+  request alone saying nothing of who started it, and then an `ask` rule of
+  any registered agent holds the grant back; a chain that names an agent the
+  mount does not spare gets no grant at all
+  (`named_own_agent`'s third value, `test_kas_engine_child_chain.py`,
+  `test_kas_engine_child_nesting.py`). A
+  request that names no one (0.66.117) and a name the batch does not hold keep
+  the limits alone and are asked
+  (`test_kas_engine_child_grants.py`, on requests a real engine sent). Its own
+  `allow` rules add nothing: the engine answers a child with its parent's
+  decision unless the child's own is a deny or an explicit ask. Its own `deny`
+  rules bind it. The mount records one `kas_engine_subagent_children` security
+  event naming them. The agents left out are logged, not put in the session-start
+  notice. An entry the person's folder projects under the helper's id never joins
+  the batch (`kas_engine_subagents._held_children`).
+  The mount's deny is the last rule of the default agent's entry
+  (`kas_engine_subagent_target.mount_deny_last`, applied by `native_batch` after
+  the denies that name agents): the engine quotes the first deny that matches a
+  refused call and prints only its `match`, so naming one of Kiro Crew's own
+  agents reads `deny subagent matching "kirocrew, …"` instead of `matching "*"`.
+  The order decides the text only; the most restrictive matching rule decides the
+  call. An own agent the mount found and left out is denied by name too, before
+  the mount's deny (`kas_native_batch.name_left_out`, from the names the
+  projection refused), so its refusal names it; a name no agent carries is still
+  refused as `matching "*"`, since the engine checks its rules before it looks
+  the name up.
+- *Gate-only limits.* A native child's request shares the session's id and is told
+  apart by the id its `agentSubtaskId` frame recorded, or by the sub-agent the
+  engine names on the request itself (`_meta.kiro.requester.subagent`): a
+  sub-agent starting another raises a request whose own `tool_call` frame reads
+  as its parent's, so the recorded ids miss it. `_build_permission_event`
+  stamps the session agent's LIMITS on it, as on the session's own requests: the
+  shell and write allowlists, the read-only flag beside the shell allowlist, a Bot
+  worker's unjudged denies, and the deny record with its grants emptied
+  (`_denies_only`). The `spec_granted_*` and `spec_hook_held`
+  grants stay off, so the `spec-shell-allowlist`, `spec-write-allowlist`,
+  `spec-denies` and unjudged-denies rows refuse the child as they refuse the parent,
+  and no grant row answers for it. One child is judged as its parent: when the
+  registration that built the session's batch mounted the shipped helper for the
+  agent the session runs now (host memory `kas_shipped_helper_parent`, written by
+  `KasHarness.record_session_projection` from the mount itself,
+  `kas_engine_subagents.with_engine_subagents`; never read from an agent entry or
+  file), and that batch holds `kirocrew-helper` while the agent carries the mount's
+  `subagent` deny on every other name
+  (`kas_engine_subagent_target.helper_is_the_only_child`), a native child can only
+  be that helper, whose entry is built from its parent's, so a request that names
+  a tool call also carries the parent's grants (`_stamp_parent_grants`) and the
+  gate answers it by the rule text it answers the parent's by
+  (`test_kas_engine_child_scope.py` runs each call as both and compares every
+  stamped field and the verdict). A child that runs another agent's spec, a
+  person's own agent named `kirocrew-helper`, a registration that mounted none
+  (an agent switch, a re-projection, the preview off, the name already taken), and a
+  request naming no tool call keep the limits alone. When the mount also spares
+  the person's own agents the helper is one child of several, and which child
+  asked is read off the request itself (`_child_is_the_shipped_helper`): the
+  engine puts the asking sub-agent's name and depth under
+  `_meta.kiro.requester.subagent` (`kas_wire.requesting_subagent`), and the grants
+  are stamped only when the name is the helper's id exactly and the depth is the
+  integer 1, so the session's own agent started it
+  (`kas_engine_subagent_target.engine_names_the_helper`). The engine sets both when
+  it creates the child: the name is the registry key of the definition it runs,
+  the depth its own count. A model picks which registered agent to start, and
+  nothing it writes makes one agent report another's id; an agent file never
+  replaces a batch entry of its id. A person's
+  agent, a helper another sub-agent started, a missing or malformed name or depth,
+  and every request of an engine that sends no requester (0.66.117 and earlier;
+  0.66.119 sends it) keep the limits and are asked
+  (`test_kas_engine_child_identity.py`, on requests a real engine sent). All of it
+  sits behind one question, whether the shipped helper was mounted for the agent
+  the session runs (`_shipped_helper_mounted`), answered by the host memory the
+  registration wrote (`kas_shipped_helper_parent`); a name, a batch id or a rule
+  value is not that record. In a session that is itself a held sub-agent run
+  (next bullet) the child's request carries that run's parent limits too.
+- *A `spawn_run` child on another agent (KAS only).* A run of Kiro Crew's own
+  manager that names another agent than its parent's runs that agent's spec in a
+  session of its own, so nothing above stamps it. `acp/kas_parent_limits.py` holds
+  it to its parents' DENIES, as kiro-cli holds a sub-agent to its parent's and its
+  own: at the run's session start (`KasHarness.session_extras`, so `session/new`
+  and `session/load` alike) each agent above it is projected from its
+  `toolsSettings`, `permissions`, `tools` and `allowedTools` by the session's own
+  translation (`to_client_custom_agent`), every engine `deny` rule of that entry
+  except the `subagent` capability joins every entry of the run's batch, and the
+  crew-only limit keys travel under `_crewParentLimits`
+  (dropped before the wire beside `CREW_ONLY_ENTRY_KEYS`) to
+  `AcpSessionHandle.kas_parent_limits`, which the handle stamps on the run's own
+  and its native children's requests (`AcpEvent.spec_parent_limits`). The gate's
+  `spec-parent-limits` row refuses what any record refuses. Rules:
+  - *Denies only.* No `allow` or `ask` rule, hook, `excludedTools`, tool list, MCP
+    exclusion or grant of a parent is carried, each record's deny record has its
+    grants emptied (`denies_only`), and the run's own grants and limits stay. One
+    `ask` is added: the host `ask` of a parent's URL-shaped `web_fetch.blocked`
+    entry (`with_blocked_host_asks`), because a fetch the run's own spec allows
+    would otherwise never reach the gate that refuses it. A fetch on that host no
+    entry reaches then asks. The one exception is the bullet after this one,
+    behind the KAS sub-agents preview.
+  - *Who is above a run.* The sessions that started a run on its key: each run
+    notes its parent as it starts (`note_parent`, called by
+    `run_lifecycle._run_inner`, in memory), and the run record names the first
+    (`state.json` `parent_session`). The walk repeats for a parent that is itself a
+    run, so a grandchild carries its grandparent's denies. A session that is not
+    a run is not looked at. One key keeps at most `MAX_PARENTS_PER_RUN` (64)
+    distinct parents: a new one past it raises `TooManyParents` and changes
+    nothing, so the run that would add it fails before its session starts, and
+    every parent already noted keeps holding the key.
+  - *Each session above holds on its own.* An agent name is not one set of
+    limits: the directory or the session can decide which spec the name resolves
+    to, and a path limit is anchored where its session runs. So `holding_agents`
+    lists every session above the run, two on one agent name included, and each
+    is read with its own key and directories. Records with the same agent, limits
+    and anchor are carried once. A parent on the run's own agent adds nothing
+    only when what is read for it is the run's own limit (`_is_the_runs_own`):
+    the same limits the run's key resolves in the run's directory, from a parent
+    that runs in that directory or in one that is not known. In any other
+    directory it holds the run like any parent, so a run may write only what its
+    own allowlist and each one above it admit.
+  - *Which spec.* The one that parent's own KAS session projects (an app
+    agent's bound file, `read_bound_app_spec`; else `resolve_projected_spec`; a
+    Bot worker's merged spec), read at the CHILD's session start: a running session keeps what it read and the run's next
+    session (a continuation, a retry, a restart) reads the parent's file again.
+    Every directory the parent may run in (`parent_project_dirs`) is read, since
+    the directory can decide which spec a name resolves to, and a spec found from
+    any of them applies. Path limits are anchored at the directory the spec was
+    read from, else at the run's.
+  - *A parent with no directory of its own.* The resolver knows a sub-agent
+    session's directory only when the run was started with a `cwd`. A run
+    started with none still runs somewhere (a pooled session's directory, or a
+    folder of its own), and its limits are anchored there. So each run notes,
+    with its parent, the directory that parent's session is bound to when the
+    parent is itself a run (`note_parent`'s third argument, from the parent
+    run's `_session_cwd`: what its provider reported to the gateway, never the
+    run record's `cwd`, which lives in the run folder the agent can write).
+    `_unresolved_dirs` reads it only for a parent the resolver knows no
+    directory for, and only when it is another directory than the run's, so one
+    session has one directory to the walk and a chain in one folder carries
+    what it carried. The parent is then read in that directory and, after it,
+    with no directory as before: equal limits are carried once, anchored where
+    the parent is bound, and a limit only the second read finds is still
+    carried, anchored at the run's. With none noted (a
+    gateway that restarted since, a chat that is not live and has no project)
+    the parent stays anchored at the run's directory, and the run starts. No
+    other reader of `parent_project_dirs` sees the noted directory: the spawn
+    gate would read that folder's `.kiro/agents` and could refuse a spawn it
+    admits.
+  - *No pooled session.* A warm-pool session's batch was built before any run
+    named it, so a run that carries a parent's denies cold-starts
+    (`get_or_create`, pool decision `bypass_parent_denies`, KAS only). The
+    question is asked for the directory a pooled session is bound to, the
+    pool's (`run_is_held`'s `run_dir`). Only a
+    kept run's first start can reach the pool; every other sub-agent key is
+    stateless and never claims from it.
+  - *The deny record.* A session's own entry records a deny for the gate only
+    beside a grant it held back, because without one its calls ask. A run has
+    grants of its own, so the record it carries holds every `deniedCommands` and
+    write `deniedPaths` entry the gate can read (`_gate_read_denies`), whatever
+    the parent grants.
+  - *Where a parent cannot decide, the run asks.* A parent's own grants wait on
+    a deny check that answers a clear no (`spec_denied_gate.denied_grant_applies`),
+    so its own call asks a person when the check cannot read the command (a
+    chain, a redirect, a substitution), cannot resolve a write's target or a
+    fetch's URL, or when its deny list holds an entry Kiro Crew cannot read
+    (`SpecParentLimits.unread_denies`, the tools `_unread_denies` names: the
+    shell, the write tool, and `web_fetch` for a `blocked` entry that is not a
+    plain URL). A held
+    run gets the same answer: after no record refuses, the row takes the run's
+    own spec grants off the call the later rows judge
+    (`spec_parent_gate.withhold_undecided`: the `spec_granted_*` fields emptied,
+    its own deny record kept with no grant), so `spec-builtin-grant` does not
+    answer it. Rows that do not read the run's spec still answer (an operator
+    grant, the read-only classifier), as for the parent. Only a call of a tool on
+    which a parent has a deny is touched; every other call, and a command the
+    record decides, keeps the run's own grants. Only a call that reaches the
+    gate can be made to ask: every shell call and write does, and a fetch does
+    unless the run's own entry allows it at the engine and no carried host `ask`
+    covers its host.
+  - *Fail closed.* A parent whose record or agent file exists and cannot be read,
+    a batch that would pass the projection's rule bound with the added denies,
+    or a held run that names no agent (no entry to carry them),
+    refuses the run (`ParentLimitsUnreadable` -> `AcpAgentUnavailable`, naming the
+    parent agent). A parent no agent file defines carries nothing, as the spawn
+    gate's `availableAgents` check treats it.
+  - *Not covered.* A run on any other harness (the same gap, unchanged); a
+    parent's `subagent` denies (`availableAgents` is the spawn gate's); sessions
+    that are not sub-agent runs (a Bot's worker, a conductor's worker, a member
+    session).
+- *A `spawn_run` child on another agent, KAS sub-agents preview on: the founding
+  chat's grants.* While the "KAS sub-agents" Feature Preview is on
+  (`kas_parent_grants.preview_on`, its one reader; a switch that is absent or
+  cannot be read is off; it hands the switch's reader the config the projection
+  of the same session start hands it in `kas_shell_grant_lift`, the one the
+  gateway last applied and else `config.json`, so a run never takes its founding
+  chat's grants on one value while its shell grant is read against
+  `denyByDefault` on another, `test_kas_preview_readers_agree.py`), the "denies
+  only" rule above gains one exception: a run
+  founded by a chat on another agent is approved as that chat is. kiro-cli runs a
+  sub-agent on the session agent's grants and gives the sub-agent's own grants
+  no effect; every `ask` and `deny` on the chain still holds. Two calls in
+  `KasHarness.session_extras` (`acp/kas_parent_grants.py`):
+  - *`founding_grants_spec`*, before a Bot's held limits (`held_child_spec`)
+    strip what they hold. The run's spec takes the founding agent's permission
+    half in place of its own: `allowedTools` with each server's `autoApprove`
+    verbs, `toolsSettings`, and its `permissions` rules. The authored `ask` rules
+    of every agent above the run and the run's own `ask` and `deny` rules are
+    appended, and its own `toolsSettings.subagent` stays without `trustedAgents`.
+    Tools, servers, hooks, model and prompt stay the run's. A tool the run's own
+    file restricts (`without_grant_only_settings`) keeps the run's own
+    `toolsSettings` entry, under the run's spelling of the tool, in place of the
+    founder's. The founder's `deniedCommands`, `deniedPaths` and `blocked` lists
+    are not copied into the run's spec: the parent record of the bullet above
+    refuses by them, on the `spec-parent-limits` row and under the founder's
+    name, with the preview on as with it off.
+    A `denyByDefault` of the run's own refuses as its own file makes it refuse:
+    kiro-cli lifts it for an agent whose `allowedTools` names the shell, so
+    whether the list names the shell stays the run's own too. The session's one
+    projection then applies everything it applies to any spec: the governance
+    ceiling, the hook and batch-guard withholds, the withhold of a gate-answered
+    grant under an authored `ask` or `deny`, and the run's own allowlists and
+    denies. So a call the run's own file refuses is refused by the same row with
+    the same text as with the preview off, and a call it leaves asked is asked.
+  - *`limit_to_founders`*, after `hold_to_parents`. Each founder is projected
+    twice under its own session key: the half it hands down (`_half`) and its
+    whole permission half as its own session reads it (`_session_half`). Every
+    allow match and gate-answered grant the run's entry holds that either entry
+    does not is removed. So a grant passes the run's ceiling and the founding
+    chat's, and no hold on the handed-down half can leave the run a grant the
+    founding chat is asked for (a founder that lists the shell beside its own
+    `denyByDefault` asks for a command off its list, and so does the run). A grant
+    the run's own entry kept for a tool its file restricts (its `allowedCommands`,
+    `allowedPaths`, a listed tool) is one of them: it stays only where each
+    founder holds it, by the same pattern or by the whole tool. The limit-only
+    keys the founder's half brought (`_crewShellAllowlist`, `_crewShellReadonly`,
+    `_crewWriteAllowlist`, `_crewShellUnjudgedDenies`) leave the run's own entry
+    where a parent record carries the equal value and the run's own file does not
+    restrict that tool, so those refusals name the founding agent. A founder's
+    deny is never on the run's own entry: the record `hold_to_parents` carries
+    holds it, and where that record cannot decide a call (a chain it cannot
+    split, a redirect, a substitution) it takes the run's grants off the call, so
+    the run asks as the founding chat does.
+  - *Who founds a run.* The sessions at the top of the chain that are not
+    sub-agent runs, found by the walk above. A middle run's grants are never read.
+    With several founders (a run continued from another chat) a grant is kept only
+    when each holds it. Every session counts on its own, never one per agent name:
+    two founding chats on one agent are two founders, each with its own directory
+    and its own spec, and the `ask` rules are read from every session above the
+    run (`_sessions_above`), each from the directories that session runs in. A
+    session above whose directory is not known (a run started with no `cwd`) is
+    read where its session was noted as bound, when that is another directory
+    than the run's, and then with no directory, as its denies are
+    (`kas_parent_limits._unresolved_dirs`). A run with no parent session is
+    returned unchanged. A run whose founders all run its own spec keeps its own
+    permission half and is limited by no founder. The `ask` rules of the sessions
+    above that its own spec lacks are appended to its spec (`_with_asks`), so a
+    chat on agent A that starts an agent with an `ask`, which starts A again,
+    gets a run of A that asks as a run of any other agent does. Its entry also
+    records every `deniedCommands` and write `deniedPaths` entry of its own file
+    the gate reads (`_holding_its_denies`): the projection records them only
+    beside a grant they held back, and the appended `ask` may have taken that
+    grant, so the `spec-denies` row refuses by them as it did. With no such `ask`
+    above, the run is returned unchanged. A run whose rules would pass what KAS
+    reads with the appended `ask` rules keeps its spec and no grant, or is not
+    started. A founder runs the run's own
+    spec when it names the run's agent and reads an equal spec through the one
+    reader both use (`kas_parent_limits.parent_spec`); a name that a folder or an
+    app binding resolves to another spec is another agent to that run. A session
+    above the run that names an agent no file defines leaves the run no grant,
+    founder or not: what it asks for cannot be read. So does a session between
+    that has no record of the agent it ran (a delivered run's folder is pruned
+    while the parent note still names it; `_parent_template_for_spawn` then
+    answers `""`), and the run's start notice says so. A run left no grant keeps
+    the same record of its own denies, so it still refuses by them.
+  - *Holds, all decided in `_half`.* A grant that names an MCP server (an
+    `@server` or `@server/tool` entry of `allowedTools`, a `match` entry of an
+    `mcp` allow rule) reaches the run by name, as on kiro-cli
+    (`server_grant_reaches`): it covers the server the run's own spec declares
+    under that name, whichever program that is and whether or not the founding
+    agent holds a server of that name. So the run's own server of that name
+    answers without a permission request once the founding agent approved the
+    name; an `ask` or `deny` on that server, in the run's own file or in any
+    agent's above it, still holds. A name the run's spec declares no server for
+    is not reached. A founder's `autoApprove` verbs name no server and are held
+    to a server both specs declare the same way (`_held_alike`: `type`,
+    `command`, `args`, `env`, `url`, `headers`): they approve tools of its own
+    program, so they reach the run only for such a server. An `mcp` allow rule with no
+    `match` and a `*` in `allowedTools` hand the run no MCP grant, whether or not
+    both specs declare a server the same way: the run's entry keeps none from
+    either (`test_kas_parent_grants_server_name.py`).
+    A grant of commands or paths (`allowedCommands`, `allowedPaths`,
+    `autoAllowReadonly`, the `denyByDefault` and `fallbackAction` that read the
+    same lists, and a `permissions` allow with a `match` outside `mcp`,
+    `web_fetch` and `web_search`) reaches it only when the run works in the
+    founding chat's one known directory (`parent_project_dirs`). A founding agent
+    whose own spec carries a PreToolUse hook hands down a grant only when the
+    run's own spec carries that same hook, enabled (`_hooks_run_on_the_run`), and
+    the run works in the founding chat's one known directory: a hook runs where
+    its session runs, and elsewhere the same entry may not find what it runs, and
+    a hook that fails to start blocks nothing (`_has_pre_tool_hooks`, any hook,
+    relative or absolute; `test_kas_parent_grants_hook_dir.py`). A
+    spec's own hooks fire on its own session's calls, so a founder's hook the run
+    lacks would stop a call in the founding chat and not in the run; one the run
+    carries fires on the run's permission request before any grant is read
+    (`tool_permission.SpecHooks`, the first floor of the sub-agent ladder). The
+    same hook is the same whole record the hook runner reads (event, matcher and
+    its mode, command, skills, timeout, output cap; the object and the document
+    form of one entry are one record). Every enabled PreToolUse hook of the
+    founder needs its entry in the run's spec, and the run may carry more. One
+    missing, a difference in any field, a disabled entry, or hooks that cannot be
+    read on either side, and that founder hands down nothing. A script under
+    `~/.kiro/hooks` reaches a shipped agent's spec through
+    `_apply_user_kiro_hooks`, so a shipped pair that both received it keeps the
+    founder's grants and a child agent built without it is handed none. The Hooks
+    page's hooks and the `~/.kiro/hooks/*.json` files fire on both sessions, so
+    they hold nothing back.
+  - *A Bot's worker* keeps its merged spec. It is limited the same way, so it runs
+    unasked only what both its own file and each founder grant, and it gains the
+    chain's `ask` rules.
+  - *Fail closed.* A missing link of the chain, a founding session whose agent no
+    file defines (the session-start notice says so), or a founder that cannot be
+    projected leaves the run no grant. So does a `toolsSettings` value or a
+    `permissions` block that cannot be read whole (`_unreadable`), since what that
+    file asks for or refuses is then unknown: a founder like that hands down
+    nothing, and a run like that keeps its own spec and gains nothing. A parent
+    record that cannot be read refuses the run as above.
+  - *Lifecycle.* Read at the run's session start. A running session keeps the
+    entry it registered until it ends, also when the preview is switched in the
+    meantime; the run's next session reads the switch again. A run on its
+    founder's grants cold-starts as a held run does (`run_is_held`).
+  - *Not carried.* A founder's hooks, tool list, `excludedTools` and
+    `trustedAgents`. Every other harness is unchanged.
+- *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
+  (`acp/kas_engine_subagent_target.py`), exists only in memory, with no hooks. It
+  holds built-in tools and the MCP servers its parent holds
+  (`shared_servers`): a server of the parent's block or a pooled stub of one its
+  spec declares, that the parent's `tools` mount and its `excludedTools` do not
+  withdraw whole. The helper lists each as the parent's `tools` name it, carries
+  every `excludedTools` entry the parent holds for it, and repeats the parent's
+  projected block entry byte for byte: the engine keys a running server by its
+  name and declaration, so the helper is handed the parent's process and adds
+  none (a declaration that differed would start a second one for the call). The
+  repeat takes one more hold on each launch snapshot it names
+  (`kas_env_launch.retain_batch`), so the batch releases a name as often as it
+  holds it. The parent's `permissions` rules reach the helper's calls in the
+  engine, which intersects a sub-agent's policy with its parent's. Kiro Crew's
+  own servers stay excluded whole, by rule (`own_servers`: the managed servers and
+  the builtin app servers): each runs under the parent session's identity, so
+  nothing could refuse a session-bound tool or a spawn for the helper alone. So do
+  a pooled stub the parent's spec does not declare, a sub-agent target's servers,
+  and a server whose name the engine reads as a tag or a pattern. A server from the
+  OS user's `mcp.json` reaches the parent and the helper alike, because Kiro Crew
+  copies it into the default agent's block; a server from a project's
+  `.kiro/settings/mcp.json` reaches neither (measured on a real KAS session).
+- *Its finished calls.* The session agent's spec `postToolUse` hooks fire for a
+  child's finished call (`acp/kas_child_finished.py`, see
+  [acp-client](acp-client.md)), once per call. The three surfaces that fire them
+  read the predicate through the agent-SDK boundary
+  (`agent_sdk/kas_child_finished.py`). On the dashboard turn the same site writes
+  the call's `tool_invocation` audit row (`outcome` `invoked`, the redacted title
+  and the kind a turn's own call records, `metadata.sub_agent`, no argument): a
+  child's frames reach the turn as activity only, so a call the engine ran
+  without a permission request would otherwise leave no row.
+
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
 a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode,
 whose seeded `permission` `"*": "ask"` already makes each call ask; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both
 from the spec its session array was projected from (`acp/spec_tools_allowlists.py`:
 `spec_shell_allowlist` with no KAS policy, so an `allowedTools` naming the shell
-lifts `denyByDefault` only when the spec has no `deniedCommands`, and
+lifts `denyByDefault` only when the spec has no `deniedCommands`, whatever
+the `kas_subagents` preview reads, and
 `spec_write_allowlist` anchored at the session directory by `anchor_write_allowlist`)
 as `AcpClient._spec_shell_allowlist` / `_spec_write_allowlist` / `_spec_write_cwd`,
 reset per spawn. A withheld array carries no spec, so the spec is read again rather
@@ -4322,6 +4935,10 @@ channel carries a **fail-closed tripwire** rather than a standing assumption.
 reads as serialized frames, so a kiro-cli that starts logging bodies produces a refusal
 instead of a silent widening, and `_begin_at_event_boundary` closes the matching bypass
 where a truncated window strands a frame's argument lines after its envelope was cut away.
+That trim and the `since` filter share one record-start predicate, `_record_timestamp`,
+which judges a line as written: a record starts at column 0, so an indented line, even one
+that begins with a date or is a one-line object with a `timestamp` field, continues the
+record above it.
 Neither tries to separate one session's frames from another's, deliberately: a per-line
 filter over interleaved sessions would look scoped without being scoped, which is worse
 than nothing.

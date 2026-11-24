@@ -49,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
 )
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_CLAUDE_CODE
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -1076,6 +1077,12 @@ async def _get_or_create_impl(
         # Crew-owned Connection on it kept the vendor's own element instead of
         # the gateway bridge. Cold-starting projects the bridge for this key.
         pool_decision = "bypass_crew_oauth_bridge"
+    elif key.startswith("subagent:") and await asyncio.to_thread(
+        _held_to_parent_denies, owner, key, agent
+    ):
+        # A pooled child's batch was built with no session key, so it holds none of
+        # the denies of the agents above this run. Cold-starting projects them.
+        pool_decision = "bypass_parent_denies"
     else:
         pool_decision = ""
 
@@ -1161,10 +1168,16 @@ async def _get_or_create_impl(
                             _namespace,
                             advertised,
                         )
-                    if self._deps.is_claude_backend(provider):
-                        switch_model = self._deps.to_provider_id(model, "claude_code")
+                    # The id the switch sends is spelled in the harness's model-id
+                    # namespace (``SessionCapabilities.model_id_namespace``). Only
+                    # ``claude_code`` has ids of its own in the registry; every
+                    # other namespace, an unknown backend's ``acp`` included, takes
+                    # kiro's ids.
+                    wire_namespace = self._deps.provider_model_namespace(provider)
+                    if wire_namespace == MODEL_NAMESPACE_CLAUDE_CODE:
+                        switch_model = self._deps.to_provider_id(model, wire_namespace)
                         comparable_pool = (
-                            self._deps.to_provider_id(pool_model, "claude_code")
+                            self._deps.to_provider_id(pool_model, wire_namespace)
                             if pool_model
                             else pool_model
                         )
@@ -1913,6 +1926,15 @@ def _crew_oauth_bridges_chat() -> bool:
     from kiro_crew.connections import crew_oauth
 
     return crew_oauth.bridges_chat_sessions()
+
+
+def _held_to_parent_denies(owner: Any, key: str, agent: str | None) -> bool:
+    """Whether a KAS sub-agent run on *key* carries a parent agent's denies. Blocking."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_subagent_runs import run_is_held
+
+    on_kas = owner._cfg.agent.acp_backend == ACP_BACKEND_KAS
+    return on_kas and run_is_held(key, agent or owner._pool_agent or "", owner._pool_cwd or "")
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

@@ -67,7 +67,8 @@ def json_event_timestamp(line: str) -> str | None:
 
     3.x's ``mcp.log`` writes one JSON object per line, ``{"timestamp": ...}`` first, so
     such a line starts a record exactly as a date-led text line does. It counts only
-    when the WHOLE line parses as an object whose ``timestamp`` is a string
+    when ``{`` is the line's first character (an indented object is nested in a
+    frame) and the WHOLE line parses as an object whose ``timestamp`` is a string
     ``diagnostics._RECORD_START`` matches: a pretty-printed frame's ``{`` or
     ``"key": {`` line does not parse alone, and a JSON-RPC envelope has no such field.
     """

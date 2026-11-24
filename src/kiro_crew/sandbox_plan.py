@@ -189,7 +189,8 @@ class PlanHost:
     voice_runtime_parents: tuple[str, ...] = ()
     #: Every rename-sensitive ancestor of those parents.
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
-    #: The resolved kiro agents tree, sealed read-only.
+    #: kiro-cli's own trusted files, sealed read-only: the resolved agents tree and its
+    #: user MCP registry (``settings/mcp.json``, both spellings).
     kiro_agents_targets: tuple[str, ...] = ()
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.

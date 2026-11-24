@@ -11,10 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from app_manager_helpers import app_home_fixture  # noqa: F401 - fixture
 from app_manager_helpers import _make_app_source
+from governance_chokepoints_helpers import _install as _install_ceiling
+from governance_chokepoints_helpers import _isolate  # noqa: F401 - autouse fixture
 
 from conftest import requires_symlinks
+from kiro_crew import member_records
 from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.apps.manager import (
     disable_app,
@@ -23,6 +27,7 @@ from kiro_crew.apps.manager import (
     register_external_app,
     uninstall_app,
 )
+from kiro_crew.apps.manager_records import _import_app_tree_grants
 from kiro_crew.dashboard import token_auth_app_scope as scope
 from kiro_crew.dashboard.token_auth import read_app_secret, validate_app_secret
 
@@ -215,3 +220,127 @@ def test_disable_ends_cached_grants_on_the_next_request(tmp_path, app_home):
     assert enable_app("test-app").ok
     asyncio.run(scope._prime_app_api_allowlist("test-app"))
     assert scope.app_token_path_allowed("test-app", "/api/sessions")
+
+
+#: The secret a release that kept it in the app's folder left there.
+_LEFT_IN_FOLDER = "0" * 63 + "1"
+
+
+@pytest.fixture
+def outside_a_sandbox(_floor_monkeypatch):
+    # The gateway runs unsandboxed, and the upgrade's import runs only there; a test
+    # host may itself be a sandbox.
+    _floor_monkeypatch.delenv(member_records._IN_SANDBOX_MARKER, raising=False)
+
+
+def _ext_manifest(name: str) -> dict:
+    return {
+        "name": name,
+        "version": "1.0.0",
+        "displayName": "Ext",
+        "permissions": {"api": ["/api/sessions"]},
+    }
+
+
+def _registered_by_a_release(home, name="ext-app", *, enabled=True):
+    """A self-managed app as a release that kept the secret in its folder registered it.
+
+    No stored secret and no owner-enable marker: that release wrote its secret, its
+    approvals and its record into the app's own folder only.
+    """
+    root = home / "apps" / name
+    root.mkdir(parents=True)
+    record = {
+        "name": name,
+        "version": "1.0.0",
+        "displayName": "Ext",
+        "enabled": enabled,
+        "installedAt": "2026-11-09T21:26:17Z",
+        "origin": "external",
+        "resources": "app",
+        "lifecycle": "app",
+        "schemaVersion": 2,
+        "approvedGrantsStored": True,
+    }
+    (root / "installed.json").write_text(json.dumps(record), encoding="utf-8")
+    (root / "app.json").write_text(json.dumps(_ext_manifest(name)), encoding="utf-8")
+    (root / "approved-grants.json").write_text(
+        json.dumps({"api": ["/api/sessions"], "events": []}), encoding="utf-8"
+    )
+    (root / ".app_secret").write_text(_LEFT_IN_FOLDER, encoding="utf-8")
+
+
+def _write_enabled(home, name="ext-app"):
+    """What a sandboxed shell can do to the record: say the app is on."""
+    path = home / "apps" / name / "installed.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["enabled"] = True
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _next_launch(name="ext-app"):
+    """The owner registration the app sends on its next launch."""
+    return register_external_app(name, "1.0.0", "Ext", manifest_data=_ext_manifest(name))
+
+
+@pytest.mark.usefixtures("outside_a_sandbox")
+def test_a_release_registration_mints_after_its_next_registration(app_home):
+    _registered_by_a_release(app_home)
+
+    result = _next_launch()
+
+    assert result.ok and result.secret not in ("", _LEFT_IN_FOLDER)
+    assert validate_app_secret("ext-app", result.secret) is True
+    assert validate_app_secret("ext-app", _LEFT_IN_FOLDER) is False
+    assert not (app_home / "apps" / "ext-app" / ".app_secret").exists()
+
+
+@pytest.mark.usefixtures("outside_a_sandbox")
+def test_a_disable_the_release_recorded_outlasts_a_rewritten_record(app_home):
+    _registered_by_a_release(app_home, enabled=False)
+    _import_app_tree_grants()  # the upgraded gateway's first start
+    _write_enabled(app_home)
+
+    result = _next_launch()
+
+    assert result.ok
+    assert host_exec_granted("ext-app") is False
+    assert validate_app_secret("ext-app", result.secret) is False
+
+
+@pytest.mark.usefixtures("outside_a_sandbox")
+def test_a_record_planted_after_the_upgrade_does_not_mint(app_home):
+    _import_app_tree_grants()  # the upgraded gateway's first start, before the plant
+    _registered_by_a_release(app_home)
+
+    result = _next_launch()
+
+    assert result.ok
+    assert host_exec_granted("ext-app") is False
+    assert validate_app_secret("ext-app", result.secret) is False
+
+
+@pytest.mark.usefixtures("outside_a_sandbox")
+def test_a_registration_left_off_does_not_mint_after_a_rewritten_record(app_home):
+    assert register_external_app("ext-app", "1.0.0", "Ext", start_disabled=True).ok
+    _write_enabled(app_home)
+
+    result = _next_launch()
+
+    assert result.ok
+    assert host_exec_granted("ext-app") is False
+    assert validate_app_secret("ext-app", result.secret) is False
+
+
+@pytest.mark.usefixtures("outside_a_sandbox")
+def test_a_release_registration_of_an_app_governance_forbids_does_not_mint(app_home):
+    _registered_by_a_release(app_home)
+    _install_ceiling(
+        {"version": 1, "boot": {"fail_closed": True}, "apps": {"mode": "deny", "deny": ["ext-app"]}}
+    )
+
+    result = _next_launch()
+
+    assert result.ok
+    assert host_exec_granted("ext-app") is False
+    assert validate_app_secret("ext-app", result.secret) is False

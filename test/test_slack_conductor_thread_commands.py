@@ -435,14 +435,45 @@ def test_bang_conductor_runs_the_start_and_says_why_not(monkeypatch):
 
 def _slash(monkeypatch, args: str, user: str = OWNER, channel: str = PRIVATE):
     slack = _Slack()
-    orch = SimpleNamespace(slack=slack, _last_slash_room=(channel, TEAM))
+    orch = SimpleNamespace(slack=slack)
     replies: list[str] = []
 
     async def respond(text: str, blocks: Any = None) -> None:
         replies.append(text)
 
-    asyncio.run(events_slash._handle_conductor(orch, user, args, respond))
+    async def typed_in_channel() -> None:
+        from kiro_crew.slack import slash_context
+
+        slash_context.room.set((channel, TEAM))
+        await events_slash._handle_conductor(orch, user, args, respond)
+
+    asyncio.run(typed_in_channel())
     return slack, replies
+
+
+def _typed(monkeypatch, slack: _Slack, *commands: tuple[str, str]) -> None:
+    """Hand each ``(channel, text)`` to ``_handle_slash`` as the owner's ``/kirocrew``,
+    every one before any handler task runs, then let the handlers finish."""
+    monkeypatch.setattr("kiro_crew.slack.events.sel", lambda: MagicMock())
+    orch = SimpleNamespace(
+        slack=slack, _owner_id=OWNER, slack_command="kirocrew", _cfg=_cfg(), _handler_tasks=set()
+    )
+
+    async def typed() -> None:
+        for channel, text in commands:
+            payload = {
+                "command": "/kirocrew",
+                "text": text,
+                "user_id": OWNER,
+                "channel_id": channel,
+                "team_id": TEAM,
+            }
+            await events_slash._handle_slash(orch, payload)
+        # No handler task has run yet, so the commands were handled at the same time.
+        assert slack.posts == []
+        await asyncio.gather(*orch._handler_tasks)
+
+    asyncio.run(typed())
 
 
 def test_slash_conductor_posts_a_parent_and_starts_under_it(monkeypatch, dashboard):
@@ -474,3 +505,34 @@ def test_slash_conductor_refused_room_posts_nothing(monkeypatch, dashboard):
     _room(monkeypatch, private=False)
     slack, replies = _slash(monkeypatch, "goal", channel=PUBLIC)
     assert slack.posts == [] and "public channels are off" in replies[0]
+
+
+def test_overlapping_slash_conductors_each_post_where_they_were_typed(monkeypatch, dashboard):
+    monkeypatch.setattr(ct, "refusal", AsyncMock(return_value=("", ROOM_PRIVATE)))
+    monkeypatch.setattr(ct, "start", AsyncMock(return_value=(True, ct.STARTED_TEXT)))
+    slack = _Slack()
+    _typed(monkeypatch, slack, (PRIVATE, "conductor first"), (PUBLIC, "conductor second"))
+    assert sorted(slack.posts) == [
+        (PRIVATE, "Conductor: first", None),
+        (PUBLIC, "Conductor: second", None),
+    ]
+
+
+def test_a_refused_slash_conductor_audits_the_denial(monkeypatch, dashboard, _on):
+    _room(monkeypatch, private=False)
+    slack = _Slack()
+    _typed(monkeypatch, slack, (PUBLIC, "conductor goal"))
+    why = ct.NOT_HERE_TEXT.format(
+        why="public channels are off (slack.thread_conductor_public_channels)"
+    )
+    assert [c.kwargs for c in _on.log_api_access.call_args_list] == [
+        {
+            "caller": OWNER,
+            "operation": ct.OPERATION,
+            "outcome": "denied",
+            "source": "slack",
+            "resources": f"channel={PUBLIC}",
+            "error": why,
+        }
+    ]
+    assert slack.posts == []

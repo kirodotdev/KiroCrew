@@ -57,11 +57,20 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
+from kiro_crew.acp.harness.kas_missing_agent import _kiro_cli_builtin_reason, _missing_agent_reason
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
+from kiro_crew.acp.kas_parent_grants import founding_grants_spec, limit_to_founders
+from kiro_crew.acp.kas_parent_limits import (
+    ParentLimitsUnreadable,
+    hold_to_parents,
+    projected_parent_limits,
+    run_is_held,
+)
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import (
     declared_servers,
@@ -717,63 +726,6 @@ def muted_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> frozenset[s
     )
 
 
-def _kiro_cli_builtin_reason(agent: str) -> str:
-    """Why kiro-cli's built-in *agent* does not start on KAS, naming what to pick instead.
-
-    KAS has no definition of it, and running KAS's own closest mode would decide
-    some tool calls without asking Crew. Reads config for the default template.
-    """
-    from kiro_crew.config.loader_snapshots import (
-        DEFAULT_KIRO_TEMPLATE,
-        KIRO_CLI_BUILTIN_AGENTS,
-        default_template,
-    )
-
-    try:
-        from kiro_crew.config import KiroCrewConfig
-
-        default = default_template(KiroCrewConfig.load())
-    except Exception:  # noqa: BLE001 - the name is a hint, never a gate
-        logger.debug("no default template for the %r refusal", agent, exc_info=True)
-        default = DEFAULT_KIRO_TEMPLATE
-    if default in KIRO_CLI_BUILTIN_AGENTS:
-        # A configured default that is itself refused here is no pick.
-        default = DEFAULT_KIRO_TEMPLATE
-    return (
-        f'The agent "{agent}" is built into kiro-cli and has no safe match on KAS. '
-        f'Pick Kiro Crew\'s default agent "{default}" instead, or run '
-        f"`kiro-cli --agent {agent}` in this chat's Terminal tab."
-    )
-
-
-def _missing_agent_reason(agent: str, session_key: str) -> str:
-    """The reason a session cannot start on *agent*, which has no spec, for the user.
-
-    Names the Crew Member when *session_key* is one's DM thread, and the app the
-    agent came from when an installed app declares it (``apps.manager``). Blocking
-    file I/O, so it runs inside the projection's worker thread; it never raises,
-    because the reason replaces an error that is already being raised.
-    """
-    from kiro_crew.apps.manager import missing_agent_reason
-
-    member = ""
-    try:
-        from kiro_crew.config import KiroCrewConfig
-        from kiro_crew.members import member_identity_for_session
-
-        identity = member_identity_for_session(session_key)
-        if identity is not None:
-            row = KiroCrewConfig.load().agents.get(identity["name"])
-            member = (row.display_name if row is not None else "") or identity["name"]
-    except Exception:  # noqa: BLE001 - the member name is a label, never a gate
-        logger.debug("no member label for a missing agent %r", agent, exc_info=True)
-    try:
-        return missing_agent_reason(agent, member=member)
-    except Exception:  # noqa: BLE001 - same: fall back to the plain reason
-        logger.debug("no owner lookup for a missing agent %r", agent, exc_info=True)
-        return f'The agent "{agent}" can\'t start: its agent definition is missing.'
-
-
 def _kiro_cli_sandbox_owns_relay() -> bool:
     """Whether kiro-cli's internal sandbox confines a KAS relay spawn on this host.
 
@@ -1262,7 +1214,9 @@ class KasHarness(MembershipHarness):
 
     # ── Seam 3: session/new and session/load extras ──
 
-    def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
+    def record_session_projection(
+        self, handle: Any, custom_agents: Any, active_agent: str, shipped_helper_parent: str = ""
+    ) -> None:
         """Record what the batch this session registered auto-approves.
 
         KAS keeps that batch for the session's life (``set_mode`` activates an entry
@@ -1327,8 +1281,18 @@ class KasHarness(MembershipHarness):
         handle.kas_crew_answered_read_paths = projected_answered_read_paths(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
+        # A sub-agent run: what the agents above it are refused at the gate
+        # (`spec-parent-limits` tier).
+        handle.kas_parent_limits = projected_parent_limits(
+            custom_agents, active_agent, str(getattr(handle, "_bound_cwd", "") or "")
+        )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
+        # Host memory of the helper this registration mounted, written with the batch:
+        # a registration that mounted none, or for another agent, leaves it empty.
+        handle.kas_shipped_helper_parent = (
+            active_agent if custom_agents and shipped_helper_parent == active_agent else ""
+        )
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
@@ -1350,6 +1314,7 @@ class KasHarness(MembershipHarness):
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
         governance_app: str | None = None,
+        remote_workspace: bool = False,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1377,6 +1342,15 @@ class KasHarness(MembershipHarness):
             kas_model_catalog.vault_identity, getattr(self, "spawn_machine_auth", None)
         )
         if not agent:
+            # No entry is built for this session, so a parent's denies have no carrier.
+            if session_key.startswith("subagent:") and await asyncio.to_thread(
+                run_is_held, session_key, ""
+            ):
+                raise AcpAgentUnavailable(
+                    "this sub-agent names no agent, so the denies of the agent that "
+                    "started it cannot be applied and it was not started",
+                    agent=agent,
+                )
             return SessionExtras(vault_identity=vault_identity)
 
         def _build() -> tuple[
@@ -1386,7 +1360,9 @@ class KasHarness(MembershipHarness):
             dict[str, dict[str, Any]],
             frozenset[str],
             str,
+            str,
         ]:
+            helper_for: list[str] = []
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -1453,6 +1429,10 @@ class KasHarness(MembershipHarness):
                     else:
                         reason = _missing_agent_reason(agent, session_key)
                     raise AcpAgentUnavailable(reason, agent=agent) from exc
+            # Preview on, a sub-agent run: approved as the chat that founded it is.
+            spec, founding = founding_grants_spec(
+                spec, agent, session_key, spec_notices, session_cwd or work_dir
+            )
             if agent == MATE_WORKER_AGENT:
                 # A crewmate's worker: its source base plus that crewmate's own
                 # additions, governed as one spec, with its prompt as literal
@@ -1659,7 +1639,8 @@ class KasHarness(MembershipHarness):
             # that enables that server keeps its own declaration of it.
             gated: set[str] = set()
             refused: set[str] = set()
-            targets, targets_notice = project_subagent_targets(
+            project_targets = partial(
+                project_subagent_targets,
                 agent,
                 spec,
                 custom_agents,
@@ -1674,9 +1655,33 @@ class KasHarness(MembershipHarness):
                 folder_gated_out=gated,
                 refused_out=refused,
             )
+            targets, targets_notice = project_targets()
             # A refused target the engine could still load from disk is denied, so
             # the refusal the notice names holds.
-            custom_agents = [*deny_refused_targets(custom_agents, agent, refused), *targets]
+            listed = frozenset(refused)
+            custom_agents = native_batch(
+                deny_refused_targets(custom_agents, agent, listed),
+                targets,
+                agent=agent,
+                session_key=session_key,
+                member_dispatch=member_dispatch,
+                crew_panel=crew_panel,
+                agents_dir=agents_dir,
+                work_dir=work_dir,
+                stub_server_names=stubbed - withdrawn,
+                settings_dir=session_cwd or work_dir,
+                notices=spec_notices,
+                parent_spec=spec,
+                spec_dir=prompt_dir,
+                remote_workspace=remote_workspace,
+                mounted_out=helper_for,
+                # The same projection, for the person's own agents: called only
+                # once the default agent's engine mount is accepted.
+                own_agents=partial(project_targets, every_agent=True),
+            )
+            # The own agents the mount left out, denied by name before its deny on
+            # every name: the engine's refusal quotes the first deny that matches.
+            custom_agents = name_left_out(custom_agents, agent, refused - listed)
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
@@ -1703,7 +1708,22 @@ class KasHarness(MembershipHarness):
                 from kiro_crew.agent_sdk.kas_project_hooks import with_folder_pre_tool_mark
 
                 custom_agents = with_folder_pre_tool_mark(custom_agents, agent, spec, bool(gated))
-            return custom_agents, snapshot, managed, apps, withdrawn, notice
+            try:
+                # A sub-agent run is refused what the sessions above it are refused.
+                custom_agents = hold_to_parents(custom_agents, agent, session_key, folder)
+                custom_agents = limit_to_founders(custom_agents, agent, spec, founding)
+            except ParentLimitsUnreadable as exc:
+                # Refused, never started without its parents' denies.
+                raise AcpAgentUnavailable(str(exc), agent=agent) from exc
+            return (
+                custom_agents,
+                snapshot,
+                managed,
+                apps,
+                withdrawn,
+                notice,
+                "".join(helper_for[-1:]),
+            )
 
         try:
             (
@@ -1713,6 +1733,7 @@ class KasHarness(MembershipHarness):
                 app_launches,
                 withdrawn_stubs,
                 withheld_notice,
+                helper_parent,
             ) = await asyncio.to_thread(
                 # The session's agent and each of its sub-agent targets read the same
                 # app manifests, skill files and agent specs: one start reads each once.
@@ -1727,6 +1748,7 @@ class KasHarness(MembershipHarness):
                 app_launches=app_launches,
                 withdrawn_stub_names=withdrawn_stubs,
                 withheld_credentials_notice=withheld_notice,
+                shipped_helper_parent=helper_parent,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

@@ -53,8 +53,10 @@ from kiro_crew.sandbox_leaves import (
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
+    _materialize_kiro_mcp_registry,
     _materialize_sealable_ceilings,
     _refuse_linked_models_leaf,
+    _resolved_kiro_mcp_registry_targets,
 )
 from kiro_crew.sandbox_staging import (
     _materialize_declared_mask_dirs,
@@ -473,7 +475,11 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
         )
     )
-    kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
+    # kiro-cli's own trusted files ride one host field: its agents tree and its user MCP
+    # registry, each sealed read-only with its parents guarded against rename.
+    kiro_agents_targets = tuple(
+        dict.fromkeys((*_resolved_kiro_agents_targets(), *_resolved_kiro_mcp_registry_targets()))
+    )
     install_root_targets = tuple(_resolved_install_root_targets())
     # A renamed parent carries a seal away on both backends, so every entry resolving a
     # seal steps on is guarded, and so are the parents of its own spelling, which keep a
@@ -884,6 +890,8 @@ def namespace_argv(
     # with a keystone the seal could not cover.
     _required_targets: list[str] = []
     _materialize_sealable_ceilings(_required_targets)
+    # kiro-cli's MCP registry the same way, but best-effort: never a refusal.
+    _materialize_kiro_mcp_registry()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)

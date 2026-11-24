@@ -719,6 +719,7 @@ async def create_session(
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
+            shipped_helper_parent=getattr(kas_extras, "shipped_helper_parent", ""),
             mcp_servers=wire_servers,
             budget=budget,
             stub_token=stub_token,
@@ -789,6 +790,7 @@ async def create_session(
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
+            shipped_helper_parent=getattr(kas_extras, "shipped_helper_parent", ""),
             mcp_servers=wire_servers,
             budget=budget,
             stub_token=stub_token,
@@ -872,6 +874,7 @@ def _collect_late_start(
     denied_tools: frozenset[tuple[str, str]],
     zero_tools: bool = False,
     mirrored_snapshot: Any,
+    shipped_helper_parent: str = "",
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
@@ -964,6 +967,7 @@ def _collect_late_start(
                 agent=agent,
                 crew_agent=crew_agent,
                 kas_agents=kas_agents,
+                shipped_helper_parent=shipped_helper_parent,
                 mcp_servers=mcp_servers,
                 budget=budget,
                 stub_token=stub_token,
@@ -1039,6 +1043,7 @@ async def _finish_create_session(
     denied_tools: frozenset[tuple[str, str]],
     zero_tools: bool = False,
     mirrored_snapshot: Any,
+    shipped_helper_parent: str = "",
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
@@ -1116,7 +1121,7 @@ async def _finish_create_session(
     handle.mirror_used = mirror_used
     # What the registered agent batch grants, recorded by the harness that
     # registered one; a host that took its agent at spawn time records nothing.
-    self._harness.record_session_projection(handle, kas_agents, active_agent)
+    self._harness.record_session_projection(handle, kas_agents, active_agent, shipped_helper_parent)
     # The snapshot names this projection wrote, for shutdown. session/new hoists
     # builtin app servers, which do start through the launcher, so the names are
     # read from the batch before that hoist (``create_session``); a caller that

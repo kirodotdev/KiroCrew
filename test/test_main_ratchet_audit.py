@@ -58,7 +58,9 @@ printf '%s\\n' "${*//$'\\n'/<NL>}" >> "$GH_LOG"
 case "$1" in
   api)
     if [ "$STUB_HEAD_SHA" = "UNREADABLE" ]; then
-      echo "stub: head unreadable" >&2
+      # As the real CLI answers a non-2xx: the error body on stdout, exit 1.
+      printf '%s' '{"message":"Server Error","status":"500"}'
+      echo "gh: Server Error (HTTP 500)" >&2
       exit 1
     fi
     printf '%s\\n' "$STUB_HEAD_SHA"

@@ -79,7 +79,6 @@ CHANNEL_CONNECTION_WRITES = (
         r"\A/api/(?:slack|telegram|discord|feishu|imessage|teams|webex|wecom|weixin|whatsapp)"
         r"/config/?\Z"
     ),
-    re.compile(r"\A/api/channels(?:/[^/]+)?/?\Z"),
     re.compile(r"\A/api/channels/(?:weixin|whatsapp)/"),
     re.compile(r"\A/api/messaging/teams/?\Z"),
 )

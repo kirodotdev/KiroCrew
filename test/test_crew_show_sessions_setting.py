@@ -28,7 +28,21 @@ def _owner_caller(_floor_monkeypatch):
     )
 
 
-@pytest.mark.parametrize(("stored", "want"), [(True, True), (False, False), ("yes", False)])
+def test_the_per_bot_switch_defaults_on_when_the_bot_config_omits_it():
+    assert KiroCrewAgentConfig(kiro_agent="kirocrew").show_sessions_in_list is True
+    cfg = KiroCrewConfig.load()
+    cfg.agents["ada"] = KiroCrewAgentConfig(kiro_agent="kirocrew", workspace="default")
+    cfg.save()
+    path = config_dir() / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["agents"]["ada"].pop("show_sessions_in_list", None)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert KiroCrewConfig.load().agents["ada"].show_sessions_in_list is True
+
+
+@pytest.mark.parametrize(
+    ("stored", "want"), [(True, True), (False, False), ("yes", True), (0, True)]
+)
 def test_a_stored_per_bot_switch_loads_only_a_real_bool(stored, want):
     cfg = KiroCrewConfig.load()
     cfg.agents["ada"] = KiroCrewAgentConfig(kiro_agent="kirocrew", workspace="default")

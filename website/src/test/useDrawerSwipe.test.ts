@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { animate, motionValue } from 'framer-motion'
 import { useDrawerSwipe } from '../hooks/useDrawerSwipe'
@@ -70,6 +70,17 @@ describe('useDrawerSwipe', () => {
     expect(x.get()).toBe(CLOSED + 20)
     fire(el, touch('touchmove', 240))
     expect(x.get()).toBe(CLOSED + 200)
+  })
+
+  it('leaves a drag on a pinch-zoomed page to the browser, which pans the view', () => {
+    vi.stubGlobal('visualViewport', { scale: 2 })
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchmove', 240))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+    expect(x.get()).toBe(0)
   })
 
   it('mounts the panel at the axis lock, not at touchstart', () => {

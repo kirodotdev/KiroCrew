@@ -217,11 +217,11 @@ class ProviderRegistry:
 
         if provider:
             p = self._providers.get(provider)
-            if p is None or not p.is_available():
+            if p is None or not await asyncio.to_thread(p.is_available):
                 return McpSearchResponse(results=[], provider_outcomes=[])
             return await _search_one(provider, p)
 
-        providers = self.available_providers
+        providers = await asyncio.to_thread(lambda: self.available_providers)
         if not providers:
             return McpSearchResponse(results=[], provider_outcomes=[])
 

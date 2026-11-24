@@ -1505,7 +1505,15 @@ because no written grant consulted it. A profile is saved by editing a file, whi
 distribution poll observes, and a host without central distribution has no poll at all, so
 the gateway runs its own **profile watch**: every `_PROFILE_PROJECTION_POLL_S` (15 s), off
 the event loop, `agent.reproject_for_profile_change` re-stats the directory and calls the
-hook when the answer differs from the one the memo records. A projection that does not land
+hook when the answer differs from the one the memo records. A re-stat that reloads the store to
+the snapshot it already holds is not a difference: the profile generation moves only when the
+published snapshot differs from the one it replaces (`governance_profiles._publish_snapshot`).
+On a fresh data home the directory does not exist at boot and the first sandboxed spawn
+creates it empty, so its read-only seal has a target; that reload, a `chmod`, or a rewrite with
+the same bytes leaves the answer, and so the watch, alone. Counting that reload as a move would
+have the first tick after a fresh start rebuild the agent config for no governance change and
+replace the files the sandbox pins under any hook starting in that second
+(`test/test_rebuild_keeps_pinned_files.py`). A projection that does not land
 (a declined rebuild or a held spec, each of which logs a refusal and an audit event per
 attempt) is retried by the watch every `agent._PROFILE_WATCH_RETRY_S` (an hour) rather than
 every tick, and one whose rebuild raised after `agent._PROFILE_WATCH_RAISE_RETRY_S` (five
@@ -3918,7 +3926,7 @@ Three keys from the RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts
 | `app_versions` (ruleset, `identifier`) | Which third-party app versions may be installed and loaded | `<app>@<version>` from the manifest, or the registration's own version when no manifest is sent, or, for an activation (boot, enable, restart) whose manifest names no version, the installed record's version (an install or update never falls back); with no readable (semver) version, such as none or a JSON `null`, any policy that governs the key refuses. The registry install's pre-clone admission skips the version (its manifest can be a stale local checkout); the clone-time admission asks it on the fetched manifest before the build or `onInstall` | `apps/admission.py::app_admission_denied`, run at install, update, boot, restart and enable; builtins stay exempt as for every admission rule |
 | `capabilities.app_dev_mode` | App developer mode: the toggle and every dev-mode read | the gate | `apps/dev_mode.py` (`set_dev_mode`, `is_dev_mode`, `is_dev_mode_cached`, `_load_dev_apps`) through `extension_governance.developer_mode_permitted`, which any other developer-mode switch reads too |
 
-The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` off the loop first and passes `version_checked=True` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an LTS build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the LTS gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
+The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` and the `apps` activation check (`_app_activation_denied`) off the loop first and passes `version_checked=True` and that verdict as `activation_permitted` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an LTS build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the LTS gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
 
 Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_sync` reports, and refuses the whole sync if any is denied. A package that drifts between that read and the sync is not asked (a known gap). A refused dev-mode toggle answers `locked_by_policy` (409 over HTTP), audited as a denied `app_dev_mode` SEL row.
 
@@ -4018,7 +4026,8 @@ status tick rather than waiting out the cache's stale window.
 **And follows a profile-layer edit.** The value in that frame is
 `governance_profiles.governance_answer_generation()`, which is
 `context.governance_generation()` plus a module-private `_profile_generation()`
-bumped whenever `ProfileStore._ensure_fresh` publishes a new snapshot. The field's
+bumped whenever `ProfileStore._ensure_fresh` publishes a snapshot that differs from the one it
+replaces (a reload to an equal snapshot decides nothing and moves nothing). The field's
 contract is unchanged — it stays an opaque, comparison-only integer, so combining two
 monotonic counters is not a change of meaning and no consumer needs to know. This
 exists because the ceiling counter alone missed Level-2 edits: a profile file

@@ -7,6 +7,7 @@ import { createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit
 import type { RootState } from '../index'
 import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { crewModeCatalogKnown, crewModeEnabled, newChatCrewModeAgent, setCrewModeCatalog } from '../../lib/crewMode'
 import { featurePreviewLockKnown, whenFeaturePreviewLockKnown } from '../../utils/editionLocks'
@@ -168,11 +169,18 @@ export const createSlot = createAsyncThunk<
       // deleting the original, so the colored session survives. Same contract
       // as the background project carry below. The default-color policy branch
       // stays fire-and-forget: nothing is lost if a default fails to apply.
+      // A permission refusal (`owner_only`, on both colour branches) is the one
+      // exception: this caller may not set a colour on any session, so failing
+      // here would block the recreate for good. The new slot is kept uncoloured.
       try {
         await api.setSlotColorHex(slot.key, explicitHex)
       } catch (err) {
-        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
-        throw err
+        if (isPermissionRefusal(err)) {
+          slot.color_hex = null
+        } else {
+          await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
+          throw err
+        }
       }
     } else {
       const ci = explicitColor != null ? explicitColor : resolveDefaultColor(
@@ -186,8 +194,12 @@ export const createSlot = createAsyncThunk<
           try {
             await api.setSlotColor(slot.key, ci)
           } catch (err) {
-            await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
-            throw err
+            if (isPermissionRefusal(err)) {
+              slot.color_index = null
+            } else {
+              await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
+              throw err
+            }
           }
         } else {
           api.setSlotColor(slot.key, ci).catch(() => {})

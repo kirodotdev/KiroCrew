@@ -393,6 +393,10 @@ def native_subagent_snapshots(
             }
             # The label and model a card's frames carry, when it has them.
             base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
+            # A KAS engine sub-agent's card (``dashboard.engine_subagent_cards``) stays
+            # marked: what its replayed frame carries beyond every native card's.
+            if info.get("engine"):
+                base["frame_extras"] = {"engine": True}
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:

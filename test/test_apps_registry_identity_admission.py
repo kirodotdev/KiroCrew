@@ -315,6 +315,61 @@ async def test_an_update_takes_the_app_down_only_to_copy_its_files(monkeypatch, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("denial", [None, "app 'demoapp' not permitted by policy"])
+async def test_a_self_managed_update_asks_activation_off_the_loop(monkeypatch, tmp_path, denial):
+    """The ``apps`` activation check reads the governance profile store, so the
+    registry installer asks it in a worker and hands the verdict to the registration,
+    which runs on the loop."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(monkeypatch, src, cloned_manifest={"name": "demoapp", "version": "2.0.0"})
+    entry = {
+        "name": "demoapp",
+        "repo": "https://example.com/demo.git",
+        "branch": "main",
+        "resources": "app",
+    }
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "get_app", lambda _name: {"name": "demoapp", "version": "1.0.0"})
+    monkeypatch.setattr(registry, "_resolved_clone_commit", lambda root: "a" * 40)
+    monkeypatch.setattr(registry, "verified_signer", lambda manifest: "")
+    monkeypatch.setattr(registry, "set_app_provenance", lambda name, **kwargs: None)
+
+    from kiro_crew.apps import admission, hooks_integration, manager
+
+    async def _recheck(app_name: str, *, bounded: bool) -> bool:
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_retained_startup_hooks", _recheck)
+    monkeypatch.setattr(admission, "app_version_refusal", lambda *a: None)
+    monkeypatch.setattr(manager, "refresh_app_config_keys", lambda: None)
+    asked_on_loop: list[bool] = []
+
+    def _activation_denied(name, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asked_on_loop.append(False)
+        else:
+            asked_on_loop.append(True)
+        return denial
+
+    monkeypatch.setattr(manager, "_app_activation_denied", _activation_denied)
+    registered: list[dict] = []
+
+    def _register_external(**kwargs):
+        registered.append(kwargs)
+        return MagicMock(ok=True, notice="")
+
+    monkeypatch.setattr(manager, "register_external_app", _register_external)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is True, result
+    assert asked_on_loop == [False]
+    assert [kwargs["activation_permitted"] for kwargs in registered] == [denial is None]
+
+
+@pytest.mark.asyncio
 async def test_an_empty_streaming_log_is_the_list_the_install_writes_to(monkeypatch, tmp_path):
     """An empty ``StreamingLogLines`` is falsy but is still the caller's log: the
     install writes into it (and so into its queue) rather than into a fresh list."""

@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 OP_REQUEST_SERVER = "cards.request_server"
 
 _BODY_KEYS = frozenset(
-    {"server", "source", "registry_id", "reason", "action", "entry", "uses_chat_folder"}
+    {"server", "source", "registry_id", "reason", "action", "entry", "uses_chat_folder", "target"}
 )
 
 #: The opt-in managed sets an owner may mount on the default agent with no
@@ -384,6 +384,9 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         # A gateway or registry server's entry is the gateway's to build.
         _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
         return _deny(400, "invalid_body", "entry is only for source 'custom'")
+    if "target" in body:
+        _audit(sk, OP_REQUEST_SERVER, "denied", "unknown_field")
+        return _deny(400, "invalid_body", "target is only for source 'custom'")
     state = request.app["state"]
     template, code, message = await asyncio.to_thread(_caller_template, state, slot_key, sk)
     if not template:

@@ -102,8 +102,8 @@ DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 MATE_ROOT_FIELD: Final[str] = "mate_root"
 MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
 #: On a mate thread's own row only: whether the sessions it dispatched stay in the
-#: person's lists (:func:`mate_lists_sessions`). False (the default) leaves them
-#: out, for the Bot's Sessions tab; True keeps them listed. Read by
+#: person's lists (:func:`mate_lists_sessions`). True keeps them listed; False
+#: leaves them out, for the Bot's Sessions tab alone. Read by
 #: :func:`list_view` and the dashboard's ``crewModeView``.
 MATE_LISTED_FIELD: Final[str] = "bot_sessions_listed"
 #: The slot ``mode`` of a mate thread: ``members.DM_SLOT_MODE``, spelled here because
@@ -142,8 +142,9 @@ def mate_lists_sessions(agent: Any) -> bool:
     """Whether Bot *agent*'s sessions stay in the person's lists, by the live config.
 
     On for every Bot while ``dashboard.show_bot_sessions_in_list`` is on; otherwise
-    the Bot's own ``show_sessions_in_list``. Each is off when unset, unread or not a
-    real bool. No I/O.
+    the Bot's own ``show_sessions_in_list``, which the loader reads as on when the
+    Bot's config leaves it unset. Off when no live config or Bot record is read, or
+    the value is not a real bool. No I/O.
     """
     cfg = _live_cfg()
     if getattr(getattr(cfg, "dashboard", None), "show_bot_sessions_in_list", False) is True:

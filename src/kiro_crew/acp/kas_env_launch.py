@@ -800,6 +800,23 @@ def batch_snapshot_names(custom_agents: Any) -> list[str]:
     return names
 
 
+def retain_batch(custom_agents: Any) -> None:
+    """Take one more hold on each shared snapshot *custom_agents* references.
+
+    For an entry that repeats another entry's declaration without a projection of
+    its own (the KAS helper repeats its parent's block). A batch lists a name once
+    per entry that references it and :func:`discard_batch` releases it as often,
+    so the repeat must hold it too: releases then equal holds. A name nobody holds
+    (a per-write file, a projection that fell back to withholding) is left alone.
+    """
+    with _SHARE_LOCK:
+        for name in batch_snapshot_names(custom_agents):
+            for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+                key = str(snapshot_dir(leaf) / name)
+                if key in _SHARED_HOLDS:
+                    _SHARED_HOLDS[key] += 1
+
+
 def discard_batch(custom_agents: Any, written: Any = ()) -> None:
     """Remove the snapshots its holder's projections wrote: the holder shut down.
 

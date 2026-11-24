@@ -96,6 +96,7 @@ def post_compaction_parts(
         is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
+        provider_type=provider_type,
         # The live session's own mount, which a crewmate worker's conducting rules follow.
         member_dispatch_mounted=getattr(context_provider, "member_dispatch_mounted", None),
     )

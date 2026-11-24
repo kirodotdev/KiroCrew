@@ -344,6 +344,31 @@ class TestUnfurlAlwaysOff:
         assert posts == []
 
     @pytest.mark.asyncio
+    async def test_remote_media_is_refused_on_the_stop_stream_path_too(self) -> None:
+        """chat.stopStream takes a blocks tree as well: a media tree is refused with
+        no call made, and a media-free footer still goes through."""
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def _api_call(method: str, json: dict[str, Any]) -> dict[str, str]:
+            calls.append((method, json))
+            return {"ok": "true"}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(api_call=_api_call)
+        refused = await client.stop_stream(
+            "C1",
+            "1712793600.000100",
+            blocks=[{"type": "image", "image_url": "https://attacker.example/pixel.png"}],
+        )
+        assert refused is False
+        assert calls == []
+
+        footer = [{"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 5s"}]}]
+        assert await client.stop_stream("C1", "1712793600.000100", blocks=footer) is True
+        assert [m for m, _ in calls] == ["chat.stopStream"]
+        assert calls[0][1]["blocks"] == footer
+
+    @pytest.mark.asyncio
     async def test_a_media_free_tree_still_posts(self) -> None:
         """The refusal is scoped to media fields: ordinary blocks are unaffected,
         and no in-repo caller constructs an image or video block."""

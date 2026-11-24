@@ -776,6 +776,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     turn._declined_grant_notices = _declined_grant_notices
     if _web_ask:
         _declined_grant_notices["web_ask_rule"] = web_ask_rule.card_notice(_web_ask)
+    if _held:
+        # Redact complete texts before card_notice can truncate a credential.
+        _declined_grant_notices["bot_limit_held"] = _redact_display_text(
+            mate_held_rules.card_notice([_redact_display_text(text) for text in _held])
+        )
     # Backend-subagent request whose SECURITY context is absent
     # (structured params missing, or shell with no recoverable
     # command — see AcpEvent.child_low_fidelity): every

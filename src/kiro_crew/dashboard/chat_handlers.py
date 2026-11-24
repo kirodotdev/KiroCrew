@@ -603,6 +603,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_slot_creator,
     message_required_error,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401
@@ -710,6 +711,10 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     parse_cls_meta,
     request_slot_origin,
     row_mid,
+)
+from kiro_crew.dashboard.stop_retires_approval import (
+    retire_stopped_cards,
+    waiting_permission_cards,
 )
 from kiro_crew.dashboard.system_notices import (  # noqa: F401
     SESSION_RELOAD_DEFERRED_TEXT,
@@ -948,8 +953,15 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     They are combined here deliberately: a new blocking wait added later must
     be released from every stop path, and three separate call sites each
     needing their own second line is how one of them gets missed.
+
+    In a chat whose sub-agents run in the KAS engine, every page is then told
+    which permission cards the stop rejected (``stop_retires_approval``): only the
+    tab whose composer pressed Stop clears its own, and there Stop all stops the
+    turn from the sub-agent chip.
     """
+    waiting = waiting_permission_cards(state, slot)
     _reject_pending_approvals(slot)
+    retire_stopped_cards(state, slot, waiting)
     cancelled = state.cancel_questions_for_slot(slot.key)
     if cancelled:
         logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)

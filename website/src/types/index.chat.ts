@@ -775,6 +775,12 @@ export interface SubagentActivity {
    *  done-event result is stored here. Managed cards leave this unset and use
    *  the on-demand DiskLoader to keep Redux memory bounded. */
   result?: string
+  /** A sub-agent the KAS engine runs inside the chat's own turn (the gateway's
+   *  `engine: true` on its spawn/done/snapshot frames, set only for a chat with
+   *  the `kas_subagents` preview on). It has no run of its own: it cannot be
+   *  stopped or retried alone, and the engine reports no credits or model for
+   *  it. Every other `native:*` card leaves this unset. */
+  engine?: boolean
 }
 
 /** Where `clampToolOutput` (wire.ts in store/chat) removed the middle of a tool

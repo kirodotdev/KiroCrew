@@ -1115,6 +1115,8 @@ class TurnDriver:
                 # belong to a child session so their directives are refused.
                 if directives is not None:
                     directives.on_subagent_activity(event)
+                # A native sub-agent's finished call: its PostToolUse, as for the turn's own.
+                await hooks.on_child_result(event)
             elif kind == EVENT_TOOL_RESULT:
                 if undelivered_watch is not None:
                     await undelivered_watch.on_result(event)

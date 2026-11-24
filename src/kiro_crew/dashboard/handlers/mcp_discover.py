@@ -189,7 +189,7 @@ async def _edition_featured(
         return []
     edition = registry.get("capability")
     read = getattr(edition, "featured", None)
-    if edition is None or read is None or not edition.is_available():
+    if edition is None or read is None or not await asyncio.to_thread(edition.is_available):
         return []
     try:
         rows = await asyncio.wait_for(read(limit), timeout=_DETAIL_TIMEOUT_SECS)
@@ -212,7 +212,7 @@ async def edition_package_detail(server_id: str) -> McpServerDetail | None:
     """
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("capability")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         return None
     try:
         return await asyncio.wait_for(
@@ -242,7 +242,7 @@ async def search_registry(
     so the two answer alike.
     """
     registry = await asyncio.to_thread(_get_registry)
-    provider_names = [p.name for p in registry.available_providers]
+    provider_names = [p.name for p in await asyncio.to_thread(lambda: registry.available_providers)]
     if featured and not query:
         rows = _featured_results(provider_names, provider, limit)
         rows += await _edition_featured(registry, provider, limit - len(rows))
@@ -351,7 +351,7 @@ async def api_mcp_discover_detail(request: web.Request) -> web.Response:
     provider = registry.get(provider_name)
     if provider is None:
         return web.json_response({"error": f"Unknown provider '{provider_name}'"}, status=400)
-    if not provider.is_available():
+    if not await asyncio.to_thread(provider.is_available):
         return web.json_response(
             {"error": f"Provider '{provider_name}' is not available"}, status=503
         )
@@ -463,7 +463,7 @@ async def official_install_plan(server_id: str) -> tuple[str, dict[str, Any], st
             )
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("official")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         raise OfficialPlanError(503, "provider_unavailable", "Provider 'official' is not available")
     try:
         detail = await asyncio.wait_for(
@@ -615,7 +615,7 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("capability")
-    if provider is None or not provider.is_available():
+    if provider is None or not await asyncio.to_thread(provider.is_available):
         return web.json_response({"error": "Provider 'capability' is not available"}, status=503)
 
     # circular import: agents/mcp import sibling handler modules at call time.
