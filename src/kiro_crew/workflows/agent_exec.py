@@ -146,7 +146,7 @@ def step_backend_kwargs(opts: dict) -> dict[str, str]:
             f"backend {name!r} is not available; choose one of "
             f"{selectable_stored_backend_values()}"
         )
-    # "kiro" runs where a saved Kiro CLI pick runs, as spawn_run(backend="kiro") does.
+    # "kiro" runs where a Bot's Kiro CLI pin runs, as spawn_run(backend="kiro") does.
     return {"backend_override": requested_kiro_pick(backend, selectable) or backend}
 
 

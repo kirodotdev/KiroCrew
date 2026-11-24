@@ -236,9 +236,20 @@ any event loop (a worker thread or a sync CLI entry). An unknown probe on a Kiro
 `acp --help` that did not run, or a v3 start that did not finish. The floor task then
 asks again after each `kas_floor_wait.KIRO_PICK_VERDICT_RETRY_SECS` delay (1, 5 and
 15 minutes) while the pick is still stored and `kiro_cli_pick_verdict_open` holds (no
-v3 confirmed, KAS selectable), reconciling the live config after each ask, so a busy
+v3 start confirmed, KAS selectable), reconciling the live config after each ask, so a busy
 host's timed-out probe moves the pick once kiro-cli answers, without a restart. Before the
-first wait it releases the spawn gate, so no spawn waits for these asks. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
+first wait it releases the spawn gate, so no spawn waits for these asks.
+With no pick stored, a help probe that names v3 records the help verdict
+(`confirm_kiro_cli_offers_kas(started=False)`, unless a start verdict is on record):
+the Agent Harness panel's Kiro CLI row and a Bot's Kiro CLI pin read it
+(`kiro_cli_listed_backend`), while a stored `agent.acp_backend` pick moves onto KAS
+only on a start verdict (`kiro_cli_pick_backend`). A Kiro CLI pick saved while the
+gateway runs therefore loads as the v2 launch, and `process_entry._watch_saved_kiro_pick`
+runs the boot's check for it once the boot floor task is done, so new sessions run
+where a restart would put them. A pick saved over a value that degrades to the Kiro
+CLI floor reaches it too: the watch document says whether a Kiro CLI value is the
+stored pick or the floor (`config.live.watch_document`). Nothing is started while no
+pick is stored, and a pick on the bundle route is never checked. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
 row reads that same `kas_engine_verdict` and `kas_engine_start_verdict`, never its
 own probe, and says which
 engine the pick runs on by the floor's own rule: KAS only when v3

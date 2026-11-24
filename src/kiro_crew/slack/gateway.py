@@ -575,6 +575,8 @@ from kiro_crew.slack.gateway_runtime.nudge_channel_fire import (
 from kiro_crew.slack.gateway_runtime.process_entry import (
     _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
     BOOT_RESTART_HINT,
+    _ask_again_while_pick_open,
+    _kas_floor_defaulted,
     _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
@@ -585,6 +587,7 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _start_kas_cli_floor,
     _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
+    _watch_saved_kiro_pick,
     run_gateway,
     signing_key_preflight,
 )
