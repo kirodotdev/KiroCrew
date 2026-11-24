@@ -464,8 +464,12 @@ closed, the folder removed.
 `workspace_tools` starts each command in a session of its own, which the group
 stop does not reach. It runs unchanged from every other remote workspace: its
 SIGTERM retirement unwinds a running command (`_unwind`, coreutils `timeout`
-signalling the command's group), and whatever is left in the sandbox ends with
-the tool server's own PID namespace. Pinned by
+signalling the command's group). A `run_command` also signals its own group
+(`_signal_group`: TERM, then KILL after the grace) on a host without `timeout`,
+such as stock macOS, so a background job it started does not outlive it; the
+guest file cannot import `platform_compat_kill`, so that one `os.killpg` site is
+counted in `test_kill_chokepoint_ratchet.py`. Whatever is left in the sandbox
+ends with the tool server's own PID namespace. Pinned by
 `test_connected_computers_broker.py`.
 
 A connected-computer workspace attachment that fails or is cancelled closes all

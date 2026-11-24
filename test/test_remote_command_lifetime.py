@@ -45,13 +45,39 @@ def _wait_dead(pid: int) -> None:
     wait_until(lambda: not _alive(pid), describe=lambda: f"pid {pid} still alive")
 
 
+def _reap_leftover(pid: int) -> None:
+    """Kill a background job a failing test left behind, so no run leaks a process."""
+    if _alive(pid):
+        os.kill(pid, signal.SIGKILL)
+
+
 @posix_groups
 def test_a_timed_out_command_takes_its_whole_group_with_it(tmp_path):
+    # sleep 300 outlasts wait_until's deadline, so only a group stop can end it.
     marker = tmp_path / "bg.pid"
     ws = wt.Workspace(str(tmp_path))
-    out = ws.run_command(f"sleep 60 & echo $! > {marker}; echo partial; sleep 60", timeout=1)
+    out = ws.run_command(f"sleep 300 & echo $! > {marker}; echo partial; sleep 300", timeout=1)
     assert out.startswith("partial\n") and out.endswith("[timed out after 1s]")
-    _wait_dead(_background_pid(marker))
+    pid = _background_pid(marker)
+    try:
+        _wait_dead(pid)
+    finally:
+        _reap_leftover(pid)
+
+
+@posix_groups
+def test_a_group_that_ignores_term_is_killed_after_the_grace(tmp_path, monkeypatch):
+    # The shell and its job both ignore TERM, so only the KILL after the grace ends them.
+    monkeypatch.setattr(wt, "_KILL_GRACE_SECS", 0.2)
+    marker = tmp_path / "bg.pid"
+    ws = wt.Workspace(str(tmp_path))
+    out = ws.run_command(f"trap '' TERM; sleep 300 & echo $! > {marker}; sleep 300", timeout=1)
+    assert out.endswith("[timed out after 1s]")
+    pid = _background_pid(marker)
+    try:
+        _wait_dead(pid)
+    finally:
+        _reap_leftover(pid)
 
 
 @posix_groups
@@ -69,8 +95,12 @@ def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch):
     monkeypatch.setattr(wt.subprocess, "Popen", RetiredWhileWaiting)
     ws = wt.Workspace(str(tmp_path))
     with pytest.raises(SystemExit):
-        ws.run_command(f"sleep 60 & echo $! > {marker}; sleep 60", timeout=60)
-    _wait_dead(_background_pid(marker))
+        ws.run_command(f"sleep 300 & echo $! > {marker}; sleep 300", timeout=60)
+    pid = _background_pid(marker)
+    try:
+        _wait_dead(pid)
+    finally:
+        _reap_leftover(pid)
 
 
 @posix_groups

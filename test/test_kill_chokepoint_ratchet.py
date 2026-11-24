@@ -87,6 +87,11 @@ PID_KILL_PRIMITIVES = frozenset(
 #: session runtime, so an ownership gate there would consult a table that can
 #: never hold a lease for it. Raising it for a site the change itself adds is what
 #: the ratchet exists to stop.
+#:
+#: ``remote_session/workspace_tools.py`` is a guest script that runs on a remote
+#: machine without ``kiro_crew`` installed, so it cannot import
+#: ``platform_compat_kill``; its one group signal (``_signal_group``) is counted
+#: here and cannot route through the gate.
 BYPASS_SITES: dict[str, int] = {
     "acp/runtime_process_tree.py": 1,
     "apps/backend_runtime/stale_reap.py": 2,
@@ -112,6 +117,7 @@ BYPASS_SITES: dict[str, int] = {
     "mcp_gateway/daemon_control.py": 1,
     "monitoring/provider_cli.py": 1,
     "pdf_extract.py": 1,
+    "remote_session/workspace_tools.py": 1,
     "sandbox_probe.py": 1,
     "session_pid.py": 7,
     "session_pid_orphan_kill.py": 4,
