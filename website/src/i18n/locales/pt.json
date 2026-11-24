@@ -25091,7 +25091,8 @@
       "chat_model_picker": "O botão de modelo na caixa de mensagem. Mostra o modelo deste chat e abre o seletor de modelos.",
       "chat_session_title": "O título da sessão no topo do chat. Mostra o nome da sessão; clique nele para renomear a sessão.",
       "composer_approval_mode": "O seletor do modo de aprovação na linha de controles da caixa de mensagem. Define se só as consultas rodam sem perguntar, se as próprias buscas na memória, nos chats, nas habilidades e no conhecimento também rodam, se esta sessão é confiável ou se tudo é aprovado automaticamente (YOLO).",
-      "composer_voice_input": "O botão do microfone na caixa de mensagem. Pressione-o para ditar em vez de digitar; numa tela sensível ao toque, alterna entre o teclado e segurar para falar."
+      "composer_voice_input": "O botão do microfone na caixa de mensagem. Pressione-o para ditar em vez de digitar; numa tela sensível ao toque, alterna entre o teclado e segurar para falar.",
+      "members_bot_sessions_switch": "O interruptor no topo da aba Sessões, no cartão de perfil de um bot. O rótulo traz o nome do bot; ligado, as sessões desse bot também aparecem na sua própria lista de sessões."
     }
   },
   "sessionEnvironments": {
