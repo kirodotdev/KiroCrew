@@ -91,10 +91,10 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
     ),
     ("GET", "/api/dashboard/branding"): Row(
         "src/kiro_crew/dashboard/handlers/core.py:292",
-        "The dashboard name and logo choice (useBranding.tsx).",
+        "The dashboard name, instance label and logo (useBranding.tsx); only those three keys.",
     ),
     ("GET", "/api/theme/boot"): Row(
-        "src/kiro_crew/dashboard/handlers/core.py:536",
+        "src/kiro_crew/dashboard/handlers/core.py:547",
         "The theme and language the page starts with (LanguageProvider.tsx); public at boot.",
     ),
     ("GET", "/api/chat/slots"): Row(

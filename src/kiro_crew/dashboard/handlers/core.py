@@ -305,6 +305,17 @@ async def api_branding(request: web.Request) -> web.Response:
     cfg = live.snapshot()
     if cfg is None:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if request.get("via_app"):
+        # A delegated (``via_app``) token reads this route for the app's dashboard view
+        # (``delegated_scope.READ_ALLOW``). It gets exactly the name and the logo the page
+        # draws: an allowlist, so no field added below for the owner reaches the app.
+        return web.json_response(
+            {
+                "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
+                "instance_label": cfg.dashboard.instance_label,
+                "avatar": "/logo.png",
+            }
+        )
     # `direct_local` is the canonical client-side origin signal: true only for a
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin

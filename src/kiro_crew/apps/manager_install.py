@@ -882,6 +882,15 @@ def update_app(
         update_marker = _UpdateMarker.hold(name)
     except OSError as exc:
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
+    # The ``dashboard_proxy`` grant names the sealed install record, and this function
+    # never seals one: drop it before the new tree lands, so no grant stands for code the
+    # owner never saw, on success or after a rollback. The registry path re-seals right
+    # after (``set_app_provenance``) with a new identity, which the old grant never
+    # matches; a folder update leaves the app with no record and no offer. The caller
+    # holds the lifecycle lock and restarts the backend only after this returns.
+    from kiro_crew.apps import dashboard_proxy  # noqa: PLC0415 - MCP listing import budget
+
+    dashboard_proxy.forget_install(name)
     with _tree_swap(name), update_marker:
         previous_ui: Path | None = None
         ui_recorded = False
