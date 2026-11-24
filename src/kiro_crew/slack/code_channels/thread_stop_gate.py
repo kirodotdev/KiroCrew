@@ -67,17 +67,14 @@ async def decide(
     if not is_owner(sender_id):
         routing._audit(sender_id, OPERATION, "denied", resources, "unauthorized sender")
         return routing.DROP
-    if not routing.channel_and_origin_permit(cfg, channel, channel):
-        routing._audit(
-            sender_id, OPERATION, "denied", resources, "channel activation does not admit the bot"
-        )
-        return routing.DROP
+    # No channel-activation check (review or off): Stop only removes work, so the owner's
+    # Stop is admitted whatever the channel's activation, even where a thread started.
     routing._audit(sender_id, OPERATION, "allowed", resources)
     # A thread has no channel-wide stop fence or status hold (the channel holds other
     # threads), so it skips ``routing._stop_bound``'s: its Stop fences the stopped
     # turn's dispatch itself (stop_helpers.stop_channel).
     # shortcut: Slack writes a thread admitted before the Stop are not fenced; key the
-    # fence by thread when part C's board writes need it.
+    # fence by thread when part C's board writes need it (#41908).
     await stop_helpers.stop_channel(
         orch, binding, sender_id, channel, source=OPERATION, say_idle=True
     )

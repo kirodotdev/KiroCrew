@@ -24,7 +24,12 @@ from test_slack_code_channel_trust_from_slack import _Sessions
 import kiro_crew.dashboard.chat_handlers as chat_handlers
 import kiro_crew.slack.handler as slack_handler
 from kiro_crew import safety_override as safety_override_mod
-from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
+from kiro_crew.config.loader import (
+    ACTIVATION_MENTION,
+    ACTIVATION_OFF,
+    ACTIVATION_REVIEW,
+    ChannelConfig,
+)
 from kiro_crew.config.section_builders import _build_slack_config as build_slack_config
 from kiro_crew.slack.code_channels import (
     agent_picker,
@@ -81,6 +86,7 @@ def thread(env: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     e = env
     e.thread_on = True
     e.public_ok = False
+    e.activation = ACTIVATION_MENTION
 
     def cfg(_orch: Any = None) -> Any:
         return SimpleNamespace(
@@ -93,7 +99,7 @@ def thread(env: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
                 ),
             ),
             agent=SimpleNamespace(default_agent="slack-default"),
-            channel_config=lambda ch: ChannelConfig(activation=ACTIVATION_MENTION),
+            channel_config=lambda ch: ChannelConfig(activation=e.activation),
         )
 
     e.cfg = cfg
@@ -432,6 +438,29 @@ def test_stop_in_the_thread_halts_the_conductor_and_its_workers(thread: Any, sto
     said = [p for p in thread.slack.posts if p[0] == PRIVATE]
     assert said and said[-1][2] == ANCHOR  # answered in the thread
     assert "this channel" not in said[-1][1]
+
+
+@pytest.mark.parametrize("activation", [ACTIVATION_REVIEW, ACTIVATION_OFF])
+def test_the_owners_stop_works_in_a_review_or_off_channel(
+    thread: Any, stops: list[str], activation: str
+) -> None:
+    """A thread can start in such a channel, so its owner can always stop it from Slack."""
+    thread.activation = activation
+    result = _gate(thread, OWNER)
+    assert result.gate is routing.Gate.DROP
+    assert sorted(stops) == sorted([CONDUCTOR, WORKER])
+    said = [p for p in thread.slack.posts if p[0] == PRIVATE]
+    assert said and said[-1][2] == ANCHOR
+
+
+@pytest.mark.parametrize("activation", [ACTIVATION_REVIEW, ACTIVATION_OFF])
+@pytest.mark.parametrize("user", [SHARED, MEMBER])
+def test_a_non_owner_still_stops_nothing_in_a_review_or_off_channel(
+    thread: Any, stops: list[str], activation: str, user: str
+) -> None:
+    thread.activation = activation
+    assert _gate(thread, user).gate is routing.Gate.DROP
+    assert stops == []
 
 
 @pytest.mark.parametrize("user", [SHARED, MEMBER])
