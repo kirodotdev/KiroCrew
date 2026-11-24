@@ -1,6 +1,6 @@
 # Implementation Plan: Builtin App Optional Enable
 
-Status: implemented in `src/kiro_crew/apps/manager_builtins.py` and the dashboard app navigation/store surfaces.
+Status: implemented in `src/kiro_crew/apps/manager_builtins.py` and the dashboard app navigation/store surfaces. Historical where it differs from main: `_BUILTIN_APPS` is empty, and the 21 built-ins are discovered from `src/kiro_crew/apps/builtins/*/app.json` (`discover_builtin_apps`, called by `register_builtin_apps`); channels, taskkeeper, secretary and board are not built-ins. There is no `AppsPage.tsx` and no `refreshAppNav` in `App.tsx`: the store is `website/src/pages/apps/DiscoverPage.tsx` and `LibraryPage.tsx` with `website/src/components/appstore/AppListRow.tsx` (`isBuiltin`), and the nav lives under `website/src/shell/`.
 
 ## Overview
 

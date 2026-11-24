@@ -10,7 +10,7 @@ Status: historical; none of the proposed `website/src/kit/` tasks shipped.
 
 - [ ] 1. Scaffold the kit module and lifecycle core
   - Create `website/src/kit/` with `ui/`, `app/`, `tool-views/`, `data/`, `gallery/` and barrel exports
-  - Implement `kit/tool-views/core/types.ts` (`ToolViewState`, `ToolViewDef`) and `defineToolView`; add `zod` as a `website/package.json` dependency (name it in the PR — not previously present)
+  - Implement `kit/tool-views/core/types.ts` (`ToolViewState`, `ToolViewDef`) and `defineToolView`; use the `zod` dependency `website/package.json` already declares
   - Implement `ToolViewFrame` rendering the four lifecycle states (skeleton / running / result / error)
   - _Requirements: 2.2, 2.3_
 
