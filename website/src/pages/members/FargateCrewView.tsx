@@ -308,9 +308,6 @@ export default function FargateCrewView({
         <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
           {t('pages.membersPage.deploy_action_deploy')}
         </Btn>
-        <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
-          {t('pages.membersPage.deploy_action_hint')}
-        </div>
       </div>
     )
   }
@@ -440,9 +437,6 @@ export default function FargateCrewView({
           <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
             {t('pages.membersPage.deploy_action_deploy')}
           </Btn>
-          <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
-            {t('pages.membersPage.deploy_action_hint')}
-          </div>
         </div>
       )}
     </div>
