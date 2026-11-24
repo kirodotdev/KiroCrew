@@ -47,13 +47,12 @@ from kiro_crew.security.readonly_bash import _EXTGLOB_RE
 # A Windows segment may hold a space (`C:\Users\Jane Doe\`), never another whitespace,
 # and inside a Windows path a multi-component name such as `.kube/config` may use one
 # lone backslash for each `/` (`C:\Users\u\.kube\config`).
-_WIN_NAME_SEP = r"(?(win)(?:/|\\(?!\\))|/)"
 _CRON_CRED_PATH_RE = re.compile(
     r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?"
     r"|(?P<win>(?<![\w?\\-])[A-Za-z]:\\(?:[^\t\n\r\f\v'\"\\:]{1,255}\\){0,32}"
     r"|%[A-Za-z_][\w()]{0,255}%\\))"
     r"(?P<name>"
-    + "|".join(re.escape(d).replace("/", _WIN_NAME_SEP) for d in _SENSITIVE_HOME_DIRS)
+    + "|".join(re.escape(d).replace("/", r"(?(win)(?:/|\\(?!\\))|/)") for d in _SENSITIVE_HOME_DIRS)
     + r")"
     r"(?:/|\s|['\"]|$|(?(win)\\(?!\\)|(?!)))",
     re.IGNORECASE,
