@@ -1268,7 +1268,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "pod/provision.py::_manifest_path",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
-        "pod/runtime.py::recent_journal",
         # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
         # place; Windows has no exec, so the CLI runs the same binary as a child
         # and returns its exit code. Argv is the pod venv's entry point plus a
