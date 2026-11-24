@@ -26,6 +26,7 @@ import string
 import sys
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.prompt_segments import SOURCE_USER, PromptSegment, SegmentedPrompt
 from kiro_crew.terminal_safe import safe_terminal_line
 
 if TYPE_CHECKING:
@@ -72,6 +73,10 @@ async def start(
     # A harness runs a slash command (``/compact``) only when it opens the prompt.
     if await _is_harness_command(prompt):
         return hooks, prompt
+    if injected and not isinstance(prompt, SegmentedPrompt):
+        # The typed text stays the user's own, so a path the hook printed is read as
+        # injected text, never as an image the user attached.
+        prompt = SegmentedPrompt([PromptSegment(SOURCE_USER, prompt)])
     return hooks, await with_hook_context(prompt, injected)
 
 

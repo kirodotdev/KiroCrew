@@ -114,6 +114,7 @@ class _KasProvider:
     def __init__(self, cwd: str) -> None:
         self.cwd = cwd
         self.prompts: list[str] = []
+        self.raw_prompts: list = []
 
     async def stream(self, message):
         from kiro_crew.providers.base import (
@@ -125,6 +126,7 @@ class _KasProvider:
         )
 
         self.prompts.append(str(message))
+        self.raw_prompts.append(message)
         yield LLMEvent(
             kind=EVENT_TOOL_CALL,
             tool_call_id="t1",
@@ -209,6 +211,12 @@ class TestCliChatSpecObserverHooks:
         assert prompt.startswith("[Hook context]")
         assert "out-prompt" in prompt and "run echo hi" in prompt
         assert ("out-spawn" in prompt) is new_session
+        # Only the typed text is the user's: a path a hook prints is never an attachment.
+        from kiro_crew.prompt_segments import SOURCE_USER, segments_of
+
+        (raw,) = provider.raw_prompts
+        user = [seg.text for seg in segments_of(raw) if seg.source == SOURCE_USER]
+        assert user == ["run echo hi"]
 
     @pytest.mark.asyncio
     async def test_a_new_session_says_when_the_spec_cannot_be_read(self, tmp_path, runs, capsys):
