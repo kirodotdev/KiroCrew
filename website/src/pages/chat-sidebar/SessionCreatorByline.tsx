@@ -58,7 +58,7 @@ function CreatorName({ attribution }: { attribution: SessionAttribution }) {
       className="min-w-0 max-w-[40%] truncate font-normal text-muted"
       title={creatorTitle(attribution, viewerId)}
     >
-      <span aria-hidden>{'\u00A0·\u00A0'}</span>
+      <span aria-hidden data-meta-sep>{'\u00A0·\u00A0'}</span>
       <span className="sr-only">{spoken}</span>
       <span aria-hidden>{label}</span>
     </span>
