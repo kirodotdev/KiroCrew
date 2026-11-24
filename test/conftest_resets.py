@@ -1324,6 +1324,49 @@ def _reset_subagent_not_due_memo():
 
 
 @per_test_guard
+def _reset_waiting_sends():
+    """Start each test with no dashboard send recorded as waiting in fair admission.
+
+    Each entry holds an admission bound to that test's own admission service, so an
+    entry one test left would let a later test's Stop on the same slot key cancel
+    work in the earlier test's service.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.shared_crew.admission_entry")
+        # hasattr: prove.py runs the tests on a tree with this map reverted away.
+        if module is not None and hasattr(module, "_WAITING_SENDS"):
+            module._WAITING_SENDS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_app_scope_grant_facts():
+    """Start each test with no app grant facts stored for a scope refusal's wording.
+
+    The entries hold what one test's manifest, install record and clock said about
+    an app. Tests reuse app names, so an entry one test left could word the next
+    test's refusal.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.token_auth_app_scope")
+        if module is not None:
+            module._app_grant_facts.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_persisted_truncation_reports():
     """Start each test with no truncated spawn listing already reported.
 
@@ -1360,6 +1403,32 @@ def _reset_chromium_opt_in_record():
         record = getattr(module, "_CHROMIUM_OPT_IN_RETRY_AT", None)
         if record is not None:
             record.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_code_channel_owner_only_notices():
+    """Start each test with no remembered code-channel owner-only notice, and no
+    channel remembered as being opened.
+
+    ``shared_refusal._noticed`` throttles the notice per person and channel on the
+    clock, and tests reuse both ids, so a notice one test sent could silence the
+    next test's. ``routing._opening`` lets a channel's unmentioned messages through
+    while it is opened, so one a test left would admit the next test's.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.slack.code_channels.shared_refusal")
+        if module is not None:
+            module._noticed.clear()
+        routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
+        if routing is not None:
+            routing._opening.clear()
 
     clear()
     try:

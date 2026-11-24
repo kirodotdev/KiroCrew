@@ -1,5 +1,7 @@
 # Configuration Reference
 
+<!-- docs-lint: wrong-on-purpose secrets_vault -->
+
 Everything Kiro Crew remembers about how it should behave lives in one JSON file,
 `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway`
 run. Most keys are also editable from the dashboard's Settings pages. This page
@@ -926,6 +928,7 @@ edited on Settings → Browser and applies without a restart.
 | `browser.recording.max_total_mb` | The most replay all chats keep together, in MB; past it the oldest turns are removed first, whichever chat they belong to | `1024` |
 | `browser.run.max_ops` | The most browser steps one chat runs; past it the next step is not run and the agent is told why. Taking over the browser or starting a new chat counts from zero. `0` sets no limit | `0` |
 | `browser.run.max_repeats` | The most times in a row one browser step runs with the same details (the same click on the same element, the same scroll); past it the next one is not run and the agent is told to try something else. Any different step starts the count again. `0` sets no limit | `0` |
+| `browser.run.max_minutes` | The most minutes one chat's browser run lasts, counted from its first step; past it the next step is not run and the agent is told why. Time between turns counts, as the step count does. Taking over the browser or starting a new chat starts the clock again. `0` sets no limit | `0` |
 | `browser.credentials.enabled` | Start Kiro's own Chromium signed in to the sites your edition's sign-in provider serves. Unset follows the edition's default; with no provider it does nothing. Your own Chrome is never changed | unset |
 | `browser.credentials.domains` | The sites that sign-in may be used for (`example.com` covers its subdomains). Only a site both listed here and served by the provider is used. Empty follows the provider's default | `[]` |
 | `dashboard.browser_local_origins` | The loopback origins the side panel's Preview tab may open, each `host:port` with host `localhost`, `127.0.0.1` or `[::1]` (`localhost:5173` for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside URL is answered with "Open this in your Chrome, or ask Kiro". The same list is the only way the agent's `browser` tool may open a loopback address, so listing an origin also opens it to the agent's browser (which may be your own Chrome). Empty keeps every address refused. Entries in any other shape are dropped | `[]` |

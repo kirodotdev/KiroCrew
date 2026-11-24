@@ -482,7 +482,10 @@ When a step's stream runs to its end, `Task.result` holds its answer without kir
 complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
 acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
 answer. The snapshot taken while the turn runs stays raw, so a step whose stream
-raises (a dead process, a context overflow) keeps that snapshot as it is.
+raises (a dead process, a context overflow) keeps that snapshot as it is. Neither
+carries the alternation placeholder the model repeats at the start of a turn after
+one that ended on a tool result: each prompt of the step streams through
+`alternation_echo.drop_echo` ([messaging](messaging.md)).
 
 ## Concurrent Tasks
 

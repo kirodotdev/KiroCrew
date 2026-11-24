@@ -435,15 +435,18 @@ def _report_changes() -> bool:
         return False
 
 
-def _run_limits() -> tuple[int, int]:
-    """``browser.run.max_ops`` and ``max_repeats``, read fresh for each op. Off (0) when unreadable."""
+def _run_limits() -> tuple[int, int, int]:
+    """``browser.run`` ``max_ops``, ``max_repeats`` and ``max_minutes``, read fresh for each op.
+
+    Off (0) when unreadable.
+    """
     try:
         from kiro_crew.config import KiroCrewConfig
 
         run = KiroCrewConfig.load().browser.run
-        return run.max_ops, run.max_repeats
+        return run.max_ops, run.max_repeats, run.max_minutes
     except Exception:  # noqa: BLE001 - an unreadable setting leaves every op as it was
-        return 0, 0
+        return 0, 0, 0
 
 
 def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
@@ -1635,14 +1638,19 @@ async def _bound_op(
             result = off_host
         else:
             # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
-            max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
+            limits = (0, 0, 0) if isinstance(request, GatewayCaller) else _run_limits()
             counted: tuple[Any, run_budget.RunCount] | None = None
-            if max_ops or max_repeats:
+            if any(limits):
                 sess = hub.get(key)
                 if sess is not None:
                     counted = (sess, dataclasses.replace(sess.run))
                     stopped = run_budget.check(
-                        sess.run, op, args, max_ops=max_ops, max_repeats=max_repeats
+                        sess.run,
+                        op,
+                        args,
+                        max_ops=limits[0],
+                        max_repeats=limits[1],
+                        max_minutes=limits[2],
                     )
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)

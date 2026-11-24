@@ -37,7 +37,8 @@ from kiro_crew.config.sections import (
     DecisionProviderConfig,
     DecisionsConfig,
 )
-from kiro_crew.decisions import gate
+from kiro_crew.decisions import gate, local_models
+from kiro_crew.decisions import provider as provider_mod
 from kiro_crew.decisions.types import Answer, Box, Choice, ImageAsset, Noul
 
 SESSION = "dashboard:chat-1"
@@ -178,13 +179,18 @@ def seam(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     state = SimpleNamespace(
-        endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT, denied=False, provider=FakeProvider()
+        endpoint=DECISION_PROVIDER_ENDPOINT_DEFAULT,
+        model=DecisionProviderConfig().model,
+        denied=False,
+        provider=FakeProvider(),
     )
 
     def _config():
         return SimpleNamespace(
             decisions=DecisionsConfig(
-                provider=DecisionProviderConfig(endpoint=state.endpoint, timeout_ms=1000)
+                provider=DecisionProviderConfig(
+                    endpoint=state.endpoint, model=state.model, timeout_ms=1000
+                )
             )
         )
 
@@ -313,6 +319,74 @@ def test_every_request_carries_the_point_s_own_wait_ceiling(seam, tmp_path, monk
         wait == (decide_mod.IMAGE_WAIT_S if image else decide_mod.TEXT_WAIT_S)
         for image, wait in seen
     )
+
+
+def _local_preset(seam, monkeypatch, preset_id: str) -> local_models.LocalModel:
+    """Point the seam at a route-built local preset the runtime attests."""
+    preset = local_models.get(preset_id)
+    assert preset is not None
+    seam.endpoint = local_models.endpoint_for(preset.default_port)
+    seam.model = preset.model
+    seam.write(endpoint=seam.endpoint)
+    monkeypatch.setattr("kiro_crew.decisions.capability.is_local_preset", lambda *a, **k: True)
+    return preset
+
+
+@pytest.mark.parametrize(
+    "preset_id,asked", [("plumb-4b", False), ("strands-decider-2b", False), ("laya", True)]
+)
+def test_a_local_model_slower_than_the_text_wait_is_not_asked_to_pick_or_check(
+    seam, tmp_path, monkeypatch, preset_id, asked
+):
+    """Plumb-4B and Strands Decider 2B typically answer after the 500 ms a pick or a
+    check waits: the op takes a timeout's path at once, with no request. Laya fits."""
+    _local_preset(seam, monkeypatch, preset_id)
+    for args in ({"ref": "e1"}, {"target": "red kettle add"}):
+        expected, expected_calls = _baseline("click", args, tmp_path)
+        page, sent = FakePage(), len(seam.provider.calls)
+        result = _run("click", args, _ctx(page, tmp=tmp_path))
+        assert (len(seam.provider.calls) > sent) is asked
+        if not asked:
+            assert result == expected and page.calls == expected_calls
+
+
+@pytest.mark.parametrize("preset_id", ["plumb-4b", "strands-decider-2b", "laya"])
+def test_reflex_still_asks_a_slow_local_model_and_waits_by_its_median(seam, monkeypatch, preset_id):
+    """The probe ``reflex`` shares stays armed, and its wait is three times the
+    preset's own median, never less than three times the local spec's figure."""
+    from kiro_crew.browser_harness import reflex
+
+    preset = _local_preset(seam, monkeypatch, preset_id)
+    assert decide_mod._probe(SESSION).text is True
+    caps = decide_mod.capabilities()
+    spec_ms = provider_mod.get(provider_mod.PROVIDER_LOCAL).latency_ms
+    assert caps.latency_ms == max(spec_ms, round(preset.p50_secs * 1000))
+    seen: list = []
+    real = gate.decide
+
+    async def _spy(*args, **kwargs):
+        seen.append(kwargs.get("max_wait_s"))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(gate, "decide", _spy)
+    plan = reflex.parse({"goal": "Merge the tiles", "keys": ["ArrowRight"]})
+    loop = reflex.Loop(_ctx(FakePage()), plan, SESSION, False, caps)
+    verdict = asyncio.run(
+        decide_mod.reflex_step(
+            SESSION,
+            {"goal": "Merge the tiles"},
+            {"PRESS_ArrowRight": "press ArrowRight"},
+            {},
+            [],
+            [],
+            until=None,
+            subject="page",
+            frame=None,
+            step=1,
+            wait_s=loop.wait_s,
+        )
+    )
+    assert verdict is not None and seen == [pytest.approx(caps.latency_ms * 3 / 1000)]
 
 
 def test_a_frame_that_cannot_be_written_is_the_outline_path(seam, tmp_path):

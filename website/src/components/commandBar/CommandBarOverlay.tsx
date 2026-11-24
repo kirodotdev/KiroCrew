@@ -183,8 +183,10 @@ export default function CommandBarOverlay({
   // and the alternative surfaces (sidebar, recents) are reading the same three.
   const liveSlots = useAppSelector(selectSlotsWithLiveLastTs)
   // The person's own sessions: a Crew Mode chat's workers are listed in its side
-  // panel, never in the Needs You or Recent sessions rows (the full set stays for
-  // the engines, which key navigation and the mates' running state on it).
+  // panel, never in the Needs You or Recent sessions rows, and the folders view
+  // leaves out a Bot's home that holds none of these on the chat page, as the
+  // Sessions list does (the engines also take the full set, which keys navigation
+  // and the mates' running state).
   const personSlots = useAppSelector(selectPersonSlots)
   // What those hidden workers owe the person, carried by their root: a worker's
   // tool approval is counted on its conductor over the FULL slot set, so Needs
@@ -231,9 +233,10 @@ export default function CommandBarOverlay({
     folderSortError,
     artifacts,
     folders,
+    listedFoldersKey,
     runningMates,
     mates,
-  } = useCommandBarOverlayEngines({ scope, liveSlots, subagentQueued, dispatch, navigate })
+  } = useCommandBarOverlayEngines({ scope, liveSlots, personSlots, subagentQueued, dispatch, navigate })
 
   // The query is NOT reset here. It is seeded at mount, and clearing it on the open
   // edge would drop the type-ahead along with anything typed before this effect ran.
@@ -335,7 +338,7 @@ export default function CommandBarOverlay({
     rowsAnswerTheQuery, slots, rowCount, scopeLoading, scopeFetching,
   } = useCommandBarOverlaySlots({
     scope, debounced, query, sessions, openSessionsKey, recentSessions, artifacts, folderSortMode, folders,
-    runningMates, mates,
+    listedFoldersKey, runningMates, mates,
     argCommand, ranked, selected, setSelected,
   })
 

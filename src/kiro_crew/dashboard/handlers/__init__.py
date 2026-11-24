@@ -130,6 +130,9 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_test,
     api_mcp_oauth_relay,
 )
+from kiro_crew.dashboard.handlers.connections_app_manifest import (  # noqa: E402, F401
+    api_connections_app_manifests,
+)
 
 # ── Session crew log (handlers/crew_log.py) ──
 from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401

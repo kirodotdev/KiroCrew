@@ -50,8 +50,9 @@ __all__ = [
 
 #: Engine version this release runs. A ``-node<N>`` suffix names a republish of
 #: the same engine build with a different bundled Node runtime; the engine release
-#: is the part before it.
-KAS_PIN_VERSION = "0.66.117-node22.23.4"
+#: is the part before it. A trailing ``-al2`` marks a republish whose linux-x64
+#: Node and onnxruntime are the Amazon Linux 2 builds from ``packaging/kas-al2/``.
+KAS_PIN_VERSION = "0.66.117-node22.23.4-al2"
 
 #: The engine release the pin runs: :data:`KAS_PIN_VERSION` without its
 #: ``-node<N>`` suffix. This is the version the engine reports about itself, so
@@ -59,7 +60,7 @@ KAS_PIN_VERSION = "0.66.117-node22.23.4"
 KAS_PIN_ENGINE_RELEASE = KAS_PIN_VERSION.split("-node", 1)[0]
 
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
-KAS_PIN_MANIFEST_SHA256 = "58600c49bdd758709982051b11043f0f91194b9fe0dfa1cfd34d086ea341d95e"
+KAS_PIN_MANIFEST_SHA256 = "70db3b46ed43067e7b8c5c82423a5750d080825433cbaafed581b6daa0934993"
 
 #: The engine and Node build keys the pinned manifest publishes, the matrix
 #: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host
@@ -76,7 +77,7 @@ KAS_PIN_NODE_BUILDS = frozenset(
 #: SAME commit that moves the version and digest above: the floor describes the
 #: pinned bytes, so it never changes without them.
 KAS_PIN_LINUX_GLIBC_FLOOR: dict[str, tuple[int, int]] = {
-    "linux-x64": (2, 28),
+    "linux-x64": (2, 26),
     "linux-arm64": (2, 28),
 }
 

@@ -6829,7 +6829,8 @@
         },
         "run": {
           "max_ops": 0,
-          "max_repeats": 0
+          "max_repeats": 0,
+          "max_minutes": 0
         }
       }
     },
@@ -7101,7 +7102,8 @@
       "enumValues": null,
       "defaultValue": {
         "max_ops": 0,
-        "max_repeats": 0
+        "max_repeats": 0,
+        "max_minutes": 0
       }
     },
     {
@@ -7128,6 +7130,20 @@
       "tags": [],
       "label": "Most repeats of one step",
       "help": "After this many times in a row of the same browser step with the same details (the same click on the same element, the same scroll), the next one is not run and the agent is told to try something else. Any different step starts the count again. 0 (the default) sets no limit.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "browser.run.max_minutes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Most minutes of one browser run",
+      "help": "Once a chat's browser run has lasted this many minutes since its first step, the next step is not run and the agent is told why. Time between turns counts, as the step count does. Taking over the browser or starting a new chat starts the clock again. 0 (the default) sets no limit.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0

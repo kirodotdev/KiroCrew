@@ -368,11 +368,12 @@ scheduled jobs.
   exits 1. The `markdown` collection is never imported, and a private Bot (V2)
   store refuses the import: use the dashboard copy, which keeps provenance.
   Embeddings are built later by the gateway; `memory stats` shows the progress.
-- `kirocrew memory import-text <file> [--yes | --dry-run]` — save what another assistant
-  wrote about you: one fact per line or bullet (200 per run, file up to 256 KiB). It lists
-  facts the default store does not hold and you have not forgotten, and saves the numbers
-  you confirm (`--yes`: all; no terminal: none). It never replaces a stored fact and
-  makes no network or model call.
+- `kirocrew memory import-text <file> [--store <name>] [--yes | --dry-run]` — save what
+  another assistant wrote about you: one fact per line or bullet (200 per run, file up to
+  256 KiB). It lists facts the default store, or the named one, does not hold and you have
+  not forgotten, and saves the numbers you confirm (`--yes`: all; no terminal: none). It
+  never replaces a stored fact and makes no network or model call. `--store` is checked
+  like `memory import --store`: a private Bot (V2) store is refused.
 
 ## Comparing Memory Providers
 

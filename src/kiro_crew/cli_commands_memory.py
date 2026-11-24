@@ -760,6 +760,29 @@ def _memory_shadow(args: argparse.Namespace) -> None:
         print(safe_terminal_line(line))
 
 
+def _refuse_v2_import_destination(store_name: str) -> None:
+    """Exit 1 on stderr when *store_name* is a private V2 store, before anything opens.
+
+    REFUSED BEFORE THE OPEN: ``import`` and ``import-text`` write rows through
+    ``set_semantic`` and ``write_episodic`` with no ``facets=``, so a V2 destination
+    would receive rows stripped of scope, surface, crew, session_key and derived_from
+    while reporting success. A named V1 destination still works; V1 has no facets to
+    lose.
+
+    ``memory_store_version`` is the same resolver ``VectorMemoryStore.__init__``
+    uses, so this does not depend on the store object being built.
+    """
+    if memory_store_version(store_name) == 2:
+        print(
+            f"Error: memory store {store_name!r} is a private V2 store, and this import "
+            "cannot carry the scope, surface, crew, session and derivation facets its "
+            "rows hold, so nothing was written. Import into a V1 store, or use the "
+            "owner-authorized copy in the dashboard, which preserves provenance.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -813,7 +836,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action == "carve":
         _memory_carve(args)
         return
-    # "import-text" parses its file and opens the default store itself, and only to save.
+    # "import-text" parses its file and opens the store itself, and only to save.
     if action == "import-text":
         from kiro_crew import memory_import_text
 
@@ -864,23 +887,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
         db_path = _admitted_store_path(store_name, cfg, may_create=action == "import")
         if db_path is None:
             sys.exit(1)
-        if action == "import" and memory_store_version(store_name) == 2:
-            # REFUSED BEFORE THE OPEN: `import_memory` rebuilds rows through
-            # `set_semantic` and `write_episodic` with no `facets=`, so a V2 destination
-            # would receive rows stripped of scope, surface, crew, session_key and
-            # derived_from while reporting success. A named V1 destination still works;
-            # V1 has no facets to lose.
-            #
-            # `memory_store_version` is the same resolver `VectorMemoryStore.__init__`
-            # uses, so this does not depend on the store object being built.
-            print(
-                f"Error: memory store {store_name!r} is a private V2 store, and this import "
-                "cannot carry the scope, surface, crew, session and derivation facets its "
-                "rows hold, so nothing was written. Import into a V1 store, or use the "
-                "owner-authorized copy in the dashboard, which preserves provenance.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        if action == "import":
+            _refuse_v2_import_destination(store_name)
         import_payload: dict | None = None
         if action == "import":
             # PARSED BEFORE THE OPEN: `store.init()` creates `memory.db`, so a missing

@@ -17,6 +17,9 @@ logger = logging.getLogger("kiro_crew.mcp_tools.code_channels")
 _PIN = (
     " It always acts on THIS session's own Slack code channel (the session must be one "
     "a code channel is bound to); it takes no channel and cannot reach any other channel."
+    " No tool opens a code channel: Kiro Crew opens one by itself when someone asks it "
+    "for code work in Slack and it judges the work needs its own channel. Outside a code "
+    "channel, do the work where you are and tell the person."
 )
 
 

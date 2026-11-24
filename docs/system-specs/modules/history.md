@@ -1891,8 +1891,12 @@ no longer destroy older turns.
   a slot linked only after it observed its file (a reused slot a cron or workflow
   injection binds, a hooked revive) resolves another file B with its own
   `created_at`. (A History resume of a cron transcript binds its own `cron:` key
-  in `metadata_codec.slot_args`, and a task-runner review transcript its own
-  `taskrunner:<task_id>:chat:<token>` key, so neither drifts.) Comparing B's identity
+  in `metadata_codec.slot_args`: the line's link, or, for the dashboard user's
+  resume of a job's `cron_<job id>` transcript whose line has none, the key the
+  job's tab restores to (`own_cron_link`). A task-runner review transcript binds
+  its own `taskrunner:<task_id>:chat:<token>` key. Neither drifts. A sequence
+  agent's or stateless run's transcript with no link is not keyed by its name,
+  and its reopened tab stays unbound.) Comparing B's identity
   against the observation from file A would read "different file" as "deleted and
   recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they

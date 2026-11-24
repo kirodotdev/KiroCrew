@@ -217,12 +217,13 @@ async def dispatch(payload: dict) -> None:
                 logger.debug("Failed to send ephemeral rejection", exc_info=True)
         return
     # A shared user presses nothing in a code channel, bound, revoked or one of ours
-    # Slack's UI opened (slack.shared_access): one check for every card there,
-    # including the buttons whose handlers act directly (approve, Kill Now).
-    from kiro_crew.slack.code_channels.routing import shared_user_refused_here
+    # Slack's UI opened (slack.shared_access), except in the one they opened: one
+    # check for every card there, including the buttons whose handlers act directly
+    # (approve, Kill Now). Each refused press is answered with why, privately.
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_here, tell_owner_only
 
     if is_shared_listed(user_id) and await shared_user_refused_here(
-        getattr(_orch, "slack", None), channel
+        getattr(_orch, "slack", None), channel, user_id
     ):
         sel().log_api_access(
             caller=user_id,
@@ -232,6 +233,7 @@ async def dispatch(payload: dict) -> None:
             resources=action_id,
             error="code channel is owner-only",
         )
+        await tell_owner_only(getattr(_orch, "slack", None), channel, user_id, throttle=False)
         return
 
     # ── "Open session" deep-link button — no-op ──

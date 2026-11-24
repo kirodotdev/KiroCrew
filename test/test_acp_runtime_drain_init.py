@@ -675,3 +675,99 @@ def test_backfill_context_window_no_model_is_safe(monkeypatch):
     )
     assert handle.last_prompt_stats.context_pct == 30.0
     assert handle.last_prompt_stats.context_window_tokens == 0
+
+
+# ── The session's MCP report arms the idle shortcut (KAS `_kiro/mcp/status`) ──
+
+
+def _kas_status_frame(session_id: str, server: str, status: str) -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "method": "_kiro/mcp/status",
+            "params": {"sessionId": session_id, "servers": [{"name": server, "status": status}]},
+        }
+    )
+
+
+def _arrive(handle: AcpSessionHandle, queue: asyncio.Queue, msg: JsonRpcMessage) -> None:
+    """Fold *msg* into the report and queue it, in the reader loop's order."""
+    handle._mcp_report.record_frame(msg, owned=True)
+    queue.put_nowait(msg)
+
+
+@pytest.mark.asyncio
+async def test_drain_init_exits_once_every_declared_server_reported_in_kas_status():
+    """A KAS host reports readiness only in ``_kiro/mcp/status``, which no drain
+    action names. Once every declared server has a final report the drain arms
+    its idle shortcut. The ceiling sits far past the wait's lost-run bound, so
+    completing inside it proves the report, not the ceiling, ended the drain."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._mcp_report.record_declared({"mcpServers": {"ext": {"command": "x"}}})
+    _arrive(handle, q["sA"], _kas_status_frame("sA", "ext", "connected"))
+    far = 10 * default_timeout()
+    await _bounded(
+        handle.drain_init(duration=0.05, idle_exit=0.01, no_report_ceiling=far),
+        what="the init drain exiting once its declared server reported",
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_pending_kas_status_does_not_arm_the_shortcut(monkeypatch):
+    """A server still connecting has not reported: the drain keeps waiting for
+    its final status instead of exiting on the first snapshot."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._mcp_report.record_declared({"mcpServers": {"ext": {"command": "x"}}})
+    _arrive(handle, q["sA"], _kas_status_frame("sA", "ext", "connecting"))
+    parked = _signal_when_parked(monkeypatch, q["sA"])
+
+    # The ceiling sits far past the wait's lost-run bound, so only the final
+    # status can end the drain inside it.
+    far = 10 * default_timeout()
+    drain = asyncio.ensure_future(
+        handle.drain_init(duration=0.2, idle_exit=0.01, no_report_ceiling=far)
+    )
+    try:
+        await await_until(parked, what="the drain parking on its emptied queue")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(drain), timeout=0.15)
+        _arrive(handle, q["sA"], _kas_status_frame("sA", "ext", "connected"))
+        await await_until(drain, what="the drain exiting on the final status")
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_init_mode_switched_session_arms_on_the_switched_agents_report(monkeypatch):
+    """A mode switch drops the pre-switch agent's reports before the drain
+    runs, so its staged ``connected`` cannot arm the shortcut, and the
+    switched-to agent's own status still does."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    report = handle._mcp_report
+    report.record_declared({"mcpServers": {"ext": {"command": "x"}}})
+    _arrive(handle, q["sA"], _kas_status_frame("sA", "ext", "connected"))
+    report.forget_reported(report.fold_mark())
+    parked = _signal_when_parked(monkeypatch, q["sA"])
+
+    far = 10 * default_timeout()
+    drain = asyncio.ensure_future(
+        handle.drain_init(
+            duration=0.2, idle_exit=0.01, no_report_ceiling=far, stale_report_frames=1
+        )
+    )
+    try:
+        await await_until(parked, what="the drain parking on its emptied queue")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(drain), timeout=0.15)
+        _arrive(handle, q["sA"], _kas_status_frame("sA", "ext", "connected"))
+        await await_until(drain, what="the drain exiting on the switched agent's status")
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)

@@ -114,7 +114,7 @@ def test_a_wake_publishes_each_advertised_fold_it_moved_once(monkeypatch):
     queued = eager._queue
     assert queued is not None
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
 
     names = [event.fold for event in seen]
     assert len(names) == len(set(names)), f"a fold published twice in one batch: {names}"

@@ -210,7 +210,7 @@ async def test_a_turned_away_upload_does_not_use_up_the_run_budget(
     _no_stream(monkeypatch)
     state = _granted("app.example", "act")
     _on_page("https://app.example/form")
-    monkeypatch.setattr(mod, "_run_limits", lambda: (0, 1))
+    monkeypatch.setattr(mod, "_run_limits", lambda: (0, 1, 0))
     answers = iter([{"ok": False, "code": turned_away}, {"ok": True, "ref": "e4"}])
 
     async def _op(op: str, args: dict, ctx: Any, supervisor: Any) -> dict:

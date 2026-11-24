@@ -45,6 +45,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_recovery_item,
     mint_options_token,
     remember_slack_options,
+    slack_mirror_is_paused,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
@@ -53,6 +54,7 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new, notice_row_shown
+from kiro_crew.dashboard.slack_reconnect_wait import slack_reply_client, wait_for_slack_reconnect
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -1406,13 +1408,19 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         # asks nothing, so no options control is minted from it.
         _mirror_reply_text = turn._terminal_directive_text
         _mirror_final_segment = ""
+    _mirror_paused_in_wait = False
+    if _mirror_reply_text and _mirror_thread and _mirror_chan and not state.slack_client:
+        # A reconnect took the client: wait for it, then re-read the pause as turn start does.
+        await wait_for_slack_reconnect(state)
+        _mirror_paused_in_wait = slack_mirror_is_paused(state, session_key)
     if (
         _mirror_reply_text
-        and state.slack_client
         and _mirror_thread
         and _mirror_chan
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
+        and not _mirror_paused_in_wait
+        and slack_reply_client(state, session_key, _mirror_chan)
     ):
         try:
             from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat

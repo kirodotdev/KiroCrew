@@ -126,7 +126,11 @@ _ICONS = frozenset(
 OFF_TEXT = "Error: Slack code channels are off on this Kiro Crew, so this tool does nothing."
 NOT_BOUND_TEXT = (
     "Error: this session is not bound to a Slack code channel. The code-channel tools act "
-    "only on the channel the calling session runs in, so there is nothing to act on here."
+    "only on the channel the calling session runs in, so there is nothing to act on here. "
+    "No tool opens a code channel: Kiro Crew opens one by itself when someone asks it for "
+    "code work in Slack (the owner, or a person the owner shares Slack access with) and "
+    "it judges the work needs its own channel. Do the work here, and tell the person it "
+    "is happening here."
 )
 ARCHIVED_TEXT = "Error: this session's code channel is archived."
 STOPPED_TEXT = (
