@@ -188,6 +188,17 @@ def _record_unowned_file(mate_id: str) -> bool:
     return True
 
 
+def crewmate_file_recorded_here(mate_id: str) -> bool:
+    """Whether the owner record already names THIS data home as *mate_id*'s writer.
+
+    A pure read: unlike :func:`crewmate_file_on_record` it never records an unowned
+    file, so an import that has just installed a roster naming *mate_id* does not
+    adopt a file another Bot left at that name. Raises :class:`MateConfigError` when
+    the record exists but cannot be read.
+    """
+    return _read_owners().get(mate_id) == _this_home()
+
+
 def crewmate_file_foreign(mate_id: str) -> bool:
     """Whether the owner record names ANOTHER data home as the writer of *mate_id*'s file.
 

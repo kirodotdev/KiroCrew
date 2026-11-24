@@ -528,7 +528,7 @@ def imported_bots(
         from kiro_crew import members as members_mod
         from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
         from kiro_crew.config.paths import config_dir
-        from kiro_crew.dashboard.handlers.members_thread import _member_thread_slot
+        from kiro_crew.dashboard.handlers.members import _member_thread_slot
 
         if Path(os.path.realpath(mc)) != Path(os.path.realpath(config_dir())):
             raise ValueError(f"{mc} is not this process's data home")

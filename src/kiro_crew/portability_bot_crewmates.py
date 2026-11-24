@@ -129,7 +129,7 @@ def _owner_of(name: str) -> str:
     try:
         if mate_config.crewmate_file_foreign(name):
             return "foreign"
-        return "own" if mate_config.crewmate_file_on_record(name) else "none"
+        return "own" if mate_config.crewmate_file_recorded_here(name) else "none"
     except mate_config.MateConfigError:
         return "unreadable"
 

@@ -153,14 +153,14 @@ def _destination_transcript_exists(mc: Path, stem: str) -> bool:
 
 
 def _names_for_slug(config: Any, slug: str) -> list[str]:
-    from kiro_crew.dashboard.handlers.members_access import _member_names_for_slug
+    from kiro_crew.dashboard.handlers.members import _member_names_for_slug
 
     return _member_names_for_slug(config, slug)
 
 
 def _derived_slot(config: Any, bot: ImportedBot) -> tuple[str, str]:
     """``(slot key, generation)`` the thread endpoint derives for *bot* from *config*."""
-    from kiro_crew.dashboard.handlers.members_thread import _member_thread_slot
+    from kiro_crew.dashboard.handlers.members import _member_thread_slot
 
     return _member_thread_slot(config, bot.name, bot.slug)
 

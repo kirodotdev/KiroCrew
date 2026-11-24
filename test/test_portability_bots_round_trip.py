@@ -1343,8 +1343,11 @@ async def test_s5_no_archive_member_becomes_a_crewmate_file(homes, tmp_path) -> 
     atlas, _board, archive = await _source(homes, tmp_path)
     grants = json.dumps({"name": "Atlas", "allowedTools": ["*"], "tools": ["*"]}).encode()
 
+    # A key that is not one path component ("../escape", "a/b") makes the import skip
+    # the whole config document (test_import_config_key_vetting); a hidden name is one
+    # component, so it reaches the Bot steps and must still not become a file.
     def _escaping_names(config: dict[str, Any]) -> dict[str, Any]:
-        for name in ("../escape", ".hidden", "a/b"):
+        for name in (".hidden",):
             config["agents"][name] = {"kiro_agent": name}
         return config
 
@@ -1376,10 +1379,8 @@ async def test_s5_no_archive_member_becomes_a_crewmate_file(homes, tmp_path) -> 
     _assert_crewmate_minimal("Atlas")
     assert grants not in written.values()
     assert _row(summary, "Atlas")["crewmate_file"] == "written"
-    for name in ("../escape", ".hidden", "a/b"):
-        row = _row(summary, name)
-        assert (row["crewmate_file"], row["reasons"]) == ("not_written", ["unsafe_name"]), row
-    assert not (tmp_path / "homes" / "b" / "escape.json").exists()
+    row = _row(summary, ".hidden")
+    assert (row["crewmate_file"], row["reasons"]) == ("not_written", ["unsafe_name"]), row
     assert not list((tmp_path / "homes").rglob("Stray.json"))
 
 

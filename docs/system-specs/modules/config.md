@@ -1839,9 +1839,10 @@ summary are byte-identical to one built without the Bot work.
   them first, and this install's own Bots as they were before the import (name to
   `member_id`, `memory_store` and slug).
 - **Replace** passes `portability_bots.INSTANCE_REPLACE_COMPONENTS` (every
-  `snapshot_components.COMPONENTS` name except `artifacts` and `uploads`) to
-  `_do_replace`, so an instance import never clears this install's `artifacts/` or
-  `uploads/`.
+  `snapshot_components.COMPONENTS` name except `artifacts`, `uploads` and `members`)
+  to `_do_replace`, so an instance import never clears this install's `artifacts/`,
+  `uploads/` or `members/`; each Bot's `members/<slug>/` files install add-only through
+  the Bot stores step.
 - **Merge into an install that has `config.json`** keeps that config (see above), so
   the archive's Bots are added by `portability_bot_roster.merge_roster`, which runs
   AFTER the named-store merge and takes the set of stores that merge created here
