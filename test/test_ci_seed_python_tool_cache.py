@@ -78,22 +78,29 @@ class Site(NamedTuple):
     index: int
     steps: list
     job_body: dict
+    callable_workflow: bool
 
 
-def _action() -> dict:
+# Each file is parsed once for the module: the workflows are large, and a parse
+# per test or per call site costs more than every assertion here together.
+@pytest.fixture(scope="module")
+def action() -> dict:
     return yaml.safe_load((ACTION_DIR / "action.yml").read_text(encoding="utf-8"))
 
 
-def _seed_steps() -> dict[str, dict]:
-    return {step["shell"]: step for step in _action()["runs"]["steps"]}
+@pytest.fixture(scope="module")
+def seed_steps(action: dict) -> dict[str, dict]:
+    return {step["shell"]: step for step in action["runs"]["steps"]}
 
 
-def _table() -> list[Row]:
+@pytest.fixture(scope="module")
+def table() -> list[Row]:
     lines = (ACTION_DIR / "python-versions.txt").read_text(encoding="utf-8").splitlines()
     return [Row(*line.split()) for line in lines if line.strip() and not line.startswith("#")]
 
 
-def _workflows() -> dict[str, dict]:
+@pytest.fixture(scope="module")
+def workflows() -> dict[str, dict]:
     return {
         path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted(WORKFLOWS.glob("*.y*ml"))
@@ -111,7 +118,7 @@ def _expected_seed_condition(site: Site) -> str | None:
     """The `if` the seed must carry: the setup step's own, plus the repository
     guard where the checkout can be another repository's tree."""
     own = site.steps[site.index].get("if")
-    if not _callable(_workflows()[site.workflow]):
+    if not site.callable_workflow:
         return own
     return THIS_REPOSITORY_ONLY if own is None else f"{THIS_REPOSITORY_ONLY} && ({own})"
 
@@ -131,21 +138,23 @@ def _contract_bound(site: Site) -> bool:
     return site.workflow == barrier._FAST_GATE.name
 
 
-def _seeded_sites() -> list[Site]:
-    return [site for site in _sites() if not _contract_bound(site)]
+@pytest.fixture(scope="module")
+def seeded_sites(sites: list[Site]) -> list[Site]:
+    return [site for site in sites if not _contract_bound(site)]
 
 
-def _sites() -> list[Site]:
+@pytest.fixture(scope="module")
+def sites(workflows: dict[str, dict]) -> list[Site]:
     """Every setup-python step in a job a CodeBuild runner can pick up."""
     found = []
-    for name, workflow in _workflows().items():
+    for name, workflow in workflows.items():
         for job_name, job in (workflow.get("jobs") or {}).items():
             if not isinstance(job, dict) or not _codebuild_oses(job):
                 continue
             steps = job.get("steps") or []
             for index, step in enumerate(steps):
                 if str(step.get("uses", "")).startswith(SETUP_PYTHON):
-                    found.append(Site(name, job_name, index, steps, job))
+                    found.append(Site(name, job_name, index, steps, job, _callable(workflow)))
     return found
 
 
@@ -167,18 +176,20 @@ def _satisfies(version: str, spec: str) -> bool:
 # ── where the seed runs ─────────────────────────────────────────────────
 
 
-def test_some_setup_python_step_can_reach_codebuild_on_each_os() -> None:
-    reachable = {name for site in _sites() for name in _codebuild_oses(site.job_body)}
+def test_some_setup_python_step_can_reach_codebuild_on_each_os(sites: list[Site]) -> None:
+    reachable = {name for site in sites for name in _codebuild_oses(site.job_body)}
     assert reachable == set(CODEBUILD_LABEL), "the routing text changed; these tests measure less"
 
 
-def test_every_codebuild_setup_python_step_follows_the_seed() -> None:
+def test_every_codebuild_setup_python_step_follows_the_seed(
+    seeded_sites: list[Site], action: dict
+) -> None:
     unseeded = []
-    assert _seeded_sites()
-    for site in _seeded_sites():
+    assert seeded_sites
+    default = action["inputs"]["python-version"]["default"]
+    for site in seeded_sites:
         step = site.steps[site.index]
         seed = site.steps[site.index - 1] if site.index else {}
-        default = _action()["inputs"]["python-version"]["default"]
         seeded_version = (seed.get("with") or {}).get("python-version", default)
         if (
             seed.get("uses") != ACTION_REF
@@ -190,23 +201,23 @@ def test_every_codebuild_setup_python_step_follows_the_seed() -> None:
     assert unseeded == []
 
 
-def test_a_callable_workflow_seeds_only_in_this_repository() -> None:
-    guarded = [site for site in _seeded_sites() if _callable(_workflows()[site.workflow])]
+def test_a_callable_workflow_seeds_only_in_this_repository(seeded_sites: list[Site]) -> None:
+    guarded = [site for site in seeded_sites if site.callable_workflow]
     assert guarded, "no seeded workflow is callable; this test measures nothing"
     for site in guarded:
         condition = str(site.steps[site.index - 1].get("if"))
         assert condition.startswith(THIS_REPOSITORY_ONLY), f"{site.workflow}:{site.job}"
     # The guard belongs to callable workflows only: elsewhere the seed keeps
     # exactly the setup step's own condition.
-    for site in _seeded_sites():
-        if site not in guarded:
+    for site in seeded_sites:
+        if not site.callable_workflow:
             seed, step = site.steps[site.index - 1], site.steps[site.index]
             assert seed.get("if") == step.get("if"), f"{site.workflow}:{site.job}"
 
 
-def test_the_seed_appears_only_directly_before_setup_python() -> None:
+def test_the_seed_appears_only_directly_before_setup_python(workflows: dict[str, dict]) -> None:
     stray = []
-    for name, workflow in _workflows().items():
+    for name, workflow in workflows.items():
         for job_name, job in (workflow.get("jobs") or {}).items():
             steps = job.get("steps") or [] if isinstance(job, dict) else []
             for index, step in enumerate(steps):
@@ -218,21 +229,23 @@ def test_the_seed_appears_only_directly_before_setup_python() -> None:
     assert stray == []
 
 
-def test_the_fast_gate_jobs_keep_their_own_contract_and_carry_no_seed() -> None:
-    bound = [site for site in _sites() if _contract_bound(site)]
+def test_the_fast_gate_jobs_keep_their_own_contract_and_carry_no_seed(
+    sites: list[Site], workflows: dict[str, dict]
+) -> None:
+    bound = [site for site in sites if _contract_bound(site)]
     assert bound, "no Fast Gate job reaches CodeBuild; the exception excuses nothing"
     for site in bound:
         barrier.TestFastGatePythonRuntime._assert_runtime(site.job_body)
         assert all(step.get("uses") != ACTION_REF for step in site.steps), site.job
     # The contract covers every job of that workflow, so none may be left out here.
-    fast_gate_jobs = set(_workflows()[barrier._FAST_GATE.name]["jobs"])
+    fast_gate_jobs = set(workflows[barrier._FAST_GATE.name]["jobs"])
     assert {site.job for site in bound} == fast_gate_jobs
 
 
-def test_every_seeded_job_checks_the_action_out_first() -> None:
+def test_every_seeded_job_checks_the_action_out_first(seeded_sites: list[Site]) -> None:
     action_path = "/" + ACTION_DIR.relative_to(ROOT).as_posix() + "/"
     missing = []
-    for site in _seeded_sites():
+    for site in seeded_sites:
         checkouts = [
             step
             for step in site.steps[: site.index]
@@ -255,8 +268,8 @@ def test_every_seeded_job_checks_the_action_out_first() -> None:
 # ── what the table pins ─────────────────────────────────────────────────
 
 
-def test_the_table_rows_are_pinned_publisher_archives() -> None:
-    rows = _table()
+def test_the_table_rows_are_pinned_publisher_archives(table: list[Row]) -> None:
+    rows = table
     assert rows
     keys = [(row.os, row.os_version, row.arch, row.version) for row in rows]
     assert len(set(keys)) == len(keys)
@@ -272,10 +285,12 @@ def test_the_table_rows_are_pinned_publisher_archives() -> None:
         assert filename == f"python-{row.version}-{os_part}-{row.arch}{suffix}", row
 
 
-def test_the_table_holds_every_version_a_seeded_step_requests() -> None:
-    rows = _table()
+def test_the_table_holds_every_version_a_seeded_step_requests(
+    table: list[Row], seeded_sites: list[Site]
+) -> None:
+    rows = table
     unpinned = []
-    for site in _seeded_sites():
+    for site in seeded_sites:
         spec = site.steps[site.index]["with"]["python-version"]
         for version in _requested_versions(site, spec):
             for os_name in _codebuild_oses(site.job_body):
@@ -287,8 +302,10 @@ def test_the_table_holds_every_version_a_seeded_step_requests() -> None:
     assert unpinned == []
 
 
-def test_each_os_and_version_line_has_one_row_so_the_install_is_not_a_choice() -> None:
-    rows = _table()
+def test_each_os_and_version_line_has_one_row_so_the_install_is_not_a_choice(
+    table: list[Row],
+) -> None:
+    rows = table
     lines = [(row.os, row.os_version, row.arch, row.version.rsplit(".", 1)[0]) for row in rows]
     assert len(set(lines)) == len(lines)
 
@@ -296,16 +313,18 @@ def test_each_os_and_version_line_has_one_row_so_the_install_is_not_a_choice() -
 # ── the two steps are one procedure ─────────────────────────────────────
 
 
-def test_the_steps_split_by_os_on_self_hosted_runners_only() -> None:
-    steps = _seed_steps()
+def test_the_steps_split_by_os_on_self_hosted_runners_only(seed_steps: dict[str, dict]) -> None:
+    steps = seed_steps
     assert set(steps) == {"bash", "pwsh"}
     assert steps["bash"]["if"] == "runner.environment == 'self-hosted' && runner.os == 'Linux'"
     assert steps["pwsh"]["if"] == "runner.environment == 'self-hosted' && runner.os == 'Windows'"
     assert all("continue-on-error" not in step for step in steps.values())
 
 
-def test_both_steps_share_their_inputs_and_carry_no_credential() -> None:
-    steps = _seed_steps()
+def test_both_steps_share_their_inputs_and_carry_no_credential(
+    seed_steps: dict[str, dict],
+) -> None:
+    steps = seed_steps
     assert steps["bash"]["env"] == steps["pwsh"]["env"]
     env = steps["bash"]["env"]
     assert int(env["SEED_DOWNLOAD_ATTEMPTS"]) >= 1
@@ -354,8 +373,10 @@ def _positions(text: str, markers: list[str]) -> list[int]:
         ),
     ],
 )
-def test_each_step_verifies_before_it_unpacks_or_runs(shell: str, markers: list[str]) -> None:
-    run = _seed_steps()[shell]["run"]
+def test_each_step_verifies_before_it_unpacks_or_runs(
+    seed_steps: dict[str, dict], shell: str, markers: list[str]
+) -> None:
+    run = seed_steps[shell]["run"]
     positions = _positions(run, markers)
     assert positions == sorted(positions)
     # One failing exit, and it is the mismatch: every other stop is exit 0.
@@ -363,8 +384,8 @@ def test_each_step_verifies_before_it_unpacks_or_runs(shell: str, markers: list[
     assert run.count(ERROR) == 1 and run.index(ERROR) < run.index("exit 1")
 
 
-def test_both_steps_bound_the_download_and_stay_on_https() -> None:
-    steps = _seed_steps()
+def test_both_steps_bound_the_download_and_stay_on_https(seed_steps: dict[str, dict]) -> None:
+    steps = seed_steps
     bash, pwsh = steps["bash"]["run"], steps["pwsh"]["run"]
     for flag in (
         "--fail",
@@ -430,7 +451,8 @@ def _host_os_version() -> str:
 class Seed:
     """One run of the Linux step in a private tool cache, temp dir and PATH."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, step: dict) -> None:
+        self.step = step
         self.tool_cache = tmp_path / "tool-cache"
         self.temp = tmp_path / "runner-temp"
         self.logs = tmp_path / "logs"
@@ -454,7 +476,7 @@ class Seed:
             assert real
             self._stub(name, _STUB_RECORDER.format(name=name, real=real))
         self.script = tmp_path / "seed.sh"
-        self.script.write_text(_seed_steps()["bash"]["run"], encoding="utf-8")
+        self.script.write_text(step["run"], encoding="utf-8")
 
     def _stub(self, name: str, body: str) -> None:
         path = self.bin / name
@@ -490,11 +512,7 @@ class Seed:
             "SEED_TABLE": str(self.table),
             "STUB_LOG_DIR": str(self.logs),
             "FIXTURE_ARCHIVE": str(self.archive),
-            **{
-                k: v
-                for k, v in _seed_steps()["bash"]["env"].items()
-                if k.startswith("SEED_DOWNLOAD")
-            },
+            **{k: v for k, v in self.step["env"].items() if k.startswith("SEED_DOWNLOAD")},
             **extra,
         }
         return subprocess.run(
@@ -516,10 +534,10 @@ class Seed:
 
 
 @pytest.fixture
-def seed(tmp_path: Path) -> Seed:
+def seed(tmp_path: Path, seed_steps: dict[str, dict]) -> Seed:
     if not sys.platform.startswith("linux"):
         pytest.skip("the Linux seed step reads /etc/os-release and uses GNU tools")
-    return Seed(tmp_path)
+    return Seed(tmp_path, seed_steps["bash"])
 
 
 def test_a_matching_archive_is_installed_and_marked(seed: Seed) -> None:
@@ -568,7 +586,7 @@ def test_a_failed_download_is_retried_a_bounded_number_of_times_then_falls_throu
     seed: Seed,
 ) -> None:
     result = seed.run(STUB_CURL_FAIL="1")
-    attempts = int(_seed_steps()["bash"]["env"]["SEED_DOWNLOAD_ATTEMPTS"])
+    attempts = int(seed.step["env"]["SEED_DOWNLOAD_ATTEMPTS"])
     seed.assert_fell_through(result, f"failed {attempts} times")
     assert len(seed.log("curl.log")) == attempts
     assert seed.log("order.log") == []
