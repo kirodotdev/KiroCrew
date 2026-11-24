@@ -306,6 +306,7 @@ DECLARED_SITES = frozenset(
         ("staging.py", "staging_dir"),
         ("ui_prefs.py", "_read_raw"),
         ("work_root.py", "sweep_work_root"),
-        ("workspace_cli_settings.py", "workspace_cli_settings_lock"),
+        ("workspace_cli_settings.py", "_settings_dir_within_work_dir"),
+        ("workspace_cli_settings.py", "locked_workspace_cli_settings"),
     }
 )

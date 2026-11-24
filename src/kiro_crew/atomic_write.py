@@ -1275,6 +1275,7 @@ def atomic_write(
     replace_budget_s: float | None = None,
     on_staged: Callable[[int], None] | None = None,
     preserve_windows_dacl: bool = False,
+    before_publish: Callable[[], None] | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1395,6 +1396,12 @@ def atomic_write(
     writer may have replaced it by then. An exception it raises aborts the write
     like any other staging failure.
 
+    *before_publish* runs right before EVERY rename attempt, the Windows retries
+    included (:func:`replace_with_retry_checked`), for a writer whose check that
+    *path* is still the file it read must not go stale during the retry backoff.
+    Anything it raises removes the temp file and ends the write with no rename. It
+    is refused with *replace_budget_s*, whose elapsed-time arm has no such hook.
+
     *preserve_windows_dacl* is the Windows half of the carry above, which covers
     POSIX xattrs and the macOS extended ACL only. On Windows the existing file's
     own DACL is read by name before staging and copied exactly onto the temp
@@ -1436,6 +1443,11 @@ def atomic_write(
         raise ValueError(
             "replace_budget_s cannot be combined with parent_dir_fd: the retry "
             "budget applies only to the by-name publishing rename"
+        )
+    if replace_budget_s is not None and before_publish is not None:
+        raise ValueError(
+            "replace_budget_s cannot be combined with before_publish: only the "
+            "count-based retry runs a check before each rename attempt"
         )
     if parent_dir_fd is not None and not pinned_parent_replace_supported():
         # Refused rather than degraded. The caller pinned a parent chain
@@ -1502,7 +1514,10 @@ def atomic_write(
         # removes the temp file. Unlinking a name publish_replacement already
         # removed is a no-op.
         try:
-            publish_replacement(tmp, path, budget_s=replace_budget_s)
+            if before_publish is None:
+                publish_replacement(tmp, path, budget_s=replace_budget_s)
+            else:
+                replace_with_retry_checked(tmp, path, before_publish)
         except BaseException:
             _unlink_temp(tmp, None, acl_carried=preserve_access_control_from is not None)
             raise
@@ -1515,6 +1530,8 @@ def atomic_write(
         # the replace semantics hold; os.replace is not in supports_dir_fd on
         # every interpreter, os.rename is (pinned_parent_replace_supported
         # probes rename for exactly this reason).
+        if before_publish is not None:
+            before_publish()
         os.rename(
             os.path.basename(tmp),
             path.name,

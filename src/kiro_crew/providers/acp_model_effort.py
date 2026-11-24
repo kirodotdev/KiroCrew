@@ -59,7 +59,7 @@ from kiro_crew.agent_sdk.backends import (
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
-from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
+from kiro_crew.providers.acp_cli_overlay import EffortOverlayRefused, _clear_cli_overlay_effort
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
 
@@ -556,7 +556,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     model does not support effort, or when this harness is in neither set and
     so has no effort channel at all. A session that advertises the option but
     whose model refuses the write (``effort_refused_by_model``) raises
-    ``AcpCommandRefused`` after the stored level and overlay are rolled back.
+    ``AcpCommandRefused`` after the stored level and overlay are rolled back. A
+    workspace ``cli.json`` that refuses the write on every retry raises
+    ``EffortOverlayRefused`` with the stored level put back and nothing pushed.
     """
     model = self._effort_model
     if not self.supports_effort():
@@ -613,13 +615,22 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     # critical section makes losing the lock a stuck holder rather than
     # routine contention, and waiting it out on the loop would freeze every
     # session.
-    if not await asyncio.to_thread(
-        self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-    ):
+    refusal: EffortOverlayRefused | None = None
+    try:
+        persisted = await asyncio.to_thread(
+            self._apply_effort_overlay,
+            timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+            raise_refusal=True,
+        )
+    except EffortOverlayRefused as exc:
+        persisted, refusal = False, exc
+    if not persisted:
         if _prev is None:
             self._effort_per_model.pop(model, None)
         else:
             self._effort_per_model[model] = _prev
+        if refusal is not None:
+            raise refusal
         raise RuntimeError(
             f"could not persist effort {level!r} for {model!r}: the workspace "
             "overlay is locked by another writer; try again"
@@ -773,7 +784,8 @@ async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool 
     while the UI shows "default".
     Returns None when NOTHING changed because the workspace overlay was busy:
     neither the file nor this map, so the caller commits no slot value and
-    resets nothing.
+    resets nothing. Raises ``EffortOverlayRefused``, with the map put back, when
+    the workspace ``cli.json`` refuses the clear on every retry.
     """
     model = self._effort_model
     if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
@@ -804,9 +816,17 @@ async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool 
         # Persist before pushing live, as change_effort does: the FILE is what
         # a respawn reads, so pushing over a write that did not persist reports
         # a default the next spawn replaces with the level just cleared.
-        if not await asyncio.to_thread(
-            self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-        ):
+        try:
+            persisted = await asyncio.to_thread(
+                self._apply_effort_overlay,
+                timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+                raise_refusal=True,
+            )
+        except EffortOverlayRefused:
+            if cleared is not None:
+                self._effort_per_model[model] = cleared
+            raise
+        if not persisted:
             if cleared is not None:
                 self._effort_per_model[model] = cleared
             logger.warning(
@@ -828,9 +848,18 @@ async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool 
     # No default to push live — clear the overlay and let the caller reset
     # so kiro respawns at the model's built-in default. A harness that never
     # reads the file has no entry of its own there, and its cold start reads none.
-    if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY and not await asyncio.to_thread(
-        _clear_cli_overlay_effort, self._client._work_dir, model
-    ):
+    try:
+        overlay_cleared = (
+            self._client.backend not in ACP_BACKENDS_EFFORT_OVERLAY
+            or await asyncio.to_thread(
+                _clear_cli_overlay_effort, self._client._work_dir, model, raise_refusal=True
+            )
+        )
+    except EffortOverlayRefused:
+        if cleared is not None:
+            self._effort_per_model[model] = cleared
+        raise
+    if not overlay_cleared:
         # NOTHING changed, file or map. Either bool would make the handler commit
         # the cleared slot value over an overlay still holding the level; None
         # gets a retryable 409 instead.

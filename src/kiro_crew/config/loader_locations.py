@@ -173,6 +173,11 @@ def _session_work_dir(session_key: str | None) -> Path:
     return root / "_default"
 
 
+def provider_work_dir(session_key: str | None, cwd: str | None) -> Path:
+    """The directory a provider for *session_key* runs in: *cwd*, else its own subdirectory."""
+    return Path(cwd) if cwd else _session_work_dir(session_key)
+
+
 def outbox_dir() -> Path:
     """Return the outbox directory for agent-to-user file delivery."""
     d = workspace_root() / OUTBOX_DIR_NAME
