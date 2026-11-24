@@ -695,13 +695,53 @@ class TestSelfProtectionKillTargetScoping:
     @pytest.mark.parametrize("directory", [False, True])
     @pytest.mark.parametrize(
         "redirect",
-        ["<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
+        ["", "<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
     )
-    def test_glob_redirect_target_does_not_decide_program_kind(
+    def test_slash_glob_at_program_position_still_reads_as_a_program(
         self, program, args, rule, directory, redirect
     ):
+        # Outside a `for` list a trailing slash proves nothing: bash runs a function
+        # named `p*ll/`, and a redirect target's slash is not the program's.
         command = f"{program}{'/' if directory else ''}{redirect} {args}"
-        assert _denied_by(command) == (None if directory else rule)
+        assert _denied_by(command) == rule
+
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            # The loop value is rewritten back into a program path, then run.
+            (f"for w in /usr/bin/p*ll/; do ${{w%/}} -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/local/bin/kiro*rew/; do ${{w%/}} {_TOK}; done", _RULE_MINT),
+            (f"for w in /usr/bin/p*ll/; do $w -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/bin/p*ll/; do $(dirname $w/z) -f {_NAME}; done", _RULE_KILL),
+            (f'for w in /usr/bin/p*ll/; do eval "${{w%/}} -f {_NAME}"; done', _RULE_KILL),
+            (
+                f"function p*ll/ {{ /usr/bin/pkill \"$@\"; }}; 'p*ll/' -f {_NAME}",
+                _RULE_KILL,
+            ),
+        ],
+    )
+    def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
+        assert _denied_by(cmd) == rule
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x=w; ${!x%/} -f t",
+            "declare -n r=w; ${r%/} -f t",
+            "x=$w/z; ${x%//z} -f t",
+            "eval $w",
+            "$w -f t",
+            "echo `basename $w`",
+            "for v in $w; do $v -f t; done",
+        ],
+    )
+    def test_loop_value_that_can_be_rewritten_grants_no_exemption(self, body):
+        # The exemption is withdrawn for the whole frame, not only when the target
+        # sits in the same command as the glob.
+        from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
+
+        frames = _self_frames(f"for w in /usr/bin/p*ll/; do {body}; done")
+        assert all(not _for_list_directory_globs(tokens) for _, tokens in frames)
 
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
@@ -710,10 +750,11 @@ class TestSelfProtectionKillTargetScoping:
         "cmd",
         [
             f"for w in /opt/x/*/; do ln -sfn /opt/{_NAME}/y $w/z; done",
+            f'for w in /srv/x/*/; do ln -sfn /path/to/{_NAME}/thing "$w/z"; done',
+            f"for w in /a/*/ /b/*/\ndo echo ${{w}}/q {_NAME}; done",
             f"for w in */; do echo {_NAME}; done",
             f"for w in '/opt/x/*/'; do echo {_NAME}; done",
             f'for w in "/opt/x/*/"; do echo {_NAME}; done',
-            f"ls -d /opt/*/ && echo {_NAME}",
         ],
     )
     def test_directory_only_glob_is_not_a_kill_verb(self, cmd):

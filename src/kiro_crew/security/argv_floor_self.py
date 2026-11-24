@@ -48,7 +48,6 @@ from .shell_normalizer import (
     _decode_printf_escapes,
     _ends_argv,
     _glob_could_expand_to,
-    _is_directory_only_glob,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
@@ -178,9 +177,50 @@ def _is_kill_by_name_program(token: str) -> bool:
     base = _shell_normalizer._program_basename(token)
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
-    if _is_directory_only_glob(token):
-        return False
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
+
+
+#: An operator expansion (``${w%/}``, ``${!x}``) or a substitution can rewrite a value.
+_VALUE_REWRITE_RE = re.compile(r"\$\{(?![a-z_][a-z0-9_]*\})|\$\(|`", re.IGNORECASE)
+#: Words that bind a variable by name (``declare -n r=w``) or re-read text as a command.
+_REBINDING_WORDS = frozenset({"declare", "typeset", "local", "eval"})
+_SHELL_NAME_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
+#: Reserved words that precede a command, so the word after one is its program.
+_COMMAND_PREFIX_WORDS = frozenset({"do", "then", "else", "elif", "!", "{", "time"})
+
+
+def _for_list_directory_globs(tokens: "list[str]") -> "frozenset[int]":
+    """Indexes of ``for NAME in`` list words ending in ``/`` whose value stays data.
+
+    Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
+    Its value can still become a program (``${w%/} -f``, or a bare ``$w`` after
+    ``do``), so the exemption holds only where the frame rewrites no value and every
+    ``$NAME`` is an argument of a data consumer (``ln -s x "$w/z"``).
+    """
+    if _REBINDING_WORDS.intersection(tokens) or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
+        return frozenset()
+    programs = _argv_programs(["" if t in _COMMAND_PREFIX_WORDS else t for t in tokens])
+    disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
+    found: set[int] = set()
+    for k in range(len(tokens) - 2):
+        name = tokens[k + 1]
+        if tokens[k] != "for" or tokens[k + 2] != "in" or not _SHELL_NAME_RE.fullmatch(name):
+            continue
+        ref = re.compile(r"\$\{?" + name + r"(?![a-z0-9_])", re.IGNORECASE)
+        if not all(
+            _data_consumer_exempt(j, word, programs, tokens, command_disqualified=disqualified)
+            for j, word in enumerate(tokens)
+            if ref.search(word)
+        ):
+            continue
+        for j in range(k + 3, len(tokens)):
+            if tokens[j] == "do":
+                break
+            if tokens[j].rstrip(";&|").endswith("/"):
+                found.add(j)
+            if _ends_argv(tokens[j]):
+                break
+    return frozenset(found)
 
 
 # ``env -S`` splits its argument into a command and execs it.
@@ -389,6 +429,7 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
         # quadratic in the trigger count.  ``None`` until the first trigger token needs
         # it, so a frame carrying none pays nothing.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             # AN INLINE PROGRAM THAT NAMES THE MINT SURFACE IS DENIED WITHOUT NEEDING THE VERB
             # AS AN ARGV WORD, and it is checked FIRST because it does not depend on the
@@ -413,6 +454,10 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            if dir_globs is None:
+                dir_globs = _for_list_directory_globs(tokens)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
             # quotes are already off these tokens, so ``'/tmp/kirocrew;' token`` (a symlink
@@ -860,6 +905,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
+        dir_globs: "frozenset[int] | None" = None
         for i, token in enumerate(tokens):
             if not _is_kill_by_name_program(token):
                 continue
@@ -867,6 +913,11 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
+                continue
+            # ``for w in /a/*/`` lists directories, which never run.
+            if dir_globs is None:
+                dir_globs = _for_list_directory_globs(tokens)
+            if i in dir_globs:
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
