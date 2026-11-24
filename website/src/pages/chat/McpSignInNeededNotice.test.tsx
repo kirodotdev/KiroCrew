@@ -125,6 +125,7 @@ describe('McpSignInNeededNotice', () => {
       act(() => { h.seen[0].onOutcome('sent') })
       expect(buttons()[0].disabled).toBe(true)
       expect(screen.queryByTestId('mcp-sign-in-needed-failed')).toBeNull()
+      expect(screen.queryByTestId('mcp-sign-in-needed-unconfirmed')).toBeNull()
     } finally {
       h.stop()
     }
@@ -153,6 +154,21 @@ describe('McpSignInNeededNotice', () => {
       // Through the shared error surface, with the reason first.
       expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toContain('busy. It did not go out. Try again.')
       expect(buttons()[0].disabled).toBe(false)
+    } finally {
+      h.stop()
+    }
+  })
+
+  it('says a lost answer is not confirmed and keeps the button held against a second send', () => {
+    const h = host('pending')
+    try {
+      draw(ROW, 'chat-1')
+      fireEvent.click(buttons()[0])
+      expect(screen.queryByTestId('mcp-sign-in-needed-unconfirmed')).toBeNull()
+      act(() => { h.seen[0].onOutcome('indeterminate') })
+      expect(screen.getByTestId('mcp-sign-in-needed-unconfirmed').textContent).toContain('Not confirmed. It may have gone out.')
+      expect(buttons()[0].disabled).toBe(true)
+      expect(screen.queryByTestId('mcp-sign-in-needed-failed')).toBeNull()
     } finally {
       h.stop()
     }

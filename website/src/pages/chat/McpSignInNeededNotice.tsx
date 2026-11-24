@@ -18,8 +18,10 @@ export function isMcpSignInNeededNotice(m: ChatMessage): boolean {
 }
 
 /** What a server's button did: `pending` while its send is out, `done` once
- *  the text went out or into the chat box, `failed` when it did not go out. */
-type Press = { state: 'pending' | 'done' } | { state: 'failed'; reason?: string }
+ *  the text went out or into the chat box, `unconfirmed` when the answer was
+ *  lost (it may have gone out, so the button stays held against a second
+ *  send), `failed` when it did not go out. */
+type Press = { state: 'pending' | 'done' | 'unconfirmed' } | { state: 'failed'; reason?: string }
 
 const LINK = 'break-all underline underline-offset-2 hover:text-text focus-visible:text-text disabled:opacity-50 disabled:no-underline disabled:cursor-default'
 
@@ -80,7 +82,10 @@ export default memo(function McpSignInNeededNotice({
     if (!slot) return
     setUnhandled(false)
     const settle = (outcome: ComposeSendOutcome, reason?: string) =>
-      setPresses(cur => ({ ...cur, [name]: outcome === 'refused' ? { state: 'failed', reason } : { state: 'done' } }))
+      setPresses(cur => ({
+        ...cur,
+        [name]: outcome === 'refused' ? { state: 'failed', reason } : { state: outcome === 'indeterminate' ? 'unconfirmed' : 'done' },
+      }))
     const detail: ComposeSendDetail = { text, slot, queue: true, result: null, onOutcome: settle }
     window.dispatchEvent(new CustomEvent(COMPOSE_SEND_EVENT, { detail }))
     if (detail.result === 'pending') setPresses(cur => ({ ...cur, [name]: { state: 'pending' } }))
@@ -90,7 +95,8 @@ export default memo(function McpSignInNeededNotice({
   }
   // Stored text as an i18nT value, never a key or a <Trans> value.
   const sendText = (name: string) => i18nT('pages.chatPage.mcp_sign_in_needed_send', { name })
-  const held = (name: string) => presses[name]?.state === 'pending' || presses[name]?.state === 'done'
+  const held = (name: string) => { const st = presses[name]?.state; return st === 'pending' || st === 'done' || st === 'unconfirmed' }
+  const unconfirmed = servers.some(name => presses[name]?.state === 'unconfirmed')
   const failedName = servers.find(name => presses[name]?.state === 'failed')
   const failed = failedName ? presses[failedName] : undefined
   // At most two inline buttons; three or more servers share one menu.
@@ -142,6 +148,14 @@ export default memo(function McpSignInNeededNotice({
           askAgent={false}
           onDismiss={() => setPresses(cur => { const next = { ...cur }; delete next[failedName]; return next })}
           testId="mcp-sign-in-needed-failed"
+        />
+      )}
+      {unconfirmed && (
+        <ErrorNotice
+          message={i18nT('components.grillCard.unconfirmed')}
+          variant="inline"
+          askAgent={false}
+          testId="mcp-sign-in-needed-unconfirmed"
         />
       )}
       {unhandled && (
