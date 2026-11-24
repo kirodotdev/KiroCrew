@@ -111,6 +111,16 @@ def test_a_split_credential_does_not_stream_out(size):
     assert out == f"before {REDACTED_CREDENTIAL_TAG} after\n"
 
 
+@pytest.mark.parametrize("char", IGNORABLES, ids=lambda c: f"U+{ord(c):04X}")
+def test_an_ignorable_inside_a_credential_does_not_end_the_streamed_word(char):
+    # The stream holds the last word back; an ignorable the plan reads through
+    # must not end that word, or the anchor before it is sent and the rest follows.
+    text = f"中文{_split(GITHUB, 4, char)}中文\n"
+    stream = StreamRedactor()
+    out = "".join(stream.feed(c) for c in text) + stream.flush()
+    assert out == f"中文{REDACTED_CREDENTIAL_TAG}中文\n"
+
+
 def test_a_split_credential_never_reaches_the_transcript_file(tmp_path):
     split = _split(GITHUB, 4, "\u200b")
     ConversationLog(base_dir=tmp_path).append("t1", "assistant", f"here {split} it is")
