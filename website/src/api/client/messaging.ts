@@ -37,6 +37,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** `slack.tracking_channels`, IDs only: the channels the agent may post to.
+   *  Absent on an older gateway. */
+  tracking_channels?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
@@ -202,6 +205,10 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   owner_id: string
   command: string
   allowed_enterprise_ids: string[]
+  /** Tracked channels to add and to remove, as an edit: a channel added in
+   *  Slack since the page loaded, and each entry's activation and agent, stay. */
+  tracking_channels_add?: string[]
+  tracking_channels_remove?: string[]
   reactions_enabled: boolean
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
@@ -612,7 +619,8 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     reconnectSlack: () => post('/api/slack/reconnect', {}).then(j) as Promise<{ connected: boolean; connect_error: string }>,
     getSlackSharedAccess: () => get('/api/slack/shared-access').then(j) as Promise<SlackSharedAccessData>,
     setSlackSharedAccess: (enabled: boolean) => put('/api/slack/shared-access', { enabled, confirm: enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
-    addSlackSharedUser: (userId: string) => post('/api/slack/shared-access/users', { user_id: userId }).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
+    /** Add one person by Slack member ID or by email (the server looks the email up and keeps the ID). */
+    addSlackSharedUser: (target: { user_id: string } | { email: string }) => post('/api/slack/shared-access/users', target).then(j) as Promise<{ ok: boolean; user: SlackSharedUser }>,
     removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,

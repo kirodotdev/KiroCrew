@@ -414,6 +414,7 @@ async def load_session(
     # the generation the wire payload was built from, and the activation bracket below
     # compares against it rather than re-reading the file.
     kas_agents = None
+    helper_parent = ""
     launch_snapshots: list[str] = []
     payload_snapshot = None
     request_identity = ""
@@ -434,6 +435,7 @@ async def load_session(
             **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
+        helper_parent = getattr(kas_extras, "shipped_helper_parent", "")
         payload_snapshot = kas_extras.derived_spec_snapshot
         # Mirrors create_session: the vault identity the request goes out under,
         # for the KAS catalog recorder (a load echoes the select too).
@@ -678,7 +680,7 @@ async def load_session(
         self._harness.bind_session_handle(harness_state, handle)
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
-    self._harness.record_session_projection(handle, kas_agents, active_agent)
+    self._harness.record_session_projection(handle, kas_agents, active_agent, helper_parent)
     # shortcut: a load that fails before this line leaves its bridge snapshots to the
     # boot sweep, as a failed KAS load leaves its batch; track them earlier if that bites.
     handle.kas_launch_snapshots.extend([*launch_snapshots, *crew_bridged])

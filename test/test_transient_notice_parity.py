@@ -52,7 +52,8 @@ _EN_CATALOG = _REPO / "website" / "src" / "i18n" / "locales" / "en.json"
 # `TRANSIENT_NOTICE_X = "..."` / `GATEWAY_NOTICE_X = "..."` at column 0, excluding
 # the META_KEY / ARGS_KEY entries (which name meta fields, not tokens).
 _BACKEND_RE = re.compile(
-    r'^(?P<name>(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+)\s*=\s*"(?P<token>[^"]+)"',
+    # A value black wrapped in parentheses (a name too long for one line) counts too.
+    r'^(?P<name>(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+)\s*=\s*\(?\s*"(?P<token>[^"]+)"',
     re.MULTILINE,
 )
 _META_KEY_RE = re.compile(
@@ -476,7 +477,7 @@ def test_composed_owner_modules_read_the_notice_module_locally() -> None:
             assert not global_reads, (info.name, global_reads)
             if any("gn" in c.co_varnames or "gn" in c.co_freevars for c in codes):
                 readers += 1
-    assert readers == 15
+    assert readers == 16
 
 
 def test_gateway_notice_meta_shape() -> None:

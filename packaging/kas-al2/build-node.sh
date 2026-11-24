@@ -48,7 +48,7 @@ log() { echo "==> $*"; }
 
 pinned_node_version() {
   local v
-  v="$(sed -n 's/^KAS_PIN_VERSION = "[^"]*-node\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$PIN_FILE")"
+  v="$(sed -n 's/^KAS_PIN_VERSION = "[^"]*-node\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\(-al2\)\{0,1\}"$/\1/p' "$PIN_FILE")"
   [ -n "$v" ] || die "no -node<N> suffix on KAS_PIN_VERSION in $PIN_FILE"
   echo "$v"
 }

@@ -368,8 +368,8 @@ New-Item -ItemType Directory -Path $gatewayHome -Force | Out-Null
 # interpreter, so nothing outside the artifact is involved. `-B`: the gateway
 # spawns its agent backend with the Python bytecode variables stripped
 # (`sandbox._PYTHON_ENV_PREFIXES`, by design, so a foreign interpreter never
-# inherits our cache settings), so the PYTHONPYCACHEPREFIX set below does not
-# reach this shim; without `-B` its interpreter writes `__pycache__` beside the
+# inherits our cache settings), so the PYTHONDONTWRITEBYTECODE set below does
+# not reach this shim; without `-B` its interpreter writes `__pycache__` beside the
 # `kiro_crew.testing` sources, which ship without precompiled bytecode, and
 # those files survive the uninstall as residue this script created.
 $fakeBackend = Join-Path $evidence "kiro-backend.cmd"
@@ -386,6 +386,7 @@ $savedGatewayEnv = @{
   KIROCREW_FAKE_ACP_TEST_MODE = $env:KIROCREW_FAKE_ACP_TEST_MODE
   KIROCREW_SKIP_MODEL_DOWNLOAD = $env:KIROCREW_SKIP_MODEL_DOWNLOAD
   PYTHONPYCACHEPREFIX = $env:PYTHONPYCACHEPREFIX
+  PYTHONDONTWRITEBYTECODE = $env:PYTHONDONTWRITEBYTECODE
   PYTHONPATH = $env:PYTHONPATH
   PYTHONNOUSERSITE = $env:PYTHONNOUSERSITE
   PYTHONUTF8 = $env:PYTHONUTF8
@@ -393,6 +394,8 @@ $savedGatewayEnv = @{
 }
 $gatewayProcess = $null
 $gatewayReady = $false
+$gatewayExitedEarly = $false
+$gatewayExitCode = $null
 $gatewayTimer = [System.Diagnostics.Stopwatch]::StartNew()
 try {
   $env:KIROCREW_HOME = $gatewayHome
@@ -405,17 +408,18 @@ try {
   # Embeddings are default-on; a ~610MB download inside a 50-second readiness
   # ceiling would fail the gate for a reason unrelated to the artifact.
   $env:KIROCREW_SKIP_MODEL_DOWNLOAD = "1"
-  # Bytecode this boot compiles goes OUTSIDE the installed tree, which is what the
-  # shipped desktop app does (it exports the same variable at
-  # `<data home>/cache/pycache` to keep bytecode out of the codesigned bundle).
-  # Leaving it unset writes `__pycache__` beside the bundled sources instead, and
-  # NSIS removes only what its install log recorded -- so those post-install files
-  # survive the uninstall, keep the directory non-empty, and the "silent uninstall
-  # left the install directory behind" assertion below then fails on residue this
-  # script created rather than on anything the uninstaller got wrong. Measured: 3
-  # such files, and the startup-pyc floor is unaffected because it counts the
-  # SHIPPED payload before the gateway ever runs.
-  $env:PYTHONPYCACHEPREFIX = Join-Path $gatewayHome "pycache"
+  # Boot the way the packaged Windows app does: no cache prefix, so CPython reads
+  # the `__pycache__` files shipped beside the bundled sources
+  # (`website/electron/gateway-env.js`, `gatewayBytecodeEnvironment`, which sets
+  # it empty; PowerShell cannot hold an empty variable, so it is removed). A set
+  # prefix makes CPython ignore those caches and compile every module from
+  # source, which measured 1.8x to 2.8x slower against the readiness ceiling.
+  # PYTHONDONTWRITEBYTECODE keeps this boot from writing new `__pycache__` files
+  # into the installed tree: NSIS removes only what its install log recorded, so
+  # such files would survive the uninstall and fail the "silent uninstall left
+  # the install directory behind" assertion below on residue this script made.
+  Remove-Item -Path Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue
+  $env:PYTHONDONTWRITEBYTECODE = "1"
   $env:PYTHONPATH = $null
   $env:PYTHONNOUSERSITE = "1"
   $env:PYTHONUTF8 = "1"
@@ -442,6 +446,12 @@ try {
     -not $gatewayProcess.HasExited -and
     $gatewayTimer.Elapsed.TotalSeconds -lt $MaxGatewayReadySeconds
   )
+  # Read before the finally block ends the tree, so a failure can say whether the
+  # gateway died or was still starting when the ceiling ran out.
+  if (-not $gatewayReady -and $gatewayProcess.HasExited) {
+    $gatewayExitedEarly = $true
+    $gatewayExitCode = $gatewayProcess.ExitCode
+  }
 } finally {
   $gatewayTimer.Stop()
   # The gateway's CHILDREN are what block the uninstall, so end the TREE and then
@@ -473,7 +483,7 @@ if (-not $gatewayReady) {
   Get-Content -LiteralPath $gatewayStderr -Tail 30 -ErrorAction SilentlyContinue
   $probeTimedOut = [bool](Select-String -LiteralPath $gatewayStderr -Pattern 'probe timed out' `
     -SimpleMatch -Quiet -ErrorAction SilentlyContinue)
-  throw "Installed gateway was not ready within $MaxGatewayReadySeconds seconds (Kiro CLI probe timed out: $probeTimedOut)."
+  throw "Installed gateway was not ready within $MaxGatewayReadySeconds seconds (Kiro CLI probe timed out: $probeTimedOut; exited before ready: $gatewayExitedEarly; exit code: $gatewayExitCode)."
 }
 Write-Host "Installed gateway became ready in $gatewayElapsed seconds ($startupPycCount pycs)."
 if ($env:GITHUB_STEP_SUMMARY) {

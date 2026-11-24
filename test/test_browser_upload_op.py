@@ -305,6 +305,7 @@ def test_worker_sets_the_node_the_isolated_world_gave_and_frees_it() -> None:
         "Page.getFrameTree",
         "Page.createIsolatedWorld",
         "Runtime.evaluate",
+        "Runtime.callFunctionOn",
         "DOM.setFileInputFiles",
         "Runtime.releaseObject",
     ]

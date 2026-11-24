@@ -161,7 +161,9 @@ export type FolderModalTarget = { mode: 'create'; parentId: string } | { mode: '
 export interface SidebarScope {
   // Its props
   localSlots: ChatSidebarProps['slots']
-  activeSlot: ChatSidebarProps['activeSlot']
+  /** The open session while a session drag is in flight, else null: the chat-pane
+   *  drop zone refuses a reference to the open chat itself. */
+  dragOpenSlot: string | null
   history: ChatSidebarProps['history']
   historyHasMore: ChatSidebarProps['historyHasMore']
   defaultAgent: ChatSidebarProps['defaultAgent']
@@ -169,9 +171,7 @@ export interface SidebarScope {
   onSelectSlot: ChatSidebarProps['onSelectSlot']
   onOpenSlotInNewTab: ChatSidebarProps['onOpenSlotInNewTab']
   collapsible: ChatSidebarProps['collapsible']
-  chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
-  canStageSessionRef: ChatSidebarProps['canStageSessionRef']
   onShowSessionInPane: ChatSidebarProps['onShowSessionInPane']
   staticRows: ChatSidebarProps['staticRows']
 
@@ -268,7 +268,8 @@ export interface SidebarScope {
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]
   rowViews: ReturnType<SidebarRows['views']>
-  isActiveRow: ReturnType<SidebarRows['views']>['isActive']
+  /** A code-channel worker that never folds under its conductor: the open one, or a pinned one. */
+  keepCrewWorkerShown: (worker: Slot) => boolean
 
   // The confirming callbacks (the native dialogs stay in ChatSidebar.tsx)
   clearClosedSessionsWithConfirm: () => Promise<void>

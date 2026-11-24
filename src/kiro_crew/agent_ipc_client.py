@@ -176,6 +176,20 @@ def redeem_at_startup(port_fn: Callable[[], int]) -> None:
         current_capability(port_fn)
 
 
+def redeem_server_pickup() -> None:
+    """:func:`redeem_at_startup` for a Kiro Crew stdio server, on the port its requests use.
+
+    The startup step of every server ``acp.ipc_pickup.PICKUP_SERVERS`` names. It runs
+    before the first request because listing the tools already reads this session's
+    tool policy from the gateway. Without a pickup, and on a second call, it does
+    nothing.
+    """
+    # Imported here: port_resolution loads the configuration, which this light module does not.
+    from kiro_crew.port_resolution import resolve_client_port_src
+
+    redeem_at_startup(lambda: resolve_client_port_src(None)[0])
+
+
 def capability_request(
     req: "urllib.request.Request | str", capability: str
 ) -> urllib.request.Request:

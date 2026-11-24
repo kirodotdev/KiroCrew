@@ -15,13 +15,11 @@ import asyncio
 import pytest
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
+from kiro_crew.mcp_discovery import McpServerInfo
 
 
-class _FakeServer:
-    """Minimal stand-in for a probed server row."""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
+class _FakeServer(McpServerInfo):
+    """A probed server whose row is pared down to the fields these tests read."""
 
     def to_dict(self) -> dict:
         return {"name": self.name, "status": "ok"}

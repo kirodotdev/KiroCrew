@@ -935,13 +935,15 @@ async def stop_slot_turn(
     # is resolved and the reply names the honest state -- there is no running
     # provider turn here to report as "stopped", and no provider turn to kill.
     _idle_running = outcome == "idle" and slot.running
+    if outcome == "idle" and (
+        _cancel_preparing_runner(slot, preparing) or await _cancel_admission_wait(slot)
+    ):
+        # The turn had no provider turn yet: this press stopped it.
+        _idle_running = False
     # A newer press owns the card and the posture now: settling either here
     # would idle its stop, and its next press would start over instead of
     # escalating to the hard kill.
     _owns_posture = slot._stop_generation == stop_generation
-    if outcome == "idle" and _cancel_preparing_runner(slot, preparing):
-        # The runner had no provider turn yet: this press stopped it.
-        _idle_running = False
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
@@ -1010,6 +1012,19 @@ def _cancel_preparing_runner(slot: "_ChatSlot", preparing: Any) -> bool:
     slot._preparing_turn = None
     runner.cancel()
     return True
+
+
+async def _cancel_admission_wait(slot: "_ChatSlot") -> bool:
+    """End a dashboard send still waiting in fair admission; whether it did.
+
+    That wait runs before the send's runner starts, so it has no
+    ``_preparing_turn`` record for :func:`_cancel_preparing_runner` to find. Its
+    work is cancelled as a person's cancel instead: the turn ends unstarted and
+    its own hand-off drains the queue.
+    """
+    from kiro_crew.shared_crew import admission_entry
+
+    return await admission_entry.cancel_waiting_send(slot.key)
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
@@ -1585,9 +1600,9 @@ async def _interrupt_claimed_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
-    if outcome == "idle":
-        # Its tail drains the promoted card, as at the end of any stopped turn.
-        _cancel_preparing_runner(slot, preparing)
+    if outcome == "idle" and not _cancel_preparing_runner(slot, preparing):
+        # Either tail drains the promoted card, as at the end of any stopped turn.
+        await _cancel_admission_wait(slot)
     # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
     # new generation during the await owns the card and the posture.
     _owns_posture = slot._stop_generation == claim_generation

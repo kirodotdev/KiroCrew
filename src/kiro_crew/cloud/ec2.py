@@ -1605,3 +1605,14 @@ def wait_for_delete(tag: str, profile: str = "", region: str = "") -> bool:
     )
     # `wait` exits 0 when the stack reaches DELETE_COMPLETE (including "not found").
     return rc == 0
+
+
+def wait_for_create(tag: str, profile: str = "", region: str = "") -> bool:
+    """Block until a stack being created settles. Returns True on CREATE_COMPLETE."""
+    rc, _out, _err = aws.run_aws(
+        ["cloudformation", "wait", "stack-create-complete", "--stack-name", stack_name(tag)],
+        profile,
+        region,
+        timeout=_DEPLOY_TIMEOUT,
+    )
+    return rc == 0

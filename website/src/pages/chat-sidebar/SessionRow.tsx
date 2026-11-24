@@ -51,6 +51,7 @@ import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
+import { useRowStatus } from './rowStatus'
 import { SessionStatusLinksLine } from './SessionLinksLine'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
@@ -310,11 +311,15 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
+    slot: s, dividerNext, scope, navScope, holdContainer, crewWindowCovers, isOut, isPinned, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // From the row-status store: only a row whose answer flips re-renders on a chat switch.
+  const { isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, isUnread, nextIsActive } = useRowStatus(s, dividerNext)
+  // No divider touches the open row: its highlight separates it.
+  const showDivider = dividerNext !== null && !isActive && !nextIsActive
   // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.
@@ -1924,7 +1929,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                     // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
                     rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
                 : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
-              slotKey={s.key} links={s.source_links} total={s.source_links_total} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
+              // A session whose chips are turned off shows no linked-items count and no chips.
+              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
               onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }} />
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}

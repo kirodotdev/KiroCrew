@@ -4,7 +4,7 @@
 // optional second credential / allow-all / thread allow-list blocks, the
 // threshold guard, the secret-clear paths and the save result messages.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import {
   BotChannelPanel,
@@ -236,6 +236,56 @@ describe('BotChannelPanel save', () => {
     // stored preview, so the next save sends something the user can see.
     expect(screen.getByPlaceholderText('zz-token-placeholder')).toHaveValue('zz-new-token')
   })
+
+  it('collapses a replaced token to its preview while a second credential typed during the save stays', async () => {
+    let finish: (v: unknown) => void = () => {}
+    let loads = 0
+    renderPanel(makeSpec({
+      secondCredential: { label: 'Zz bot ID', description: 'zz-id-desc', placeholder: 'zz-id' },
+      getConfig: () => {
+        loads += 1
+        return Promise.resolve(config(loads > 1
+          ? { connected: true, bot_token_preview: 'zz11…new9', bot_id_set: false }
+          : { bot_id_set: false }))
+      },
+      saveConfig: vi.fn().mockReturnValueOnce(new Promise(res => { finish = res })),
+    }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Replace/ }))
+    fireEvent.change(screen.getByPlaceholderText('zz-token-placeholder'), { target: { value: 'zz-new-token' } })
+    await act(async () => { fireEvent.click(await saveBtn()) })
+    fireEvent.change(screen.getByLabelText('Zz bot ID'), { target: { value: 'zz-id-during' } })
+    await act(async () => { finish({ ok: true, restart_required: false, verify_warning: '' }) })
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('zz-token-placeholder')).not.toBeInTheDocument()
+    expect(screen.getByText('zz11…new9')).toBeInTheDocument()
+    expect(screen.getByLabelText('Zz bot ID')).toHaveValue('zz-id-during')
+  })
+
+  it('collapses a replaced second credential while a token removal marked during the save stays pending', async () => {
+    let finish: (v: unknown) => void = () => {}
+    let loads = 0
+    renderPanel(makeSpec({
+      secondCredential: { label: 'Zz bot ID', description: 'zz-id-desc', placeholder: 'zz-id' },
+      getConfig: () => {
+        loads += 1
+        return Promise.resolve(config(loads > 1
+          ? { connected: true, bot_id_set: true, bot_id_preview: 'zzid…new9' }
+          : { bot_id_set: true, bot_id_preview: 'zzid…old1' }))
+      },
+      saveConfig: vi.fn().mockReturnValueOnce(new Promise(res => { finish = res })),
+    }))
+    const idField = (await screen.findByText('Zz bot ID')).closest('[data-setting-label]') as HTMLElement
+    fireEvent.click(within(idField).getByRole('button', { name: /^Replace/ }))
+    fireEvent.change(screen.getByLabelText('Zz bot ID'), { target: { value: 'zz-new-id' } })
+    await act(async () => { fireEvent.click(await saveBtn()) })
+    fireEvent.click(screen.getByLabelText('Remove'))
+    await act(async () => { finish({ ok: true, restart_required: false, verify_warning: '' }) })
+    expect(await screen.findByText('Connected')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Zz bot ID')).not.toBeInTheDocument()
+    expect(screen.getByText('zzid…new9')).toBeInTheDocument()
+    expect(screen.getByText('Will be removed on save.')).toBeInTheDocument()
+  })
+
   it('refuses a threshold outside 1-100 without calling the API', async () => {
     const saveConfig = vi.fn()
     renderPanel(makeSpec({ saveConfig }))

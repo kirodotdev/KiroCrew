@@ -32,9 +32,11 @@ own messages defer a wake that comes due until your turn finishes, but they do
 not restart the clock. A loop stays on schedule in a conversation you are
 actively using.
 
-A loop the agent arms caps at **24** cycles by default; the goal control's own
-field starts at `0`, so a loop you arm there is unlimited unless you set a
-number. Either way the cap is a runaway backstop, not a finish line —
+A loop the agent arms that wakes on every interval (`gate=false`, or a loop
+with nothing to observe) caps at **24** cycles by default; a gated loop that
+watches a subject has no cycle cap by default, because a quiet cycle costs no
+turn. The goal control's own field starts at `0`, so a loop you arm there is
+unlimited unless you set a number. Either way the cap is a runaway backstop, not a finish line —
 a loop that reaches its cap ran out of rope rather than completing. A cap of `0`
 is unlimited, which is worth asking for only when you genuinely want an
 unbounded loop.
@@ -79,6 +81,13 @@ request's typed facts to the decision service, so it is off until you turn it
 on. With the scope off, such a loop runs as a plain timer. A loop whose
 instruction names no session and no pull request, such as a conductor's patrol,
 gives the built-in brief nothing to read, so it runs as it does with the scope off.
+The built-in brief also leaves out a named session that has been closed or
+deleted and judges the loop on what is still open. Once a session the judge has
+already read is closed, the next cycle still fires, because nothing that session
+wrote since the last read can be read; later cycles leave it out. A loop
+whose named sessions have all gone runs as it does with the scope off too. A
+session that is still open but cannot be read on a cycle still makes that cycle
+fire.
 
 A loop never switches its session to a cheaper model for a check. The judge is a
 separate small call, not a turn of the loop's own session, and every cycle that

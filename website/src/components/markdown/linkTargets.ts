@@ -1,7 +1,7 @@
 import { useContext, useEffect, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
-import { classifyShortName, sessionKeyFrom } from '../../utils/sessionKeys'
+import { classifyShortName, rosterKeyFrom, sessionKeyFrom } from '../../utils/sessionKeys'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
@@ -148,8 +148,9 @@ export function classifySessionLink(raw: string, actions: SessionActions): Sessi
   const roster = actions.sessions
   // A full key names its generation exactly, independent of any write time. A
   // short name goes through the roster ONCE, and its outcome also says WHY it did
-  // not resolve — the distinction a "not open" tooltip needs.
-  const fullKey = sessionKeyFrom(raw)
+  // not resolve — the distinction a "not open" tooltip needs. A key of another
+  // shape (a cron-born, title-derived one) counts only as an exact roster key.
+  const fullKey = sessionKeyFrom(raw) ?? rosterKeyFrom(raw, roster)
   const short = fullKey ? null : classifyShortName(raw, roster.keys(), actions.writtenAtEpoch)
   const key = fullKey ?? (short!.kind === 'resolved' ? short!.key : null)
   if (key) {

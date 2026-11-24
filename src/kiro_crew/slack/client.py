@@ -213,12 +213,15 @@ class SlackClientOps(ABC):
         self,
         channel: str,
         thread_ts: str,
-        file: str,
+        file: str | bytes,
         filename: str,
         title: str,
         initial_comment: str | None = None,
     ) -> None:
         """Upload a file to a Slack thread.
+
+        *file* is a path, or the bytes themselves when the caller has already
+        checked them and must not have the path reopened.
 
         *initial_comment* is an optional message posted with the file as its
         Slack ``initial_comment``; ``None`` (the default) carries no comment, so
@@ -725,7 +728,7 @@ class RealSlackClient(SlackClientOps):
         self,
         channel: str,
         thread_ts: str,
-        file: str,
+        file: str | bytes,
         filename: str,
         title: str,
         initial_comment: str | None = None,
@@ -997,6 +1000,10 @@ class RealSlackClient(SlackClientOps):
         if turn_muted(channel, ts=ts):
             return False
         try:
+            # The same blocks check as every other method here that takes a tree;
+            # a refused tree returns False with no call made, so the caller's
+            # retry without blocks still closes the stream.
+            _refuse_remote_media(blocks)
             # Each chunk is new content; see update_message.
             require_channel(channel)
             body: dict[str, Any] = {"channel": channel, "ts": ts}

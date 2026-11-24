@@ -39,4 +39,6 @@ def test_every_granted_dashboard_and_work_verb_is_named() -> None:
 def test_ledger_rebuild_is_named_as_the_cache_dirty_recovery() -> None:
     text = skill_text(SKILL)
     assert "`cache_dirty`" in text
-    assert "kirocrew-work::work_ledger_rebuild" in text
+    # Named by verb and server; the id form is the harness's, given by [TOOL NAMES].
+    assert "`work_ledger_rebuild`" in text
+    assert "`kirocrew-work`" in text

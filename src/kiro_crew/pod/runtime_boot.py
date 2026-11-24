@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import pinned_fs
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.pod import env_overrides, launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime, runtime_attestation, runtime_home, runtime_ports
@@ -328,7 +329,7 @@ def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
     # edit land outside the pod even with KIROCREW_WORKSPACE set correctly.
     workspace = Path(env["KIROCREW_WORKSPACE"])
     try:
-        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(workspace)
         os.chdir(workspace)
     except OSError as exc:
         print(f"FATAL: could not enter the pod workspace {workspace}: {exc}")

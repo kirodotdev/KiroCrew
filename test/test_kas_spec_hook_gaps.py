@@ -642,6 +642,7 @@ def _subagent_run(
     store: ScriptHookStore | None = None,
     switch_to: str = "",
     stale: bool = False,
+    second_round: str = "",
 ):
     """One subagent run on *backend*; every PreToolUse fire it makes denies.
 
@@ -686,6 +687,13 @@ def _subagent_run(
             mcp_server_name=mcp[0],
             tool_name=mcp[1],
         )
+        if second_round:  # KAS's next consent round: the call's id, another tool.
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="r-2",
+                tool_call_id="t-1",
+                harness_tool_id=second_round,
+            )
         yield LLMEvent(
             kind=EVENT_TOOL_RESULT, tool_call_id="t-1", tool_output="ok", tool_final=True
         )
@@ -823,10 +831,14 @@ def test_a_kas_subagent_denies_on_its_permission_request_and_fires_once(monkeypa
 
 
 @pytest.mark.usefixtures("healthy_host_memory")
-def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatch):
+@pytest.mark.parametrize("second_round", ["", "list_directory"])
+def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatch, second_round):
     """A spec's PostToolUse matcher is a kiro-cli tool name, which KAS's call title
-    is not, so the subagent passes the names the request's id stands for."""
-    fire, _provider = _subagent_run(ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command")
+    is not, so the subagent passes the names the request's id stands for: the first
+    request's, as a later consent round under the call's id names another tool."""
+    fire, _provider = _subagent_run(
+        ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command", second_round=second_round
+    )
     (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
     assert "execute_bash" in post.kwargs["extra_hooks_tool_names"]
 

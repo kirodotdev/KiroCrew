@@ -114,8 +114,14 @@ can reorder strictness or redefine matching):
   `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
   so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
   stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
-  at all there. A pattern rooted without a drive (`/data/**`) still never
-  meets an item, which `abspath` gives a drive. POSIX is unchanged.
+  at all there. A pattern rooted without a drive (`/data/**`) meets no local
+  drive path, which `abspath` always gives a drive, while a remote-workspace
+  target still meets it (below): on Windows such a rule binds guest files only.
+  A pattern whose first segment is a wildcard (`/**`, `/*`) can also meet a
+  local UNC path (`\\host\share\...`), since either separator matches.
+  `ScopedRuleset.from_dict` logs one WARNING for each such entry when the
+  policy loads ("Filesystem + egress at the host gate" below). POSIX is
+  unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
@@ -623,7 +629,10 @@ in an oss build). One fetch is the Kiro control plane's
   (`/`, `~` or `~/...`), one `/` between segments, no trailing `/`, no `.` or `..`
   segment, and no `\`, drive letter, `~user`, `[`, `$` or extended glob
   (`enterprise_policy_translate._non_canonical`, plain string checks); any other
-  shape refuses a deny and is dropped from an allow. The reply's settings (`body.configuration`, each entry's
+  shape refuses a deny and is dropped from an allow. A `/`-rooted path is
+  canonical on every gateway OS, so a Windows gateway neither refuses nor drops
+  it: there it binds remote-workspace targets and no local drive path ("Path
+  matcher" above). The reply's settings (`body.configuration`, each entry's
   `value` the setting as JSON) are shape-checked and hashed when the reply declares a
   hash, and then a badly shaped entry refuses the reply. With no hash they are read
   leniently, as before, so an entry Crew does not read never refuses a reply, and a
@@ -1496,7 +1505,15 @@ because no written grant consulted it. A profile is saved by editing a file, whi
 distribution poll observes, and a host without central distribution has no poll at all, so
 the gateway runs its own **profile watch**: every `_PROFILE_PROJECTION_POLL_S` (15 s), off
 the event loop, `agent.reproject_for_profile_change` re-stats the directory and calls the
-hook when the answer differs from the one the memo records. A projection that does not land
+hook when the answer differs from the one the memo records. A re-stat that reloads the store to
+the snapshot it already holds is not a difference: the profile generation moves only when the
+published snapshot differs from the one it replaces (`governance_profiles._publish_snapshot`).
+On a fresh data home the directory does not exist at boot and the first sandboxed spawn
+creates it empty, so its read-only seal has a target; that reload, a `chmod`, or a rewrite with
+the same bytes leaves the answer, and so the watch, alone. Counting that reload as a move would
+have the first tick after a fresh start rebuild the agent config for no governance change and
+replace the files the sandbox pins under any hook starting in that second
+(`test/test_rebuild_keeps_pinned_files.py`). A projection that does not land
 (a declined rebuild or a held spec, each of which logs a refusal and an audit event per
 attempt) is retried by the watch every `agent._PROFILE_WATCH_RETRY_S` (an hour) rather than
 every tick, and one whose rebuild raised after `agent._PROFILE_WATCH_RAISE_RETRY_S` (five
@@ -1543,8 +1560,8 @@ The projection is built per session, so the translated merge asks
 `may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
 the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
 `permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
-ask `may_skip_gate_now`. The ceiling
-and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
+ask `may_skip_gate_now`. The ceiling, `hooks.confirm_tools` and `hooks.auto_deny_tools`
+are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
 picks (the surface bind, or the unattended deny-all), every `task` bind (a call's agent may
@@ -2800,6 +2817,12 @@ reads is checked: `allow` in allow mode, `deny` in deny mode. The warning names
 the dead entry and its reason and offers no replacement host. It warns rather than
 raising: refusing the document would turn one stale entry into a boot failure on
 upgrade for a policy that loads today.
+On a Windows gateway the same loader reports a `path` entry in the list the mode
+reads whose expansion starts with exactly one separator (`/data/**`): it meets no
+path on a drive letter, so the scope permits (deny mode) or refuses (allow mode)
+the local path it names, while a remote-workspace target still meets it ("Path
+matcher" above). A drive, a `//` or `\\` share prefix, a `~` or `$VAR`
+that expands to a drive, and an unrooted glob stay silent, and matching is unchanged.
 
 `on_tool_call(..., tool_kind=, raw_params=)` carries these from the ACP event
 (`AcpEvent.tool_kind` / `.raw_tool_params`); the call sites thread them
@@ -3903,7 +3926,7 @@ Three keys from the RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts
 | `app_versions` (ruleset, `identifier`) | Which third-party app versions may be installed and loaded | `<app>@<version>` from the manifest, or the registration's own version when no manifest is sent, or, for an activation (boot, enable, restart) whose manifest names no version, the installed record's version (an install or update never falls back); with no readable (semver) version, such as none or a JSON `null`, any policy that governs the key refuses. The registry install's pre-clone admission skips the version (its manifest can be a stale local checkout); the clone-time admission asks it on the fetched manifest before the build or `onInstall` | `apps/admission.py::app_admission_denied`, run at install, update, boot, restart and enable; builtins stay exempt as for every admission rule |
 | `capabilities.app_dev_mode` | App developer mode: the toggle and every dev-mode read | the gate | `apps/dev_mode.py` (`set_dev_mode`, `is_dev_mode`, `is_dev_mode_cached`, `_load_dev_apps`) through `extension_governance.developer_mode_permitted`, which any other developer-mode switch reads too |
 
-The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` off the loop first and passes `version_checked=True` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an LTS build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the LTS gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
+The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` and the `apps` activation check (`_app_activation_denied`) off the loop first and passes `version_checked=True` and that verdict as `activation_permitted` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an LTS build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the LTS gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
 
 Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_sync` reports, and refuses the whole sync if any is denied. A package that drifts between that read and the sync is not asked (a known gap). A refused dev-mode toggle answers `locked_by_policy` (409 over HTTP), audited as a denied `app_dev_mode` SEL row.
 
@@ -4003,7 +4026,8 @@ status tick rather than waiting out the cache's stale window.
 **And follows a profile-layer edit.** The value in that frame is
 `governance_profiles.governance_answer_generation()`, which is
 `context.governance_generation()` plus a module-private `_profile_generation()`
-bumped whenever `ProfileStore._ensure_fresh` publishes a new snapshot. The field's
+bumped whenever `ProfileStore._ensure_fresh` publishes a snapshot that differs from the one it
+replaces (a reload to an equal snapshot decides nothing and moves nothing). The field's
 contract is unchanged — it stays an opaque, comparison-only integer, so combining two
 monotonic counters is not a change of meaning and no consumer needs to know. This
 exists because the ceiling counter alone missed Level-2 edits: a profile file
@@ -4545,6 +4569,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   It keeps the auto-approve surface it decides itself (`may_skip_gate` with
   `BUILTIN_TOOL_SCOPES` / `BUILTIN_TOOL_CAPABILITIES`, `strip_ungoverned_auto_approve`,
   the `hooks.confirm_tools` gate, `may_skip_gate_now`, `withheld_by_confirm_tools`,
+  `withheld_by_auto_deny_tools` (doctor names the operator's own rule as the cause),
   `mcp_scope_governed_now`, `sanitize_agent_config_governance`) and the two boot checks,
   `assert_governance_floor` and `assert_governance_paths_protected`. Its owners, one
   responsibility each, lowest layer first; new work goes to the owner it belongs to:
@@ -4609,6 +4634,28 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   - `platform/policy_distribution_boot.py` — `parse_distributed_policy`,
     `load_distributed_policy`, `fetch_once`, `validate_ceiling` and the
     `_sanitize_detail` redaction sink.
+- `platform/server_pattern_reach.py` — whether an operator tool pattern can reach a
+  call on one MCP server: `may_match_spelling` (the
+  literal-prefix test `server_requires_confirmation` runs over `@server`,
+  `@server/<tool>` and `Running: @server/<tool>`) and `may_name_server_call`, which
+  `_operator_denies` asks for a whole-server grant (`@server`, `@server/q*`). The gate
+  judges such a call's `hooks.auto_deny_tools` under `@server`, `@server/<tool>`,
+  `Running: @server/<tool>`, `mcp__server__<tool>` and the bare tool name, so every
+  pattern that can match one of those withholds the grant, a bare name or wildcard
+  (`read_private`, `delete_*`) included. A pattern keeps it only when it begins `@` or
+  `mcp__` and names another server (`@other/*`, `mcp__other__*`), or holds whitespace
+  and cannot spell `Running: @server/<tool>` (`*rm -rf*`, `Running: @other/*`): only
+  that spelling holds whitespace, one space after `running:`. Kiro Crew's own managed
+  servers (`mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`) are judged against their real tools
+  instead: a pattern withholds such a server's grant only when it matches one of those
+  spellings for a tool the server can expose, switched-off ones included
+  (`_managed_spellings`, read through `mcp_discovery_managed.managed_tool_names_for_policy`
+  once per server per process and imported only then; a list that is empty or cannot be
+  read withholds). So `["*curl*"]` or `["web_fetch"]` keeps `@kirocrew-core` and
+  withholds a third-party `@ops`, whose tool names are not known here, and `["delete_*"]`
+  withholds both, since it names `kirocrew-core`'s `delete_message`. A pattern that
+  names one tool keeps an exact grant of another (`read_private` keeps
+  `@server/other_tool`).
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),

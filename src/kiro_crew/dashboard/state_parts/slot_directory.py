@@ -393,6 +393,10 @@ def native_subagent_snapshots(
             }
             # The label and model a card's frames carry, when it has them.
             base.update({key: str(info[key]) for key in ("label", "model") if info.get(key)})
+            # A KAS engine sub-agent's card (``dashboard.engine_subagent_cards``) stays
+            # marked: what its replayed frame carries beyond every native card's.
+            if info.get("engine"):
+                base["frame_extras"] = {"engine": True}
             if info.get("done"):
                 done_at = float(info.get("done_at") or 0.0)
                 if done_at and (now - done_at) > ttl_secs:
@@ -740,6 +744,11 @@ def get_or_create_slot(
         self._restricted_keys.add(f"dashboard:{name}")
     if ephemeral:
         self._ephemeral_keys.add(f"dashboard:{name}")
+    # A new slot starts with approve-for-me off: a person turns it on for this
+    # slot, not for an earlier one that held the same name.
+    from kiro_crew.dashboard.approve_for_me import approve_for_me_keys
+
+    approve_for_me_keys(self).discard(f"dashboard:{name}")
     # Hydrate only a complete, genuine Slack link. Other transports still
     # write their namespaced origin id through the legacy channel field;
     # those are projected separately via ``links`` and must never make the

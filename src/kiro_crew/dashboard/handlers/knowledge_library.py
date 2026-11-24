@@ -18,13 +18,11 @@ from functools import partial
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import fts5_segment_for_index
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.handlers.knowledge_access import (
-    _audited_write,
-    _require_knowledge_owner,
-    _sel_log,
-    _store,
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
 )
+from kiro_crew.dashboard.handlers.knowledge_access import _audited_write, _sel_log, _store
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.validation import clamp_query_offset
@@ -46,7 +44,7 @@ def _namespace_rows(store) -> list:
 
 async def list_namespaces(request: web.Request) -> web.Response:
     """GET /api/knowledge/namespaces -- all namespaces with item counts."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.namespaces.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.namespaces.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -265,7 +263,7 @@ def _items_page(
 
 async def list_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/items -- list/search with pagination."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.items.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.items.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -480,7 +478,7 @@ def _item_detail(store, item_id: str) -> dict | None:
 
 async def get_item(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id} -- single item with entities, relations, source_locations."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -492,7 +490,7 @@ async def get_item(request: web.Request) -> web.Response:
 
 async def update_item(request: web.Request) -> web.Response:
     """PATCH /api/knowledge/items/{id} -- update fields."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.update")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.update")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -537,7 +535,7 @@ async def update_item(request: web.Request) -> web.Response:
 
 async def delete_item(request: web.Request) -> web.Response:
     """DELETE /api/knowledge/items/{id}."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.delete")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.delete")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -569,7 +567,7 @@ async def delete_item(request: web.Request) -> web.Response:
 
 async def get_item_content(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/content -- plain text for clipboard."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.content.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.content.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -597,7 +595,7 @@ def _entity_list_rows(store, where_clause: str, params: list) -> list:
 
 async def list_entities(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.entities.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.entities.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -622,7 +620,7 @@ async def list_entities(request: web.Request) -> web.Response:
 
 async def get_entity_graph(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/{id}/graph -- D3-compatible subgraph."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.entity.graph.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.entity.graph.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -649,7 +647,7 @@ async def get_entity_graph(request: web.Request) -> web.Response:
 
 async def get_entity_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/by-name/{name}/items -- items containing entity."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.entity.items.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.entity.items.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -719,7 +717,7 @@ def _related_items(store, item_id: str, limit: int) -> list[dict]:
 
 async def get_related_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/related -- items sharing entities with given item."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.item.related.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.item.related.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -741,7 +739,7 @@ async def get_full_graph(request: web.Request) -> web.Response:
       source_id: comma-separated source IDs to filter entities by. When set,
         only entities mentioned in items belonging to those sources are included.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.graph.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.graph.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -827,7 +825,7 @@ async def source_counts(request: web.Request) -> web.Response:
     source's unfiltered, all-namespace total and would over-report whenever a
     filter is on. Sourceless items are reported under the `__none__` key.
     """
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source_counts.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source_counts.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
@@ -908,7 +906,7 @@ def _stats_counts(store, with_embedded: bool) -> tuple[dict, int]:
 
 async def get_stats(request: web.Request) -> web.Response:
     """GET /api/knowledge/stats."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.stats.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.stats.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)

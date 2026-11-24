@@ -814,6 +814,7 @@ order, and pins that no owner imports the facade:
 | `chrome.tsx` | the sidebar's shared drawing atoms, used by the row and the render owners: the open-in-tab click predicate, the open chat row's side-panel re-click (`reclickTogglesPanel` and `reclickDoubleClick`, re-exported from `lib/reclickPanelToggle.ts`) and its tooltip (`reclickPanelTitle`, naming the live side-panel shortcut), `DisclosureChevron` (the sidebar's one disclosure grammar), the folder and divider chrome (the pinned-section divider, the folder body geometry and the text-control classes), and `dateSegment`, the date-segment label the flat lane and the Older Sessions pane head their groups with |
 | `CrewGroups.tsx` | the per-machine group chrome: the `Local` header, each crew group's header, badge, offline note and tunnel-error notice, and the collapsed-crew set |
 | `rows.ts` | the row model: the one declaration of every filter dimension and what each consumer derives from it (`filteredSlots`, `listNarrowed`, the reveal registry), the status-chip predicates and badge counts, the one lane order, the drag freeze, the split of the filtered rows between the `Local` lanes and the crew groups (each crew group's rows, the folder hide applied), the flat lane, the tree's ungrouped rows and per-folder rows, the board's pool (local rows the folder filter does not conceal), the dormant split's gates, and each rendered row's `SessionRowView` and window |
+| `rowStatus.ts` | the row-status store: the open session, the crew window, the crew-parent mark, Split View, a failed open and the unread keys, which each row selects its own answers from (`useRowStatus`: active, reclick, crew parent, unread, and whether the row below is active, for its divider), and the narrow reads the body takes of it (`useRowStatusSelect`, `useActiveRowAmong`) |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer test on local folder state for the owners that hold their own lists |
 | `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`, and two keys declared beside their own logic (`mc-pinned-session-order` in `utils/pinnedSessionOrder.ts`, `kc-board-folder-collapsed:*` in `utils/boardFolderCollapse.ts`); the session sort is not among them, being gateway config (`dashboard.session_sort`, see `sessionSort.ts`); and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips, the folders-shelved flag, the folders-unread-first flag (`mc-sidebar-folders-unread-first`) and the group-by-kind flag (`filters.tsx`); and the model filter's one key (`mc-session-model-filter`, its selection and direction) |
@@ -895,6 +896,22 @@ row and UI-location pins join the facade with the owner files; the switchSlot
 call-site table, the hover-state rows and the restyle ratchet name each owner file;
 `useInteractiveModels.test.ts` reads `bulkModelSwitch.tsx`; and
 `hoverVariantPolicy.test.ts` reads the row shell's touch flag here.
+
+**A chat switch.** The default export is a thin outer layer over the body
+(`ChatSidebarBody`, memoized). The outer layer takes `activeSlot`, `unreadSlots`,
+`canStageSessionRef` and `chatDropTarget`, the props a chat switch or the first open
+changes, and keeps them out of the body's props: the first two in the row-status
+store (the unread set keeps its identity while its members hold, because the chat
+page hands a new array on every switch), the other two in contexts. A switch
+therefore re-renders the rows whose highlight or divider changes and the window
+wrapper that keeps the open row mounted, not the body. The body reads the open
+session only where it changes the list's structure, each through a selector that
+answers null for every other session: a row the Slack setting hides
+(`crewModeView`), an aged unpinned row the dormant collapse would fold (and the
+just-left entry it records), a code-channel worker that must not fold, the cleanup
+panel while it is open, and a session drag (the drop zone's refusal; the drop
+re-reads the store). An unread change still re-renders the body, since the Unread
+chip, its count and the unread-first folder order depend on it.
 
 New sidebar code goes to the owner whose row above names its responsibility, not
 to `ChatSidebar.tsx`: a new filter dimension is one entry in `rows.ts`, and a new
@@ -1526,6 +1543,16 @@ no longer destroy older turns.
   lands while a save writes (`slot_transcript._fold_head`) is subtracted when
   the save commits (`write_guards.saved_rows_still_held`, rows matched by
   identity), so the folded rows are not counted as the window's on-disk part.
+  A native clear (`_keep_cleared_turns`) saves the slot, then folds the same
+  way, up to the row that was last before the save, the rows `_disk_window_len`
+  counts as saved (normally all of them) and, when no row stays in the window,
+  the other writers' lines `_frozen_prefix_cache` holds. When a row stays beside
+  such lines it folds nothing: the save merged them among the window's rows by
+  time, so no count of rows is the boundary, and every row stays in the window
+  for the next flush. The folded turns are then read from the transcript like
+  any folded row. A refused or failed save does not raise that count, and the
+  rows past it stay in the window for the next flush, as do the rows that
+  arrived during the save.
 - **Idle window release** (`dashboard/slot_window_release.py`): the flush loop,
   at most once a minute and after its flush, folds every saved row older than
   the newest `_WINDOW_ROWS` of a slot idle for ten minutes into the frozen
@@ -1586,6 +1613,17 @@ no longer destroy older turns.
   meanwhile it stays an ordinary fork. Until a pick the child runs on the parent's
   model and effort, and a pick on a child with copied history appends the usual
   model-switch notice row. The agent `session_fork` path is unchanged.
+- **Fork as incognito / Fork as temporary**: the same message menu lists, after
+  "Fork with another model", one entry per mode stricter than the open chat's
+  (`stricterForkMemoryModes` in `website/src/utils/forkMemoryModes.ts`): a
+  persistent chat offers both, an incognito chat only "Fork as temporary", and
+  a temporary chat neither. Each sends the `direction="head"` request with
+  `memory_mode`, and the new chat shows the usual incognito or temporary badge
+  from the response's `memory_mode`.
+- **Pinned forks**: a dashboard fork of a pinned session is pinned too, so it
+  stays beside its parent in the pinned group. `dashboard.fork_inherits_pin`
+  (default true) gates this; when it is false the fork starts unpinned. Agent
+  `session_fork` children are never pinned either way.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
@@ -1594,14 +1632,23 @@ no longer destroy older turns.
   would buy no privacy, for the reason the titling section below gives -- the
   parent's full transcript is already in its session JSONL, and a fork copies
   transcript while engaging neither guarantee the modes make (`is_restricted`,
-  `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
-  child from a restricted parent -- that would hand no-write content to
-  consolidation -- so the request body carries no `memory_mode` and the
-  parent's value is the only source; promotion (below) is the one deliberate,
-  consent-gated exception. A temporary child still receives its copied turns:
+  `blocks_reads`). What an ORDINARY fork must not do is produce a child LESS
+  private than its parent -- a persistent child of a restricted parent would
+  hand no-write content to consolidation. The body's optional `memory_mode`
+  may therefore name the parent's mode or a stricter one in
+  `execution_context.MEMORY_MODES` order (persistent, incognito, temporary).
+  `chat_fork_memory_mode.fork_child_memory_mode` decides it in `fork_slot`
+  before the transcript snapshot: a looser mode answers 409
+  `fork_memory_mode_looser` (SEL `denied`) and a value outside the three 400
+  `invalid_memory_mode`, with no child. A stricter mode is passed to
+  `get_or_create_slot` at birth and bound through `ExecutionContext.with_mode`,
+  which only tightens. Without the field the parent's value is the only
+  source. Promotion (below) is the one deliberate, consent-gated exception,
+  and it ignores the field. A temporary child still receives its copied turns:
   `build_session_context` assembles the thread-history block before any
   `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
-  report the inherited (or, for a promotion, forced) mode. The inherited value
+  report the child's mode: the inherited or stricter requested one, or for a
+  promotion the forced one. The inherited value
   is validated against `VALID_MEMORY_MODES` before the child is allocated:
   rehydration copies the transcript header's `memory_mode` onto the slot as
   written, so a hand-edited or partially written header can leave a value
@@ -1874,8 +1921,12 @@ no longer destroy older turns.
   a slot linked only after it observed its file (a reused slot a cron or workflow
   injection binds, a hooked revive) resolves another file B with its own
   `created_at`. (A History resume of a cron transcript binds its own `cron:` key
-  in `metadata_codec.slot_args`, and a task-runner review transcript its own
-  `taskrunner:<task_id>:chat:<token>` key, so neither drifts.) Comparing B's identity
+  in `metadata_codec.slot_args`: the line's link, or, for the dashboard user's
+  resume of a job's `cron_<job id>` transcript whose line has none, the key the
+  job's tab restores to (`own_cron_link`). A task-runner review transcript binds
+  its own `taskrunner:<task_id>:chat:<token>` key. Neither drifts. A sequence
+  agent's or stateless run's transcript with no link is not keyed by its name,
+  and its reopened tab stays unbound.) Comparing B's identity
   against the observation from file A would read "different file" as "deleted and
   recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
@@ -2610,8 +2661,9 @@ shared by both vocabulary stores.
   restores the same object still naming the deleted id, which the periodic flush makes
   durable with no later pass able to reach it. EVERY path that pops a slot and may put it
   back therefore wraps its whole frame, restore included, in `close_in_flight` — the
-  single-tab close, the bulk stale-tab archive and History resume's reserved build alike —
-  and both sweeps iterate that registry alongside `state._slots`. A second popping path
+  single-tab close, the bulk stale-tab archive, History resume's reserved build and the
+  Spec Builder worker teardown (whose failed-archive and still-running-orphan put-backs
+  restore the popped slot) alike — and both sweeps iterate that registry alongside `state._slots`. A second popping path
   left unwrapped reopens the hole in full, so the pairing is pop-with-restore, not
   close-the-tab.
   The registry is keyed per REGISTRATION rather than by slot name or by object: by name,
@@ -3570,7 +3622,11 @@ Telegram, which persist the new message only after the restore, pass
 `newest_request=True`: a request after the newest `stop_event` marker is then the
 stopped one, and the marker an older surface's Stop (a channel Stop writes none).
 The dashboard leaves it off, because a drained queue row can already follow its
-own marker; Slack keeps its existing call.
+own marker; Slack keeps its existing call. The dashboard also passes the history
+replay its prompt carries (`replay=`). A cold start rebuilds that replay from this
+same log, so when it already holds the stopped request as a `User:` row the restore
+is `""` and the request reaches the model once (see
+`docs/system-specs/modules/session.md`).
 
 ## Session Lifecycle
 
@@ -3778,6 +3834,10 @@ derived `<agent>--readonly` spec; claude, goose and Strands: a `side_read_only`
 session, with the boundary `THREAD_BOUNDARY_PROMPT_NO_SHELL`,
 `THREAD_BOUNDARY_PROMPT_LISTING` and `THREAD_BOUNDARY_PROMPT_FILE_READS`
 respectively); elsewhere `REJECT_ALL` with `THREAD_BOUNDARY_PROMPT_NO_TOOLS`. Actions go through the main chat, and the boundary prompt says so.
+A finished turn's stored reply loses each line that only quotes a directive tool's marker
+(`session_directive.strip_quoted_markers`; the interrupted partial answer keeps it): under
+`REJECT_ALL` the slot's own spec runs,
+and a directive tool it pre-grants runs without a permission request.
 A shell-capable thread turn also gets `THREAD_BOUNDARY_PROMPT_NO_SHELL` while
 `name_grant.environment_refusal()` refuses every program name, since each shell
 read is then declined; the check runs off the loop.
@@ -3796,10 +3856,11 @@ then disk prefix plus window -- so a parent only disk holds is found. The Bot's 
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
 an `assistant` reply and broadcast; it goes through the main chat's credential
 pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
-text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+text stays `redact()` of the marker-stripped answer byte for byte and the row keeps the `redactions` records
 its placeholders need, and the removed values are kept for the owner's reveal
 (`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
-interrupted partial answer below is stored the same way. The thread read
+interrupted partial answer below goes through the same credential pass and reveal rule,
+unstripped. The thread read
 (`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
 its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
 `reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`

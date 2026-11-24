@@ -793,12 +793,13 @@ class TestSlashAndReplyCommands:
     async def test_status_over_slash_answers_the_interaction_ephemerally(self) -> None:
         d, cli, _ = _dispatcher({"u1"})
         await d.on_interaction(self._cmd("status"))
-        # The reply rides the interaction callback, NOT a channel message: an
-        # ephemeral answer is the whole reason the slash surface exists here.
+        # The reply rides the interaction's own webhook, NOT a channel message:
+        # a private answer is the whole reason the slash surface exists here.
         assert cli.sent == []
-        assert len(cli.responses) == 1
-        interaction_id, body, ephemeral = cli.responses[0]
-        assert interaction_id == "i9" and ephemeral is True and "uptime" in body
+        assert cli.defers == [("i9", "c1")]
+        assert len(cli.webhook_writes) == 1
+        verb, _token, body, _components, _destination = cli.webhook_writes[0]
+        assert verb == "edit_original" and "uptime" in body
 
     @pytest.mark.asyncio
     async def test_a_slash_command_is_never_pre_acked_as_a_component(self) -> None:
@@ -814,7 +815,7 @@ class TestSlashAndReplyCommands:
         await d.handle_message(_inbound("!help"))
         text_card = cli.sent[-1][0]
         await d.on_interaction(self._cmd("help"))
-        slash_card = cli.responses[-1][1]
+        slash_card = cli.webhook_writes[-1][2]
         assert text_card == slash_card
         # Every catalogued command appears, so the card cannot drift from the
         # registered menu.
@@ -827,7 +828,7 @@ class TestSlashAndReplyCommands:
         await d.on_interaction(self._cmd("nope"))
         # It replays through the text path, where an unrecognized `!nope` is
         # ordinary text; what must NOT happen is a silent drop with no reply.
-        assert cli.responses, "the interaction must be answered either way"
+        assert cli.webhook_writes, "the interaction must be answered either way"
 
 
 class TestModelPicker:
@@ -861,9 +862,12 @@ class TestModelPicker:
             )
         )
         assert d._model_pref[d._scope_id("u1", "")] == "m-fast"
-        # One edit carries the outcome AND retires the buttons.
-        last_id, body, components = cli.edits[-1]
-        assert last_id == message_id and components == [] and "m-fast" in body
+        # One edit carries the outcome AND retires the buttons, through the
+        # press's own token: the one route that also reaches a private picker.
+        verb, token, body, components, destination = cli.webhook_writes[-1]
+        assert (verb, token, destination) == ("edit_original", "tok", "c1")
+        assert components == [] and "m-fast" in body
+        assert cli.edits == []
         # The live session was switched in place, not merely recorded.
         assert sess._gp.set_models == ["m-fast"]
 
@@ -909,7 +913,7 @@ class TestModelPicker:
         )
         await d.on_interaction(press)
         await d.on_interaction(press)
-        assert "no longer active" in cli.edits[-1][1]
+        assert "no longer active" in cli.webhook_writes[-1][2]
 
     @pytest.mark.asyncio
     async def test_an_expired_picker_is_refused_and_names_no_model(self) -> None:
@@ -928,7 +932,7 @@ class TestModelPicker:
                 custom_id="m:1",
             )
         )
-        assert "no longer active" in cli.edits[-1][1]
+        assert "no longer active" in cli.webhook_writes[-1][2]
         assert d._model_pref == {}
 
     @pytest.mark.asyncio
@@ -1012,9 +1016,10 @@ class TestCommandSurfaceParity:
                     command_name=name,
                 )
             )
-        # Either the interaction itself was answered, or it was acknowledged and
-        # replayed onto the text path which then replied. Silence is the failure.
-        assert cli.responses or cli.sent, name
+        # Either the interaction itself was answered privately, or (a DM session
+        # picker) the text path posted into the DM. Silence is the failure.
+        answered = [w for w in cli.webhook_writes if w[0] != "delete_original"]
+        assert answered or cli.sent, name
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", [name for name, _desc in COMMAND_SPEC])
@@ -1174,15 +1179,17 @@ class TestGuildCommandRefusalsAreVisible:
             return False
 
         # Denied in both namespaces that read the ceiling, so a strict read
-        # anywhere on the way in drops the stop.
+        # anywhere on the way in drops the stop. The outbound read is denied too,
+        # as in production, where both read the same `channels` allowlist.
         monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
         monkeypatch.setattr(td_mod, "channel_inbound_permitted", _denied)
+        monkeypatch.setattr(td_mod, "channel_outbound_permitted", _denied)
         d, cli, sess = _dispatcher({"u1"})
         sess._busy = True
         await d.on_interaction(self._cmd())
         assert "disabled by policy" in cli.responses[-1][1] and sess._gp.cancelled == 0
         await d.on_interaction(self._cmd(name="stop"))
-        assert sess._gp.cancelled == 1 and "Stopped" in cli.sent[-1][0]
+        assert sess._gp.cancelled == 1 and "Stopped" in cli.webhook_writes[-1][2]
 
     @pytest.mark.asyncio
     async def test_an_unauthorized_user_gets_nothing_at_all(self) -> None:
@@ -1197,8 +1204,8 @@ class TestGuildCommandRefusalsAreVisible:
         d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
         cli.thread_channels.add("t1")
         await d.on_interaction(self._cmd(guild="g1", channel="t1"))
-        assert len(cli.responses) == 1
-        assert "uptime" in cli.responses[0][1]
+        assert len(cli.webhook_writes) == 1
+        assert "uptime" in cli.webhook_writes[0][2]
 
 
 class TestRendererIsFullyWired:
@@ -1321,9 +1328,9 @@ class TestReviewFindingRegressions:
         assert _owner_dm_target(threads) == "user:1"
 
     @pytest.mark.asyncio
-    async def test_guild_slash_model_refuses_rather_than_posting_the_list(self) -> None:
-        """The slash surface promises a private reply, and the picker cannot be
-        one: its buttons need an editable channel message."""
+    async def test_guild_slash_model_posts_a_private_picker(self) -> None:
+        """The slash surface promises a private reply, so the picker is one: a
+        press edits it through its own interaction token."""
         d, cli, sess = _dispatcher({"u1"}, allowed_threads={"t1"})
         cli.thread_channels.add("t1")
         sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
@@ -1339,13 +1346,13 @@ class TestReviewFindingRegressions:
                 command_name="model",
             )
         )
-        assert len(cli.responses) == 1 and cli.responses[0][2] is True
-        assert "cannot be private here" in cli.responses[0][1]
+        verb, _token, _body, components, destination = cli.webhook_writes[0]
+        assert verb == "edit_original" and components and destination == "t1"
         # Nothing was posted to the thread, so no model list leaked.
         assert cli.sent == []
 
     @pytest.mark.asyncio
-    async def test_a_dm_slash_model_still_posts_the_picker(self) -> None:
+    async def test_a_dm_slash_model_posts_the_picker_privately(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
         await d.on_interaction(
@@ -1359,7 +1366,7 @@ class TestReviewFindingRegressions:
                 command_name="model",
             )
         )
-        assert any(components for _text, components in cli.sent)
+        assert any(w[3] for w in cli.webhook_writes) and cli.sent == []
 
     def test_the_install_url_grants_thread_creation(self) -> None:
         """`auto_thread` promotes a channel message into a NEW public thread, so

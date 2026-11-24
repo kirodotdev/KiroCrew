@@ -1224,7 +1224,8 @@ and in the boot canary above.
 
 `nightly.yml`'s `process-leak-invariant` job (`Process Leak Invariant + Chaos
 (Linux)`) runs `test/e2e/test_process_leak_invariant.py` and
-`test/e2e/test_process_chaos.py` on `ubuntu-latest`. It is not a PR gate.
+`test/e2e/test_process_chaos.py` on `kirocrew-linux-4-core` in this repository
+(`ubuntu-latest` in a fork). It is not a PR gate.
 
 - **A real `systemd --user` session.** The suites need a usable `systemd --user`
   scope backend. The job creates one the same way `pod-scenarios` does

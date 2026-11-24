@@ -7,8 +7,8 @@ workers too, which is how a host with many conductors stalls. ``start()`` hands
 those loops to one :class:`BootPacer` in boot order, and each loop's timer waits
 its turn here (:meth:`BootPacer.wait_turn`) before its own countdown.
 
-The gap between two releases follows the memory posture ``resource_status.probe``
-reports (``ample`` / ``tight`` / ``critical``). Memory, not disk: what a woken
+The gap between two releases follows the memory decision posture
+``resource_status.probe`` returns (``ample`` / ``tight`` / ``critical``). Memory, not disk: what a woken
 session costs at start is memory, and a full temp disk is not freed by waiting.
 
 * ``ample``: :data:`BOOT_WAKE_GAP_SECS`, enough for the previous wake to start its
@@ -49,13 +49,15 @@ _AMPLE, _CRITICAL = "ample", "critical"
 async def probe_host_posture() -> str:
     """The host's memory posture, from a fresh ``resource_status.probe``.
 
-    The probe reads ``/proc`` and the config, so it runs off the loop. A probe that
-    fails reads ``unknown``, which the pacer treats as ``tight``.
+    The probe reads ``/proc`` and the config, so it runs off the loop. The pacing is a
+    decision, so it reads ``decision_posture``: the advisory ``unknown`` reported for a
+    container limit out of view must not slow the wakes. A probe that fails reads
+    ``unknown``, which the pacer treats as ``tight``.
     """
     from kiro_crew import resource_status
 
     try:
-        return str((await asyncio.to_thread(resource_status.probe)).posture)
+        return str((await asyncio.to_thread(resource_status.probe)).decision_posture)
     except Exception:  # noqa: BLE001 - a failed probe is an unknown posture
         logger.debug("AutoNudge boot pacer: posture probe failed", exc_info=True)
         return resource_status.POSTURE_UNKNOWN

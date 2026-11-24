@@ -223,6 +223,17 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
 export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
 
 /**
+ * KAS sub-agents: a KAS dashboard chat on the default agent runs the sub-agents
+ * that report back in the same reply inside the KAS engine instead of starting
+ * Kiro Crew's own. Server-only: the gateway reads
+ * `dashboard.feature_previews.kas_subagents` at each session start
+ * (`acp/kas_engine_subagents.kas_subagents_preview_on`), so nothing in the
+ * dashboard reads this key. Default OFF, and OFF is Kiro Crew's own sub-agents
+ * as before; a change applies to chats started after it.
+ */
+export const PREVIEW_KAS_SUBAGENTS = `${PREVIEW_FLAG_PREFIX}kas-subagents`
+
+/**
  * Worker grill: a conductor may offer to let two or three workers grill a costly
  * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
  * and dispatch one moderator worker that runs the fast talk
@@ -288,6 +299,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
+  PREVIEW_KAS_SUBAGENTS,
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,

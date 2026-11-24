@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, Settings2 } from 'lucide-react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { CONNECTION_PROVIDER_PARAM, GOOGLE_ENTRY_SLUG, isGoogleSlug } from './connectionsLinks'
+import { CONNECTION_PROVIDER_PARAM, GOOGLE_ENTRY_SLUG, OAUTH_CLIENTS_QUERY_KEY, isGoogleSlug } from './connectionsLinks'
 import { OAuthAppPanel, OAuthClientWrittenContext, OAuthDraftsContext, OAuthDraftValuesContext, type OAuthDraftValues, type OAuthDraftValueStore } from './OAuthAppPanel'
 import ProviderLogo from './ProviderLogo'
 import { api, ApiError, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
@@ -192,6 +192,37 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   // feed below; this never mints and never owns reachability (that stays with
   // /api/mcp). Declared before the mint feed because `waitingSlugs` reads the
   // awaiting_consent verdicts.
+  // The OAuth app a card can create in one click (Slack's manifest today). Kept
+  // under the Slack manifest's key, so a Slack Code switch saved in Settings
+  // refreshes what the button creates. The route is owner-only: its 403 leaves
+  // the tip without its buttons, and any other failure says so.
+  const { data: appManifests, error: appManifestsError } = useQuery({
+    queryKey: ['slack-manifest', 'connections-app-manifests'],
+    queryFn: async () => (await api.connectionsAppManifests()).apps,
+    enabled: servicesEnabled,
+    retry: false,
+  })
+  // The OAuth app part's own cache: a card whose client is saved already has
+  // its app, so it is not offered a second one.
+  const wantsClients = servicesEnabled && !!appManifests && Object.keys(appManifests).length > 0
+  const { data: oauthClients, error: oauthClientsError } = useQuery({
+    queryKey: OAUTH_CLIENTS_QUERY_KEY,
+    queryFn: api.connectionsOAuthClients,
+    enabled: wantsClients,
+  })
+  // Either read failing hides the buttons, so either one says so; only the
+  // owner gate's expected 403 stays quiet.
+  const appManifestsFailed = (!!appManifestsError
+    && !(appManifestsError instanceof ApiError && appManifestsError.status === 403))
+    || (wantsClients && !!oauthClientsError)
+  const appToCreate = (slug: string) => {
+    // A failed read of either answer, even over a cached one, cannot vouch for
+    // the app it would create (switches since saved, a client since saved), so
+    // it offers none.
+    if (appManifestsError || oauthClientsError) return undefined
+    const client = oauthClients?.clients?.find(c => c.slug === slug)
+    return client && !client.configured ? appManifests?.[slug] : undefined
+  }
   const { data: statusBySlug = {}, isError: statusIsError } = useQuery<Record<string, ConnectionStatus>>({
     queryKey: ['connections-status'],
     queryFn: async () => {
@@ -970,6 +1001,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           {(isError || statusIsError) && (
             <ErrorNotice message={t('pages.connectionsPage.could_not_load_status')} className="mb-3" />
           )}
+          {/* No hand-off either, for the same reason. */}
+          {appManifestsFailed && (
+            <ErrorNotice message={t('pages.connectionsPage.could_not_load_app_manifests')} className="mb-3" />
+          )}
 
           {isLoading ? (
             <ContentSkeleton rows={6} />
@@ -1057,6 +1092,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     signInInChat={status?.signInInChat === true}
                     crewHeld={status?.crewHeld === true}
                     signInRedirect={status?.signInRedirect}
+                    appManifest={appToCreate(provider.slug)}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}

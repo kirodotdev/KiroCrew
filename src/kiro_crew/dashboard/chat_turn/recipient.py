@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_mirror_is_paused,
 )
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import (
@@ -619,16 +620,18 @@ async def _deliver_linked_slack_message(
     message: str,
 ) -> None:
     """Mirror one system message to a linked Slack thread."""
-    slack_client = getattr(state, "slack_client", None)
-    if slack_client is None:
-        return
-    if slack_mirror_is_paused(state, session_key):
-        return
     thread_ts = getattr(slot, "_slack_thread_ts", "")
     channel_id = getattr(slot, "_slack_channel", "")
     if (not thread_ts or not channel_id) and sessions is not None:
         thread_ts, channel_id = sessions.get_slack_link(session_key)
     if not (thread_ts and channel_id):
+        return
+    # A reconnect may have taken the client: post through the one it publishes.
+    await wait_for_slack_reconnect(state)
+    slack_client = getattr(state, "slack_client", None)
+    if slack_client is None:
+        return
+    if slack_mirror_is_paused(state, session_key):
         return
     try:
         # Top-level in a code channel, like every other post its session makes.

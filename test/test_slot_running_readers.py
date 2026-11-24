@@ -279,6 +279,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control_parts/model_switch.py", "land_model_pick_after_channel_turn"),
                 ("state_parts/session_events.py", "wire_session_release_listener"),
                 ("openai_compat.py", "api_completions"),
+                # A session the engine refused is retracted through
+                # _retract_failed_newborn, which leaves a reserved one alone.
+                ("crew_api_responses.py", "_run"),
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control_parts/turn_control.py", "reload_target"),
@@ -389,5 +392,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
+        # One request's turn, started as the dashboard send starts one.
+        ("crew_api_responses.py", "_run"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

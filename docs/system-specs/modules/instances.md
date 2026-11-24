@@ -995,10 +995,11 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   characters, the hint store's limit. The resolver rebuilds it as
   `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
   same-named local session; a `crew` that is not an id becomes the value-free
-  `/chat?crewError=1`. The hub reads the route only from the native navigate
-  channel, never from its URL, and matches the id against a crew list read
+  `/chat?crewError=1`. The hub runs the link (pane switch, connect rule) only
+  from the native navigate channel, and matches the id against a crew list read
   fresh for the link (not the cached `['instances']`, which can still say
-  `connected` for a tunnel that died while the window was hidden). The newest
+  `connected` for a tunnel that died while the window was hidden). The same
+  route on the dashboard's own address only opens the crew window (below). The newest
   native link wins: a crew link whose read answers after a later link arrived,
   or after the user switched panes, is dropped silently. A link that arrives
   before a reloading window has restored its remembered pane wins over that
@@ -1025,6 +1026,30 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
     switches there. Known limit: a dead forwarder the gateway has not noticed yet
     still reads `connected`, so the key reaches the pane on screen, which a tab
     click would show just as broken.
+  - **On the dashboard address.** `/chat?crew=<crew id>&crewSid=<key>` (and
+    `/chat/<slug>?…`) typed or linked into the hub's own address opens that
+    session in the crew window over the local chat page, the window the
+    sidebar's crew rows open (`useCrewAddressLink`). It runs in the hub only,
+    never in a pane, a popout or an `/embed/` frame (the embedded chat keeps its
+    own `?crew=&key=`), on every new address entry that carries the route. It
+    drops `crew`, `crewSid` and `crewError` from the live address at once (the
+    chat page's URL writer copies every other param, so a reload never re-reads
+    them; it copies the router's committed search, which can still hold the
+    route while the replace's transition is pending, so it leaves out each of
+    the three the live address no longer carries, `withoutSpentCrewLink`),
+    forgets a remembered pane and brings the local crew forward, then
+    checks the id against the shared `['instances']` list: a malformed link, an
+    unknown id, a crew turned off, a crew with no dashboard pane or a list that
+    failed to load raises the same message as the native link and opens nothing.
+    A link whose list read answers after a newer address link arrived, after
+    the user picked or opened a session or closed the window, or while a crew
+    pane is in front or another page is shown, opens nothing and shows nothing.
+    It has no connect rule: it never switches to the crew's pane and never
+    starts a tunnel, because any web page can open a dashboard address. A crew
+    that is not connected opens the window in its not-connected state, which
+    goes live once the tunnel is up; known limit: a crew outside the warm set
+    stays not connected until the user connects it from its tab. The address
+    takes no `sid`: a `sid` beside it is read as a local session, as always.
 - **Active pane on reload.** `mc-active-pane` in sessionStorage
   (`lib/activePaneMemory.ts`) stores only the crew id, never a port or token.
   Reload keeps it. A new window starts empty and opens on Local. The first
@@ -2210,9 +2235,65 @@ verdict and runs no probe, since the SSH ladder would dial whatever `ssh_host`
 the record holds.
 
 SSM-only registry fields: `ssm_target` (an EC2 `i-…` or SSM managed-instance
-`mi-…` id), plus optional `aws_profile`, `aws_region` and `ssm_run_as`. Only the
-profile **name** is persisted — never a credential; the AWS CLI resolves
-credentials via its own provider chain.
+`mi-…` id, or a resolver, below), plus optional `aws_profile`, `aws_region` and
+`ssm_run_as`. Only the profile **name** is persisted — never a credential; the
+AWS CLI resolves credentials via its own provider chain.
+
+**Resolver targets.** On the `ssm` method only, `ssm_target` may say where the
+id is found instead of being one: `asg:<group>` names an Auto Scaling group,
+whose one `InService` instance is the target, and `param:<name>` names an SSM
+parameter whose value is the id. `validation.split_ssm_resolver` owns both
+shapes (charset-bound, never starting with `-`, AWS's own length caps); the
+registry's ssm arm admits them beside `ssm_target_matches`, which stays closed
+to them, as does `validate_ssm_target`. `cloud.ssm.resolve_ssm_target` makes the
+one read-only call (`autoscaling describe-auto-scaling-groups`, or `ssm
+get-parameter` without decryption) with the row's own profile and region, and
+raises `validation.SsmTargetUnresolvedError` (an `SsmValidationError`) unless it
+gets exactly one EC2 or managed-instance id; its message never quotes the
+parameter's value. The id it returns still goes through `_resolve_transport`
+and `validate_ssm_target` before any argv is built, and nothing writes it back
+to the row.
+
+Where it is looked up follows what the call is for. The paths that build a
+forward -- `connect` and `_recover` -- call `_with_resolved_target` before
+`_resolve_transport`, off the event loop, so a replaced instance is reached on
+the next rebuild. `_recover` still validates under its Phase 1 lock (against the
+dead forward's dialled id), looks the target up after releasing it, and then
+re-reads its stamp under the lock and stands down if a connect or disconnect
+landed during the lookup, as it does after a chained mint; it retries an
+unresolved lookup on the usual backoff within the attempt cap, because zero or
+two `InService` instances is what a rolling replacement looks like for a moment,
+and any other invalid target still stands it down. Tier 1 reuses the held
+token, which only the instance the old forward reached issued: when the lookup
+names another instance the token is dropped, and a resolver crew holding none
+goes straight to tier 2, which mints from the new instance before it rebuilds
+and stores that credential only once the rebuild has installed the forward to
+it. The stamp moves as a failed tier-1 install would move it, so tier 2 binds to
+the generation it expects and a mint still in flight for the old forward is
+refused. One that lands first -- a refresh started after that move still mints
+over the old forward -- is dropped by the install itself: `_rebuild` drops the
+held token whenever the forward it installs dials another `ssm_target` than the
+one it replaces. A failed tier-2 mint retries the same way next attempt, so the
+crew is never left connected without a credential from the instance it reaches,
+nor with one from another. The mints that serve an
+already open forward -- the token refresh, the lent hop and the parent-hop
+re-mint -- call `_with_dialled_target` instead, which takes the id from the live
+tunnel's `TunnelStatus.ssm_target`: a fresh lookup could name a replacement the
+open port does not reach, and the credential has to come from the machine it
+leads to. The remote verbs do the same while the crew is connected, so restart
+and update act on, and read back, the machine its pane shows; with no connected
+forward they look the target up. Diagnose always makes its own lookup: it
+answers what a connect would reach now. A failed spawn of `aws`
+during a lookup is raised as `SsmTargetUnresolvedError` too, so no caller dials
+anything. `connect` reports it as "could not look up the SSM target: …".
+
+A resolver row is never a launched or correlated cloud crew: `is_launched_instance`,
+`cloud destroy`'s `unregister_instance`, `register_instance`'s re-launch match,
+the Stop/Start row match, `handlers_crew_turn._record_for` and the panel's
+cloud-tag lookup (which alone offers the Stop/Start/Delete buttons that call
+`coordsOf`) all compare the row's literal `ssm_target` with an instance or node
+id, which an `asg:`/`param:` value never equals. `hasDashboardPane` reads only
+the method, so a resolver row keeps its pane.
 
 `ssm_run_as` is the **remote POSIX user** SSM commands run as: `cloud.ssm.run_command`
 wraps every remote command in `sudo -u <user> -i bash`, and its default
@@ -2286,6 +2367,12 @@ window is a Session Manager preference, not a value this code knows.
 `diagnose_instance_ssm` mirrors the SSH ladder with an SSM first rung, so an
 offline agent is not reported as a dead remote gateway:
 
+0. for a resolver target only: does the lookup name one id? → no ⇒
+   `ssm_target_unresolved`, with the lookup's own message as the reason (a
+   sandbox refusal of the `aws` spawn is `unknown`, as in rung 1); the later
+   rungs probe the id it names, and a `ssm_target_missing` for that id says to
+   wait for its agent to register or to update the parameter, never to type a
+   fixed id over the resolver
 1. managed node online? (`describe-instance-information`) → no ⇒ `ssm_unreachable`,
    or `ssm_target_missing` when the read succeeded and SSM lists no node with that id
 2. remote dashboard up? (`send-command` + curl on the remote loopback) → no ⇒ `remote_down`,
@@ -2336,7 +2423,8 @@ profile, no agent, no route to SSM) and a wrong account or region also list no n
 the reason names all three causes. A terminated instance SSM still lists, a read that prints
 nothing, and a read that errors all read as `ssm_unreachable`, so if SSM answers an
 unknown id with an error rather than an empty list the result is the less specific code,
-never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement.
+never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement; a
+row that should follow one uses a resolver target instead (above).
 
 A `SandboxUnavailableError` from rung 1's `aws` spawn is not an SSM answer: the hub's
 own sandbox refused to start the CLI, so no call reached AWS. The ladder stops there
@@ -4455,7 +4543,7 @@ the `exclude_incognito` arm reports as retryable) is `503 crew_peer_busy`, its
 naming the status and nothing from the peer's body, and a reply over the read cap
 is `502 crew_reply_too_large`; `crew_malformed_reply` is reserved for a 2xx that is
 not JSON. Every call emits a SEL audit event
-(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+(tool name `instances_` plus `crew_search`, `crew_list` or `crew_read`) carrying the resolved instance id
 **and the originating MCP caller's session key**, so an audit reviewer can see
 which agent session read which remote crew's history.
 

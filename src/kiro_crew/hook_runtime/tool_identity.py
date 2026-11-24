@@ -35,9 +35,11 @@ if TYPE_CHECKING:
         KIRO_TOOL_ALIASES,
         TOOL_AUTO_APPROVE,
         SpecDeniedGrant,
+        SpecParentLimits,
         ToolHookResult,
         _bounded_pattern_search,
         _every_operation_names_a_path,
+        as_parent_limits,
         as_spec_denied_grant,
         computer_use_action_classes,
         computer_use_action_from_title,
@@ -231,6 +233,10 @@ class ToolCall:
     #: ``AcpEvent.spec_granted_read_paths``: the same for the read ``allowedPaths``,
     #: against the target of a file read. Empty grants nothing.
     spec_granted_read_paths: tuple[str, ...] = ()
+    #: ``AcpEvent.spec_parent_limits``: for a KAS sub-agent run, one
+    #: ``SpecParentLimits`` per agent above it. Read by the ``spec-parent-limits``
+    #: row only, which REFUSES what any of them refuses. Empty refuses nothing.
+    spec_parent_limits: tuple[SpecParentLimits, ...] = ()
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -318,6 +324,7 @@ class ToolCall:
             "spec_granted_read_paths": _granted_patterns(
                 getattr(event, "spec_granted_read_paths", None)
             ),
+            "spec_parent_limits": as_parent_limits(getattr(event, "spec_parent_limits", ())),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -355,6 +362,7 @@ class ToolCall:
             "spec_shell_readonly": self.spec_shell_readonly,
             "spec_granted_paths": self.spec_granted_paths,
             "spec_granted_read_paths": self.spec_granted_read_paths,
+            "spec_parent_limits": self.spec_parent_limits,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,

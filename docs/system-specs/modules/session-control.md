@@ -953,7 +953,7 @@ so a pick that is unknown, not selectable under governance, not installed, or
 installed after the gateway started is refused with that endpoint's codes
 (`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
 listing the backends that can start), and with no session made. A `kiro`
-pick runs on KAS where a stored Kiro CLI pick would ([harness-parity](harness-parity.md)
+pick runs on KAS where a Bot's Kiro CLI pin would ([harness-parity](harness-parity.md)
 H1). An enabled
 `agent.acp_failover` chain may move it to a later member, and the reply says so
 (`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
@@ -1034,7 +1034,7 @@ two routes answer them differently:
 | `count_user_session` | `True` — a human request-layer session for the pulse survey | `False` — an agent-made session is not one (`test_session_pulse_session_count` sweeps for the literal, so the core takes it as a parameter and the only literal `True` stays in `chat_fork.py`) |
 | `jev_route_allowed` | `is_owner_dashboard_request` | `False` — arming a second routed session is the owner's own click, which no agent caller made; the child keeps the parent's pinned `model` |
 | SEL operation | `chat.slot_fork` | `session_control.fork`, on the core's rows and on this module's own `_audit` row (`session_fork`), so the two entry points stay distinguishable |
-| Sidebar pin (`stamp`) | `_inherit_pin(source.slot)` copies the parent's `pinned` onto the child before its birth save, so the fork stays beside its parent in the pinned group; the response carries `pinned` | Never pinned: `pinned` marks a session as human-owned |
+| Sidebar pin (`stamp`) | `_inherit_pin(source.slot)` copies the parent's `pinned` onto the child before its birth save, so the fork stays beside its parent in the pinned group; the response carries `pinned`. With `dashboard.fork_inherits_pin` off (default on), no stamp is passed and the fork starts unpinned | Never pinned: `pinned` marks a session as human-owned |
 
 The core's refusals are `web.json_response` objects — that is the module's
 refusal shape and its coded sites are what the error-code ratchet
@@ -2532,7 +2532,9 @@ is a code channel's. Every other caller meets exactly the refusals above.
   `read`, `summary`, `broadcast`, `fork`, or `retry` / `continue` / `reload` / `set_model`;
 - *turn author* -- on a channel-origin or channel-narrowed turn, every Slack author routed into
   the slot (`note_channel_sender`, from `maybe_route_linked_thread`) is the owner by identity
-  (the handler's `is_owner`, not the allow-list) now. The clause governs who DRIVES the session; third-party text it reads
+  (the handler's `is_owner`, not the allow-list), or the shared user who opened that channel
+  and is listed and Slack-confirmed now (`shared_refusal.opener_admitted`, read without the
+  confirmation cache's expiry, so a long turn keeps it). The clause governs who DRIVES the session; third-party text it reads
   as content (the origin thread the first turn carries as fenced untrusted data, files, issues)
   is bounded by reach, not by authorship.
 

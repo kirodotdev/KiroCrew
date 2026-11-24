@@ -197,10 +197,52 @@ class TestSelfProtectionKillTargetScoping:
                 "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
                 "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
             ),
+            # A same-line assignment of literal text is resolved, so a name joined
+            # from such assignments is the name itself.
+            *_named(
+                "test_a_name_joined_from_literal_assignments_is_a_kill",
+                'kill $(a=kiro; b=crew; pgrep -f "$a$b")',
+                'kill $(case x in x) :;; esac; a=kiro; b=crew; pgrep -f "$a$b")',
+                f'a=kiro; b=crew; {_PK} -f "$a$b"',
+            ),
         ],
     )
     def test_kill_spellings_that_name_the_cli_are_kills(self, origin, cmd):
         assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        ['kill $(pgrep -f "$pattern")', "kill $(pgrep -f otherproduct)"],
+        ids=["pattern-variable", "another-product"],
+    )
+    def test_a_lookup_by_a_pattern_variable_or_another_name_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'kill $(pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(case x in x) :;; esac; pgrep -f "$(printf kiro)$(printf crew)")',
+            'kill $(x=$(printf kiro); pgrep -f "${x}crew")',
+            "kill $(pgrep -f kiro{c..c}rew)",
+            "kill $(pidof kiro{,}crew)",
+            f"{_PK} -f kiro{{c..c}}rew",
+            f'{_PK} -f "$(printf kiro)$(printf crew)"',
+        ],
+        ids=[
+            "printed-halves",
+            "printed-halves-after-esac",
+            "printed-assignment",
+            "brace-sequence",
+            "pidof-brace-list",
+            "pkill-brace-sequence",
+            "pkill-printed-halves",
+        ],
+    )
+    def test_an_assembled_lookup_target_remains_residual(self, cmd):
+        # A stated residual of this floor: a target the command assembles from what a
+        # substitution prints, or from a brace expansion, is not worked out.
+        assert _denied_by(cmd) != _RULE_KILL, cmd
 
     def test_nested_shell_payload_bare_kill_allowed(self):
         # Descending must not widen: a bare PID kill inside a payload is still
@@ -685,8 +727,168 @@ class TestSelfProtectionKillTargetScoping:
     def test_expanded_or_executing_spelling_blocked(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
 
+    @pytest.mark.parametrize(
+        ("program", "args", "rule"),
+        [
+            ("/usr/bin/p*ll", f"-f {_NAME}", _RULE_KILL),
+            ("kiro*rew", _TOK, _RULE_MINT),
+        ],
+    )
+    @pytest.mark.parametrize("directory", [False, True])
+    @pytest.mark.parametrize(
+        "redirect",
+        ["", "<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
+    )
+    def test_slash_glob_at_program_position_still_reads_as_a_program(
+        self, program, args, rule, directory, redirect
+    ):
+        # Outside a `for` list a trailing slash proves nothing: bash runs a function
+        # named `p*ll/`, and a redirect target's slash is not the program's.
+        command = f"{program}{'/' if directory else ''}{redirect} {args}"
+        assert _denied_by(command) == rule
+
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            # The loop value is rewritten back into a program path, then run.
+            (f"for w in /usr/bin/p*ll/; do ${{w%/}} -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/local/bin/kiro*rew/; do ${{w%/}} {_TOK}; done", _RULE_MINT),
+            (f"for w in /usr/bin/p*ll/; do $w -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/bin/p*ll/; do $(dirname $w/z) -f {_NAME}; done", _RULE_KILL),
+            (f'for w in /usr/bin/p*ll/; do eval "${{w%/}} -f {_NAME}"; done', _RULE_KILL),
+            (
+                f"function p*ll/ {{ /usr/bin/pkill \"$@\"; }}; 'p*ll/' -f {_NAME}",
+                _RULE_KILL,
+            ),
+            # The printed loop value is rewritten downstream and run by a shell.
+            (
+                f'for w in /usr/bin/p[k]ill/; do echo "$w -f {_NAME}"; done'
+                " | sed 's@/ -f@ -f@' | /bin/ba?h",
+                _RULE_KILL,
+            ),
+            (
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln -s {_NAME} \"$w/z\"; done' 2>&1 | bash",
+                _RULE_KILL,
+            ),
+            (f"for w in /usr/bin/p*ll/; do echo $w {_NAME}; done > /tmp/x.sh", _RULE_KILL),
+            # `for` is only an echo argument; the glued word after `;` is the program.
+            (
+                f'function p*ll/ {{ /usr/bin/p?ill "$@"; }}; echo for w in x;p*ll/ -f {_NAME}',
+                _RULE_KILL,
+            ),
+            (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # A `{ …; }` loop body, with a decoy `do` later in an echo argument.
+            (
+                'for w in a/; { function p*ll/ { /usr/bin/p?ill "$@"; }; '
+                f"'p*ll/' -f {_NAME}; }}; echo do done",
+                _RULE_KILL,
+            ),
+            (f"for w in a/; {{ 'kiro*rew/' {_TOK}; }}; echo do done", _RULE_MINT),
+            # An outer frame shadows a body program, then a nested shell runs the loop.
+            (
+                "ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln $w {_NAME}; done'",
+                _RULE_KILL,
+            ),
+            # The same, with the whole command itself shaped as a `for` loop.
+            (
+                "for w in a/; do ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/bin/p*ll/; do ln $v {_NAME}; done'; done",
+                _RULE_KILL,
+            ),
+            (
+                "for w in a/; do ln() { ${1%/} $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/local/bin/kiro*rew/; do ln $v {_TOK}; done'; done",
+                _RULE_MINT,
+            ),
+            # A body program that stores its output (`printf -v`) and then runs it.
+            (
+                f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
+                _RULE_KILL,
+            ),
+        ],
+    )
+    def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
+        assert _denied_by(cmd) == rule
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x=w; ${!x%/} -f t",
+            "declare -n r=w; ${r%/} -f t",
+            "x=$w/z; ${x%//z} -f t",
+            "eval $w",
+            "$w -f t",
+            "echo `basename $w`",
+            "for v in $w; do $v -f t; done",
+            "echo $w/z | sed s@//z@@",
+            "ln -s t $w/z 2>&1",
+            "echo $w/z >> /tmp/x.sh",
+        ],
+    )
+    def test_loop_value_that_can_be_rewritten_grants_no_exemption(self, body):
+        # The exemption is withdrawn for the whole frame, not only when the target
+        # sits in the same command as the glob.
+        from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
+
+        text = f"for w in /usr/bin/p*ll/; do {body}; done"
+        frames = _self_frames(text)
+        assert all(
+            not _for_list_directory_globs(tokens, text, src == text) for src, tokens in frames
+        )
+
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do ln -sfn /opt/{_NAME}/y $w/z; done",
+            f'for w in /srv/x/*/; do ln -sfn /path/to/{_NAME}/thing "$w/z"; done',
+            f"for w in /a/*/ /b/*/\ndo echo ${{w}}/q {_NAME}; done",
+            f"for w in */; do echo {_NAME}; done",
+            f"for w in '/opt/x/*/'; do echo {_NAME}; done",
+            f'for w in "/opt/x/*/"; do echo {_NAME}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_a_kill_verb(self, cmd):
+        # A glob ending in `/` expands only to directories, so it can never run
+        # pkill/killall; the later product-named path is not its target.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"/usr/bin/p*ll -f {_NAME}",
+            f"for w in /a/*; do echo {_NAME}; done",
+        ],
+    )
+    def test_glob_that_can_name_a_file_still_reads_as_a_kill_verb(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do echo {_TOK}; done",
+            f"for w in */; do echo {_TOK}; done",
+            f"for w in '/opt/x/*/'; do echo {_TOK}; done",
+            f'for w in "/opt/x/*/"; do echo {_TOK}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_the_cli(self, cmd):
+        # Same reading for the mint rule: a glob ending in `/` cannot run the CLI.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"* {_TOK}",
+            f"/usr/local/bin/kiro*rew {_TOK}",
+            f"for w in /a/*; do echo {_TOK}; done",
+        ],
+    )
+    def test_glob_that_can_name_the_cli_still_mints(self, cmd):
+        assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1316,3 +1518,126 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_named_allowances_stay_allowed(self, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
+
+
+class TestWindowsKillByNamePrograms:
+    """Windows ends a process by name with its own programs, read as pkill is."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "taskkill /f /im {n}.exe",
+            "taskkill /F /T /IM KiroCrew.exe",
+            "taskkill.exe /f /im {n}.exe",
+            'taskkill /fi "imagename eq {n}.exe" /f',
+            "Stop-Process -Name {n} -Force",
+            "spps -Name {n}",
+            "Get-Process {n}* | Stop-Process -Force",
+            "gps {n} | Where-Object {{ $_.Id -ne $PID }} | spps",
+            "wmic process where \"name like '%{n}%'\" delete",
+            "wmic process where name='{n}.exe' call terminate",
+            "bash -c 'taskkill /im {n}.exe'",
+        ],
+    )
+    def test_a_windows_by_name_kill_of_the_product_is_refused(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "taskkill /f /im notepad.exe",
+            "taskkill /PID 1234 /T /F",
+            "Get-Process {n}",
+            "Stop-Process -Name notepad",
+            "Stop-Process -Id 1234 -Force",
+            "Get-Process notepad | Stop-Process",
+            "Get-Process {n}; Stop-Process -Name notepad",
+            "wmic process where name='{n}.exe' get processid",
+            "echo taskkill /im {n}.exe",
+        ],
+    )
+    def test_other_targets_pid_forms_and_reads_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The tokenizer splits on blanks only: a separator glued to a word.
+            "Get-Process {n}| Stop-Process -Force",
+            "gps {n}|spps",
+            "wmic process where \"name='{n}.exe'\" delete; Write-Output done",
+            # A ``;`` inside a script block does not end the pipeline.
+            "Get-Process {n} | Where-Object {{ 1; 1 }} | Stop-Process",
+            "Stop-Process -Name:{n}",
+            "Get-Process {n} | Stop-Process -WhatIf:$false",
+            # Command position after a wrapper, an assignment, a call operator or a block.
+            "cmd /c taskkill /im {n}.exe",
+            "cmd.exe /c taskkill /im {n}.exe",
+            "start taskkill /im {n}.exe",
+            "call taskkill /im {n}.exe",
+            "sudo taskkill /im {n}.exe",
+            "sudo -u bob taskkill /im {n}.exe",
+            "timeout 5 taskkill /im {n}.exe",
+            "A=1 taskkill /im {n}.exe",
+            "& taskkill /im {n}.exe",
+            "Get-ChildItem | ForEach-Object {{ Stop-Process -Name {n} }}",
+            # Printed words piped into a shell run.
+            "echo taskkill /im {n}.exe | sh",
+            # The image as the last segment of an executable path.
+            "wmic process where \"executablepath like '%\\{n}.exe'\" delete",
+            "wmic process where \"commandline like '%{n}%'\" delete",
+        ],
+    )
+    def test_a_spelling_around_the_target_does_not_hide_it(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The name in a filter that spares it, not in the target.
+            'taskkill /f /fi "imagename eq node.exe" /fi "windowtitle ne {n}*"',
+            "wmic process where \"name='node.exe' and not commandline like '%{n}%'\" delete",
+            # The name in a later pipeline stage, not in the Get-Process source.
+            "Get-Process | Where-Object {{ $_.Name -eq 'node' -and $_.Name -notlike '*{n}*' }}"
+            " | Stop-Process",
+            "Get-Process -Name node -ErrorAction SilentlyContinue"
+            " | Where-Object {{ $_.Path -like '*\\{n}\\node_modules\\*' }} | Stop-Process -Force",
+            # The name in the next command.
+            "Get-Process chrome | Stop-Process; Remove-Item -Recurse $env:TEMP\\{n}-playwright-*",
+            # A printed message and a dry run.
+            "Write-Host To stop the dashboard run taskkill /im {n}.exe",
+            "Get-Process {n} | Stop-Process -WhatIf",
+            # Mentions outside the target place.
+            "git log --grep spps -- src/{n}",
+            "taskkill /pid 1234 /s {n}-host",
+            # A product-named checkout folder earlier in an executable path.
+            "wmic process where \"name='node.exe' and executablepath like"
+            " '%\\{N}\\frontend\\node_modules\\%'\" delete",
+            "wmic process where \"name='node.exe' and commandline like '%\\{N}\\frontend\\%'\" delete",
+            # The program named as prose (heredoc bodies) or in a comment.
+            "git commit -F - <<'EOF'\nfix: x\n\nThe floor now reads taskkill /im {n}.exe,"
+            " Stop-Process -Name {n}\nand Get-Process {n} | Stop-Process.\nEOF",
+            "gh pr create --title x --body-file - <<'EOF'\nRefuses wmic process where"
+            " name='{n}.exe' delete and spps -Name {n}.\nKeeps taskkill /pid 1234 allowed.\nEOF",
+            "cat >> docs/windows.md <<'EOF'\nTo stop it from a terminal: taskkill /im {n}.exe\nEOF",
+            "# taskkill /im {n}.exe",
+        ],
+    )
+    def test_the_name_outside_the_target_place_stays_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, N=_NAME.upper())) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A heredoc body line that starts with the program is read as a command,
+            # as it is for pkill; so is a line whose echo the shell reader cannot
+            # tell from an executing consumer.
+            "cat >> docs/t.md <<'EOF'\nTo stop it from PowerShell:\n\n    {verb} {n}\nEOF",
+            "cat >> docs/w.md <<'EOF'\n| Command | Effect |\n| {verb} {n}.exe | stops it |\nEOF",
+            "robocopy dist C:\\Tools\\x\\dist /e & echo Restart it with {verb} {n}.exe then relaunch",
+        ],
+    )
+    @pytest.mark.parametrize("verb", ["taskkill /im", "Stop-Process -Name"])
+    def test_a_windows_kill_is_read_where_the_pkill_twin_is(self, cmd, verb):
+        windows = _denied_by(cmd.format(verb=verb, n=_NAME))
+        assert windows == _denied_by(cmd.format(verb="pkill -f", n=_NAME)) == _RULE_KILL

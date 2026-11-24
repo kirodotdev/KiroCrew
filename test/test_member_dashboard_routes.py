@@ -85,7 +85,7 @@ def _env(tmp_path, _floor_monkeypatch):
     # No app token, and the owner gate open: both are the sibling routes' boundaries
     # and are asserted structurally below rather than re-tested here.
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
-    _floor_monkeypatch.setattr(routes, "_owner_only", _none)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", _none)
     # No DM session in a test, so a change records no history entry. That is the
     # documented degradation: the record is the file, the entry is history.
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
@@ -640,7 +640,7 @@ async def test_every_route_denies_an_app_caller_and_gates_the_values_it_serves()
         else:
             assert "_resolve" in called, f"{name} does not resolve the member"
         if name in _VALUE_SERVING_READS:
-            assert "_owner_only" in called, f"{name} is not owner-gated"
+            assert "require_owner_dashboard_request" in called, f"{name} is not owner-gated"
     reader_gate = next(
         node
         for node in ast.walk(tree)
@@ -683,8 +683,8 @@ async def test_a_non_owner_cannot_read_a_crewmates_values():
         return web.json_response({"error": "owner authorization required"}, status=403)
 
     _deny.operations = []
-    original = mod._owner_only
-    mod._owner_only = _deny
+    original = mod.require_owner_dashboard_request
+    mod.require_owner_dashboard_request = _deny
     try:
         async with _client() as client:
             resp = await client.get(_q(""))
@@ -693,7 +693,7 @@ async def test_a_non_owner_cannot_read_a_crewmates_values():
                 "fold values reach a caller the sibling board refuses"
             )
     finally:
-        mod._owner_only = original
+        mod.require_owner_dashboard_request = original
     assert _deny.operations == ["members.dashboard"], (
         "the read must name its own operation, so the SEL denial says which surface " "was refused"
     )
@@ -1251,7 +1251,7 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
         """Both page routes, and the refetch that answers their values.
 
         The preview is served by `_serve`, which neither route reaches before its own
-        `_owner_only` call -- so the staged page inherits the applied page's gate rather
+        `require_owner_dashboard_request` call -- so the staged page inherits the applied page's gate rather
         than carrying one of its own.
         """
         from kiro_crew.dashboard.handlers import member_dashboard
@@ -1262,7 +1262,7 @@ class TestAStagedPageReachesOnlyItsOwnersPreview:
             member_dashboard.api_member_dashboard_refetch,
         ):
             source = self._source(handler)
-            assert "_owner_only(" in source, handler.__name__
+            assert "require_owner_dashboard_request(" in source, handler.__name__
             # Returned on refusal, not merely computed: a gate whose answer is dropped
             # is not a gate.
             assert "return owner_denied" in source, handler.__name__

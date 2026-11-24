@@ -394,8 +394,8 @@ class DrainReport:
 
     ``drained`` is True only when the buffers reached empty AND no batch is in flight: the
     writer takes a batch out of the buffer before writing it. ``claimed`` counts what that
-    batch holds and has not attempted, which a hard exit loses; a failed batch being handed
-    back shows in both counts for an instant. The rest is read after the drain, for its report.
+    batch holds and has not attempted, which a hard exit loses (to within the one write under way);
+    a failed batch handed back shows in both for an instant. The rest is read after the drain.
     """
 
     drained: bool
@@ -550,9 +550,9 @@ class CrewLogWriter:
         self._inline: "set[str]" = set()
         #: How many CLAIMED entries each unit still owes: the ones the writer took out of
         #: ``_pending`` and has not attempted yet, which :meth:`owes` and the shutdown report
-        #: cannot learn from ``_pending``. The entry being attempted right NOW is not counted:
-        #: a job of this batch asks :meth:`owes` about its own unit and must not wait for
-        #: itself. Every exit from :meth:`_write_batch` releases what it did not attempt.
+        #: cannot learn from ``_pending``. The entry being attempted NOW is not counted: its job
+        #: asks :meth:`owes` about its own unit and must not wait for itself; a group commit is,
+        #: while it runs. Every exit from :meth:`_write_batch` releases what it did not attempt.
         self._claimed: "dict[str, int]" = {}
         self._dropped_count = 0
         #: Units whose loss has already been reported, so a wedged disk is named once

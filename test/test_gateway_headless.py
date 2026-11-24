@@ -302,9 +302,12 @@ async def frontend_dist(tmp_path, monkeypatch):
     monkeypatch.setattr(startup.srv, "_DIST_DIR", dist)
     monkeypatch.setattr(startup.srv, "warm_own_host_names", lambda: None)
     monkeypatch.setattr(token_auth, "_APP_WINDOW_EXCLUDED_PATHS", frozenset())
+    earlier = set(dist_file_response._PENDING_CLOSES)
     yield files
-    # File responses close on the static pool after sending their last byte.
-    await asyncio.wait_for(asyncio.gather(*dist_file_response._PENDING_CLOSES), timeout=30)
+    # File responses close on the static pool after sending their last byte. Wait only
+    # for this test's: a close left by an earlier test whose loop has ended never finishes.
+    ours = dist_file_response._PENDING_CLOSES - earlier
+    await asyncio.wait_for(asyncio.gather(*ours), timeout=30)
 
 
 @pytest.mark.asyncio

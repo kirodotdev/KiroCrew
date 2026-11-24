@@ -333,8 +333,9 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
     # writes. For a store-bearing PUT that puts the parameter's owner gate ahead
     # of the write gate below, which is the precedence it should have: naming
     # another store is the OPERATOR's question, and a caller that may not ask it
-    # should not have its body read either. With no ``?store=`` the resolver cannot
-    # refuse at all, so the write gate is still the first thing such a PUT meets.
+    # should not have its body read either. With no ``?store=`` the resolver refuses
+    # only a dashboard session that is neither the owner nor a teammate, so for
+    # everyone else the write gate is still the first thing such a PUT meets.
     operation = "preferences.write" if request.method == "PUT" else "preferences.read"
     store, denial = await resolve_requested_memory_store(request, state, operation)
     if denial is not None:

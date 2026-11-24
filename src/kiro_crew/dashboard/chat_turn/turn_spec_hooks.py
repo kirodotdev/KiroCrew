@@ -45,6 +45,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_recovery_item,
     mint_options_token,
     remember_slack_options,
+    slack_mirror_is_paused,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
@@ -52,7 +53,8 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
     project_hook_files_notice_meta,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
-from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
+from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new, notice_row_shown
+from kiro_crew.dashboard.slack_reconnect_wait import slack_reply_client, wait_for_slack_reconnect
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -872,6 +874,7 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     session whose spec declares ``"tools": []``, which Crew enforces only at the
     permission request. One more on a session whose adapter release has a known
     problem a newer release fixes (``KNOWN_LIMITATIONS``)."""
+    folder = getattr(client, "cwd", "")
     for name in (
         "steer_upgrade_notice",
         "agent_prompt_upgrade_notice",
@@ -887,50 +890,38 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         notice = getattr(client, name, "")
         if not (isinstance(notice, str) and notice):
             continue
-        if name == "telemetry_unconfirmed_notice" and not notice_gets_row(slot, notice):
+        text = _redact_display_text(notice)
+        if name == "telemetry_unconfirmed_notice":
+            if not notice_gets_row(slot, notice):
+                continue
+        elif not _session_notice_is_new(slot, text, folder) and notice_row_shown(slot, text):
             continue
-        append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
-
-
-#: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
-_SEED_DECLINED_NOTICES = {
-    "session": (
-        "ℹ Crew's tools are off in this session. Another open Crew session in this "
-        "folder uses a different model or permission mode, and its "
-        ".claude/settings.local.json is in use here. To get the tools back, close "
-        "that session, then start a new session here."
-    ),
-    "project": (
-        "ℹ Crew's tools are off in this session. This folder's own "
-        ".claude/settings.local.json controls tool approvals here, and Crew could "
-        "not safely set it aside. The gateway log names the reason."
-    ),
-}
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
 
 
 async def _notice_seed_declined(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose MCP tools are withheld by a settings file.
 
-    Reads the live governed state off the client, the same predicate that
-    withholds the array, so the row shows exactly when the tools are off and
-    names whose file holds the path. Best-effort: a client without the read, or
-    a read that fails, renders no row rather than failing the turn.
+    Reads the client's own answer (``settings_withheld_reason``), which follows the
+    same live predicate that withholds the array, so the row shows exactly when the
+    tools are off and says why, with the remedy, since only a person reads this row.
+    Best-effort: a client without the read, or a read that fails, renders no row
+    rather than failing the turn.
     """
-    read = getattr(client, "settings_withheld_cause", None)
+    read = getattr(client, "settings_withheld_reason", None)
     if not callable(read):
         return
     try:
-        cause = await asyncio.to_thread(read)
+        reason = await asyncio.to_thread(read, with_fix=True)
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
-        logger.debug("settings-withheld cause could not be read for the notice", exc_info=True)
+        logger.debug("settings-withheld reason could not be read for the notice", exc_info=True)
         return
-    notice = _SEED_DECLINED_NOTICES.get(cause) if isinstance(cause, str) else None
-    if notice:
+    if isinstance(reason, str) and reason:
         append_and_surface(
             state,
             slot,
             "notice",
-            notice,
+            f"ℹ Crew's tools are off in this session because {reason}",
             "msg msg-info",
             meta={"kind": SEED_DECLINED_NOTICE_KIND},
         )
@@ -1401,13 +1392,19 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         # asks nothing, so no options control is minted from it.
         _mirror_reply_text = turn._terminal_directive_text
         _mirror_final_segment = ""
+    _mirror_paused_in_wait = False
+    if _mirror_reply_text and _mirror_thread and _mirror_chan and not state.slack_client:
+        # A reconnect took the client: wait for it, then re-read the pause as turn start does.
+        await wait_for_slack_reconnect(state)
+        _mirror_paused_in_wait = slack_mirror_is_paused(state, session_key)
     if (
         _mirror_reply_text
-        and state.slack_client
         and _mirror_thread
         and _mirror_chan
         and not cross_surface_withheld(state, slot)
         and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
+        and not _mirror_paused_in_wait
+        and slack_reply_client(state, session_key, _mirror_chan, turn=turn)
     ):
         try:
             from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat

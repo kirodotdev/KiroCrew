@@ -307,6 +307,9 @@ with no row here.
    * - ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``
      - pre-session registry query (whether a per-template MCP addition reaches a
        session of a template Crew does not own)
+   * - ``ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY``
+     - driver-internal (whether a mirror's shared translation adds Crew's own
+       servers to a custom agent's spec before it builds the ``session/new`` array)
    * - ``ACP_BACKENDS_SPEC_FILE_GRANTS``
      - pre-session registry query (whether a start on a crew-bound spec Crew does
        not own is refused while the file's grants exceed the ceiling)
@@ -329,6 +332,12 @@ with no row here.
      - driver-internal (whether that transport's permission events say
        ``child_calls_marked``, which a deny-rule override card and a session
        waiver require; read per frame by each transport's permission builder)
+   * - ``ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD``
+     - semantic question (``SessionCapabilities.permission_requests_name_child``:
+       whether the dashboard's native-crew auto-approve rung may treat a request
+       raised while a native sub-agent card is open as that sub-agent's. Not the
+       two ``..._CHILD_CALLS_MARKED`` sets above: those let a transport mark one
+       request for a deny-rule override, and claude is in them but not here)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -339,8 +348,9 @@ with no row here.
      - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
    * - ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``
      - driver-internal (whether the direct client stamps the spec's shell and
-       write allowlists on its own permission requests, and the claude seed adds
-       the ``permissions.ask`` rules that make those calls reach the gate)
+       write allowlists on its own permission requests; the claude seed adds
+       the ``permissions.ask`` rules that make those calls reach the gate, and
+       opencode's seeded ``"*": "ask"`` already does)
    * - ``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``
      - context assembly (whether Crew puts the agent spec's ``file://`` steering
        and the global and project steering trees into the prompt, asked by
@@ -546,9 +556,10 @@ DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 # :func:`resolve_selected_backend` hands the pick
 # to Crew's KAS path, which drives that engine with KAS's launch, projection,
 # permissions and compaction -- but only after the gateway's ``acp --help`` probe
-# has CONFIRMED v3 (:func:`confirm_kiro_cli_offers_kas`) and while KAS is
-# selectable. Without that evidence (another process, an unknown verdict, the
-# bundle route, a policy that denies KAS) the pick keeps the v2 launch, which
+# has CONFIRMED v3 and one start of that engine was not refused
+# (:func:`confirm_kiro_cli_offers_kas`), and while KAS is selectable. Without that
+# evidence (another process, an unknown verdict, a help verdict with no start yet,
+# the bundle route, a policy that denies KAS) the pick keeps the v2 launch, which
 # passes ``--agent-engine v2`` itself (``kiro_cli.kiro_acp_engine_args``). The stored
 # value is never rewritten: ``config.json`` still says ``"kiro"`` until the user
 # saves KAS (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
@@ -864,10 +875,19 @@ KAS_CLI_FLOOR_DEFAULT_NOTICE = (
 # Whether THIS process has positive evidence that the host's kiro-cli offers its v3
 # (KAS) engine: set by the gateway's KAS floor when ``acp --help`` ran and names the
 # engine (and, for a stored Kiro CLI pick, a v3 start was not refused), and cleared
-# when a KAS start proves kiro-cli refuses the engine here. The one condition under
-# which a Kiro CLI pick runs on :data:`KIRO_SELECTION_BACKEND`; an unknown verdict
-# leaves it unset.
+# when a KAS start proves kiro-cli refuses the engine here. What the Agent Harness
+# panel's Kiro CLI row and a Bot's Kiro CLI pin read (:func:`kiro_cli_listed_backend`);
+# an unknown verdict leaves it unset.
 _kiro_cli_offers_kas: bool = False
+
+# Whether that evidence includes one start of the v3 engine kiro-cli did not refuse
+# (``kas_engine_start_verdict``). The one condition under which a stored Kiro CLI pick
+# in ``agent.acp_backend`` runs on :data:`KIRO_SELECTION_BACKEND`
+# (:func:`kiro_cli_pick_backend`): kiro-cli's help lists v3 on hosts where it then
+# refuses to run it, so the help verdict the floor records when no pick is stored
+# leaves a pick saved later on the v2 launch until its own start check lands. Kept
+# apart from the flag above because the panel row and a Bot pin read the help verdict.
+_kiro_cli_kas_started: bool = False
 
 # Whether :func:`ensure_kiro_cli_kas_verdict` has already run its one bounded probe
 # in THIS process. The probe spawns ``kiro-cli acp --help``, then one v3 start; a process that
@@ -1005,15 +1025,19 @@ def mark_backend_unservable(backend: str, reason: str) -> None:
     _selectable.discard(backend)
 
 
-def confirm_kiro_cli_offers_kas() -> None:
+def confirm_kiro_cli_offers_kas(*, started: bool = True) -> None:
     """Record that this host's kiro-cli offers its v3 (KAS) engine.
 
     Called by the gateway's KAS floor only on a probe that RAN and names the
-    engine. From then on a Kiro CLI pick resolves to :data:`KIRO_SELECTION_BACKEND`
-    while KAS is selectable.
+    engine. *started* says one start of that engine was not refused as well; only
+    then does a stored Kiro CLI pick resolve to :data:`KIRO_SELECTION_BACKEND`
+    (while KAS is selectable). A help verdict alone (*started* false) is what the
+    panel's Kiro CLI row and a Bot's Kiro CLI pin read.
     """
-    global _kiro_cli_offers_kas
+    global _kiro_cli_offers_kas, _kiro_cli_kas_started
     _kiro_cli_offers_kas = True
+    if started:
+        _kiro_cli_kas_started = True
 
 
 def revoke_kiro_cli_offers_kas() -> None:
@@ -1023,8 +1047,9 @@ def revoke_kiro_cli_offers_kas() -> None:
     (``acp.kas_engine_refusal``): from then on a Kiro CLI pick loads as the v2
     launch again, and :func:`ensure_kiro_cli_kas_verdict` does not probe it back.
     """
-    global _kiro_cli_offers_kas, _kiro_cli_kas_probed
+    global _kiro_cli_offers_kas, _kiro_cli_kas_started, _kiro_cli_kas_probed
     _kiro_cli_offers_kas = False
+    _kiro_cli_kas_started = False
     _kiro_cli_kas_probed = True
 
 
@@ -1034,12 +1059,13 @@ def kiro_cli_offers_kas() -> bool:
 
 
 def kiro_cli_pick_verdict_open() -> bool:
-    """Whether a Kiro CLI pick could still move onto KAS: no v3 confirmed, KAS still selectable.
+    """Whether a Kiro CLI pick could still move onto KAS: no v3 start confirmed, KAS still selectable.
 
     A gap or a refusal marks KAS unservable (except where KAS is the governance
-    floor), so in practice an unknown verdict is what leaves this true.
+    floor), so in practice an unknown start verdict, or a help verdict recorded
+    while no pick was stored, is what leaves this true.
     """
-    return not _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends()
+    return not _kiro_cli_kas_started and KIRO_SELECTION_BACKEND in selectable_backends()
 
 
 def ensure_kiro_cli_kas_verdict() -> None:
@@ -1302,6 +1328,25 @@ def kiro_cli_pick_backend() -> str:
     Called only where the stored value is read (``_read_backend_choice``), never
     from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
     a degraded value's floor (harness-parity H3), not a pick.
+
+    The evidence is a v3 start kiro-cli did not refuse (``started`` on the
+    confirmation), the check a gateway runs for a pick stored at boot or saved
+    while it runs. The help verdict alone answers :func:`kiro_cli_listed_backend`.
+    """
+    if _kiro_cli_kas_started and KIRO_SELECTION_BACKEND in selectable_backends():
+        return KIRO_SELECTION_BACKEND
+    return ACP_BACKEND_KIRO
+
+
+def kiro_cli_listed_backend() -> str:
+    """The runtime id a Kiro CLI choice runs on where kiro-cli's help verdict decides.
+
+    :data:`KIRO_SELECTION_BACKEND` once the floor recorded that kiro-cli's
+    ``acp --help`` names v3 (:func:`confirm_kiro_cli_offers_kas`, with or without a
+    start) and while KAS is selectable, else :data:`ACP_BACKEND_KIRO`. Read by a
+    Bot's stored Kiro CLI pin (``crewmate_harness``) and by the Agent Harness
+    panel's Kiro CLI row (``kiro_on_kas_notice.kiro_cli_runs_on_kas``). A stored
+    ``agent.acp_backend`` pick reads :func:`kiro_cli_pick_backend` instead.
     """
     if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
         return KIRO_SELECTION_BACKEND
@@ -1309,17 +1354,18 @@ def kiro_cli_pick_backend() -> str:
 
 
 def requested_kiro_pick(backend: str | None, available: Iterable[str]) -> str | None:
-    """*backend*, or the id a Kiro CLI pick loads as when *backend* is the Kiro CLI id.
+    """*backend*, or the id a Kiro CLI pin runs on when *backend* is the Kiro CLI id.
 
     For a backend a caller names for one run (``spawn_run(backend=...)``, a
-    workflow step's ``backend=``): a requested ``"kiro"`` follows the rule a stored
-    pick follows (:func:`kiro_cli_pick_backend`), so it runs kiro-cli's v3 engine
-    through KAS where a saved Kiro CLI choice would. The answer must also be in
-    *available* (what can start here), so a KAS this host cannot run never
-    replaces a Kiro CLI that can.
+    workflow step's ``backend=``): a requested ``"kiro"`` follows the rule a Bot's
+    Kiro CLI pin follows (:func:`kiro_cli_listed_backend`), so it runs kiro-cli's v3
+    engine through KAS once this process recorded that kiro-cli's help names it
+    (:func:`confirm_kiro_cli_offers_kas`). The answer must also be in *available*
+    (what can start here), so a KAS this host cannot run never replaces a Kiro CLI
+    that can.
     """
     if backend == ACP_BACKEND_KIRO:
-        picked = kiro_cli_pick_backend()
+        picked = kiro_cli_listed_backend()
         if picked in available:
             return picked
     return backend
@@ -1396,6 +1442,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
 from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
+    ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -1542,6 +1589,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_CHILD_CANCEL,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_RAW_SDK_TASKS,
     ACP_BACKENDS_READ_PATH_ARG,

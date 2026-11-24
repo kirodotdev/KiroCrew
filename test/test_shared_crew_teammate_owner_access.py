@@ -240,8 +240,6 @@ def test_the_owner_still_passes_and_other_sessions_still_do_not() -> None:
         ("POST", "/api/relay-viewer/token"),
         ("PUT", "/api/slack/config"),
         ("POST", "/api/telegram/config"),
-        ("POST", "/api/channels"),
-        ("DELETE", "/api/channels/c1"),
         ("POST", "/api/channels/whatsapp/qr/start"),
         ("POST", "/api/instances/i1/connect"),
         ("POST", "/api/instances/i1/refresh-token"),
@@ -266,6 +264,18 @@ def test_a_credential_that_outlives_access_stays_the_owners(
 )
 def test_a_teammate_reads_and_uses_a_channel(method: str, path: str) -> None:
     assert is_owner_dashboard_request(_request("relay", path, method))
+
+
+@pytest.mark.parametrize(
+    ("method", "path"), [("POST", "/api/channels"), ("DELETE", "/api/channels/c1")]
+)
+@pytest.mark.parametrize("who", TEAMMATES)
+def test_a_teammate_creates_and_closes_a_multi_agent_channel(
+    who: str, method: str, path: str
+) -> None:
+    """A multi-agent channel holds no token, so it is not a channel connection's write."""
+    assert is_owner_dashboard_request(_request(who, path, method))
+    assert not is_owner_dashboard_request(_request("other", path, method))
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE"])

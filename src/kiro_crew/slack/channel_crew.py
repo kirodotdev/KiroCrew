@@ -176,22 +176,17 @@ async def bind_bot_memory(
         _record_explicit_agent_selection,
         pin_private_agent_store,
     )
-    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 
     # The last APPLIED reload first, as ``resolve_channel_crew`` reads it.
     cfg = live.snapshot()
     if cfg is None:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    prior = await asyncio.to_thread(read_session_execution, session_key)
-    prior_store = prior.store.legacy_name if prior is not None else ""
+    refusal = await memory_binding_refusal(session_key, bot, cfg)
+    if refusal:
+        raise UnknownMemoryStore(refusal)
     target = getattr(cfg.agents.get(bot or ""), "memory_store", "") or ""
     store = "" if target == DEFAULT_MEMORY_STORE else target
-    if prior is not None and prior_store and prior_store != store:
-        raise UnknownMemoryStore(
-            f"This thread's memory belongs to Bot {prior.selection_name or prior_store!r}. "
-            "Start a new thread to use another Bot or none."
-        )
     if bot is None or not store:
         return
     bindings = await asyncio.to_thread(
@@ -201,3 +196,33 @@ async def bind_bot_memory(
     state: Any = SimpleNamespace(sessions=sessions, conversation_log=conversation_log)
     await pin_private_agent_store(state, session_key, bot, cfg)
     await _record_explicit_agent_selection(session_key, bot, bindings, config=cfg)
+
+
+async def memory_binding_refusal(
+    session_key: str, agent: str | None, cfg: Any = None
+) -> str | None:
+    """Why this thread may not move to *agent* (``None`` is a reset), or ``None``.
+
+    A thread whose execution record names a store other than Global (``!bot`` bound it to
+    a Bot's own memory) keeps that store for good, so it may move only to an agent whose
+    ``config.agents`` record names the same store. Every thread-agent change asks this
+    first: ``!bot <name>``, ``!bot off``, ``!ta <name>``, ``!ta off`` and ``/agent <name>``.
+    The record is durable, so the answer is the same after a restart.
+    """
+    from kiro_crew.config import KiroCrewConfig, live
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    prior = await asyncio.to_thread(read_session_execution, session_key)
+    prior_store = prior.store.legacy_name if prior is not None else ""
+    if prior is None or not prior_store:
+        return None
+    if cfg is None:
+        cfg = live.snapshot() or await asyncio.to_thread(KiroCrewConfig.load)
+    target = getattr((getattr(cfg, "agents", None) or {}).get(agent or ""), "memory_store", "")
+    if (target or "") not in ("", DEFAULT_MEMORY_STORE) and target == prior_store:
+        return None
+    return (
+        f"This thread's memory belongs to Bot {prior.selection_name or prior_store!r}. "
+        "Start a new thread to use another Bot or none."
+    )

@@ -24,11 +24,12 @@ _MANAGED_ENV_KEYS_KEPT = frozenset({"KIROCREW_HOME"})
 
 
 #: An ``env`` value that is exactly one variable reference, ``${NAME}``. KAS
-#: starts a stdio server with a fixed minimal environment (``HOME``, ``PATH``,
-#: ``SHELL`` and a few more) plus the entry's own ``env``, and expands
-#: ``${NAME}`` there from its own environment, so a reference is the only way a
-#: launcher's per-process value reaches an MCP child, and the wire carries the
-#: name, never the value. Only names the edition lists through
+#: starts a stdio server with its own process environment plus the entry's own
+#: ``env`` (measured on ``@kiro/agent`` 0.66.119, the engine kiro-cli 3.5.0 runs,
+#: and on 0.66.117, the one Kiro Crew bundles), and expands ``${NAME}`` in that
+#: ``env`` from its own environment, so a relayed reference hands the server the
+#: engine's value under the entry's key, and the wire carries the name, never the
+#: value. Only names the edition lists through
 #: ``McpToolingProvider.kas_relayed_env_references`` are relayed: the KAS
 #: environment holds credentials of its own, the CLI's ``KIRO_API_KEY`` among
 #: them. The public default lists none.

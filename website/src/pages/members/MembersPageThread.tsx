@@ -1152,6 +1152,10 @@ export function MembersPageThreadColumn({
                         crewmate={crewmateIdentity}
                         crewmateShown={threadView.chatUncovered}
                         onOpenCrewWorkLog={openCrewWorkLog}
+                        // The roster row, already in memory, says whether this
+                        // thread holds a message; absent (an older gateway)
+                        // reads as no, so a first open stays as it is.
+                        historyKnown={active?.has_dm_message === true}
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}

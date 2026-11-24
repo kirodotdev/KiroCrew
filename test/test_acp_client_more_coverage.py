@@ -341,8 +341,22 @@ class TestProcessTreeHelpers:
             return b"4242 4243\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "check_output", _fake_check_output)
+        monkeypatch.setattr(
+            acp_client.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+        )
         assert _direct_children(2**30) == [4242, 4243]
-        assert calls and calls[0][:2] == ["pgrep", "-P"]
+        assert calls and calls[0][:2] == ["/usr/bin/pgrep", "-P"]
+
+    def test_direct_children_without_a_system_pgrep_spawns_nothing(self, monkeypatch):
+        """No pgrep in the system directories means no answer, never a PATH lookup."""
+        monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            acp_client.subprocess_mod, "check_output", lambda cmd, **kw: calls.append(cmd)
+        )
+        monkeypatch.setattr(acp_client.platform_compat, "trusted_system_bin", lambda name: None)
+        assert _direct_children(2**30) == []
+        assert calls == []
 
     def test_direct_children_swallows_pgrep_failure(self, monkeypatch):
         monkeypatch.setattr(runtime_process_tree, "_CHILDREN_INTERFACE", False)

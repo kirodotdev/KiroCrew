@@ -42,7 +42,7 @@ def ensure_engine_at_startup() -> None:
     try:
         if kas_bundle.installed_bundle() is not None:
             return
-        if kas_bundle.pinned_version() != kas_bundle.KAS_PIN_VERSION:
+        if kas_bundle.pinned_version() != kas_bundle.host_pin_version():
             return
         base_url = KiroCrewConfig.load().agent.kas_bundle_url
         kas_engine_install.install_pinned_engine(base_url, caller="startup")

@@ -287,14 +287,16 @@ def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[s
         # On a case-insensitive filesystem the two spellings are one file; on a
         # case-sensitive one they are two, and the added spelling is the untracked one.
         try:
-            return os.path.samefile(root / path, root / twin)
+            return os.path.samestat(os.lstat(root / path), os.lstat(root / twin))
         except OSError:
             return False
 
     def _all_removed_below(directory: Path) -> bool:
         """Whether every file under *directory* is one the reset deletes."""
-        for here, _dirs, files in os.walk(directory):
-            for file_name in files:
+        for here, dirs, files in os.walk(directory):
+            # os.walk lists a symlink to a directory under dirs and never enters it.
+            links = [d for d in dirs if os.path.islink(os.path.join(here, d))]
+            for file_name in [*files, *links]:
                 if not _removed(Path(here, file_name).relative_to(root).as_posix()):
                     return False
         return True

@@ -33,6 +33,16 @@ if TYPE_CHECKING:
 #: reap-echo arm in ``_run`` and ``_force_reap``'s own record synthesize an error.
 _NEUTRAL_REAP_REASONS = frozenset({"user_stop", "parent_end"})
 
+#: Crew's own MCP tools, as a sub-agent run's prompt and its parent's note name them
+#: when a settings file in the run's folder withheld them all
+#: (``SubagentInfo.crew_tools_withheld``).
+CREW_OWN_TOOLS = "Crew's own tools (its MCP servers, spawn_run and cron_add among them)"
+
+#: What a parent is told beside the result of such a run. Prefixed with the agent's
+#: label by each caller; ``{reason}`` is the session's ``settings_withheld_reason``, the
+#: fact without the remedy, since the parent is a model and the remedy is the person's.
+CREW_TOOLS_WITHHELD_NOTE = f"ran without {CREW_OWN_TOOLS} because {{reason}}."
+
 
 class _BareStateView(MutableMapping[str, Any]):
     """Live ``{toolCallId: ToolCallState}`` view over an :class:`InFlightToolTracker`.
@@ -437,6 +447,8 @@ class SubagentInfo:
     # consumed credits before failing. Providers that do not bill in credits
     # report zero through the shared TurnUsage contract.
     credits: float = 0.0
+    # The run's summed dollar cost, from the same attempts; zero on a credit-billed harness.
+    cost_usd: float = 0.0
     # Shared with terminal reporters so a reap need not wait for a cancelled
     # consumer's state-write drain before settling the active attempt.
     _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
@@ -808,6 +820,11 @@ class SubagentInfo:
     # Notice-only: the outcome stays completed (earlier calls may have taken
     # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
     leaked_tool_call: bool = False
+    # Why this run's session started without Crew's MCP tools, as one clause: a
+    # ``.claude`` settings file in its folder that Crew could not govern withheld
+    # the whole array. Recorded when the session is established; "" when the
+    # tools were delivered.
+    crew_tools_withheld: str = ""
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).
@@ -825,6 +842,12 @@ class SubagentInfo:
         and made no commit, whatever its text reports.
         """
         return self.tool_count == 0 and self.turns == 0
+
+    @property
+    def crew_tools_withheld_note(self) -> str:
+        """The note on this run's result when its session had no Crew tools, else ``""``."""
+        reason = self.crew_tools_withheld
+        return CREW_TOOLS_WITHHELD_NOTE.format(reason=reason) if reason else ""
 
     @property
     def served_model_unverified(self) -> bool:

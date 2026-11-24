@@ -439,6 +439,14 @@ class SessionExtras:
     stubs from the session-level array. Empty on every other host.
     """
 
+    shipped_helper_parent: str = ""
+    """The agent this projection mounted Kiro Crew's shipped helper for, or ``""``.
+
+    Host memory only: set from the call that built and appended the helper
+    (``kas_engine_subagents.with_engine_subagents``), never read from an agent
+    entry or file and never sent to the engine. ``""`` on every other host.
+    """
+
     withheld_credentials_notice: str = ""
     """The session-start notice naming MCP servers that start without part of
     their declared ``env`` or ``headers``, by server and key name, never a value.
@@ -778,7 +786,9 @@ class HarnessAdapter(LaunchAdapter):
         projection reads it, for the profiles a translated allow meets.
         """
 
-    def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
+    def record_session_projection(
+        self, handle: Any, custom_agents: Any, active_agent: str, shipped_helper_parent: str = ""
+    ) -> None:
         """Record on a new or resumed session's *handle* what its agent batch grants.
 
         For a host whose PreToolUse hooks Crew runs at the permission request, so

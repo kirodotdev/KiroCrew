@@ -274,6 +274,35 @@ def test_every_relative_unit_spelling_is_accepted():
     assert short["in 2 hrs"] - before >= 2 * 3600
 
 
+def test_iso_time_with_its_own_zone_names_that_instant_in_any_job_zone():
+    utc = datetime(2099, 11, 22, 5, 20, tzinfo=ZoneInfo("UTC")).timestamp()
+    spellings = (
+        "2099-11-22T05:20:00Z",
+        "2099-11-22T05:20Z",
+        "2099-11-22 05:20:00Z",
+        "2099-11-22T05:20:00.000Z",
+        "2099-11-22T07:20:00+02:00",
+        "2099-11-22T00:20-0500",
+    )
+    for zone in ("UTC", "America/Los_Angeles", "Pacific/Kiritimati"):
+        assert {s: cron_mod.parse_time_string(s, zone) for s in spellings} == {
+            s: utc for s in spellings
+        }
+
+
+def test_tomorrow_before_an_iso_time_with_a_zone_is_refused():
+    result = cron_mod.parse_time_string("tomorrow 2099-11-22T05:20:00Z", "UTC")
+
+    assert isinstance(result, str) and result.startswith("Error: could not parse time")
+
+
+def test_the_parse_error_lists_a_date_and_time_form():
+    result = cron_mod.parse_time_string("next blue moon", "UTC")
+
+    assert isinstance(result, str)
+    assert "'2026-11-22 09:00'" in result and "'2026-11-22T05:20:00Z'" in result
+
+
 def test_a_relative_day_count_past_the_calendar_is_refused():
     result = cron_mod.parse_time_string("in 99999999999 days", "UTC")
     assert isinstance(result, str)

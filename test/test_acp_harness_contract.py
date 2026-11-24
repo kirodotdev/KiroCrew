@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from kas_agents_helpers import without_own_agents_deny
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
@@ -488,7 +489,7 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
         lambda d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw: projected,
     )
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
-    assert extras.custom_agents == projected
+    assert [without_own_agents_deny(a) for a in extras.custom_agents] == projected
 
 
 @pytest.mark.asyncio
@@ -740,7 +741,7 @@ async def test_kas_projection_survives_an_unreadable_overlay(
     monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", _build)
 
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
-    assert extras.custom_agents == [{"name": "a"}]
+    assert [without_own_agents_deny(a) for a in extras.custom_agents] == [{"name": "a"}]
     assert seen == [frozenset()]
 
 

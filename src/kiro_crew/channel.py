@@ -52,6 +52,7 @@ from kiro_crew.llm_helpers import (
     is_prompt_busy,
     unfinished_turn_error,
 )
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.safety_override import safety_override
 from kiro_crew.trust_patterns import extract_bash_command
@@ -1416,7 +1417,10 @@ async def _stream_task(
         spec = await turn_spec(client, agent.agent_name)
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
-        async for event in continue_timed_out_calls(client.stream, message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
 

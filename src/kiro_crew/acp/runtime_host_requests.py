@@ -22,6 +22,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.acp import kas_mcp_lazy_sign_in as _lazy_sign_in
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp._dispatch import reject_option_id as _reject_option_id
@@ -61,7 +62,7 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 # while the engine can still send that attempt's link would hand the link to
 # the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
-# How long a credential re-attempt (a reset without startOAuth) may hold off a
+# How long a re-attempt (a reset without startOAuth) may hold off a
 # sign-in. It opens no consent URL, so the slot does not have to outlast the
 # longest connect: past the engine's default 60 s connect timeout it is freed,
 # and a URL the engine still sends for it is refused because no sign-in is in
@@ -430,8 +431,14 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
 
 
 def mcp_sign_in_holds(self: AcpRuntime, session_id: str, server_name: str) -> bool:
-    """Whether the runtime holds this session and server's sign-in slot."""
-    return self._mcp_sign_in == (session_id, server_name)
+    """Whether a sign-in of this session and server is live.
+
+    Its slot is held, or the engine's mid-session sign-in whose link this session
+    was shown has not ended yet (``kas_mcp_lazy_sign_in.flow_open``).
+    """
+    return self._mcp_sign_in == (session_id, server_name) or _lazy_sign_in.flow_open(
+        self, session_id, server_name
+    )
 
 
 def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bool:
@@ -519,7 +526,8 @@ def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> 
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now, or that lost its connection mid-session. Sends
+    exist now or because its start ran out of time, or that lost its
+    connection mid-session. Sends
     ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
     the server's next ``_kiro/mcp/status`` entry reports whether it
     connected. The host that takes this request is the
@@ -576,12 +584,20 @@ async def _answer_open_external_url(self: AcpRuntime, request_id: int | str, par
     the owning session is gone, or when the URL is not http(s), which the
     banner would refuse. The engine raises on that error, so its connect
     attempt ends at once instead of waiting for a callback no user was shown.
+    A mid-session sign-in's link goes by its server name instead
+    (``kas_mcp_lazy_sign_in.deliver_mid_session_consent``).
     """
     url = params.get("url") if isinstance(params, dict) else None
-    entry = self._mcp_sign_in
+    # A mid-session sign-in's link names its server; see kas_mcp_lazy_sign_in.
+    lazy = _lazy_sign_in.is_mid_session_consent(params)
+    entry = None if lazy else self._mcp_sign_in
     queue = self._session_queues.get(entry[0]) if entry is not None else None
     refusal = ""
-    if entry is None:
+    if lazy and isinstance(url, str) and _is_safe_oauth_url(url):
+        refusal = await _lazy_sign_in.deliver_mid_session_consent(self, params, url)
+    elif lazy:
+        refusal = "the consent URL is not an http(s) URL"
+    elif entry is None:
         refusal = "no MCP sign-in is in flight"
     elif queue is None:
         refusal = "the MCP sign-in's session has left"

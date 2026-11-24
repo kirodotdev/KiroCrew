@@ -54,6 +54,7 @@ vi.mock('../api/client', () => ({
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
     connectionsTest: (...a: unknown[]) => connectionsTest(...a),
+    connectionsAppManifests: () => Promise.resolve({ schema_version: 1, apps: {} }),
   },
 }))
 
@@ -624,7 +625,7 @@ describe('relaying the loopback return address', () => {
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.',
+      'Paste the full address from your browser. It starts with http://localhost or http://127.0.0.1.',
     )
     expect(relayInput()).toHaveAttribute('aria-invalid', 'true')
     expect(mcpOAuthRelay).not.toHaveBeenCalled()

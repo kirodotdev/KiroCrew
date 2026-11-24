@@ -3185,8 +3185,21 @@ slot kept reading running until preparation finished. The dispatch gate's
 stream edge. An `"idle"` answer for a runner that has already opened its stream
 (the provider finished, the slot has not settled) cancels nothing and answers
 `{"ok": true, "info": "no active turn"}`. A dashboard send still waiting in
-fair admission before its runner starts has no record yet and is not covered
-(#36433). Tests: `test/test_stop_during_turn_preparation.py`.
+fair admission before its runner starts has no record yet: when no runner was
+cancelled, the handler cancels that wait instead (`turn_stop._cancel_admission_wait`,
+`admission_entry.cancel_waiting_send`, `cancelled_by_user`). The turn ends
+unstarted at once, its own hand-off drains the queue, and Stop answers
+`{"ok": true}`. A Stop pressed after admission grants the send and before its
+runner starts finds neither and is not caught. Tests:
+`test/test_stop_during_turn_preparation.py`, `test/test_stop_during_admission_wait.py`.
+
+A Stop recorded on the session from another surface (a linked channel) while a
+turn waits in fair admission, on the send path or in `gate_turn`, reaches no
+runner either. The wait's revalidation reads the session's Stop count and, when
+it grew since the wait began, ends the turn unstarted once the wait ends
+(`admitted_chat_turn`'s `stop_count`). Only growth counts: a teardown resetting
+the count is not a Stop. An agent-started turn's `gate_turn` wait is left out,
+for the same reason as above: only its own open stream can cancel its cycle.
 
 ### Cancelled-turn context restore
 
@@ -3214,6 +3227,19 @@ gives it back when the turn is refused before the prompt is sent
 a stale wake). Telegram gives it back on the same refusals it has. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
+
+The dashboard builds the restore against the history replay the same prompt carries:
+`build_cancelled_turn_preamble(conversation_log, session_key, replay=compressed)`. A
+cold start rebuilds that replay from the transcript, and the first-turn history debt
+stays armed after a cancel, so the first Stop of a fresh chat leaves a next prompt whose
+replay already holds the stopped turn. When the replay holds the stopped request as a
+whole `User:` row (compared after the image-reference strip and punctuation fold the
+replay applies), the restore is `""` and the request reaches the model once, through the
+replay. The replay keeps the newest rows that fit its budget, so a stopped turn whose
+reply pushed the request row out of it keeps the restore: nothing else names the request.
+Slack and the channel pipelines pass no replay and are unchanged. Tests:
+`test/test_dashboard_first_turn_cancel_restore.py` and `TestCancelledTurnPreambleReplay`
+in `test/test_history_restore_preambles.py`.
 
 ### Owner-fenced deadline cancel: `cancel_owned_turn`
 

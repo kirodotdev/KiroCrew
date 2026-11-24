@@ -621,7 +621,7 @@ async def resume_slot_from_history(
     """
     if not request_app and state.conversation_log:
         # A cron transcript reopens as its job's own tab, which ``slot_args`` binds
-        # to the line's ``cron:`` link, so the cron paths that look that tab up by
+        # to the transcript's own ``cron:`` key, so the cron paths that look that tab up by
         # name reach it. Named here, before the bookkeeping below keys on it.
         from kiro_crew.dashboard.chat_utils import cron_tab_name
         from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key

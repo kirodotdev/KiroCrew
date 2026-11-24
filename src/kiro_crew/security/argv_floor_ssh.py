@@ -1467,6 +1467,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                             host_position=positional_pending and not value_shadow,
                             dns=not filename_glob,
                             match_globs=not glob_verb,
+                            file_operand=verb in ("scp", "rsync"),
                         ):
                             return True
                         if not value_shadow:
@@ -1605,6 +1606,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
                         and (not value_shadow or value_shadow_ambiguous),
                         dns=not filename_glob,
                         match_globs=not glob_verb,
+                        file_operand=verb in ("scp", "rsync"),
                     ):
                         return True
                     if _routing_option_value_targets_self(

@@ -106,6 +106,17 @@ def _still_the_stored_binding(binding: Binding) -> bool:
     """
     from kiro_crew.slack.code_channels.store import store
 
+    if getattr(binding, "thread", False) is True:
+        # A Conductor thread is found by channel AND anchor (a channel holds many);
+        # an ended one is not the thread's binding for any write.
+        thread = store().get_thread_binding(binding.channel_id, binding.anchor_ts)
+        return (
+            thread is not None
+            and thread.thread
+            and not thread.ended_at
+            and thread.session_key == binding.session_key
+            and thread.team_id == binding.team_id
+        )
     current = store().get_binding(binding.channel_id)
     return (
         current is not None
@@ -180,12 +191,14 @@ def scope_refusal(state: Any, binding: Binding) -> str:
         from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
             AUDIENCE_UNREAD_REFUSAL,
             SESSION_MAP_BUSY_REFUSAL,
+            THREAD_PRIVACY_UNREAD_REFUSAL,
         )
 
         why = _publish_refusal(state, binding)
     except Exception:
         return SCOPE_CONFIRMED
-    if why in (SESSION_MAP_BUSY_REFUSAL, AUDIENCE_UNREAD_REFUSAL):
+    # A Conductor thread's private room not freshly read is the same "in a moment".
+    if why in (SESSION_MAP_BUSY_REFUSAL, AUDIENCE_UNREAD_REFUSAL, THREAD_PRIVACY_UNREAD_REFUSAL):
         return SCOPE_PASSING
     return SCOPE_CONFIRMED
 

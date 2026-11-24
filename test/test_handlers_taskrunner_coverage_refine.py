@@ -23,6 +23,7 @@ from handlers_taskrunner_coverage_helpers import (  # noqa: F401 -- the autouse 
 )
 from taskrunner_switch_helpers import turn_task_runner_off
 
+from kiro_crew import session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -280,6 +281,24 @@ class TestRunRefine:
         state.sessions.release.assert_called_once()
         state.sessions.reset.assert_awaited_once()
         state.push_refresh.assert_called_once_with("taskrunner")
+
+    @pytest.mark.asyncio
+    async def test_a_quoted_directive_marker_line_is_kept_out_of_the_spec(self) -> None:
+        """The refine turn runs the default spec, which pre-grants the directive tools,
+        so the draft may quote a marker line: protocol, kept out of the final text."""
+        quoted = session_directive.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+        state = _refine_state()
+        state.sessions = self._sessions(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="# Task: t\n" + quoted[:-9]),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=quoted[-9:] + "\nDone."),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        await _run_refine(state, "build a thing")
+        final = state.broadcast_ws.call_args.args[1]
+        assert final["status"] == "done"
+        assert final["text"] == "# Task: t\nStop REQUESTED.\nDone."
 
     @pytest.mark.asyncio
     async def test_streaming_chunks_are_throttle_pushed(

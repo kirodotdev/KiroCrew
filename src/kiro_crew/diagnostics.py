@@ -40,6 +40,7 @@ from kiro_crew import (
     __version__,
     agent_scratch,
     diagnostics_host_name,
+    diagnostics_kiro_home_logs,
     platform_compat,
     release_channel,
 )
@@ -49,6 +50,7 @@ from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -190,8 +192,17 @@ def _scrub(text: str) -> tuple[str, int]:
     text, warnings = redact_credentials(text)
     count += len(warnings)
     for pattern, repl in _EXTRA_REDACTIONS:
-        text, n = pattern.subn(repl, text)
-        count += n
+        # A match spanning a credential tag re-redacts a secret the passes above
+        # already counted (the header rule over `Authorization: Bearer <tag>`), so
+        # it is replaced but not counted again.
+        # shortcut: such a line is counted once even if it held a second secret
+        # only this rule caught; split the value per secret if exact counts matter.
+        count += sum(
+            1
+            for m in pattern.finditer(text)
+            if not any(tag in m.group(0) for tag in CREDENTIAL_REDACTION_TAGS)
+        )
+        text = pattern.sub(repl, text)
     return text, count
 
 
@@ -455,6 +466,8 @@ def _kiro_cli_chat_log() -> Path | None:
 
 
 def _kiro_cli_extra_logs() -> list[Path]:
+    # kiro-cli 3.x's per-process logs go after the kiro-log ones; readers name them by folder.
+    home_logs = diagnostics_kiro_home_logs.protocol_logs()
     out: list[Path] = []
     for base in _kiro_log_dirs():
         for level in _kiro_log_levels(base):
@@ -465,8 +478,8 @@ def _kiro_cli_extra_logs() -> list[Path]:
             if out:
                 # One log dir wins; do not mix members from two of them, or the
                 # zip would carry two different `mcp.log` entries under one name.
-                return out
-    return out
+                return out + home_logs
+    return out + home_logs
 
 
 def _scratch_kiro_chat_logs() -> list[Path]:
@@ -527,7 +540,7 @@ def _scratch_log_dir_name(log: Path) -> str:
 # driving kiro-cli has first-hand diagnostics when the backend rejects a turn.
 # The sources sit OUTSIDE the eight fenced identity stores
 # (``identity_stores.IDENTITY_STORE_ROOTS`` -> ``kiro-log/{mcp,lsp}.log`` under
-# XDG_RUNTIME_DIR|TMPDIR).
+# XDG_RUNTIME_DIR|TMPDIR, and ``mcp.log`` under ``<kiro home>/logs/<stamp>-<pid>/``).
 #
 # SCOPE IS THE SECURITY PROPERTY, not just the redaction. Two sources kiro-cli
 # writes are deliberately NOT read, for the same reason:
@@ -574,6 +587,8 @@ def _scratch_log_dir_name(log: Path) -> str:
 # ``<timestamp> ERROR <module>: <message>`` with no JSON-RPC envelope and a
 # longest line of 313 bytes. Sentinel strings passed as tool-call ARGUMENTS in
 # that same session appear in neither file, so this binary logs no frame payloads.
+# On kiro-cli 3.5.0 the per-process ``<kiro home>/logs`` mcp.log holds one JSON event per
+# line, and a tool call is an ``mcp.callTool.ok`` record of ids only: no arguments, no result.
 #
 # That is a measurement of one version, not a guarantee about a component this
 # repo neither builds nor pins, so a later kiro-cli could start logging bodies.
@@ -766,11 +781,10 @@ def _tail_lines(text: str, tail: int) -> str:
 def _filter_since(text: str, since: str) -> str:
     """Keep only events at/after ``since``, each with its own continuation lines.
 
-    kiro-cli log lines lead with an ISO-ish timestamp, so a lexical compare of
-    the line's leading token against ``since`` is a monotone filter without
-    parsing every timestamp shape. ``since`` is matched against the start of each
-    line, so any leading slice of that timestamp works: a bare calendar day, or a
-    day plus hour to narrow within it.
+    A record's timestamp (a text line's leading token, a 3.x JSON event's
+    ``timestamp`` field) is ISO-ish, so a lexical compare against ``since`` is a
+    monotone filter without parsing every timestamp shape. Any leading slice of the
+    timestamp works: a bare calendar day, or a day plus hour to narrow within it.
 
     A line with no recognizable leading timestamp is a CONTINUATION of the event
     above it (a JSON body, a stack trace), so it inherits that event's verdict:
@@ -792,12 +806,11 @@ def _filter_since(text: str, since: str) -> str:
     # No event seen yet -> keep, so the truncation marker survives.
     event_kept = True
     for line in text.splitlines(keepends=True):
-        head = line.lstrip()
         # A record START carries the timestamp and sets the verdict the following
         # continuation lines inherit. Same predicate the boundary trim uses, so a
         # line the two classify differently cannot exist.
-        if _starts_a_record(line):
-            event_kept = head[: len(since)] >= since
+        if (stamp := _record_timestamp(line)) is not None:
+            event_kept = stamp[: len(since)] >= since
         if not event_kept:
             continue
         out.append(line)
@@ -822,9 +835,9 @@ _FRAME_BODY_MARKER = re.compile(r'"jsonrpc"\s*:|"params"\s*:\s*[{\[]|"result"\s*
 #: rather than being spelled twice.
 _TRUNCATION_NOTE_PREFIX = "...[truncated"
 
-#: The shape that STARTS a log record: an ISO calendar date, then ``T`` or a space
-#: before the time. Anything else on a line's left edge is a continuation of the
-#: record above it.
+#: The shape that STARTS a log record, at column 0 of a text line or as a 3.x JSON
+#: event's ``timestamp`` value: an ISO calendar date, then ``T`` or a space before
+#: the time. Any other line is a continuation of the record above it.
 #:
 #: A bare "leading digit" test is not enough, and the difference is a disclosure
 #: rather than a tidiness point: a serialized frame can hold a JSON array of bare
@@ -836,14 +849,17 @@ _TRUNCATION_NOTE_PREFIX = "...[truncated"
 _RECORD_START = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
 
 
-def _starts_a_record(line: str) -> bool:
-    """True when ``line`` begins a log record rather than continuing one.
+def _record_timestamp(line: str) -> str | None:
+    """Text led by the timestamp of the record ``line`` STARTS; None if it continues one.
 
     One predicate for both :func:`_begin_at_event_boundary` and
     :func:`_filter_since`, which each need the same event/continuation split. Two
-    copies would drift, and here they would drift on a security boundary.
+    copies would drift, and here they would drift on a security boundary. The line is
+    judged as written: a record starts at column 0, and an indented line continues one.
     """
-    return _RECORD_START.match(line.lstrip()) is not None
+    if _RECORD_START.match(line):
+        return line
+    return diagnostics_kiro_home_logs.json_event_timestamp(line)
 
 
 def _begin_at_event_boundary(text: str) -> str:
@@ -878,10 +894,9 @@ def _begin_at_event_boundary(text: str) -> str:
         return text
     note, rest = lines[0], lines[1:]
     for i, line in enumerate(rest):
-        # Must be a record START, not merely a line beginning with a digit: a
-        # frame's JSON array of bare numbers would satisfy the looser test and let
-        # the trim stop inside the frame.
-        if _starts_a_record(line):
+        # A record START, not merely a leading digit: a frame's JSON array of bare
+        # numbers would pass that looser test and let the trim stop inside the frame.
+        if _record_timestamp(line) is not None:
             return note + "".join(rest[i:])
     return note
 
@@ -913,9 +928,9 @@ def read_kiro_cli_logs(
 ) -> str:
     """Redacted tail of kiro-cli's own PROTOCOL logs, for diagnosing a rejected turn.
 
-    Reads ONLY the ``kiro-log`` mcp/lsp log files — never the fenced identity
-    stores, and deliberately NOT the two conversation-bearing sources kiro-cli
-    also writes:
+    Reads ONLY kiro-cli's mcp/lsp logs in ``kiro-log`` and the per-process ``mcp.log``
+    of :mod:`diagnostics_kiro_home_logs` — never the fenced identity stores, and
+    deliberately NOT the two conversation-bearing sources kiro-cli also writes:
 
     * ``sessions/cli/<sid>.jsonl`` transcripts, and
     * ``kiro-chat.log``, which is never a per-session file: the shared one is ONE
@@ -965,7 +980,10 @@ def read_kiro_cli_logs(
     total_redactions = 0
 
     # mcp/lsp only; no `kiro-chat.log`, shared or per-process — see the docstring.
-    sources: list[tuple[str, Path]] = [(p.name, p) for p in _kiro_cli_extra_logs()]
+    sources: list[tuple[str, Path]] = []
+    for p in _kiro_cli_extra_logs():
+        folder = diagnostics_kiro_home_logs.folder_of(p)
+        sources.append((f"{folder}/{p.name}" if folder else p.name, p))
 
     # Read the caps from the module at CALL time so a test can monkeypatch them.
     # Divide the response budget among the sources instead of giving each the
@@ -1021,7 +1039,8 @@ def read_kiro_cli_logs(
         return (
             "No kiro-cli protocol logs found. kiro-cli writes mcp.log / lsp.log "
             "under $XDG_RUNTIME_DIR|$TMPDIR|%TEMP%/kiro-log/ (kiro-log/logs/ on "
-            "Windows); none exist or are readable "
+            "Windows), and kiro-cli 3.x mcp.log under ~/.kiro/logs/<stamp>-<pid>/ "
+            "($KIRO_HOME/logs/ when set); none exist or are readable "
             "here. (kiro-chat.log can carry other sessions' conversations, so it "
             "is deliberately not a source for this tool.)"
         )
@@ -1132,7 +1151,7 @@ def _kas_engine_version() -> str:
         if not kas_bundle.kas_bundle_route():
             return "not selected"
         engine = kas_bundle.installed_engine_label()
-        pin = kas_bundle.KAS_PIN_VERSION
+        pin = kas_bundle.host_pin_version()
         if engine is None:
             return f"not installed (release pins KAS {pin}; kirocrew kas install)"
         return f"{engine} (release pins KAS {pin})"
@@ -1438,11 +1457,13 @@ def collect_bundle(
     except OSError:
         pass
 
-    # Scrub the user-supplied note ONCE up front. It flows into versions.txt,
-    # manifest.json, AND the pre-filled GitHub issue URL — a user may paste a
-    # secret (bearer token, key) into "what happened?", so it needs the same
-    # redaction the log members get below.
-    note, _, _ = _scrub_bundle(note or "")
+    # Scrub the user-supplied note up front for manifest.json AND the pre-filled
+    # GitHub issue URL — a user may paste a secret (bearer token, key) into
+    # "what happened?", so it needs the same redaction the log members get
+    # below. versions.txt is built from the raw note and scrubbed as a whole, so
+    # the note's redactions land in that member's tally like every other member's.
+    raw_note = note or ""
+    note, _, _ = _scrub_bundle(raw_note)
 
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     filename = f"kirocrew-diagnostics-{stamp}-{uuid.uuid4().hex[:8]}.zip"
@@ -1477,7 +1498,10 @@ def collect_bundle(
             # Named for its scratch dir: every per-process log is `kiro-chat.log`.
             text_sources.append((f"kiro-chat/{_scratch_log_dir_name(log)}.log", log, True))
         for extra in _kiro_cli_extra_logs():
-            text_sources.append((f"kiro-cli-{extra.name}", extra, True))
+            # Named for its folder, like the scratch chat logs above, when it has one.
+            folder = diagnostics_kiro_home_logs.folder_of(extra)
+            member = f"kiro-cli-{extra.stem}/{folder}.log" if folder else f"kiro-cli-{extra.name}"
+            text_sources.append((member, extra, True))
 
     # Crash artifacts are always useful and low-volume — include regardless.
     text_sources.append(("crash.log", home / "logs" / "crash.log", False))
@@ -1522,7 +1546,7 @@ def collect_bundle(
     )
     with os.fdopen(_fd, "wb") as _raw, zipfile.ZipFile(_raw, "w", zipfile.ZIP_DEFLATED) as zf:
         # Generated members first.
-        versions = _versions_text(note, identity, version_alignment)
+        versions = _versions_text(raw_note, identity, version_alignment)
         # ``versions.txt`` carries the absolute ``data_home`` path
         # unconditionally, which embeds the OS login. Run it through the bundle
         # scrub stack so the archive does not ship a local path in a file whose

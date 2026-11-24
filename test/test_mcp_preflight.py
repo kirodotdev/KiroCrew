@@ -401,8 +401,10 @@ class TestEvaluateOnlyWhatChanged:
         # Patch the CONSUMER namespace: evaluate holds its own reference.
         monkeypatch.setattr(ev, "preflight", slow_preflight)
 
+        # Distinct args: names of one command and args are one process, which
+        # the pass measures one after another on purpose.
         servers = [
-            McpServerInfo(name=f"srv{i}", command="/bin/true")
+            McpServerInfo(name=f"srv{i}", command="/bin/true", args=[f"--srv{i}"])
             for i in range(ev.MAX_EVALUATIONS_PER_PASS)
         ]
         known = await ev.evaluate_new_servers(servers, tmp_path)
@@ -1043,9 +1045,10 @@ class TestProgressArrivesDuringThePass:
             return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
 
         monkeypatch.setattr(ev, "preflight", preflight)
+        # Two different processes, so the gated one cannot hold up the other.
         servers = [
-            McpServerInfo(name="first-mcp", command="/bin/true"),
-            McpServerInfo(name="last-mcp", command="/bin/true"),
+            McpServerInfo(name="first-mcp", command="/bin/true", args=["--first"]),
+            McpServerInfo(name="last-mcp", command="/bin/true", args=["--last"]),
         ]
         task = asyncio.create_task(
             ev.evaluate_new_servers(

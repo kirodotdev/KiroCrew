@@ -220,11 +220,15 @@ const ActivityTimeline = memo(function ActivityTimeline({
               {ev.by ? (
                 // One sentence per row, so a language can place the actor
                 // before or after the action; only the action is emphasised.
+                // Both are slot children, never values: <Trans> parses its
+                // string as markup, so a value would be parsed with it.
                 <span className="text-muted">
                   <Trans
                     i18nKey="pages.artifactDetailPage.action_by_actor"
-                    values={{ action: verb(ev.type, ev.metadata), name: ev.by }}
-                    components={[<span key="action" className="font-medium text-text" />]}
+                    components={[
+                      <span key="action" className="font-medium text-text">{verb(ev.type, ev.metadata)}</span>,
+                      <span key="name">{ev.by}</span>,
+                    ]}
                   />
                 </span>
               ) : (

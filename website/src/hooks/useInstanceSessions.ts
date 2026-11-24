@@ -98,8 +98,6 @@ interface PeerSlot {
   pending_approval?: boolean
   /** An unanswered question card is waiting on the slot. */
   needs_input?: boolean
-  /** A change card, guide offer or browser ask only the full chat draws is waiting. */
-  needs_full_chat?: boolean
   /** ISO-8601. Moves only when a turn starts or ends — the ranking/display rung. */
   last_turn_ts?: string
   /** ISO-8601 of the newest saved row of any role; advances on every streamed tool call. */
@@ -164,7 +162,6 @@ export interface InstanceSessionRow {
   messages: number
   pending_approval?: boolean
   needs_input?: boolean
-  needs_full_chat?: boolean
   /** The peer that OWNS this session — what makes the badge and remote activation
    *  fire, and the only thing `isPeerRow()` reads. Required here (not optional as
    *  on `Slot`) because a row this hook emits always came from some peer.
@@ -458,7 +455,6 @@ export function useInstanceSessions(
           // claimed.
           pending_approval: live && s.pending_approval === true,
           needs_input: live && s.needs_input === true,
-          needs_full_chat: live && s.needs_full_chat === true,
           peer_id: inst.id,
           peer_name: name,
           row_identity: str(s.row_identity),

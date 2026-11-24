@@ -879,7 +879,13 @@ shipped builtin's execution exemption and leaving the boot-warmed first-party
 name and MCP-server sets stale until the next restart. Symmetrically,
 `register_builtin_apps` stands down when a user-installed app already occupies the
 directory, leaving their install untouched, because taking it over is
-unrecoverable.
+unrecoverable. Until the wheel copy is released (§ Former built-in adoption), that
+built-in still serves the name: its routes register and every hook root chooser
+resolves the shipped package. A local or git build named like a built-in is a
+legitimate way to test one, so it is not refused; `builtin_shadow.shadowed_builtin_notice`
+names the situation instead, appended to the install result's `message` and set as
+`shadowedBuiltin` on the app's `/api/apps` and `kirocrew app info` row, with the App
+Store step added when the name is pinned for adoption.
 
 Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
@@ -2189,7 +2195,7 @@ Writer: `apps/lifecycle.py`; consumer: an app's `publish`/`_broadcast`.
 
 `build_app_context` builds `ctx.crewmate` (`apps/crewmate_sdk.py::CrewmateSDK`) only when `crewmate_sdk.PREVIEW_ENABLED` is on (off until the owner view below ships), the manifest's `permissions.proposeCrewmate` is literally `true` and the builder passed the gateway's Application as `crewmate_host`. Both builders pass it (`hooks_integration._build_app_context_from_info`, `LifecycleDispatcher._build_context`), whatever the app's `routes` hook says, because the SDK never hands the Application to the app.
 
-`propose(bundle)` runs `crewmate_bundle.crewmate_import_params`, which fails closed on an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender` or `avatar`, another format, a newer `formatVersion`, a grant, a `user:` or non-`builtin:` dashboard id, a bundled skill or `script` cron without its files (an app hands none), an avatar it does not carry, and any `agent.json` MCP server or skill (rfc-crewmate-share.md §5.7). Rules, crons, skill references and `avatarTraits` are imported; key results and a dashboard this build does not ship are listed in `not_imported`. `handlers/change_cards.py::propose_app_card` then stores one `crewmate.import` card under `slot_key` `app:<name>` with an empty `session_key`, and writes nothing else. `propose_for_caller` refuses that kind and any `app:` key from a chat caller, and `list_kinds` leaves the kind out, so no agent can raise it. The card's plan opens as `crewmate.create`'s: `POST /api/agents` with `approval_mode: "normal"`, then the long-term goal, then the rules, a shipped builtin dashboard and each message cron, created paused. It shares that kind's evidence, member-id-checked Undo and state reads through `CREWMATE_CREATING_KINDS`. The app token cannot run a plan step: `change_card_middleware` refuses it on every hooked route.
+`propose(bundle)` runs `crewmate_bundle.crewmate_import_params`, which fails closed on an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender` or `avatar`, another format, a newer `formatVersion`, a grant, a `user:` or non-`builtin:` dashboard id, a bundled skill or `script` cron without its files (an app hands none), an avatar it does not carry, and any `agent.json` MCP server or skill (rfc-crewmate-share.md §5.7). Rules, crons, skill references and `avatarTraits` are imported; key results and a dashboard this build does not ship are listed in `not_imported`. `handlers/change_cards.py::propose_app_card` then stores one `crewmate.import` card under `slot_key` `app:<name>` with an empty `session_key`, and writes nothing else. `propose_for_caller` refuses that kind and any `app:` key from a chat caller, and `list_kinds` leaves the kind out, so no agent can raise it. The card's plan opens as `crewmate.create`'s: `POST /api/agents` with `approval_mode: "normal"`, then the long-term goal, then the rules, a shipped builtin dashboard and each message cron, created paused. It shares that kind's evidence, member-id-checked Undo and state reads through `CREWMATE_CREATING_KINDS`. The app token cannot run a plan step: `change_card_middleware` refuses it on every hooked route. Once a view shows the card, the owner edits its name before the press, as on every import card: the kind marks `name` editable and the card draws a name field in place of its Name row while it is pending or failed.
 
 Not built yet: the owner-facing view that lists `app:` cards (they are stored but no chat slot shows them), cancelling them when the app is disabled, re-consent when an update adds the permission, and a provenance stamp on the crew record.
 
@@ -3183,6 +3189,15 @@ the one-time import first, so the import's lock is the only lock needed.
   `approvedGrants`. The approved event set is part of `hook_signature`, so
   approving events reloads the app's hooks and rebuilds its event bus; the API
   and WebSocket caches pick an approval up within their refresh interval.
+  Until the owner approves, an app-token call on an `/api/` path that only a
+  held-back `api` entry covers answers 403 `app_permission_not_approved`, whose
+  body lists those entries as `pending_approval` and tells the app the owner's
+  step: the app's page (`/apps/detail/<name>`), the "Approve new
+  permissions" button, and the refresh interval. A path no declared entry
+  covers answers `app_permission_not_declared`, which names the `app.json`
+  change, the update and the approval (dashboard-token-auth, App-token scope
+  confinement). `held_back_app_grants` supplies the entries; it reads the same
+  approved set and lists nothing when none is stored.
   `get_app` is read-only, like `list_apps`.
 - **Failure direction is closed.** An install without the file whose old
   manifest is unreadable gives an empty previous set on update; a stored set
@@ -5950,8 +5965,9 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
 one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
-`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
-rows, all four of which the route serves. They are App Kit seam level 6.
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira, Linear and
+ServiceNow rows, all five of which the route serves. A ServiceNow list offers no label
+filter, since its records have none, and like Jira and Linear it shows no comment count. They are App Kit seam level 6.
 
 The transport is chosen the way §18g chooses the pull-request client, from the
 published identity: an **external** app posts through its scoped client once
@@ -7099,7 +7115,7 @@ which module owns which part, so a change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `manager.py` | The facade: the only import path and patch surface. It defines nothing and installs `kiro_crew._facade_mirror` over the owners below |
-| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), `AppResult` and `get_app_manifest` |
+| `manager_records.py` | Where an app lives (`apps_dir`, `app_dir`, `app_data_dir`), its `installed.json` record (`InstalledApp`, `_read_installed`, `_write_installed`), the approved `permissions.api` / `permissions.events` set, the update-in-flight fencing every grant read checks (`staged_app_grants`), the declared entries still waiting for approval that a refusal names (`held_back_app_grants`), `AppResult` and `get_app_manifest` |
 | `manager_tree.py` | Validating a source directory (`_validate_source_path`, `_check_min_version`), the copy (`_copy_app_tree`, `copy_app_tree_as_installed`), the preserved-`data/` rules (`gateway_data_dir_obstruction`, `_owned_data_dir`), `_remove_any_shape` and `InstalledTreeRefused` |
 | `manager_install.py` | `install_app`, `update_app`, the per-app `app_lifecycle_lock` and the scoped `registry_source_repository` |
 | `manager_activation.py` | `enable_app`, `disable_app` and the governance check every activation passes (`_app_activation_denied`) |
@@ -7993,7 +8009,9 @@ stream, so `run` streams with `person_only_directive_refuser`
 (`dashboard/session_directive_apply.py`, as a cron turn and a workflow step do): a
 completed `set_project`, `reset_conversation`, `chat_tag` or `suggest_followup`
 call is refused with `refuse_user_origin_directive` (its wording, and a SEL `denied`
-row on the turn's key), and the refusals lead the reply. Nothing is applied.
+row on the turn's key), and the refusals lead the reply. Nothing is applied. The
+reply loses each line that only quotes a directive marker
+(`session_directive.strip_quoted_markers`), which the model read in a tool result.
 
 **Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
 Always present, built in `AppContext.__post_init__` from `name`, because it adds no

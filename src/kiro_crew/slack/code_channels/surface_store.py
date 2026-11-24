@@ -1,7 +1,7 @@
 """What the agent surface remembers about each code channel.
 
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
-Kiro Crew data home, keyed by channel id. It holds pointers and
+Kiro Crew data home, keyed by channel id (a Conductor thread's board by :func:`room_key`). It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
 the command set last registered, which message is the current wrap-up, the
 pinned work board's ts, digest and already-sent alert tokens, the view tabs this
@@ -120,6 +120,17 @@ _SCALAR_TYPES: dict[str, type | tuple[type, ...]] = {
     for f in fields(SurfaceRecord)
     if f.name not in _NON_SCALAR
 }
+
+
+def room_key(binding: Any) -> str:
+    """The key a binding's board state is kept under: the channel id for a code
+    channel, ``"<channel_id>:<anchor_ts>"`` for a Conductor thread (one channel can
+    hold many, so the channel alone would make them share one board message)."""
+    if getattr(binding, "thread", False) is True:
+        from kiro_crew.slack.code_channels.store import thread_key
+
+        return thread_key(binding.channel_id, binding.anchor_ts)
+    return str(binding.channel_id)
 
 
 def _default_path() -> Path:

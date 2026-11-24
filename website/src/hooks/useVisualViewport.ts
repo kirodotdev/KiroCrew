@@ -25,6 +25,16 @@ export interface VisualViewport {
   offsetTop: number
 }
 
+/**
+ * Whether the user has pinch-zoomed the page in. A sideways swipe then pans the
+ * zoomed view, so the side panel swipes leave it to the browser. The small
+ * margin keeps a scale that rounds a hair over 1 from counting as zoomed.
+ */
+export function pinchZoomed(): boolean {
+  const scale = typeof window !== 'undefined' ? window.visualViewport?.scale : undefined
+  return typeof scale === 'number' && scale > 1.01
+}
+
 const read = (): VisualViewport => {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null
   if (!vv) {

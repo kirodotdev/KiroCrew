@@ -16,12 +16,12 @@ direct crew-home child -- is the pattern the sandbox does not let an agent renam
 around (``aws-control-staging``, ``quarantined-clones``), unlike a leaf nested under
 ``apps/``.
 
-The marker is written ONLY from the owner-authenticated enable path (``enable_app``,
-which requires an owner dashboard request and refuses app tokens), for whichever app
-the owner enabled. It is NEVER derived from the enablement record, so re-writing a
-forged ``installed.json`` (for example on the boot re-registration of a builtin)
-cannot mint it. It is revoked on every write that disables the app and on uninstall,
-so a disabled app can never keep one.
+The marker is written ONLY outside the sandbox, from actions no app token reaches: an
+enable (``enable_app``, from the owner's dashboard, the host CLI or a default install)
+and an owner registration (``register_external_app``; dashboard-token-auth, "Who can
+mint one"). A forged ``installed.json`` alone (for example on the boot re-registration
+of a builtin) never mints it. It is revoked on every write that disables the app and on
+uninstall, so a disabled app can never keep one.
 
 These functions are generic -- they act on whatever app name they are handed and know
 no specific app id, so core (`sandbox_leaves`, `manager_records`, `manager_uninstall`)
@@ -51,8 +51,8 @@ def _grant_path(name: str):
 
 def grant_host_exec(name: str) -> bool:
     """Record, from the unsandboxed gateway, that *name* is owner-enabled to run
-    outside the sandbox. Call ONLY from the owner-authenticated enable path -- never
-    derived from the enablement record. A write failure is logged, never raised, and
+    outside the sandbox. Call ONLY from an enable or an owner registration (above).
+    A write failure is logged, never raised, and
     returns False so the caller can report it; every reader fails CLOSED on a
     missing grant.
     """
@@ -82,8 +82,8 @@ def host_exec_granted(name: str) -> bool:
 
     The pod gate's authority. Unforgeable from the sandbox: the grant directory is
     sealed read-only and cannot be renamed around, and the marker is written only on an
-    owner-authenticated enable, never from the enablement record. A forged
-    ``installed.json`` never produces one.
+    enable or an owner registration. A forged ``installed.json`` alone never produces
+    one.
     """
     try:
         return _grant_path(name).is_file()

@@ -1018,7 +1018,9 @@ and out-of-store cases.
 
 ## APIs
 
-All four mutations are gated on `_is_restricted_session` and audited through the
+Every route answers only the owner and an admitted Shared Crew teammate: any other
+dashboard session gets 403 `owner_only` (`require_owner_for_dashboard_caller`). All four
+mutations are also gated on `_is_restricted_session` and audited through the
 SEL. Every non-2xx body carries a machine-readable `code`.
 
 | Method | Path | Purpose |

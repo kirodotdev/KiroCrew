@@ -13,7 +13,7 @@ from kiro_crew import _facade_mirror
 # binds the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches every
 # owner holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module, and it
 # keeps no code of its own. New work goes to the owner of its responsibility:
-#   ``knowledge_access`` -- the owner gate, the SEL audit, the store, pipeline and task handles
+#   ``knowledge_access`` -- the SEL audit, the store, pipeline and task handles
 #   ``knowledge_library`` -- namespaces, items, entities, the graph, counts and statistics
 #   ``knowledge_sync`` -- a source's sync status, the sync claim and the sync tasks
 #   ``knowledge_sources`` -- registering and managing sources, the folder picker, file rows
@@ -45,7 +45,6 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.knowledge_access import _audited_write  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_access import _pipeline  # noqa: F401
-    from kiro_crew.dashboard.handlers.knowledge_access import _require_knowledge_owner  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_access import _sel_log  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_access import _store  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_access import _task_registry  # noqa: F401

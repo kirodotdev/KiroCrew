@@ -1451,7 +1451,11 @@ async def install_from_registry(
             # ``manifest_data`` is the identity-checked read from above — reusing
             # it avoids a second read that could see different bytes.
             from kiro_crew.apps.admission import app_version_refusal
-            from kiro_crew.apps.manager import refresh_app_config_keys, register_external_app
+            from kiro_crew.apps.manager import (
+                _app_activation_denied,
+                refresh_app_config_keys,
+                register_external_app,
+            )
 
             display = manifest_data.get("displayName", name)
             version = manifest_data.get("version", "0.0.0")
@@ -1478,6 +1482,9 @@ async def install_from_registry(
                 await _roll_back_refused()
                 outcome = {"ok": False, "name": name, "message": "", "error": consent_refusal}
                 return outcome
+            # The apps activation check reads the same store, so it is asked off the
+            # loop too and its verdict passed in.
+            activation_permitted = await asyncio.to_thread(_app_activation_denied, name) is None
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -1488,6 +1495,7 @@ async def install_from_registry(
                 source_repository=persisted_git_url,
                 start_disabled=start_disabled,
                 version_checked=True,
+                activation_permitted=activation_permitted,
             )
             if not reg_result.ok:
                 # A refused registration leaves the prior record as it was, so the

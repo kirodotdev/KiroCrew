@@ -16,10 +16,10 @@ import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
+import { DiscoverySearchBar, DiscoveryStates, providerFailureLines } from './DiscoverySearchBar'
 import { SkillMetaStrip } from './SkillDirectoryBrowser'
 import { parseFrontmatter } from './SkillForm'
-import type { DiscoveredSkill, SkillProviderOutcome } from '../types'
+import type { DiscoveredSkill } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { fmtCompact } from '../i18n/format'
@@ -35,19 +35,6 @@ interface Props {
  *  in zh — the threshold and suffix are the locale's, via `fmtCompact`. */
 export function formatInstalls(n: number): string {
   return fmtCompact(n)
-}
-
-/** One line per provider that could not search, naming it and, when it said, why.
- *  A provider that answered with zero rows is not here: that is an empty result. */
-export function providerFailureLines(outcomes: SkillProviderOutcome[]): string[] {
-  return outcomes
-    .filter(o => o.status !== 'ok')
-    .map(o => {
-      const provider = o.display_name || o.name
-      return o.message
-        ? i18nT('components.skillBrowserModal.provider_could_not_search', { provider, reason: o.message })
-        : i18nT('components.skillBrowserModal.provider_did_not_answer', { provider })
-    })
 }
 
 /** Per-skill install lifecycle for UI feedback. */

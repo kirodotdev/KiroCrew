@@ -111,9 +111,12 @@ def test_the_captured_element_is_what_the_claude_mirror_projects(tmp_path, monke
 
     Same spec shape as the capture's, so the server name the live title carries
     (``spec-probe``) is the one the projection emits, and the parse it emits it from
-    is the one ``consumed_spec_matches`` confirms against the saved stamp.
+    is the one ``consumed_spec_matches`` confirms against the saved stamp. The
+    saved capability record is what makes it a member rather than a custom agent,
+    whose array would gain Crew's default servers.
     """
     import kiro_crew.agent as agent_mod
+    from kiro_crew import agent_state
     from kiro_crew.acp import session_mcp
     from kiro_crew.agent_capabilities import _digest
     from kiro_crew.agent_capabilities_consumed import consumed_spec_matches
@@ -131,6 +134,24 @@ def test_the_captured_element_is_what_the_claude_mirror_projects(tmp_path, monke
         "mcpServers": {"spec-probe": {"command": "python3", "args": ["probe_server.py"]}},
     }
     (agents / "probe-member.json").write_text(json.dumps(saved), encoding="utf-8")
+    state_path = tmp_path / "agent_state.json"
+    monkeypatch.setattr(agent_state, "_state_path", lambda: state_path)
+    record = {
+        "schema_version": 1,
+        "parent": {
+            "name": "parent",
+            "source": "user",
+            "path": str(tmp_path / "parent.json"),
+            "scope": "global",
+            "project": "",
+        },
+        "accepted": {section: {} for section in agent_state.CAPABILITY_SECTIONS},
+        "overrides": {section: {} for section in agent_state.CAPABILITY_SECTIONS},
+        "status": "saved",
+        "materialized": _digest(saved),
+    }
+    state_path.write_text(json.dumps({"probe-member": {"capabilities": record}}), encoding="utf-8")
+    assert agent_state.get_capabilities("probe-member") == record
     projection = mirror_for(CLAUDE).session_projection(
         "probe-member", work_dir=tmp_path, permission_surface_owned=True
     )

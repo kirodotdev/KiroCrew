@@ -475,8 +475,9 @@ async function stopForkedGatewaySurvivors(pids, { deadline, graceMs, getCommandF
  * (`kept_grants.mark_user_stop` on the Python side writes the same file), so the
  * YOLO and chat trust kept across other exits end even when the gateway never
  * reads the Quit's `user_stop` body and is signalled instead. Owner-only, never
- * through a link, written to a temporary name and renamed. Returns whether the
- * mark is on disk; never throws, because a Quit must go ahead without it.
+ * through a link, written to a temporary name and renamed, and synced, file and
+ * directory, so a power loss right after the Quit still finds it. Returns whether
+ * the mark is on disk; never throws, because a Quit must go ahead without it.
  */
 function markUserStop({ kirocrewHome, fsMod = fs, pathMod = path } = {}) {
   if (!kirocrewHome) return false;
@@ -492,11 +493,36 @@ function markUserStop({ kirocrewHome, fsMod = fs, pathMod = path } = {}) {
     const tmp = `${file}.${process.pid}.tmp`;
     const payload = JSON.stringify({ version: 1, via: "desktop", at: Date.now() / 1000 });
     try { fsMod.unlinkSync(tmp); } catch {}
-    fsMod.writeFileSync(tmp, payload, { mode: 0o600, flag: "wx" });
+    const fd = fsMod.openSync(tmp, "wx", 0o600);
+    try {
+      fsMod.writeFileSync(fd, payload);
+      fsMod.fsyncSync(fd);
+    } finally {
+      fsMod.closeSync(fd);
+    }
     fsMod.renameSync(tmp, file);
+    syncDir(dir, fsMod);
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Sync a directory's entries, so a rename in it survives a power loss. Best
+ * effort: the rename already happened, and Windows refuses to sync a directory.
+ */
+function syncDir(dir, fsMod) {
+  let fd;
+  try {
+    fd = fsMod.openSync(dir, "r");
+    fsMod.fsyncSync(fd);
+  } catch {
+    // The mark is in place; only its durability is unproven here.
+  } finally {
+    if (fd !== undefined) {
+      try { fsMod.closeSync(fd); } catch {}
+    }
   }
 }
 

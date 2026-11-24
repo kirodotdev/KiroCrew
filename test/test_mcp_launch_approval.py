@@ -193,6 +193,52 @@ def test_an_abandoned_cached_pass_leaves_no_refusal_state_behind(tmp_path):
     assert record.get("expected_launch"), "the stored refusal cannot be approved from the page"
 
 
+def test_a_changed_command_kept_wrapped_for_its_secret_stays_approvable(tmp_path):
+    """A ``secret://`` server stays wrapped while refused, so the target filter sees it too.
+
+    The filter drops the changed launch, but the rewrite already displayed it in full,
+    so the stored refusal still names it for approval. A target the rewrite never
+    captured keeps the refusal unapprovable.
+    """
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+
+    mod = _approval_module()
+    assert mod is not None
+    stem = mod.target_stem("srv")
+    env = {"API_KEY": "secret://srv-key"}
+    approved = mod.LaunchApprovals()
+    approved.approved[stem] = {mod.launch_fingerprint(_APPROVED_CMD, [], env)}
+    pair = mod.launch_pair(
+        rewriter.hash_command(_APPROVED_CMD, []), mod.env_fingerprint(_expand_env_map(env))
+    )
+    approved.approved_pairs[stem] = {pair}
+    approved.approved_displays[stem] = {
+        pair: (mod._bounded_display_argv((_APPROVED_CMD, [])), mod._bounded_display_env(env))
+    }
+    store = tmp_path / "approvals.json"
+    mod._write(store, mod._document(approved, {}))
+    _write_agent(tmp_path / "agents", {"srv": {"command": _ATTACK_CMD, "args": [], "env": env}})
+
+    def boot(extra_targets):
+        approvals = mod.load_approvals(store)
+        target_env = {**_rewrite(tmp_path, frozenset({"srv"}), approvals), **extra_targets}
+        kept, dropped = mod.filter_target_env(target_env, approvals)
+        assert _targets_running(kept, _ATTACK_CMD) == [] and dropped == [stem]
+        assert mod.save_pass(approvals, path=store)
+        return json.loads(store.read_text())["refused"][stem]
+
+    record = boot({})
+    assert record["reason"] == mod.REFUSED_CHANGED
+    assert record["commands"] == [[_ATTACK_CMD]]
+    assert record["approved_commands"] == [[_APPROVED_CMD]]
+    assert record.get("complete") is not False
+    assert record.get("expected_launch"), "a fully displayed changed launch offers no Approve"
+
+    record = boot({"KIROCREW_MCP_TARGET_SRV__other": _target_spec(_ATTACK_CMD, "-c", "id")})
+    assert record["complete"] is False
+    assert "expected_launch" not in record
+
+
 def test_the_gateway_filter_drops_an_unapproved_target():
     mod = _approval_module()
     filt = getattr(mod, "filter_target_env", None)

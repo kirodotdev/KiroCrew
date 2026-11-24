@@ -32,7 +32,7 @@ def _isolated_home(tmp_path, _floor_monkeypatch):
 
 
 def _status(posture: str, available_gb: float = 8.0) -> SimpleNamespace:
-    return SimpleNamespace(posture=posture, available_gb=available_gb)
+    return SimpleNamespace(posture=posture, decision_posture=posture, available_gb=available_gb)
 
 
 def _headroom(root: str, space_pct: float, inodes: int = 100_000) -> TempHeadroom:
@@ -130,7 +130,10 @@ def test_the_sample_reads_disk_in_the_worker_thread_and_publishes(monkeypatch):
     notifier = rp.ResourcePressureNotifier(
         SimpleNamespace(push=lambda _note: None),
         probe_fn=lambda: SimpleNamespace(
-            posture=POSTURE_AMPLE, available_gb=9.0, agent_ceiling=None
+            posture=POSTURE_AMPLE,
+            decision_posture=POSTURE_AMPLE,
+            available_gb=9.0,
+            agent_ceiling=None,
         ),
         disk_fn=lambda: (POSTURE_TIGHT, "/tmp 7% free"),
         on_posture_change=lambda: pulls.append(1),
@@ -439,16 +442,34 @@ def test_tight_steps_wake_per_gb_and_a_repeat_or_a_smaller_fall_does_not():
     assert pulls == [1, 1]
 
 
-def test_a_recovery_inside_the_level_wakes_nobody_and_raises_the_reference():
-    """RFC §10 test 7."""
+def test_a_recovery_and_a_fall_back_inside_the_level_wake_nobody():
+    """RFC §10 test 7: memory swinging a step up and back down, sample after sample,
+    keeps the reference at the last wake; a step below that wake, or a level change,
+    still wakes."""
     pulls: list[int] = []
     notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
     _feed_free(notifier, POSTURE_TIGHT, 4.0)
     _feed_free(notifier, POSTURE_TIGHT, 3.0)
-    _feed_free(notifier, POSTURE_TIGHT, 3.8)
     assert len(pulls) == 2
-    _feed_free(notifier, POSTURE_TIGHT, 2.8)
-    assert len(pulls) == 3 and "was 3.8 GB" in rp.worsened()[1]
+    for _ in range(60):
+        _feed_free(notifier, POSTURE_TIGHT, 3.8)
+        _feed_free(notifier, POSTURE_TIGHT, 2.8)
+    assert len(pulls) == 2
+    _feed_free(notifier, POSTURE_TIGHT, 2.0)
+    assert len(pulls) == 3 and "was 3.0 GB at the last wake" in rp.worsened()[1]
+    _feed_free(notifier, POSTURE_CRITICAL, 1.9)
+    assert len(pulls) == 4 and rp.worsened() is None
+
+
+def test_an_axis_off_the_level_does_not_raise_its_reference_either():
+    """On a host tight on disk, memory crossing its own line back and forth
+    (4.4 <-> 3.4 GB) steps once, not on every fall."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    for _ in range(30):
+        _feed_free(notifier, POSTURE_AMPLE, 4.4, disk_pct=8.0, disk_level=POSTURE_TIGHT)
+        _feed_free(notifier, POSTURE_TIGHT, 3.4, disk_pct=8.0, disk_level=POSTURE_TIGHT)
+    assert len(pulls) == 2 and "was 4.4 GB" in rp.worsened()[1]
 
 
 def test_the_critical_step_is_half_a_gb():
@@ -668,8 +689,9 @@ def test_the_watchdog_hands_over_only_own_runtime_sizes(monkeypatch):
 
 
 def test_a_renewed_fall_to_an_earlier_reading_is_a_new_step():
-    """GPT a8b37eb49a9a / Opus 74fc18755a62: 4 -> 3 -> 4 -> 3 in one tight period,
-    and the same reading in a later tight period, each publish a token not seen yet."""
+    """The same reading in a later tight period publishes a token not seen yet.
+    Inside one period, 4 -> 3 -> 4 -> 3 is one step on purpose: the recovery leaves
+    the reference at 3 GB (RFC §4.2)."""
     pulls: list[int] = []
     notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
     tokens: list[str] = []
@@ -685,7 +707,7 @@ def test_a_renewed_fall_to_an_earlier_reading_is_a_new_step():
         _feed_free(notifier, level, free)
         if rp.worsened() is not None and rp.worsened()[0] not in tokens:
             tokens.append(rp.worsened()[0])
-    assert len(tokens) == 3 and all(t.endswith(":mem3.0:disk-") for t in tokens)
+    assert len(tokens) == 2 and all(t.endswith(":mem3.0:disk-") for t in tokens)
 
 
 def test_the_probe_wakes_again_for_the_same_reading_in_a_later_tight_period(monkeypatch):

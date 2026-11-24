@@ -20,6 +20,7 @@ import os
 import string
 from typing import Any, cast
 
+from kiro_crew.acp.kas_deny_alternatives import top_level_branches
 from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
 from kiro_crew.acp.kas_permissions import (
     _MAX_PATTERN_LENGTH,
@@ -372,11 +373,16 @@ def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:
     return list(dict.fromkeys(out))[:_MAX_DENIES]
 
 
-def denied_command_items(tools_settings: Any, policy: Any = None) -> list[dict[str, Any]]:
+def denied_command_items(
+    tools_settings: Any, policy: Any = None, *, top_level_split_carries: bool = True
+) -> list[dict[str, Any]]:
     """Uncarried denies with raw values and classification separate from display text.
 
     ``whole`` names a malformed list; ``past_bound`` distinguishes a readable
-    entry beyond the record limit from one the gate can actually check.
+    entry beyond the record limit from one the gate can actually check. With
+    *top_level_split_carries* false, an entry KAS receives only as the branches of
+    a top-level ``|`` (``kas_deny_alternatives.top_level_branches``) counts as not
+    carried, so a Bot worker keeps holding its shell for it.
     """
     out: list[dict[str, Any]] = []
     if not isinstance(tools_settings, dict):
@@ -404,7 +410,11 @@ def denied_command_items(tools_settings: Any, policy: Any = None) -> list[dict[s
             past = readable and raw not in kept and len(kept) >= _MAX_DENIES
             if readable and not past:
                 kept.add(raw)
-            if not (isinstance(raw, str) and shell_deny_carried(raw, globs)):
+            if not (
+                isinstance(raw, str)
+                and shell_deny_carried(raw, globs)
+                and (top_level_split_carries or len(top_level_branches(raw.strip())) == 1)
+            ):
                 out.append(
                     dict(
                         key=f"{key}.deniedCommands",
@@ -617,7 +627,7 @@ def unjudged_denied_commands(
     return list(
         dict.fromkeys(
             deny_entry_text(item)
-            for item in denied_command_items(settings, policy)
+            for item in denied_command_items(settings, policy, top_level_split_carries=False)
             if item["conditional"] is conditional
         )
     )
@@ -629,13 +639,17 @@ def with_unjudged_denies(
     """Record structured denies for the Bot worker, never on the KAS wire.
 
     Conditional entries use the refusal row's shared judge; other entries hold
-    every non-read-only command. Authored text never carries classification.
+    every non-read-only command. Authored text never carries classification. A
+    top-level ``a|b`` holds even though its branches travel: their globs are
+    narrower than the entry's own regex, which anchors only its outer ends.
     """
     out: list[dict[str, Any]] = []
     for entry in custom_agents:
         if isinstance(entry, dict) and entry.get("id") == agent_id:
             settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
-            unjudged = denied_command_items(settings, entry.get("permissions"))
+            unjudged = denied_command_items(
+                settings, entry.get("permissions"), top_level_split_carries=False
+            )
             if unjudged:
                 entry = {**entry, CREW_UNJUDGED_DENIES_KEY: unjudged}
         out.append(entry)

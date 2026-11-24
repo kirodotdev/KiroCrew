@@ -860,6 +860,20 @@ describe('sseSubagentDone — requestedModel threading (#5326)', () => {
     expect(store.getState().chat.subagents.usage.credits).toBe(1.25)
   })
 
+  it('stores a finite non-negative terminal dollar cost', () => {
+    const store = makeDoneStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentDone({
+      slot: 'active', id: 'cost', elapsed: 12, credits: 0, cost_usd: 0.0123, outcome: 'completed',
+    }))
+    expect(store.getState().chat.subagents.cost.costUsd).toBe(0.0123)
+
+    store.dispatch(sseSubagentDone({
+      slot: 'active', id: 'cost', elapsed: 13, credits: 0, cost_usd: Number.NaN, outcome: 'failed',
+    }))
+    expect(store.getState().chat.subagents.cost.costUsd).toBe(0.0123)
+  })
+
   it('does not clobber an existing requestedModel when the done frame omits it', () => {
     const store = makeDoneStore()
     store.dispatch(setActiveSlot('active'))

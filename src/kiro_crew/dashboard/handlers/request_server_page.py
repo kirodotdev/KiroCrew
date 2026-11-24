@@ -23,6 +23,7 @@ from kiro_crew.change_card_mcp_server import (
     ACTIONS,
     KIND_MCP_SERVER,
     OPTION_USE_NOW,
+    PARAM_TARGET,
     PARAM_USES_CHAT_FOLDER,
 )
 from kiro_crew.dashboard.handlers.guide import _audit, _deny
@@ -179,7 +180,7 @@ async def request_page_change(
         "server": body.get("server"),
         OPTION_USE_NOW: True,
     }
-    for key in ("entry", PARAM_USES_CHAT_FOLDER):
+    for key in ("entry", PARAM_USES_CHAT_FOLDER, PARAM_TARGET):
         if key in body:
             params[key] = body[key]
     return await propose_for_caller(

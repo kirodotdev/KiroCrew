@@ -1,8 +1,8 @@
 """KAS projection: a stdio MCP server gets the gateway's Kerberos and ssh-agent pointers.
 
 kiro-cli's MCP children inherit its environment, so they see the ``KRB5CCNAME`` and
-``SSH_AUTH_SOCK`` the gateway armed for it. KAS starts a stdio server with a fixed
-minimal environment instead, so the projection hands the server the same two
+``SSH_AUTH_SOCK`` the gateway armed for it. KAS hands a stdio server its own
+environment, whatever that holds; the projection also hands the server the same two
 pointers through Crew's launcher (``kiro_crew.kas_env_shim``) and its owner-only
 snapshot. These tests pin that both pointers reach the server's process and never
 the wire, that the socket follows the KAS spawn's own forward verdict, that a
@@ -21,7 +21,7 @@ import sys
 
 import pytest
 from kas_agents_helpers import _spec
-from test_kas_env_launch import _run_entry, _snapshot, _wire_text
+from test_kas_env_launch import _ENV_SERVER, _run_entry, _snapshot, _wire_text
 
 from kiro_crew import env as env_mod
 from kiro_crew import kas_env_shim, platform_compat, sandbox
@@ -35,18 +35,11 @@ CACHE_LEAF = "krb5cc_kas-auth-4242"
 #: The real relay, read at import, before the conftest floor pins it empty.
 _REAL_INHERITED_AUTH_ENV = kas_env_launch.inherited_auth_env
 
-#: A stdio MCP server that answers ``initialize`` and one ``tools/call`` with the
-#: two pointers it sees, then exits.
-_FAKE_SERVER = r"""
-import json, os, sys
-for line in sys.stdin:
-    msg = json.loads(line)
-    if msg.get("method") == "tools/call":
-        seen = {k: os.environ.get(k, "<missing>") for k in ("KRB5CCNAME", "SSH_AUTH_SOCK")}
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": seen}), flush=True)
-        break
-    print(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": {}}), flush=True)
-"""
+
+#: Many cases here start a real interpreter as the stdio server (`_run_entry`); the
+#: group test_kas_env_launch.py, whose launcher this module shares, also uses keeps
+#: those cold starts on one xdist worker, in sequence.
+pytestmark = pytest.mark.xdist_group("kas_env_launch_real_child")
 
 
 @pytest.fixture
@@ -60,7 +53,7 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture
 def script(tmp_path):
     path = tmp_path / "fake_auth_server.py"
-    path.write_text(_FAKE_SERVER, encoding="utf-8")
+    path.write_text(_ENV_SERVER, encoding="utf-8")
     return path
 
 
@@ -92,7 +85,8 @@ def relay(tmp_path, monkeypatch):
 
 
 def _bare(script) -> dict:
-    return {"command": sys.executable, "args": [str(script)]}
+    """A server that reports the two pointers it sees (``None`` when unset)."""
+    return {"command": sys.executable, "args": [str(script), "KRB5CCNAME", "SSH_AUTH_SOCK"]}
 
 
 def _project(
@@ -136,7 +130,7 @@ class TestProjection:
         entry = launched["mcpServers"]["plain"]
         assert _snapshot_env(home, entry) == {"KRB5CCNAME": relay.ccache}
         assert relay.verdicts == [], "the verdict is never re-derived"
-        assert _seen(entry)["SSH_AUTH_SOCK"] == "<missing>"
+        assert _seen(entry)["SSH_AUTH_SOCK"] is None
 
     def test_a_malformed_env_stays_reported_when_only_pointers_launch_it(self, home, script, relay):
         withheld: dict = {}
@@ -192,7 +186,7 @@ class TestProjection:
         monkeypatch.setattr(kas_env_launch, "atomic_write", boom)
         launched = _project({"plain": _bare(script)})["mcpServers"]["plain"]
         assert launched == _bare(script), "it starts as it does without the pointers"
-        assert _seen(launched) == {"KRB5CCNAME": "<missing>", "SSH_AUTH_SOCK": "<missing>"}
+        assert _seen(launched) == {"KRB5CCNAME": None, "SSH_AUTH_SOCK": None}
 
     def test_an_unwritable_snapshot_still_refuses_a_server_with_withheld_env(
         self, home, script, relay, monkeypatch

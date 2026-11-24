@@ -1,14 +1,15 @@
 """``kirocrew memory import-text``: save facts from a plain text or Markdown file.
 
-Reads one fact per line or bullet, lists the facts the default store does not hold and
-the owner has not forgotten, and writes only the confirmed ones through
-``VectorMemoryStore.set_semantic_if_absent``. The key is a digest of the fact, so a second
+Reads one fact per line or bullet, lists the facts the store (the default one, or the
+``--store`` the owner names) does not hold and the owner has not forgotten, and writes only
+the confirmed ones through ``VectorMemoryStore.set_semantic_if_absent``. The key is a digest of the fact, so a second
 run is a no-op. No network call, no model call.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import sys
@@ -33,7 +34,7 @@ _BULLETS = ("- ", "* ", "+ ", "\u2022 ")
 
 
 def _fact_from_line(raw: str) -> str:
-    """The fact a line states, or ``""`` for a blank, heading, fence or label line."""
+    """The fact a line states, or ``""`` for a blank, heading, fence, label or separator line."""
     line = raw.strip()
     if line.startswith(("#", "```", "---")) or line.endswith(":"):
         return ""
@@ -46,7 +47,9 @@ def _fact_from_line(raw: str) -> str:
         head, _, rest = line.partition(" ")
         if head[:-1].isdigit() and head[-1:] in (".", ")"):
             line = rest.strip()
-    return line
+    # A rule (``***``), a setext underline (``=====``) or a table divider (``|---|---|``)
+    # holds no letter or digit and states nothing.
+    return line if any(ch.isalnum() for ch in line) else ""
 
 
 def normalize(fact: str) -> str:
@@ -128,14 +131,108 @@ def _choose(count: int, args: argparse.Namespace) -> list[int] | None:
     return chosen or None
 
 
+def _admit(cfg: Any, store_name: str) -> Path:
+    """The admitted database path for *store_name*, or exit 1 after the refusal is printed.
+
+    The checks ``memory import --store`` makes: declared and present, not a private V2
+    store, and a named store without its database is created only when a fact is saved.
+    """
+    from kiro_crew.cli_commands_memory import _admitted_store_path, _refuse_v2_import_destination
+
+    db_path = _admitted_store_path(store_name, cfg, may_create=True)
+    if db_path is None:
+        sys.exit(1)
+    _refuse_v2_import_destination(store_name)
+    return db_path
+
+
+def _open(cfg: Any, store_name: str, db_path: Path) -> VectorMemoryStore:
+    from kiro_crew.vector_memory import declared_store
+
+    return declared_store(
+        db_path, store_id=store_name, config=cfg, embedding_dim=cfg.memory.embedding_dim
+    )
+
+
+def _hold(store_name: str) -> contextlib.AbstractContextManager[None]:
+    """The hold `memory import` takes on a named store, from admission through cleanup."""
+    from kiro_crew.memory_stores import memory_store_namespace_lock, named_store_or_empty
+
+    if named_store_or_empty(store_name):
+        return memory_store_namespace_lock()
+    return contextlib.nullcontext()
+
+
+def _offer(cfg: Any, store_name: str, name: str, facts: list[str], skipped: int) -> list[str]:
+    """Print what *facts* would add to the store, and return the facts offered."""
+    held: set[str] = set()
+    forgotten: set[str] = set()
+    # The whole read is one hold: an import that creates the database and removes it
+    # empty finishes before the check or after the close, so the open never recreates it.
+    with _hold(store_name):
+        db_path = _admit(cfg, store_name)
+        # Only an existing file is opened: opening creates it, and a preview leaves none.
+        if db_path.exists():
+            store = _open(cfg, store_name, db_path)
+            try:
+                store.init()
+                held, forgotten = _held_facts(store.get_all_semantic()), _forgotten_keys(store)
+            finally:
+                store.close()
+    new = [fact for fact in facts if normalize(fact) not in held]
+    fresh = [fact for fact in new if fact_key(fact) not in forgotten]
+    proposed, over = fresh[:MAX_FACTS], len(fresh) - MAX_FACTS
+    more = f" {over} more over the {MAX_FACTS} limit; run again." if over > 0 else ""
+    print(
+        f"{len(proposed)} new fact(s) in {name}; {len(facts) - len(new)} already known, "
+        f"{len(new) - len(fresh)} previously forgotten, {skipped} skipped.{more}"
+    )
+    for number, fact in enumerate(proposed, 1):
+        print(f"  {number}. {safe_terminal_line(fact)}")
+    return proposed
+
+
+def _save(cfg: Any, store_name: str, name: str, facts: list[str]) -> list[str]:
+    """Write *facts* if absent and return each outcome; the store is admitted again first."""
+    from kiro_crew.cli_commands_memory import _settle_created_database
+    from kiro_crew.memory_stores import named_store_or_empty
+
+    outcomes: list[str] = []
+    # The owner may have answered minutes after the preview. A named store is checked
+    # again under the hold, so a retirement, replacement or allocation since then is not
+    # written into.
+    with _hold(store_name):
+        db_path = _admit(cfg, store_name)
+        created = bool(named_store_or_empty(store_name)) and not db_path.exists()
+        sidecars = set(db_path.parent.glob(db_path.name + "-*")) if created else set()
+        landed: bool | None = False
+        store = _open(cfg, store_name, db_path)
+        try:
+            store.init()
+            landed = None
+            for fact in facts:
+                outcomes.append(store.set_semantic_if_absent(fact_key(fact), fact, 1.0, SOURCE))
+            landed = "imported" in outcomes
+        finally:
+            store.close()
+            # A database made for facts that all failed would mask a lost store.
+            _settle_created_database(
+                db_path,
+                store_name,
+                name,
+                created=created,
+                rows_landed=landed,
+                preexisting_sidecars=sidecars,
+            )
+    return outcomes
+
+
 def run(args: argparse.Namespace) -> None:
     """Run ``kirocrew memory import-text`` for *args*; a refusal exits 1 on stderr."""
-    from kiro_crew.cli_commands_memory import _admitted_store_path
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.hooks import safe_read_file
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
     from kiro_crew.user_json import strip_utf8_bom
-    from kiro_crew.vector_memory import declared_store
 
     path = Path(args.file)
     name = safe_terminal_line(path.name)
@@ -157,46 +254,21 @@ def run(args: argparse.Namespace) -> None:
         print(f"Error: no facts found in {name}; nothing saved.", file=sys.stderr)
         sys.exit(1)
     cfg = KiroCrewConfig.load()
-    db_path = _admitted_store_path(DEFAULT_MEMORY_STORE, cfg, may_create=True)
-    if db_path is None:
-        sys.exit(1)
-    store = declared_store(
-        db_path, store_id=DEFAULT_MEMORY_STORE, config=cfg, embedding_dim=cfg.memory.embedding_dim
-    )
-    outcomes: list[str] = []
+    # Defaulted only when the flag is ABSENT, as `memory import` does: `--store ''` names
+    # no store, and an `or` would turn it into a write to the default one.
+    store_name = getattr(args, "store", None)
+    if store_name is None:
+        store_name = DEFAULT_MEMORY_STORE
+    proposed = _offer(cfg, store_name, name, facts, skipped)
     try:
-        # Only an existing file is opened: opening creates it, and a preview leaves none.
-        opened = db_path.exists()
-        held: set[str] = set()
-        forgotten: set[str] = set()
-        if opened:
-            store.init()
-            held, forgotten = _held_facts(store.get_all_semantic()), _forgotten_keys(store)
-        new = [fact for fact in facts if normalize(fact) not in held]
-        fresh = [fact for fact in new if fact_key(fact) not in forgotten]
-        proposed, over = fresh[:MAX_FACTS], len(fresh) - MAX_FACTS
-        more = f" {over} more over the {MAX_FACTS} limit; run again." if over > 0 else ""
-        print(
-            f"{len(proposed)} new fact(s) in {name}; {len(facts) - len(new)} already known, "
-            f"{len(new) - len(fresh)} previously forgotten, {skipped} skipped.{more}"
-        )
-        for number, fact in enumerate(proposed, 1):
-            print(f"  {number}. {safe_terminal_line(fact)}")
-        try:
-            chosen = _choose(len(proposed), args) if proposed else None
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-        if not chosen:
-            print("Nothing saved.")
-            return
-        if not opened:
-            store.init()
-        for number in chosen:
-            fact = proposed[number - 1]
-            outcomes.append(store.set_semantic_if_absent(fact_key(fact), fact, 1.0, SOURCE))
-    finally:
-        store.close()
+        chosen = _choose(len(proposed), args) if proposed else None
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not chosen:
+        print("Nothing saved.")
+        return
+    outcomes = _save(cfg, store_name, name, [proposed[number - 1] for number in chosen])
     saved = outcomes.count("imported")
     print(f"Saved {saved} fact(s); {outcomes.count('existing')} already present.")
     if saved:

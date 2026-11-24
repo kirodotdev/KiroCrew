@@ -2,11 +2,12 @@
 //
 // Contract under test:
 // - sharing a server that is not Kiro Crew's own and has no "does not use the
-//   folder" answer asks first; "No" records the answer and then shares, pinned
-//   to the launch read as usual; "Not sure" records "uses the folder" and
-//   shares nothing
+//   folder" answer asks first; "Share across chats" records the answer and then
+//   shares, pinned to the launch read as usual; "Keep one per chat" records
+//   "uses the folder" and shares nothing
 // - a server shared before the question existed keeps its switch, and its row
-//   asks once; "Yes" takes it off sharing in the same request
+//   asks once; "Keep one per chat" takes it off sharing in the same request
+// - the dialog opens with focus on "Keep one per chat", the safe choice
 // - Kiro Crew's own servers and servers already answered "No" are never asked
 // - the bulk share never offers a server that waits for the answer
 //
@@ -78,7 +79,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('the working-folder question', () => {
-  it('asks before sharing, and "No" records the answer and then shares', async () => {
+  it('asks before sharing, and "Share across chats" records the answer and then shares', async () => {
     serve({})
     const answer = vi.spyOn(api, 'mcpGatewaySetCwdUse').mockResolvedValue({ ok: true, name: 'alpha-mcp' } as never)
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
@@ -88,10 +89,16 @@ describe('the working-folder question', () => {
 
     const dialog = await screen.findByRole('dialog', {}, { timeout: 5000 })
     expect(dialog.textContent).toContain(M('cwd_question_title', { name: 'alpha-mcp' }))
-    expect(dialog.textContent).toContain(M('cwd_question_why'))
+    expect(dialog.textContent).toContain(M('cwd_question_help'))
+    expect(dialog.textContent).toContain(M('cwd_question_not_sure'))
+    // Opening focus is on the safe choice, so Enter never shares by accident.
+    await waitFor(
+      () => expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: M('cwd_question_keep') })),
+      { timeout: 5000 },
+    )
     expect(api.mcpGatewayLaunchPreview).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(M('cwd_question_no')) }))
+    fireEvent.click(screen.getByRole('button', { name: M('cwd_question_share') }))
 
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'alpha-identity'), { timeout: 5000 })
     expect(answer).toHaveBeenCalledWith('alpha-mcp', 'not_used')
@@ -117,14 +124,14 @@ describe('the working-folder question', () => {
     expect(setStub).not.toHaveBeenCalled()
   })
 
-  it('"Not sure" keeps the server in each chat and shares nothing', async () => {
+  it('"Keep one per chat" keeps the server in each chat and shares nothing', async () => {
     serve({})
     const answer = vi.spyOn(api, 'mcpGatewaySetCwdUse').mockResolvedValue({ ok: true, name: 'alpha-mcp' } as never)
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
     fireEvent.click(await findSwitch())
-    fireEvent.click(await screen.findByRole('button', { name: new RegExp(M('cwd_question_unsure')) }))
+    fireEvent.click(await screen.findByRole('button', { name: M('cwd_question_keep') }))
 
     await waitFor(() => expect(answer).toHaveBeenCalledWith('alpha-mcp', 'uses_cwd'), { timeout: 5000 })
     await screen.findByText(M('cwd_kept_per_chat', { name: 'alpha-mcp' }), {}, { timeout: 5000 })
@@ -132,7 +139,7 @@ describe('the working-folder question', () => {
     expect(api.mcpGatewayLaunchPreview).not.toHaveBeenCalled()
   })
 
-  it('asks once on a server shared before the question, and "Yes" stops sharing it', async () => {
+  it('asks once on a server shared before the question, and "Keep one per chat" stops sharing it', async () => {
     serve({ stub: true, in_allowlist: true })
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: false } as never)
 
@@ -140,7 +147,7 @@ describe('the working-folder question', () => {
     expect((await findSwitch()).getAttribute('aria-checked')).toBe('true')
     screen.getByText(M('cwd_unanswered_hint'))
     fireEvent.click(screen.getByRole('button', { name: `${M('cwd_unanswered_answer')} alpha-mcp` }))
-    fireEvent.click(await screen.findByRole('button', { name: new RegExp(M('cwd_question_yes')) }))
+    fireEvent.click(await screen.findByRole('button', { name: M('cwd_question_keep') }))
 
     await waitFor(
       () => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined, false, 'uses_cwd'),
@@ -148,7 +155,7 @@ describe('the working-folder question', () => {
     )
   })
 
-  it('asks before approving an updated launch of an unanswered server, and "No" approves with the answer', async () => {
+  it('asks before approving an updated launch of an unanswered server, and "Share across chats" approves with the answer', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue({
       enabled: true, stub: ['alpha-mcp'], stub_count: 1, running: true, ping_ok: true, supported: true,
       launch_refused: {
@@ -169,7 +176,7 @@ describe('the working-folder question', () => {
     mount()
     fireEvent.click(await screen.findByRole('button', { name: `${M('new_command_button')} alpha-mcp` }, { timeout: 5000 }))
     expect(setStub).not.toHaveBeenCalled()
-    fireEvent.click(await screen.findByRole('button', { name: new RegExp(M('cwd_question_no')) }))
+    fireEvent.click(await screen.findByRole('button', { name: M('cwd_question_share') }))
 
     await waitFor(
       () => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b', false, 'not_used'),

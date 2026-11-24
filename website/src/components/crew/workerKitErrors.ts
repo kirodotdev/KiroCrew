@@ -1,6 +1,7 @@
 /**
- * The words a worker-kit failure shows. The worker-kit routes refuse with a
- * machine `code` (`stale_revision`, `invalid_spec`, …) that is also their
+ * The words a failure of a Bot's worker-kit or capabilities routes shows (Add
+ * abilities, and the Abilities pane's load and Remove errors). Both refuse with
+ * a machine `code` (`stale_revision`, `invalid_spec`, …) that is also their
  * `error`, so the raw message is an identifier, never a sentence. Each known
  * code reads as a localized sentence saying what to do; any other failure (an
  * owner-only refusal, a dropped connection) keeps the message the transport

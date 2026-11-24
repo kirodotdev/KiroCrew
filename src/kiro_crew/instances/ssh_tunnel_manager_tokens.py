@@ -208,7 +208,7 @@ async def mint_embed_token(
     hop = int(st.local_port)
     epoch = self._tunnel_epoch.get(instance_id, 0)
     try:
-        params = self._resolve_transport(inst, parent)
+        params = self._resolve_transport(self._with_dialled_target(inst), parent)
     except (SshValidationError, SsmValidationError) as e:
         return False, {
             "error": f"invalid {inst.connection_method} settings: {e}",
@@ -930,7 +930,9 @@ async def _refresh_token_once(self: SshTunnelManager, instance_id: str) -> bool:
     # the await, compared after.
     epoch = self._tunnel_epoch.get(instance_id, 0)
     try:
-        params = self._resolve_transport(inst, await self._with_parent(inst))
+        params = self._resolve_transport(
+            self._with_dialled_target(inst), await self._with_parent(inst)
+        )
     except (SshValidationError, SsmValidationError) as e:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the format names a token, its arguments never carry one
         logger.warning("Token refresh aborted for %s: %s", instance_id, e)

@@ -54,6 +54,30 @@ def mcp_entry_is_registry_governed(entry: Any) -> bool:
     return entry.get("type") == MCP_REGISTRY_TYPE
 
 
+def mcp_entry_names_launch(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry launches its server: a non-empty ``command`` or ``url``.
+
+    The MCP page writes a placeholder (``{}``, ``{"disabled": true}``,
+    ``{"disabledTools": [...]}``) into a scope file for a server that file does not
+    name. It holds that server's mute and per-tool disables and starts nothing. A
+    registry pointer launches nothing here either: the admin's catalog does
+    (:func:`mcp_entry_is_registry_governed`).
+    """
+    if not isinstance(entry, Mapping):
+        return False
+    return any(isinstance(entry.get(key), str) and entry.get(key) for key in ("command", "url"))
+
+
+def mcp_entry_installs_server(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry is the user installing its server, not a placeholder.
+
+    An entry that launches the server (:func:`mcp_entry_names_launch`) or points at
+    the admin's catalog for it (a registry pointer) installs it, and earns the
+    grant an installed server gets. The MCP page's placeholder does neither.
+    """
+    return mcp_entry_names_launch(entry) or mcp_entry_is_registry_governed(entry)
+
+
 #: ``type`` values that name a remote transport, as the agent spec schema and the
 #: session projections spell them.
 MCP_REMOTE_TRANSPORT_TYPES = frozenset({"http", "sse"})

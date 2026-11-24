@@ -489,6 +489,9 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
     "ACP_BACKENDS_CWD_BOUND_SESSIONS": "standard ACP: whether session/load is sent for a moved cwd",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
+    "ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY": (
+        "Crew-side: which servers Crew puts in the standard session/new array"
+    ),
     "ACP_BACKENDS_NO_MCP_INIT_FRAMES": "Crew-side: how long Crew drains after session/new",
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
@@ -541,6 +544,11 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
         "Crew-side: fail-closed list of backends whose sub-agent calls the direct "
         "client's permission parser is proven to tell apart; a missing member only "
         "loses the deny-rule override"
+    ),
+    "ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD": (
+        "Crew-side: fail-closed list of backends where the dashboard's native-crew "
+        "auto-approve rung may read a request as a sub-agent's; a missing member "
+        "only shows the approval card"
     ),
     "ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED": (
         "Crew-side: fail-closed list of backends whose sub-agent calls the shared "

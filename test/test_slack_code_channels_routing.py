@@ -24,6 +24,7 @@ from kiro_crew.slack import events as _slack_events  # noqa: F401
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as binding_mod
 from kiro_crew.slack.code_channels import routing
+from kiro_crew.slack.code_channels import tools as code_tools
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.creation import ORIGIN_CONTEXT_BLOCK_ID, session_id_for
 from kiro_crew.slack.code_channels.routing import Gate
@@ -1243,6 +1244,9 @@ async def test_the_first_message_is_the_request_alone_with_the_framing_as_contex
     [entry] = queued
     assert entry["source"] == routing.SEED_CONTEXT_SOURCE
     assert entry["content"].startswith("[Slack code channel]")
+    # A preview request goes to an html view, not an upload or a screenshot.
+    assert f"call {code_tools.SET_VIEW} with type html" in entry["content"]
+    assert "self-contained HTML document" in entry["content"]
 
 
 async def test_a_binding_that_cannot_be_saved_leaves_no_session_behind(

@@ -333,7 +333,9 @@ class WorkLedgerProbe(irq.Probe):
         new level wakes once. With no level seen yet, ``ample`` is the baseline and
         wakes nobody. A same-level step of decline (``worsened``, rfc-resource-control.md
         §4.2) wakes once per token and is charged to the posture rate entry like a
-        level change, so a flapping value is bounded by its hourly budget. A growth
+        level change. That hourly budget is one wake per patrol tick, so it caps a
+        flapping value's cost without quieting it; the notifier's step reference,
+        which a recovery never raises, is what keeps a swing from re-waking. A growth
         step of one open item's worker tree (``worker_growth``, §4.3) wakes once per
         step and is charged to THAT item's budget.
         """

@@ -266,7 +266,9 @@ where the gateway already searches, start a new chat: the next default-agent
 session start rebuilds the spec with the server. A program found only through the
 server's own `env.PATH`, or under a Node version installed after the gateway
 started, needs a gateway restart. The agent's `diagnose_settings` check names a
-server dropped this way, so you can ask the agent why a server is missing.
+server dropped this way, so you can ask the agent why a server is missing. A
+server whose command is `npx`, `npm` or `node` needs Node.js: install Node.js
+22.12 or later, then restart the gateway.
 
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but

@@ -24,6 +24,16 @@ indistinguishable from the user having turned the server off, and a later probe
 success could silently re-enable something they had switched off by hand. The
 count lives only in this store, so clearing it is one counter reset.
 
+A streak belongs to one LAUNCH: the command, args and non-secret env a local
+server starts with, or a remote server's url and header names, hashed the way the
+probe cache keys its entries (``mcp_discovery_probe_state._probe_identity``). Each
+record keeps the launch its failures were seen under, a failure under a different
+launch starts counting again, and ``probe_all`` holds a server back only while its
+configured launch is still the one that failed. Editing the command, or an update
+that moves it to a new versioned path, is therefore probed again on the next pass,
+and its first good handshake deletes the record. Only the hash is stored, so the
+file never holds a command line or url that could carry a credential.
+
 Why a counter and not a single failure: a probe spawns a real process and one
 failure is routinely transient (a cold npm cache, a laptop that just woke, a
 registry blip). The claim being made is that a server is *consistently*
@@ -45,7 +55,7 @@ import stat
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
@@ -67,6 +77,11 @@ _ERROR_MAX_CHARS = 400
 # The probe status is one of a small set of known words; the bound is only here so
 # a hand-written store cannot put an unbounded string on the wire.
 _STATUS_MAX_CHARS = 40
+
+# Bound for the stored launch hash. ``_probe_identity`` produces well under this
+# (two SHA-256 hex digests and a prefix), so a real value is never cut; a longer
+# string came from a hand-edit and, cut or not, matches no configured launch.
+_LAUNCH_MAX_CHARS = 200
 
 # Ceiling for the stored counter. It exists to keep the value SERIALIZABLE, not to
 # express a policy: an int past ``sys.get_int_max_str_digits()`` (4300 by default
@@ -146,10 +161,14 @@ def _sanitize(rec: dict[str, Any]) -> dict[str, Any]:
         fails = 0
     status = rec.get("last_status")
     error = rec.get("last_error")
+    launch = rec.get("launch")
     return {
         "fails": min(fails, _FAILS_MAX),
         "last_status": status[:_STATUS_MAX_CHARS] if isinstance(status, str) else "",
         "last_error": error[:_ERROR_MAX_CHARS] if isinstance(error, str) else "",
+        # "" for a record that names no launch, which matches no configured server,
+        # so ``probe_all`` probes it again rather than holding it on a guess.
+        "launch": launch[:_LAUNCH_MAX_CHARS] if isinstance(launch, str) else "",
         "last_failed_at": _as_time(rec.get("last_failed_at")),
         # 0.0 and absent mean the same thing everywhere this is read ("has not
         # crossed"), so normalising to a float loses nothing and keeps the record
@@ -350,13 +369,21 @@ def _save(servers: dict[str, dict[str, Any]]) -> None:
     atomic_write(store_path(), json.dumps(payload, indent=2) + "\n")
 
 
-def record_verdicts(verdicts: Iterable[tuple[str, str, str]]) -> None:
+def record_verdicts(
+    verdicts: Iterable[tuple[str, str, str]], launches: Mapping[str, str] | None = None
+) -> None:
     """Fold ``(name, status, error)`` triples into the store; one write.
 
     ``ok`` deletes a server's record outright rather than decrementing it -- the
     claim being made is "consistently unreachable", and one good handshake
     disproves it. A status outside ``FAILING_STATUSES`` and not ``ok`` carries no
     verdict and is skipped, so it neither advances nor clears the count.
+
+    ``launches`` maps a name to the launch its verdict was probed under (see the
+    module docstring). A failure under a launch other than the stored one starts
+    a new streak, because failures of a replaced command say nothing about the
+    command configured now. A name it does not cover records the launch
+    ``""``, which ``probe_all`` never holds back.
 
     Returns nothing, and changes no configuration. The crossing is acted on by
     ``mcp_discovery.probe_all``, which stops spawning a crossed server's probe
@@ -386,7 +413,12 @@ def record_verdicts(verdicts: Iterable[tuple[str, str, str]]) -> None:
                 continue
             if status not in FAILING_STATUSES:
                 continue
+            launch = str((launches or {}).get(name) or "")[:_LAUNCH_MAX_CHARS]
             rec = servers.setdefault(name, {})
+            if rec.get("launch", "") != launch:
+                # A different launch starts a new streak, crossing marker included.
+                rec.clear()
+            rec["launch"] = launch
             # ``fails`` is already a bounded non-negative int for anything that
             # came off disk (see ``_sanitize``); the guard here covers a record
             # this loop just created.
@@ -425,6 +457,9 @@ def _state_from(rec: dict[str, Any], limit: int) -> dict[str, Any]:
         "lastStatus": rec.get("last_status", ""),
         "lastError": rec.get("last_error", ""),
         "since": rec.get("crossed_at") or 0,
+        # For ``mcp_discovery._spawn_excluded`` to compare with the configured
+        # launch; ``_annotate_quarantine`` does not put it on the wire.
+        "launch": rec.get("launch", ""),
     }
 
 

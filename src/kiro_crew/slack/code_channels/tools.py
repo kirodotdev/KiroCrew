@@ -62,7 +62,7 @@ from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.security import refuses, scan_exfiltration_urls
-from kiro_crew.slack.code_channels import surface
+from kiro_crew.slack.code_channels import surface, view_css
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.models import (
     MAX_TITLE_CHARS,
@@ -126,7 +126,15 @@ _ICONS = frozenset(
 OFF_TEXT = "Error: Slack code channels are off on this Kiro Crew, so this tool does nothing."
 NOT_BOUND_TEXT = (
     "Error: this session is not bound to a Slack code channel. The code-channel tools act "
-    "only on the channel the calling session runs in, so there is nothing to act on here."
+    "only on the channel the calling session runs in, so there is nothing to act on here. "
+    "No tool opens a code channel: Kiro Crew opens one by itself when someone asks it for "
+    "code work in Slack (the owner, or a person the owner shares Slack access with) and "
+    "it judges the work needs its own channel, or when they ask for a code channel. Do "
+    "the work here, and tell the person it is happening here. To get a code channel, they "
+    "can ask for it again in this thread (in a DM, mention Kiro Crew): that message is "
+    "judged again, and a channel it opens starts with this thread. A new top-level "
+    "message starts without this thread. Slack can't open a code channel from a Slack "
+    "Connect conversation. Never promise to post into a code channel that hasn't opened."
 )
 ARCHIVED_TEXT = "Error: this session's code channel is archived."
 STOPPED_TEXT = (
@@ -444,18 +452,10 @@ _URL_LEAD = re.compile(r"^[\x00-\x20]+")
 #: the first ``>``; ``HTMLParser`` would run it to ``]]>``.
 _MARKED_SECTION = re.compile(r"<!\[[^>]*(?:>|\Z)")
 _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
-_CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.S)
-#: CSS that can render author text or load another resource. With no string
-#: token, ``attr()``, ``@import`` or ``@counter-style``, no property (``content``,
-#: ``quotes``, ``list-style-type``, ...) has author text to show.
-_CSS_AUTHOR_TEXT = re.compile(
-    r"[\"']|(?<![-\w])attr\s*\(|@import|@counter-style|@font-face", re.IGNORECASE
-)
-_CSS_URL = re.compile(r"(?<![-\w])(?:url|src)\s*\(([^)]*)\)?", re.IGNORECASE)
 
 
-def _css_decoded(css: str, *, keep_comments: bool = False) -> str:
-    """*css* as a CSS parser reads it: escapes decoded, comments removed.
+def _css_decoded(css: str) -> str:
+    """*css* with its escapes decoded, comments kept (published all the same).
 
     Character references are not decoded: an HTML ``<style>`` never decodes them
     (foreign content, which does, is refused), and a ``style=`` value arrives
@@ -467,22 +467,7 @@ def _css_decoded(css: str, *, keep_comments: bool = False) -> str:
             return chr(point) if 0 < point <= 0x10FFFF else "\ufffd"
         return m.group(2)
 
-    decoded = _CSS_ESCAPE.sub(one, css)
-    return decoded if keep_comments else _CSS_COMMENT.sub(" ", decoded)
-
-
-def _css_refusal(css: str) -> str:
-    """Why *css* could show author text or load something (``""`` when it can't)."""
-    decoded = _css_decoded(css)
-    if _CSS_AUTHOR_TEXT.search(decoded):
-        return (
-            "an html view's CSS may not hold strings, attr(), @import, @counter-style "
-            "or @font-face"
-        )
-    for m in _CSS_URL.finditer(decoded):
-        if not _URL_NOISE.sub("", m.group(1)).strip().lower().startswith("https:"):
-            return "an html view's CSS may load only https: URLs"
-    return ""
+    return _CSS_ESCAPE.sub(one, css)
 
 
 def _is_data_url(key: str, value: str) -> bool:
@@ -511,6 +496,7 @@ class _ViewAudit(HTMLParser):
         self.shown: list[str] = []  # text and shown attribute text, in order
         self.values: list[str] = []  # every attribute value
         self.styles: list[str] = []  # <style> text and style= values
+        self.css: list[tuple[str, bool]] = []  # each sheet or style= value, and if inline
         self._in_style = False
         # In HTML content ``<![CDATA[`` is a bogus comment ending at ``>``. Newer
         # CPython releases read it as CDATA unless told otherwise; older ones
@@ -524,7 +510,10 @@ class _ViewAudit(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _REFUSED_ELEMENTS:
-            self._refuse(f"an html view may not use <{tag}> (embedded, foreign or linked content)")
+            self._refuse(
+                f"an html view may not use <{tag}> (embedded, foreign or linked content); "
+                "build the page from plain HTML elements and a <style> block"
+            )
         if tag == "style":
             self._in_style = True
         # Every value is screened, duplicates included (a browser keeps the first).
@@ -534,11 +523,17 @@ class _ViewAudit(HTMLParser):
             if key == "http-equiv" and value.strip().lower() == "refresh":
                 self._refuse("an html view may not redirect (meta refresh)")
             if _is_data_url(key, value):
-                self._refuse("an html view may not load a data: URL")
+                self._refuse(
+                    "an html view may not load a data: URL (the view loads nothing from "
+                    "outside the document); drop the image, or draw it with HTML and CSS"
+                )
             if key == "style":
                 self.styles.append(value)
+                self.css.append((value, True))
             if key in _SHOWN_ATTRS and value:
                 self.shown.append(value)
+        if tag == "style":  # after its own style=, so the sheet's text joins this entry
+            self.css.append(("", False))
 
     def parse_comment(self, i: int, report: int = 1) -> int:
         # Comments end where a browser ends them (``<!-->`` is empty), the same
@@ -567,6 +562,7 @@ class _ViewAudit(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_style:
             self.styles.append(data)
+            self.css[-1] = (self.css[-1][0] + data, False)  # one sheet, however it arrives
         else:
             self.shown.append(data)
 
@@ -582,18 +578,24 @@ def _audit_view(content: str, redacted: str) -> None:
     # values); the published document is what the value screen reads.
     if original.refusal:
         raise ArgumentError(f"{original.refusal}; nothing was published")
-    for css in original.styles:
-        why = _css_refusal(css)
+    # Both documents: a redaction marker must not change how the CSS reads.
+    for css, inline in original.css + published.css:
+        why = view_css.refusal(css, inline=inline)
         if why:
             raise ArgumentError(f"{why}; nothing was published")
     hidden = (
         "a credential or sensitive value is hidden in an attribute or CSS; nothing was published"
     )
     # Comments are kept for this screen: not shown, but published all the same.
-    for text in published.values + [
-        _css_decoded(css, keep_comments=True) for css in published.styles
-    ]:
-        if refuses(text, _redact_payload):
+    # Each CSS string is read again as a browser joins it (line continuations).
+    for text in (
+        published.values
+        + [_css_decoded(css) for css in published.styles]
+        + [value for css, _ in published.css for value in view_css.string_values(css)]
+    ):
+        # A URL parser drops every tab, LF and CR, so a value split by one
+        # (``\9 `` in CSS, ``&#9;`` in an attribute) loads whole.
+        if refuses(text, _redact_payload) or refuses(_URL_NOISE.sub("", text), _redact_payload):
             raise ArgumentError(hidden)
     _refuse_hidden_split(zip(_joined(original.shown), _joined(published.shown)))
 

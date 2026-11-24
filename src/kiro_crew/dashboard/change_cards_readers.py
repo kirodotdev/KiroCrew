@@ -1213,7 +1213,7 @@ async def _mcp_detail(params: dict[str, Any]) -> dict[str, Any]:
 
         registry = await asyncio.to_thread(_get_registry)
         provider = registry.get(params["provider"])
-        if provider is None or not provider.is_available():
+        if provider is None or not await asyncio.to_thread(provider.is_available):
             return {}
         detail = await asyncio.wait_for(provider.fetch_detail(params["id"]), timeout=8)
     except Exception:

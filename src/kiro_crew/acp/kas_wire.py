@@ -106,6 +106,11 @@ FIELD_CONVERSATION_SUMMARY = "conversationSummary"
 FIELD_CONTENT = "content"
 FIELD_PROMPT_TURN_SUMMARIES = "promptTurnSummaries"
 FIELD_AGENT_SUBTASK_ID = "agentSubtaskId"
+# A permission request's asker (:func:`requesting_subagent`).
+FIELD_REQUESTER = "requester"
+FIELD_SUBAGENT = "subagent"
+FIELD_AGENT_NAME = "agentName"
+FIELD_DEPTH = "depth"
 FIELD_PIPELINE = "pipeline"
 FIELD_STAGES = "stages"
 FIELD_UNIT = "unit"
@@ -129,6 +134,27 @@ def kiro_meta(update: dict) -> dict[str, Any] | None:
     meta = update.get(META_KEY)
     kiro = meta.get(KIRO_KEY) if isinstance(meta, dict) else None
     return kiro if isinstance(kiro, dict) else None
+
+
+def requesting_subagent(params: object) -> tuple[object, object] | None:
+    """The ``(name, depth)`` of the sub-agent a ``session/request_permission`` names, or ``None``.
+
+    The engine puts ``requester.subagent`` under the request's ``_meta.kiro`` when a
+    sub-agent raised it: ``agentName`` is the name it resolved that sub-agent's
+    definition by (:data:`FIELD_AGENT_NAME`) and ``depth`` how far under the
+    session's own agent it runs, 1 for one that agent started
+    (:data:`FIELD_DEPTH`). ``None`` when any hop is missing or not an object: the
+    session's own request, and every request of an engine that does not send the
+    field (0.66.117 and earlier do not; 0.66.119 does). The two values are returned
+    as the engine sent them, a missing one as ``None``; the reader checks their
+    types.
+    """
+    kiro = kiro_meta(params) if isinstance(params, dict) else None
+    requester = kiro.get(FIELD_REQUESTER) if kiro is not None else None
+    subagent = requester.get(FIELD_SUBAGENT) if isinstance(requester, dict) else None
+    if not isinstance(subagent, dict):
+        return None
+    return subagent.get(FIELD_AGENT_NAME), subagent.get(FIELD_DEPTH)
 
 
 def turn_boundary(update: object) -> tuple[str, str] | None:

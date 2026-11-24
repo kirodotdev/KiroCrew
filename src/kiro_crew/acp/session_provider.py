@@ -482,6 +482,7 @@ class AcpSessionProvider(LLMProvider):
     # Each reads the handle's field of the same name, ``""`` when it is not a str.
     kas_agent_prompt_notice = _handle_str("kas_agent_prompt_notice")
     kas_bundle_engine_version = _handle_str("kas_bundle_engine_version")
+    kas_relay_engine_version = _handle_str("kas_relay_engine_version")
     kas_untested_version_notice = _handle_str("kas_untested_version_notice")
     kas_engine_fallback_notice = _handle_str("kas_engine_fallback_notice")
     kas_telemetry_notice = _handle_str("kas_telemetry_notice")
@@ -1371,12 +1372,18 @@ class AcpSessionProvider(LLMProvider):
         on its own harness state (``ClaudeSharedSession``); every other session
         has none and reads ``""``, as ``LLMProvider`` does.
         """
+        return self._harness_state_text("settings_withheld_cause")
+
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """The clause for that withholding, off the same harness state, or ``""``."""
+        return self._harness_state_text("settings_withheld_reason", with_fix=with_fix)
+
+    def _harness_state_text(self, name: str, **kwargs: Any) -> str:
+        """The str this session's harness state answers to *name*, or ``""``."""
         handle = self._handle
         states = getattr(self._runtime, "_session_harness_states", None) or {}
-        read = getattr(
-            states.get(handle.session_id) if handle else None, "settings_withheld_cause", None
-        )
-        value = read() if callable(read) else ""
+        read = getattr(states.get(handle.session_id) if handle else None, name, None)
+        value = read(**kwargs) if callable(read) else ""
         return value if isinstance(value, str) else ""
 
     def advertised_commands(self) -> list[dict[str, str]]:

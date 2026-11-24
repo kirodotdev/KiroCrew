@@ -309,6 +309,53 @@ class TestBotMemory:
         assert posts[2].startswith("❌ This thread's memory belongs to Bot 'vault'"), posts
         assert _handler._thread_agents[_KEY] == "vault"
 
+    @pytest.mark.parametrize(
+        "moves",
+        [
+            ["!ta off"],
+            ["!ta reviewer"],
+            ["/agent reviewer"],
+            ["!bot off", "!ta off"],
+            ["!ta reviewer", "!bot off"],
+            ["!bot research", "!ta reviewer", "!ta off"],
+        ],
+    )
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_no_order_of_switches_moves_a_bound_thread_off_its_store(
+        self, vault, bots, audit, monkeypatch, moves, restart
+    ):
+        from kiro_crew.context import store_of_session
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.slack import thread_override_slots
+        from kiro_crew.slack.handler_runtime.inbound import _read_thread_overrides
+
+        monkeypatch.setattr(_handler, "_resolve_agent_name", lambda name, project=None: name)
+        log = ConversationLog()
+        _run(_first("!bot vault"), conversation_log=log)
+        if restart:
+            # A restart forgets every in-memory choice; the transcript and record remain.
+            _handler._thread_agents.clear()
+            _handler._hydrated_sessions.clear()
+            thread_override_slots.unpin(_KEY, "agent")
+            # The real hydration, which a fresh process runs on the thread's next message.
+            monkeypatch.setattr(
+                transport_dispatch, "_hydrate_thread_overrides", _handler._hydrate_thread_overrides
+            )
+        slack, sessions = _run(*(_reply(m) for m in moves), _reply("hello"), conversation_log=log)
+
+        refusals = [p for p in _posts(slack) if p.startswith("❌ This thread's memory belongs")]
+        assert len(refusals) == len(moves), _posts(slack)
+        assert store_of_session(log, _KEY) == vault
+        assert _read_thread_overrides(_KEY, log)[0] == "vault"
+        assert sessions.calls[-1][1].get("crew_agent") == "vault"
+        denied = [
+            c.kwargs
+            for c in audit.log_tool_invocation.call_args_list
+            if c.kwargs.get("outcome") == "agent_denied_memory_binding"
+        ]
+        assert len(denied) == len(moves), denied
+        assert all(d["metadata"]["user"] == _OWNER and d["metadata"]["reason"] for d in denied)
+
     def test_naming_the_same_bot_again_is_allowed(self, vault, audit):
         slack, _sessions = _run(_first("!bot vault"), _reply("!bot vault"))
         assert not any(p.startswith("❌") for p in _posts(slack)), _posts(slack)
