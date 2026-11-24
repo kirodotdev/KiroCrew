@@ -388,7 +388,14 @@ def register_token_parser(sub: _Commands) -> None:
         default=None,
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
     )
-    token_parser.add_argument("--ttl", default="20h", help="Token TTL, e.g. 1h, 30m (default: 20h)")
+    token_parser.add_argument(
+        "--ttl",
+        default="20h",
+        help=(
+            "How long the session lasts, e.g. 1h, 30m (default: 20h). A printed "
+            "link must itself be opened within 5 minutes"
+        ),
+    )
     token_parser.add_argument(
         "--bearer",
         action="store_true",
