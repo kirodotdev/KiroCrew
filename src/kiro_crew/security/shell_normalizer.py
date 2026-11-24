@@ -52,6 +52,11 @@ from .shell_normalizer_programs import (  # noqa: F401  (also re-exported for im
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
 )
+from .shell_normalizer_quote_pairs import (  # noqa: F401  (also re-exported for importers)
+    _drop_empty_quote_pairs,
+    _drop_token_empty_pairs,
+    _modes_may_diverge,
+)
 from .shell_normalizer_redirects import (  # noqa: F401  (also re-exported for importers)
     _ARRAY_EXPAND_RE,
     _OUTPUT_REDIRECT_RE,
@@ -1098,7 +1103,11 @@ def _cased_payload(cased: "str | None", source: str, payload: str) -> "str | Non
 
 
 def _self_tokens(
-    text_lower: str, *, resolve: bool = True, cased: "str | None" = None
+    text_lower: str,
+    *,
+    resolve: bool = True,
+    cased: "str | None" = None,
+    preserve_structure: bool = False,
 ) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
 
@@ -1167,7 +1176,7 @@ def _self_tokens(
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        tokens = normalize_shell_command(command)
+        tokens = normalize_shell_command(command, preserve_structure=preserve_structure)
         if not resolve:
             return tokens
         return _resolve_function_aliases(_resolve_local_assignments(tokens))
@@ -1908,8 +1917,7 @@ def _decode_shell_quoted_literals(cmd: str) -> str:
     return _ANSI_C_QUOTE_RE.sub(_replace, cmd)
 
 
-@once_per_call(fresh=list)
-def _shell_tokens(cmd: str) -> list[str]:
+def _shell_tokens(cmd: str, *, preserve_structure: bool = False) -> list[str]:
     """Tokenize *cmd* the way a POSIX shell hands argv to a program.
 
     Quote removal, backslash de-escaping (``shlex`` POSIX mode), ANSI-C / locale
@@ -1917,31 +1925,38 @@ def _shell_tokens(cmd: str) -> list[str]:
     empty-string concatenation (``g""it`` -> ``git``) and whitespace-run collapsing
     -- and NOTHING else: no tilde, no ``$HOME``, no path resolution.  This is the
     shared core of two callers that need the same token identity but must stop at
-    different points:
-
-    * :func:`normalize_shell_command` continues on to expand ``~``/``$HOME``,
-      because it feeds path matchers that decide FILE identity.
-    * :func:`_deny_segment_views` stops here, because expansion is
-      platform-dependent and would land the operator's real home path in the
-      audit trail -- see that function.
+    different points: :func:`normalize_shell_command` goes on to expand ``~``/``$HOME``;
+    :func:`_deny_segment_views` stops here. *preserve_structure*: see :mod:`shell_normalizer_quote_pairs`.
 
     On parse failure (unbalanced quotes) falls back to whitespace splitting with
     quote/backslash stripping, so a hostile unterminated quote yields a degraded
     view rather than no view.
     """
+    preserve_structure = preserve_structure and _modes_may_diverge(cmd)  # else one memo entry
+    return _shell_tokens_keyed((cmd, preserve_structure))  # type: ignore[arg-type]
+
+
+@once_per_call(fresh=list)  # type: ignore[arg-type]  # keyed on the (cmd, preserve_structure) tuple
+def _shell_tokens_keyed(key: "tuple[str, bool]") -> list[str]:
+    """:func:`_shell_tokens` memoized per ``(cmd, preserve_structure)``; modes never cross."""
+    cmd, preserve_structure = key
     if not cmd or not cmd.strip():
         return []
+    if preserve_structure:
+        cmd = _drop_empty_quote_pairs(cmd)
     cmd = _decode_shell_quoted_literals(cmd)
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
         # Unbalanced quotes or other parse errors — fall back to basic split.
         tokens = [t.strip("\"'\\") for t in cmd.split()]
+    if preserve_structure:
+        return [_drop_token_empty_pairs(token) for token in tokens]
     # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
     return [_EMPTY_QUOTE_RE.sub("", token) for token in tokens]
 
 
-def normalize_shell_command(cmd: str) -> list[str]:
+def normalize_shell_command(cmd: str, *, preserve_structure: bool = False) -> list[str]:
     """Normalize a shell command string into a resolved token list.
 
     Handles:
@@ -1969,7 +1984,7 @@ def normalize_shell_command(cmd: str) -> list[str]:
 
     home = os.path.expanduser("~")
     resolved: list[str] = []
-    for token in _shell_tokens(cmd):
+    for token in _shell_tokens(cmd, preserve_structure=preserve_structure):
         # Expand $HOME/${HOME} per-token (after shlex, so Windows backslashes
         # in the expanded path are never reinterpreted as escape characters).
         # Uses a callable replacement to avoid re.error on Windows where the

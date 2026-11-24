@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from denied_commands_security_helpers import _own_address_probe_stays_local  # n
 
 from kiro_crew.hooks import TOOL_DENY, HookManager
 from kiro_crew.security import argv_floor as _argv_floor
+from kiro_crew.security import argv_floor_ssh_bodies as _bodies
 from kiro_crew.security import is_denied, shell_normalizer
 from kiro_crew.security.call_views import _CALL_VIEWS, once_per_call, sharing_views
 
@@ -114,13 +116,17 @@ def test_a_shared_call_and_an_unshared_call_give_one_verdict(command):
 
 
 class _CountingShlex:
-    """``shlex`` as the normalizer sees it, noting each text handed to ``split``."""
+    """``shlex`` as the normalizer sees it, noting each ``(text, mode)`` handed to
+    ``split``. The mode is the ``preserve_structure`` flag read from the
+    ``_shell_tokens`` frame that calls ``split``: ``False`` is the default
+    deny-matching tokenizer, ``True`` the escape-aware ssh-to-self descent."""
 
     def __init__(self) -> None:
-        self.split_texts: list[str] = []
+        self.records: list[tuple[str, bool]] = []
 
     def split(self, text, *args, **kwargs):  # type: ignore[no-untyped-def]
-        self.split_texts.append(text)
+        mode = bool(sys._getframe(1).f_locals.get("preserve_structure", False))
+        self.records.append((text, mode))
         return shlex.split(text, *args, **kwargs)
 
     def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
@@ -135,15 +141,53 @@ class _CountingShlex:
         _LONG_LINE,
         "bash -c 'make lint && make test' 2>&1 | tee build.log",
         'OUT=$HOME/out; mkdir -p "$OUT" && ls "$OUT"',
+        "ssh far.example.com id",
+        "bash -c 'ssh far.example.com id'",
     ],
-    ids=["one-word", "pipeline", "long-line", "nested-shell", "assignment"],
+    ids=[
+        "one-word",
+        "pipeline",
+        "long-line",
+        "nested-shell",
+        "assignment",
+        "ssh",
+        "descend-and-diverge",
+    ],
 )
 def test_one_gate_call_tokenizes_each_text_once(monkeypatch, command):
     counting = _CountingShlex()
     monkeypatch.setattr(shell_normalizer, "shlex", counting)
     assert is_denied(command) is None
-    assert counting.split_texts
-    assert len(counting.split_texts) == len(set(counting.split_texts))
+    assert counting.records
+    from collections import Counter
+
+    # One gate call tokenizes each (text, mode) at most once: the per-call memo serves
+    # every repeat, so a text asked for twice in the SAME mode is split once. _shell_tokens
+    # runs in two modes within a call -- the DEFAULT deny-matching tokenizer and the
+    # escape-aware preserve_structure ssh-to-self descent. A per-TEXT len==len(set) form
+    # would redden on the descend-and-diverge command, whose outer frame IS split in BOTH
+    # modes (two records for one text); the (text, mode) form is the faithful successor:
+    # each text split once in EACH mode, never twice in one mode.
+    per_text_mode = Counter(counting.records)
+    assert max(per_text_mode.values()) == 1, dict(per_text_mode)
+    modes = {mode for _text, mode in counting.records}
+    # The DEFAULT deny-matching tokenizer (mode False) runs for every command.
+    assert False in modes
+    # The escape-aware preserve_structure descent (mode True) runs ONLY when the fold scanner
+    # both DESCENDS -- the command can name an ssh verb after folding (an ssh-family verb,
+    # seen through quote/backslash/assignment splicing, or a ``\``-newline continuation) --
+    # AND the command DIVERGES between the modes (carries a quote, so the shared-tokenizer
+    # pre-check does not reuse the default split). A quote-free descending command reuses the
+    # default split; a verb-free command is not descended. The memo bounds each (text, mode)
+    # to one split either way, which is what this file pins.
+    descends = _bodies._line_may_name_ssh_verb(command.lower()) or "\\\n" in command.lower()
+    diverges = shell_normalizer._modes_may_diverge(command.lower())
+    assert (True in modes) == (descends and diverges), (
+        command,
+        descends,
+        diverges,
+        dict(per_text_mode),
+    )
 
 
 def test_outside_a_call_a_marked_reader_computes_every_time():
@@ -304,3 +348,48 @@ def test_two_gate_calls_share_no_entry_and_nothing_survives_either(monkeypatch):
     assert any("first-marker" in str(key) for key in first)
     assert not any("first-marker" in str(key) for key in second)
     assert not any("second-marker" in str(key) for key in first)
+
+
+# --- The shared-tokenizer construct pre-check (scanner reuses the default split) ----------
+# ``_shell_tokens`` routes the structure-preserving mode to the default-mode memo entry when
+# the command carries no construct on which the two modes can differ (no quote -> no empty-
+# quote pair), so the two ssh-self legs split such a command ONCE instead of twice. These
+# commands DO make the two modes differ, so the pre-check must NOT share them: a nested
+# ``bash -c "..."`` whose structural escaped pair the default elision would truncate, and an
+# escaped empty pair that surfaces an empty argument.
+_MODE_DIVERGENT = [
+    'bash -c \'true\nbash -c "x\\"\\""\'',
+    'echo \\"\\"',
+]
+
+
+def test_the_shared_tokenizer_matches_the_unshared_over_the_corpus(monkeypatch):
+    # In BOTH modes, the tokens with the pre-check active equal the tokens computed with it
+    # disabled (every command split in its true mode), over the corpus and the divergent set.
+    def unshared(cmd, mode):
+        with monkeypatch.context() as m:
+            m.setattr(shell_normalizer, "_modes_may_diverge", lambda c: True)
+            return shell_normalizer._shell_tokens(cmd, preserve_structure=mode)
+
+    for cmd in [*_CORPUS, *_MODE_DIVERGENT]:
+        for mode in (False, True):
+            assert shell_normalizer._shell_tokens(cmd, preserve_structure=mode) == unshared(
+                cmd, mode
+            ), (cmd, mode)
+
+
+def test_sharing_a_mode_divergent_command_corrupts_the_preserve_tokens(monkeypatch):
+    # Mutant: share EVEN where the modes differ (pre-check says "cannot differ" always). The
+    # preserve mode then returns the default tokens for a divergent command -- a corrupted
+    # memo -- so at least one divergent command's preserve tokens change.
+    def true_preserve(cmd):
+        with monkeypatch.context() as m:
+            m.setattr(shell_normalizer, "_modes_may_diverge", lambda c: True)
+            return shell_normalizer._shell_tokens(cmd, preserve_structure=True)
+
+    reference = {cmd: true_preserve(cmd) for cmd in _MODE_DIVERGENT}
+    monkeypatch.setattr(shell_normalizer, "_modes_may_diverge", lambda c: False)
+    assert any(
+        shell_normalizer._shell_tokens(cmd, preserve_structure=True) != reference[cmd]
+        for cmd in _MODE_DIVERGENT
+    )

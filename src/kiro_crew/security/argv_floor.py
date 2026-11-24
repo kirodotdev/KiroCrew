@@ -364,12 +364,40 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_ssh_bodies import (  # noqa: F401
         _COMMAND_SEPARATORS,
+        _COMPOUND_HEADS,
+        _CRON_FIELD_RE,
+        _NONSHELL_CONSUMER_HEADS,
         _PATH_SEPARATOR_BACKSLASH_RE,
+        _PLAIN_SHELLS,
+        _PLAIN_WORD_RE,
+        _PROCSUB_CONTINUATION_RE,
         _PROGRAM_WORD_RE,
+        _SCHEDULE_DATA_READERS,
+        _SSH_WORDS,
+        _STARTUP_AMBIGUOUS_SHELLS,
+        _WRAPPER_LONG_FLAGS,
+        _WRAPPER_OPT_WORD,
+        _WRAPPER_SET_OPTS,
+        _WRAPPER_SHORT_FLAGS,
+        _body_names_an_ssh_word,
+        _cut_descended_data_bodies,
+        _fold_outside_quoted_heredocs,
+        _folded_scanner_reaches_self,
+        _is_inert_trailing_command,
+        _is_lone_plain_wrapper,
+        _is_nonshell_consumer,
+        _judged,
+        _leg_judge,
+        _leg_tokens,
         _line_may_name_ssh_verb,
+        _list_may_run_a_body,
         _live_substitutions,
+        _plain_wrapper_script,
         _reaches_self_over_ssh,
+        _scanner_cut_nonshell_literals,
+        _steps_expand_nothing,
         _substitution_reaches_self,
+        _tokens,
         _with_backslash_path_separators,
     )
     from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
@@ -419,6 +447,11 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
     from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
+    from kiro_crew.security.call_views import (  # noqa: F401
+        _CALL_VIEWS,
+        once_per_call,
+        sharing_views,
+    )
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
     )
@@ -442,6 +475,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     )
     from kiro_crew.security.self_kill_windows import _windows_self_kill  # noqa: F401
     from kiro_crew.security.shell_commands import (  # noqa: F401
+        SUBST,
         _double_quoted_substitution_bodies,
         _heredoc_body_substitutions,
         _proven_body_spans,
@@ -466,11 +500,13 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decode_shell_quoted_literals,
         _dequote_token,
         _ends_argv,
+        _fold_line_continuations,
         _glob_could_expand_to,
         _is_mint_verb,
         _is_self_program,
         _iter_shell_chars,
         _matching_close_paren,
+        _modes_may_diverge,
         _nested_shell_payloads,
         _only_single_quoted_openers,
         _opens_comment,
@@ -484,6 +520,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _shell_join_continuations,
         _shell_payload_walk,
         _shell_quote_walk,
+        _shell_tokens,
         _split_push_command_segments,
         _split_shell_words,
         _strip_redirect,
