@@ -1619,6 +1619,17 @@ describe("A Bot session's wait rides on its Bot in Needs You (#41359)", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
+  it('does not lift an idle session whose key is an inherited object property', () => {
+    // `mateWaitingThreads` returns a map; a key like `constructor` must not read as waiting.
+    storeState.dashboard = {
+      slots: [{ key: 'constructor', title: 'Plain idle chat', messages: 2 }],
+      unreadSlots: [],
+    }
+    mount()
+    const row = screen.getAllByRole('option').find(o => (o.textContent ?? '').includes('Plain idle chat'))
+    expect(row?.textContent ?? '').not.toContain('Answer')
+  })
+
   it("keeps a closed Bot thread's session in Needs You with its own Approve pill", () => {
     storeState.dashboard = {
       slots: [

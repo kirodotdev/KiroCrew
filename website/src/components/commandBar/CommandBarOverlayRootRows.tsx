@@ -182,7 +182,7 @@ export function useCommandBarOverlayRootRows({
         : sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames, compacting.has(slot.key))
       // A Bot thread carries its sessions' wait only when it owes nothing itself;
       // that row opens the Bot on the Bots page, where its chat lives (not /chat).
-      const mateCarried = own.style !== 'pill' && !!mateWaiting?.[slot.key]
+      const mateCarried = mateWaiting?.[slot.key] === true && own.style !== 'pill'
       const st = mateCarried ? mateWaitingStatus() : own
       if (st.style !== 'pill' || !st.label || !st.colorVar) continue
       lifted.add(slot.key)
