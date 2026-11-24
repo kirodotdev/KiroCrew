@@ -252,7 +252,14 @@ class _DiscordBotSurface(_DiscordResumeSurface):
         )
 
     def picker_heading(self, query: str, total: int) -> str:
-        return f"🤖 **Your Bots** ({total})\nReplies from its own thread come back here."
+        # Only a Bot whose thread is open with a message in it is offered (see
+        # ``show_bot_picker``), so the heading says how the others get here:
+        # without it a Bot never opened is missing from the list with no word.
+        return (
+            f"🤖 **Your Bots** ({total})\nReplies from its own thread come back here.\n"
+            "Bot not listed? Open it once on the dashboard's Bots page and send it "
+            "a message, then run `!bot` again."
+        )
 
 
 class DiscordSessionResume:

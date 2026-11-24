@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ChevronDown, Link2, Pause } from 'lucide-react'
+import { ChevronDown, Link2, Pause, Settings } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { api } from '../../api/client'
@@ -8,6 +8,7 @@ import { useAppSelector } from '../../store'
 import { slotRowByKey } from '../../store/slotIndex'
 import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { useLabelTip } from '../../components/InstantTip'
+import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import LinkedSurfacesSection from '../../components/LinkedSurfacesSection'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import HeaderControl from './HeaderControl'
@@ -22,8 +23,13 @@ import HeaderControl from './HeaderControl'
  * The chip stays while the Bot chat has a link OR a channel it can connect to:
  * the rows' Connect offers are how an unlinked chat links again, so hiding the
  * chip with the last link would make an Unlink a one-way door. With no link
- * and nothing configured to connect to there is nothing to offer, and no chip
- * (unless the read of what can be connected failed: then the menu says so).
+ * and nothing configured to connect to there is nothing to offer, so the chip
+ * becomes a button to the channel settings instead: without it the feature has
+ * no trace on the page and nothing says where to look. It shows its label as
+ * text and a settings glyph, so it is not read as the connect chip (whose
+ * menu stays on the page) or as a share link. A failed read of what can be
+ * connected keeps the chip, whose menu says so.
+ * The label names the page: an empty target list does not prove no channel exists.
  *
  * shortcut: the chip names the first link only; a Bot linked to two channels
  * still gets every row in the menu. Name them all if that becomes common.
@@ -33,13 +39,14 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
   const link = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))?.links?.[0]
   // The same query, key and shape the rows' offers read, so the two share one
   // cache entry and agree on whether anything can be connected.
-  const { data: targets = [], errorUpdatedAt, dataUpdatedAt } = useQuery({
+  const { data, errorUpdatedAt, dataUpdatedAt } = useQuery({
     queryKey: ['channel-targets'],
     queryFn: () => api.channelTargets().then(result => (
       Array.isArray(result) ? result as ConfiguredChannelTarget[] : []
     )),
     refetchInterval: 30_000,
   })
+  const targets = data ?? []
   // A failed target read keeps the chip too: its menu carries the rows' own
   // load-error notice, which a hidden chip would make unreachable. Read as
   // "the last outcome was an error", not `isError`: that flag drops while the
@@ -47,20 +54,45 @@ export default function BotLinkedChannels({ slotKey, inBar }: { slotKey: string;
   // start the loop again.
   const targetsFailed = errorUpdatedAt > dataUpdatedAt
   const visible = !!link || targets.length > 0 || targetsFailed
+  // Only once the read has answered "nothing": before it does, a settings link
+  // would flash on a crew that has a channel.
+  const setUp = !visible && data !== undefined
   const label = link
     ? t(link.paused ? 'pages.membersPage.linked_to_paused' : 'pages.membersPage.linked_to', { label: link.label })
-    : t('pages.membersPage.connect_channel')
+    : t(setUp ? 'pages.membersPage.open_messaging_channels' : 'pages.membersPage.connect_channel')
   const tip = useLabelTip(label)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   // The tip names the chip; once its menu is open the rows say it, and a tip
   // left up would paint over the first row.
   const [open, setOpen] = useState(false)
+  // Asks the page's leave guard first, so an unsaved draft on the Bots page
+  // (a schedule in the docked Profile) is not dropped without a prompt.
+  const navigate = useAskingNavigate()
   if (!visible) {
     // A row that keeps its menu open on select (Unlink does) never closes the
     // menu when the chip goes: drop the open state with the chip, or the menu
     // would pop open by itself when the chip comes back.
     if (open) setOpen(false)
-    return null
+    // The phone bar has no room for it beside the centred identity pill.
+    if (!setUp || inBar) return null
+    return (
+      <HeaderControl
+        inBar={false}
+        chipClassName="glass-hover flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-full min-w-0 max-w-full text-[12.5px] text-text cursor-pointer"
+        barClassName=""
+        data-testid="member-set-up-channel"
+        onClick={() => navigate('/settings/channels')}
+        {...tip.handlers}
+      >
+        <Settings size={14} className="shrink-0 text-muted" aria-hidden />
+        {/* Visible text, not a tooltip: this is the one control on the page
+            that says where a channel is set up. It shrinks with its header
+            cell and truncates rather than run over the identity pill; the
+            tip shows the same label on every hover and keyboard focus. */}
+        <span className="truncate">{label}</span>
+        {tip.bubble}
+      </HeaderControl>
+    )
   }
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>

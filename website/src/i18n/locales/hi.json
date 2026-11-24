@@ -23528,6 +23528,7 @@
       "linked_to": "{{label}} से जुड़ा",
       "linked_to_paused": "{{label}} से जुड़ा · जवाब रुके हुए",
       "connect_channel": "किसी चैनल से जोड़ें",
+      "open_messaging_channels": "चैट प्लेटफ़ॉर्म खोलो",
       "dashboard_kept_last_good": "इस डैशबोर्ड का नया संस्करण लोड नहीं हुआ, इसलिए यह अंतिम लोड हुआ संस्करण है।",
       "dashboard_none_yet": "इस Bot के लिए अभी कोई डैशबोर्ड सेट नहीं है।",
       "dashboard_empty_region": "{{name}} का डैशबोर्ड: अभी कोई पेज नहीं चुना गया",

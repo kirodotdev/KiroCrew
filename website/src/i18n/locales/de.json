@@ -23528,6 +23528,7 @@
       "linked_to": "Verbunden mit {{label}}",
       "linked_to_paused": "Verbunden mit {{label}} · Antworten pausiert",
       "connect_channel": "Mit einem Kanal verbinden",
+      "open_messaging_channels": "Öffne Chat-Plattformen",
       "dashboard_kept_last_good": "Eine neuere Version dieses Dashboards wurde nicht geladen; dies ist die letzte, die geladen wurde.",
       "dashboard_none_yet": "Für diesen Bot ist noch kein Dashboard eingerichtet.",
       "dashboard_empty_region": "Dashboard von {{name}}: noch keine Seite gewählt",

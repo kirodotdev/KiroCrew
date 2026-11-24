@@ -24122,6 +24122,7 @@
       "linked_to": "Vinculado a {{label}}",
       "linked_to_paused": "Vinculado a {{label}} · respuestas en pausa",
       "connect_channel": "Conectar a un canal",
+      "open_messaging_channels": "Abre Plataformas de chat",
       "dashboard_kept_last_good": "No se cargó una versión más reciente de este panel, así que esta es la última que sí se cargó.",
       "dashboard_none_yet": "Aún no hay un panel configurado para este Bot.",
       "dashboard_empty_region": "Panel de {{name}}: aún no se ha elegido ninguna página",
