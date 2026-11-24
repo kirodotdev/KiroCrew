@@ -161,7 +161,10 @@ def still_confirmed(cfg: Any, user_id: str, *, owner: bool) -> bool:
     if owner or not listed(cfg, user_id):
         return False
     verdict = _verdicts.get(user_id)
-    return verdict is not None and verdict.ok and _fits(verdict, verify=verify_with_slack(cfg))
+    if verdict is None or not verdict.ok:
+        return False
+    # A Slack-confirmed answer holds in both modes; a list-only one only while Slack is not asked.
+    return not (verify_with_slack(cfg) and verdict.reason == REASON_LISTED)
 
 
 def was_shared(user_id: str) -> bool:
