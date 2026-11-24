@@ -129,8 +129,12 @@ NOT_BOUND_TEXT = (
     "only on the channel the calling session runs in, so there is nothing to act on here. "
     "No tool opens a code channel: Kiro Crew opens one by itself when someone asks it for "
     "code work in Slack (the owner, or a person the owner shares Slack access with) and "
-    "it judges the work needs its own channel. Do the work here, and tell the person it "
-    "is happening here."
+    "it judges the work needs its own channel, or when they ask for a code channel. Do "
+    "the work here, and tell the person it is happening here. To get a code channel, they "
+    "can ask for it again in this thread (in a DM, mention Kiro Crew): that message is "
+    "judged again, and a channel it opens starts with this thread. A new top-level "
+    "message starts without this thread. Slack can't open a code channel from a Slack "
+    "Connect conversation. Never promise to post into a code channel that hasn't opened."
 )
 ARCHIVED_TEXT = "Error: this session's code channel is archived."
 STOPPED_TEXT = (
