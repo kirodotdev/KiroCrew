@@ -79,8 +79,8 @@ async def test_workflow_receipt_requires_productive_raw_success(world, mode):
     full = await scope.prompt(
         world.builder, key, "first", is_new=True, agent="kirocrew", cwd=None, provider=provider
     )
-    assert provider.essential_delivery._pending is not None
-    envelope = provider.essential_delivery._pending.envelope
+    assert "essentials" in provider.essential_delivery._pending
+    envelope = provider.essential_delivery._pending["essentials"].envelope
     provider.mode = mode
     try:
         await consume(provider, full)
