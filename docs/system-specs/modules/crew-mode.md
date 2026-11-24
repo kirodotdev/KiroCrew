@@ -1583,7 +1583,7 @@ proposed goal exactly as one created on the Bots page does (see the goal
 welcome below); the `/members?create=1&name=<encoded-name>&goal=<encoded-goal>`
 link to an editable UI draft remains for a user who wants to fill it in; opening a draft
 never creates a member or starts a schedule.
-An app's proposal of a Bot from a `.crewmate` bundle is a `crewmate.import` card, raised only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)). Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
+A Bot made from a Bot file (a `.kirobot` file, an older `.crewjam` or `.crewmate` one, or an app's bundle) is a `crewmate.import` card: an app raises one only through `ctx.crewmate` ([app-kit-platform §8a](app-kit-platform.md#8a-ctxcrewmate-proposes-only-the-owners-press-creates)), and the owner raises one with Import from file or with Make a copy on a Bot's Profile card, which hands that Bot's export straight to the same import. Its create pins `approval_mode: "normal"` in the same write and sends no `first_greeting`; its evidence and Undo are `crewmate.create`'s (`change_card_catalog.CREWMATE_CREATING_KINDS`).
 Creating a Bot is never a first-run chapter: neither the end of the tour nor
 a Bots visit opens anything by itself, and the page's New Bot card is
 the one place a Bot is created on the Bots page.
