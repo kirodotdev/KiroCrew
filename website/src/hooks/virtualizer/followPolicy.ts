@@ -1228,10 +1228,11 @@ export function useFollowPlacementPins<T>(ctx: {
   /** Caps the rows mounted above the viewport for a few frames (see
    *  WindowOperations.stageLeadingOverscan). */
   stageLeadingOverscan: () => void
+  recomputeWindow: () => void
 }): void {
   const {
     itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, getStableIdRef,
-    setWindowRange, shiftRetainedRange, stageLeadingOverscan,
+    setWindowRange, shiftRetainedRange, stageLeadingOverscan, recomputeWindow,
   } = ctx
   const { stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
   const { pinAuto, forcePin } = ctx.pinning
@@ -1288,6 +1289,17 @@ export function useFollowPlacementPins<T>(ctx: {
     if (pinSuppressedNow(performance.now(), lastHardInputAtRef.current, pinCascadeUntilRef.current, SCROLL_SETTLE_MS)) return
     pinAuto()
   })
+  // The bulk pin below mounts a fixed count of tail rows, which in a chat of
+  // short rows ends below the viewport top. Those rows are measured in the
+  // commit that mounts them, so the next commit widens the window from their
+  // heights, before that frame paints. Declared first so it skips the commit
+  // that arms it.
+  const coverTailRef = useRef(false)
+  useLayoutEffect(() => {
+    if (!coverTailRef.current) return
+    coverTailRef.current = false
+    recomputeWindow()
+  })
   const prevItemCountRef = useRef(itemCount)
   // Tail identity of the previous commit, session-scoped. What separates a
   // bulk PREPEND (idle history prefetch landing hundreds of rows ABOVE a
@@ -1336,6 +1348,7 @@ export function useFollowPlacementPins<T>(ctx: {
     const bulkPrepend = prevTail !== null && prevTail.session === sessionId && prevTail.key === tailKey
     if (growth > overscan + 1 && stickRef.current && !bulkPrepend) {
       setWindowRange(tailWindow(itemCount, overscan))
+      coverTailRef.current = true
       // The rows above the viewport are only overscan: mount them over the
       // next frames, so the frame that shows the opened session is not held
       // up by rendering rows nobody can see yet.

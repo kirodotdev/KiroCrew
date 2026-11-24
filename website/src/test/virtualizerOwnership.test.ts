@@ -194,6 +194,7 @@ describe('phase order (source guard)', () => {
       ],
       'followPolicy.ts': [
         [L, 'leadingChromeRef.current = lead'], // leading chrome
+        [L, 'coverTailRef.current = false'], // the bulk pin's tail window widened to cover the viewport
         [L, 'prevItemCountRef.current = itemCount'], // append / bulk pin
       ],
       'readingPosition.ts': [
