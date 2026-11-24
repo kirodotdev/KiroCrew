@@ -47,6 +47,7 @@ def test_a_unc_path_names_its_share(path, share) -> None:
         "relative\\x",
         "",
         "\\\\",
+        "\\\\.\x00\x00.\\",
         3,
         None,
     ],

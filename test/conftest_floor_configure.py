@@ -392,6 +392,8 @@ def _unc_share(path) -> str | None:
         return None
     if text[:1] not in ("\\", "/") or text[1:2] not in ("\\", "/"):
         return None  # the common case: a drive path, or a relative one
+    if "\0" in text:
+        return None  # Python refuses an embedded NUL before it asks Windows anything
     text = text.replace("/", "\\")
     if text[2:3] in ("?", ".") and text[3:4] == "\\":
         if text[4:8].upper() != "UNC\\":
