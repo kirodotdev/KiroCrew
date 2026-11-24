@@ -2877,7 +2877,7 @@
         "highlight_9": "Funktioniert mit GitHub, GitLab und Azure DevOps; benötigt auf dem Gateway-Host eine authentifizierte CLI für den verbundenen Anbieter (`gh`, `glab` oder `az`) — für die Installation ist keine bestimmte CLI erforderlich",
         "page_label": "Issue Radar",
         "use_case_1": "Triagiere Issues und Pull Requests verschiedener verbundener Anbieter und bewahre dabei Zusammenfassungen, Label-Vorschläge und den Untersuchungsverlauf auf.",
-        "configuration_1": "Verbinde ein Repository und authentifiziere dessen Anbieter-CLI auf dem Gateway-Host: gh für GitHub, glab für GitLab oder az mit der Azure DevOps-Erweiterung unter macOS, Linux oder WSL."
+        "configuration_1": "Verbinde ein Repository und authentifiziere dessen Anbieter-CLI auf dem Gateway-Host: gh für GitHub, glab für GitLab oder az mit der Azure DevOps-Erweiterung."
       },
       "views": {
         "comingSoon": {

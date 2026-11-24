@@ -2761,7 +2761,7 @@
       },
       "manifest": {
         "use_case_1": "연결된 제공자의 이슈와 풀 리퀘스트를 트리아지하면서 요약, 제안 레이블, 조사 기록을 유지합니다.",
-        "configuration_1": "저장소를 연결하고 게이트웨이 호스트에서 제공자 CLI를 인증하세요. GitHub에는 gh, GitLab에는 glab, Azure DevOps에는 macOS, Linux 또는 WSL에서 확장을 설치한 az가 필요합니다.",
+        "configuration_1": "저장소를 연결하고 게이트웨이 호스트에서 제공자 CLI를 인증하세요. GitHub에는 gh, GitLab에는 glab, Azure DevOps에는 확장을 설치한 az가 필요합니다.",
         "description": "기억하는 이슈 트리아지 어시스턴트입니다. AI가 제안하는 레이블과 항목별 조사 노트로 GitHub 이슈, GitLab 이슈, Azure DevOps 작업 항목을 살펴보고 필터링하고 트리아지하세요 — 조사 결과는 로컬 원장에 보관되므로 같은 내용을 다시 조사하지 않습니다.",
         "display_name": "Issue Radar",
         "highlight_1": "이슈와 풀 리퀘스트에 대한 AI 요약과 추천 레이블, 각각의 근거 제공",
