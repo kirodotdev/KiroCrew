@@ -26,6 +26,7 @@ from kiro_crew import portability, portability_bot_export, portability_stream
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.mate_config import minimal_mate_spec
 from kiro_crew.portability import create_export_zip
+from kiro_crew.testing.clock import ManualClock
 
 fake_kirocrew_home = portability_helpers.fake_kirocrew_home
 patched_config_dir = portability_helpers.patched_config_dir
@@ -469,7 +470,7 @@ class TestMemoryOnlyUnchanged:
         mc = patched_config_dir
         monkeypatch.setattr(portability, "datetime", _FrozenDatetime)
         frozen = _FrozenDatetime.now().timestamp()
-        monkeypatch.setattr(portability_stream.time, "time", lambda: frozen)
+        ManualClock(frozen).install(monkeypatch, portability_stream)
 
         def _archive() -> tuple[dict[str, bytes], dict]:
             zip_bytes, manifest = create_export_zip(memory_only=True)
