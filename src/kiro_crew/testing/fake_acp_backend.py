@@ -96,6 +96,17 @@ With ``KIROCREW_FAKE_ACP_SCRIPT`` naming a JSON file, a chat prompt the script
 answers gets the script's reply instead of any of the above
 (:mod:`kiro_crew.testing.scripted_replies` documents the file).
 
+With ``KIROCREW_FAKE_ACP_EXPECT_HOST_TOKEN`` set (off by default), the KAS relay
+spawn asks the host for its credential before it answers any ``session/prompt``,
+as the engine does on a relay started with ``--auth-method client`` (the fake
+asks whatever ``--auth-method`` says): it sends the connection-level
+``_kiro/auth/getAccessToken`` request (no ``sessionId``, empty params) and
+waits for the answer (bounded by ``PERMISSION_WAIT_SECS``). Unless the
+answer's ``result.accessToken`` equals the variable's value the prompt fails with a JSON-RPC error that names the outcome
+(no answer, an error, the wrong token) and never echoes a token. A plain kiro-cli
+spawn (no engine flag) never sends the request, and with the variable unset
+nothing changes.
+
 Observing a cancel mid-turn requires reading stdin while a prompt is streaming,
 so ``main()`` reads on a background thread into a queue rather than looping
 read->handle. Calling ``_handle`` directly (as the unit tests do) leaves that
@@ -342,6 +353,13 @@ _BROWSER_TOOL_CALL_ID = "fake-browser-1"
 _TOOL_PURPOSE = "Say hello from the fake backend"
 _PERMISSION_REQ_ID = 9001
 _ELICIT_REQ_ID = 9002
+_HOST_TOKEN_REQ_ID = 9003
+#: Opt-in host credential check (module docstring): the token the host must
+#: answer ``_kiro/auth/getAccessToken`` with before a prompt is served.
+HOST_TOKEN_ENV = "KIROCREW_FAKE_ACP_EXPECT_HOST_TOKEN"
+#: The engine's credential callback (``kas_transport.METHOD_KAS_AUTH_GET_ACCESS_TOKEN``,
+#: spelled here so this module stays stdlib-only).
+HOST_TOKEN_METHOD = "_kiro/auth/getAccessToken"
 _ELICIT_FORM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -778,6 +796,33 @@ def _emit_elicitation(session_id: str, mode: str) -> str:
     return ELICIT_ANSWER_PREFIX + json.dumps(echoed, sort_keys=True)
 
 
+def _host_token_refusal() -> str | None:
+    """Why the host's credential answer fails the opt-in check, or ``None`` to serve.
+
+    ``None`` without asking when ``HOST_TOKEN_ENV`` is unset or this is not the KAS
+    relay spawn. Otherwise sends the engine's credential request and compares the
+    answer's ``accessToken`` with the variable's value. The message never carries a
+    token, only which way the answer missed.
+    """
+    expected = os.environ.get(HOST_TOKEN_ENV, "")
+    if not expected or not _KAS_RELAY:
+        return None
+    _send({"jsonrpc": "2.0", "id": _HOST_TOKEN_REQ_ID, "method": HOST_TOKEN_METHOD, "params": {}})
+    answer = _await_inbox(
+        lambda m: m.get("method") is None and m.get("id") == _HOST_TOKEN_REQ_ID,
+        PERMISSION_WAIT_SECS,
+    )
+    if answer is None:
+        return f"fake ACP backend: the host did not answer {HOST_TOKEN_METHOD}"
+    if "error" in answer:
+        return f"fake ACP backend: the host refused {HOST_TOKEN_METHOD}"
+    result = answer.get("result")
+    token = result.get("accessToken") if isinstance(result, dict) else None
+    if token != expected:
+        return f"fake ACP backend: the host answered {HOST_TOKEN_METHOD} with another token"
+    return None
+
+
 class _SlowHoldExpired(Exception):
     """A held stream was not released within ``SLOW_HOLD_WAIT_SECS``."""
 
@@ -969,6 +1014,10 @@ def _handle(msg: dict[str, Any]) -> None:
         session = _SESSIONS.get(session_id)
         if session is None:
             _error(req_id, message="Unknown or terminated ACP session")
+            return
+        refusal = _host_token_refusal()
+        if refusal is not None:
+            _error(req_id, message=refusal)
             return
         servers, cwd = session
         text = _prompt_text(params)
