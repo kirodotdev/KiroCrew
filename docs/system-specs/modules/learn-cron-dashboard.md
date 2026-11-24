@@ -5720,10 +5720,14 @@ still refresh while the dashboard body is blocked. On a new gateway it:
 1. displays the connected gateway's OS so a remote browser does not imply an
    agent must be installed on the browser machine;
 2. offers the Kiro CLI card and an independent Other coding agents picker.
-   The picker starts collapsed, and starts open only when the config names a
-   harness outside `KIRO_HARNESS_BACKENDS` (Kiro CLI and KAS, which a config
-   with no choice runs): only then is the picker, not the Kiro cards, what
-   stands between the user and the dashboard.
+   The picker starts collapsed. It starts open when the config names a harness
+   outside `KIRO_HARNESS_BACKENDS` (Kiro CLI and KAS, which a config with no
+   choice runs): then the picker, not the Kiro cards, is what stands between
+   the user and the dashboard. It also starts open when the configured KAS
+   cannot start because the host cannot provide the sandbox (reason
+   `sandbox_blocked`) and no workload-pod hint shows above it: its notice is
+   then the only text saying why, and installing Kiro CLI gives the host no
+   sandbox. The open state is taken once, at mount.
    The picker reads `/api/acp-backends`, shows each harness's detected state and
    install command, and lets the owner select a verified harness. A configured
    usable backend whose `/api/acp-backends` row advertises
