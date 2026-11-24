@@ -30,12 +30,7 @@ from kiro_crew.channel_shell_base import _offerable_base_binary
 from kiro_crew.channel_spec_hooks import pre_tool_refusal, turn_spec
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
-from kiro_crew.config.loader import (
-    config_local_path,
-    config_path,
-    read_endorsed_config_text,
-    resolve_agent_bindings,
-)
+from kiro_crew.config.loader import config_local_path, config_path, read_endorsed_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.resolution import _deep_merge
 from kiro_crew.constants import (
@@ -968,27 +963,17 @@ class ChannelManager:
 
 
 def _session_agent_kwargs(agent_name: str) -> dict[str, Any]:
-    """The ``get_or_create`` agent arguments for a member's configured agent.
+    """``get_or_create``'s agent arguments: a crewmate (``default``) runs its template.
 
-    A member may name a crewmate (a ``config.agents`` key such as ``default``) as
-    well as a template. kiro-cli knows only templates, so a crewmate starts its
-    bound template under its own crew identity, as ``kirocrew chat --agent`` and a
-    dashboard turn do; passed through raw, ``default`` reached the skill view as
-    an agent with no spec and every turn failed with "no prepared skill discovery
-    view". Any other name is a template and passes through. Blocking (config
-    read): run it off the event loop.
+    Passed raw, a crewmate name reached the skill view as an agent with no spec.
+    Blocking (config read): run it off the event loop.
     """
     if not agent_name:
         return {"agent": None}
-    try:
-        cfg = KiroCrewConfig.load()
-        if agent_name not in cfg.agents:
-            return {"agent": agent_name}
-        bindings = resolve_agent_bindings(cfg, agent_name, validate_memory_files=False)
-    except Exception:  # noqa: BLE001 -- an unreadable config keeps the name as given
-        logger.warning("Could not resolve channel agent %r; using it as given", agent_name)
-        return {"agent": agent_name}
-    return {"agent": bindings.kiro_agent or None, "crew_agent": agent_name}
+    from kiro_crew.cli_chat import _resolve_cli_agent
+
+    kiro_agent, crew_agent, _model, _store = _resolve_cli_agent(KiroCrewConfig.load(), agent_name)
+    return {"agent": kiro_agent, "crew_agent": crew_agent}
 
 
 async def run_channel_agent(

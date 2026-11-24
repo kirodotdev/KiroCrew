@@ -8,7 +8,6 @@ skill discovery view" (CREW-27282).
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,13 +33,11 @@ def test_a_crewmate_name_starts_its_template_under_its_crew_identity() -> None:
 
 def test_a_template_name_and_no_name_pass_through() -> None:
     with patch.object(channel_mod.KiroCrewConfig, "load", return_value=_cfg()):
-        assert _session_agent_kwargs("deep-researcher") == {"agent": "deep-researcher"}
+        assert _session_agent_kwargs("deep-researcher") == {
+            "agent": "deep-researcher",
+            "crew_agent": None,
+        }
         assert _session_agent_kwargs("") == {"agent": None}
-
-
-def test_an_unreadable_config_keeps_the_name_as_given() -> None:
-    with patch.object(channel_mod.KiroCrewConfig, "load", side_effect=ValueError("bad")):
-        assert _session_agent_kwargs("default") == {"agent": "default"}
 
 
 @pytest.mark.asyncio
@@ -57,7 +54,7 @@ async def test_run_channel_agent_hands_the_template_to_get_or_create() -> None:
     sessions = MagicMock()
     sessions.get_or_create = get_or_create
     with patch.object(channel_mod.KiroCrewConfig, "load", return_value=_cfg()):
-        await asyncio.wait_for(run_channel_agent(agent, ch, sessions), timeout=10)
+        await run_channel_agent(agent, ch, sessions)
 
     assert captured["agent"] == "kirocrew"
     assert captured["crew_agent"] == "default"
