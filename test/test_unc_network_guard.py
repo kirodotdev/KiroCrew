@@ -7,6 +7,7 @@ the runner's network. ``_refuse_unc_network_paths`` makes them raise at once ins
 from __future__ import annotations
 
 import os
+import pickle
 import sys
 from pathlib import Path
 
@@ -88,9 +89,29 @@ def test_local_paths_still_resolve(tmp_path) -> None:
 
 
 @windows_only
-def test_the_wrapped_stat_keeps_its_supports_membership() -> None:
+def test_a_path_object_is_read_once_and_checked_as_opened(tmp_path) -> None:
+    local = str(tmp_path / "missing")
+
+    class Shifty:
+        """Local on the first read, UNC on every later one."""
+
+        reads = 0
+
+        def __fspath__(self) -> str:
+            Shifty.reads += 1
+            return local if Shifty.reads == 1 else "\\\\host.invalid\\share\\x"
+
+    with pytest.raises(FileNotFoundError):
+        os.stat(Shifty())
+    assert Shifty.reads == 1
+
+
+@windows_only
+def test_the_wrapped_calls_keep_their_supports_membership_and_pickle() -> None:
     assert os.stat in os.supports_fd
     assert os.stat in os.supports_follow_symlinks
+    for call in (os.stat, os.lstat, os.path.exists):
+        assert pickle.loads(pickle.dumps(call)) is call
 
 
 @windows_only

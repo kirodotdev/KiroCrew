@@ -388,7 +388,7 @@ def _unc_share(path) -> str | None:
         return None  # a file descriptor
     try:
         text = os.fsdecode(path)
-    except (TypeError, UnicodeDecodeError):
+    except Exception:  # noqa: BLE001 - not a path; the real call answers for it
         return None
     if text[:1] not in ("\\", "/") or text[1:2] not in ("\\", "/"):
         return None  # the common case: a drive path, or a relative one
@@ -416,12 +416,13 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
     construction (testing-conventions D10). The wrapped calls raise
     ``UncNetworkPathRefused`` at once instead, which is the same on every runner. A
     test stubs the seam the product calls, as a ``monkeypatch`` that replaces the
-    guarded function does. A share holding the checkout, the temp dir, the home or the
-    interpreter stays allowed, so a run started from a network drive still works.
+    guarded function does. A share holding the checkout, the working directory, the temp
+    dir, the home or the interpreter stays allowed, so a run started from a network
+    drive still works.
 
     shortcut: a name bound by ``from os.path import exists`` before ``pytest_configure``
-    keeps the unguarded call, and ``open``/``listdir`` are not wrapped; widen the set
-    when a flake shows one.
+    keeps the unguarded call, and ``open``, ``listdir``/``scandir``, ``access`` and
+    ``ismount`` are not wrapped; widen the set when a flake shows one.
     """
     global _UNC_GUARD_INSTALLED
     if os.name != "nt" or _UNC_GUARD_INSTALLED:
@@ -430,13 +431,32 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
     import ntpath
     import tempfile
 
-    homes = (rootdir, os.getcwd(), tempfile.gettempdir(), os.path.expanduser("~"), sys.prefix)
+    homes = (
+        rootdir,
+        os.getcwd(),
+        tempfile.gettempdir(),
+        os.path.expanduser("~"),
+        sys.prefix,
+        sys.base_prefix,
+        sys.executable,
+    )
     allowed = frozenset(share for share in map(_unc_share, homes) if share)
 
-    def guard(real, name: str):
+    def guard(real, module_name: str, attr: str, name: str):
         @functools.wraps(real)
         def refuse_unc(*args, **kwargs):
-            path = args[0] if args else kwargs.get("path")
+            # Read ``__fspath__`` once and hand the real call that same value, so the
+            # path checked is the path opened.
+            if args:
+                path = args[0]
+                if not isinstance(path, (str, bytes, int)):
+                    try:
+                        path = os.fspath(path)
+                    except Exception:  # noqa: BLE001 - not a path; the real call answers
+                        return real(*args, **kwargs)
+                    args = (path, *args[1:])
+            else:
+                path = kwargs.get("path")
             share = _unc_share(path)
             if share is not None and share not in allowed:
                 raise UncNetworkPathRefused(
@@ -448,11 +468,15 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
                 )
             return real(*args, **kwargs)
 
+        # Named after the attribute it replaces, so ``pickle`` finds this object there.
+        refuse_unc.__module__ = module_name
+        refuse_unc.__qualname__ = attr
         return refuse_unc
 
     for module, attr, name in (
         (os, "stat", "os.stat"),
         (os, "lstat", "os.lstat"),
+        (os, "readlink", "os.readlink"),
         (ntpath, "_getfinalpathname", "os.path.realpath"),
         (ntpath, "exists", "os.path.exists"),
         (ntpath, "isdir", "os.path.isdir"),
@@ -462,7 +486,7 @@ def _refuse_unc_network_paths(rootdir: str) -> None:
         real = getattr(module, attr, None)
         if real is None:
             continue
-        wrapped = guard(real, name)
+        wrapped = guard(real, module.__name__, attr, name)
         setattr(module, attr, wrapped)
         # ``os.stat in os.supports_fd`` must still answer as it did for the real call.
         for supports in (os.supports_fd, os.supports_dir_fd, os.supports_follow_symlinks):
