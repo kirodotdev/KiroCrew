@@ -196,6 +196,10 @@ export async function stubDashboardApi(page, opts = {}) {
     }
     if (path === '/api/chat/folders') return json(route, folders)
     if (path === '/api/chat/slots') return json(route, slots)
+    // The gateway answers `{ pins: [...] }`. The catch-all's `[]` left
+    // `res.pins` undefined, so the pins query never held data and every
+    // transcript row re-rendered on each page render, which no real install does.
+    if (path === '/api/chat/pins') return json(route, { pins: [] })
     if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
     if (path === '/api/status') {
       return json(route, { sessions: slots.length, crons: 0, lessons: 0, uptime: 120, version: '0.5.0' })
