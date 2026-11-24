@@ -14077,7 +14077,7 @@
       },
       "toolDetails": {
         "auto": "Automatisch",
-        "details_unavailable_for_historical_tool_calls": "Details für frühere Werkzeugaufrufe nicht verfügbar.",
+        "details_unavailable_for_historical_tool_calls": "Die Details dieses früheren Aufrufs wurden nicht gespeichert. Frag im Chat, was er getan hat.",
         "formatted": "Formatiert",
         "no_input_or_output_captured_for_this_tool_call": "Keine Ein- oder Ausgabe für diesen Werkzeugaufruf erfasst.",
         "null": "null",

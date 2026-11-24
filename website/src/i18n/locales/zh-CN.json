@@ -13733,7 +13733,7 @@
       },
       "toolDetails": {
         "auto": "自动",
-        "details_unavailable_for_historical_tool_calls": "历史工具调用的详情不可用。",
+        "details_unavailable_for_historical_tool_calls": "这次较早的调用没有保存详情。想知道它做了什么，可以在对话里问。",
         "formatted": "格式化",
         "no_input_or_output_captured_for_this_tool_call": "此工具调用未捕获输入或输出。",
         "null": "null",

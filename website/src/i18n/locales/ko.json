@@ -13733,7 +13733,7 @@
       },
       "toolDetails": {
         "auto": "자동",
-        "details_unavailable_for_historical_tool_calls": "과거 도구 호출의 세부 정보는 표시할 수 없습니다.",
+        "details_unavailable_for_historical_tool_calls": "이전 호출의 세부 정보는 저장되지 않았습니다. 무엇을 했는지 채팅에서 물어보세요.",
         "formatted": "서식",
         "no_input_or_output_captured_for_this_tool_call": "이 도구 호출의 입력 또는 출력이 기록되지 않았습니다.",
         "null": "null",

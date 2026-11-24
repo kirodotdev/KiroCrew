@@ -14421,7 +14421,7 @@
       },
       "toolDetails": {
         "auto": "Automatico",
-        "details_unavailable_for_historical_tool_calls": "Dettagli non disponibili per le chiamate agli strumenti precedenti.",
+        "details_unavailable_for_historical_tool_calls": "I dettagli di questa chiamata precedente non sono stati salvati. Chiedi nella chat cosa ha fatto.",
         "formatted": "Formattato",
         "no_input_or_output_captured_for_this_tool_call": "Nessun input o output registrato per questa chiamata allo strumento.",
         "null": "null",

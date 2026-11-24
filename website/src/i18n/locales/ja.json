@@ -13733,7 +13733,7 @@
       },
       "toolDetails": {
         "auto": "自動",
-        "details_unavailable_for_historical_tool_calls": "過去のツール呼び出しの詳細は表示できません。",
+        "details_unavailable_for_historical_tool_calls": "この以前の呼び出しの詳細は保存されていません。何をしたかはチャットで聞いてください。",
         "formatted": "整形",
         "no_input_or_output_captured_for_this_tool_call": "このツール呼び出しの入力または出力は記録されていません。",
         "null": "null",
