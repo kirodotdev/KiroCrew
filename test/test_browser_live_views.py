@@ -334,6 +334,44 @@ async def test_tabs_lists_the_slots_tabs_through_the_one_browser_door(
     ]
 
 
+async def test_tabs_returns_empty_list_when_slot_has_no_live_targets(
+    grant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An app slot with the view grant but no live browser returns 200 {"tabs": []}.
+
+    One-line change that turns this test red: remove the ``if not hub.targets_of(key)``
+    guard from ``api_browser_live_views_tabs`` in ``browser_live_views.py``.
+    """
+    await _browsing()
+    # Hub has a session for SLOT but no live browser (targets set is empty).
+    hub = lh.get_live_hub()
+    sess = hub.get(SLOT)
+    assert sess is not None
+
+    never_called: list[Any] = []
+
+    async def _never(key: str, op: str, args: dict[str, Any], **_: Any) -> Any:
+        never_called.append((key, op, args))
+        return {"ok": True, "result": {"ok": True, "tabs": []}}, 200
+
+    monkeypatch.setattr(browser_ops, "run_browser_op", _never)
+
+    # Clear the targets set so targets_of returns an empty set.
+    original_targets = set(sess.targets)
+    sess.targets.clear()
+    try:
+        async with TestClient(TestServer(_app())) as client:
+            status, body = await _post(
+                client, "/api/browser/live/views/tabs", {"session_key": SLOT}
+            )
+    finally:
+        sess.targets.update(original_targets)
+
+    assert never_called == [], "run_browser_op must not be called when targets_of is empty"
+    assert status == 200
+    assert body.get("tabs") == []
+
+
 async def test_the_chats_close_ends_and_forgets_its_views(
     grant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

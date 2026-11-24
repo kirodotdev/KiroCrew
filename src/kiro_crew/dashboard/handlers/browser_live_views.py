@@ -73,6 +73,7 @@ async def api_browser_live_views_tabs(request: web.Request) -> web.Response:
         refused = await _view_refusal(request, key, "browser_live_views_tabs")
         if refused is not None:
             return refused
+        if not hub.targets_of(key):
             return {"tabs": []}
         from kiro_crew.apps.browser_page_port import _flat, _redacted  # noqa: PLC0415
         from kiro_crew.dashboard.handlers.browser_ops import (  # noqa: PLC0415
