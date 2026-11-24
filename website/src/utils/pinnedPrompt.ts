@@ -593,6 +593,8 @@ export interface PinnedPromptState {
   raw: string
   full: string
   images: string[]
+  /** The row's meta. Its author stamp decides which side the card is drawn on. */
+  meta?: Record<string, unknown> | null
   bodyBeyondPreview: boolean
   push: number
   bannerH: number
@@ -690,6 +692,7 @@ export function nextPinnedPromptState(
     raw,
     full,
     images,
+    meta,
     // By COMPARISON: a short multiline paste never clamps, so this flag is the
     // only thing that can reach its body.
     bodyBeyondPreview: full !== text,
