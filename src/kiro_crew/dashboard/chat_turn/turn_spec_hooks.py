@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
-from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth, sends_mcp_client_secret
 from kiro_crew.agent_sdk.kas_telemetry_notice import notice_gets_row
 from kiro_crew.agent_sdk.spec_hooks import (
     _MAX_SPEC_HOOKS,
@@ -266,9 +266,11 @@ async def _prepare_spec_hooks(
                 # Only a KAS engine Crew knows is older than 0.66.104 drops a
                 # remote MCP server's `oauth` block; the relay's version is unknown.
                 discards_mcp_oauth=on_kas and discards_mcp_oauth(client),
-                # Every KAS engine is sent no block that names a `clientSecret`
-                # or keeps nothing Crew can send (`oauth_withheld`).
+                # A KAS engine is sent no block that keeps nothing Crew can send
+                # (`oauth_withheld`), nor one that names a `clientSecret` unless it
+                # takes the secret through `setClientSecret`.
                 withholds_oauth_secret=on_kas,
+                sends_oauth_secret=on_kas and sends_mcp_client_secret(client),
                 # The session and app the KAS projection judged `trustedAgents` for.
                 governance_session_key=provider_session_key(client),
                 governance_app=app if isinstance(app, str) else None,

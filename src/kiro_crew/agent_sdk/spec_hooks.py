@@ -1264,6 +1264,7 @@ def crew_fired_spec_hooks(
     session_key: str = "",
     discards_mcp_oauth: bool = False,
     withholds_oauth_secret: bool = False,
+    sends_oauth_secret: bool = False,
     governance_session_key: str = "",
     governance_app: str | None = None,
     kas_checkout: str | None = None,
@@ -1282,7 +1283,9 @@ def crew_fired_spec_hooks(
     engine Crew knows drops a remote MCP server's ``oauth`` block.
     *withholds_oauth_secret* is true for every KAS session: its projection sends
     nothing, on any engine, from a block that names a ``clientSecret`` or keeps no
-    key it can send. *session_key*
+    key it can send, except that *sends_oauth_secret* (the engine announced
+    ``mcpOAuthClientSecret``) lets a confidential block with a ``clientId``
+    through without its secret. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
     *governance_session_key* and *governance_app* are the session and app the KAS
     projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
@@ -1301,6 +1304,7 @@ def crew_fired_spec_hooks(
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
         withholds_oauth_secret=withholds_oauth_secret,
+        sends_oauth_secret=sends_oauth_secret,
         session_key=governance_session_key,
         governance_app=governance_app,
     )
@@ -1685,7 +1689,7 @@ async def turn_spec_hooks(
     session_key = provider_session_key(provider)
     # The keys the session runs without, read as the chat turn reads them.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth, sends_mcp_client_secret
 
     on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
@@ -1697,6 +1701,7 @@ async def turn_spec_hooks(
                 translates_tools_settings=on_kas,
                 discards_mcp_oauth=on_kas and discards_mcp_oauth(provider),
                 withholds_oauth_secret=on_kas,
+                sends_oauth_secret=on_kas and sends_mcp_client_secret(provider),
                 session_key=session_key,
                 kas_checkout=kas_hook_checkout(provider) if project_hooks else None,
             )

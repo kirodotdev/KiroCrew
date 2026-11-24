@@ -1438,10 +1438,13 @@ the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 (`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
 `SessionCapabilities.honors_remote_mcp_oauth`). KAS engines before 0.66.104 had
 no slot for it (#27711); from 0.66.104 KAS takes a public client's `clientId` and
-`redirectUri`, but Crew withholds a block that names a `clientSecret` on every
-engine (`kas_engine_features.carry_oauth`), and every pre-registered provider is
-confidential. KAS joins the set once Crew sends the secret through
-`_kiro/mcp/oauth/setClientSecret` (#41723). A pre-registered provider's Connect
+`redirectUri`. A block that names a `clientSecret` reaches only an engine that
+announces `mcpOAuthClientSecret` (0.66.135, with `agent.kas_persist_mcp_sign_in`
+on): Crew sends it without the secret and the secret through
+`_kiro/mcp/oauth/setClientSecret` (`acp/kas_client_secret.py`); every other engine
+gets no block (`kas_engine_features.carry_oauth`). Every pre-registered provider
+is confidential, and this page is read before any engine runs, so it cannot tell
+whether a KAS chat will take the secret: KAS stays out of the set (#41723). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
 chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`
