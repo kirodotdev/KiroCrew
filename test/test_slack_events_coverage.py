@@ -410,6 +410,24 @@ class TestHandleYolo:
         assert _audit_rows(_real_sel, "slack.yolo_mode") == [("U_OWNER", "allowed", "yolo_off", "")]
 
     @pytest.mark.asyncio
+    async def test_off_is_confirmed_only_once_its_record_is_gone_for_good(
+        self, _yolo_env, _mock_sel
+    ):
+        order: list[str] = []
+
+        async def _settled() -> bool:
+            order.append("durable")
+            return True
+
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        respond = AsyncMock(side_effect=lambda *_a, **_k: order.append("confirmed"))
+        with patch("kiro_crew.slack.handler.disable_yolo", side_effect=lambda: order.append("off")):
+            with patch("kiro_crew.kept_grants.settle", _settled, create=True):
+                await ev._handle_yolo(orch, "U_OWNER", "off", respond)
+        assert order == ["off", "durable", "confirmed"]
+
+    @pytest.mark.asyncio
     async def test_renew_success_reports_minutes(self, _yolo_env, _real_sel):
         _yolo_env.renew.return_value = SimpleNamespace(renewed=True, ttl=1800)
         orch = _make_orch()
