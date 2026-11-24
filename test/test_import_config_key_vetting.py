@@ -194,6 +194,26 @@ def test_an_absolute_workspace_folder_keeps_the_whole_config(tmp_path, workspace
     assert not summary.get("refused_merges")
 
 
+def test_a_workspace_folder_realpath_cannot_resolve_is_not_the_data_home(_floor_monkeypatch):
+    """A folder whose resolution raises OSError (a Windows UNC share that is gone) is kept."""
+    import os
+
+    from kiro_crew.archive_config_vetting import _is_data_home
+    from kiro_crew.config.paths import config_dir
+
+    real = os.path.realpath
+    home = real(config_dir())
+    unreachable = os.path.join(home, "unreachable")
+
+    def realpath(path, *args, **kwargs):
+        if path == unreachable:
+            raise OSError(64, "The specified network name is no longer available", path)
+        return real(path, *args, **kwargs)
+
+    _floor_monkeypatch.setattr(os.path, "realpath", realpath)
+    assert _is_data_home("unreachable") is False
+
+
 @pytest.mark.parametrize("workspace_dir", ["../../outside", "..\\outside"])
 def test_the_overlay_config_local_json_is_held_to_the_same_workspace_rule(tmp_path, workspace_dir):
     snap = tmp_path / "snap"

@@ -103,7 +103,9 @@ def _is_data_home(raw: str) -> bool:
     try:
         # An absolute folder wins the join, so this is also the absolute case.
         folder = os.path.realpath(os.path.join(home, os.path.expanduser(raw)))
-    except ValueError:  # an embedded NUL: not resolvable, so not the data home
+    except (ValueError, OSError):
+        # An embedded NUL, or a Windows UNC share whose lookup fails with an error
+        # ntpath.realpath does not tolerate: not resolvable, so not the data home.
         return False
     return os.path.normcase(folder) == os.path.normcase(home)
 
