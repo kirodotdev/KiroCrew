@@ -31,7 +31,7 @@ def seen(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     daemon thread (``sel-writer``) that re-locks its file on every append, so a
     flush it starts while this fixture is installed would land in ``calls``
     and break an exact-list assertion on a change that has nothing to do with
-    it (#37631; the same exposure as #33379).
+    it.
 
     Every writer these tests drive -- ``write_queue_atomic``,
     ``_get_telemetry_salt``, ``open_log_for_append_owner_only`` and the two
