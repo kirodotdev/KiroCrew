@@ -105,6 +105,7 @@ from kiro_crew.dashboard.chat_api import resume as _owner_resume
 from kiro_crew.dashboard.chat_api import resume_identity as _owner_resume_identity
 from kiro_crew.dashboard.chat_api import resume_live as _owner_resume_live
 from kiro_crew.dashboard.chat_api import resume_window as _owner_resume_window
+from kiro_crew.dashboard.chat_api import send_decision as _owner_send_decision
 from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_relaunch
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
 from kiro_crew.dashboard.chat_api import slot_create as _owner_slot_create
@@ -160,8 +161,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _settle_send_race,
     _sweep_stale_permissions,
     api_chat,
-    decided_message_handling,
-    steer_is_auto,
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
     _close_managed,
@@ -262,6 +261,10 @@ from kiro_crew.dashboard.chat_api.resume_live import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
+)
+from kiro_crew.dashboard.chat_api.send_decision import (  # noqa: F401
+    decided_message_handling,
+    steer_is_auto,
 )
 from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     _report_reload_respawn,
@@ -478,6 +481,7 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     _unhide_folder,
     resolve_folder_project_dir_off_loop,
 )
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY, paste_meta  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _FLUSH_SNAPSHOT_RETRIES,
     _TRANSIENT_ROLES,
@@ -1506,6 +1510,7 @@ _facade_compose(
         _owner_agent_switch,
         _owner_app_admission,
         _owner_chat_send,
+        _owner_send_decision,
         _owner_conductor_close,
         _owner_continue_turn,
         _owner_crew_steer,

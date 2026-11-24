@@ -2496,8 +2496,10 @@ specified compatibility change.
     per-source cap the note route shares;
   - `slot_note` — the note route, its deferred hold, and `deliver_note`, the
     delivery half the merge-back route (`chat_merge_back.py`) shares;
-  - `chat_send`: the send path (`api_chat`) and the steer-or-queue decision a
+  - `chat_send`: the send path (`api_chat`) and the steer-or-queue choice a
     busy slot's human send asks for;
+  - `send_decision`: the `message.steer` decision behind that choice, when the
+    send asks Jev to pick (`steer_is_auto`, `decided_message_handling`);
   - `crew_steer` — a person's steer into a Crew Mode worker: whether a send is
     one (`_person_crew_worker_root`), the queue-entry marker the drain records it
     by (`mark_crew_steer`), and the hold on a steer written into a running turn
@@ -3914,6 +3916,20 @@ release of a single cancel. There is no bulk endpoint. Unlike a single cancel,
 Discard all puts no text back in the composer, and so it does not remove a card
 before the server answers. The expanded stack has no Discard all, because each
 of its cards has its own cancel.
+
+**A queued send keeps its paste blocks.** A send's `meta.pastes` (the collapsed
+paste blocks the composer sent) is kept on the queue entry when every block's text
+is in the message (`chat_paste_meta.paste_meta`; a malformed list is refused whole).
+The drain copies it onto the user row, and a merged row keeps every entry's blocks
+(`merged_pastes`), so the row draws the `[ Paste #N ]` chips after a reload or on
+another device, as a dispatched send's row does. A bot's chat queues every send
+(`responsive_chat.accept`), so without it the row came back as the whole paste.
+A block whose text the message holds only after trimming both ends (the send path
+strips the message) keeps the trimmed text. The durable queue copy leaves the
+blocks out (`durable_queue_entries`), since each repeats a span of the entry's
+text; a send restored after a restart shows its full text. An
+expanded chip renders its text as markdown, as the rest of the sent message does,
+up to `PASTE_MARKDOWN_MAX_CHARS`; a larger paste stays plain text.
 
 **An open queue editor holds the queue.** Opening a card's editor posts
 `{"editing": true}` to `/api/chat/slots/{slot}/queue/{queue_id}/editing`, which

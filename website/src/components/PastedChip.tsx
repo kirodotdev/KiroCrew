@@ -4,9 +4,11 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
+import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT, PASTE_MARKDOWN_MAX_CHARS } from './pastePreviewConstants'
 import PastePreviewTooltip from './PastePreviewTooltip'
 import { usePreviewScrollDismiss } from './usePreviewScrollDismiss'
+
+import MarkdownRenderer from './MarkdownRenderer'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -16,8 +18,8 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  *
  * Visual: tight accent-colored inline text matching body font. Click toggles an
  * animated inline reveal of the full content with a rounded accent bar gutter.
- * Text inside the expanded pre is lighter than surrounding bubble text so it
- * reads as a quote. No popups, no overlays.
+ * The content renders as markdown, as the rest of the sent message does, so a
+ * pasted table or list reads as one. No popups, no overlays.
  *
  * Hovering (or keyboard-focusing) the collapsed chip shows a small floating
  * preview of the first PREVIEW_MAX_LINES lines, so a paste can be identified
@@ -116,10 +118,19 @@ function PastedChip({ block }: { block: PasteBlock }) {
             style={{ overflow: 'hidden' }}
           >
             <div className="max-h-[280px] overflow-auto">
-              <div className="flex gap-3 py-1 text-[12px] font-mono text-muted leading-[1.55] whitespace-pre-wrap" style={{ wordBreak: 'break-word' }}>
-                <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-accent" />
-                <span className="flex-1 min-w-0">{block.content}</span>
-              </div>
+              {block.content.length > PASTE_MARKDOWN_MAX_CHARS ? (
+                <div className="flex gap-3 py-1 text-[12px] font-mono text-muted leading-[1.55] whitespace-pre-wrap" style={{ wordBreak: 'break-word' }} data-testid="pasted-chip-raw">
+                  <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-accent" />
+                  <span className="flex-1 min-w-0">{block.content}</span>
+                </div>
+              ) : (
+                // The same rendering as the rest of a sent message
+                // (renderFileSegment): what was pasted reads as the message did.
+                <div className="flex gap-3 py-1" data-testid="pasted-chip-markdown">
+                  <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-accent" />
+                  <div className="flex-1 min-w-0"><MarkdownRenderer content={block.content} softBreaks compactImages /></div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}

@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_delivery import (
     queue_for_next_turn,
     quote_meta,
 )
+from kiro_crew.dashboard.chat_paste_meta import paste_meta
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
@@ -556,6 +557,7 @@ async def accept(
         banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
         queued_work=queued_admission,
         knowledge=knowledge_meta(meta),
+        pastes=paste_meta(meta, message),
     )
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True
