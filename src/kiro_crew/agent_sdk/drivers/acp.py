@@ -639,7 +639,7 @@ def agent_spec_mcp_refs(
     for the same boot-path reason as every other function here.
     """
     from kiro_crew.acp.default_crew_servers import session_spec_on
-    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld
+    from kiro_crew.acp.mcp_ref_guard import drop_gate_withheld, drop_opted_out
     from kiro_crew.acp.session_mcp import agent_spec_snapshot
     from kiro_crew.acp_backends import selectable_backend_values
     from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
@@ -659,12 +659,18 @@ def agent_spec_mcp_refs(
                 raw = params.get("mcpServers")
                 wire = list(raw) if isinstance(raw, list) else []
             judged = session_spec_on(backend, agent, spec)
-            # Same filter as the runtime detector, so doctor's per-backend rows
-            # and a session's report agree on a gate-withheld server.
-            unresolved = drop_gate_withheld(
-                unresolved_server_refs(
-                    judged, wire, backend=backend, mcp_json=mcp_json_server_names(spec, backend)
-                )
+            # Same filters as the runtime detector, so doctor's per-backend rows and a
+            # session's report agree on a gate-withheld or an excluded server.
+            unresolved = drop_opted_out(
+                judged,
+                drop_gate_withheld(
+                    unresolved_server_refs(
+                        judged,
+                        wire,
+                        backend=backend,
+                        mcp_json=mcp_json_server_names(spec, backend),
+                    )
+                ),
             )
         except Exception:
             continue

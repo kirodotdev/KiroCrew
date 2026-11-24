@@ -722,7 +722,7 @@ ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN = frozenset(
 # shared translation resolves its spec with adds them when the mirror asks
 # (``session_mcp.session_mcp_projection``), through the helper kiro-cli's skill view
 # and KAS apply on their own paths (``acp.default_crew_servers``). These mirrors
-# mount a server whole and apply no ``excludedTools``, so the helper adds no app
+# mount a server whole and apply no per-tool ``excludedTools``, so the helper adds no app
 # server here and leaves out a default one an ``excludedTools`` entry may reach.
 # Measured on claude-agent-acp 0.94.0 and codex-acp 2.3.0: a custom agent's chat
 # called ``cron_list`` and ``artifact_list`` as Crew's default agent's did (on
