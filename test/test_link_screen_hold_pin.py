@@ -39,6 +39,13 @@ same way, because a screen found there with no use found there pairs with
 nothing. Only the argument is screened: the value such a call returns is not
 tainted the way a direct ``first_linked_ancestor`` assignment's is.
 
+The count is not the exact size of the class, in either direction. The screen
+set is not grown over the call graph, so a site screened only through a helper
+that wraps a screen (``_refuse_if_link``) is not found. And a few counted sites
+never read through the name they screen: a predicate that asks ``islink`` and
+then probes the same name for a junction, or a screen and a use on branches that
+exclude each other.
+
 A run in which the controls do not all hit is UNKNOWN, not a pass: the condition
 failed to find sites known to satisfy it, so its silence about everything else
 carries no weight. :func:`test_control_modules_are_all_found` prints the count so
@@ -86,8 +93,11 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_link_screen_hold_pin")
 
 #: Predicates that ask the filesystem whether a path is a link. Each one marks
 #: the pattern, so keying on a single symbol under-reports: the ancestor walk and
-#: the single-path check reach the same shape by different routes.
-SCREENS = frozenset({"first_linked_ancestor", "is_link_or_junction", "is_reparse_point"})
+#: the single-path check reach the same shape by different routes. ``islink`` is
+#: the stdlib spelling. It stays in :data:`PRIMITIVES`, and a call is read as a
+#: screen before it is read as a use. ``Path.is_symlink()`` is not here: a
+#: screen's subject is its first argument, and that call has none.
+SCREENS = frozenset({"first_linked_ancestor", "is_link_or_junction", "is_reparse_point", "islink"})
 
 #: By-name resolves in ``os``, ``os.path``, ``pathlib`` and ``shutil``. Both
 #: spellings of each question, because ``pathlib`` renames all of them. Plus the
@@ -199,6 +209,7 @@ CONTROL_MODULES = (
     "member_essential_context.py",
     "memory_files.py",
     "messaging/outbound_files.py",
+    "ui_prefs.py",
 )
 
 #: Sites whose contract is to hold the chain across the screen AND the use. The
@@ -219,7 +230,7 @@ RELEASE_CALL = "_release_held"
 #: deletion and everything stays green. A floor is the one assertion a deletion
 #: cannot satisfy, which is why these are numbers and a named member rather than a
 #: second copy of the lists.
-MIN_CONTROL_MODULES = 11
+MIN_CONTROL_MODULES = 12
 REQUIRED_HELD_SITE = (
     "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
     "_write_unit_order",
