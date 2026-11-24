@@ -448,6 +448,66 @@ def _k15_parked_pool_wait(module: _Module) -> Iterable[ast.AST]:
             yield node
 
 
+def _k23_silent_park_expiry(module: _Module) -> Iterable[ast.AST]:
+    """A park that ignores its own expiry: ``<obj>.wait(timeout=N)``, ``N >= 2``,
+    as a bare statement. ``threading.Event.wait`` answers False on expiry and
+    raises nothing, so the worker proceeds un-parked when the budget runs out
+    and the assertions that follow report an ordering violation that never
+    happened — host load dressed as a correctness bug (the write-safety
+    tokenless park was one). A consumed return (``assert ev.wait(5)``, an
+    ``if not`` guard) is a held wait and does not match; a bound under 2 s is
+    K9's. ``subprocess`` waits raise ``TimeoutExpired`` instead of proceeding,
+    so a receiver whose last name says process is left out; an Event bound to
+    such a name is a known miss, and a deliberate silent park carries
+    ``# flake-ok: <reason>``."""
+    for node in module.calls:
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "wait":
+            continue
+        if not isinstance(module.parents.get(node), ast.Expr):
+            continue
+        seconds = _literal_timeout(node, 0)
+        if seconds is None or seconds < 2 or module.inside_raises_timeout(node):
+            continue
+        receiver = func.value
+        if isinstance(receiver, ast.Call):
+            # ``Popen(cmd).wait(10)``, ``Barrier(n).wait(5)``: a constructed
+            # object, not a shared Event a worker parks on.
+            continue
+        name = receiver.id if isinstance(receiver, ast.Name) else ""
+        if isinstance(receiver, ast.Attribute):
+            name = receiver.attr
+        if "proc" in name or name in ("child", "popen", "p"):
+            continue
+        if isinstance(receiver, ast.Name) and _k23_bound_to_raising_wait(module, node, name):
+            continue
+        yield node
+
+
+#: Constructors whose ``.wait(timeout)`` raises on expiry instead of returning False.
+_K23_RAISING_WAITS = ("Popen", "Process", "Barrier")
+
+
+def _k23_bound_to_raising_wait(module: _Module, node: ast.AST, name: str) -> bool:
+    """``name`` is assigned, in the function holding ``node``, from a process or
+    barrier constructor or a ``spawn`` helper (``root = self._spawn_isolated()``)."""
+    scope = module.enclosing_function(node) or module.tree
+    for assign in ast.walk(scope):
+        if not isinstance(assign, ast.Assign) or not isinstance(assign.value, ast.Call):
+            continue
+        bound = [
+            n
+            for t in assign.targets
+            for n in ([t] if isinstance(t, ast.Name) else getattr(t, "elts", []))
+        ]
+        if not any(isinstance(n, ast.Name) and n.id == name for n in bound):
+            continue
+        callee = _dotted(assign.value.func).rsplit(".", 1)[-1]
+        if callee.endswith(_K23_RAISING_WAITS) or "spawn" in callee.lower():
+            return True
+    return False
+
+
 def _k18_xfail_strict_false(module: _Module) -> Iterable[ast.AST]:
     """``pytest.mark.xfail(strict=False)`` overrides the global ``xfail_strict = true``
     in ``setup.cfg``, making an unexpected pass invisible until it silently pollutes main.
@@ -908,6 +968,7 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K14-unpaused-crew-log-rmtree": ("rmtree",),
     "K15-parked-pool-wait": ("to_thread", "run_in_executor"),
     "K16-module-async-state": ("create_task", "call_later", "ensure_future", "call_at"),
+    "K23-silent-park-expiry": ("wait",),
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
     "K20-on-loop-session-write": ("update_metadata",),
@@ -932,6 +993,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K14-unpaused-crew-log-rmtree": _k14_unpaused_crew_log_rmtree,
     "K15-parked-pool-wait": _k15_parked_pool_wait,
     "K16-module-async-state": _k16_module_async_state,
+    "K23-silent-park-expiry": _k23_silent_park_expiry,
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
     "K20-on-loop-session-write": _k20_on_loop_session_write,
@@ -1285,6 +1347,23 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(work, 5)\n    await asyncio.to_thread(ev.is_set)\n"
         "    await loop.run_in_executor(None, work, 5)\n"
         "    await async_wait_until(ev.is_set)\ndef held():\n    assert ev.wait(5)\n",
+    ),
+    "K23-silent-park-expiry": (
+        (
+            "def worker():\n    release.wait(timeout=10)\n",
+            "def worker():\n    gate.wait(30.0)\n",
+            "def worker(self):\n    self.release.wait(timeout=5)\n",
+        ),
+        # A consumed return (assert / if-not), a process wait that raises on
+        # expiry, and a short bound, which is K9's.
+        "import pytest\ndef worker():\n    assert release.wait(timeout=10)\n"
+        "    if not gate.wait(5):\n        raise AssertionError('never released')\n"
+        "    proc.wait(timeout=30)\n    release.wait(0.5)\n"
+        # Constructed or spawned processes and barriers raise on expiry.
+        "    subprocess.Popen(cmd).wait(timeout=10)\n    threading.Barrier(2).wait(timeout=5)\n"
+        "def held_spawn(self):\n    root = self._spawn_isolated()\n    root.wait(timeout=10)\n"
+        "    tree, gc_pid = self._spawn_tree()\n    tree.wait(timeout=10)\n"
+        "    server = subprocess.Popen(cmd)\n    server.wait(timeout=10)\n",
     ),
     "K16-module-async-state": (
         (
