@@ -244,7 +244,7 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
 
 
 def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
-    """*backend*, moved onto KAS where a Kiro CLI pick runs there (one rule for every
+    """*backend*, moved onto KAS where a Bot's Kiro CLI pin runs there (one rule for every
     requested backend: :func:`~kiro_crew.agent_sdk.backends.requested_kiro_pick`)."""
     from kiro_crew.agent_sdk.backends import requested_kiro_pick
 

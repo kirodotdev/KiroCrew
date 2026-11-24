@@ -304,7 +304,7 @@ def _local_js_isolated(helpers: Any, expression: str) -> Any:
     return (out.get("result") or {}).get("value")
 
 
-def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, bool]:
+def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, Any]:
     """Set one ``<input type=file>`` to *files* (1 to :data:`_MAX_FILES` gateway-staged paths).
 
     *expression* is the walker's ``fileInput(ref, true)``, evaluated in the same
@@ -312,6 +312,15 @@ def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, boo
     element only when it is a visible, enabled file input, else ``null``, and then
     nothing is set (``{"ok": false}``). ``DOM.setFileInputFiles`` on that node fires
     the page's own ``input`` and ``change`` events.
+
+    A folder field (``webkitdirectory``) is filled by the browser listing the staged
+    folder, which the full Chrome build does only for the active tab, and Harness
+    opens its tabs in the background: the tab is brought to the front first. The
+    browser's own ``input`` event on the field, noted by a listener in this world, must
+    fire within :data:`_FOLDER_WAIT_S`, else ``folder_field_unsupported``; ``files`` is
+    not read, since the page's ``change`` handler may clear it. A flag read that fails
+    because a new document replaced the page after the set (the page acted on the
+    files, as one that submits on its own ``change`` does) counts as filled.
     """
     _check_files(files, "set_files")
     out = helpers.cdp(
@@ -327,7 +336,27 @@ def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, boo
     if found.get("subtype") != "node" or not isinstance(object_id, str):
         return {"ok": False}
     try:
+        folder = _node_value(helpers, object_id, "this.webkitdirectory") is True
+        if folder:
+            _node_value(helpers, object_id, _ARM_FOLDER_INPUT)
+            helpers.cdp("Page.bringToFront")
+            loader = _top_loader(helpers)
         helpers.cdp("DOM.setFileInputFiles", files=files, objectId=object_id)
+        if folder:
+            deadline = time.monotonic() + _FOLDER_WAIT_S
+            while True:
+                try:
+                    if _node_value(helpers, object_id, f"this.{_FOLDER_INPUT_FLAG}") is True:
+                        break
+                except Exception:
+                    # The world went with its document: filled only when a new document
+                    # replaced the page after the set, as a page submitting on change does.
+                    if loader is None or _top_loader(helpers) in (None, loader):
+                        raise
+                    break
+                if time.monotonic() >= deadline:
+                    return {"ok": False, "code": "folder_field_unsupported"}
+                time.sleep(_POLL_S)
     finally:
         try:
             helpers.cdp("Runtime.releaseObject", objectId=object_id)
@@ -336,11 +365,42 @@ def _local_set_files(helpers: Any, expression: str, files: Any) -> dict[str, boo
     return {"ok": True}
 
 
+def _node_value(helpers: Any, object_id: str, value: str) -> Any:
+    """*value* (an expression over ``this``) read on the node *object_id*, in its own world."""
+    out = helpers.cdp(
+        "Runtime.callFunctionOn",
+        objectId=object_id,
+        functionDeclaration=f"function() {{ return {value}; }}",
+        returnByValue=True,
+    )
+    return (out.get("result") or {}).get("value")
+
+
+def _top_loader(helpers: Any) -> str | None:
+    """The ``loaderId`` of the tab's top frame, which a new document there replaces."""
+    tree = helpers.cdp("Page.getFrameTree").get("frameTree") or {}
+    loader = (tree.get("frame") or {}).get("loaderId")
+    return loader if isinstance(loader, str) and loader else None
+
+
 #: Most paths one helper call hands the browser; the gateway's ``upload``
 #: (``UPLOAD_MAX_TREE_FILES``) is the same, kept equal by a test.
 _MAX_FILES = 100
 #: How long a click is given to open a file chooser before ``no_chooser``.
 _CHOOSER_WAIT_S = 3.0
+#: How long the browser is given to list a staged folder into a folder field.
+_FOLDER_WAIT_S = 3.0
+#: Set on the folder field's wrapper in the walker's world by the browser's own next
+#: ``input`` event (``isTrusted``: one the page makes is ignored), seen in capture on the
+#: field's root (its document or shadow root, where ``target`` is still the field) before
+#: a page listener on the field can stop it; reset on every call, since that world is
+#: reused across calls.
+_FOLDER_INPUT_FLAG = "__kcFolderInput"
+_ARM_FOLDER_INPUT = (
+    f"(this.{_FOLDER_INPUT_FLAG} = false, ((n, r) => r.addEventListener('input', "
+    f"function noted(e) {{ if (e.isTrusted && e.target === n) {{ n.{_FOLDER_INPUT_FLAG} = true; "
+    f"r.removeEventListener('input', noted, true); }} }}, true))(this, this.getRootNode()))"
+)
 _POLL_S = 0.05
 
 

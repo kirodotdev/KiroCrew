@@ -32,6 +32,7 @@ from kiro_crew.config.integration_sections import (
 )
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
+    KIRO_CLI_PICK_STORED_ATTR,
     _build_agent_config,
     _build_dashboard_config,
     _build_session_config,
@@ -900,6 +901,7 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
+        setattr(cfg.agent, KIRO_CLI_PICK_STORED_ATTR, False)
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (

@@ -1,0 +1,11 @@
++204
+The self-kill floor reads the Windows programs that end a process by name
+(taskkill, Stop-Process and its spps alias, wmic), in command position only, at
+the one place each names its target: the taskkill /im operand or an imagename eq
+filter, the Stop-Process -Name operand or the Get-Process source of the pipe that
+feeds it, and a non-negated = or like comparison of a wmic delete or terminate
+(the last path segment for executablepath and commandline). self_kill_windows.py holds that
+reader and its -WhatIf dry-run exemption; it finds command position through
+argv_rules, which now also holds the Windows program-position helpers moved from
+deny_gate and the start and call wrappers. The vocabulary module holds the program
+set and its comment.

@@ -12,7 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
-from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES, STORED_BACKEND_KIRO
 from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
@@ -758,6 +758,7 @@ def _builtin_adoption_nav(raw: object) -> dict[str, dict[str, str]]:
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     agent = _agent_section_fields(agent_data)
     mark_member_backend_inherited(agent, member_backend_inherited(agent_data))
+    setattr(agent, KIRO_CLI_PICK_STORED_ATTR, agent_data.get("acp_backend") == STORED_BACKEND_KIRO)
     return agent
 
 
@@ -785,6 +786,11 @@ MEMBER_BACKEND_INHERITED_ATTR = "_member_backend_inherited"
 def mark_member_backend_inherited(agent: AgentConfig, inherited: bool) -> None:
     """Record on *agent* whether its ``member_acp_backend`` was inherited."""
     setattr(agent, MEMBER_BACKEND_INHERITED_ATTR, inherited)
+
+
+#: Whether a loaded agent section's ``agent.acp_backend`` is stored as the Kiro CLI
+#: pick: plain for the same reason as :data:`MEMBER_BACKEND_INHERITED_ATTR`.
+KIRO_CLI_PICK_STORED_ATTR = "_kiro_cli_pick_stored"
 
 
 def _agent_section_fields(agent_data: dict) -> AgentConfig:

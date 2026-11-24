@@ -340,14 +340,15 @@ jobs:
 
           # Build records. Name is passed via jq --arg (safe JSON encoding, never
           # shell-eval'd); the script validates the login and HTML-escapes the
-          # name. `.name // .login` covers users with no display name set.
+          # name. `.name // .login` covers users with no display name set. A failed
+          # lookup still prints its error body, so the login replaces that output.
           : >/tmp/records.jsonl
           while IFS= read -r login; do
             [ -n "$login" ] || continue
             if grep -qixF "$login" /tmp/known.txt; then
               name="$login"
             else
-              name="$(gh api "users/$login" --jq '.name // .login' 2>/dev/null || printf '%s' "$login")"
+              name="$(gh api "users/$login" --jq '.name // .login' 2>/dev/null)" || name="$login"
             fi
             jq -cn --arg l "$login" --arg n "$name" '{login: $l, name: $n}' >>/tmp/records.jsonl
           done </tmp/logins.txt

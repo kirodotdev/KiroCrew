@@ -79,7 +79,7 @@ def schemas() -> list[dict[str, Any]]:
                 "or a glob such as ~/Pictures/*.png; at most 100 files and 25 MiB in "
                 "all; links are skipped, a protected location is refused). `via`: "
                 "input (default) for a shown, enabled file field, a ref the snapshot "
-                "marks [file] (a folder only onto a drop zone); chooser clicks the "
+                "marks [file] (a folder only into a folder field); chooser clicks the "
                 "ref (a 'Choose file' button) and fills the file picker it opens; drop "
                 "drops them on the ref, a drop zone; both also take x,y pixels instead of "
                 "a ref, for a zone the snapshot gives no ref. The page gets checked copies under "

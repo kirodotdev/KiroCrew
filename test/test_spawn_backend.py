@@ -314,9 +314,9 @@ class TestSpawnEndpoint:
 
 
 class TestKiroFollowsTheKiroCliPick:
-    """``backend="kiro"`` runs where a stored Kiro CLI pick would: on KAS once this
-    host confirmed kiro-cli's v3 engine and KAS is selectable and can start, else on
-    the Kiro CLI (v2) launch."""
+    """``backend="kiro"`` runs where a Bot's Kiro CLI pin would: on KAS once this
+    process recorded that kiro-cli's help names its v3 engine and KAS is selectable
+    and can start, else on the Kiro CLI (v2) launch."""
 
     @pytest.fixture
     def kas_startable(self, selectable, monkeypatch):

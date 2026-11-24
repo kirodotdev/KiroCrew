@@ -409,7 +409,7 @@ def harnesses(monkeypatch):
     from kiro_crew.agent_sdk import backends
 
     monkeypatch.setattr(backends, "selectable_backends", lambda: _SELECTABLE)
-    monkeypatch.setattr(backends, "kiro_cli_pick_backend", lambda: "kas")
+    monkeypatch.setattr(backends, "kiro_cli_listed_backend", lambda: "kas")
     monkeypatch.setattr(members_mod, "_CREWMATE_WORKER_SLOTS", set())
     monkeypatch.setattr(members_mod, "_CREWMATE_WORKER_MEMBERS", {})
     monkeypatch.setattr(members_mod, "_SESSION_BACKEND_PICKS", {})

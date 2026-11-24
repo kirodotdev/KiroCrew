@@ -3591,7 +3591,11 @@ Telegram, which persist the new message only after the restore, pass
 `newest_request=True`: a request after the newest `stop_event` marker is then the
 stopped one, and the marker an older surface's Stop (a channel Stop writes none).
 The dashboard leaves it off, because a drained queue row can already follow its
-own marker; Slack keeps its existing call.
+own marker; Slack keeps its existing call. The dashboard also passes the history
+replay its prompt carries (`replay=`). A cold start rebuilds that replay from this
+same log, so when it already holds the stopped request as a `User:` row the restore
+is `""` and the request reaches the model once (see
+`docs/system-specs/modules/session.md`).
 
 ## Session Lifecycle
 

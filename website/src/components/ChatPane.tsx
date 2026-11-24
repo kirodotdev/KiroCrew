@@ -43,6 +43,7 @@ import PaneDim from './PaneDim'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import McpLoadingBar from '../pages/chat/McpLoadingBar'
+import { ChatTranscriptSkeleton } from './ChatTranscriptSkeleton'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter, { allToolCallsReturned, transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
 import { useChatProjectDir, useEnvironmentStartLabel, useSlotRunsHere } from './sessionEnvironmentHooks'
@@ -151,6 +152,7 @@ export default function ChatPane({
   crewmate,
   crewmateShown = true,
   onOpenCrewWorkLog,
+  historyKnown = false,
   threads,
   onSessionOpen,
   sessions,
@@ -630,7 +632,7 @@ export default function ChatPane({
     if (pagesActiveSlot) loadOlder()
     else loadOlderPane()
   }, [crewmateQuietUnproven, canWalk, walkLoading, walkFailed, pagesActiveSlot, loadOlder, loadOlderPane])
-  const { data: slotDetail, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
+  const { data: slotDetail, isPending: slotDetailPending, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
     queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
@@ -640,6 +642,11 @@ export default function ChatPane({
   // still-loading active slot has no page marker for the hold below to read,
   // and this re-run is what places its page and flags it.
   const paneIsActive = slotKey === activeSlot
+  // The transcript skeleton, on the same terms as the Sessions chat's slot
+  // load: only while this slot's first page is in flight and nothing of it is
+  // in the store yet. A cached revisit has its page at once, so it never shows
+  // on a later refresh; a host that cannot vouch for history never sees it.
+  const firstPageSkeleton = historyKnown && slotDetailPending && allMessages.length === 0
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
@@ -871,6 +878,7 @@ export default function ChatPane({
            pane renders the session the user just opened. */
         data-pane-slot={slotKey}
         data-chat-scope=""
+        aria-busy={firstPageSkeleton || undefined}
         {...dropTargetProps}
         /* No background of its own, like the single chat page's pane: each
            host paints `bg-bg` under it (the split grid, the side panel, the
@@ -1161,6 +1169,13 @@ export default function ChatPane({
           </SearchHighlightContext.Provider>
           </RunInTerminalOriginSlot.Provider>
         </ChatProjectDirCtx.Provider>
+        {/* Between the host band and the dock, so the header and the composer
+            stay usable while the first page loads. */}
+        {firstPageSkeleton && (
+          <div className="absolute inset-x-0 z-[2] pointer-events-none" style={{ top: topInset, bottom: dockH }} data-testid="chat-pane-skeleton">
+            <ChatTranscriptSkeleton />
+          </div>
+        )}
         {/* Composer dock. Floats over the bottom of the transcript scroller
             instead of sitting under it in the flex column (ChatPage's iOS
             toolbar layout, decided in

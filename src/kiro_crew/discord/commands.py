@@ -59,7 +59,10 @@ def parse_command(text: str) -> str | None:
     'link', 'unlink', 'stop', 'help'.
     """
     stripped = text.strip()
-    cmd = stripped.split()[0].lower() if stripped.startswith(_PREFIXES) and stripped.split() else ""
+    if not stripped.startswith(_PREFIXES):
+        return None
+    # Prefix-led after a strip, so the first token always exists.
+    cmd = stripped.split()[0].lower()
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:

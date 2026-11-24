@@ -90,10 +90,12 @@ wherever a conductor runs, rather than discovering the refusal from a worker tha
 cannot report.
 
 **The acceptance condition is named before dispatch, not after.** It is one of
-five kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
+six kinds: `pr_checks` (a pull request's checks are all green), `pr_merged` (a
 pull request has merged), `edition_check` (a check an installed edition
 provides through `kirocrew acceptance-check`, for work that lands where the
-evaluator cannot read it itself), `file` (a path exists), or `human_approval`
+evaluator cannot read it itself), `git_commit` (a local branch, named by an
+absolute repository path, has a commit past a base sha), `file` (a path
+exists), or `human_approval`
 (you accept it — legitimate for a design review,
 and never machine-evaluated). There is deliberately no "run this command" kind,
 so "the tests pass" is expressed as `pr_checks` on the pull request that carries
