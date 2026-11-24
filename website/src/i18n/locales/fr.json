@@ -11073,7 +11073,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "Verrouillé par la politique",
-      "tooltip": "La politique de ton organisation contrôle ce paramètre. Une modification faite ici n’a aucun effet."
+      "tooltip": "La politique de ton organisation contrôle ce paramètre. Une modification faite ici n’a aucun effet.",
+      "edition_label": "Non disponible dans cette édition",
+      "edition_tooltip": "Cette édition ne propose pas ce paramètre, et un administrateur ne peut pas l’activer. Une modification faite ici n’a aucun effet.",
+      "edition_set_label": "Fixé par cette édition",
+      "edition_set_tooltip": "Cette édition fixe cette valeur, et un administrateur ne peut pas la modifier."
     },
     "directDeploy": {
       "deploy_via_agent": "Déployer via l'agent",
@@ -20179,7 +20183,7 @@
         "automatic_updates_are_unavailable_in_this_build": "Les mises à jour automatiques ne sont pas disponibles dans cette version",
         "automatic_updates_unavailable_dev_build": "Les mises à jour automatiques ne sont pas disponibles dans cette version (version de développement).",
         "automatic_updates_unavailable_channel": "Les mises à jour automatiques ne sont pas disponibles car ce canal de publication ne propose pas encore de builds pour votre plateforme. Changez de canal ci-dessus pour recevoir les mises à jour.",
-        "automatic_updates_unavailable_policy_channel": "Cette build {{build}} ne peut pas passer aux mises à jour {{channel}} qu'exige la stratégie de ton organisation : les mises à jour automatiques sont donc désactivées.",
+        "automatic_updates_unavailable_policy_channel": "Cette build {{build}} ne peut pas passer aux mises à jour {{channel}} qu'exige cette édition : les mises à jour automatiques sont donc désactivées.",
         "automatic_updates_policy_channel_download": "<download>Installe l'app {{channel}}</download> pour recevoir à nouveau les mises à jour. Tes réglages, chats et fichiers sont conservés.",
         "update_channel_requires": "exige {{channel}}",
         "automatic_updates_unavailable_platform": "Les mises à jour automatiques ne sont pas disponibles dans cette version sur cette plateforme.",
@@ -21987,6 +21991,7 @@
         "credential_redaction_toggle": "Masquer les identifiants",
         "credential_redaction_toggle_help": "Masque les clés, jetons et mots de passe dans le chat, les canaux de messagerie, le prompt de l’agent, les fichiers et les journaux.",
         "credential_redaction_locked": "Un administrateur contrôle ce réglage.",
+        "credential_redaction_locked_edition": "Cette édition masque toujours les identifiants, et un administrateur ne peut pas le désactiver.",
         "credential_redaction_read_failed": "Impossible de lire le réglage de masquage.",
         "credential_redaction_write_failed": "Impossible d’enregistrer la modification. {{state}}",
         "credential_redaction_retry": "Réessayer",
@@ -24410,7 +24415,7 @@
       "why_marker": "En lecture seule : {{productName}} le règle quand tu termines une étape.",
       "why_alias": "En lecture seule : {{productName}} lit cette valeur dans un autre réglage, une modification ici ne changerait rien.",
       "why_text": "En lecture seule : il contient du texte libre, comme un chemin de fichier, une adresse web ou une commande.",
-      "why_locked": "En lecture seule : la politique de ton organisation le fixe.",
+      "why_locked": "En lecture seule : cette édition le fixe, et un administrateur ne peut pas le modifier.",
       "why_compound": "En lecture seule : il contient plusieurs valeurs qui doivent changer ensemble.",
       "restart": "S'applique après redémarrage de la passerelle",
       "default_label": "Par défaut : {{value}}",

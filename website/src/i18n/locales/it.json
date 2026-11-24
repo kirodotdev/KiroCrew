@@ -11073,7 +11073,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "Bloccato dai criteri",
-      "tooltip": "I criteri della tua organizzazione controllano questa impostazione. Una modifica fatta qui non ha effetto."
+      "tooltip": "I criteri della tua organizzazione controllano questa impostazione. Una modifica fatta qui non ha effetto.",
+      "edition_label": "Non disponibile in questa edizione",
+      "edition_tooltip": "Questa edizione non offre questa impostazione, e un amministratore non può attivarla. Una modifica fatta qui non ha effetto.",
+      "edition_set_label": "Impostato da questa edizione",
+      "edition_set_tooltip": "Questa edizione imposta questo valore, e un amministratore non può cambiarlo."
     },
     "directDeploy": {
       "deploy_via_agent": "Distribuisci tramite agente",
@@ -20179,7 +20183,7 @@
         "automatic_updates_are_unavailable_in_this_build": "Gli aggiornamenti automatici non sono disponibili in questa build",
         "automatic_updates_unavailable_dev_build": "Gli aggiornamenti automatici non sono disponibili in questa build (build di sviluppo).",
         "automatic_updates_unavailable_channel": "Gli aggiornamenti automatici non sono disponibili perché questo canale di rilascio non ha ancora build per la tua piattaforma. Cambia canale qui sopra per ricevere gli aggiornamenti.",
-        "automatic_updates_unavailable_policy_channel": "Questa build {{build}} non può passare agli aggiornamenti {{channel}} richiesti dai criteri della tua organizzazione, quindi gli aggiornamenti automatici sono disattivati.",
+        "automatic_updates_unavailable_policy_channel": "Questa build {{build}} non può passare agli aggiornamenti {{channel}} richiesti da questa edizione, quindi gli aggiornamenti automatici sono disattivati.",
         "automatic_updates_policy_channel_download": "<download>Installa l'app {{channel}}</download> per ricevere di nuovo gli aggiornamenti. Impostazioni, chat e file vengono mantenuti.",
         "update_channel_requires": "richiede {{channel}}",
         "automatic_updates_unavailable_platform": "Gli aggiornamenti automatici non sono disponibili in questa build su questa piattaforma.",
@@ -21987,6 +21991,7 @@
         "credential_redaction_toggle": "Oscura le credenziali",
         "credential_redaction_toggle_help": "Oscura chiavi, token e password nella chat, nei canali di messaggistica, nel prompt dell’agente, nei file e nei log.",
         "credential_redaction_locked": "Un amministratore controlla questa impostazione.",
+        "credential_redaction_locked_edition": "Questa edizione oscura sempre le credenziali, e un amministratore non può disattivarlo.",
         "credential_redaction_read_failed": "Impossibile leggere l’impostazione di oscuramento.",
         "credential_redaction_write_failed": "Impossibile salvare la modifica. {{state}}",
         "credential_redaction_retry": "Riprova",
@@ -24410,7 +24415,7 @@
       "why_marker": "Sola lettura: {{productName}} la imposta quando finisci un passaggio.",
       "why_alias": "Sola lettura: {{productName}} legge questo valore da un'altra impostazione, quindi cambiarlo qui non farebbe nulla.",
       "why_text": "Sola lettura: contiene testo libero, come un percorso di file, un indirizzo web o un comando.",
-      "why_locked": "Sola lettura: la imposta la politica della tua organizzazione.",
+      "why_locked": "Sola lettura: la imposta questa edizione, e un amministratore non può cambiarla.",
       "why_compound": "Sola lettura: contiene più valori che devono cambiare insieme.",
       "restart": "Si applica dopo il riavvio del gateway",
       "default_label": "Predefinito: {{value}}",
