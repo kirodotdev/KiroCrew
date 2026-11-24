@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, type ReactNode } from 'react'
 import { ChevronDown, ImageOff } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { EdgeFade } from '../../app-sdk/ChatScrollChrome'
 import { ROW_PAD_Y, PINNED_PREVIEW_LINES, PINNED_RESTING_LINES, pinnedImageUrl } from '../../utils/pinnedPrompt'
-import { OtherSenderBubble } from './shared-crew/MessageByline'
+import { MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
 
 interface PinnedPromptProps {
   /** Clamped plain-text preview of the pinned prompt (images stripped out). */
@@ -86,6 +86,10 @@ interface PinnedPromptProps {
    * line from it (`pinHandoffY`), so it must never come from measuring the card
    * while the expand/collapse morph below is animating `height` — that samples an
    * expanded-size height and moves the line by the difference.
+   *
+   * The sender's name above another person's card is part of this height: the
+   * host's push, its tall-prompt gate and the strip test all read it as "from
+   * the band's top padding to the card's bottom", and the name sits in that span.
    */
   onCollapsedHeight?: (h: number) => void
   /**
@@ -216,7 +220,16 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
 export default function PinnedPrompt({ meta, slotKey, ...card }: PinnedPromptProps) {
   return (
     <OtherSenderBubble meta={meta ?? undefined} slotKey={slotKey}>
-      {other => <PinnedPromptCard {...card} other={other} />}
+      {other => (
+        <PinnedPromptCard
+          {...card}
+          other={other}
+          // The transcript's own byline, so the card names its sender with the
+          // text and the look of the row it stands in for. Not `continuesRun`:
+          // the card is on its own, with no named row above it to lean on.
+          byline={other ? <MessageByline meta={meta ?? undefined} slotKey={slotKey} /> : null}
+        />
+      )}
     </OtherSenderBubble>
   )
 }
@@ -225,12 +238,31 @@ export default function PinnedPrompt({ meta, slotKey, ...card }: PinnedPromptPro
  * `other`: someone else sent the prompt. The card then sits on the start side
  * with the outlined bubble, as that person's row does in the transcript
  * (UserMessage), so a filled card on the end side is always the reader's own.
+ * `byline` names that sender above the box, as the row's byline does.
  */
 function PinnedPromptCard({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey, other,
-}: Omit<PinnedPromptProps, 'meta' | 'slotKey'> & { other: boolean }) {
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey, other, byline,
+}: Omit<PinnedPromptProps, 'meta' | 'slotKey'> & { other: boolean; byline: ReactNode }) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
+  // The byline's own height (its line plus the gap under it), 0 without one.
+  // It rides above the box inside the card, so every height this card hands
+  // out — the resting height, the mask, the room under the ceiling — counts it.
+  // Read live where a height is reported, and kept in state for the render.
+  const bylineRef = useRef<HTMLDivElement | null>(null)
+  const hasByline = byline != null
+  const readBylineH = () => bylineRef.current?.getBoundingClientRect().height ?? 0
+  const [bylineH, setBylineH] = useState(0)
+  useLayoutEffect(() => {
+    const el = bylineRef.current
+    if (!el) { setBylineH(0); return }
+    const measure = () => setBylineH(el.getBoundingClientRect().height)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [hasByline])
   const lastBoxH = useRef<number | null>(null)
   const [clamped, setClamped] = useState(false)
   // Natural height of the whole band when a peeked or expanded card owns it —
@@ -371,8 +403,11 @@ function PinnedPromptCard({
     // ceiling, and a stale override here would outlive the fold too.
     el.style.alignItems = ''
     el.style.overflow = 'hidden'
-    el.style.height = `${liveH}px`
-  }, [liveH])
+    // `liveH` is measured from the card's top, and the byline sits between
+    // that top and the box: the box takes what is left under it, as its
+    // ceiling does (`maxH`), so the card's bottom stays on the bubble's.
+    el.style.height = `${Math.max(0, liveH - bylineH)}px`
+  }, [liveH, bylineH])
 
   // Hand every scroll gesture over the card to the transcript, because the browser
   // will not. The card is interactive (its text is selectable, its buttons work) and
@@ -389,6 +424,10 @@ function PinnedPromptCard({
   useEffect(() => {
     const box = boxRef.current
     if (!box || !scrollTranscriptBy) return
+    // The sender's name sits above the box inside the same interactive card,
+    // so it forwards too: a wheel over it would otherwise be the one strip of
+    // the card that does not scroll.
+    const hosts = bylineRef.current ? [box, bylineRef.current] : [box]
     // `deltaMode` is not always pixels. Firefox reports lines, and page mode exists
     // too; treating either as pixels would move the transcript by a few px when the
     // reader asked for a screen. The line height to convert with is the PARAGRAPH's
@@ -423,7 +462,7 @@ function PinnedPromptCard({
             if (room) return true
           }
         }
-        if (el === box) break
+        if (el === box || el === bylineRef.current) break
         el = el.parentElement
       }
       return false
@@ -462,19 +501,23 @@ function PinnedPromptCard({
     const onTouchEnd = () => {
       lastY = null
     }
-    box.addEventListener('wheel', onWheel, { passive: false })
-    box.addEventListener('touchstart', onTouchStart, { passive: true })
-    box.addEventListener('touchmove', onTouchMove, { passive: false })
-    box.addEventListener('touchend', onTouchEnd, { passive: true })
-    box.addEventListener('touchcancel', onTouchEnd, { passive: true })
-    return () => {
-      box.removeEventListener('wheel', onWheel)
-      box.removeEventListener('touchstart', onTouchStart)
-      box.removeEventListener('touchmove', onTouchMove)
-      box.removeEventListener('touchend', onTouchEnd)
-      box.removeEventListener('touchcancel', onTouchEnd)
+    for (const host of hosts) {
+      host.addEventListener('wheel', onWheel, { passive: false })
+      host.addEventListener('touchstart', onTouchStart, { passive: true })
+      host.addEventListener('touchmove', onTouchMove, { passive: false })
+      host.addEventListener('touchend', onTouchEnd, { passive: true })
+      host.addEventListener('touchcancel', onTouchEnd, { passive: true })
     }
-  }, [scrollTranscriptBy])
+    return () => {
+      for (const host of hosts) {
+        host.removeEventListener('wheel', onWheel)
+        host.removeEventListener('touchstart', onTouchStart)
+        host.removeEventListener('touchmove', onTouchMove)
+        host.removeEventListener('touchend', onTouchEnd)
+        host.removeEventListener('touchcancel', onTouchEnd)
+      }
+    }
+  }, [scrollTranscriptBy, hasByline])
 
   // Height MORPH on expand/collapse and on peek open/close —
   // the fold. The card's height is
@@ -518,7 +561,7 @@ function PinnedPromptCard({
     // height, and the hand-off line derived from it would jump by the difference
     // — hiding a transcript row that is still on screen. A peeked height is never
     // reported for the same reason: it is not where the card rests.
-    if (!expanded && !peek) onCollapsedHeight?.(target)
+    if (!expanded && !peek) onCollapsedHeight?.(target + readBylineH())
     if (from == null || Math.abs(from - target) < 0.5) return
     // Reduced motion: land on the new height in one step. The peek makes this
     // morph fire on every hover, which is far more often than the chevron did.
@@ -547,7 +590,7 @@ function PinnedPromptCard({
     }
     el.addEventListener('transitionend', done)
     return () => el.removeEventListener('transitionend', done)
-  }, [expanded, peek, reducedMotion, onCollapsedHeight])
+  }, [expanded, peek, reducedMotion, onCollapsedHeight, hasByline])
 
   useEffect(() => {
     // While expanded the text wraps in full and stops overflowing, so re-measuring
@@ -573,18 +616,19 @@ function PinnedPromptCard({
       // until the next remount. Skipped while an inline height is set — that is
       // the morph animating, and its intermediate values are not the settled
       // height (this also re-reports once `transitionend` clears it).
-      if (box && !box.style.height) onCollapsedHeight?.(box.getBoundingClientRect().height)
+      if (box && !box.style.height) onCollapsedHeight?.(box.getBoundingClientRect().height + readBylineH())
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     if (box) ro.observe(box)
+    if (bylineRef.current) ro.observe(bylineRef.current)
     return () => ro.disconnect()
     // `promptKey` re-runs this for a new prompt identity whose text is unchanged:
     // the host has reset its resting height to the seed for that identity, and
     // nothing above resizes (same text, same box), so without the key the
     // observer never fires and the seed stays in place under this card.
-  }, [text, expanded, peek, folding, onCollapsedHeight, promptKey])
+  }, [text, expanded, peek, folding, onCollapsedHeight, promptKey, hasByline])
 
   // Whether the expanded paragraph has content below its visible edge. Re-read on
   // its own scroll (the reader moving through it), on a resize of the paragraph
@@ -661,7 +705,7 @@ function PinnedPromptCard({
   // paint over that strip, so its controls would be clickable but invisible.
   const maskBottomPad = folding ? 0 : ROW_PAD_Y
   const maskBaseH = cardBoxH > 0
-    ? cardBoxH + ROW_PAD_Y + maskBottomPad
+    ? bylineH + cardBoxH + ROW_PAD_Y + maskBottomPad
     : (bannerH > 0 ? ROW_PAD_Y + maskBottomPad + bannerH : 0)
   const maskH = maskBaseH > 0 ? Math.max(0, maskBaseH - pushUp) : undefined
   // Clip the card's in-flow wrapper only while it is being pushed out: the clip is
@@ -747,6 +791,18 @@ function PinnedPromptCard({
           className="relative z-[1] pointer-events-auto max-w-full min-w-0"
           style={{ transform: `translateY(${-cardPushUp}px)`, willChange: 'transform' }}
         >
+          {/* Who sent it, above the box and inside the element the push moves,
+              so the name leaves with the card. A column of its own so the
+              byline's bottom margin is inside the measured height. The card is
+              as wide as the wider of the name and the box, capped at the band,
+              so a name longer than the band truncates (the byline's own
+              `truncate`) and the box under it keeps hugging its text (`w-fit`
+              on the box). */}
+          {hasByline && (
+            <div ref={bylineRef} data-testid="pinned-prompt-byline" className="flex flex-col items-start max-w-full min-w-0">
+              {byline}
+            </div>
+          )}
           <div
           ref={boxRef}
           // `items-stretch`, not `items-start`, and that is what makes `maxH` work
@@ -775,8 +831,12 @@ function PinnedPromptCard({
           // (`user-bubble-other`, the stronger ring). It has no fill, like the
           // bubble; the band's mask behind the card keeps the reply from showing
           // through.
-          className={`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 ring-inset forced-colors:border shadow-sm px-4 py-2 text-sm ${other ? 'user-bubble-other text-text ring-border-strong' : 'bg-card text-card-fg ring-border'}`}
-          style={maxH != null ? { maxHeight: maxH } : undefined}
+          // It also sits under that person's name, which can be the wider of
+          // the two, so it hugs its own text (`w-fit`) up to the same cap.
+          className={`message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl ring-1 ring-inset forced-colors:border shadow-sm px-4 py-2 text-sm ${other ? 'user-bubble-other text-text ring-border-strong w-fit max-w-full' : 'bg-card text-card-fg ring-border'}`}
+          // The ceiling is measured from the card's top, and the byline has
+          // taken its height off the top of that room.
+          style={maxH != null ? { maxHeight: Math.max(0, maxH - bylineH) } : undefined}
         >
           <button
             type="button"
