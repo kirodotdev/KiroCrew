@@ -13,6 +13,7 @@ the switch rests on, in the same shape as ``test_crew_card_send_setting``:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -123,7 +124,7 @@ class TestUpdateEndpoint:
         monkeypatch.setattr(
             crewmate_worker_reload,
             "schedule_reload_workers",
-            lambda state, name: reloads.append((state, name)),
+            lambda state, name, **_kw: reloads.append((state, name)),
         )
         app = _crud_app()
         app["state"] = state = _make_state(tmp_path)
@@ -139,6 +140,44 @@ class TestUpdateEndpoint:
                 assert resp.status == 200
                 assert len(reloads) == expected, body
         assert reloads == [(state, seeded_agent), (state, seeded_agent)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("turn_on", [True, False])
+    async def test_a_switch_change_tells_each_reloaded_worker_its_setting_changed(
+        self, seeded_agent, monkeypatch, tmp_path, turn_on
+    ):
+        """Each worker the change reloads is told that its Bot's worker setting changed,
+        in either direction. The reload's default notice says capabilities were added,
+        which turning the switch off is not."""
+        from kiro_crew.dashboard import crewmate_worker_reload as reload_mod
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents[seeded_agent].worker_conducts = not turn_on
+        cfg.save()
+        notices: list[str] = []
+
+        async def reload_if_idle(state, slot, *, notice=reload_mod._NOTICE, on_reloaded=None):
+            notices.append(notice)
+            return reload_mod.RELOADED
+
+        monkeypatch.setattr(
+            reload_mod, "_workers_of", lambda st, member: [SimpleNamespace(key="w1")]
+        )
+        monkeypatch.setattr(reload_mod, "reload_if_idle", reload_if_idle)
+        app = _crud_app()
+        app["state"] = state = _make_state(tmp_path)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                f"/api/agents/{seeded_agent}", json={"worker_conducts": turn_on}
+            )
+            assert resp.status == 200
+            # The reload runs as a task the route leaves behind: wait for it, bounded.
+            pending = tuple(getattr(state, "_crewmate_reload_tasks", ()))
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        assert notices == [
+            "Session reloaded so it picks up this Bot's changed worker setting. "
+            "The conversation is kept."
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("junk", ["true", "false", 1, 0, None])

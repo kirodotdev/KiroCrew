@@ -1065,9 +1065,18 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # parts read per call alike, until its next start. Reloading the Bot's
             # workers brings that start now (an idle one at once, a busy one at its
             # turn end, its conversation kept), as a worker-kit policy change does.
+            # Each says the setting changed: the reload's default notice says
+            # capabilities were added, which turning the switch off is not.
             from kiro_crew.dashboard.crewmate_worker_reload import schedule_reload_workers
 
-            schedule_reload_workers(request.app.get("state"), name)
+            schedule_reload_workers(
+                request.app.get("state"),
+                name,
+                notice=(
+                    "Session reloaded so it picks up this Bot's changed worker setting. "
+                    "The conversation is kept."
+                ),
+            )
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:
