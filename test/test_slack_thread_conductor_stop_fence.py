@@ -92,6 +92,7 @@ def test_the_fence_ends_with_the_turn() -> None:
     """Only the running turn is narrowed: the turn runner clears the flag at the
     turn's end and the next turn's start, so a new dashboard turn is not narrowed."""
     cce.forget_senders()
+
     class _Slot:  # a plain class: a dashboard slot is weak-referenceable
         key = "chat-x"
         _turn_channel_narrowed = False
