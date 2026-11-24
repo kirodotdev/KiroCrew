@@ -518,12 +518,12 @@ chat's `mcp_sign_in_needed` notice names only the chat way in, never this page
 signs in on KAS: a warm URL was minted by kiro-cli, so adopting it would write the grant back
 into kiro-cli's cache. It asks the rule above (`kas_sign_in_entry`, through `_signs_in_on_kas`)
 after the card has written the entry, so a Connect the mint keeps on kiro-cli still adopts its
-warm URL. The premint asks before the click, so it warms only providers whose Connect would
-still sign in on kiro-cli (`kiro_cli_sign_in_providers`): a pre-registered provider, or one
-whose main-spec entry the engine is not sent bare. A provider the spec does not hold yet is
-judged by the bare registry url its Connect writes first. Test enumerates through kiro-cli's
-grant, so the card offers none for such a provider (`crewHeld`) and `api_connections_test`
-refuses it with 409 `kas_sign_in_test_unsupported`.
+warm URL. The premint asks before the click, so it and both automatic re-arms warm only
+providers whose Connect would still sign in on kiro-cli (`kiro_cli_sign_in_providers`): a
+pre-registered provider, or one whose main-spec entry the engine is not sent bare. A provider
+the spec does not hold yet is judged by the bare registry url its Connect writes first. Test
+enumerates through kiro-cli's grant, so the card offers none for such a provider (`crewHeld`)
+and `api_connections_test` refuses it with 409 `kas_sign_in_test_unsupported`.
 
 ### The handoff: how a premint reaches the click it was minted for
 
@@ -593,11 +593,12 @@ its dependent slice lands.
 **One automatic replacement, single-flight, disarmed by shutdown.** Resilience is owned by the
 same reaper that detects process death. An explicit page warm arms ONE automatic replacement
 (`arm_supervision`, `_WARM_REARM_ATTEMPTS = 1`). A dead generation reserves one single-flight
-re-arm task that reuses the ordinary tri-state candidate scan plus `warm_mint_all` without
-granting itself another attempt, so a second death cannot form a restart loop; a present grant
-and an unreadable grant cache are both skipped by that scan. Concurrent observers share the one
-task rather than each starting their own. Deliberate shutdown disarms recovery, settles the
-in-flight task, then retires the process. No provider-level recovery state crosses the API.
+re-arm task that reuses the ordinary tri-state candidate scan, the premint's KAS sign-in filter
+and `warm_mint_all` without granting itself another attempt, so a second death cannot form a
+restart loop; a present grant and an unreadable grant cache are both skipped by that scan.
+Concurrent observers share the one task rather than each starting their own. Deliberate shutdown
+disarms recovery, settles the in-flight task, then retires the process. No provider-level recovery
+state crosses the API.
 
 **Parked generations are drained, not leaked.** `sweep_retiring` is the only thing that retires
 a parked process, and every route to it runs off a new mint — so `_drain_parked_generations`
