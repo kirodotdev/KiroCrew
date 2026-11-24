@@ -11231,6 +11231,7 @@
       "note_crewmate_import": "导入时不会运行任何东西：查找信息会自己来，其他任何事之前都会先问你，定时任务以关闭状态到达，技能要等你信任这个 Bot 的工作区文件夹后才会加载。确认后，可用这张卡片上的撤销删除它。",
       "title_crewmate_import": "导入 Bot“{{name}}”",
       "primary_mcp_server": "应用",
+      "primary_mcp_server_project": "将 {{name}} 添加到此项目",
       "decline_mcp_server": "取消",
       "title_mcp_server_add": "添加服务器：{{name}}",
       "title_mcp_server_change": "更改服务器：{{name}}",

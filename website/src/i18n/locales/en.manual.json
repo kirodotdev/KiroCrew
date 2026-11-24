@@ -4978,6 +4978,7 @@
       "note_crewmate_import": "Nothing runs when you import: it looks things up on its own and asks before anything else, schedules arrive switched off, and skills wait until you trust the bot's workspace folder. After the press, Undo on this card removes it.",
       "title_crewmate_import": "Import bot “{{name}}”",
       "primary_mcp_server": "Apply",
+      "primary_mcp_server_project": "Add {{name}} to this project",
       "decline_mcp_server": "Cancel",
       "title_mcp_server_add": "Add server: {{name}}",
       "title_mcp_server_change": "Change server: {{name}}",
