@@ -419,6 +419,8 @@ from kiro_crew.subagent_parts.run_output import (  # noqa: F401
 )
 from kiro_crew.subagent_parts.run_record import (  # noqa: F401
     _NEUTRAL_REAP_REASONS,
+    CREW_OWN_TOOLS,
+    CREW_TOOLS_WITHHELD_NOTE,
     AnnounceCallback,
     SubagentInfo,
     _BareStateView,

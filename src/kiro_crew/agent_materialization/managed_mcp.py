@@ -30,8 +30,9 @@ def _managed_mcp_env() -> dict[str, str]:
     """Env every managed Kiro Crew MCP server is launched with.
 
     Pins ``KIROCREW_HOME`` when the gateway is running under an override, because
-    a child process does NOT inherit it: the spec's ``env`` is the only channel.
-    That pin doubles as the spec's write provenance — see
+    whether a child inherits it depends on what its harness passes it, so the
+    spec's ``env`` carries it. That pin doubles as the spec's write provenance —
+    see
     :func:`_existing_specs_are_mine`.
     Without this the gateway and its own stdio shims read DIFFERENT data homes,
     which is silent and self-contradictory rather than merely wrong —
@@ -123,9 +124,8 @@ def drop_policy_markers(entry: dict[str, Any]) -> None:
 def add_policy_markers(entry: dict[str, Any]) -> None:
     """Put :func:`policy_cache_only_env` on a managed stdio entry's ``env``, in place.
 
-    A harness that starts the child with a minimal environment (KAS) gives it
-    only what the entry declares, so a centrally governed child needs the
-    markers here to adopt the gateway's verified cache.
+    On KAS the entry carries them, so a centrally governed child adopts the
+    gateway's verified cache whatever the engine's own environment holds.
     """
     policy_env = policy_cache_only_env()
     if policy_env:

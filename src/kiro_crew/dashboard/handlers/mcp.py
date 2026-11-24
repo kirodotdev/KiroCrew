@@ -1199,6 +1199,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
         _builtin_mcp_server_names,
         _is_builtin_mcp_server,
+        _is_page_placeholder,
         _mark_agent_entries_disabled,
         _shared_agent_home_declined,
         _sync_mcp_to_agent_batch_unlocked,

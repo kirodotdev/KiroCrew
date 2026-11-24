@@ -1067,6 +1067,10 @@ class AcpClient:
         """Why Crew's MCP tools are withheld for want of a governed settings file: never here."""
         return ""
 
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Why Crew's MCP tools are withheld for want of a governed settings file: never here."""
+        return ""
+
     async def _discard_settings_seed(self) -> None:
         """Remove the per-session settings file this session seeded: it seeded none."""
 

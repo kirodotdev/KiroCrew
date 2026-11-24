@@ -7301,7 +7301,9 @@
       "searching": "検索中…",
       "searching_2": "検索中：{{name}}",
       "type_at_least_2_characters_to_search": "検索するには最低2文字入力してください",
-      "type_to_search_for_more": "入力するとさらに検索できます"
+      "type_to_search_for_more": "入力するとさらに検索できます",
+      "provider_could_not_search": "{{provider}} を検索できませんでした: {{reason}}",
+      "provider_did_not_answer": "{{provider}} から応答がありませんでした。"
     },
     "embedTabStrip": {
       "close_tab": "タブを閉じる",
@@ -8383,7 +8385,6 @@
       "open_app_full_screen": "アプリを全画面で開く"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{total}} 件中 {{failed}} 件のプロバイダーが応答しませんでした — 結果が不完全な可能性があります。",
       "retry": "再試行",
       "a_server_named_already_exists": "「{{name}}」という名前のサーバーが既に異なる設定で存在します。インストール済みサーバーテーブルから管理してください。",
       "add_server": "サーバーを追加",
@@ -9389,8 +9390,6 @@
       "reinstall_hint": "再インストールすると、ローカルのコピーが {{provider}} の最新版に置き換わり、自分で加えた変更も失われます。",
       "reinstalled": "再インストール済み",
       "reinstalled_files_other": "{{count}} 個のファイルを再インストールしました",
-      "provider_could_not_search": "{{provider}} を検索できませんでした: {{reason}}",
-      "provider_did_not_answer": "{{provider}} から応答がありませんでした。",
       "select_a_skill_to_preview": "プレビュー対象のスキルを選択してください",
       "skill_search_results": "スキル検索結果",
       "source": "ソース",
@@ -17473,6 +17472,8 @@
         "probe_failing_help": "{{failures}} 回連続でプローブに失敗したため、{{productName}} はこのサーバーのプローブを停止しました。再起動しても元に戻りません。チャットセッションでは引き続き使用できます。先に原因を修正してください。",
         "agent_dropped_not_found": "このコンピューターでプログラム '{{command}}' が見つからないため、エージェントはこのサーバーのツールを使えません。",
         "agent_dropped_fix": "インストールするか、{{page}} でこのサーバーのコマンドにプログラムのフルパスを指定してください。その後、ゲートウェイを再起動してください (設定 → バージョン情報 → ゲートウェイを再起動)。",
+        "own_entry_unused": "{{file}} にこの名前で登録した独自のサーバー ('{{command}}') は使われていません。{{productName}} には同じ名前のサーバーが付属しており、エージェントはそちらを使います。",
+        "own_entry_unused_fix": "独自のサーバーも動かすには、そのファイルで別の名前を付けてください。",
         "reset_failures": "サーバーを再試行",
         "test_server": "テスト",
         "testing_server": "テスト中…",

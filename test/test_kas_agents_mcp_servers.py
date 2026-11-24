@@ -167,10 +167,10 @@ class TestMcpServersProjection:
         assert out["mcpServers"]["kirocrew-core"] == {"command": "x"}
 
     def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
-        """KAS starts an MCP child with a minimal environment of its own, so a
-        launcher's per-process value reaches the child only through a reference
-        to a name the edition relays. The credential-keyed literal beside it, and
-        a reference wrapped in literal text, do not."""
+        """A reference to a name the edition relays stays on the wire, so KAS
+        fills it in from its own environment, where a launcher's per-process value
+        lives. The credential-keyed literal beside it, and a reference wrapped in
+        literal text, do not."""
         out = to_client_custom_agent(
             "a",
             _spec(
@@ -1305,7 +1305,7 @@ class TestNativeManagedMcpIdentity:
         assert "env" not in unrelated["mcpServers"]["kirocrew-work"]
 
     def test_a_central_ceiling_puts_managed_stdio_children_in_cache_only_mode(self, monkeypatch):
-        """KAS gives managed children a minimal env; the gateway supplies the markers."""
+        """On KAS the gateway puts the markers on a managed child's entry itself."""
         from kiro_crew.platform import policy_distribution as pd
 
         monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
