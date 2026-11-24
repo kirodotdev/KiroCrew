@@ -88,8 +88,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // ever hid. Density relief is per-card (ToolCallLine's fold chip) plus the
 // size caps in presentToolDiff, so an edit-heavy turn is N foldable cards,
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
+// The exception is a row the gateway stamped `file_change_recorded`: the
+// turn's changed-files card lists that change, so the row is a working step
+// and folds with the others (rfc-fold-recorded-edit-cards.md). A row without
+// the stamp (another harness's write shape, a refused path, an older turn)
+// keeps the rule above, since its card may be the only record of the edit.
 const isDiffCardItem = (it: TurnItem) =>
-  it.kind === 'single' && isDiffToolMessage(it.msg)
+  it.kind === 'single' && isDiffToolMessage(it.msg) && it.msg.meta?.file_change_recorded !== true
 // An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
 const isAskAnsweredItem = (it: TurnItem) =>
   it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
