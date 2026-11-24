@@ -30,6 +30,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_coverage_helpers import (
     _write_index,
 )
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
+from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import _inline_sensitive_gate
 from kiro_crew.testing.synthetic_credentials import github_classic
 
 # pytest resolves a fixture in the requesting test's module, so each shared
@@ -1047,7 +1048,8 @@ class TestDiscoverFolderSpecs:
         with mock.patch.object(Path, "iterdir", side_effect=OSError("denied")):
             assert r._discover_folder_specs(index) is False
 
-    def test_a_failing_stat_falls_back_to_now(self, tmp_path):
+    def test_a_failing_stat_falls_back_to_now(self, tmp_path, monkeypatch):
+        _inline_sensitive_gate(monkeypatch)
         _spec_tree(tmp_path, "one", "tasks.md")
         index = {"seed": _entry(tmp_path / "seed", working_dir=str(tmp_path))}
         real_stat = Path.stat
