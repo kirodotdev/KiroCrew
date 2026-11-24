@@ -140,6 +140,18 @@ kirocrew`). Onto that base:
    where the gateway starts the server for a session, and some sessions of such
    a spec are handed no gateway stub.
 
+**A copy leaves once no config declares it.** An entry step 2 or step 3 adds, or
+the dashboard's enable sync copies from the Kiro global, is
+written with `"copied": true` in its `x-kirocrew-derived` record
+(`mcp_provenance.mark_copied`; a copy the alias rename moves also records its
+source key, `copied_from`). After step 4, a copied entry whose name, alias and
+recorded source key no app manifest, scope global, store, managed or
+edition server declares is removed, so a server renamed or removed in
+`~/.kiro/settings/mcp.json` leaves `kirocrew.json` and the worker spec derived
+from it. An entry without the flag is the user's (or a copy an older build made)
+and always stays. Nothing is removed on a pass where one of the MCP config files
+is present but cannot be read (`user_json.read_mcp_servers` answers `None`).
+
 Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
 `command`/`args` are set by `_refresh_dynamic_fields()` and must not be

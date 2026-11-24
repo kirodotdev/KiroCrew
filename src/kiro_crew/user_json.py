@@ -234,10 +234,23 @@ def load_mcp_servers(path: Path) -> dict[str, Any]:
     A missing, unreadable or malformed file, a non-object root, and an
     ``mcpServers`` that is not an object all contribute no servers.
     """
-    servers = load_user_json_object(path).get("mcpServers", {})
+    return read_mcp_servers(path) or {}
+
+
+def read_mcp_servers(path: Path) -> dict[str, Any] | None:
+    """:func:`load_mcp_servers`, but None for a file that is present and cannot be read.
+
+    A missing file is a readable empty config (``{}``). For a caller that removes
+    what a config does not declare, a file it could not read declares nothing it
+    can trust, so it must not read as empty.
+    """
+    data = _read_user_json_object(path)
+    if data is None:
+        return None
+    servers = data.get("mcpServers", {})
     if not isinstance(servers, dict):
         logger.warning("Ignoring %s: mcpServers is not an object", path)
-        return {}
+        return None
     return servers
 
 
@@ -247,28 +260,47 @@ def load_user_json_object(path: Path) -> dict[str, Any]:
     The same contract as ``kiro_crew.agent._load_json``, with
     :func:`loads_user_jsonc` as the parser, for callers that read an MCP config.
     """
-    if not path.is_file():
+    data = _read_user_json_object(path)
+    return {} if data is None else data
+
+
+def _read_user_json_object(path: Path) -> dict[str, Any] | None:
+    """:func:`load_user_json_object`, but None for a present file that cannot be read.
+
+    Only an absent path is a readable empty object. A directory in the file's place,
+    or a path that cannot even be stat'ed, is present and unreadable.
+    """
+    try:
+        is_file = path.is_file()
+        absent = not is_file and not path.exists()
+    except OSError as exc:
+        logger.warning("Ignoring invalid %s: %s", path, exc)
+        return None
+    if absent:
         return {}
+    if not is_file:
+        logger.warning("Ignoring %s: it is not a file", path)
+        return None
     try:
         raw = path.read_bytes()
     except OSError as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
-        return {}
+        return None
     # A UTF-16/UTF-32 file (a Windows redirect's default) cannot be decoded as
     # UTF-8, so it is skipped either way. Name the cause first, in the words the
     # kiro-cli path uses, instead of the opaque ``'utf-8' codec can't decode``.
     reason = wide_bom_reason(raw)
     if reason is not None:
         logger.warning("Ignoring %s: %s", path, reason)
-        return {}
+        return None
     try:
         data = loads_user_jsonc(raw.decode("utf-8"))
     except (ValueError, OSError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
-        return {}
+        return None
     if not isinstance(data, dict):
         logger.warning("Ignoring %s: top-level JSON is not an object", path)
-        return {}
+        return None
     return data
 
 

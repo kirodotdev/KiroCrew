@@ -158,6 +158,14 @@ it must hold across REPEATED rebuilds: recording a value we merely passed throug
 would make our own record read as proof on the next pass, which is how an unearned
 claim becomes an overwrite.
 
+The same record carries one more fact about the whole entry: `"copied": true` when
+the rebuild copied it in from a scope global (`mark_copied`). The spec is rebuilt on
+top of itself, so only a record written with the copy tells a stale copy from a
+server the user wrote into the spec. A rebuild removes a copied entry once no MCP
+config declares its name, and never while one of those files cannot be read; an
+entry without the flag stays. A name list kept elsewhere was not used: it would
+delete a server the user later wrote under a reused name.
+
 Deliberately a second key rather than a field inside `x-kirocrew`. The two records
 answer different questions about different files, and the marker's invariant is
 that it appears only in files we do not own — folding this in would put the marker

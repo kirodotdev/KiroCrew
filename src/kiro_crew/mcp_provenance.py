@@ -98,6 +98,10 @@ def is_withheld_mute(entry: Any) -> bool:
 # second is the ownership proof -- see :func:`source_view`.
 _FROM_FIELD = "from"
 _EMITTED_FIELD = "emitted"
+# Also inside the record, beside the command fields: the rebuild COPIED this entry
+# in from a scope global rather than finding it written here (see mark_copied).
+_COPIED_FIELD = "copied"
+_COPIED_KEY_FIELD = "copied_from"
 
 # The record describes the ONE field the rebuild computes from a source value and
 # therefore must not re-consume as if the user had written it: the resolved absolute
@@ -193,6 +197,43 @@ def recorded_source(entry: object) -> tuple[str, str] | None:
     emitted = record[_EMITTED_FIELD]
     assert isinstance(src, str) and isinstance(emitted, str)  # _command_record checks
     return (src, emitted)
+
+
+def mark_copied(entry: dict[str, Any], key: str | None = None) -> dict[str, Any]:
+    """Copy of ``entry`` recording that the rebuild copied it in from a scope global.
+
+    *key* is the source's own key when the entry sits under another name (a slash
+    key moved to its alias); :func:`copied_key` reads it back.
+
+    The rebuild starts from its own previous output, so a copied server whose source
+    entry was renamed or removed would otherwise stay as a startable entry nothing
+    declares. This flag is what lets a later rebuild remove that copy and only that
+    one: an entry a user wrote into the spec never carries it. It lives inside
+    :data:`DERIVED_KEY`, the rendered spec's own record, so every reader that already
+    skips that key skips this too, and the command record beside it is kept.
+    """
+    record = entry.get(DERIVED_KEY)
+    kept = dict(record) if isinstance(record, dict) else {}
+    kept[_COPIED_FIELD] = True
+    if key is not None:
+        kept[_COPIED_KEY_FIELD] = key
+    return {**entry, DERIVED_KEY: kept}
+
+
+def copied_key(entry: object) -> str | None:
+    """The source key :func:`mark_copied` recorded on a copied ``entry``, else None."""
+    if not isinstance(entry, dict) or not is_copied(entry):
+        return None
+    key = entry[DERIVED_KEY].get(_COPIED_KEY_FIELD)
+    return key if isinstance(key, str) else None
+
+
+def is_copied(entry: object) -> bool:
+    """True when ``entry`` carries :func:`mark_copied`'s flag; anything else reads as not."""
+    if not isinstance(entry, dict):
+        return False
+    record = entry.get(DERIVED_KEY)
+    return isinstance(record, dict) and record.get(_COPIED_FIELD) is True
 
 
 def command_is_ours(entry: object) -> bool:

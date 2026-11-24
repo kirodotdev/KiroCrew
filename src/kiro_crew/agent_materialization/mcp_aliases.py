@@ -20,7 +20,7 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import DERIVED_KEY, is_copied, mark_copied
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -401,7 +401,8 @@ def _normalize_mcp_server_keys(
     for old_key in sorted(
         [k for k in servers if "/" in k and k not in managed], key=len, reverse=True
     ):
-        spec = _norm_mcp_spec(servers.pop(old_key))
+        _raw = servers.pop(old_key)
+        spec = _norm_mcp_spec(_raw)
         base = mcp_server_alias(old_key)
 
         # Reuse an existing home for an equivalent spec — the canonical alias or
@@ -410,6 +411,14 @@ def _normalize_mcp_server_keys(
         alias = next(
             (k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec),
             None,
+        )
+        # The survivor stays removable only when every equivalent entry folding into
+        # it (the moved one, a reused home, a duplicate sibling) is a copy, so a
+        # server the user wrote never becomes removable by folding into a copy.
+        copied = is_copied(_raw) and all(
+            is_copied(servers[k])
+            for k in servers
+            if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec
         )
         if alias is None:
             # Genuinely distinct spec (or nothing here yet): take the canonical
@@ -421,7 +430,7 @@ def _normalize_mcp_server_keys(
                 while f"{alias}-{n}" in servers:
                     n += 1
                 alias = f"{alias}-{n}"
-        servers[alias] = spec
+        servers[alias] = mark_copied(spec, old_key) if copied else spec
         renames[old_key] = alias
         mounted_aliases[old_key] = alias
 

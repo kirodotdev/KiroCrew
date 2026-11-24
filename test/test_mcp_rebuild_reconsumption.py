@@ -22,7 +22,7 @@ from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import DERIVED_KEY, recorded_source
 
 
 @pytest.fixture(autouse=True)
@@ -364,7 +364,9 @@ class TestScopeOwnedIsExcluded:
         monkeypatch.setenv("PATH", "/usr/bin")
         cfg_dir = _bundled_defaults(tmp_path)
         out = _emitted(tmp_path, cfg_dir, {"s": {"command": "/opt/s"}})
-        assert DERIVED_KEY not in out["s"]
+        # The record holds only the copy stamp: no command source to restore.
+        assert recorded_source(out["s"]) is None
+        assert out["s"][DERIVED_KEY] == {"copied": True}
 
     def test_an_alias_keyed_scope_entry_still_counts_as_owned(
         self, tmp_path: Path, monkeypatch
@@ -394,7 +396,7 @@ class TestScopeOwnedIsExcluded:
             "the colliding scope entry did not supply the command, so alias matching "
             "would be over-broad -- revisit the ownership test"
         )
-        assert DERIVED_KEY not in out["vendor-srv"], (
+        assert recorded_source(out["vendor-srv"]) is None, (
             "an alias-colliding scope entry that supplies the command must read as "
             "owning it, or the record would shadow a live declaration"
         )
