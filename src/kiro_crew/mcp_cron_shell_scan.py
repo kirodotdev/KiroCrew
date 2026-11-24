@@ -53,7 +53,7 @@ _CRON_CRED_PATH_RE = re.compile(
     r"|(?P<win>(?<![\w?\\-])[A-Za-z]:\\(?:[^\t\n\r\f\v'\"\\:]{1,255}\\){0,32}"
     r"|%[A-Za-z_][\w()]{0,255}%\\))"
     r"(?P<name>"
-    + "|".join(_WIN_NAME_SEP.join(map(re.escape, d.split("/"))) for d in _SENSITIVE_HOME_DIRS)
+    + "|".join(re.escape(d).replace("/", _WIN_NAME_SEP) for d in _SENSITIVE_HOME_DIRS)
     + r")"
     r"(?:/|\s|['\"]|$|(?(win)\\(?!\\)|(?!)))",
     re.IGNORECASE,
