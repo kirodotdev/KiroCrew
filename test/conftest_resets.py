@@ -1450,6 +1450,8 @@ def _reset_code_channel_owner_only_notices():
     clock, and tests reuse both ids, so a notice one test sent could silence the
     next test's. ``routing._opening`` lets a channel's unmentioned messages through
     while it is opened, so one a test left would admit the next test's.
+    ``publishing._pr_status_held`` holds a channel whose ``pr_status`` Slack
+    refused, for the process, so a refusal one test planted would mute the next.
     """
 
     def clear():
@@ -1459,6 +1461,9 @@ def _reset_code_channel_owner_only_notices():
         routing = sys.modules.get("kiro_crew.slack.code_channels.routing")
         if routing is not None:
             routing._opening.clear()
+        publishing = sys.modules.get("kiro_crew.slack.code_channels.workspace.publishing")
+        if publishing is not None:
+            publishing._pr_status_held.clear()
 
     clear()
     try:

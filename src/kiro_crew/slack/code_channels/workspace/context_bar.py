@@ -320,3 +320,24 @@ def pr_resource(number: int, url: str, title: str, state: str) -> dict[str, str]
         "title": name + suffix,
         "provider": "github",
     }
+
+
+#: Every value the channel-wide ``pr_status`` takes, exactly; ``""`` clears it.
+#: The client sends no other.
+PR_STATUS_VALUES = frozenset({"open", "draft", "blocked", "merged", "closed", ""})
+#: A PR's last-read CI when no read has settled it yet (an open PR with it sends nothing).
+PR_CI_UNREAD = "unread"
+
+
+def pr_status_for(state: str, ci: str = "", review: str = "", mergeable: str = "") -> str | None:
+    """The ``pr_status`` a PR gives the channel, from its real state; None: send nothing.
+
+    An open PR is ``blocked`` while its checks fail, a review asks for changes or
+    it conflicts with its base, else ``open`` (checks running or passed included).
+    Fields the read did not settle ("") count for nothing.
+    """
+    if state == "open":
+        if ci == "failed" or review == "changes_requested" or mergeable == "conflicting":
+            return "blocked"
+        return "open"
+    return state if state in {"draft", "merged", "closed"} else None
