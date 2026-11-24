@@ -53,7 +53,7 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
 import { useRowStatus } from './rowStatus'
 import { SessionStatusLinksLine } from './SessionLinksLine'
-import { useSessionCardLines, cardLineClass } from './cardLines'
+import { useSessionCardLines, cardLineClass, AGENT_LINE_INLINE_CLS, AGENT_HIDDEN_LINE_CLS } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
 import { ConductorModeTitleMark } from '../../components/crew/CrewModeMarks'
@@ -1630,7 +1630,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               which already carries the name, is drawn on the first line. Not while renaming: the
               rename box lives in that title line. */}
           <div className={`relative flex-1 min-w-0 overflow-x-clip ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
-            <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
+            <div data-session-agent-line className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor} ${memberTitle === null && !crewRoot && !cardLines.agent ? `${AGENT_HIDDEN_LINE_CLS} ${renamingHere ? '' : AGENT_LINE_INLINE_CLS}` : ''}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
                 *  every sidebar commit for a crossfade that fires only on the
@@ -1644,7 +1644,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               {memberTitle === null && crewRoot && <ConductorModeTitleMark />}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
-              {memberTitle === null && !crewRoot && (
+              {memberTitle === null && !crewRoot && cardLines.agent && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? CODE_CHANNEL_AGENT_FIT : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* Shared Crew creator: inline after the agent name, never a new line. */}
@@ -1757,7 +1757,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   className="min-w-0 max-w-[45%] truncate font-normal text-muted"
                   title={i18nT('pages.chatSidebar.answered_by', { agent: effectiveAgent })}
                 >
-                  <span aria-hidden>{'\u00A0·\u00A0'}</span>
+                  <span aria-hidden data-meta-sep>{'\u00A0·\u00A0'}</span>
                   {i18nT('pages.chatSidebar.answered_by', { agent: effectiveAgent })}
                 </span>
               )}
@@ -1779,7 +1779,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 <span className="truncate min-w-0 font-normal" title={resolvedSlotTags.map(t => t.name).join(' · ')}>
                   {resolvedSlotTags.map(t => (
                     <span key={t.id} data-testid={`slot-tag-${t.id}`}>
-                      <span aria-hidden>{'\u00A0·\u00A0'}</span>
+                      <span aria-hidden data-meta-sep>{'\u00A0·\u00A0'}</span>
                       <span style={{ color: t.color }}>{t.name}</span>
                     </span>
                   ))}

@@ -1900,6 +1900,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.max_per_creator"
   },
   {
+    "id": "chat.show-agent-name-on-session-cards",
+    "label": "Show Agent Name on Session Cards",
+    "labelKey": "pages.settings.chatPanel.session_card_agent_name",
+    "hint": "Turn off to drop the agent name row; the time moves up beside the title",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.show-all-bots-in-my-sessions",
     "label": "Show all bots in my Sessions",
     "labelKey": "pages.membersPage.bot_sessions_all_switch",
