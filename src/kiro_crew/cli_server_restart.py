@@ -954,7 +954,15 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} via=service",
             )
             print("✅ Restarted kirocrew service.")
-            _print_token_url(port)
+            # The line printed follows the start command the manager has
+            # loaded. One that cannot be read is said to be unknown.
+            headless = service_controller.restarted_headless(report)
+            if headless is None:
+                print(f"   mode: {service_controller.MODE_UNKNOWN}")
+            if headless:
+                print_client_access(port)
+            else:
+                _print_token_url(port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED
