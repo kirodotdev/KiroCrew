@@ -20,7 +20,9 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, MousePointerClick, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { recipeLines } from './browserRecipes'
+import { BrowserRecipeList } from './BrowserRecipeList'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -88,6 +90,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   browser?: string[]
   /** The `permissions.kiroOperations` names: the Kiro operations the gateway calls for it as you. */
   kiroOperations?: string[]
+  /** The `permissions.browserRecipes`: the fixed clicks Crew makes on its agent's browser tab. Install approves none. */
+  browserRecipes?: unknown[]
   /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
   webhookSource?: boolean
   /**
@@ -692,6 +696,7 @@ export default function TrustAppModal({
   const desktopCaps = knownDesktopCapabilities(app?.desktopCapabilities)
   const browserVerbs = knownBrowserVerbs(app?.browser)
   const kiroOperations = Array.isArray(app?.kiroOperations) ? app.kiroOperations.filter(op => typeof op === 'string') : []
+  const browserRecipes = recipeLines(app?.browserRecipes)
   const browserPreview = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
@@ -959,6 +964,20 @@ export default function TrustAppModal({
                 ))}
               </div>
               <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.kiro_operations_note')}</p>
+            </div>
+          )}
+          {/* `permissions.browserRecipes`: every click in words, as it will run. Installing approves none of it; the app's page does. */}
+          {browserRecipes.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-browser-recipes">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <MousePointerClick size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.browser_recipes_heading')}</span>
+              </div>
+              <BrowserRecipeList items={browserRecipes.map(line => ({ key: line.name, line }))} />
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.browser_recipes_note')}</p>
+              {!browserPreview && (
+                <p className="text-muted leading-relaxed" data-testid="trust-browser-recipes-preview-off">{i18nT('components.appstore.trustAppModal.browser_preview_off')}</p>
+              )}
             </div>
           )}
           {/* The Kiro Crew endpoints the manifest declares beyond the app's own

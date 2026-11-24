@@ -27,7 +27,9 @@ superseded-by: []
   is still open in [#39532](https://github.com/kirodotdev/KiroCrew/pull/39532).
   Steps 2 and 3 are not built (checked at `2a6a591c20`). Each step lands as its
   own pull request after a maintainer signs the design, and each of those pull
-  requests carries its own App Kit doc update.
+  requests carries its own App Kit doc update. Amendment A (browser recipes, at
+  the end) is proposed in
+  [#41783](https://github.com/kirodotdev/KiroCrew/pull/41783) and is not signed.
 - Related: `rfc-app-agent-tools-third-party-grant.md` (accepted; owns the
   third-party tool path this document depends on and does not redo),
   `rfc-app-sdk-crew-webview.md` and `rfc-app-session-controls.md` (precedents
@@ -559,3 +561,113 @@ turn replay (`dashboard/routes/browser_live.py`).
 5. Who builds phases 1 and 2 of the third-party grant RFC, and can Browser
    Collab be the phase 2 acceptance case? The authors of #17015 and of that RFC
    are being asked; this RFC takes whichever split they choose.
+
+## Amendment A: browser recipes
+
+- Status: proposed. Needs a maintainer's sign-off; the accepted text above does
+  not cover it. Proposed in
+  [#41783](https://github.com/kirodotdev/KiroCrew/pull/41783), tracked in
+  [#41732](https://github.com/kirodotdev/KiroCrew/issues/41732).
+- What it adds: `permissions.browserRecipes`, fixed click and wait steps an app
+  declares, which the gateway runs on the tab of the app's own agent with no
+  model turn. The app page asks for one by name through
+  `POST /api/browser/media` with `action: "recipe"`. A recipe marked `watch` can
+  also run by itself while the media watch follows that tab, so a "Skip ad"
+  button is pressed when nobody is in a turn. The first user is Mood Music.
+
+### A.1 A second click path
+
+Section 3 gives an app one way to click in a browser tab: the `act` verb of
+`ctx.browser` and `BrowserView`, on a tab of one of the app's own slots, through
+the one gateway door (section 2). Recipes are a second way. This amendment says
+so plainly, because the accepted design assumed one.
+
+How the two differ:
+
+| | `permissions.browser` `act` | `permissions.browserRecipes` |
+|---|---|---|
+| Who picks the target | App code, at run time | The manifest, fixed at approval |
+| What it may do | The `PagePort` verbs | `click` and `waitFor` on a CSS selector, nothing else: no script, no typed text, no address |
+| Which tab | A tab of one of the app's slots | The app's own agent's tab, on a page that matches both the recipe's `site` and the app's approved `browserSites` |
+| What the owner approves | The verb | Each recipe's whole definition (`browser_recipes.recipe_entry`), so any change to a step is a new, unapproved entry |
+| Gates shared | Preview, app enabled and trusted, the URL gate, the op lock, the takeover fence | The same |
+
+Recipes reuse the gates of section 2 rather than adding their own: the run
+takes `browser_ops._OP_LOCK` and `LiveHub.op_fence`, judges the page against the
+session's sites before and after each click, and blanks a page off the list. A
+recipe never starts the browser and never runs while the person holds the tab.
+
+### A.2 Behind the same preview
+
+Recipes sit behind the `app_browser_sdk` Feature Preview of section 9. No new
+flag is added. With the preview off:
+
+- `app_browser_recipes` and `app_watch_recipes` return nothing, so no recipe runs
+  on demand or by itself;
+- the route answers 403 `preview_off` with the same text `ctx.browser` uses
+  (`browser_sdk.PREVIEW_OFF_TEXT`), checked again after the lock is taken;
+- an app that declares recipes still installs; its trust prompt and its page say
+  the preview is off, and an approval the owner gives is stored but has no
+  effect. Turning the preview off withdraws no approval, and nothing is approved
+  on the owner's behalf.
+
+### A.3 Running by itself is a second, separate yes
+
+Approving a recipe (`browserRecipes` grant family) lets the app page run it when
+it asks. A `watch` recipe runs by itself only with a second owner yes, the same
+recipe entry in its own family, `browserRecipeWatch`. Both families are
+explicit-only and owner-approved: an install never approves either one
+(`manager_records._OWNER_APPROVED_FAMILIES`).
+
+The app's page shows the second yes as a labelled switch per watch recipe on the
+recipe's own card, never in the "approve new permissions" notice that approves the
+rest. On is an approval (`/enable` with only that family), offered while the app
+is on. The yes needs the recipe approval too: a `browserRecipeWatch` entry
+without its `browserRecipes` entry runs nothing. An update that changes a watch
+recipe drops both, because the entry is the whole definition.
+
+Off takes back only that yes (`POST /api/browser/recipe-watch-off`, owner only,
+`browser_recipes.withdraw_watch`): the recipe still runs when the page asks, the
+app stays on, and a running watch stops clicking at its next tick. The route only
+narrows the approvals, so it needs no confirmation. It is the one per-entry
+withdraw of any grant family; the others still end by turning the app off.
+
+### A.4 What the owner reads
+
+The manifest holds CSS selectors, and the gateway runs those selectors exactly.
+The owner does not approve a raw selector string: the trust prompt, the approval
+notice and the app's permissions card show each recipe in words
+(`BrowserRecipeList.tsx`): its name, when it runs (when asked; by itself once
+allowed), its site, and each step as a sentence such as "Click the element
+matching `button.ytp-skip-ad-button`". The selector stays visible, set apart in
+monospace, because it is what runs. The plain sentence says what the step does;
+the selector says where.
+
+### A.5 How a recipe clicks, and its cost
+
+A click step finds the element and clicks that element in one walker call in the
+isolated world (`recipeClick`, `el.click()`). The click is bound to the element, not
+to a point, so a frame or overlay the page moves under the point cannot receive it.
+An earlier draft hit-tested a point (`DOM.getNodeForLocation`) and then sent trusted
+input there (`Input.dispatchMouseEvent`); a page could move a frame under the point
+between the two calls. That gap is closed: no point-based input is sent on this path.
+
+The cost is that the click is a script click. The event's `isTrusted` is false, and
+only `click` fires, with no pointer or mouse down and up before it. A site that acts
+only on trusted input, or on `pointerdown`, does nothing. The route still answers
+`ok: true` with `"click": "script"`, so the app page checks the effect (for media,
+the `state` read) and falls back to its agent, as it does on any refusal. Every audit
+row of a recipe run names `click=script`, so an ignored click is traceable. The
+real-machine run checks YouTube's play button and "Skip ad" button with this click.
+
+### A.6 SDK level
+
+The amendment takes `APP_SDK_LEVEL` 15, by the rule of section 10 (level 14 went to the backend SDK batch).
+
+### A.7 Questions for the maintainer
+
+1. Is a second click path acceptable at all, given A.1, or should recipes become
+   a mode of `act`?
+2. Is a script click (A.5) acceptable, given that some sites ignore it?
+3. The watch switch's off (A.3) is a per-entry withdraw for one family only. Should
+   the other families get one too, in its own change?

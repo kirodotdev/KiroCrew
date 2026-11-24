@@ -23,5 +23,8 @@
  * raster sniffer, by reference.
  * Level 14 also adds the pinned path walk and copy (`pin_parent`,
  * `copy_file_pinned`); the dashboard gains nothing at that level.
+ *
+ * Level 15 adds `permissions.browserRecipes` and `useBrowserMedia().runRecipe`: fixed
+ * clicks on selectors the gateway runs on the app's own agent's tab, no model asked.
  */
-export const APP_SDK_LEVEL = 14
+export const APP_SDK_LEVEL = 15

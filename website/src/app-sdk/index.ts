@@ -669,7 +669,7 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // Play, pause, seek and volume on the tab the app's own agent browses, behind the
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
-export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+export type { BrowserMedia, BrowserMediaState, BrowserRecipeResult } from './browserMedia'
 // The app's browsing list, and the owner's dialog before a site is added (level 13).
 export { useBrowserSites } from './browserSites'
 export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSites'

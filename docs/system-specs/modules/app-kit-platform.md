@@ -8005,7 +8005,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45); level 14 adds backend
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
 `address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
-descriptor-pinned path walk and copy (§40). Several seams
+descriptor-pinned path walk and copy (§40); level 15 adds
+`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
@@ -10880,11 +10881,93 @@ origin and the element's duration, nothing else of the page; the hook gets only 
 context the app's other hooks get, and wakes no agent itself. Delivery goes only to the
 app that owns the slot, only while its hooks are loaded, it is enabled and allowed to
 execute; the watch ends on the first tick that finds the slot no longer the app's, the
-app without approved sites (disabled, uninstalled, untrusted, sites withdrawn), the hook
-undeclared, or the tab closed. An ending already handed over is not handed over again
+app without approved sites (disabled, uninstalled, untrusted, sites withdrawn), neither
+the hook declared nor a watch recipe approved, or the tab closed. An ending already handed over is not handed over again
 by a restarted watch until the element is seen playing.
 
-Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.browserSites`),
+**Browser recipes (seam level 15).** `permissions.browserRecipes` names fixed clicks the
+gateway runs on the app's own agent's tab with no model asked
+(`apps/browser_recipes.py`, `browser_harness/recipes.py`). A recipe is `{name, site,
+steps, watch?}`: `name` matches `[a-z][a-z0-9_]{0,31}`, `site` meets `entry_refusal` (the
+`browserSites` rule), and each of 1 to `MAX_STEPS` (8) steps is exactly `{"click":
+<selector>}` or `{"waitFor": <selector>, "timeout": <s>}` (above 0, at most 10 s; a
+recipe's waits at most 15 s together, inside `OP_TIMEOUT_S`). A selector is at most 200
+characters with no control character; a recipe needs one click, and a `watch` recipe
+starts with one. There is no script, no typed text and no address in any step. At most
+`MAX_RECIPES` (16); one invalid recipe admits none, re-checked on every read since
+`app.json` is app-writable. Each recipe is one entry of the explicit-only `browserRecipes`
+family, spelled `recipe_entry` (its whole definition as sorted compact JSON), so any change
+to a step, the site or `watch` is a new entry; an install approves none
+(`_OWNER_APPROVED_FAMILIES`): the trust prompt lists every recipe with its selectors and
+the owner approves them on the app's page (`browserRecipesGrant`,
+`staged-browser-recipes`). Hook contexts expose only approved recipes as raw declared
+objects in live declaration order; approval compares canonical `recipe_entry` strings,
+and an invalid declaration yields an empty list. A `watch` recipe runs by itself only
+with a second owner yes: the same `recipe_entry` in the explicit-only, owner-approved
+`browserRecipeWatch` family. The app page shows it as a labelled switch per approved
+watch recipe on the recipe card (`BrowserRecipesBox`), never in the approve-all notice:
+on is `enableApp` with only that family, offered while the app is on; off is
+`POST /api/browser/recipe-watch-off` `{"app", "recipe": <entry>}`
+(`apps/browser_recipes_routes.py`, owner dashboard only, 403 for an app token or an
+internal caller), which removes only that entry (`browser_recipes.withdraw_watch`,
+under the app's record lock; the recipe stays approved, the app stays on, and a running
+watch stops at its next tick); `browserRecipesGrant`
+carries `watchOn` and `watchOff`. An enable that carries `browserRecipeWatch` entries starts the watch again on the app's open tabs (`browser_media_watch.watch_app_tabs`), since a watch with nothing to run has ended. `app_browser_recipes(app)` (on demand) and `app_watch_recipes(app)` (the watch;
+both approvals) are the run-path readers, fresh on every run, empty unless the
+`app_browser_sdk` Feature Preview is on (`browser_sdk.preview_on`), the app is enabled
+and `third_party_ceiling_closed` admits it. With the preview off an approval stays
+stored and inert, and `browserRecipesGrant.preview` is false so the page and the trust
+prompt say so. The design is Amendment A of `rfc-app-sdk-browser.md` (proposed). A step
+finds its element with the walker's `recipeTarget` (isolated world, top document, first
+match, refused while `probeSelectorBlocked`, never a password box, only when shown inside
+the viewport and `elementFromPoint` at its centre, descended through open shadow roots,
+is it or inside it in the composed tree (else `covered`), never scrolled; an `iframe`,
+`frame`, `object` or `embed` as the match or deepest hit is `covered`. A custom-element
+hit other than the match with no readable shadow root is also `covered`, since it may
+hide an embedded document) through `ops._page` with `frame_refs=False`: selectors are
+literal top-document CSS, including a value such as `f1e1`. The target and click
+calls both skip frame-ref dispatch. The call first judges the page against the
+session's sites (off-list: blanked, `redirect_refused`); the page must also match the
+recipe's `site` (`wrong_site`). A click step judges the URL and the site again, then
+one `recipeClick` call repeats the target checks, judges the recipe's `site` and the session's
+approved sites (`OpContext.sites`; none means no click) against the page's own `location`
+in the same synchronous call (`rcSite`, the `url_matches` rule for one entry; else
+`wrong_site`), and calls `el.click()` on the matched element in the
+isolated world, so a page that moves after the gateway's check gets no click. The click is bound to that element, never to a point,
+so a frame or overlay the page moves under the point cannot receive it; there is no
+point-based input helper on this path. It is a script click (`recipes.CLICK_KIND`,
+`"script"`): the event's `isTrusted` is false, and only `click` fires (no pointer or
+mouse down/up). A site that ignores untrusted clicks does nothing; the answer is still
+`ok: true` with `"click": "script"`, and the page checks the effect (for media, the
+`state` read) and falls back to its agent, as it does on any refusal. The route's
+audit row names it in `resources` (`/api/browser/media recipe='<name>' click=script`),
+and the watch's row path is `app.browser.recipe.<name> click=script`. The landing page
+is judged again after each click (`redirect_refused`, blanked). A failure names its `step` and `code` (`not_found`,
+`hidden`, `covered`, `wait_timeout`, `bad_selector`, `password_field`, `wrong_site`). The page runs
+one through `POST /api/browser/media` `{"session_key", "action": "recipe", "recipe":
+<name>}` (`useBrowserMedia().runRecipe`), under every gate of that route (owner only, no
+internal secret, the app's own slot with approved sites, no takeover, the op lock and
+fence); with the preview off it is 403 `preview_off` (`browser_sdk.PREVIEW_OFF_TEXT`); a
+name that is not an approved recipe is 403 `recipe_not_approved`, and success
+is `{"ok": true, "session_key", "recipe", "steps"}`. After acquiring the lock and
+inside the takeover fence, the route re-reads the preview, the slot's sites and the named
+approved recipe. Withdrawal during the wait returns an `ok: false` result with
+`preview_off`, `not_app_browser` or `recipe_not_approved` and sends no input. The audit row is `browser_recipe`.
+A `watch` recipe runs from the media watch above: an app with one is watched even
+without the hook, and each tick, under the tick's lock and fence and after the `state`
+read, only when that read shows an element playing (not `paused`, not `ended`; none on a page without media), re-reads `app_watch_recipes` off the event loop and the slot's sites; if
+either is gone it runs no recipe. It runs each freshly approved watch recipe whose
+site matches and whose first click's element is shown
+(one audit row as `app:<name>`, path `app.browser.recipe.<name> click=script`, written also when
+the run is cut short, as `interrupted`); a failed recipe does
+not cost the tick's ending event. It stops with the watch, and is skipped while the person
+holds the tab. These clicks land in the person's own signed-in browser: the bound is the
+declared selectors, on approved sites, that the owner approved.
+
+Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.browserSites`,
+`Permissions.browserRecipes`), `apps/browser_recipes.py`, `browser_harness/recipes.py`,
+`dashboard/handlers/browser_media_watch.py`, `apps/official_catalog.py`,
+`website/src/components/appstore/browserRecipes.ts`,
 `apps/manifest.py`, `apps/point_grants.py`, `apps/manager_records.py`,
 `apps/manager_lookup.py`, `apps/app_sdk_level.py`,
 `hooks.py` (`GATE_TIERS`), `dashboard/handlers/browser_ops.py`,

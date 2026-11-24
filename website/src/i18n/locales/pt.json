@@ -6850,6 +6850,8 @@
         "browser_note": "Instalar não aprova nada disso: você aprova na página do app. Enquanto o app está desligado, ele não usa nada disso; ao religar, volta o que você aprovou. Só as abas das conversas deste app, nunca suas outras abas.",
         "kiro_operations_heading": "Operações do Kiro que este app vai pedir para chamar em seu nome",
         "kiro_operations_note": "Instalar não aprova nenhuma delas: você as aprova na página do app. Depois o {{productName}} faz cada chamada com seu login do Kiro, e o app recebe só a resposta.",
+        "browser_recipes_heading": "Cliques automáticos no seu navegador",
+        "browser_recipes_note": "O {{productName}} faz estes cliques só em páginas dos sites aprovados do app, sem perguntar ao assistente. É o seu próprio navegador com login. Instalar não aprova nenhum: você os aprova na página do app.",
         "browser_preview_off": "O acesso de apps ao navegador está desligado neste gateway, então isso ainda não tem efeito. Ligue em Configurações > Desenvolvedor > Prévias de recursos.",
         "host_api_heading": "O app também pode usar partes do {{productName}} fora do app",
         "host_api_chat": "Ele pode iniciar os próprios chats com o agente e enviar mensagens neles.",
@@ -6892,6 +6894,14 @@
         "failed_generic_next_offline": "O {{productName}} não está conectado agora, então “Confiar e tentar de novo” fica desativado até ele reconectar.",
         "failed_desktop_unsupported": "Não é possível instalar o “{{app}}” na versão para desktop do {{productName}}, e nada foi alterado.",
         "failed_desktop_unsupported_help": "Ele precisa de pacotes Python que a versão de desktop não consegue adicionar; peça ao autor do app para incluí-los com o app, ou abra o {{productName}} em um navegador web em vez da versão de desktop."
+      },
+      "browserRecipeList": {
+        "on_site": "Em {{site}}",
+        "runs_by_itself": "Roda sozinho enquanto a mídia toca",
+        "runs_by_itself_if_allowed": "Roda quando o app pede. Sozinho enquanto a mídia toca, só se você permitir",
+        "runs_when_asked": "Roda quando o app pede",
+        "step_click": "Clique no elemento que corresponde a <sel/>",
+        "step_wait": "Espere até {{duration}} pelo elemento que corresponde a <sel/>"
       },
       "registryTier": {
         "curated": "Revisado pela equipe",
@@ -12877,7 +12887,12 @@
       "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las.",
       "grants_reconsent_browser_sites": "Sites de navegação: o agente do próprio app pode abrir, ler, digitar e clicar nestas páginas no seu navegador, com a sua sessão, sem perguntar a cada vez.",
       "grants_reconsent_kiro_operations": "Operações do Kiro: o app pode chamá-las em seu nome, com seu login do Kiro. Ele recebe as respostas, nunca o login.",
+      "grants_reconsent_browser_recipes": "Cliques automáticos no seu navegador: o {{productName}} faz estes cliques para o app sem perguntar ao assistente.",
       "kiro_operations_card_heading": "Operações do Kiro que este app pode chamar em seu nome",
+      "browser_recipes_card_heading": "Cliques automáticos no seu navegador",
+      "browser_recipes_card_note": "Só nos sites aprovados do app. Um clique que roda sozinho acontece enquanto a mídia do app toca, por exemplo para pular um anúncio.",
+      "browser_recipe_watch_switch": "{{name}} roda sozinho enquanto a mídia toca",
+      "browser_recipe_watch_note": "Um clique que roda sozinho, por exemplo para pular um anúncio, precisa deste sim separado. Desligue aqui para parar só esse clique e manter o app.",
       "kiro_operations_first_notice": "{{name}} pede para chamar estas operações do Kiro em seu nome.",
       "approve_kiro_operations": "Aprovar estas operações do Kiro",
       "grants_reconsent_browser": "Abas do navegador das próprias conversas: Aprovar novas permissões ativa na hora cada item abaixo, sem outra confirmação. Se você desligar o app, tudo para até você religá-lo.",

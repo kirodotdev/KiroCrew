@@ -6494,6 +6494,8 @@
         "browser_note": "安装不会批准其中任何一项：要你在应用页面上批准。应用关着时一项都用不了；重新打开后，你批准过的会恢复。只限这个应用自己对话的标签页，不碰你的其他标签页。",
         "kiro_operations_heading": "此应用将请求以你的身份调用的 Kiro 操作",
         "kiro_operations_note": "安装不会批准其中任何一项：你需要在应用页面上批准。之后 {{productName}} 用你的 Kiro 登录发出每次调用，应用只拿到结果。",
+        "browser_recipes_heading": "你浏览器里的自动点击",
+        "browser_recipes_note": "{{productName}} 只在此应用已批准网站的页面上进行这些点击，不询问助手。这是你自己已登录的浏览器。安装不会批准其中任何一项：你需要在应用页面上批准。",
         "browser_preview_off": "这个 gateway 上的“应用浏览器访问”是关闭的，所以这些暂时不起作用。可在 设置 > 开发者 > 功能预览 中打开。",
         "host_api_heading": "该应用还可以使用应用之外的 {{productName}} 功能",
         "host_api_chat": "它可以与智能体开启自己的聊天，并在其中发送消息。",
@@ -6536,6 +6538,14 @@
         "failed_generic_next_offline": "{{productName}} 当前未连接，重新连接前无法使用“信任并重试”。",
         "failed_desktop_unsupported": "“{{app}}”无法安装到 {{productName}} 桌面版中，且没有做任何更改。",
         "failed_desktop_unsupported_help": "它需要桌面版无法添加的 Python 软件包；请让应用作者将其随应用一同提供，或改为在网页浏览器中打开 {{productName}}，而不是使用桌面版。"
+      },
+      "browserRecipeList": {
+        "on_site": "在 {{site}} 上",
+        "runs_by_itself": "媒体播放时自动运行",
+        "runs_by_itself_if_allowed": "在应用请求时运行。只有你另外允许后，才会在媒体播放时自动运行",
+        "runs_when_asked": "在应用请求时运行",
+        "step_click": "点击匹配 <sel/> 的元素",
+        "step_wait": "最多等待 {{duration}}，直到出现匹配 <sel/> 的元素"
       },
       "registryTier": {
         "curated": "团队已审核",
@@ -12319,7 +12329,12 @@
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
       "grants_reconsent_browser_sites": "浏览网站：应用自带的智能体可以在你浏览器里用你登录的账号打开、阅读这些页面，并在上面输入和点击，不再每次询问。",
       "grants_reconsent_kiro_operations": "Kiro 操作：应用可以用你的 Kiro 登录、以你的身份调用这些操作。它只拿到结果，拿不到登录凭据。",
+      "grants_reconsent_browser_recipes": "你浏览器里的自动点击：{{productName}} 会替此应用进行这些点击，不询问助手。",
       "kiro_operations_card_heading": "此应用可以以你的身份调用的 Kiro 操作",
+      "browser_recipes_card_heading": "你浏览器里的自动点击",
+      "browser_recipes_card_note": "只在此应用已批准的网站上。自动运行的点击只在应用的媒体播放时进行，例如跳过广告。",
+      "browser_recipe_watch_switch": "{{name}} 在媒体播放时自动运行",
+      "browser_recipe_watch_note": "自动进行的点击（例如跳过广告）需要你在这里另外同意。在这里关掉，只停这项点击，应用照常使用。",
       "kiro_operations_first_notice": "{{name}} 请求以你的身份调用这些 Kiro 操作。",
       "approve_kiro_operations": "批准这些 Kiro 操作",
       "grants_reconsent_browser": "它自己对话里的浏览器标签页：点“批准新权限”后，下面每一项马上生效，不会再弹出确认。关掉这个应用，这些都会停下，直到你重新打开。",

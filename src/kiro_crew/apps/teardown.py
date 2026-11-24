@@ -56,7 +56,6 @@ from kiro_crew.apps.hooks_integration import (
     stop_app_startup_hooks,
 )
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
-from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
@@ -406,6 +405,11 @@ async def teardown_app_runtime(
         )
 
     if on_disable and app_may_be_running:
+        # Call time: the bound's module stays off a manifest load (the facade serves it lazily).
+        from kiro_crew.apps.manifest_lifecycle_timeouts import (  # noqa: PLC0415
+            lifecycle_timeout_seconds,
+        )
+
         try:
             script_output = await run_lifecycle_script(
                 name,

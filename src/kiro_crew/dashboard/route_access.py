@@ -60,6 +60,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.
     ("POST", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.change", UNSTABLE),
+    # Owner dashboard only (apps/browser_recipes_routes.py); only narrows the approvals.
+    ("POST", "/api/browser/recipe-watch-off"): RouteAccess(
+        "apps.browser_recipes.watch_off", UNSTABLE
+    ),
     # Owner gate (handlers/connections_app_manifest.py); writes nothing.
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
