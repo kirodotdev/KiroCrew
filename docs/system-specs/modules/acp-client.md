@@ -6804,6 +6804,15 @@ and only when nobody chose a location for the variable. It copies
 pages included, the source left unchanged) only when that index reports
 `backfill_state.status = 'complete'`, inside a 10 s budget, through a staging file
 renamed into place.
+A read-only open of a WAL database must create its `-shm` file, which a Codex
+home the gateway may read but not write refuses. The seed then uses the
+snapshot code's immutable stand-in read (`snapshot._immutable_read_may_stand_in`,
+`_hold_reader_lock`, `_refuse_if_changed_since`; see `snapshot_archive.py`), so
+both paths make one decision: an immutable read only for a refusal coded
+`SQLITE_READONLY`, `SQLITE_CANTOPEN` or `SQLITE_PERM` with no `-wal` or
+`-journal` beside the file, under an SQLite reader lock (POSIX only), and the copy
+kept only if the source did not change meanwhile. Any refusal there means a cold
+start.
 Only the state index is copied, never credentials or the log database, and each
 runtime still owns its own copy. A missing, incomplete or unreadable source, an
 existing destination, or any copy error leaves the directory as it was, and codex
