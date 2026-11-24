@@ -359,7 +359,11 @@ class TestDescriptionRedaction:
     def test_a_display_reassembled_credential_is_redacted(self, streamed: str) -> None:
         from kiro_crew.messaging.outbound_files import unescape_md
         from kiro_crew.security import redact_credentials
-        assert redact_credentials(streamed)[0] == streamed
+
+        # The byte-level pass reads through an invisible character, so that row is
+        # caught there already; the other rows only the display form rejoins.
+        first = redact_credentials(streamed)[0]
+        assert first == streamed or ("\u200b" in streamed and "[REDACTED" in first)
         alt = unescape_md(streamed)
         assert _KEY in canonicalize_display(alt)
         assert _KEY not in canonicalize_display(_description(alt))
