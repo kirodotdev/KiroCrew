@@ -1010,7 +1010,10 @@ Wired sites:
 - `apps/manager_builtins.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
 - `apps/registry_pipeline/sources.py` / `apps/routes_art.py` — clone-sandbox-mode decision routes
-  through `current_context().registry` (`_context_clone_sandbox_mode`).
+  through `current_context().registry` (`_context_clone_sandbox_mode`). Edition hooks may
+  block, so the async registry paths (`checkout.py`, `indexes.py`, `manifests.py`,
+  `store_art.py`, `routes_art.py`) never call it on the event loop; each awaits
+  `asyncio.to_thread(_context_clone_sandbox_mode, git_url)`.
 - Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
   at boot. Every engine that lands a model turn records one `interaction` event
   for it, beside its landed-turn bookkeeping (`record_success` or
@@ -1595,7 +1598,11 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   rows. The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. The Protocol names
-  operations so no external CLI grammar fossilizes in the core.
+  operations so no external CLI grammar fossilizes in the core. An MCP
+  provider's `is_available` (the capability one asks `available()`) is an
+  edition hook and may block, so `mcp_providers.base.ProviderRegistry.search_with_outcomes`, the
+  async `mcp_discover` handlers and the MCP change-card reader never call it on
+  the event loop; each runs it through `asyncio.to_thread`.
 
   > `query` is an optional free-text filter HINT, sent only by MCP discovery
   > search (`mcp_providers/capability.py`); the browse endpoint
@@ -1687,6 +1694,11 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   result fields flow through the existing `_redact_external` scrub before
   reaching the dashboard. Read fail-closed through `safe_context_call` (fallback
   `[]`). Default `[]`, so the public edition searches only the built-in catalog.
+  A provider's `is_available` is an edition hook and may block, so the async
+  discover paths (`ProviderRegistry.search_with_outcomes`, `api_skills_discover`
+  and its featured rows, `api_skills_discover_install`,
+  `api_skills_discover_preview`) never call `provider_available` on the event
+  loop; each runs it through `asyncio.to_thread`.
   v1 addition; `Default` returns `[]`.
 - `ImportSourceProvider.import_sources() -> List[ImportSource]` — WIRED:
   `onboarding_import._sources()` unions the returned descriptors over the core
