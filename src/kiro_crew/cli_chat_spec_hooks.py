@@ -112,7 +112,7 @@ async def stop(hooks: ChannelTurnHooks, reply: str, stop_reason: str) -> None:
     Only for a turn that landed (*stop_reason* classifies ``succeeded``), as the
     channel driver judges it: not one the user stopped, or one that ended on an error.
     """
-    from kiro_crew.acp.types import STOP_CLASS_SUCCEEDED, classify_stop_reason
+    from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_CLASS_SUCCEEDED, classify_stop_reason
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
     if classify_stop_reason(stop_reason).name != STOP_CLASS_SUCCEEDED:
