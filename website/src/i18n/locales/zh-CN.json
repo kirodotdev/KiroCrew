@@ -10581,7 +10581,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "已被策略锁定",
-      "tooltip": "此设置由你所在组织的策略控制。在这里更改不会生效。"
+      "tooltip": "此设置由你所在组织的策略控制。在这里更改不会生效。",
+      "edition_label": "此版本不可用",
+      "edition_tooltip": "此版本不提供该设置，管理员也无法开启。在这里更改不会生效。",
+      "edition_set_label": "由此版本设定",
+      "edition_set_tooltip": "此值由此版本设定，管理员也无法更改。"
     },
     "directDeploy": {
       "deploy_via_agent": "通过智能体部署",
@@ -19132,7 +19136,7 @@
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
         "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",
-        "automatic_updates_unavailable_policy_channel": "此 {{build}} 版本无法切换到组织策略要求的 {{channel}} 更新，因此自动更新已关闭。",
+        "automatic_updates_unavailable_policy_channel": "此 {{build}} 构建无法切换到本版本要求的 {{channel}} 更新，因此自动更新已关闭。",
         "automatic_updates_policy_channel_download": "<download>安装 {{channel}} 应用</download>即可重新接收更新。你的设置、聊天和文件都会保留。",
         "update_channel_requires": "要求 {{channel}}",
         "automatic_updates_unavailable_platform": "此构建版本在此平台上不支持自动更新。",
@@ -20886,6 +20890,7 @@
         "credential_redaction_toggle": "脱敏凭证",
         "credential_redaction_toggle_help": "隐藏聊天、消息频道、代理提示、文件和日志中的密钥、令牌和密码。",
         "credential_redaction_locked": "此设置由管理员控制。",
+        "credential_redaction_locked_edition": "此版本始终脱敏凭证，管理员也无法关闭。",
         "credential_redaction_read_failed": "无法读取脱敏设置。",
         "credential_redaction_write_failed": "无法保存更改。{{state}}",
         "credential_redaction_retry": "重试",
@@ -23237,7 +23242,7 @@
       "why_marker": "只读：{{productName}} 会在你完成某个步骤时自动设置它。",
       "why_alias": "只读：{{productName}} 从另一个设置读取这个值，在这里修改不会生效。",
       "why_text": "只读：它是自由文本，例如文件路径、网址或命令。",
-      "why_locked": "只读：你所在组织的策略设置了它。",
+      "why_locked": "只读：由此版本设定，管理员也无法更改。",
       "why_compound": "只读：它包含多个必须一起修改的值。",
       "restart": "网关重启后生效",
       "default_label": "默认值：{{value}}",

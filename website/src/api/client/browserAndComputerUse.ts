@@ -26,6 +26,8 @@ export interface ComputerUseConfigData {
   enabled: boolean
   /** True when this build ignores the local opt-in (LTS); the enable is greyed out. */
   locked_by_policy?: boolean
+  /** True when no policy term can lift that lock (LTS, no enterprise term). */
+  locked_by_edition?: boolean
   supported: boolean
   platform: string
   reason: string

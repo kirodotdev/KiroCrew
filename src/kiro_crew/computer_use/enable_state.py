@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # names applications the operator automates — mildly sensitive on its own.
 _STATE_FILE_MODE = 0o600
 
+#: The governance scope that turns desktop control on.
+_GOVERNANCE_SCOPE = "capabilities.computer_use"
+
 
 def computer_use_state_path() -> Path:
     """Path to the keystone ``computer_use.json``.
@@ -114,7 +117,14 @@ def locked_by_policy(*, audit_tool: str = "") -> bool:
     """
     from kiro_crew.edition_locks import policy_permits
 
-    return not policy_permits("capabilities.computer_use", audit_tool=audit_tool)
+    return not policy_permits(_GOVERNANCE_SCOPE, audit_tool=audit_tool)
+
+
+def locked_by_edition() -> bool:
+    """True when this build keeps desktop control off and no policy term can turn it on."""
+    from kiro_crew.edition_locks import locked_by_edition as scope_locked_by_edition
+
+    return scope_locked_by_edition(_GOVERNANCE_SCOPE)
 
 
 def load_policy_config(state: "dict | None" = None) -> PolicyConfig:

@@ -4444,7 +4444,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "Locked by policy",
-      "tooltip": "Your organization's policy controls this setting. A change made here has no effect."
+      "tooltip": "Your organization's policy controls this setting. A change made here has no effect.",
+      "edition_label": "Not available in this edition",
+      "edition_tooltip": "This edition does not offer this setting, and an admin cannot turn it on. A change made here has no effect.",
+      "edition_set_label": "Set by this edition",
+      "edition_set_tooltip": "This edition sets this value, and an admin cannot change it."
     },
     "pierreEditorImpl": {
       "highlighting_unavailable_with_reason": "Syntax highlighting is unavailable until you reload. Content remains readable. Last failure: {{classification}} (generation {{generation}}, attempt {{attempt}}): {{reason}}"
@@ -9337,7 +9341,7 @@
         "updates_managed_lane_by": "Updates for this install are managed by {{managedBy}}. To update manually, run the command below in a terminal.",
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
         "automatic_updates_unavailable_channel": "Automatic updates are unavailable because this release channel has no builds for your platform yet. Switch channels above to receive updates.",
-        "automatic_updates_unavailable_policy_channel": "This {{build}} build can't switch to {{channel}} updates, which your organization's policy requires, so automatic updates are off.",
+        "automatic_updates_unavailable_policy_channel": "This {{build}} build can't switch to {{channel}} updates, which this edition requires, so automatic updates are off.",
         "automatic_updates_policy_channel_download": "<download>Install the {{channel}} app</download> to get updates again. Your settings, chats and files are kept.",
         "update_channel_requires": "requires {{channel}}",
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
@@ -10636,6 +10640,7 @@
         "credential_redaction_toggle": "Redact credentials",
         "credential_redaction_toggle_help": "Hides keys, tokens and passwords in chat, messaging channels, the agent's prompt, files and logs.",
         "credential_redaction_locked": "An administrator controls this setting.",
+        "credential_redaction_locked_edition": "This edition always redacts credentials, and an admin cannot turn it off.",
         "credential_redaction_read_failed": "Could not read the redaction setting.",
         "credential_redaction_write_failed": "Could not save the change. {{state}}",
         "credential_redaction_retry": "Retry",
@@ -11635,7 +11640,7 @@
       "why_marker": "Read only: {{productName}} sets it when you finish a step.",
       "why_alias": "Read only: {{productName}} reads this value from another setting, so a change here would do nothing.",
       "why_text": "Read only: it holds free text, such as a file path, a web address or a command.",
-      "why_locked": "Read only: your organization's policy sets it.",
+      "why_locked": "Read only: this edition sets it, and an admin cannot change it.",
       "why_compound": "Read only: it holds several values that must change together.",
       "restart": "Applies after gateway restart",
       "default_label": "Default: {{value}}",

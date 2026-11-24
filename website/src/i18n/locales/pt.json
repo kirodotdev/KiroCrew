@@ -11073,7 +11073,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "Bloqueado por política",
-      "tooltip": "A política da sua organização controla esta configuração. Uma alteração feita aqui não tem efeito."
+      "tooltip": "A política da sua organização controla esta configuração. Uma alteração feita aqui não tem efeito.",
+      "edition_label": "Indisponível nesta edição",
+      "edition_tooltip": "Esta edição não oferece esta configuração, e um administrador não pode ativá-la. Uma alteração feita aqui não tem efeito.",
+      "edition_set_label": "Definido por esta edição",
+      "edition_set_tooltip": "Esta edição define este valor, e um administrador não pode alterá-lo."
     },
     "directDeploy": {
       "deploy_via_agent": "Implantar via agente",
@@ -20186,7 +20190,7 @@
         "automatic_updates_are_unavailable_in_this_build": "As atualizações automáticas não estão disponíveis nesta compilação",
         "automatic_updates_unavailable_dev_build": "As atualizações automáticas não estão disponíveis nesta compilação (compilação de desenvolvimento).",
         "automatic_updates_unavailable_channel": "As atualizações automáticas não estão disponíveis porque este canal de lançamento ainda não tem builds para a sua plataforma. Troque de canal acima para receber atualizações.",
-        "automatic_updates_unavailable_policy_channel": "Esta build {{build}} não pode mudar para as atualizações {{channel}} que a política da sua organização exige, então as atualizações automáticas estão desativadas.",
+        "automatic_updates_unavailable_policy_channel": "Esta build {{build}} não pode mudar para as atualizações {{channel}} que esta edição exige, então as atualizações automáticas estão desativadas.",
         "automatic_updates_policy_channel_download": "<download>Instale o app {{channel}}</download> para voltar a receber atualizações. Suas configurações, chats e arquivos são mantidos.",
         "update_channel_requires": "exige {{channel}}",
         "automatic_updates_unavailable_platform": "As atualizações automáticas não estão disponíveis nesta compilação nesta plataforma.",
@@ -21994,6 +21998,7 @@
         "credential_redaction_toggle": "Ocultar credenciais",
         "credential_redaction_toggle_help": "Oculta as chaves, os tokens e as senhas no chat, nos canais de mensagens, no prompt do agente, nos arquivos e nos logs.",
         "credential_redaction_locked": "Um administrador controla esta configuração.",
+        "credential_redaction_locked_edition": "Esta edição sempre oculta as credenciais, e um administrador não pode desativar isso.",
         "credential_redaction_read_failed": "Não foi possível ler a configuração de ocultação.",
         "credential_redaction_write_failed": "Não foi possível salvar a alteração. {{state}}",
         "credential_redaction_retry": "Tentar novamente",
@@ -24417,7 +24422,7 @@
       "why_marker": "Somente leitura: o {{productName}} define isso quando você termina uma etapa.",
       "why_alias": "Somente leitura: o {{productName}} lê este valor de outra configuração, então alterá-lo aqui não faria nada.",
       "why_text": "Somente leitura: contém texto livre, como um caminho de arquivo, um endereço web ou um comando.",
-      "why_locked": "Somente leitura: a política da sua organização define isso.",
+      "why_locked": "Somente leitura: esta edição define isso, e um administrador não pode alterá-lo.",
       "why_compound": "Somente leitura: contém vários valores que precisam mudar juntos.",
       "restart": "Aplica após reiniciar o gateway",
       "default_label": "Padrão: {{value}}",

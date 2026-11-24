@@ -10581,7 +10581,11 @@
     },
     "lockedByPolicyBadge": {
       "label": "정책으로 잠김",
-      "tooltip": "이 설정은 조직의 정책이 관리합니다. 여기서 변경해도 적용되지 않습니다."
+      "tooltip": "이 설정은 조직의 정책이 관리합니다. 여기서 변경해도 적용되지 않습니다.",
+      "edition_label": "이 에디션에서는 사용할 수 없음",
+      "edition_tooltip": "이 에디션에서는 이 설정을 제공하지 않으며, 관리자도 켤 수 없습니다. 여기서 변경해도 적용되지 않습니다.",
+      "edition_set_label": "이 에디션에서 고정됨",
+      "edition_set_tooltip": "이 값은 이 에디션에서 고정되며, 관리자도 변경할 수 없습니다."
     },
     "directDeploy": {
       "deploy_via_agent": "에이전트로 배포",
@@ -19132,7 +19136,7 @@
         "automatic_updates_are_unavailable_in_this_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다",
         "automatic_updates_unavailable_dev_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다 (개발 빌드).",
         "automatic_updates_unavailable_channel": "이 릴리스 채널에는 아직 사용 중인 플랫폼용 빌드가 없어 자동 업데이트를 사용할 수 없습니다. 위에서 채널을 변경하면 업데이트를 받을 수 있습니다.",
-        "automatic_updates_unavailable_policy_channel": "이 {{build}} 빌드는 조직 정책이 요구하는 {{channel}} 업데이트로 전환할 수 없으므로 자동 업데이트가 꺼져 있습니다.",
+        "automatic_updates_unavailable_policy_channel": "이 {{build}} 빌드는 이 에디션이 요구하는 {{channel}} 업데이트로 전환할 수 없으므로 자동 업데이트가 꺼져 있습니다.",
         "automatic_updates_policy_channel_download": "업데이트를 다시 받으려면 <download>{{channel}} 앱을 설치</download>하세요. 설정, 채팅, 파일은 그대로 유지됩니다.",
         "update_channel_requires": "{{channel}} 필요",
         "automatic_updates_unavailable_platform": "이 플랫폼의 이 빌드에서는 자동 업데이트를 사용할 수 없습니다.",
@@ -20886,6 +20890,7 @@
         "credential_redaction_toggle": "자격 증명 마스킹",
         "credential_redaction_toggle_help": "채팅, 메시징 채널, 에이전트 프롬프트, 파일, 로그의 키, 토큰, 비밀번호를 가립니다.",
         "credential_redaction_locked": "이 설정은 관리자가 제어합니다.",
+        "credential_redaction_locked_edition": "이 에디션은 항상 자격 증명을 마스킹하며, 관리자도 끌 수 없습니다.",
         "credential_redaction_read_failed": "마스킹 설정을 읽을 수 없습니다.",
         "credential_redaction_write_failed": "변경 내용을 저장할 수 없습니다. {{state}}",
         "credential_redaction_retry": "다시 시도",
@@ -23237,7 +23242,7 @@
       "why_marker": "읽기 전용입니다. 단계를 마치면 {{productName}}이(가) 설정합니다.",
       "why_alias": "읽기 전용입니다. {{productName}}은(는) 이 값을 다른 설정에서 읽으므로 여기서 바꿔도 아무 일도 일어나지 않습니다.",
       "why_text": "읽기 전용입니다. 파일 경로, 웹 주소, 명령 같은 자유 텍스트입니다.",
-      "why_locked": "읽기 전용입니다. 조직의 정책이 설정합니다.",
+      "why_locked": "읽기 전용입니다. 이 에디션이 설정하며, 관리자도 변경할 수 없습니다.",
       "why_compound": "읽기 전용입니다. 함께 바꿔야 하는 여러 값을 담고 있습니다.",
       "restart": "게이트웨이 다시 시작 후 적용",
       "default_label": "기본값: {{value}}",
