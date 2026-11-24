@@ -25,7 +25,8 @@
  * `copy_file_pinned`); the dashboard gains nothing at that level.
  *
  * Level 15 adds `permissions.browserRecipes` and `useBrowserMedia().runRecipe`: fixed
- * clicks on selectors the gateway runs on the app's own agent's tab, no model asked.
+ * clicks on selectors the gateway runs on the app's own agent's tab, no model asked;
+ * and `isStatusRow`, the chat's verdict on a row the gateway wrote.
  * Level 16 adds `useKeepAlive`: a routed page stays mounted, hidden, while the app
  * says it is busy, and the dashboard names it on every page with Open and Stop.
  *

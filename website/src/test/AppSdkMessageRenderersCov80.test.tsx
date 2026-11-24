@@ -50,7 +50,7 @@ vi.mock('../pages/chat/AssistantMessage', () => ({
 vi.mock('../pages/chat/SubagentCompletionCard', () => ({
   default: () => <div data-testid="subagent" />,
 }))
-vi.mock('../pages/chat/subagentCompletion', () => ({
+vi.mock('../lib/subagentCompletion', () => ({
   isSubagentCompletionMessage: (m: ChatMessage) => !!m.meta?.zzqSubagent,
 }))
 vi.mock('../pages/chat/McpOAuthBanner', () => ({

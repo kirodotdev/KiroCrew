@@ -14,7 +14,7 @@ facts as a structured dict on the injected message's
 that first and keeps the regexes only as a legacy fallback.
 
 The dict shape mirrors ``ParsedSingleCompletion`` / ``ParsedBatchCompletion`` in
-``website/src/pages/chat/subagentCompletion.ts`` (minus ``body``, which the
+``website/src/lib/subagentCompletion.ts`` (minus ``body``, which the
 frontend still derives from the message's blank-line split — a structural
 boundary, not prose). Keep the two in lockstep.
 

@@ -46,7 +46,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useChatSetting } from '../../hooks/useChatSetting'
 import EngineSubagentRecord, { engineRecordOf } from './EngineSubagentRecord'
-import type { ParsedSubagentCompletion } from './subagentCompletion'
+import type { ParsedSubagentCompletion } from '../../lib/subagentCompletion'
 
 /** Per-turn stats attached by the backend to the last assistant message of a
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn

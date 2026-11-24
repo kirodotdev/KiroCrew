@@ -11,7 +11,7 @@ import { replyShowsFooter } from '../pages/chat/replyFooter'
  * rows (`kind` live, `meta.kind` reloaded). A trailing notice used to (a) make
  * the `showFooter` walks return false for the real reply — hiding its
  * Copy/footer — and (b) become `lastTextIdx`, anchoring Regenerate/variant
- * switching on the notice card (issue #10115). `CompactionCard.tsx` exports
+ * switching on the notice card (issue #10115). The chat describes
  * `isSystemNoticeRow` as "one predicate shared with the last-real-message
  * scans", and `completedTurns.ts` already follows that convention; these scans
  * must too. Pinned by source scan where the predicate is inline (a `useMemo`
@@ -70,7 +70,7 @@ describe('last-assistant scans skip system-notice rows', () => {
     expect(body).toContain('if (isSystemNoticeRow(messages[i])) continue')
   })
 
-  it('the shared predicate is imported from CompactionCard', () => {
-    expect(CHAT_PAGE).toContain("import { isSystemNoticeRow } from '../CompactionCard'")
+  it('the shared predicate is imported from lib/systemNotice', () => {
+    expect(CHAT_PAGE).toContain("import { isSystemNoticeRow } from '../../../lib/systemNotice'")
   })
 })

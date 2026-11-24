@@ -45,7 +45,8 @@ import SpecHooksRunNowhereNotice, {
   projectHookFilesNoticeDismissed,
   specHooksRunNowhereDismissed,
 } from '../pages/chat/SpecHooksNotice'
-import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import { SystemNoticeRow } from '../pages/chat/CompactionCard'
+import { isSystemNoticeRow } from '../lib/systemNotice'
 import { replyShowsFooter, replyTurnStats } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
@@ -59,7 +60,7 @@ import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
 import { grillKeysSentAfter } from './protocol/grillMarker'
 import { ToolDetails } from '../pages/chat/ToolDetails'
-import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSubagentCompletionMessage } from '../lib/subagentCompletion'
 import { REASONING_ROLES, stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'

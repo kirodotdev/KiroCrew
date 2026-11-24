@@ -3507,7 +3507,7 @@ The resolved id rides the wire as a `model` field on the `subagent_spawn`,
 rides alongside it as a `requested_model` field on those same payloads (both are
 `_redact()`-ed, since the pin is caller-supplied). The single-completion
 meta (`subagent_completion_meta.single_completion_meta`, mirrored by
-`website/src/pages/chat/subagentCompletion.ts`) additionally carries `requestedModel`
+`website/src/lib/subagentCompletion.ts`) additionally carries `requestedModel`
 and `resolvedModel`. The frontend renders the resolved model as a chip beside the
 agent pill and flags a **downgrade** — an amber chip plus a persistent
 `role="status"` "Requested X, served Y" banner — when the two name different models,

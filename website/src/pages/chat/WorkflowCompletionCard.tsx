@@ -21,50 +21,11 @@ import { openActivityToTab } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { ChatMessage } from '../../types'
+import { parseWorkflowCompletion } from '../../lib/workflowCompletion'
 
 import { i18nT } from '../../i18n/t'
 import { useRowDisclosure } from './rowDisclosure'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
-const WF_COMPLETION_PREFIX = '[Workflow completion event]'
-// Name is backtick-delimited; allow any char except a backtick (including
-// newlines) so an unusual name doesn't make the header fail to parse. If it
-// still doesn't match (e.g. a name containing a backtick), detection falls back
-// to normal rendering rather than dropping the message — see
-// isWorkflowCompletionMessage.
-const WF_COMPLETION_RE = /^\[Workflow completion event\]\s*\nWorkflow `([^`]+)` \((wf_[A-Za-z0-9_]+)\) → \*\*([a-z]+)\*\*/
-
-/** True when an assistant message is an injected workflow completion event
- *  whose header actually PARSES. Gating on a successful parse (not just the
- *  loose prefix) is deliberate: ChatPage branches to WorkflowCompletionCard on
- *  this predicate, and the card renders null when the header can't be parsed —
- *  so a prefix-only match would swallow the completion (including the result
- *  the user was waiting for) instead of degrading to normal markdown. */
-export function isWorkflowCompletionMessage(message: ChatMessage): boolean {
-  if (message.role !== 'assistant') return false
-  const content = message.content || ''
-  if (!content.startsWith(WF_COMPLETION_PREFIX)) return false
-  return parseWorkflowCompletion(content) !== null
-}
-
-interface ParsedCompletion {
-  name: string
-  runId: string
-  status: string
-  /** Markdown after the header line (Result block + artifacts), agent-facing
-   *  "Use workflow_result(…)" hint stripped. */
-  body: string
-}
-
-/** Parse the header + body from a completion message, or null if it doesn't
- *  match the expected shape (caller falls back to normal rendering). */
-export function parseWorkflowCompletion(content: string): ParsedCompletion | null {
-  const m = WF_COMPLETION_RE.exec(content)
-  if (!m) return null
-  let body = content.slice(m[0].length).trim()
-  // Drop the trailing agent-facing tool hint — it's noise for the reader.
-  body = body.replace(/\n*Use workflow_result\([^\n]*$/s, '').trim()
-  return { name: m[1], runId: m[2], status: m[3], body }
-}
 
 const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   message,

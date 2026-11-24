@@ -25,7 +25,7 @@ import {
   isModelDowngrade,
   type ParsedSubagentCompletion,
   type SubagentOutcome,
-} from './subagentCompletion'
+} from '../../lib/subagentCompletion'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { normalizeModelKey } from '../../lib/model'
 import { sliceCodePoints } from '../../utils/codePoints'
