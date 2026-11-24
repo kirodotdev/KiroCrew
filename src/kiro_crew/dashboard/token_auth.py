@@ -1607,6 +1607,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _REVOKED_NONCES_FILE,
         CONNECTOR_AUDIENCE,
         CONNECTOR_CREDENTIAL_REASON,
+        LINK_TOKEN_MAX_CHARS,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,
