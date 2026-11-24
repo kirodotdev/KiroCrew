@@ -254,6 +254,13 @@ def _build_export_zip(
         manifest["components"] = ["memory"]
     if include_agent_templates:
         manifest["agent_templates"] = bundled_templates
+    # The apps the export notice names, so the import can name the ones the other
+    # machine has not set up (`portability_export.apps_not_set_up`).
+    apps, apps_past_cap = ([], 0) if memory_only else _pf.recorded_apps()
+    if apps:
+        manifest["unbundled_apps"] = apps
+    if apps_past_cap:
+        manifest["unbundled_apps_past_cap"] = apps_past_cap
     if include_sessions:
         session_mtimes: dict[str, float] = {}
         # The writer judges each chat authoritatively under its lock (privacy +
@@ -468,6 +475,11 @@ def plan_export(
         }
         if include_agent_templates:
             manifest_skeleton["agent_templates"] = bundled_templates
+        apps, apps_past_cap = _pf.recorded_apps()
+        if apps:
+            manifest_skeleton["unbundled_apps"] = apps
+        if apps_past_cap:
+            manifest_skeleton["unbundled_apps_past_cap"] = apps_past_cap
         session_order, sessions_skipped = _pf._plan_sessions(
             mc_real,
             prefix,
