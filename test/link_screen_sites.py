@@ -156,6 +156,8 @@ DECLARED_SITES = frozenset(
         ("config/loader_locations.py", "_workspace_blocker_message"),
         ("config/loader_locations.py", "materialize_workspace_dir"),
         ("config/superseded_defaults.py", "_update_map"),
+        ("connected_computers/confinement.py", "LinuxPlan.wrap"),
+        ("connected_computers/connector.py", "_root_unchanged"),
         ("connections/warm.py", "_is_plain_warm_generation_dir"),
         ("connections/warm.py", "_read_warm_generation_owner"),
         ("connections/warm.py", "_read_warm_spec_body"),
