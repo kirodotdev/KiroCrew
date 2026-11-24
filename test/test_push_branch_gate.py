@@ -21,6 +21,7 @@ between the layers, the process-substitution boundary, the one quote model and t
 nested-payload extraction -- is pinned in ``test_push_branch_gate_parser.py``.
 """
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -432,6 +433,27 @@ class TestGitPushEnforcement:
         allow = [e for e in captured_sel_events if e.event_type == "push_allowed"]
         assert len(allow) == 1
         assert allow[0].operation == "git_push"
+
+    @pytest.mark.asyncio
+    async def test_allow_audit_writes_inline_when_the_pool_cannot_start_a_worker(
+        self, captured_sel_events, monkeypatch
+    ) -> None:
+        """A maintenance pool whose first worker cannot start refuses the audit where it
+        is built, so the event is written inline instead of lost on a failed future."""
+        from kiro_crew import executors
+
+        executors.shutdown_maintenance_executor()
+        real_start = threading.Thread.start
+
+        def refusing_start(thread: threading.Thread) -> None:
+            if thread.name == "mc-maint_0":
+                raise RuntimeError("can't start new thread")
+            real_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", refusing_start)
+        _schedule_push_allow_audit(f"{PUSH} origin my-feature")
+        allow = [e for e in captured_sel_events if e.event_type == "push_allowed"]
+        assert len(allow) == 1
 
     @pytest.mark.timeout(60)
     def test_redos_safe_on_pathological_input(self) -> None:
