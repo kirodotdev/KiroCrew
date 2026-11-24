@@ -1562,7 +1562,12 @@ without a display omits both fields. The refusal record carries each command arg
 with its redacted declared environment, scrubbed and bounded before they enter it,
 and the row's **Details** and the Review dialog display them. A refusal whose
 display was cut is stored `complete: false` with no `expected_launch`, so its
-row offers no Approve. A `too_many_launches` refusal reaches the page as display
+row offers no Approve. So is one whose target reached the gateway's last target
+filter (`launch_approval.filter_target_env`) without the rewrite pass recording
+its launch, such as a kept overlay's. A server whose env holds a `secret://`
+reference stays wrapped while its launch is refused, so that filter drops its
+target too; the pass already recorded that launch with its display, so a changed
+command still offers **Approve update**. A `too_many_launches` refusal reaches the page as display
 only: the launches the cap kept, `complete: false`, no `expected_launch`, and
 `launch_cap`, the cap itself. Its row reads **Can't share** with **Remove** and one
 line naming `launch_cap` and the way back; `kirocrew doctor` names the server and

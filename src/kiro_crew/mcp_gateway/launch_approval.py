@@ -543,6 +543,11 @@ class LaunchApprovals:
         prefix = f"{command_hash}:"
         return any(pair.startswith(prefix) for pair in self.approved_pairs.get(stem, ()))
 
+    def saw_command(self, stem: str, command_hash: str) -> bool:
+        """Whether this pass recorded a launch of *command_hash* for *stem*."""
+        prefix = f"{command_hash}:"
+        return any(identity.startswith(prefix) for identity in self.launch_identities.get(stem, {}))
+
     def digest(self) -> list[Any]:
         """Stable summary folded into the rewriter's input fingerprint.
 
@@ -1500,7 +1505,10 @@ def filter_target_env(
             kept[key] = spec
             continue
         dropped.add(stem)
-        if parts:
+        # A launch this pass already refused carries its own display in the
+        # refusal record. Counting it again here would leave that record with
+        # nothing approvable, though it shows the whole launch.
+        if parts and not approvals.saw_command(stem, hash_command(parts[0], parts[1:])):
             display = _bounded_display_argv((parts[0], parts[1:]))
             commands = approvals.refused_commands.get(stem, [])
             if display not in commands and approvals._admission_allowed(
