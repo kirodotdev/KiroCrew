@@ -139,6 +139,8 @@ class TestOpenApp:
         session = {"DISPLAY": ":0", "XDG_CURRENT_DESKTOP": "KDE", "KDE_SESSION_VERSION": "6"}
         monkeypatch.setattr(platform_compat, "_user_manager_desktop_session", lambda: session)
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
+        # The developer's own data home may hold secrets to mask; none here.
+        monkeypatch.setattr(routes_mod, "app_backend_secret_mask_targets", lambda: ())
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
         envs: list[dict[str, str]] = []
 
@@ -178,6 +180,8 @@ class TestOpenApp:
             return SimpleNamespace(pid=UNALLOCATABLE_PID)
 
         monkeypatch.setattr(routes_mod, "wrap_argv", _wrap)
+        # The developer's own data home may hold secrets to mask; none here.
+        monkeypatch.setattr(routes_mod, "app_backend_secret_mask_targets", lambda: ())
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
         monkeypatch.setattr(routes_mod, "create_subprocess_limited", _spawn)
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
