@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import re as _re
-import string
 from collections.abc import Iterable
 from urllib.parse import urlsplit as _urlsplit
 
@@ -86,7 +85,9 @@ _URL_ROOT_SEP = "/"
 _GITLAB_URL_ROOT_MAX_SEGMENTS = 8
 #: The characters one URL-root segment may use: the same conservative set the
 #: Bitbucket Server and Gerrit context paths accept.
-_GITLAB_URL_ROOT_CHARS = frozenset(string.ascii_letters + string.digits + "._~-")
+_GITLAB_URL_ROOT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-"
+)
 _GITLAB_PUBLIC_HOSTS = frozenset({"gitlab.com", "www.gitlab.com"})
 
 

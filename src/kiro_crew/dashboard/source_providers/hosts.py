@@ -244,6 +244,11 @@ def _gitlab_url_root(host: str) -> str:
     return _gitlab_url_roots_of(_gitlab_hosts_snapshot).get(host, "")
 
 
+@functools.lru_cache(maxsize=4)
+def _gitlab_root_served_authorities_of(entries: frozenset[str]) -> frozenset[str]:
+    return frozenset(host for host, root in _gitlab_url_roots_of(entries).items() if not root)
+
+
 def gitlab_hosts_blocking() -> frozenset[str]:
     """The self-managed GitLab allowlist for sync code that runs OFF the event loop.
 
@@ -251,11 +256,17 @@ def gitlab_hosts_blocking() -> frozenset[str]:
     with no self-managed hosts pays no config read). Otherwise one blocking config
     read, which does not touch the shared snapshot. Never call this on the loop: use
     :func:`ensure_gitlab_hosts_loaded` there.
+
+    Returns the ``host[:port]`` of each entry served at the root only. An entry
+    that carries a relative URL root (``gitlab.example.com/gitlab``) is left out,
+    so its host stays refused: the one caller, the auto-improvement clone path,
+    builds the clone URL, project path and origin pin without a root.
     """
     if _gitlab_hosts_fresh():
-        return _gitlab_hosts_snapshot
-    gitlab, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
-    return gitlab
+        entries = _gitlab_hosts_snapshot
+    else:
+        entries, _jira, _chips, _github, _bitbucket_server, _gerrit = _load_source_link_settings()
+    return _gitlab_root_served_authorities_of(entries)
 
 
 def _allowed_jira_hosts() -> frozenset[str]:

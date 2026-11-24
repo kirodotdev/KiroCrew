@@ -393,7 +393,7 @@ const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
  * `gitlabUrlRoot` reads the root back out of it.
  * An explicit `:443` is dropped to match the URL API (and the backend), which
  * omits the default HTTPS port. */
-export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
+function gitlabHostLookup(hosts: readonly string[] | undefined): ReadonlySet<string> {
   const out = new Set<string>()
   for (const entry of hosts ?? []) {
     const text = entry.trim()
@@ -401,10 +401,20 @@ export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet
     const authority = (cut < 0 ? text : text.slice(0, cut)).toLowerCase().replace(/:443$/, '')
     if (!authority) continue
     out.add(authority)
-    const root = cut < 0 ? '' : text.slice(cut).replace(/^\/+|\/+$/g, '')
+    let root = cut < 0 ? '' : text.slice(cut + 1)
+    while (root.startsWith('/')) root = root.slice(1)
+    while (root.endsWith('/')) root = root.slice(0, -1)
     if (root) out.add(`${authority}/${root}`)
   }
   return out
+}
+
+/** The configured self-hosted GitLab instances served at the root, normalized
+ * like {@link gitlabHostLookup}. An entry carrying a relative URL root
+ * (`host/gitlab`) is left out, for callers such as Issue Radar's instance
+ * picker that build URLs and glab calls without one. */
+export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
+  return gitlabHostLookup((hosts ?? []).filter(host => !host.includes('/')))
 }
 
 /** The URL root configured for `authority` that `path` sits under: '' when the
@@ -727,7 +737,7 @@ export function parseSourceLinkUrl(
 ): PullRequestLink | null {
   return parseCandidate(
     url,
-    gitlabHostSet(gitlabHosts),
+    gitlabHostLookup(gitlabHosts),
     false,
     jiraHostSet(jiraHosts),
     false,
@@ -905,7 +915,7 @@ export function extractPullRequestLinks(
   bitbucketServerHosts: readonly string[] = [],
   gerritHosts: readonly string[] = [],
 ): PullRequestLink[] {
-  const hosts = gitlabHostSet(gitlabHosts)
+  const hosts = gitlabHostLookup(gitlabHosts)
   const jHosts = jiraHostSet(jiraHosts)
   const ghHosts = githubHostSet(githubHosts)
   const bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)
@@ -963,14 +973,14 @@ export class PullRequestLinkIndex {
     // An operator adding a self-managed host mid-session must retro-detect the
     // MRs already in the transcript, so a changed allowlist forces a full
     // rescan rather than only applying to future messages.
-    const hostsKey = [...gitlabHostSet(gitlabHosts)].sort().join(',')
+    const hostsKey = [...gitlabHostLookup(gitlabHosts)].sort().join(',')
       + '|' + [...jiraHostSet(jiraHosts)].sort().join(',')
       + '|' + [...githubHostSet(githubHosts)].sort().join(',')
       + '|' + [...bitbucketServerHostSet(bitbucketServerHosts)].sort().join(',')
       + '|' + [...gerritHostSet(gerritHosts)].sort().join(',')
     if (hostsKey !== this.hostsKey) {
       this.hostsKey = hostsKey
-      this.hosts = gitlabHostSet(gitlabHosts)
+      this.hosts = gitlabHostLookup(gitlabHosts)
       this.jHosts = jiraHostSet(jiraHosts)
       this.ghHosts = githubHostSet(githubHosts)
       this.bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)

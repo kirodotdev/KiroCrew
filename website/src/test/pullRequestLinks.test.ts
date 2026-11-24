@@ -23,6 +23,7 @@ import {
   sourceProjectHost,
   sourceProjectPath,
   forgeChipLabel,
+  gitlabHostSet,
   sourceSelection,
   withSourceSelection,
 } from '../utils/pullRequestLinks'
@@ -632,6 +633,12 @@ describe('parseSourceLinkUrl', () => {
   it('leaves a bare-host entry without a URL root', () => {
     const mr = 'https://gitlab.acme.internal/team/api/-/merge_requests/7'
     expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal'])).not.toHaveProperty('urlRoot')
+  })
+
+  it('leaves a URL-root entry out of the served-at-root host set Issue Radar offers', () => {
+    expect([...gitlabHostSet(['gitlab.acme.internal/gitlab', 'Plain.Example.com:443'])]).toEqual([
+      'plain.example.com',
+    ])
   })
 })
 

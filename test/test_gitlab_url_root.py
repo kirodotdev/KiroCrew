@@ -116,6 +116,12 @@ def test_repo_url_strips_the_url_root(rooted_allowlist) -> None:
     assert (ref.host, ref.owner, ref.repo) == ("gitlab.example.com", "group/subgroup", "project")
 
 
+def test_repo_url_outside_the_url_root_is_refused(rooted_allowlist) -> None:
+    # Resolving it would name a different project than the one under the root.
+    with pytest.raises(ValueError):
+        source.parse_repo_url("https://gitlab.example.com/group/subgroup/project")
+
+
 @pytest.mark.asyncio
 async def test_changes_panel_reads_the_project_without_the_url_root(
     monkeypatch, rooted_allowlist
@@ -161,3 +167,76 @@ def test_monitor_target_outside_the_url_root_is_refused() -> None:
             "https://gitlab.example.com/group/subgroup/project/-/merge_requests/12",
             gitlab_hosts=["gitlab.example.com/gitlab"],
         )
+
+
+# --- issue search ------------------------------------------------------------
+
+
+def test_issue_search_result_keeps_the_url_root(rooted_allowlist) -> None:
+    from kiro_crew.dashboard.source_providers.issue_search import (
+        IssueQuery,
+        _gitlab_summary,
+        _validate_gitlab,
+    )
+
+    query = _validate_gitlab(
+        IssueQuery(
+            provider="gitlab",
+            scope="group/project",
+            host="gitlab.example.com",
+            state="open",
+            assignee="",
+            author="",
+            labels=(),
+            text="",
+            sort="",
+            order="",
+            raw="",
+            limit=10,
+            page=1,
+        )
+    )
+    summary = _gitlab_summary(query, {"iid": 12, "state": "opened"})
+    url = "https://gitlab.example.com/gitlab/group/project/-/issues/12"
+    assert summary is not None and summary["url"] == url
+    # The link it returns is one the Changes panel accepts on the same instance.
+    assert source.parse_source_url(url).project == "group/project"
+
+
+# --- shared allowlist readers -------------------------------------------------
+
+
+def test_blocking_allowlist_leaves_out_a_rooted_entry(monkeypatch) -> None:
+    # Its one caller, the auto-improvement clone path, cannot carry a URL root.
+    monkeypatch.setattr(
+        hosts,
+        "_gitlab_hosts_snapshot",
+        frozenset({"gitlab.example.com/gitlab", "plain.example.com:8443"}),
+    )
+    monkeypatch.setattr(hosts, "_gitlab_hosts_fresh", lambda: True)
+    assert hosts.gitlab_hosts_blocking() == frozenset({"plain.example.com:8443"})
+
+
+def test_auto_improvement_refuses_a_rooted_host(monkeypatch, rooted_allowlist) -> None:
+    # Its clone URL and project path carry no root, so the rooted host stays refused
+    # rather than cloning ``git@host:gitlab/group/project.git``.
+    from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+
+    monkeypatch.setattr(hosts, "_gitlab_hosts_fresh", lambda: True)
+    monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda host: False)
+    monkeypatch.setattr(clone_setup, "_glab_prefers_ssh", lambda host: True)
+    assert clone_setup._gitlab_hosts() == frozenset()
+    spec, err = clone_setup.validate_target_url("https://gitlab.example.com/gitlab/group/project")
+    assert spec is None and err
+
+
+def test_auto_improvement_keeps_a_host_served_at_the_root(monkeypatch) -> None:
+    from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+
+    monkeypatch.setattr(
+        hosts,
+        "_gitlab_hosts_snapshot",
+        frozenset({"gitlab.example.com/gitlab", "plain.example.com"}),
+    )
+    monkeypatch.setattr(hosts, "_gitlab_hosts_fresh", lambda: True)
+    assert clone_setup._gitlab_hosts() == frozenset({"plain.example.com"})
