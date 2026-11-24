@@ -127,10 +127,11 @@ PREDICATE_SITES = {
 
 #: ``is_loopback(request.remote ...)`` call sites per file, and why each is safe.
 RAW_LOOPBACK_SITES = {
-    # The predicate itself (SSM refusal first), the https-proto read, the CSRF
-    # no-Origin allowance and the empty-Host allowance. The last two widen
+    # The predicate itself (SSM refusal first), the https-proto read, the
+    # forwarded-prefix read, the CSRF no-Origin allowance and the empty-Host
+    # allowance. The prefix read only scopes a cookie's path; the last two widen
     # nothing: a request still needs its own credential.
-    "dashboard/origin.py": 4,
+    "dashboard/origin.py": 5,
     # Internal-secret paths. The SSM gate refuses X-Internal-Secret and strict
     # internal paths before any of this runs.
     "dashboard/token_auth.py": 1,
