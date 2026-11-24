@@ -7895,7 +7895,9 @@
       "searching": "Поиск...",
       "searching_2": "Поиск: {{name}}",
       "type_at_least_2_characters_to_search": "Введите не менее 2 символов для поиска",
-      "type_to_search_for_more": "Начни вводить, чтобы найти больше"
+      "type_to_search_for_more": "Начни вводить, чтобы найти больше",
+      "provider_could_not_search": "Не удалось выполнить поиск в {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} не ответил."
     },
     "embedTabStrip": {
       "close_tab": "Закрыть вкладку",
@@ -9019,7 +9021,6 @@
       "open_app_full_screen": "Открыть приложение в полноэкранном режиме"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} из {{total}} провайдеров не ответили — результаты могут быть неполными.",
       "retry": "Повторить",
       "a_server_named_already_exists": "Сервер с именем «{{name}}» уже существует с другой конфигурацией.\n          Управляйте им в таблице установленных серверов.",
       "add_server": "Добавить сервер",
@@ -10106,8 +10107,6 @@
       "reinstalled_files_few": "Переустановлено {{count}} файла",
       "reinstalled_files_many": "Переустановлено {{count}} файлов",
       "reinstalled_files_other": "Переустановлено {{count}} файла",
-      "provider_could_not_search": "Не удалось выполнить поиск в {{provider}}: {{reason}}",
-      "provider_did_not_answer": "{{provider}} не ответил.",
       "select_a_skill_to_preview": "Выберите навык для предпросмотра",
       "skill_search_results": "Результаты поиска навыков",
       "source": "Источник",
@@ -18871,6 +18870,8 @@
         "probe_failing_help": "{{failures}} проверок подряд завершились сбоем, поэтому {{productName}} перестал проверять этот сервер. Перезапуск этого не отменит. Сеансы чата по-прежнему могут его использовать. Сначала устрани причину.",
         "agent_dropped_not_found": "Программа '{{command}}' не найдена на этом компьютере, поэтому агент не может использовать инструменты этого сервера.",
         "agent_dropped_fix": "Установи её или укажи полный путь к программе в команде этого сервера в разделе {{page}}. Затем перезапусти gateway (Настройки → О программе → Перезапустить шлюз).",
+        "own_entry_unused": "Твой собственный сервер с этим именем в {{file}} ('{{command}}') не используется: в {{productName}} есть свой сервер с таким же именем, и агент получает его.",
+        "own_entry_unused_fix": "Чтобы запускать и свой, дай ему другое имя в этом файле.",
         "reset_failures": "Повторить попытку",
         "test_server": "Проверить",
         "testing_server": "Проверка…",

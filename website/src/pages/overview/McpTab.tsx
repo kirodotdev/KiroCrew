@@ -1332,6 +1332,20 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       </span>
                     </div>
                   )}
+                  {s.ownEntryUnused && (
+                    /* The row is the shipped server; the user's own same-named
+                       entry never runs, and nothing else on screen says so. */
+                    <div className="text-warn text-[12px] break-words" data-testid="mcp-own-entry-unused">
+                      <AlertTriangle className="lucide-inline" />{' '}
+                      {i18nT('pages.overview.mcpTab.own_entry_unused', {
+                        file: s.ownEntryUnused.file,
+                        command: s.ownEntryUnused.command,
+                      })}
+                      <span className="block mt-0.5">
+                        {i18nT('pages.overview.mcpTab.own_entry_unused_fix')}
+                      </span>
+                    </div>
+                  )}
                   {notProbedReason && (
                     /* Warn tone, not the error red: no probe ran, so nothing
                        failed, but the server stays off until the reason is

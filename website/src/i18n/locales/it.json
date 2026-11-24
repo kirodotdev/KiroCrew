@@ -7697,7 +7697,9 @@
       "searching": "Ricerca in corso...",
       "searching_2": "Ricerca in corso: {{name}}",
       "type_at_least_2_characters_to_search": "Digita almeno 2 caratteri per cercare",
-      "type_to_search_for_more": "Digita per cercarne altri"
+      "type_to_search_for_more": "Digita per cercarne altri",
+      "provider_could_not_search": "Impossibile cercare in {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} non ha risposto."
     },
     "embedTabStrip": {
       "close_tab": "Chiudi la scheda",
@@ -8807,7 +8809,6 @@
       "open_app_full_screen": "Apri l'app a schermo intero"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} provider su {{total}} non hanno risposto — i risultati potrebbero essere incompleti.",
       "retry": "Riprova",
       "a_server_named_already_exists": "Un server chiamato \"{{name}}\" esiste già con una configurazione diversa.\n          Gestiscilo dalla tabella dei server installati.",
       "add_server": "Aggiungi server",
@@ -9867,8 +9868,6 @@
       "reinstalled_files_one": "{{count}} file reinstallato",
       "reinstalled_files_many": "{{count}} file reinstallati",
       "reinstalled_files_other": "{{count}} file reinstallati",
-      "provider_could_not_search": "Impossibile cercare in {{provider}}: {{reason}}",
-      "provider_did_not_answer": "{{provider}} non ha risposto.",
       "select_a_skill_to_preview": "Seleziona una skill di cui vedere l'anteprima",
       "skill_search_results": "Risultati della ricerca delle skill",
       "source": "Origine",
@@ -18405,6 +18404,8 @@
         "probe_failing_help": "{{failures}} sondaggi consecutivi non sono riusciti, quindi {{productName}} ha smesso di sondare questo server. Un riavvio non lo annulla. Le sessioni di chat possono ancora usarlo. Correggi prima la causa.",
         "agent_dropped_not_found": "Il programma '{{command}}' non è stato trovato su questo computer, quindi il tuo agente non può usare gli strumenti di questo server.",
         "agent_dropped_fix": "Installalo, oppure indica il percorso completo del programma nel comando di questo server, in {{page}}. Poi riavvia il gateway (Impostazioni → Informazioni → Riavvia il gateway).",
+        "own_entry_unused": "Il tuo server con questo nome in {{file}} ('{{command}}') non viene usato: {{productName}} include un server con lo stesso nome, ed è quello che riceve il tuo agente.",
+        "own_entry_unused_fix": "Per eseguire anche il tuo, dagli un altro nome in quel file.",
         "reset_failures": "Riprova server",
         "test_server": "Prova",
         "testing_server": "Prova in corso…",

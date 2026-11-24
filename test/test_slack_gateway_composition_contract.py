@@ -682,7 +682,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_alert_cron_failure",
             "async method",
             "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False, "
-            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'None'",
+            "awaiting_sign_in: 'bool' = False, "
+            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'bool'",
         ),
         (
             "_alert_cron_interrupted",

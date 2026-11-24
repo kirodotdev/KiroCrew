@@ -28,8 +28,11 @@ from kiro_crew.agent import (
     entry_as_enabled,
     kiro_agents_dir_path,
 )
-from kiro_crew.dashboard.handlers.mcp_config_entries import _kirocrew_entry_is_muted
-from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
+from kiro_crew.dashboard.handlers.mcp_config_entries import (
+    _get_kirocrew_entry,
+    _kirocrew_entry_is_muted,
+)
+from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON, _config_entry_for
 from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_sessions_for_mcp_change
 from kiro_crew.mcp_provenance import WITHHELD_KEY
 from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
@@ -227,12 +230,31 @@ def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> Non
         _sync_mcp_to_agent_unlocked(name, enabled, remove=remove)
 
 
+def _is_page_placeholder(name: str, spec: Any) -> bool:
+    """Whether *spec*, the Kiro global's entry for *name*, is the MCP page's placeholder.
+
+    The placeholder (a per-tool disable or a mute for a server another file
+    supplies) installs nothing: it is no server to copy into the spec, and enabling
+    it mounts a server the spec already holds without granting it, as the rebuild
+    does (``mcp_sources.sync_shared_server_refs``). A server the Kiro Crew store
+    installs under the same name keeps its whole-server grant.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
+
+    return (
+        isinstance(spec, dict)
+        and not mcp_entry_installs_server(spec)
+        and not mcp_entry_installs_server(_get_kirocrew_entry(name))
+    )
+
+
 def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = False) -> None:
     """Sync MCP server state to kirocrew.json mcpServers (not tools/allowedTools)."""
     from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
 
     path = _installed_agent_config()
     try:
@@ -247,29 +269,30 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         mcp_servers = cfg.setdefault("mcpServers", {})
         tool_ref = f"@{alias}"
         changed = False
+        # The global mcp.json entry, by the one key the row stands for (a listed
+        # ``ns-notes`` reads the file's ``ns/notes``). The user's
+        # hand-edited file: unreadable (permissions) or not UTF-8 (a legacy
+        # code-page save) reads as no entry.
+        try:
+            gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
+            spec: Any = _config_entry_for(gdata.get("mcpServers", {}), name)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            spec = None
+        placeholder = _is_page_placeholder(name, spec)
         if alias not in mcp_servers:
-            # Copy spec from global mcp.json (looked up by original name)
-            try:
-                gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
-                spec = gdata.get("mcpServers", {}).get(name, {})
-                if isinstance(spec, dict) and spec:
-                    entry = {k: v for k, v in spec.items() if k != "disabled"}
-                    # Strip a governed `autoApprove`: a verb it keeps on the copied
-                    # entry is granted in `allowedTools` (the skill view on kiro-cli,
-                    # the projection on KAS) and runs WITHOUT reaching the
-                    # PreToolUse gate — the same exemption `allowedTools` is
-                    # withheld for below. Drop it when the ceiling constrains this
-                    # server.
-                    if "autoApprove" in entry and not may_skip_gate_now(tool_ref):
-                        entry.pop("autoApprove", None)
-                    mcp_servers[alias] = entry
-                    changed = True
-                else:
-                    return
-            # The user's hand-edited file: unreadable (permissions) or not UTF-8
-            # (a legacy code-page save) means no spec to copy, same as absent.
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            if not mcp_entry_installs_server(spec):  # a placeholder is nothing to copy
                 return
+            entry = {k: v for k, v in spec.items() if k != "disabled"}
+            # Strip a governed `autoApprove`: a verb it keeps on the copied
+            # entry is granted in `allowedTools` (the skill view on kiro-cli,
+            # the projection on KAS) and runs WITHOUT reaching the
+            # PreToolUse gate — the same exemption `allowedTools` is
+            # withheld for below. Drop it when the ceiling constrains this
+            # server.
+            if "autoApprove" in entry and not may_skip_gate_now(tool_ref):
+                entry.pop("autoApprove", None)
+            mcp_servers[alias] = entry
+            changed = True
         # Strip a governed `autoApprove` from the entry REGARDLESS of whether the
         # alias was just copied or already existed: a re-enable, or a spec written
         # before the ceiling arrived, skips the copy branch above and would keep
@@ -299,7 +322,8 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # the one path that never reaches the PreToolUse gate — so granting it
         # unconditionally here made the ceiling un-enforceable for any server a
         # user enables from the dashboard, which is the common case.
-        keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
+        ungoverned = may_skip_gate_now(tool_ref)
+        keys = ("tools", "allowedTools") if ungoverned and not placeholder else ("tools",)
         for key in keys:
             if cfg.get(key) is None:  # a hand-edited null reads as no list yet
                 cfg[key] = []
@@ -307,7 +331,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             if tool_ref not in lst:
                 lst.append(tool_ref)
                 changed = True
-        if "allowedTools" not in keys:
+        if not ungoverned:
             stale = cfg.get("allowedTools")
             if isinstance(stale, list):
                 # A grant written before the ceiling arrived must not survive it,
@@ -318,7 +342,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                     changed = True
         if not changed:
             return
-        if "allowedTools" not in keys:
+        if not ungoverned:
             # Governed: the ref was mounted in `tools` but auto-approve was
             # WITHHELD from allowedTools (and any stale grant/autoApprove
             # removed) because the ceiling constrains this server. Record the
@@ -337,7 +361,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                 operation="mcp_tools_added",
                 outcome="ok",
                 source="dashboard",
-                resources=f"{tool_ref} added to tools/allowedTools",
+                resources=f"{tool_ref} added to {'/'.join(keys)}",
             )
     # On disable/remove, clean up any @server-name refs the user may have added
     if not enabled or remove:
@@ -424,6 +448,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server
 
     path = _installed_agent_config()
     try:
@@ -442,11 +467,13 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             gdata = {}
         granted_refs: list[str] = []
         withheld_refs: list[str] = []
+        mounted_refs: list[str] = []
         for name in names:
             alias = mcp_server_alias(name)
+            spec: Any = _config_entry_for(gdata.get("mcpServers", {}), name)
+            placeholder = _is_page_placeholder(name, spec)
             if alias not in mcp_servers:
-                spec = gdata.get("mcpServers", {}).get(name, {})
-                if not isinstance(spec, dict) or not spec:
+                if not mcp_entry_installs_server(spec):
                     continue
                 _entry = {k: v for k, v in spec.items() if k != "disabled"}
                 # Strip a governed autoApprove — see the single-server path.
@@ -474,11 +501,12 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             # Same split as the single-server path above: mount always,
             # auto-approve only when the ceiling is silent about this server.
             tool_ref = f"@{alias}"
-            keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
-            if "allowedTools" in keys:
-                granted_refs.append(tool_ref)
-            else:
+            ungoverned = may_skip_gate_now(tool_ref)
+            keys = ("tools", "allowedTools") if ungoverned and not placeholder else ("tools",)
+            if not ungoverned:
                 withheld_refs.append(tool_ref)
+            else:
+                (mounted_refs if placeholder else granted_refs).append(tool_ref)
             for key in keys:
                 if cfg.get(key) is None:  # a hand-edited null reads as no list yet
                     cfg[key] = []
@@ -486,7 +514,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                 if tool_ref not in lst:
                     lst.append(tool_ref)
                     changed = True
-            if "allowedTools" not in keys:
+            if not ungoverned:
                 stale = cfg.get("allowedTools")
                 if isinstance(stale, list):
                     kept = without_mcp_refs(stale, (alias,))
@@ -501,6 +529,14 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                     outcome="ok",
                     source="dashboard",
                     resources=f"{', '.join(granted_refs)} added to tools/allowedTools",
+                )
+            if mounted_refs:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_tools_added",
+                    outcome="ok",
+                    source="dashboard",
+                    resources=f"{', '.join(mounted_refs)} added to tools",
                 )
             if withheld_refs:
                 # Governed refs: mounted in `tools` but auto-approve withheld

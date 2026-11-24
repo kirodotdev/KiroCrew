@@ -69,7 +69,7 @@ from kiro_crew.mcp_cron_list_render import (
     _render_cron_list_full,
     _render_cron_list_json,
 )
-from kiro_crew.mcp_cron_tool_list import SERVER, _list_tools
+from kiro_crew.mcp_cron_tool_list import SERVER, _list_tools, _redeem_pickup
 from kiro_crew.mcp_cron_vet import (
     _command_cron_platform_refusal,
     _log_cron_denial,
@@ -1495,6 +1495,7 @@ ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    _redeem_pickup()  # before the first request; a no-op once the early answers ran it
     run_mcp_stdio_loop(
         SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )

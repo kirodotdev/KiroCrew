@@ -37,8 +37,10 @@ from kiro_crew.env import (
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entries_muted,
+    mcp_entry_installs_server,
     mcp_entry_is_muted,
     mcp_entry_is_registry_governed,
+    mcp_entry_names_launch,
     warn_invalid_disabled,
 )
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
@@ -248,9 +250,9 @@ _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
 _DECLARATION_OWNED_MCP_KEYS = ("disabledTools",)
 
 
-def _declares_server(spec: dict) -> bool:
-    """True when *spec* launches a server: a non-empty ``command`` or ``url``."""
-    return any(isinstance(spec.get(k), str) and spec.get(k) for k in ("command", "url"))
+#: The name the ``agent`` facade re-exports (``request_server`` reads it): one rule
+#: with :func:`mcp_cleanup.mcp_entry_names_launch`, a non-empty ``command`` or ``url``.
+_declares_server = mcp_entry_names_launch
 
 
 # The keys that belong WITH a stdio ``command``: a server's arguments and its
@@ -263,6 +265,31 @@ _COMMAND_UNIT_KEYS = ("args", "env")
 #: What an edition server's entry takes from the edition only. Its ``env`` is merged
 #: key by key instead (see the store loop in :func:`merge_mcp_sources`).
 _EDITION_INVOCATION_KEYS = ("command", "args")
+
+
+def _other_server(own: dict, entry: dict) -> str | None:
+    """The command or URL *own* starts when that is not the server *entry* runs.
+
+    *own* is the user's declaration under an edition server's name. Another
+    program (``mcp_discovery._commands_diverged``, which reads a resolved
+    ``/…/bin/srv`` as a bare ``srv``) or another ``url`` is another server. Same
+    program with other ``args`` is not: those only choose among the server's
+    tools, which the edition's ``args`` set. ``None`` when *own* starts nothing.
+    """
+    # Lazy, for the import cycle _merge_command_unit names.
+    from kiro_crew.mcp_discovery import _commands_diverged
+
+    command, url = own.get("command"), own.get("url")
+    if isinstance(command, str) and command:
+        running = entry.get("command")
+        if isinstance(running, str) and running and not _commands_diverged(command, running):
+            return None
+        return command
+    # A command on *entry* is the edition's program, even where a store ``url``
+    # was copied onto it.
+    if isinstance(url, str) and url and (entry.get("command") or url != entry.get("url")):
+        return url
+    return None
 
 
 def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
@@ -316,7 +343,7 @@ def _project_modifier_keys(existing: dict, spec: dict) -> None:
     the server (see :data:`_DECLARATION_OWNED_MCP_KEYS`).
     """
     owned_keys: tuple[str, ...] = _SOURCE_OWNED_MCP_KEYS
-    if _declares_server(spec):
+    if mcp_entry_names_launch(spec):
         owned_keys += _DECLARATION_OWNED_MCP_KEYS
     for key in owned_keys:
         if key in spec:
@@ -378,6 +405,9 @@ class McpSources(NamedTuple):
     #: The command unit an entry ran before a scope global switched its program,
     #: by name: the resolution fallback when the new command does not resolve.
     replaced_units: Mapping[str, dict] = MappingProxyType({})
+    #: Per edition server name, the highest-priority file declaring a server under
+    #: it and that declaration, for :func:`unused_own_entries`.
+    edition_claims: Mapping[str, tuple[Path, dict]] = MappingProxyType({})
 
     @property
     def scopes(self) -> tuple[tuple[str, dict], ...]:
@@ -485,6 +515,9 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
     _replaced: dict[str, dict] = {}
+    # The user's own declaration under each edition name, from the file that
+    # wins a tie: the store, then the Kiro global, then a provider global.
+    _claims: dict[str, tuple[Path, dict]] = {}
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
@@ -518,6 +551,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 replaced=_replaced,
                 edition_owned=name in edition_names,
             )
+            if name in edition_names and mcp_entry_names_launch(spec):
+                _claims.setdefault(name, (agent_mod._KIRO_MCP_JSON, spec))
 
     # Edition-contributed provider globals (CPP seam) rank BELOW the Kiro global:
     # a name claimed earlier in this pass was retired from ``_stale``, so these only
@@ -542,15 +577,20 @@ def merge_mcp_sources(config: dict) -> McpSources:
                     replaced=_replaced,
                     edition_owned=name in edition_names,
                 )
+                if name in edition_names and mcp_entry_names_launch(spec):
+                    _claims.setdefault(name, (scope_global, spec))
 
     # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
+    kirocrew_store = agent_mod._user_dir() / "mcp.json"
+    kirocrew_mcp = user_json.load_mcp_servers(kirocrew_store)
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
+            if name in edition_names and mcp_entry_names_launch(spec):
+                _claims[name] = (kirocrew_store, spec)
             mcps = config.setdefault("mcpServers", {})
             if "command" in spec and name in _replaced:
                 # The store's command outranks the program a scope global just
@@ -591,7 +631,44 @@ def merge_mcp_sources(config: dict) -> McpSources:
                         mcps[name]["env"] = {**shipped_env, **store_env}
             else:
                 mcps[name] = dict(spec)
-    return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
+    return McpSources(
+        kirocrew_mcp,
+        shared_mcp,
+        extra_shared_mcp,
+        managed_names,
+        _replaced,
+        MappingProxyType(_claims),
+    )
+
+
+def unused_own_entries(
+    config: dict, sources: McpSources, mounted: Mapping[str, str] | None = None
+) -> dict[str, dict[str, str]]:
+    """The user's own servers under an edition server's name that the agent does not run.
+
+    ``{name: {"file", "command"}}``: the file whose entry wins a tie, home shown as
+    ``~``, and the command or URL that entry names. The edition's invocation
+    outranks every file (:func:`_merge_source_owned`), so a deliberately different
+    server under the same name is otherwise left out without a word. Read from the
+    FINAL *config*: when the edition's command does not resolve here, resolution
+    falls back to the user's entry, which then runs and is not reported. *mounted*
+    is :func:`mcp_aliases.normalize_server_keys`' source-key-to-mount map: a name
+    with a ``/`` runs under its alias, so its entry is read there, while the record
+    stays under the source name the dropped-server records use.
+    """
+    # Function-local: an owner keeps the dashboard package off its import path.
+    from kiro_crew.dashboard.side_readonly_spec import _home_relative
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    unused: dict[str, dict[str, str]] = {}
+    for name, (file, own) in sources.edition_claims.items():
+        entry = servers.get((mounted or {}).get(name, name))
+        other = _other_server(own, entry) if isinstance(entry, dict) else None
+        if other is not None:
+            unused[name] = {"file": _home_relative(Path(file)), "command": other}
+    return unused
 
 
 def reconcile_raw_key_tool_overrides(config: dict, sources: McpSources) -> None:
@@ -1255,6 +1332,12 @@ def sync_shared_server_refs(
     agent's mid-chat additions). They take the same path as a governance-ceiling
     withhold: the ``@server`` ref stays in ``tools`` so the server runs, and no
     ``allowedTools`` grant is written, so every call asks.
+
+    A scope entry that does not install its server (:func:`mcp_entry_installs_server`)
+    is the MCP page's placeholder: it mounts and mutes like any entry, and it never
+    earns the ``allowedTools`` grant. A grant the spec already holds is left alone,
+    because nothing tells the user's own (or another tool's) apart from one an
+    earlier rebuild wrote.
     """
     kirocrew_mcp = sources.kirocrew
     shared_mcp = sources.kiro_global
@@ -1454,13 +1537,17 @@ def sync_shared_server_refs(
                 if ref not in _shared_mount_only:
                     _shared_mount_only.append(ref)
                 continue
-            keys = ("tools", "allowedTools") if may_auto_approve else ("tools",)
+            # A placeholder the MCP page wrote (``{"disabledTools": [...]}`` for a
+            # server the edition, an app or another file supplies) mounts the
+            # server and never grants it.
+            granted = may_auto_approve and mcp_entry_installs_server(spec)
+            keys = ("tools", "allowedTools") if granted else ("tools",)
             for key in keys:
                 if ref not in config.get(key, []):
                     config.setdefault(key, []).append(ref)
                     if ref not in _shared_added:
                         _shared_added.append(ref)
-            if "allowedTools" not in keys:
+            if not may_auto_approve:
                 # A grant written before the ceiling arrived must not survive
                 # it -- in either spelling, and not as a duplicate either.
                 _strip_owned_refs("allowedTools", strip_per_tool=True)

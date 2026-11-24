@@ -456,7 +456,9 @@ async def _run_inner_impl(
     # that can say what its MCP servers reported — before the run spends its
     # turn budget hunting a tool that was never mounted. Logged for the
     # operator AND carried into the prompt below, because the run that does
-    # the hunting never reads the log.
+    # the hunting never reads the log. A settings file that withheld the whole
+    # array is read first, since it is then the one reason every server is missing.
+    info.crew_tools_withheld = await self._crew_tools_withheld_reason(info, client)
     mcp_problems = self._warn_unusable_mcp_servers(info, client)
 
     # Fail CLOSED on a continuation that did not actually resume. Identity is
@@ -488,7 +490,7 @@ async def _run_inner_impl(
     # A server the session could not mount is stated before the task, so the
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
-    message = self._spawn_mcp_notice(mcp_problems) + message
+    message = self._spawn_mcp_notice(mcp_problems, info.crew_tools_withheld) + message
     # A spec field the claude session does not apply is named the same way.
     notice = await _session.spec_builtin_tools_notice(
         client, info, session_key, fresh=is_new and not _resumed

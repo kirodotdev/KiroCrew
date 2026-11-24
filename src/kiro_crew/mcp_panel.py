@@ -1272,6 +1272,12 @@ ADVERTISE_CALLER_IDENTITY = True
 
 def run_mcp_server() -> None:
     """Run the MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    # An enforced harness hands this server a one-time pickup in place of the secret
+    # it withholds (``agent_ipc_client``); redeem it before the first request, as
+    # ``kirocrew-dashboard`` does, since listing the tools already reads the tool policy.
+    from kiro_crew.agent_ipc_client import redeem_server_pickup
+
+    redeem_server_pickup()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,

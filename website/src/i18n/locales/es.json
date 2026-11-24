@@ -7697,7 +7697,9 @@
       "searching": "Buscando...",
       "searching_2": "Buscando: {{name}}",
       "type_at_least_2_characters_to_search": "Escribe al menos 2 caracteres para buscar",
-      "type_to_search_for_more": "Escribe para buscar más"
+      "type_to_search_for_more": "Escribe para buscar más",
+      "provider_could_not_search": "No se pudo buscar en {{provider}}: {{reason}}",
+      "provider_did_not_answer": "{{provider}} no respondió."
     },
     "embedTabStrip": {
       "close_tab": "Cerrar la pestaña",
@@ -8807,7 +8809,6 @@
       "open_app_full_screen": "Abrir la aplicación en pantalla completa"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} de {{total}} proveedores no respondieron — los resultados pueden estar incompletos.",
       "retry": "Reintentar",
       "a_server_named_already_exists": "Un servidor llamado “{{name}}” ya existe con una configuración diferente.\n          Gestiónalo desde la tabla de servidores instalados.",
       "add_server": "Añadir servidor",
@@ -9867,8 +9868,6 @@
       "reinstalled_files_one": "{{count}} archivo reinstalado",
       "reinstalled_files_many": "{{count}} archivos reinstalados",
       "reinstalled_files_other": "{{count}} archivos reinstalados",
-      "provider_could_not_search": "No se pudo buscar en {{provider}}: {{reason}}",
-      "provider_did_not_answer": "{{provider}} no respondió.",
       "select_a_skill_to_preview": "Selecciona una skill para ver la vista previa",
       "skill_search_results": "Resultados de búsqueda de skills",
       "source": "Origen",
@@ -18405,6 +18404,8 @@
         "probe_failing_help": "Fallaron {{failures}} sondeos seguidos, así que {{productName}} dejó de sondear este servidor. Reiniciar no lo deshace. Las sesiones de chat aún pueden usarlo. Corrige primero la causa.",
         "agent_dropped_not_found": "No se encontró el programa '{{command}}' en este equipo, así que tu agente no puede usar las herramientas de este servidor.",
         "agent_dropped_fix": "Instálalo o escribe la ruta completa del programa en el comando de este servidor, en {{page}}. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela).",
+        "own_entry_unused": "Tu propio servidor con este nombre en {{file}} ('{{command}}') no se usa: {{productName}} incluye un servidor con el mismo nombre, y tu agente recibe ese.",
+        "own_entry_unused_fix": "Para ejecutar también el tuyo, ponle otro nombre en ese archivo.",
         "reset_failures": "Reintentar servidor",
         "test_server": "Probar",
         "testing_server": "Probando…",

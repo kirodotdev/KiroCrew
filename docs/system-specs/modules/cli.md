@@ -3483,6 +3483,16 @@ pins the contract.
     that exit (`RestartPreventExitStatus`) is systemd-only.
   - Stdout and stderr are written to
     `~/Library/Logs/KiroCrew/gateway.{log,err}`.
+  - **Environment**: the plist's `EnvironmentVariables` come from the same
+    `service_environment()` as the Linux unit. `PATH` is built as on Linux
+    (`~/.local/bin`, mise's shims, the nvm version bin dirs found on the
+    installer's `PATH`, the system dirs, then the installer's `PATH`), and
+    when an nvm dir was promoted `/opt/homebrew/bin` follows it: the MCP search
+    path inserts Homebrew's dir right after the shims, so without that entry a
+    Homebrew `node` would run the user's Node MCP servers instead of the nvm
+    Node their shell selected. There is no `sudo` case. An installed plist
+    keeps the `PATH` it was written with until `kirocrew service install` runs
+    again.
   - Install, restart, stop and uninstall name the domain explicitly, so an
     install from SSH lands where `restart` and `stop` address it; the legacy
     `load`/`unload` verbs act on the caller's domain (`user/<uid>` from SSH).

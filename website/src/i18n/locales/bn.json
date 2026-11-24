@@ -7499,7 +7499,9 @@
       "searching": "খোঁজা হচ্ছে...",
       "searching_2": "খোঁজা হচ্ছে: {{name}}",
       "type_at_least_2_characters_to_search": "খুঁজতে অন্তত 2টি অক্ষর টাইপ করুন",
-      "type_to_search_for_more": "আরও খুঁজতে টাইপ করো"
+      "type_to_search_for_more": "আরও খুঁজতে টাইপ করো",
+      "provider_could_not_search": "{{provider}}-এ খোঁজা যায়নি: {{reason}}",
+      "provider_did_not_answer": "{{provider}} সাড়া দেয়নি।"
     },
     "embedTabStrip": {
       "close_tab": "ট্যাব বন্ধ করুন",
@@ -8595,7 +8597,6 @@
       "open_app_full_screen": "অ্যাপটি পূর্ণ স্ক্রিনে খুলুন"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{total}}টি প্রোভাইডারের মধ্যে {{failed}}টি সাড়া দেয়নি — ফলাফল অসম্পূর্ণ হতে পারে।",
       "retry": "আবার চেষ্টা করো",
       "a_server_named_already_exists": "একটি সার্ভার যার নাম “{{name}}” ইতিমধ্যেই ভিন্ন কনফিগারেশন নিয়ে বিদ্যমান।\n          ইনস্টল করা সার্ভারের টেবিল থেকে এটি পরিচালনা করুন।",
       "add_server": "সার্ভার যোগ করুন",
@@ -9628,8 +9629,6 @@
       "reinstalled": "আবার ইনস্টল হয়েছে",
       "reinstalled_files_one": "{{count}}টি ফাইল আবার ইনস্টল হয়েছে",
       "reinstalled_files_other": "{{count}}টি ফাইল আবার ইনস্টল হয়েছে",
-      "provider_could_not_search": "{{provider}}-এ খোঁজা যায়নি: {{reason}}",
-      "provider_did_not_answer": "{{provider}} সাড়া দেয়নি।",
       "select_a_skill_to_preview": "প্রিভিউ দেখতে একটি স্কিল নির্বাচন করুন",
       "skill_search_results": "স্কিল অনুসন্ধানের ফলাফল",
       "source": "উৎস",
@@ -17939,6 +17938,8 @@
         "probe_failing_help": "টানা {{failures}} বার প্রোব ব্যর্থ হয়েছে, তাই {{productName}} এই সার্ভার প্রোব করা বন্ধ করেছে। রিস্টার্ট করলেও এটি থাকে। চ্যাট সেশন এখনও এটি ব্যবহার করতে পারে। আগে কারণটি ঠিক করো।",
         "agent_dropped_not_found": "এই কম্পিউটারে '{{command}}' প্রোগ্রামটি পাওয়া যায়নি, তাই তোমার এজেন্ট এই সার্ভারের টুল ব্যবহার করতে পারবে না।",
         "agent_dropped_fix": "এটি ইনস্টল করো, অথবা {{page}}-এ এই সার্ভারের কমান্ডে প্রোগ্রামের পুরো পাথ লেখো। তারপর গেটওয়ে রিস্টার্ট করো (সেটিংস → সম্পর্কে-তে গেটওয়ে রিস্টার্টের বোতাম)।",
+        "own_entry_unused": "{{file}}-এ এই নামে তোমার নিজের সার্ভার ('{{command}}') ব্যবহার হয় না: {{productName}}-এর সাথে একই নামের একটি সার্ভার আসে, আর তোমার এজেন্ট সেটিই পায়।",
+        "own_entry_unused_fix": "তোমার সার্ভারটিও চালাতে, ওই ফাইলে এটিকে অন্য একটি নাম দাও।",
         "reset_failures": "সার্ভার আবার চেষ্টা করো",
         "test_server": "পরীক্ষা করো",
         "testing_server": "পরীক্ষা চলছে…",

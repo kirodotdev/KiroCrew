@@ -1268,6 +1268,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings_download.py",
+        # Stores the own-entry diagnostic that GET /api/mcp and doctor show, with a
+        # user's URL already cut to its scheme and host; it sends nothing itself.
+        "mcp_dropped_servers.py",
         # The shared mark-collected sender: redacts only the gateway error text its
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",

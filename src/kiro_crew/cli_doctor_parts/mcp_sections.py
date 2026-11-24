@@ -417,6 +417,27 @@ def _doctor_mcp_tools(
         issues.append(f"{ref} probe")
 
 
+def _doctor_unused_own_entries() -> None:
+    """One MCP Tools row per own server entry the default agent does not run.
+
+    The latest rebuild's record (``mcp_dropped_servers.load_unused_own``): an entry
+    in the user's MCP file under the name of a server the edition ships, naming
+    another program or a URL. The edition's server runs under that name, so the
+    probe above reports that one healthy while the user's own is never started.
+    Advisory, not an issue: the precedence is by design and which server to keep is
+    the user's call. The record already holds a URL cut to its scheme and host
+    (``mcp_dropped_servers._shown_command``), so it is printed as stored.
+    """
+    from kiro_crew.mcp_dropped_servers import load_unused_own
+
+    for name, rec in load_unused_own().items():
+        print(
+            f"  @{name}: ⚠️  your own entry in {rec['file']} ({rec['command']}) is not used: "
+            "Kiro Crew comes with a server of the same name and runs that one. "
+            "Give yours a different name in that file to run it too."
+        )
+
+
 def _doctor_whoami_governance() -> bool | None:
     """Ask kiro-cli itself whether governance can reach the signed-in identity.
 
