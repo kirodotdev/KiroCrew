@@ -3947,11 +3947,13 @@
         "dismiss": "Verwerfen",
         "edit_resend": "Bearbeiten & erneut senden",
         "open_image": "Bild öffnen",
+        "open_image_named": "Bild {{name}} öffnen",
         "open_in_file_explorer": "Im Explorer öffnen",
         "open_in_finder": "Im Finder öffnen",
         "pinned_files": "Angeheftete Dateien",
         "pins": "Angeheftet",
         "preview": "Vorschau",
+        "remove_named": "{{name}} entfernen",
         "remove_screenshot": "Screenshot entfernen",
         "screenshot": "Screenshot",
         "show_in_file_manager": "Im Dateimanager anzeigen",
@@ -4193,7 +4195,8 @@
       },
       "pinned": {
         "empty_hint": "Bitte {{name}}, Dateien anzuheften, die du verfolgen möchtest",
-        "unpin": "Lösen"
+        "unpin": "Lösen",
+        "unpin_named": "{{name}} lösen"
       },
       "preset": {
         "black": "Schwarz",

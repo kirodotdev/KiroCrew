@@ -3988,11 +3988,13 @@
         "dismiss": "Descartar",
         "edit_resend": "Editar y reenviar",
         "open_image": "Abrir imagen",
+        "open_image_named": "Abrir imagen {{name}}",
         "open_in_file_explorer": "Abrir en el Explorador de archivos",
         "open_in_finder": "Abrir en Finder",
         "pinned_files": "Archivos fijados",
         "pins": "Fijados",
         "preview": "Vista previa",
+        "remove_named": "Quitar {{name}}",
         "remove_screenshot": "Quitar captura",
         "screenshot": "Captura de pantalla",
         "show_in_file_manager": "Mostrar en el gestor de archivos",
@@ -4234,7 +4236,8 @@
       },
       "pinned": {
         "empty_hint": "Pídele a {{name}} que fije los archivos que quieras seguir",
-        "unpin": "Dejar de fijar"
+        "unpin": "Dejar de fijar",
+        "unpin_named": "Dejar de fijar {{name}}"
       },
       "preset": {
         "black": "Negro",

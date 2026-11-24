@@ -3864,11 +3864,13 @@
         "dismiss": "খারিজ করুন",
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
         "open_image": "ছবি খোলো",
+        "open_image_named": "{{name}} ছবি খোলো",
         "open_in_file_explorer": "File Explorer-এ খুলুন",
         "open_in_finder": "Finder-এ খুলুন",
         "pinned_files": "পিন করা ফাইল",
         "pins": "পিন",
         "preview": "প্রিভিউ",
+        "remove_named": "{{name}} সরাও",
         "remove_screenshot": "স্ক্রিনশট সরাও",
         "screenshot": "স্ক্রিনশট",
         "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
@@ -4110,7 +4112,8 @@
       },
       "pinned": {
         "empty_hint": "আপনি যে ফাইলগুলো ট্র্যাক করতে চান সেগুলো পিন করতে {{name}}-কে বলুন",
-        "unpin": "আনপিন করুন"
+        "unpin": "আনপিন করুন",
+        "unpin_named": "{{name}} আনপিন করো"
       },
       "preset": {
         "black": "কালো",

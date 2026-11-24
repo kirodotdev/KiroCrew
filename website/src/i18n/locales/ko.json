@@ -3822,11 +3822,13 @@
         "dismiss": "닫기",
         "edit_resend": "편집 후 재전송",
         "open_image": "이미지 열기",
+        "open_image_named": "이미지 {{name}} 열기",
         "open_in_file_explorer": "파일 탐색기에서 열기",
         "open_in_finder": "Finder에서 열기",
         "pinned_files": "고정된 파일",
         "pins": "고정",
         "preview": "미리 보기",
+        "remove_named": "{{name}} 제거",
         "remove_screenshot": "스크린샷 제거",
         "screenshot": "스크린샷",
         "show_in_file_manager": "파일 관리자에서 보기",
@@ -4068,7 +4070,8 @@
       },
       "pinned": {
         "empty_hint": "추적하고 싶은 파일을 {{name}}에게 고정해 달라고 하세요",
-        "unpin": "고정 해제"
+        "unpin": "고정 해제",
+        "unpin_named": "{{name}} 고정 해제"
       },
       "preset": {
         "black": "검정",

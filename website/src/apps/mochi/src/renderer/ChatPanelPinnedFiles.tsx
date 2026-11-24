@@ -258,7 +258,7 @@ const PinnedChip: React.FC<{
           onClick={handleDismiss}
           className="pin-chip-unpin"
           title={i18nT('apps.mochi.pinned.unpin')}
-          aria-label={`${i18nT('apps.mochi.pinned.unpin')} ${displayName}`}
+          aria-label={i18nT('apps.mochi.pinned.unpin_named', { name: displayName })}
           style={{
             display: 'flex',
             alignItems: 'center',

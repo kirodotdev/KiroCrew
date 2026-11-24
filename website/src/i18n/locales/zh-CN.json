@@ -3740,11 +3740,13 @@
         "dismiss": "忽略",
         "edit_resend": "编辑并重新发送",
         "open_image": "打开图片",
+        "open_image_named": "打开图片 {{name}}",
         "open_in_file_explorer": "在文件资源管理器中打开",
         "open_in_finder": "在 Finder 中打开",
         "pinned_files": "已置顶文件",
         "pins": "置顶",
         "preview": "预览",
+        "remove_named": "移除 {{name}}",
         "remove_screenshot": "移除截图",
         "screenshot": "截图",
         "show_in_file_manager": "在文件管理器中显示",
@@ -3986,7 +3988,8 @@
       },
       "pinned": {
         "empty_hint": "让 {{name}} 帮你钉住想追踪的文件",
-        "unpin": "取消钉住"
+        "unpin": "取消钉住",
+        "unpin_named": "取消钉住 {{name}}"
       },
       "preset": {
         "black": "黑猫",
