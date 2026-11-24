@@ -814,8 +814,10 @@ owner approved through local authorization, a call with no credential and a
 call with a credential the gateway did not sign.
 
 To cover an operation, add
-`test/e2e/crew_api_contract_cases/<operationId>.py` with a `CASES` list.
-`test/test_crew_api_contract_coverage.py` runs with the unit tests, boots
+`test/e2e/crew_api_contract_cases/<operationId>.py` with a `CASES` list. A case
+that needs something on the gateway first (a grant, a grant request nobody
+answered) names a `before` step, which runs on the booted gateway ahead of its
+call. `test/test_crew_api_contract_coverage.py` runs with the unit tests, boots
 nothing, and fails when an operation the spec marks `x-crew-status: available`
 has no such file, or when a case asks for a status or an error code the spec
 does not document. The first check reads that mark alone: while no operation in
