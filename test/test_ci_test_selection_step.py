@@ -500,3 +500,18 @@ def test_the_shadow_steps_hold_a_read_token_and_upload_the_ledgers_artifact() ->
         if str(s.get("uses", "")).startswith("actions/upload-artifact@")
     }
     assert pins == {upload["uses"]}
+
+
+def test_the_nightly_workflow_publishes_the_bundle_the_step_asks_for() -> None:
+    path = ROOT / ".github" / "workflows" / step.WORKFLOW
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # The events the step trusts are the only ones that start the publisher.
+    assert set(doc.get("on") or doc[True]) == set(step.EVENTS)
+    uploads = [
+        s["with"]
+        for job in doc["jobs"].values()
+        for s in job["steps"]
+        if "actions/upload-artifact@" in str(s.get("uses", ""))
+    ]
+    # One artifact carries the step's name, and it holds the one file the step reads.
+    assert [u["path"] for u in uploads if u["name"] == step.ARTIFACT] == [step.MEMBER]
