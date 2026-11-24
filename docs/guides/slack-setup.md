@@ -750,6 +750,11 @@ The gateway answers `/kirocrew`, any `/kirocrew-<alias>` (what `kirocrew manifes
 | `/<command> restart` | Restart the gateway (owner-only) |
 | `/<command> #channel` | Track or untrack a channel |
 
+The owner can also add and remove tracked channels in the dashboard, under
+**Settings → Messaging Channels → Slack → Tracked channels**, then **Save**. Both routes
+apply without a restart; only `/<command> channels` sets each channel's activation mode
+and agent.
+
 Any unrecognized sub-command prints the same list, generated from the live
 registry, so `/<command> help` is not a special case: anything that does not
 match falls through to it.
