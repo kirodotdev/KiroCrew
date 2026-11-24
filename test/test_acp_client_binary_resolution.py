@@ -686,6 +686,8 @@ class TestResolveKiroBinEnvOverride:
             "is_kiro_cli": True,
             "forward_ssh_auth_sock_out": [sys.platform != "win32"],
             **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
+            # The session folder, whose project MCP files the wrap seals.
+            "project_folder": str(client._work_dir),
         }
         voice_guard.assert_called_once_with(client._work_dir)
         spawn_call = mock_exec.await_args

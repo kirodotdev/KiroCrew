@@ -215,6 +215,11 @@ changes until you apply the card. A command the card cannot carry, or one sent
 from a messaging channel, gets one reply that links the MCP Servers page.
 `kiro-cli mcp add` in your own terminal is not affected.
 
+The same holds for a project's own MCP files, `.kiro/settings/mcp.json` and
+`.mcp.json`, in any folder. The agent asks with `request_server` instead, and the
+card adds the server to Kiro Crew's own list. On Linux, the sandbox seals only a
+file that already exists when the chat starts.
+
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the
 rebuild, and the gateway log names it (`Dropping MCP server ...: command not

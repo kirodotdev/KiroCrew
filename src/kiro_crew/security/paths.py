@@ -529,7 +529,14 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             matched = under(rule_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
-        remedy = matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
+        # Call-time import: keeps the module off the MCP servers' import budget.
+        from kiro_crew.project_mcp_files import project_mcp_write
+
+        project_mcp = project_mcp_write(path_str, base_dir)
+        remedy = project_mcp or (
+            matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
+        )
+        matched = matched or project_mcp
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     if not matched:

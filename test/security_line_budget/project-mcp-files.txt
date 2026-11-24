@@ -1,0 +1,2 @@
++5
+The file-edit write gate refuses a project's own MCP files (.kiro/settings/mcp.json and .mcp.json, by name in any folder) through project_mcp_files.project_mcp_write, with the request_server remedy.
