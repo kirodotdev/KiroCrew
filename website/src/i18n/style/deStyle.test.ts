@@ -162,6 +162,13 @@ describe('de terminology (style/de.md §7)', () => {
         && /(?<!\p{L})(?:Zug|Zugs|Zuges|Züge|Zügen)(?!\p{L})/u.test(de[key]))
     expect(bad, report(bad)).toEqual([])
   })
+
+  it("renders 'colour theme' as Farb-Theme, never Farbthema", () => {
+    // The onboarding appearance step shows its description beside its
+    // "Farb-Theme" label, so a second spelling reads as a second setting.
+    const bad = Object.keys(de).filter(key => /Farbthem/i.test(de[key]))
+    expect(bad, report(bad)).toEqual([])
+  })
 })
 
 describe('de compounds (style/de.md §6)', () => {
