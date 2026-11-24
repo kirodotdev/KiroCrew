@@ -3668,6 +3668,12 @@ The `thread:` prefix (a reply thread on a Bot chat message,
 [history](history.md#reply-threads-on-bot-chat-messages-dashboardchat_threadspy))
 is included for the same reason: `build_thread_message` re-seeds the whole
 envelope on a cold session.
+A `hook:` webhook session is not stateless: it is mapped while its turn runs, and
+`_run_hook_agent` forgets the mapping (`forget_conversation`) after the turn's reset, so a
+call that reuses its `sessionKey` starts a fresh conversation, unless a sub-agent of the turn
+still owes it a report (see the `ends_conversation` callers below). A new hook session's first
+prompt carries no logged exchange of the key either (`build_message` with
+`compressed_history=""` and `conversation_reset=True`).
 
 **Lifecycle:**
 - `get_or_create()`: looks up mapping → if found and `.json` file exists,
@@ -4253,6 +4259,18 @@ those callers are:
 | `session_compaction.py` — critical reset after a failed compaction (`clear_conversation=True`) | the overflowed conversation is cleared, so it is over |
 
 `swap_conversation` is not a parent end: it keeps the conversation's key and its runs, so it calls neither `_cancel_parent_children` nor `release_subagent_runtime`.
+
+`dashboard/handlers/hooks.py` — `_run_hook_agent` is deliberately absent too. A hook turn must
+yield as soon as it spawns (`parent_work_supported`), so a sub-agent it starts outlives the
+turn and its report is injected into the hook conversation; the flag would stop that work. So
+the reset stays a recycle, and the turn forgets the resume sid only when no sub-agent of it
+still owes a report, read with the probes of `_parent_owes_child_work` and its `_now` half,
+less the teardown fence this path never opens (`has_unfinished_report_for`,
+`has_in_memory_pending_work_for`, `has_live_or_queued_children`, `has_pending_work_for_async`,
+and `has_pending_store_children` for a child only the task store holds); a read that fails
+keeps the sid. While one does, the conversation is kept for the report, and the
+next call that reuses the `sessionKey` continues it; that call's own teardown forgets it unless
+sub-agent work is still owed then.
 
 `api_channel_clear_context` is deliberately absent: it ends each member's conversation
 through `discard_conversation`, which cancels that key's children and releases its
