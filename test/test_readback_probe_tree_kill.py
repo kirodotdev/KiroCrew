@@ -3,7 +3,7 @@
 The pi and opencode read-backs, and the version probes beside them, run the harness
 (or the Node it runs under) once before a chat starts. When the
 probe outlives its timeout, the kill must take the probe's descendants too, not only
-the probe. Each test runs a real stand-in that starts a long-lived grandchild, and
+the probe. Each probe runs a real stand-in that starts a long-lived grandchild, and
 forces the timeout only once both pids are on disk, so the outcome never depends on
 how fast the runner is.
 """
@@ -94,6 +94,25 @@ def _run_node_version(tmp_path: Path, argv: list[str]) -> None:
     node.write_text(f"#!/bin/sh\nexec {shlex.join(argv)}\n", encoding="utf-8")
     node.chmod(0o755)
     assert pi_node_mod._node_version(str(node), os.environ.get("PATH", ""), str(tmp_path)) is None
+
+
+def test_a_pidfile_whose_open_is_refused_for_a_moment_is_read_once_it_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Windows sharing violation a scanner causes on a freshly renamed file, once.
+    pidfile = tmp_path / "pids"
+    pidfile.write_text("11 22", encoding="utf-8")
+    refusals = [PermissionError(13, "Permission denied", str(pidfile))]
+    read_text = Path.read_text
+
+    def _refused_once(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == pidfile and refusals:
+            raise refusals.pop()
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _refused_once)
+    assert await_pids(pidfile) == (11, 22)
+    assert refusals == []
 
 
 @pytest.mark.parametrize(
