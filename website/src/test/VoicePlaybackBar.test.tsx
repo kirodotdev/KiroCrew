@@ -556,16 +556,26 @@ describe('VoicePlaybackBar', () => {
 
       act(() => { store.dispatch(setVoicePlaying(false)) })
       expect(screen.queryByTestId('voice-playback-bar')).toBeNull()
+      // No failure, no bar: the dock holds no empty glass pane or padding.
+      expect(document.querySelector('.liquid-glass')).toBeNull()
+      expect(document.querySelector('.pt-1\\.5')).toBeNull()
       await act(async () => { failSave?.(new Error('write failed')) })
 
       const notice = await screen.findByTestId('voice-speed-save-error')
       expect(notice).toHaveTextContent("Couldn't save the speed. Your previous speed is kept.")
+      // On the dock's thick glass, like the session-controls notice: bare text
+      // would let the transcript scrolling under the dock show through.
+      expect(notice.parentElement).toHaveClass('liquid-glass', 'glass-thick')
+      expect(notice.parentElement).not.toHaveClass('glass-danger')
+      expect(notice.parentElement?.parentElement).toHaveClass('pt-1.5')
       act(() => { store.dispatch(setVoicePlaying(true)) })
       await screen.findByRole('radiogroup', { name: 'Speed' })
       expect(screen.getAllByTestId('voice-speed-save-error')).toHaveLength(1)
 
       fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
       await waitFor(() => expect(screen.queryByTestId('voice-speed-save-error')).toBeNull())
+      act(() => { store.dispatch(setVoicePlaying(false)) })
+      expect(document.querySelector('.liquid-glass')).toBeNull()
     })
 
     it('clears a previous save failure when another save starts', async () => {
@@ -577,6 +587,8 @@ describe('VoicePlaybackBar', () => {
       fireEvent.click(await loadedRadio('120%'))
       await waitFor(() => expect(api.updateVoiceConfig).toHaveBeenCalledTimes(2))
       expect(screen.queryByTestId('voice-speed-save-error')).toBeNull()
+      // Only the bar's own pane is left: the notice's pane went with it.
+      expect(document.querySelectorAll('.liquid-glass.glass-thick')).toHaveLength(1)
     })
 
     describe('while a save is pending', () => {

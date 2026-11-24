@@ -212,9 +212,11 @@ async function errorBar({ failure, viewport, theme = 'dark', touch }) {
     await page.getByTestId('voice-playback-bar').waitFor({ state: 'detached', timeout: 10000 })
     await notice.waitFor({ timeout: 10000 })
     check(await page.getByTestId('voice-speed-save-error').count() === 1, `save error should remain once after playback ends at ${viewport.width}px`)
+    const paneClass = await notice.evaluate(node => node.parentElement?.className ?? '')
+    check(/\bliquid-glass\b/.test(paneClass) && /\bglass-thick\b/.test(paneClass), `save error should sit on the dock's thick glass at ${viewport.width}px`)
   }
   await page.waitForTimeout(300)
-  const png = failure === 'save' ? await notice.screenshot() : await barPng(page)
+  const png = failure === 'save' ? await notice.locator('xpath=..').screenshot() : await barPng(page)
   await context.close()
   return png
 }

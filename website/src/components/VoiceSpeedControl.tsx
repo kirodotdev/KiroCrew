@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { VOICE_SPEED_PRESETS, formatVoiceSpeed, voiceSpeedMultiplier } from '../lib/voiceSpeed'
 import ErrorNotice from './ErrorNotice'
+import { Glass } from './Glass'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
 import { Btn } from './ui'
 
@@ -71,19 +72,26 @@ export function VoiceSpeedProvider({ children }: { children: ReactNode }) {
   )
 }
 
-/** The speed-save failure stays in the composer dock after playback ends. */
+/** The speed-save failure stays in the composer dock after playback ends. It
+ *  sits on the dock's `thick` glass, like the session-controls notice: bare
+ *  text lets the transcript scrolling under the dock show through its words. */
 export function VoiceSpeedSaveNotice() {
   const { saveFailed, dismissSaveError } = useVoiceSpeedSave()
+  if (!saveFailed) return null
   return (
-    <ErrorNotice
-      variant="inline"
-      message={saveFailed ? i18nT('components.voicePlaybackBar.speedSaveFailed') : null}
-      askAgent
-      actionPlacement="below-on-phone"
-      onDismiss={dismissSaveError}
-      className="mt-1.5 justify-end"
-      testId="voice-speed-save-error"
-    />
+    <div className="pt-1.5">
+      <Glass variant="chip" thickness="thick" radius={8} className="flex px-3 py-1.5">
+        <ErrorNotice
+          variant="inline"
+          message={i18nT('components.voicePlaybackBar.speedSaveFailed')}
+          askAgent
+          actionPlacement="below-on-phone"
+          onDismiss={dismissSaveError}
+          className="justify-end"
+          testId="voice-speed-save-error"
+        />
+      </Glass>
+    </div>
   )
 }
 
