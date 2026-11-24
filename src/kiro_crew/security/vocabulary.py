@@ -32,3 +32,10 @@ _SELF_PROGRAM_SPELLINGS = ("kirocrew", "kiro-crew", "kiro.crew")
 # substitution that resolves the name), and both verbs are matched on TOKENS via
 # ``_program_basename`` so a path-qualified or expansion-produced spelling counts.
 _KILL_BY_NAME_PROGRAMS = frozenset({"pkill", "killall"})
+# The Windows programs that end a process by name: ``taskkill``, PowerShell's
+# ``Stop-Process`` and its ``spps`` alias, and ``wmic``.  Kept apart from the POSIX
+# set because each names its target in one place (``self_kill_windows`` reads it)
+# where ``pkill`` takes the name in any argument, and because the shell reader's
+# alias and glob paths read the POSIX set.  The PID forms (``taskkill /pid``,
+# ``Stop-Process -Id``) carry no name, as bare ``kill`` does not.
+_WINDOWS_KILL_BY_NAME_PROGRAMS = frozenset({"taskkill", "stop-process", "spps", "wmic"})
