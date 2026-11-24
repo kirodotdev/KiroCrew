@@ -25,8 +25,9 @@ import {
   languageOptionLabel,
   localeLanguage,
   nextTranscribeLanguages,
+  FIXED_LANGUAGE_PROVIDERS,
   PROVIDER_LOCAL,
-  PROVIDER_CODEX,
+  PROVIDER_SHERPA,
   PROVIDER_TRANSCRIBE,
   providerLabel,
   unavailableMessage,
@@ -36,6 +37,7 @@ import { PttTestStrip } from '../../components/PttTestStrip'
 import { PointerHoldConfig } from './SttPointerHoldSettings'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import SttRetentionNote from './SttRetentionNote'
+import SttSherpaSettings, { SHERPA_DOWNLOAD_RUNNING, type SherpaStatus } from './SttSherpaSettings'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
 import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } from '../../lib/speechProviders'
 import {
@@ -86,6 +88,11 @@ interface SttConfig {
   dictation_panel?: boolean
   /** End a message holding dictated words with a note telling the agent so. Off by default. */
   dictation_note?: boolean
+  /** The catalog model the `sherpa_onnx` provider runs, or `custom`. */
+  sherpa_model?: string
+  /** Owner-only: the archive and its digest for `sherpa_model: custom`. */
+  sherpa_custom_archive?: string
+  sherpa_custom_sha256?: string
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -224,6 +231,8 @@ interface SttStatus {
   ffmpeg?: SttFfmpeg
   backend?: SttBackend
   timings?: SttTimings
+  /** The `sherpa_onnx` provider's own catalog and transfer. */
+  sherpa?: SherpaStatus
 }
 
 const DOWNLOAD_STEP_RUNNING = 'downloading'
@@ -896,6 +905,8 @@ export default function SttSettings({ cardIndex }: {
     refetchInterval: q =>
       q.state.data?.download?.step === DOWNLOAD_STEP_RUNNING
       || q.state.data?.ffmpeg?.download?.stage === FFMPEG_STAGE_RUNNING
+      || q.state.data?.sherpa?.download?.step === SHERPA_DOWNLOAD_RUNNING
+      || q.state.data?.sherpa?.custom?.check?.step === 'unpacking'
         ? DOWNLOAD_POLL_MS
         : false,
   })
@@ -1333,6 +1344,18 @@ export default function SttSettings({ cardIndex }: {
         {providerNotice && <SpeechProviderNotice entry={providerNotice} testId="stt-provider-notice" askAgent={awsDraftsSaved} />}
 
         <SttRetentionNote provider={provider} />
+        {provider === PROVIDER_SHERPA && (
+          <SttSherpaSettings
+            model={stt.sherpa_model || ''}
+            status={status?.sherpa}
+            disabled={saving}
+            downloadPending={prepareMut.isPending}
+            customArchive={stt.sherpa_custom_archive}
+            customSha256={stt.sherpa_custom_sha256}
+            onSave={patch => set(patch)}
+            onDownload={name => prepareMut.mutate(name)}
+          />
+        )}
 
         {/* Gated on a NON-EMPTY catalog, not just on the provider: the catalog is
             the status endpoint's to serve, and a picker with no options is worse
@@ -1546,7 +1569,7 @@ export default function SttSettings({ cardIndex }: {
           </>
         )}
 
-        {provider !== PROVIDER_CODEX && <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />}
+        {!FIXED_LANGUAGE_PROVIDERS.includes(provider) && <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />}
         {/* Still editable: voice messages and dictation with streaming off keep
             using it, so the line says where it applies rather than greying it out. */}
         {mixedLanguagesOn && (

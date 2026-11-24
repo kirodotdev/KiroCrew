@@ -20,6 +20,14 @@ export const PROVIDER_APPLE = 'apple'
 export const PROVIDER_TRANSCRIBE = 'transcribe'
 /** Codex's experimental hosted voice transport, using its own ChatGPT login. */
 export const PROVIDER_CODEX = 'codex'
+/** A sherpa-onnx Zipformer model held in the gateway process; one language per model. */
+export const PROVIDER_SHERPA = 'sherpa_onnx'
+
+/**
+ * Providers that recognise a fixed language and ignore `stt.language_code`, so the
+ * Language picker is hidden for them rather than offered as a choice that does nothing.
+ */
+export const FIXED_LANGUAGE_PROVIDERS: readonly string[] = [PROVIDER_CODEX, PROVIDER_SHERPA]
 
 /**
  * What the picker offers when the backend serves no provider list. `local` and
@@ -40,6 +48,7 @@ export const FALLBACK_STREAMING_PROVIDERS = [
   PROVIDER_APPLE,
   PROVIDER_TRANSCRIBE,
   PROVIDER_CODEX,
+  PROVIDER_SHERPA,
 ]
 
 /**
@@ -75,6 +84,7 @@ export const PROVIDER_LABEL_KEY: Record<string, string> = {
   apple: 'pages.settings.sttSettings.provider_apple',
   transcribe: 'pages.settings.sttSettings.provider_transcribe',
   codex: 'pages.settings.sttSettings.provider_codex',
+  sherpa_onnx: 'pages.settings.sttSettings.provider_sherpa',
   // No recogniser; also where the backend lands an unknown stored provider.
   off: 'pages.settings.sttSettings.provider_off',
 }
@@ -118,6 +128,15 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
   stt_codex_failed: 'pages.settings.sttSettings.unavailable_codex_failed',
   stt_codex_sandbox_unavailable: 'pages.settings.sttSettings.unavailable_codex_sandbox',
   stt_codex_cli_unresolved: 'pages.settings.sttSettings.unavailable_codex_cli_unresolved',
+  stt_sherpa_extra_missing: 'pages.settings.sttSettings.unavailable_sherpa_extra',
+  stt_sherpa_no_wheel: 'pages.settings.sttSettings.unavailable_sherpa_no_wheel',
+  stt_sherpa_bz2_missing: 'pages.settings.sttSettings.unavailable_sherpa_bz2_missing',
+  stt_sherpa_import_failed: 'pages.settings.sttSettings.unavailable_sherpa_import_failed',
+  stt_sherpa_model_missing: 'pages.settings.sttSettings.unavailable_sherpa_model_missing',
+  stt_sherpa_failed: 'pages.settings.sttSettings.unavailable_sherpa_failed',
+  stt_sherpa_custom_missing: 'pages.settings.sttSettings.unavailable_sherpa_custom_missing',
+  stt_sherpa_custom_mismatch: 'pages.settings.sttSettings.unavailable_sherpa_custom_mismatch',
+  stt_sherpa_custom_unsupported: 'pages.settings.sttSettings.unavailable_sherpa_custom_unsupported',
 }
 
 /**
@@ -143,6 +162,8 @@ export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
   'stt_codex_failed',
   'stt_codex_sandbox_unavailable',
   'stt_codex_cli_unresolved',
+  'stt_sherpa_import_failed',
+  'stt_sherpa_failed',
 ])
 
 /**
@@ -195,6 +216,12 @@ const MODAL_SAFE_UNAVAILABLE_CODES = new Set([
   'stt_codex_failed',
   'stt_codex_sandbox_unavailable',
   'stt_codex_cli_unresolved',
+  'stt_sherpa_extra_missing',
+  'stt_sherpa_no_wheel',
+  'stt_sherpa_import_failed',
+  'stt_sherpa_bz2_missing',
+  'stt_sherpa_model_missing',
+  'stt_sherpa_failed',
 ])
 
 export function modalUnavailableMessage(code: string): string {

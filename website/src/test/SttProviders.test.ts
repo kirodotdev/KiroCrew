@@ -19,10 +19,12 @@ import {
   CATALOG_MODEL_PROVIDERS,
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
+  FIXED_LANGUAGE_PROVIDERS,
   PROVIDER_APPLE,
   PROVIDER_CODEX,
   PROVIDER_LABEL_KEY,
   PROVIDER_LOCAL,
+  PROVIDER_SHERPA,
   PROVIDER_TRANSCRIBE,
   STREAM_ERROR_CODE_KEY,
   UNAVAILABLE_CODE_KEY,
@@ -49,7 +51,7 @@ describe('provider labels', () => {
     // it exists to catch — including a retired provider left behind, which would
     // keep offering a label for something the backend refuses.
     expect(Object.keys(PROVIDER_LABEL_KEY).sort()).toEqual(
-      [PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, 'off', PROVIDER_TRANSCRIBE].sort(),
+      [PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, 'off', PROVIDER_SHERPA, PROVIDER_TRANSCRIBE].sort(),
     )
   })
 
@@ -81,6 +83,15 @@ describe('the served-list fallbacks', () => {
     for (const p of [PROVIDER_LOCAL, PROVIDER_APPLE, PROVIDER_TRANSCRIBE]) {
       expect(FALLBACK_STREAMING_PROVIDERS).toContain(p)
     }
+  })
+})
+
+describe('the language picker gate', () => {
+  it('hides the picker for providers whose language is fixed', () => {
+    // A sherpa-onnx model recognises one language and ignores `stt.language_code`.
+    expect(FIXED_LANGUAGE_PROVIDERS).toContain(PROVIDER_SHERPA)
+    expect(FIXED_LANGUAGE_PROVIDERS).toContain(PROVIDER_CODEX)
+    expect(FIXED_LANGUAGE_PROVIDERS).not.toContain(PROVIDER_LOCAL)
   })
 })
 
@@ -120,6 +131,15 @@ describe('availability reasons', () => {
       'stt_native_probe_crashed',
       'stt_no_wheel_for_platform',
       'stt_provider_off',
+      'stt_sherpa_bz2_missing',
+      'stt_sherpa_custom_mismatch',
+      'stt_sherpa_custom_missing',
+      'stt_sherpa_custom_unsupported',
+      'stt_sherpa_extra_missing',
+      'stt_sherpa_failed',
+      'stt_sherpa_import_failed',
+      'stt_sherpa_model_missing',
+      'stt_sherpa_no_wheel',
       'stt_unsupported_cpu',
     ])
   })
