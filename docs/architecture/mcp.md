@@ -5537,7 +5537,11 @@ is waiting on it (`acp/mcp_start_wait.py`), a new chat and a re-opened one
 alike, so a turn can begin while some of
 them are still connecting. Such a server is not in the model's tool list yet, and
 the host's tool loader answers a request for one of its tools as though it did
-not exist. Two parts keep the model from repeating that to the user. Both reach
+not exist. Codex differs in two ways: its adapter holds a new chat's `session/new`
+until the array's servers are ready or failed, and a server that comes up during
+a turn is offered from the next turn
+([acp-client](../system-specs/modules/acp-client.md)). Two parts keep the model
+from repeating that to the user. Both reach
 only a turn whose prompt carries the block (the gateway's context builder builds
 it: a dashboard or channel turn). A first turn whose prompt does not, such as
 `kirocrew chat` or a side question, holds its prompt for those servers instead,

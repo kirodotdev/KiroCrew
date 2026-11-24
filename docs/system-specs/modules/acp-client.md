@@ -3039,7 +3039,11 @@ the host reads its server list when a tool is loaded, so a server that connects
 during the turn serves it; the session's report follows the server (above), the
 turn is told which servers are still starting (`[MCP SERVERS]`,
 `context_assembly/mcp_servers.py`), and the model can wait for the one it needs
-(`mcp_server_wait`).
+(`mcp_server_wait`). Codex is the exception: it fixes a turn's tools when the turn
+starts, after waiting about a second for its servers, so a server still starting
+then serves no tool of that turn. Its harness therefore has codex-acp hold
+`session/new` until every server in the array is ready or failed, up to
+`CodexHarness.MCP_STARTUP_AWAIT_MS` ([providers](providers.md)).
 
 **The first turn of a start that skipped them.** Being told is what makes not
 waiting safe, and not every turn is told. So the start records the servers it

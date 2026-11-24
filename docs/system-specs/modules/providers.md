@@ -1504,8 +1504,12 @@ returning the request and agent unchanged, except that ordinary KAS adds
 `_meta.kiro.modeId` to a `session/new`, naming its first injected agent or the
 start agent it registers beside one that declares MCP servers
 ([agent-host-contract](agent-host-contract.md) §1, selection row) and the cloud
-harness does not inherit that; `load_session` asks it only inside its KAS
-branch. The ordinary session request shaping is unchanged, and so is the
+harness does not inherit that, and codex adds `_meta.mcpStartupAwaitTimeoutMs` to
+a `session/new` that carries MCP servers, so codex-acp answers only once each is
+ready or failed (capped below the `session/new` floor): without it codex gives MCP
+startup about one second at the first turn, and a gateway stub still starting
+then is offered on none of that turn's tools; `load_session` asks it only
+inside its KAS branch. The ordinary session request shaping is unchanged, and so is the
 runtime's `load_session`. Replayed approvals are held by a resume hold only the
 provider's cloud start takes around its reopen (`hold_cloud_resume`), and by two
 reader seams every served host answers as a no-op (`holds_replayed_permission`,

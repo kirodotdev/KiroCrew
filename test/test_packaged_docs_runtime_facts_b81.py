@@ -105,3 +105,14 @@ def test_work_ledger_refusal_codes_exist():
     assert f"`409 {work_ledger.CODE_CACHE_DIRTY}`" in text
     assert f"`409 {work_ledger.CODE_CREW_LOG_INCOMPLETE}`" in text
     assert "## No dashboard page" not in (DOCS / "work-ledger.md").read_text(encoding="utf-8")
+
+
+def test_codex_first_message_wait_matches_the_code():
+    from kiro_crew.acp.harness.codex import CodexHarness
+
+    text = _doc("troubleshooting.md")
+    secs = CodexHarness.MCP_STARTUP_AWAIT_MS // 1000
+    assert (
+        "On the Codex harness a new chat's first message waits for all of the chat's"
+        f" servers, yours included, for up to {secs} seconds"
+    ) in text
