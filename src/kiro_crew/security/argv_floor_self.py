@@ -189,19 +189,19 @@ _DIR_LOOP_BODY_PROGRAMS = frozenset(
 )
 
 
-def _for_list_directory_globs(tokens: "list[str]", text: str) -> "frozenset[int]":
+def _for_list_directory_globs(tokens: "list[str]", text: str, root: bool) -> "frozenset[int]":
     """Indexes of list words ending in ``/`` when the frame is ONE plain ``for`` loop.
 
     Such a glob expands only to directories, so ``for w in /a/*/`` never runs ``*``.
-    Its value could still become a program, so the shape is fixed: the frame is
-    exactly ``for NAME in WORDS; do CMD; ...; done``, each CMD's program is in
+    Its value could still become a program, so the shape is fixed: the root frame
+    (*root*, the command as typed) is exactly ``for NAME in WORDS; do CMD; ...; done``, each CMD is in
     ``_DIR_LOOP_BODY_PROGRAMS``, no word holds an operator before its end, and the
     *text* has no pipe, output redirect, substitution or operator expansion.
     """
     if "|" in text or ">" in text or any(_VALUE_REWRITE_RE.search(t) for t in tokens):
         return frozenset()
-    # The loop must BE the command: an outer frame could define a function named ``ln``.
-    if not text.lstrip().startswith("for ") or not text.rstrip().rstrip(";").endswith("done"):
+    # Only the ROOT frame: an outer frame of a nested loop could define a function ``ln``.
+    if not root:
         return frozenset()
     if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
         return frozenset()
@@ -452,7 +452,8 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
             if dir_globs is None:
-                dir_globs = _for_list_directory_globs(tokens, text_lower)
+                root = any(s == text_lower and t == tokens for s, t in _self_frames(text_lower))
+                dir_globs = _for_list_directory_globs(tokens, text_lower, root)
             if i in dir_globs:
                 continue
             # A program token ending with an operator (``kirocrew;``) is NOT skipped: the
@@ -912,7 +913,7 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 continue
             # ``for w in /a/*/`` lists directories, which never run.
             if dir_globs is None:
-                dir_globs = _for_list_directory_globs(tokens, text_lower)
+                dir_globs = _for_list_directory_globs(tokens, text_lower, source == text_lower)
             if i in dir_globs:
                 continue
             # A program token ending with an operator (``pkill;``) is NOT skipped: the

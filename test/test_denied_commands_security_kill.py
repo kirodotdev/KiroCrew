@@ -741,6 +741,17 @@ class TestSelfProtectionKillTargetScoping:
                 f"bash -c 'for w in /usr/bin/p*ll/; do ln $w {_NAME}; done'",
                 _RULE_KILL,
             ),
+            # The same, with the whole command itself shaped as a `for` loop.
+            (
+                "for w in a/; do ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/bin/p*ll/; do ln $v {_NAME}; done'; done",
+                _RULE_KILL,
+            ),
+            (
+                "for w in a/; do ln() { ${1%/} $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/local/bin/kiro*rew/; do ln $v {_TOK}; done'; done",
+                _RULE_MINT,
+            ),
             # A body program that stores its output (`printf -v`) and then runs it.
             (
                 f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
@@ -772,7 +783,10 @@ class TestSelfProtectionKillTargetScoping:
         from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
 
         text = f"for w in /usr/bin/p*ll/; do {body}; done"
-        assert all(not _for_list_directory_globs(tokens, text) for _, tokens in _self_frames(text))
+        frames = _self_frames(text)
+        assert all(
+            not _for_list_directory_globs(tokens, text, src == text) for src, tokens in frames
+        )
 
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
