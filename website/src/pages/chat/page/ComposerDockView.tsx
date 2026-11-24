@@ -171,6 +171,12 @@ interface ComposerDockViewProps {
   setAutomationOpen: Dispatch<SetStateAction<boolean>>
   prefillHint: boolean
   setPrefillHint: Dispatch<SetStateAction<boolean>>
+  /** A cold-link prompt to confirm before it reaches the composer, or null. */
+  coldPrefillPrompt?: string | null
+  onColdPrefillStart?: () => void
+  onColdPrefillDiscard?: () => void
+  /** Set while the cold-link prompt's first send waits out its input delay. */
+  coldPrefillSendKey?: string | null
   pasteSlice: ComposerPasteSlice
   pendingFiles: string[]
   pendingSessions: SessionRef[]
@@ -349,6 +355,7 @@ export default function ComposerDockView({
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
   setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, onJumpToQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
+  coldPrefillPrompt, onColdPrefillStart, onColdPrefillDiscard, coldPrefillSendKey,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, tabsCtl, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
   followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, projectSwitching, switchAgent,
@@ -696,6 +703,10 @@ export default function ComposerDockView({
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
               onDismissHint={() => setPrefillHint(false)}
+              coldPrefillPrompt={coldPrefillPrompt}
+              onColdPrefillStart={onColdPrefillStart}
+              onColdPrefillDiscard={onColdPrefillDiscard}
+              coldPrefillSendKey={coldPrefillSendKey}
               onScreenshot={handleCapture}
               onUploadFiles={composerUploadFiles}
               /* The active slot's uploads in flight, whichever host started

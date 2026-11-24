@@ -2861,8 +2861,10 @@ navigation's own commit (`takeDeferredPendingInput`). When no main window claims
 an intent within `NAV_CLAIM_MS`, the engine's fallback (`navFallbackUrl` in
 `utils/popoutController.ts`) opens the destination in a new tab under the build
 base, with the session as `?sid=` and the first prompt as `?prefill=`, or as
-`?new=1&prefill=` when no session is named or the prompt is an error hand-off. An
-artifact pop-out's fallback is built the same way.
+`?new=1&prefill=` when no session is named or the prompt is an error hand-off. A
+`?new=1&prefill=` fallback lands as the chat page's draft to put in the message
+box or discard, not as a filled composer. An artifact pop-out's fallback is built
+the same way.
 
 **Session resolution (frontend)** — the active bound session is resolved from
 the Redux slots snapshot (`slot.artifact === slug`), so no extra endpoint exists:

@@ -9,8 +9,13 @@
  * channel flow, which an external tool cannot mint.
  *
  * Two properties are load-bearing and both are pinned here.
- *  1. It SEEDS ONLY. Nothing is sent — the human still presses Enter — so the
- *     link adds no way to spend a model turn.
+ *  1. A cold link SEEDS NOTHING on its own. Because any page can open this URL,
+ *     the linked prompt is held as a draft the operator must put in the message
+ *     box (or discard) before it enters the composer; nothing is sent either —
+ *     the human still presses Enter — so the link adds no way to spend a model
+ *     turn or to leave text in a box a stray click would send. An app's own
+ *     openChat launch still seeds its composer directly (the App SDK block
+ *     below), because that is an in-app action, not an arbitrary page's URL.
  *  2. It requires the explicit `new=1` marker. A bare `?prefill=<v>` is an in-app
  *     SENTINEL in this dashboard (the file explorer's "Chat about this file" uses
  *     `?prefill=1`, a project idea's "Edit in chat" uses `?prefill=plan`, both
@@ -19,7 +24,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, act, waitFor, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, act, waitFor, screen, fireEvent, cleanup, within } from '@testing-library/react'
 import { store as singletonStore, type RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
@@ -43,6 +48,8 @@ import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '.
 import { i18nT } from '../i18n/t'
 import i18next from 'i18next'
 import { resetCrewModeCatalog, setCrewModeCatalog } from '../lib/crewMode'
+import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
+import { CONFIRM_INPUT_DELAY_MS } from '../components/chat-input/useInputDelay'
 import * as transport from '../chat-core/transport/sendTurn'
 import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
@@ -181,8 +188,17 @@ async function renderAt(route: string, targetTitle?: string, activeSlot?: string
 }
 
 const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+// The cold-link confirm, and the first send after it, ignore a press for a
+// moment after they appear. This holds the clock that delay reads still, so a
+// test can press "right away" however slow the machine is, then step past the
+// delay on purpose.
+function holdInputDelayClock() {
+  let now = performance.now()
+  vi.spyOn(performance, 'now').mockImplementation(() => now)
+  return { stepPastDelay: () => { now += CONFIRM_INPUT_DELAY_MS + 1 } }
+}
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 beforeEach(() => {
   delete (window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch
@@ -208,22 +224,131 @@ beforeEach(() => {
   createChatSlot.mockResolvedValue({ key: NEW_SLOT, title: NEW_SLOT, messages: 0, running: false })
 })
 
-describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 20_000 }, () => {
-  it('creates the session and seeds its composer with the linked prompt', async () => {
+describe('ChatPage — /chat?new=1&prefill= stages a draft to confirm', { timeout: 20_000 }, () => {
+  it('creates the session but holds the linked prompt as a draft, not in the composer', async () => {
     const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
-    // The staged value is consumed, not left behind for the next slot switch.
+    // The composer stays empty: a page that opened this link cannot leave text
+    // sitting in a box a stray click would send. The prompt shows as a draft.
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    expect(within(confirm).getByText(PROMPT)).toBeTruthy()
+    expect(composer().value).toBe('')
+    // Not staged into the composer's sessionStorage channel either.
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+    expect(sendChat).not.toHaveBeenCalled()
   })
 
-  it('seeds the composer when the activation commit runs before the create caller resumes', async () => {
-    // In a browser the create's activation renders, and the slot-restore effect
-    // reads the staged prefill, before the code awaiting the create runs again.
-    // jsdom under act() runs that caller first, so a prompt staged by the caller
-    // would still reach the composer there. Committing the activation inside the
-    // dispatch reproduces the browser order.
+  it('seeds the composer only after the operator starts the draft', async () => {
+    const clock = holdInputDelayClock()
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    // Text the operator typed before starting is kept, with the prompt after it.
+    fireEvent.change(composer(), { target: { value: 'my own context' } })
+    clock.stepPastDelay()
+    await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Put in message box' })) })
+    await waitFor(() => expect(composer().value).toBe(`my own context\n\n${PROMPT}`))
+    expect(screen.queryByTestId('cold-prefill-confirm')).toBeNull()
+    // Seeds only; the human still presses Enter.
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('drops the draft when the operator discards it, leaving the composer empty', async () => {
+    const clock = holdInputDelayClock()
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    clock.stepPastDelay()
+    await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Discard' })) })
+    await waitFor(() => expect(screen.queryByTestId('cold-prefill-confirm')).toBeNull())
+    expect(composer().value).toBe('')
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('ignores a press on the draft for a moment after it appears and after the window gains focus', async () => {
+    const clock = holdInputDelayClock()
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    const start = () => act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Put in message box' })) })
+
+    // Pressed right as it appears: nothing happens.
+    await start()
+    expect(screen.getByTestId('cold-prefill-confirm')).toBeTruthy()
+    expect(composer().value).toBe('')
+
+    // Pressed right after the window comes to the front: nothing happens either.
+    clock.stepPastDelay()
+    await act(async () => { window.dispatchEvent(new FocusEvent('focus')) })
+    await start()
+    expect(screen.getByTestId('cold-prefill-confirm')).toBeTruthy()
+    expect(composer().value).toBe('')
+
+    // Once the moment passes, the same press puts the prompt in the box.
+    clock.stepPastDelay()
+    await start()
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(screen.queryByTestId('cold-prefill-confirm')).toBeNull()
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('ignores the first send for a moment after the prompt lands, then sends as usual', async () => {
+    const clock = holdInputDelayClock()
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    clock.stepPastDelay()
+    await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Put in message box' })) })
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    const send = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+
+    // Send pressed right after the prompt lands, or right after the window
+    // comes to the front, sends nothing and keeps the prompt.
+    await send()
+    await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' }) })
+    clock.stepPastDelay()
+    await act(async () => { window.dispatchEvent(new FocusEvent('focus')) })
+    await send()
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(composer().value).toBe(PROMPT)
+
+    // After the moment passes, Send sends it.
+    clock.stepPastDelay()
+    await send()
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not optimize a cold-link draft until its first-send delay passes', async () => {
+    const clock = holdInputDelayClock()
+    saveChatConfig({ ...loadChatConfig(), optimizeBeforeSend: true })
+    const fetchMock = vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: async () => url.includes('/api/optimizer/optimize')
+        ? { changed: false, optimized: PROMPT }
+        : [],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    clock.stepPastDelay()
+    await act(async () => { fireEvent.click(within(confirm).getByRole('button', { name: 'Put in message box' })) })
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    const optimizerCalls = () => fetchMock.mock.calls.filter(([url]) => url.includes('/api/optimizer/optimize'))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+    await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' }) })
+    expect(optimizerCalls()).toHaveLength(0)
+    expect(screen.queryByTestId('optimize-busy')).toBeNull()
+    expect(sendChat).not.toHaveBeenCalled()
+
+    clock.stepPastDelay()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })) })
+    await waitFor(() => expect(optimizerCalls()).toHaveLength(1))
+    expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  it('stages nothing even when the activation commit runs before the create caller resumes', async () => {
+    // In a browser the create's activation renders, and a staged prefill would
+    // be read, before the code awaiting the create runs again. Committing the
+    // activation inside the dispatch reproduces that order; the cold link must
+    // still stage nothing into the composer.
     const stagedAtActivation: (string | null)[] = []
     const commitActivationNow: Middleware = () => next => action => {
       if (!createSlot.fulfilled.match(action)) return next(action)
@@ -235,35 +360,11 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`, undefined, undefined, [commitActivationNow])
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
-    // The seed was staged before the activation that reads it, not after.
-    expect(stagedAtActivation).toHaveLength(1)
-    expect(JSON.parse(stagedAtActivation[0] ?? 'null')).toMatchObject({ slotKey: NEW_SLOT, prompt: PROMPT })
+    const confirm = await screen.findByTestId('cold-prefill-confirm')
+    expect(within(confirm).getByText(PROMPT)).toBeTruthy()
+    expect(composer().value).toBe('')
+    expect(stagedAtActivation).toEqual([null])
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
-    expect(sendChat).not.toHaveBeenCalled()
-  })
-
-  it('still seeds the composer when sessionStorage refuses the staged prompt', async () => {
-    const setItem = Storage.prototype.setItem
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
-      if (key === PREFILL_STORAGE_KEY) throw new DOMException('full', 'QuotaExceededError')
-      return setItem.call(this, key, value)
-    })
-    const commitActivationNow: Middleware = () => next => action => {
-      const result = next(action)
-      if (createSlot.fulfilled.match(action)) flushSync(() => {})
-      return result
-    }
-    const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`, undefined, undefined, [commitActivationNow])
-
-    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
-    expect(sendChat).not.toHaveBeenCalled()
-  })
-
-  it('sends nothing — the prompt waits for a human Enter', async () => {
-    await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
     expect(sendChat).not.toHaveBeenCalled()
   })
 
@@ -272,6 +373,7 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
     expect(composer().value).toBe('')
+    expect(screen.queryByTestId('cold-prefill-confirm')).toBeNull()
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
@@ -284,6 +386,7 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
     expect(createChatSlot).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
+    expect(screen.queryByTestId('cold-prefill-confirm')).toBeNull()
   })
 
   it('ignores a bare ?prefill=<text> with no new=1, so the launcher URL must say what it wants', async () => {
@@ -306,7 +409,9 @@ describe('ChatPage — /chat?new=1 with bot= or conductor=', { timeout: 20_000 }
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
     expect(createChatSlot.mock.calls[0][1]).toBe('my-bot')
     expect(createChatSlot.mock.calls[0][8]).toBe('member')
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    // The linked prompt still waits as a draft to confirm, on the Bot's session.
+    expect(within(await screen.findByTestId('cold-prefill-confirm')).getByText(PROMPT)).toBeTruthy()
+    expect(composer().value).toBe('')
     expect(sendChat).not.toHaveBeenCalled()
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
@@ -331,7 +436,7 @@ describe('ChatPage — /chat?new=1 with bot= or conductor=', { timeout: 20_000 }
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
     expect(await screen.findByText(i18nT('pages.chatPage.conductor_link_not_started'))).toBeTruthy()
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(within(await screen.findByTestId('cold-prefill-confirm')).getByText(PROMPT)).toBeTruthy()
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     expect(sendChat).not.toHaveBeenCalled()
   })
