@@ -1,7 +1,9 @@
 """Dashboard endpoints for session storage: what it costs, and reclaiming it.
 
-Read is open; every mutation is gated on :func:`_is_restricted_session` and
-audited through the SEL, because all three of them move or delete a user's
+Every route asks :func:`require_owner_for_dashboard_caller` first: the history is the
+owner's, so a dashboard session that is neither the owner nor an admitted teammate is
+refused. Every mutation is also gated on :func:`_is_restricted_session` and
+audited through the SEL, because all of them move or delete a user's
 conversation history.
 
 The wire shape deliberately reports a session as ONE size. Sessions occupy two
@@ -34,6 +36,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _is_restricted_session,
     _read_session_key,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
@@ -345,6 +348,9 @@ async def api_session_storage(request: web.Request) -> web.Response:
     Uncached: it walks both stores, so it is far too expensive to serve on a poll
     and is meant to be fetched when the screen opens or after an action.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.read")
+    if denied is not None:
+        return denied
     data = await asyncio.to_thread(_report_payload)
     return web.json_response(data)
 
@@ -358,6 +364,9 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
     is showing may be minutes old, and acting on them would move sessions the
     user never saw.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.cleanup")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.cleanup", request)
@@ -457,6 +466,9 @@ async def api_session_storage_restore(request: web.Request) -> web.Response:
     ("undo what I just did"); naming them restores only those, for the case where
     one conversation turns out to be wanted out of a large sweep.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.restore")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.restore", request)
@@ -642,6 +654,9 @@ async def api_session_storage_empty(request: web.Request) -> web.Response:
     running delete from a stuck one. Progress is read from
     :func:`api_session_storage_empty_status`.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.empty")
+    if denied is not None:
+        return denied
     global _empty_job
 
     state: DashboardState = request.app["state"]
@@ -761,6 +776,9 @@ async def api_session_storage_empty_status(request: web.Request) -> web.Response
     no store, which is what makes it pollable at all — every other endpoint in this
     module walks the sessions on disk.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.empty_status")
+    if denied is not None:
+        return denied
     job = _reportable_job()
     if job is None:
         return web.json_response({"job": None})
@@ -969,6 +987,9 @@ async def api_session_inventory(request: web.Request) -> web.Response:
     Uncached and scan-bound like the report, so it is fetched when the screen
     opens or after an action, never on a poll.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.inventory")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     data = await asyncio.to_thread(_inventory_payload, state)
     return web.json_response(data)
@@ -998,6 +1019,9 @@ async def api_session_inventory_detail(request: web.Request) -> web.Response:
     values rather than failing: the row still has a real size to show, and a
     truncated transcript is not a reason to refuse to talk about the session.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.inventory_detail")
+    if denied is not None:
+        return denied
     uid = request.match_info.get("uid", "")
     if not uid:
         return _bad_request("uid is required.", "invalid_uid")
@@ -1114,6 +1138,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
     Sessions the server would not take are reported per uid rather than silently
     dropped — doing less than the user asked without saying so is a defect.
     """
+    denied = await require_owner_for_dashboard_caller(request, "session_storage.trash")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return _deny("session_storage.trash", request)
