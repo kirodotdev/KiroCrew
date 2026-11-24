@@ -61,7 +61,7 @@ describe('KiroAccountUnlocks', () => {
     kirocrewConfig.mockReset()
   })
 
-  it('lists what the account unlocks beside the signed-out choices', async () => {
+  it('lists what the account unlocks under the signed-out choices', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } } as Cfg)
     renderWithProviders(<KiroSignInCard />)
