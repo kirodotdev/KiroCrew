@@ -727,8 +727,168 @@ class TestSelfProtectionKillTargetScoping:
     def test_expanded_or_executing_spelling_blocked(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
 
+    @pytest.mark.parametrize(
+        ("program", "args", "rule"),
+        [
+            ("/usr/bin/p*ll", f"-f {_NAME}", _RULE_KILL),
+            ("kiro*rew", _TOK, _RULE_MINT),
+        ],
+    )
+    @pytest.mark.parametrize("directory", [False, True])
+    @pytest.mark.parametrize(
+        "redirect",
+        ["", "<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
+    )
+    def test_slash_glob_at_program_position_still_reads_as_a_program(
+        self, program, args, rule, directory, redirect
+    ):
+        # Outside a `for` list a trailing slash proves nothing: bash runs a function
+        # named `p*ll/`, and a redirect target's slash is not the program's.
+        command = f"{program}{'/' if directory else ''}{redirect} {args}"
+        assert _denied_by(command) == rule
+
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            # The loop value is rewritten back into a program path, then run.
+            (f"for w in /usr/bin/p*ll/; do ${{w%/}} -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/local/bin/kiro*rew/; do ${{w%/}} {_TOK}; done", _RULE_MINT),
+            (f"for w in /usr/bin/p*ll/; do $w -f {_NAME}; done", _RULE_KILL),
+            (f"for w in /usr/bin/p*ll/; do $(dirname $w/z) -f {_NAME}; done", _RULE_KILL),
+            (f'for w in /usr/bin/p*ll/; do eval "${{w%/}} -f {_NAME}"; done', _RULE_KILL),
+            (
+                f"function p*ll/ {{ /usr/bin/pkill \"$@\"; }}; 'p*ll/' -f {_NAME}",
+                _RULE_KILL,
+            ),
+            # The printed loop value is rewritten downstream and run by a shell.
+            (
+                f'for w in /usr/bin/p[k]ill/; do echo "$w -f {_NAME}"; done'
+                " | sed 's@/ -f@ -f@' | /bin/ba?h",
+                _RULE_KILL,
+            ),
+            (
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln -s {_NAME} \"$w/z\"; done' 2>&1 | bash",
+                _RULE_KILL,
+            ),
+            (f"for w in /usr/bin/p*ll/; do echo $w {_NAME}; done > /tmp/x.sh", _RULE_KILL),
+            # `for` is only an echo argument; the glued word after `;` is the program.
+            (
+                f'function p*ll/ {{ /usr/bin/p?ill "$@"; }}; echo for w in x;p*ll/ -f {_NAME}',
+                _RULE_KILL,
+            ),
+            (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # A `{ …; }` loop body, with a decoy `do` later in an echo argument.
+            (
+                'for w in a/; { function p*ll/ { /usr/bin/p?ill "$@"; }; '
+                f"'p*ll/' -f {_NAME}; }}; echo do done",
+                _RULE_KILL,
+            ),
+            (f"for w in a/; {{ 'kiro*rew/' {_TOK}; }}; echo do done", _RULE_MINT),
+            # An outer frame shadows a body program, then a nested shell runs the loop.
+            (
+                "ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for w in /usr/bin/p*ll/; do ln $w {_NAME}; done'",
+                _RULE_KILL,
+            ),
+            # The same, with the whole command itself shaped as a `for` loop.
+            (
+                "for w in a/; do ln() { ${1%/} -f $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/bin/p*ll/; do ln $v {_NAME}; done'; done",
+                _RULE_KILL,
+            ),
+            (
+                "for w in a/; do ln() { ${1%/} $2; }; export -f ln; "
+                f"bash -c 'for v in /usr/local/bin/kiro*rew/; do ln $v {_TOK}; done'; done",
+                _RULE_MINT,
+            ),
+            # A body program that stores its output (`printf -v`) and then runs it.
+            (
+                f'for w in /usr/bin/pkil*/; do printf -v cmd "%.14s -f {_NAME}" "$w"; $cmd; done',
+                _RULE_KILL,
+            ),
+        ],
+    )
+    def test_directory_glob_whose_value_can_run_still_denied(self, cmd, rule):
+        assert _denied_by(cmd) == rule
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "x=w; ${!x%/} -f t",
+            "declare -n r=w; ${r%/} -f t",
+            "x=$w/z; ${x%//z} -f t",
+            "eval $w",
+            "$w -f t",
+            "echo `basename $w`",
+            "for v in $w; do $v -f t; done",
+            "echo $w/z | sed s@//z@@",
+            "ln -s t $w/z 2>&1",
+            "echo $w/z >> /tmp/x.sh",
+        ],
+    )
+    def test_loop_value_that_can_be_rewritten_grants_no_exemption(self, body):
+        # The exemption is withdrawn for the whole frame, not only when the target
+        # sits in the same command as the glob.
+        from kiro_crew.security.argv_floor_self import _for_list_directory_globs, _self_frames
+
+        text = f"for w in /usr/bin/p*ll/; do {body}; done"
+        frames = _self_frames(text)
+        assert all(
+            not _for_list_directory_globs(tokens, text, src == text) for src, tokens in frames
+        )
+
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do ln -sfn /opt/{_NAME}/y $w/z; done",
+            f'for w in /srv/x/*/; do ln -sfn /path/to/{_NAME}/thing "$w/z"; done',
+            f"for w in /a/*/ /b/*/\ndo echo ${{w}}/q {_NAME}; done",
+            f"for w in */; do echo {_NAME}; done",
+            f"for w in '/opt/x/*/'; do echo {_NAME}; done",
+            f'for w in "/opt/x/*/"; do echo {_NAME}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_a_kill_verb(self, cmd):
+        # A glob ending in `/` expands only to directories, so it can never run
+        # pkill/killall; the later product-named path is not its target.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"/usr/bin/p*ll -f {_NAME}",
+            f"for w in /a/*; do echo {_NAME}; done",
+        ],
+    )
+    def test_glob_that_can_name_a_file_still_reads_as_a_kill_verb(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do echo {_TOK}; done",
+            f"for w in */; do echo {_TOK}; done",
+            f"for w in '/opt/x/*/'; do echo {_TOK}; done",
+            f'for w in "/opt/x/*/"; do echo {_TOK}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_the_cli(self, cmd):
+        # Same reading for the mint rule: a glob ending in `/` cannot run the CLI.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"* {_TOK}",
+            f"/usr/local/bin/kiro*rew {_TOK}",
+            f"for w in /a/*; do echo {_TOK}; done",
+        ],
+    )
+    def test_glob_that_can_name_the_cli_still_mints(self, cmd):
+        assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
         "cmd",
