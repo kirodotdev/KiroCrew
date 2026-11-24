@@ -37,7 +37,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition
+from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -353,6 +353,11 @@ async def _inbound_gate(
     channel = str(event.get("channel") or "")
     if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
         return DROP
+    in_thread = thread_stop_gate.binding_of(channel, event)
+    if in_thread is not None:
+        return await thread_stop_gate.decide(
+            orch, cfg, in_thread, text=text, sender_id=sender_id, from_trusted_bot=from_trusted_bot
+        )
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)

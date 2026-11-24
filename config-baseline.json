@@ -8143,6 +8143,8 @@
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
+        "thread_conductor": false,
+        "thread_conductor_public_channels": false,
         "code_channels": false,
         "slack_mcp": false,
         "code_channel_defaults": {
@@ -8586,6 +8588,38 @@
       ],
       "label": "Code Channel Dispatch",
       "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; a save that first turns that on from the settings page turns this on with it, unless a value is already stored (an explicit off is kept). Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off when unset, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.thread_conductor",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Conductor Threads",
+      "help": "Let the owner turn one Slack thread into a Conductor thread: the thread's own session may hand work to worker sessions, as a code channel's does, without the code-channel scopes. Only turns the owner drove, only workers it created itself, one level deep, filed beside it, never above its approval mode. By default only the owner's DM with the app and private channels; see thread_conductor_public_channels. Off by default. Turning it on also shows the thread's worker approval cards, its Stop button (`!stop`) and its restart resume in Slack, all owner-only. A missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.thread_conductor_public_channels",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Conductor Threads In Public Channels",
+      "help": "Also admit Conductor threads in public channels. Every member of such a channel can read what the thread shows: the workers' titles, states, PRs and CI, and their approval cards. Off by default, which keeps Conductor threads to the owner's DM with the app and private channels (a channel made public later stops dispatching). Has no effect while slack.thread_conductor is off. A missing or malformed value reads as off; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -122,6 +122,7 @@ from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_g
 from kiro_crew.slack.code_channels.routing import is_bound_code_channel
 from kiro_crew.slack.code_channels.shared_refusal import shared_message_dropped, shared_stop_refused
 from kiro_crew.slack.code_channels.store import store as code_channel_store
+from kiro_crew.slack.code_channels.thread_stop_gate import is_owner_stop
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -696,15 +697,15 @@ async def _route_message(
     # thread-follow does not admit in mention/review mode) run BEFORE the
     # interceptor: the bot ignores these messages with nothing recorded, so
     # there is nothing to gate, and an edition's interceptor must not answer a
-    # message the bot was never going to read (a challenge on every unaddressed
-    # owner message in a shared channel). They leave no trace besides their SEL
-    # denial row: no history push, no download, no Slack write. Everything that
-    # passes them still meets the interceptor before any content is recorded,
+    # message the bot was never going to read. They leave no trace besides their
+    # SEL denial row: no history push, no download, no Slack write. Everything
+    # that passes them still meets the interceptor before any content is recorded,
     # observe mode included (its history push stays after the interceptor).
     ch_cfg = slack_cfg(orch).channel_config(channel)
     activation = ch_cfg.activation
+    _owner_thread_stop = is_owner_stop(channel, event, text, sender_id)
 
-    if activation == ACTIVATION_OFF:
+    if activation == ACTIVATION_OFF and not _owner_thread_stop:
         # Allow !channel commands through so the owner can re-enable the channel.
         # Text may start with "<@BOTID> " when @mentioned, so strip that first.
         _stripped = text.lstrip()
@@ -724,10 +725,9 @@ async def _route_message(
             )
             return
 
-    # A bound code channel answers without a mention: the code-channel gate
-    # below decides it, and the mention drop is applied after the gate only
-    # when the gate leaves the message to the normal path.
-    _defer_mention_drop = is_bound_code_channel(orch, channel)
+    # A bound code channel answers without a mention: the code-channel gate below
+    # decides it, and the mention drop applies after it only if it leaves the normal path.
+    _defer_mention_drop = is_bound_code_channel(orch, channel) or _owner_thread_stop
 
     if (
         activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW)

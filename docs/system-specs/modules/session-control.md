@@ -2605,9 +2605,9 @@ bound to a dashboard slot, kept in the store's `thread_bindings` table (keyed `<
 store's `session_keys` (so `code_channel_root`), the anchor guard (`anchor_owner_by_ts`) and the
 shared-user refusals (`shared_user_refused_in(channel, thread_ts)`, `shared_user_refused_for_slot`)
 cover threads too. Its *switch* is `binding.thread_conductor_on`: `slack.thread_conductor is True`
-AND `THREAD_CONDUCTOR_RUNTIME_BUILT`, which stays false until Slack shows the thread's approval
-cards, Stop and resume (the RFC's part D, #41322, which also declares both config keys; until then
-the reads find no key and answer off); it needs no
+AND `THREAD_CONDUCTOR_RUNTIME_BUILT`, which part D (#41322, which also declares both config keys,
+default off) set true once Slack showed the thread's approval cards, Stop and resume, so the key
+alone turns the feature on (and the constant stays a kill switch); it needs no
 code-channel scope, and the degradation and torn-file readings apply as above. Its *channel state*
 adds: an ended thread refuses, and the room must be admitted -- the owner's DM (`room=im`, a `D` id,
 which skips the share and archive readings), a private channel whose fresh `conversations.info`

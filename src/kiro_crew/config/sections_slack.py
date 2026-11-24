@@ -436,6 +436,37 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    thread_conductor: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads",
+            "Let the owner turn one Slack thread into a Conductor thread: the "
+            "thread's own session may hand work to worker sessions, as a code "
+            "channel's does, without the code-channel scopes. Only turns the owner "
+            "drove, only workers it created itself, one level deep, filed beside it, "
+            "never above its approval mode. By default only the owner's DM with the "
+            "app and private channels; see thread_conductor_public_channels. Off by "
+            "default. Turning it on also shows the thread's worker approval cards, "
+            "its Stop button (`!stop`) and its restart resume in Slack, all owner-only. "
+            "A missing, unreadable or malformed value reads as off. Takes effect on "
+            "the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
+    thread_conductor_public_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Conductor Threads In Public Channels",
+            "Also admit Conductor threads in public channels. Every member of such a "
+            "channel can read what the thread shows: the workers' titles, states, "
+            "PRs and CI, and their approval cards. Off by default, which keeps "
+            "Conductor threads to the owner's DM with the app and private channels "
+            "(a channel made public later stops dispatching). Has no effect while "
+            "slack.thread_conductor is off. A missing or malformed value reads as "
+            "off; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channels: bool = field(
         default=False,
         metadata=_meta(
