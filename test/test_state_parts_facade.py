@@ -157,6 +157,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
     "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
+    "_fold_head": ("function", False, False, "(self, excess: 'int') -> 'None'"),
     "_note_enqueue": ("function", False, False, "(self) -> 'None'"),
     "_pr_source_links": ("function", False, False, "(self) -> 'list[dict]'"),
     "_retry_deferred_release": ("function", False, False, "(self) -> 'int'"),
