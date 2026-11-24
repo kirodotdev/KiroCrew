@@ -1060,6 +1060,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         rescan_before_refusal,
         reset_dangling_default_agent,
         resolve_effective_agent,
+        retract_mate_agent,
         schedule_materialized_agents_refresh,
     )
     from kiro_crew.config.loader_writeback import (  # noqa: F401

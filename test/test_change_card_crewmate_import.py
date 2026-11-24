@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from pathlib import Path
 
 import change_cards_helpers
@@ -166,23 +167,32 @@ def test_both_context_builders_hand_ctx_crewmate_to_a_lifecycle_only_app(tmp_pat
     assert Permissions.from_dict({"proposeCrewmate": True}).to_dict() == {"proposeCrewmate": True}
 
 
-@pytest.mark.parametrize(
-    ("entry", "reach"),
-    [
-        ({"url": "https://mcp.example/sse"}, {"name": "s", "host": "mcp.example"}),
-        ({"command": "/usr/bin/uvx", "args": ["x"]}, {"name": "s", "command": "uvx"}),
-        (None, {"name": "s"}),
-    ],
-)
-def test_an_inherited_server_row_says_what_the_server_reaches(entry, reach, monkeypatch):
-    monkeypatch.setattr(cards, "_mcp_global_entry", lambda name: (entry is not None, entry))
-    assert cards._server_reach("s") == reach
+@pytest.mark.parametrize("kind", ["crewmate.create", "crewmate.import"])
+def test_a_template_grant_the_new_bot_never_gets_is_not_shown_or_acknowledged(
+    kind, tmp_path, monkeypatch
+):
+    import kiro_crew.config.paths as paths
+
+    # The default template runs a user server without asking, but the press
+    # writes the new Bot its own file with empty additions.
+    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: tmp_path)
+    spec = {"allowedTools": ["@slack-mcp", "@builder-mcp"]}
+    (tmp_path / f"{catalog.DEFAULT_CREWMATE_TEMPLATE}.json").write_text(json.dumps(spec))
+    state = cards._sync_read_state(kind, {"name": "Nobody Here"}, [])
+    assert state == {"exists": False}
+    if kind == "crewmate.import":
+        params = crewmate_import_params(BUNDLE)
+    else:
+        params = catalog.validate_params(kind, {"name": "Scout", "goal": "watch PRs"})
+    preview = catalog.build_preview(kind, params, state, {})
+    fields = {r.get("field") for r in preview["changes"]}
+    assert not {"auto_approve", "template_auto_approve", "import_approval"} & fields
+    assert preview["risk"] != catalog.RISK_WIDEN
 
 
 def test_import_shares_the_create_state_read_and_partial_line():
     state = cards._sync_read_state("crewmate.import", {"name": "Nobody Here"}, [])
-    assert state["exists"] is False and "inherited_auto_approve" in state
-    assert [r["name"] for r in state["inherited_reach"]] == state["inherited_auto_approve"]
+    assert state == cards._sync_read_state("crewmate.create", {"name": "Nobody Here"}, [])
     params = {"name": "Q", "goal": "g"}
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
@@ -192,6 +202,57 @@ def test_import_shares_the_create_state_read_and_partial_line():
     shown = {"name": "Q", "goal": "g", "dashboard_template": "builtin:standup"}
     line = catalog.result_summary("crewmate.import", shown, "partial", "t", failed_step=2)
     assert line.startswith("Created Bot “Q” without its dashboard or anything after it")
+
+
+@pytest.mark.parametrize("kind", ["crewmate.create", "crewmate.import"])
+def test_a_card_saved_with_template_grants_still_applies(kind, world, monkeypatch, tmp_path):
+    """A card an earlier build saved recorded the template's grants in ``before``.
+
+    Today's state read reports none, which is no change since the preview: the
+    press creates the Bot instead of answering 409 changed_since_preview.
+    """
+    store, created = CardStore(tmp_path / "c.json"), []
+    if kind == "crewmate.import":
+        params = crewmate_import_params(BUNDLE)
+    else:
+        params = catalog.validate_params(kind, {"name": "Scout", "goal": "watch PRs"})
+    reach = [{"name": "slack-mcp", "host": "slack.example"}]
+    before = {"exists": False, "inherited_auto_approve": ["slack-mcp"], "inherited_reach": reach}
+    preview = catalog.build_preview(kind, params, before, {})
+    assert preview["risk"] == catalog.RISK_WIDEN  # the card as it was saved
+    rec = store.propose(
+        slot_key=change_cards_helpers.SLOT,
+        session_key=change_cards_helpers.SK,
+        kind=kind,
+        params=params,
+        reason="",
+        preview=preview,
+        before=before,
+        context={},
+    )
+
+    async def read_state(kind_, params_, evidence, *, state, app):
+        if evidence:
+            return {"exists": bool(created), "member_id": "m1", "revision": "r1"}
+        return {"exists": False}  # today's read: no template grants
+
+    async def create(request: web.Request) -> web.Response:
+        created.append(await request.json())
+        return web.json_response({"member_id": "m1", "name": created[-1]["name"]})
+
+    async def main():
+        app = change_cards_helpers._app(world, store)
+        app.router.add_post("/api/agents", create)
+        async with TestClient(TestServer(app)) as c:
+            card = store.public(store.get(rec["id"]))
+            body = card["plan"]["apply"][0]["body"]
+            r = await c.post("/api/agents", json=body, headers=_card_headers(card))
+            return r.status, await r.text()
+
+    monkeypatch.setattr(cards, "read_state", read_state)
+    status, text = asyncio.run(main())
+    assert status == 200, text
+    assert len(created) == 1
 
 
 def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(

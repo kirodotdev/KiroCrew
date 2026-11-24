@@ -220,9 +220,14 @@ def _resolved_source_spec(source_agent: str) -> dict[str, Any]:
     return spec
 
 
-def write_mate_config(mate_id: str) -> Path:
+def write_mate_config(mate_id: str, *, unbound: bool = False) -> Path:
     """Write *mate_id*'s crewmate file as the RFC §5.4 minimal file: its identity
     and empty additions.
+
+    With *unbound* (a create that writes the file before it publishes the
+    binding), a binding of that name already in ``config.json`` refuses the
+    write with :class:`~kiro_crew.memory_stores.MemberAlreadyExists`, so the
+    create that lost the race leaves the winner's file as it is.
 
     The worker base (``kirocrew-mate-worker``) and the chat conductor
     (``kirocrew-mate-conductor``) are source-defined, so a new mate gets its
@@ -244,7 +249,7 @@ def write_mate_config(mate_id: str) -> Path:
         "skills": [],
         "resources": [],
     }
-    path = write_mate_spec(mate_id, spec)
+    path = write_mate_spec(mate_id, spec, unbound=unbound)
     logger.info("wrote minimal Bot config %s", path)
     return path
 
@@ -365,13 +370,81 @@ def _refuse_foreign_file(mate_id: str, owners: dict[str, str]) -> None:
         )
 
 
-def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
+def _refuse_bound_name(mate_id: str) -> None:
+    """Refuse when ``config.json`` on disk already binds *mate_id*. Under the owner lock.
+
+    Every other create publishes its binding before it writes the Bot's file
+    (:func:`adopt_own_file`), and that write waits on this lock, so a file
+    holding another Bot's additions always has its binding on disk by now.
+    """
+    from kiro_crew.memory_stores import MemberAlreadyExists
+
+    if _is_bound(mate_id):
+        raise MemberAlreadyExists(f"Bot {mate_id!r} was created concurrently; reload the roster")
+
+
+def _is_bound(mate_id: str) -> bool:
+    """Whether ``config.json`` or ``config.local.json`` on disk binds *mate_id*.
+
+    Fails closed: a roster that cannot be read may hold this Bot, so it raises
+    the refusal the memory provisioning gives that roster
+    (:class:`~kiro_crew.memory_stores.UnknownMemoryStore`).
+    """
+    from kiro_crew.config.loader import (
+        ConfigReadError,
+        config_local_path,
+        config_path,
+        read_config_for_update,
+    )
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    for path in (config_path(), config_local_path()):
+        try:
+            agents = read_config_for_update(path).get("agents", {})
+        except ConfigReadError as exc:
+            raise UnknownMemoryStore("agent or memory store configuration is unreadable") from exc
+        if not isinstance(agents, dict):
+            raise UnknownMemoryStore("agent or memory store configuration is unreadable")
+        if mate_id in agents:
+            return True
+    return False
+
+
+def discard_unbound_mate_config(mate_id: str) -> None:
+    """Remove the file a create wrote for *mate_id* whose binding did not land.
+
+    Under the owner lock: the file, this instance's owner entry and the dispatch
+    snapshot entry go, unless ``config.json`` binds the name by now (another
+    create won it) or cannot be read. Best effort: a failure is logged, and the
+    create's own refusal stands.
+    """
+    from kiro_crew.config.loader import retract_mate_agent
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    try:
+        with _owners_lock():
+            owners = _read_owners()
+            if owners.get(mate_id) not in (None, _this_home()) or _is_bound(mate_id):
+                return
+            mate_config_path(mate_id).unlink(missing_ok=True)
+            if owners.pop(mate_id, None) is not None:
+                atomic_write(
+                    _owners_path(), json.dumps(owners, indent=2, sort_keys=True) + "\n", mode=0o600
+                )
+    except (OSError, MateConfigError, UnknownMemoryStore) as exc:
+        logger.warning("could not remove the unpublished Bot file %r: %s", mate_id, exc)
+        return
+    retract_mate_agent(mate_id)
+
+
+def write_mate_spec(mate_id: str, spec: dict[str, Any], *, unbound: bool = False) -> Path:
     """Write *spec* as *mate_id*'s crewmate file and publish it to the dispatch snapshot.
 
     The one writer of every creation path. Publishing in the same call puts the
     next chat on the conductor (:func:`kiro_crew.mate_worker.is_mate_owned_agent`
     reads the snapshot). Atomic at ``0o600``; refuses another instance's file
-    (:func:`_refuse_foreign_file`).
+    (:func:`_refuse_foreign_file`), and with *unbound* refuses a name
+    ``config.json`` already binds (:func:`write_mate_config`).
     """
     from kiro_crew.config.loader import publish_mate_agents
     from kiro_crew.mate_worker import drop_partial_platform_servers
@@ -390,6 +463,8 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
         with _owners_lock():
             owners = _read_owners()
             _refuse_foreign_file(mate_id, owners)
+            if unbound:
+                _refuse_bound_name(mate_id)
             atomic_write(path, json.dumps(spec, indent=2), fsync=True, mode=0o600)
             if owners.get(mate_id) != _this_home():
                 owners[mate_id] = _this_home()

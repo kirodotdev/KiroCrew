@@ -494,9 +494,10 @@ def build_preview(
             out["changes"].append({"field": "model", "label": "Model", "after": model})
         inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
         if inherited:
-            # The crewmate runs these without asking from its first turn; the
-            # click grants that, so the card says so and asks for the same
-            # acknowledgement any other widening change does.
+            # Only a card stored by an earlier build has these: today's state
+            # read reports none, since a new Bot gets its own file and no
+            # template grants. Kept so such a card rebuilds to the plan it
+            # stored and keeps its history and Undo.
             out["changes"].append(
                 {
                     "field": "auto_approve",
@@ -1459,7 +1460,8 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
     # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
     inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
     # ``import_approval`` only when a row of inherited grants follows: its
-    # hint says the crewmate asks like the owner's other crewmates do.
+    # hint says the crewmate asks like the owner's other crewmates do. Only a
+    # card stored by an earlier build has inherited grants (as crewmate.create).
     mode = "import_approval" if inherited else "approval_mode"
     changes.append({"field": mode, "label": "Approval", "after": "normal"})
     if inherited:  # granted by the template, so the press widens (as crewmate.create)

@@ -489,19 +489,6 @@ def test_crewmate_update_arms_an_approval_mode_write_against_a_newer_permission(
     assert body == {"description": "new"}
 
 
-def test_template_auto_approved_servers_reads_bare_grants_only(tmp_path, monkeypatch):
-    import kiro_crew.config.paths as paths
-
-    monkeypatch.setattr(paths, "kiro_agents_dir", lambda: tmp_path)
-    (tmp_path / "tpl.json").write_text(
-        json.dumps(
-            {"allowedTools": ["@slack-mcp", "@kirocrew-core", "@builder-mcp/read", "fs_read", "@"]}
-        )
-    )
-    assert cards.template_auto_approved_servers("tpl") == ["slack-mcp"]
-    assert cards.template_auto_approved_servers("missing") == []
-
-
 def test_undo_restores_the_prior_state_and_says_when_it_cannot():
     p = {"path": "chat.verbosity", "value": "ultra-brief"}
     undo, _ = catalog.build_undo("setting.change", p, {"value": "standard"}, [{}], 1)

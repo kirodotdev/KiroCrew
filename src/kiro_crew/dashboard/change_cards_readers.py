@@ -20,10 +20,8 @@ import copy
 import hashlib
 import hmac
 import json
-import os
 import re
 import time
-import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
@@ -40,30 +38,6 @@ from kiro_crew.dashboard.change_cards_settings import (
     read_setting_value,
     resolve_setting,
 )
-
-
-def template_auto_approved_servers(template: str) -> list[str]:
-    """The user-installed MCP servers *template* runs without asking, sorted.
-
-    A new crewmate is bound to the template, so it inherits each bare
-    ``@server`` grant in the template's ``allowedTools`` (already narrowed by the
-    governance ceiling when the spec was written). Kiro Crew's own managed
-    servers are left out: they are the product's own tools, not a connection
-    the user installed. Unreadable specs report none.
-    """
-    from kiro_crew.config.paths import kiro_agents_dir
-
-    try:
-        spec = json.loads((kiro_agents_dir() / f"{template}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    allowed = spec.get("allowedTools") if isinstance(spec, dict) else None
-    servers = {
-        ref[1:]
-        for ref in allowed or ()
-        if isinstance(ref, str) and ref.startswith("@") and "/" not in ref and len(ref) > 1
-    }
-    return sorted(s for s in servers if not s.startswith("kirocrew"))
 
 
 def _crewmate_key(name: str) -> str:
@@ -216,18 +190,6 @@ def _mcp_global_entry(name: str) -> tuple[bool, dict[str, Any] | None]:
 
     known = {s.name for s in list_servers()}
     return (name in known), None
-
-
-def _server_reach(name: str) -> dict[str, str]:
-    """What MCP server *name* reaches, for a card row: a URL's host or a command's name."""
-    _exists, entry = _mcp_global_entry(name)
-    entry = entry or {}
-    if isinstance(entry.get("url"), str):
-        host = urllib.parse.urlsplit(entry["url"]).hostname or ""
-        return {"name": name, "host": host} if host else {"name": name}
-    if isinstance(entry.get("command"), str) and entry["command"].strip():
-        return {"name": name, "command": os.path.basename(entry["command"].strip())}
-    return {"name": name}
 
 
 def _mcp_exists(name: str) -> bool:
@@ -477,6 +439,12 @@ def comparable_state(kind: str, state: Any) -> Any:
             # Which goals each one serves is part of what a card changes.
             out["links"] = [sorted(r.get("goal_ids") or []) for r in records if isinstance(r, dict)]
         return out
+    if kind in catalog.CREWMATE_CREATING_KINDS and isinstance(state, dict):
+        # A card saved by an earlier build recorded the template's grants. The
+        # state read reports none, so a difference in them is no conflict.
+        return {
+            k: v for k, v in state.items() if k not in ("inherited_auto_approve", "inherited_reach")
+        }
     return state
 
 
@@ -735,11 +703,10 @@ def _sync_read_state(
             taken = taken or any(
                 getattr(a, "display_name", "") == p["name"] for a in agents.values()
             )
-            inherited = template_auto_approved_servers(catalog.DEFAULT_CREWMATE_TEMPLATE)
-            out = {"exists": bool(taken), "inherited_auto_approve": inherited}
-            if kind == catalog.KIND_CREWMATE_IMPORT:
-                out["inherited_reach"] = [_server_reach(name) for name in inherited]
-            return out
+            # No template grant is read: the press writes the new Bot its own
+            # file with empty additions (``mate_config.write_mate_config``), so
+            # nothing it would run without asking comes from a template.
+            return {"exists": bool(taken)}
         agent = agents.get(p["name"])
         if agent is None:
             return {"exists": False}

@@ -237,7 +237,8 @@ class TestExplicitTemplateStillWorks:
         )
         assert status == 200
         assert data["ok"] is True
-        assert cfg.written["doc"]["agents"]["researcher"]["kiro_agent"] == "kirocrew"
+        # Published already bound to its own file, never to the template.
+        assert cfg.written["doc"]["agents"]["researcher"]["kiro_agent"] == "researcher"
         assert cfg.written["doc"]["agents"]["researcher"]["workspace"] == "research"
         # Naming a workspace is a reuse: stored as given, no entry of its own.
         assert "workspaces" not in cfg.written["doc"]
@@ -270,6 +271,176 @@ class TestExplicitTemplateStillWorks:
         assert cfg.saved == []
 
     @pytest.mark.asyncio
+    async def test_an_own_file_that_cannot_be_written_refuses_the_create(self, monkeypatch):
+        """No Bot is published bound to its template, so none runs the template's grants."""
+        from kiro_crew.mate_config import MateConfigError
+
+        def _refuse(name, **_kw):
+            raise MateConfigError(f"could not write Bot config for {name!r}")
+
+        monkeypatch.setattr("kiro_crew.mate_config.write_mate_config", _refuse)
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert (status, data.get("code")) == (409, "bot_config_unwritable")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_name_clash_that_appears_after_the_first_check_refuses_the_create(
+        self, monkeypatch
+    ):
+        """A user-level agent of the Bot's name would win over its own file, so the
+        create is refused, never published on its template or on that agent."""
+        calls: list[str] = []
+
+        def _named(name):
+            calls.append(name)
+            return len(calls) > 1  # absent at the first check, there at the write
+
+        written: list[str] = []
+        monkeypatch.setattr("kiro_crew.mate_config.user_agent_named", _named)
+        monkeypatch.setattr(
+            "kiro_crew.mate_config.write_mate_config", lambda name, **_kw: written.append(name)
+        )
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert (status, data.get("code")) == (409, "template_name_in_use")
+        assert len(calls) == 2 and written == [] and cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_bot_published_after_the_first_check_keeps_its_file(
+        self, monkeypatch, tmp_path
+    ):
+        """Another create of the name publishes first and the owner edits its file:
+        this create answers 409 agent_exists and leaves that file as it is."""
+        from kiro_crew.config import loader as config_loader
+        from kiro_crew.config import paths as paths_mod
+
+        mates = tmp_path / "kiro" / "mates" / "agents"
+        mates.mkdir(parents=True)
+        monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: mates)
+        edited = '{"name": "release-bot", "prompt": "the owner\'s edit"}'
+        (mates / "release-bot.json").write_text(edited)
+        config = tmp_path / "config.json"
+        config.write_text('{"agents": {"release-bot": {"kiro_agent": "release-bot"}}}')
+        monkeypatch.setattr(config_loader, "config_path", lambda: config)
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert (status, data.get("code")) == (409, "agent_exists")
+        assert (mates / "release-bot.json").read_text() == edited and cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_create_that_fails_after_the_write_removes_the_bot_file(
+        self, monkeypatch, tmp_path
+    ):
+        """The binding never lands, so the file, its owner entry and its snapshot
+        entry written ahead of it go too."""
+        import json
+
+        from kiro_crew.config import loader as config_loader
+        from kiro_crew.config import loader_snapshots
+        from kiro_crew.config import paths as paths_mod
+        from kiro_crew.member_workspace import MemberWorkspaceUnavailable
+
+        mates = tmp_path / "kiro" / "mates" / "agents"
+        monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: mates)
+        config = tmp_path / "config.json"
+        config.write_text('{"agents": {}}')
+        monkeypatch.setattr(config_loader, "config_path", lambda: config)
+        published: list[bool] = []
+        real_publish = config_loader.publish_mate_agents
+
+        def _publish(names):
+            real_publish(names)
+            published.append("release-bot" in loader_snapshots._MATERIALIZED_MATE_ONLY)
+
+        def _refuse(cfg, name):
+            raise MemberWorkspaceUnavailable("workspace_unavailable", "no directory")
+
+        monkeypatch.setattr(config_loader, "publish_mate_agents", _publish)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.provision_member_workspace", _refuse
+        )
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"}, cfg, installed=("kirocrew",)
+        )
+        assert (status, data.get("code")) == (409, "workspace_unavailable")
+        assert published == [True]
+        assert not (mates / "release-bot.json").exists()
+        owners = json.loads((mates.parent / "owners.json").read_text())
+        assert "release-bot" not in owners
+        assert "release-bot" not in loader_snapshots._MATERIALIZED_MATE_ONLY
+
+    @pytest.mark.asyncio
+    async def test_a_create_cancelled_during_the_write_removes_the_bot_file(
+        self, monkeypatch, tmp_path
+    ):
+        """A shutdown cancels the request while the file is being written: the
+        write finishes, the cancellation follows, and what it wrote still goes."""
+        import asyncio
+        import json
+        import sys
+        import threading
+
+        from kiro_crew import mate_config
+        from kiro_crew.config import loader as config_loader
+        from kiro_crew.config import loader_snapshots
+        from kiro_crew.config import paths as paths_mod
+        from kiro_crew.testing.wait import async_wait_until
+
+        mates = tmp_path / "kiro" / "mates" / "agents"
+        monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: mates)
+        config = tmp_path / "config.json"
+        config.write_text('{"agents": {}}')
+        monkeypatch.setattr(config_loader, "config_path", lambda: config)
+        started, release, wrote = threading.Event(), threading.Event(), []
+        real_write = mate_config.write_mate_config
+
+        def _slow_write(name, **kw):
+            started.set()
+            release.wait(10)
+            wrote.append(real_write(name, **kw))
+            return wrote[-1]
+
+        monkeypatch.setattr(mate_config, "write_mate_config", _slow_write)
+        handlers: list[asyncio.Task] = []
+        real_make_app = _make_app
+
+        def _app_recording_the_handler():
+            @web.middleware
+            async def _record(request, handler):
+                handlers.append(asyncio.current_task())
+                return await handler(request)
+
+            app = real_make_app()
+            app.middlewares.append(_record)
+            return app
+
+        monkeypatch.setattr(sys.modules[__name__], "_make_app", _app_recording_the_handler)
+        post = asyncio.ensure_future(
+            _post({"name": "release-bot", "kiro_agent": "kirocrew"}, _fake_config(), ("kirocrew",))
+        )
+        await async_wait_until(started.is_set)
+        handlers[0].cancel()
+        release.set()
+        with pytest.raises(BaseException):
+            await post
+        for _ in range(200):
+            if handlers[0].done():
+                break
+            await asyncio.sleep(0.05)
+        assert handlers[0].cancelled() and wrote  # the write landed before the cancel
+        assert not (mates / "release-bot.json").exists()
+        assert "release-bot" not in json.loads((mates.parent / "owners.json").read_text())
+        assert "release-bot" not in loader_snapshots._MATERIALIZED_MATE_ONLY
+
+    @pytest.mark.asyncio
     async def test_listed_template_creates_without_warning(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):
@@ -290,7 +461,7 @@ class TestMissingTemplateWarnsButCreates:
             status, _ = await _post({"name": "crew-c", "kiro_agent": "kirocrew"}, cfg, installed=())
         # Accepted (an edition may resolve it even when unlisted)…
         assert status == 200
-        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "kirocrew"
+        assert cfg.written["doc"]["agents"]["crew-c"]["kiro_agent"] == "crew-c"
         # …but the substitution risk is on the record rather than silent.
         assert "not in the installed agent listing" in caplog.text
         assert "'kirocrew'" in caplog.text
