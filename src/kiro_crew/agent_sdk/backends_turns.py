@@ -514,13 +514,14 @@ ACP_BACKENDS_SENT_IMAGE_RECORD = frozenset(
 # ``acp_frames/codex/compact-live.jsonl``, and claude's standard ACP
 # ``compaction_update``).
 #
-# Its one reader is the reply-format rules block (``build_message`` in
-# ``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
-# in the set the block is bound as the provider's delivery envelope, so the
-# engine is sent it once per conversation and again after a compaction; outside
-# it, and on a harness that is not known, it is sent on every message, so a
-# compaction the harness ran on its own can never leave a conversation without
-# the rules (harness-parity H6).
+# Its one reader is the send-once binding in ``build_message``
+# (``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
+# in the set the reply-format rules block and the ``[RUNTIME]`` and ``[PROJECT]``
+# lines are bound as the provider's delivery envelopes, so the engine is sent
+# each once per conversation and again after a compaction; outside it, and on a
+# harness that is not known, they are sent on every message, so a compaction the
+# harness ran on its own can never leave a conversation without them
+# (harness-parity H6).
 ACP_BACKENDS_COMPACTION_REPORTED = ACP_BACKENDS_SENT_IMAGE_RECORD
 
 # How long each backend's provider keeps a conversation's prompt prefix cached

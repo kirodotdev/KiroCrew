@@ -698,10 +698,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "silent compaction dropped would be withheld"
     ),
     "ACP_BACKENDS_COMPACTION_REPORTED": (
-        "whether the engine is sent the reply-format rules once per conversation and "
-        "again after a compaction, or with every message. The model has the rules "
-        "either way; outside the set each message carries one more copy, and a wrong "
-        "membership is a defect -- rules a silent compaction dropped would not return"
+        "whether the engine is sent the reply-format rules and the unchanged [RUNTIME] "
+        "and [PROJECT] lines once per conversation and again after a compaction, or "
+        "with every message. The model has them either way; outside the set each "
+        "message carries one more copy, and a wrong membership is a defect -- rules "
+        "a silent compaction dropped would not return"
     ),
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
         "what answers a full context on a harness Crew cannot hand /compact to. The "

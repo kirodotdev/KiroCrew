@@ -192,7 +192,12 @@ def build_message(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew import session_head as _session_head
     from kiro_crew.agent_sdk import context_provider_of
-    from kiro_crew.essential_delivery import RULES_SLOT, EssentialDelivery
+    from kiro_crew.essential_delivery import (
+        PROJECT_SLOT,
+        RULES_SLOT,
+        RUNTIME_SLOT,
+        EssentialDelivery,
+    )
 
     # Before any blocking step: a build its cancelled turn left running on the
     # worker must not read after the session's next turn has.
@@ -667,8 +672,11 @@ def build_message(
     # The stable session key describes conversation identity, not
     # necessarily the interface carrying this turn: refresh the runtime on
     # every follow-up from trusted dispatcher metadata.
+    _runtime_line = ""
     if not is_new_session and runtime_source:
-        parts.extend(_sections.runtime_refresh_blocks(session_key or "", runtime_source))
+        _runtime_blocks = _sections.runtime_refresh_blocks(session_key or "", runtime_source)
+        _runtime_line = _runtime_blocks[0]
+        parts.extend(_runtime_blocks)
 
     # A live model switch keeps the conversation, so the session-start
     # [ACTIVE MODEL] fact goes stale; every follow-up names the model serving
@@ -1267,6 +1275,7 @@ def build_message(
                 _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
             ),
         )
+    _bound_slots: set[str] = set()
     if (
         delivery is not None
         and context_provider is not None
@@ -1283,23 +1292,45 @@ def build_message(
         # anything the delivery knows can drop it (a start, a clear, a
         # compaction, an agent switch, a cancel, a failed turn, another
         # conversation). It has its own slot, beside a member's essentials, so a
-        # member turn is sent it once per conversation too.
+        # member turn is sent it once per conversation too. The [RUNTIME] and
+        # [PROJECT] lines name this turn's surface and project; each is bound in
+        # its own slot the same way, so a changed line has another digest and
+        # goes out.
+        _once_lines = (
+            (RULES_SLOT, _rules_block),
+            (RUNTIME_SLOT, _runtime_line),
+            (
+                PROJECT_SLOT,
+                _turn.project_line(
+                    project=project, context_groups=context_groups, session_key=session_key
+                ),
+            ),
+        )
         try:
-            delivery.bind(
-                _rules_block.translate(ctx._MULTIBYTE_TABLE),
-                scope=("reply-format-rules", session_key),
-                incarnation=context_provider.context_incarnation,
-                # The one event the delivery cannot see: a compaction in a turn
-                # the agent started on its own. That turn is read with
-                # ``stream_unsolicited``, which sends no prompt and so passes no
-                # delivery stream; its compaction reaches only the session's
-                # re-injection flag. The flag is also set for compactions the
-                # delivery did see, where it finds nothing left to void.
-                force=needs_reinjection,
-                slot=RULES_SLOT,
-            )
+            _incarnation = context_provider.context_incarnation
+            for _slot, _line in _once_lines:
+                if _line:
+                    delivery.bind(
+                        _line.translate(ctx._MULTIBYTE_TABLE),
+                        scope=(_slot, session_key),
+                        incarnation=_incarnation,
+                        # The one event the delivery cannot see: a compaction in a
+                        # turn the agent started on its own. That turn is read with
+                        # ``stream_unsolicited``, which sends no prompt and so
+                        # passes no delivery stream; its compaction reaches only
+                        # the session's re-injection flag. The flag is also set for
+                        # compactions the delivery did see, where it finds nothing
+                        # left to void.
+                        force=needs_reinjection,
+                        slot=_slot,
+                    )
+                    _bound_slots.add(_slot)
         except Exception:  # noqa: BLE001 - a saving must never fail the build
             # Nothing was bound (the provider could not name its conversation),
-            # so the block this message carries goes out as it is.
-            logger.debug("Reply-format rules not bound to the delivery", exc_info=True)
+            # so the blocks this message carries go out as they are.
+            logger.debug("Send-once blocks not bound to the delivery", exc_info=True)
+    if delivery is not None:
+        # A line this build did not bind goes out as built, never stripped by an
+        # earlier build's candidate (a turn that is not interactive, say).
+        delivery.withdraw(*({RUNTIME_SLOT, PROJECT_SLOT} - _bound_slots))
     return final, hook_result
