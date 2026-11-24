@@ -284,6 +284,7 @@ async def _inject_with_retry(
     reply.
     """
     from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+    from kiro_crew.session_directive import strip_quoted_markers
 
     refusals: list[str] = []
     _refuse_person_only = person_only_directive_refuser(parent_key, refusals)
@@ -317,7 +318,8 @@ async def _inject_with_retry(
                 # Per-interaction telemetry, as every landed-turn engine
                 # reports it: the parent ran a model turn on the report.
                 record_interaction_event(client, parent_key, "subagent_report")
-            return "\n\n".join([*refusals, response])
+            # A directive tool result the reply quotes is protocol, not reply text.
+            return "\n\n".join([*refusals, strip_quoted_markers(response)])
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.
             # Reset session + notify, same as TimeoutError path.

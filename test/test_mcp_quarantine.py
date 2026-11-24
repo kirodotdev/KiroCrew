@@ -847,6 +847,18 @@ class TestAnnotation:
         mcp_quarantine.record_verdicts(mcp_mod._quarantine_verdicts(proven))
         assert mcp_quarantine.state_for("srv") is None
 
+    def test_an_answered_refusal_never_quarantines(self, store):
+        """A server that starts and answers the handshake with an error (signed
+        out, say) is not wedging, so it keeps being probed and recovers by
+        itself once the cause is fixed."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        refused = [{"name": "srv", "status": "error", "error": "HTTP 307", "probeMode": "refused"}]
+        for _ in range(5):
+            mcp_quarantine.record_verdicts(mcp_mod._quarantine_verdicts(refused))
+        assert _failing() == set()
+        assert mcp_quarantine.state_for("srv") is None
+
 
 class TestShutdownRounds:
     @pytest.fixture

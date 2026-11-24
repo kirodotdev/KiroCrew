@@ -80,7 +80,7 @@ export type McpManagedServer = {
   // enables only servers nobody chose for, so it never re-enables this one.
   // Optional: an older gateway does not send it.
   declined?: boolean
-  // The operator's answer to "does it work on the project's files?" (null when
+  // The operator's answer to "share this server across chats?" (null when
   // unanswered), and whether it is Kiro Crew's own server, shared without asking.
   // Optional: an older gateway does not send them.
   cwd_use?: McpCwdUse | null
@@ -190,7 +190,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
     mcpGatewayLaunchPreviews: (names: string[]) => post('/api/mcp-gateway/servers/launch', { names }).then(j) as Promise<{ launches: Record<string, { name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>; errors: Record<string, string> }>,
     mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, cwdUse?: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...(cwdUse ? { cwd_use: cwdUse } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
-    // Records the answer to "does this server work on the project's files?" alone.
+    // Records the answer to "share this server across chats?" alone.
     mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; restart_required?: boolean }>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per

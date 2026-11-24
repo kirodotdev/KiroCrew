@@ -105,6 +105,12 @@ def _is_data_home(raw: str) -> bool:
         folder = os.path.realpath(os.path.join(home, os.path.expanduser(raw)))
     except ValueError:  # an embedded NUL: not resolvable, so not the data home
         return False
+    except OSError:
+        # Windows resolves by opening the path, so a folder on a share that does not
+        # answer raises (WinError 64). It is not judged here: the runtime resolves it
+        # again at use (`usable_workspace_dir_from_entry`) and does not use a folder it
+        # cannot judge, so keeping the archive's config grants nothing.
+        return False
     return os.path.normcase(folder) == os.path.normcase(home)
 
 

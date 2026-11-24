@@ -127,6 +127,8 @@ const NOTICE_FAMILIES = {
   eager_spawn_stopped: { role: 'error', card: 'error' },
   turn_failed_before_start: { role: 'error', card: 'error' },
   local_command_failed_before_start: { role: 'error', card: 'error' },
+  permission_auto_rejected_stranded: { role: 'notice', card: 'notice', tone: 'blocked' },
+  permission_auto_rejected_no_security_context: { role: 'notice', card: 'notice', tone: 'blocked' },
   turn_timeout: { role: 'error', card: 'error' },
   turn_timeout_native_pending: { role: 'error', card: 'error' },
   background_turn_abandoned: { role: 'error', card: 'error' },
@@ -228,6 +230,8 @@ const COPY_KEY = {
   eager_spawn_stopped: 'pages.chat.gatewayNotice.eager_spawn_stopped',
   turn_failed_before_start: 'pages.chat.gatewayNotice.turn_failed_before_start',
   local_command_failed_before_start: 'pages.chat.gatewayNotice.local_command_failed_before_start',
+  permission_auto_rejected_stranded: 'pages.chat.gatewayNotice.permission_auto_rejected_stranded',
+  permission_auto_rejected_no_security_context: 'pages.chat.gatewayNotice.permission_auto_rejected_no_security_context',
   turn_timeout: 'pages.chat.gatewayNotice.turn_timeout',
   turn_timeout_native_pending: 'pages.chat.gatewayNotice.turn_timeout_native_pending',
   background_turn_abandoned: 'pages.chat.gatewayNotice.background_turn_abandoned',
@@ -606,6 +610,14 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? `(?<command>.+?)` failed\. The gateway log has the details\.$/u,
     token: 'local_command_failed_before_start',
+  },
+  {
+    re: /^permission auto-rejected \(stranded between turns\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_stranded',
+  },
+  {
+    re: /^permission auto-rejected \(missing security context\): (?<tool>[\s\S]*)$/u,
+    token: 'permission_auto_rejected_no_security_context',
   },
   {
     re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit and was stopped\. Work already written to disk is still there — nothing was rolled back\. Send a message to continue from where it stopped\.(?<hint>.*)$/u,

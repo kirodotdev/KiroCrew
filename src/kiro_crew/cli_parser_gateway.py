@@ -271,7 +271,21 @@ def register_service_parser(sub: _Commands) -> None:
     # auto-restarts on crash, and auto-starts on boot.
     svc_parser = cli_help.add_command(sub, "service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
-    svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
+    install = svc_sub.add_parser(
+        "install", help="Install and start the gateway service (sudo on Linux)"
+    )
+    # No default mode: with neither flag the install keeps what the installed
+    # service already starts with (service.controller.install_service).
+    install.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Start the service's gateway with `gateway --headless`: no dashboard, "
+            "loopback only. Kept by a later `service install` run without the flag; "
+            "--no-headless installs the service with the dashboard again."
+        ),
+    )
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
 

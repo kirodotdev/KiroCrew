@@ -170,6 +170,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _git_options_before_terminator,
         _git_remote_candidates,
         _git_remote_targets_self,
+        _git_remote_word_dials_self,
         _git_rewritten_remotes_dial_self,
         _git_tar_read,
         _git_tar_verbs,
@@ -386,13 +387,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BRACE_GROUP_RE,
         _BRACE_RANGE_RE,
         _EXPANSION_DEFAULT_RE,
+        _GIT_WORD,
         _HOSTNAME_SUBSTITUTION_HINTS,
         _HOSTNAME_VARIABLE_FORMS,
         _LITERAL_HOSTS,
+        _URI_SCHEMES,
         _arith_int_literal_repl,
         _brace_alternatives,
         _brace_expansions,
         _operand_targets_self,
+        _windows_name_is_host,
     )
     from kiro_crew.security.argv_floor_tar import (  # noqa: F401
         _GLOB_WORDS,
@@ -440,6 +444,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decoded_b64_literal_sources,
         _has_self_importing_inline_program,
     )
+    from kiro_crew.security.self_kill_windows import _windows_self_kill  # noqa: F401
     from kiro_crew.security.shell_commands import (  # noqa: F401
         _double_quoted_substitution_bodies,
         _heredoc_body_substitutions,

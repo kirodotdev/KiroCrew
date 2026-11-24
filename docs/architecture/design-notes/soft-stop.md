@@ -449,6 +449,13 @@ so at that moment `recent()` holds only prior turns and the latest user entry is
 cancelled one. It is consumed one-shot on the first prompt after a cancel, so
 subsequent prompts see only the normal ACP-held conversation.
 
+The dashboard also hands it the prompt's history replay (`replay=`). A cold start
+rebuilds the replay from the same transcript, and a Stop on a fresh chat's first turn
+leaves the first-turn history debt armed, so that replay can already hold the stopped
+request as a `User:` row. The restore then returns `""`: the request reaches the model
+once, through the replay, and the stop note in the session context still says the turn
+was stopped. A replay whose budget dropped the request row keeps the restore.
+
 A mid-turn steer is a `user` row marked `meta.steer`: it was injected into the
 running turn and did not open it. When the newest user row before the marker is a
 steer, the request is the plain `user` row before it, and each steer the turn took

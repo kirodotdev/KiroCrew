@@ -80,6 +80,7 @@ import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
+import type { QueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 
 /**
  * The main composer, with its callback props held at stable identities. This
@@ -282,6 +283,7 @@ interface ComposerDockViewProps {
   isAtBottom: boolean
   answerQuestionCard: (text: string) => void
   handleCancelQueued: (queueId: string) => void
+  handleCancelAllQueued: QueuedMessageActions['onCancelAll']
   handleEditQueued: (queueId: string, content: string) => void
   handleEditOpenQueued: (queueId: string, open: boolean) => void
   handleInterruptQueued: (queueId: string) => void
@@ -359,7 +361,7 @@ export default function ComposerDockView({
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, approveForMe, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
-  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
+  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleCancelAllQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentPickerKept = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
@@ -480,7 +482,7 @@ export default function ComposerDockView({
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
-              <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
+              <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onCancelAll={handleCancelAllQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
               <div ref={inputAreaRef} className="relative z-10 dock-inert">

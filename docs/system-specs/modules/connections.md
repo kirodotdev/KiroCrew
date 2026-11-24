@@ -1435,8 +1435,12 @@ drop the parameter to save the extra screen.
 **Which backend can use it.** The client reaches a chat's sign-in only through
 the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 (`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
-`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
-schema with no slot for it (#27711). A pre-registered provider's Connect
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS engines before 0.66.104 had
+no slot for it (#27711); from 0.66.104 KAS takes a public client's `clientId` and
+`redirectUri`, but Crew withholds a block that names a `clientSecret` on every
+engine (`kas_engine_features.carry_oauth`), and every pre-registered provider is
+confidential. KAS joins the set once Crew sends the secret through
+`_kiro/mcp/oauth/setClientSecret` (#41723). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
 chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`
@@ -1674,6 +1678,9 @@ a pending sign-in (constant-time) is the only admission, each `state` answers
 once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
 HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
 echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Both loopback listeners (the shared port and a consent's own port) answer with
+the same titled page (`crew_oauth_dcr.titled_page`), so the tab reads the same
+wherever the vendor sends the browser back.
 A callback that carries an `error`, or no `code`, is a refusal, even beside a
 code: `crew_oauth.callback_refusal` maps the `error` value onto the closed RFC
 6749 §4.1.2.1 set (`callback_access_denied`, `callback_invalid_request`,

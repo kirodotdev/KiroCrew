@@ -754,6 +754,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # duplicating older history. Flag lives on the session (set by
         # SessionManager.stop_turn), consumed one-shot here. Use getattr
         # for prev_turn_cancelled so test doubles don't raise on access.
+        # A cold start's replay (the first-turn debt stays armed after a
+        # cancel) is built from the transcript and already holds the stopped
+        # turn, so the preamble is built against the replay and left out when
+        # the replay carries the stopped request.
         _session = getattr(state.sessions, "_sessions", {}).get(session_key)
         if _session is not None and getattr(_session, "prev_turn_cancelled", False):
             _session.prev_turn_cancelled = False
@@ -770,6 +774,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,
                     state.context_builder.conversation_log,
                     session_key,
+                    replay=compressed or "",
                 )
                 if preamble:
                     message = preamble + "\n\n" + message

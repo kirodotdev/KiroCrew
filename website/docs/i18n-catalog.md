@@ -369,6 +369,16 @@ both maps, keys in `en.manual.json` whose English matches the note's, and the el
 translations. The spec is `docs/system-specs/modules/app-notifications.md`
 § Localized copy.
 
+A Discover editorial card's curator copy follows it too: the published editorial
+document keeps one English title and blurb per card, and
+`components/appstore/editorialCopy.ts` maps each one's exact English to a key under
+`components.appstore.editorialCopy`. A card is translated only when the table knows
+every field it carries; otherwise it renders as published, so a reworded field never
+shows a stale translation. When the catalog publishes a new collection or rewords
+one, add its English to `EDITORIAL_COPY_KEY`, the keys to `en.manual.json` with the
+same English, and the eleven translations. The decision is
+`docs/decisions/2026-11-23-a-discover-cards-curator-copy-reads-in-the-dashboard-language-when-known.md`.
+
 ## Formatting follows the app language, not the browser
 
 `d.toLocaleDateString()`, `d.toLocaleDateString([])` and

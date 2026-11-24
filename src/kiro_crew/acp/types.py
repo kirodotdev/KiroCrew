@@ -356,7 +356,7 @@ METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: entry comes from a passive attempt whose listener is already closed.
 METHOD_KAS_MCP_RESET_SERVER = "_kiro/mcp/resetServer"
 #: Engine -> client request carrying the consent URL of that sign-in. It names
-#: neither the session nor the server.
+#: no session; a mid-session one (``kas_mcp_lazy_sign_in``) names its server.
 METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 #: KAS's spelling of ``elicitation/create``: the engine turns an MCP server's
 #: elicitation around as this server->client request, with the elicitation
@@ -1141,6 +1141,7 @@ class AcpEvent:
     # Owning sub-agent session id (EVENT_SUBAGENT_ACTIVITY) — ties a tool call
     # to a specific native sub-agent card.
     sub_session_id: str = ""
+    auto_reject_reason: str = ""  #: an ``AUTO_REJECT_*`` on an auto-rejected ``Blocked:`` notice
     # Agent TODO-list snapshot (EVENT_TODO_UPDATE) — normalised
     # {description, tasks:[{id,text,completed}]}. Every todo_list command
     # returns the WHOLE list, so this is a full snapshot, never a delta.

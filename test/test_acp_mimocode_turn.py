@@ -883,12 +883,13 @@ def test_always_true_without_recorded_options_falls_back_to_the_offered_once(
     assert _options(written) == [(0, "once")]
 
 
-def test_an_unarmed_opencode_session_sends_its_always_option(tmp_path, monkeypatch) -> None:
-    """Control: the downgrade is the tripwire's alone."""
+def test_an_unarmed_opencode_session_still_sends_once(tmp_path, monkeypatch) -> None:
+    """opencode is answered once without the tripwire too: its allow-always would stop
+    it asking about the calls the spec allowlist rows judge."""
     client, written = _asked_client(tmp_path, monkeypatch, ACP_BACKEND_OPENCODE, armed=False)
     assert client._unasked_shell_tripwire is False
     assert _run(client.approve_tool(0, always=True)) is True
-    assert _options(written) == [(0, "always")]
+    assert _options(written) == [(0, "once")]
 
 
 def test_a_mimocode_session_without_the_tripwire_sends_its_always_option(

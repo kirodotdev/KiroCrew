@@ -581,6 +581,8 @@ def _restart_through_the_service(capsys) -> list[str]:
             "kiro_crew.cli_server.service_controller.restart_service",
             side_effect=_restart_service,
         ),
+        # The real read asks the host's service manager.
+        patch("kiro_crew.cli_server.service_controller.restarted_headless", return_value=False),
         patch("kiro_crew.cli_server._print_token_url"),
     ):
         cli_server._restart(None)

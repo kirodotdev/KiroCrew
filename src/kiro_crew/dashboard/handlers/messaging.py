@@ -725,13 +725,10 @@ async def api_send_message(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"target_channel={target_channel}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {
-                "error": f"channel {target_channel} not in tracked channels. "
-                "Add it to config.json: "
-                f'{{"slack": {{"tracking_channels": [{{"channel_id": "{target_channel}"}}]}}}}. '
-                "Then restart the gateway."
-            },
+            {"error": untracked_channel_error(target_channel), "code": "channel_not_tracked"},
             status=403,
         )
 

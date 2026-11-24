@@ -57,7 +57,10 @@ def card_only(op: str, op_args: dict[str, Any]) -> bool:
 
 #: Ops that open or move around a page without pressing anything on it. A host
 #: "read" grant covers them on that host, beside :data:`READ_ONLY_OPS`.
-_OPEN_OPS = frozenset({"navigate", "scroll"})
+#: ``set_appearance`` and ``resize`` are here: like ``scroll`` they change only how
+#: the agent's own tab shows the page and press, type and send nothing, though the
+#: page's own script may react, so they are not :data:`READ_ONLY_OPS` either.
+_OPEN_OPS = frozenset({"navigate", "scroll", "set_appearance", "resize"})
 
 
 #: Ops that act on the page: a host "act" grant covers them.
@@ -94,8 +97,8 @@ def reads_only(op: str, op_args: dict[str, Any]) -> bool:
 def host_trust_class(op: str, op_args: dict[str, Any]) -> str:
     """``"read"`` or ``"act"`` for an op a host grant may cover, ``""`` for one it never does.
 
-    Read: :func:`reads_only`, plus opening a page (``navigate``, ``tabs new``) and
-    scrolling. Act: every op that presses, types, picks or uploads files on the
+    Read: :func:`reads_only`, plus opening a page (``navigate``, ``tabs new``),
+    scrolling, and setting how the tab shows it (``set_appearance``, ``resize``). Act: every op that presses, types, picks or uploads files on the
     page, plus going back and switching or closing tabs. An op this module does not name gets
     ``""``, so a new op asks until someone classes it here.
     """

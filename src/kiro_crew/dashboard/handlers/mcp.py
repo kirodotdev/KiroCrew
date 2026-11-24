@@ -1246,6 +1246,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_gateway_status,
         api_mcp_resolve_refresh,
         declared_launch,
+        mcp_sharing_can_turn_on,
     )
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,

@@ -118,7 +118,9 @@ can reorder strictness or redefine matching):
   drive path, which `abspath` always gives a drive, while a remote-workspace
   target still meets it (below): on Windows such a rule binds guest files only.
   A pattern whose first segment is a wildcard (`/**`, `/*`) can also meet a
-  local UNC path (`\\host\share\...`), since either separator matches. POSIX is
+  local UNC path (`\\host\share\...`), since either separator matches.
+  `ScopedRuleset.from_dict` logs one WARNING for each such entry when the
+  policy loads ("Filesystem + egress at the host gate" below). POSIX is
   unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
@@ -2807,6 +2809,12 @@ reads is checked: `allow` in allow mode, `deny` in deny mode. The warning names
 the dead entry and its reason and offers no replacement host. It warns rather than
 raising: refusing the document would turn one stale entry into a boot failure on
 upgrade for a policy that loads today.
+On a Windows gateway the same loader reports a `path` entry in the list the mode
+reads whose expansion starts with exactly one separator (`/data/**`): it meets no
+path on a drive letter, so the scope permits (deny mode) or refuses (allow mode)
+the local path it names, while a remote-workspace target still meets it ("Path
+matcher" above). A drive, a `//` or `\\` share prefix, a `~` or `$VAR`
+that expands to a drive, and an unrooted glob stay silent, and matching is unchanged.
 
 `on_tool_call(..., tool_kind=, raw_params=)` carries these from the ACP event
 (`AcpEvent.tool_kind` / `.raw_tool_params`); the call sites thread them

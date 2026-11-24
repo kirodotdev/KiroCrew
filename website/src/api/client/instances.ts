@@ -35,6 +35,7 @@ export interface InstanceTunnelStatus {
       | 'ssh_client_missing'
       | 'ssm_unreachable'
       | 'ssm_target_missing'
+      | 'ssm_target_unresolved'
       | 'ssm_access_denied'
       | 'ssm_user_unknown'
       | 'remote_wrong_port'

@@ -16,6 +16,9 @@ to the test files that touched it.
     build   merge the plugin's `part-*.json` files into the map
     bundle  add the co-change history and the guard tier to a map and write
             the gzip selection file the scorer reads (below)
+    check   describe a bundle file in one line (commit, build time, size, rows
+            per table) and exit 1 when it lacks a table: `test-map.yml`
+            publishes a bundle only after this passes
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -578,6 +581,26 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
     return 0
 
 
+def bundle_rows(doc: Mapping[str, Any]) -> dict[str, int]:
+    """Rows in each table of a bundle; a table that is absent or empty has none."""
+    tables = {name: doc.get(name) for name in ("tests", "files", *BUNDLE_TABLES)}
+    return {n: len(t) if isinstance(t, (dict, list)) else 0 for n, t in tables.items()}
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    path = Path(args.bundle)
+    doc = load_map(path)
+    rows = bundle_rows(doc)
+    counts = ", ".join(f"{name} {count}" for name, count in rows.items())
+    built = f", built_at {doc['built_at']}" if "built_at" in doc else ""
+    size = path.stat().st_size
+    print(f"bundle: commit `{doc.get('commit', '')}`{built}, {size} bytes, rows: {counts}")
+    missing = [name for name in BUNDLE_TABLES if not rows[name]]
+    for name in missing:
+        print(f"::error::the bundle has no {name} table")
+    return 1 if missing else 0
+
+
 def _cmd_build(args: argparse.Namespace) -> int:
     doc = merge_parts(read_parts(Path(args.parts)), args.commit)
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
@@ -652,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
     pack.add_argument(
         "--commits", type=int, default=CO_CHANGE_COMMITS, help="first-parent commits to read"
     )
+    check = sub.add_parser("check", help="describe a bundle; exit 1 when a table is missing")
+    check.add_argument("--bundle", required=True, help="gzip JSON bundle to read")
     pick = sub.add_parser("select", help="print the test files a diff would run")
     pick.add_argument("--map", required=True, help="map or bundle, plain or gzip")
     pick.add_argument("--base")
@@ -665,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = {
         "build": _cmd_build,
         "bundle": _cmd_bundle,
+        "check": _cmd_check,
         "select": _cmd_select,
         "guard-tier": _cmd_guard_tier,
         "core": _cmd_core,

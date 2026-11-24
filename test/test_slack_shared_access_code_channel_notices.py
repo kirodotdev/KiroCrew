@@ -179,9 +179,22 @@ def test_an_agent_outside_a_code_channel_is_told_how_one_opens(env: Any) -> None
     assert "tell the person" in out.text
     from kiro_crew.mcp_tools.catalog.code_channels import schemas
 
+    # How one opens: asking again in this thread is judged again and carries the
+    # thread over; a top-level message does not; Slack Connect can't host one.
+    guidance = (
+        "No tool opens a code channel",
+        "tell the person",
+        "ask for it again in this thread",
+        "starts with this thread",
+        "A new top-level message starts without this thread",
+        "Slack Connect",
+        "Never promise to post into a code channel that hasn't opened",
+    )
+    for phrase in guidance:
+        assert phrase in out.text, phrase
     for schema in schemas():
-        assert "No tool opens a code channel" in schema["description"], schema["name"]
-        assert "tell the person" in schema["description"], schema["name"]
+        for phrase in guidance:
+            assert phrase in schema["description"], (schema["name"], phrase)
 
 
 # ── The opener's own channel: what they may and may not press ────────────────

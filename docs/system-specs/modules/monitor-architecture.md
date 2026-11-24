@@ -1126,6 +1126,31 @@ turn is overdue again and fires on the overdue beat. A host short of memory
 otherwise starts every woken session and its MCP servers in the same few seconds
 and crash-loops.
 
+After boot, every prompt loop's tick first asks `resource_status.admission_check`
+(`autonudge_service/memory_hold.py`), the check scheduled cron firings and
+TaskRunner steps pass. While it refuses (memory `critical`), an active loop's
+scheduled tick fires nothing and spends no cycle: it re-arms
+`CRITICAL_HOLD_RECHECK_SECS` (30 s) out and asks again. The first tick after
+memory leaves `critical` runs as usual. The held time counts toward
+`max_runtime_secs`, which bounds wall time, as the boot pacer's wait does, so a
+loop whose budget ran out while held stops as `runtime_budget` on that tick.
+`tight`, an unreadable probe and `agent.admission_gate: false` admit, so the gate
+setting turns the hold off. The hold covers prompt loops, gated work-ledger
+watches included; a structured monitor (`is_structured_monitor_loop`) is never
+held, because its tick runs the typed controller, which mostly reads a provider
+and settles claims. Only scheduled ticks are held. A pushed tick (a
+worker's report, or the posture-change wake of §5.2 of rfc-host-memory-guard,
+marked in `AutoNudgeService._pushed_ticks`) runs, so a conductor can act at
+critical; the hold reads that mark and leaves it for the callback. Any tick of a
+loop that owes a wake (an entry in `AutoNudgeService._pending_monitor_wake`, such
+as the retry of a pushed report whose delivery was refused) runs as well: that
+wake already saw news, and the hold only reads the entry. A tick a
+person's Fire now press armed runs too: `fire_now` marks it in
+`AutoNudgeService._manual_ticks`, any other arm drops the mark, and the tick
+consumes it. Unlike the boot pacer the hold has no longest wait: a scheduled tick
+only starts a turn, and on a host that stays critical that turn is what the hold
+exists to stop.
+
 ### 7. Delivery and turn injection
 
 A verdict becomes at most one agent turn, through a fixed sequence:

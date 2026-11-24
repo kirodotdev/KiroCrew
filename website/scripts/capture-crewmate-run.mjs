@@ -62,7 +62,7 @@ for (const theme of ['dark', 'light']) {
     const aiCode = document.querySelector('[data-testid="crewmate-message"] .message-bubble :not(pre)>code')
     const quote = document.querySelector('.user-bubble [data-testid="quote-card-sent"]')
     const quoteBar = quote && quote.querySelector('span[aria-hidden]')
-    const quoteExcerpt = quote && quote.querySelector('.line-clamp-2')
+    const quoteExcerpt = quote && quote.querySelector('[data-testid="quote-card-body"]')
     return {
       quoteBar: quoteBar && getComputedStyle(quoteBar).backgroundColor,
       quoteExcerpt: quoteExcerpt && getComputedStyle(quoteExcerpt).color,

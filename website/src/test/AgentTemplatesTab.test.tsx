@@ -465,6 +465,19 @@ describe('AgentTemplatesTab detail robustness', () => {
     expect(rows.map(r => r.textContent)).toEqual(['docsstdio', 'broken', 'remotehttps://mcp.example.test'])
   })
 
+  it("says MCP Servers page servers reach a custom agent only through Kiro's global mcp.json", async () => {
+    const KIROCREW = row({ name: 'kirocrew', filename: 'kirocrew.json', source: 'kirocrew', kirocrew_owned: true, read_only: 'runtime' })
+    mockApi.agentTemplates.mockResolvedValue({ templates: [MINE, KIROCREW] })
+    renderTab()
+    // Chained: roster -> auto-select -> detail -> draft seed, then the hint renders.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    await screen.findByText(/reach this agent only through Kiro's global mcp\.json, if the agent loads it/, undefined, EDITOR_CHAIN)
+    expect(screen.queryByText(/manage servers under MCP Servers/)).toBeNull()
+    fireEvent.click(option('kirocrew'))
+    await screen.findByText(/manage servers under MCP Servers/, undefined, EDITOR_CHAIN)
+    expect(screen.queryByText(/only through Kiro's global mcp\.json/)).toBeNull()
+  })
+
   it('says why a read-only template has no prompt instead of showing an empty editor', async () => {
     mockApi.agentDetail.mockImplementation(async (name: string) => ({
       name, prompt: '', tools: [], allowedTools: [], resources: [], skills: [],

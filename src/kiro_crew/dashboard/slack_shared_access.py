@@ -45,13 +45,6 @@ def _deny(caller: str, operation: str, msg: str, *, code: str, status: int = 400
     return web.json_response({"error": msg, "code": code}, status=status)
 
 
-async def _owner_refusal(request: web.Request, operation: str) -> web.Response | None:
-    """The shared owner gate: ``None`` for the dashboard owner, else its refusal."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
-
-
 def _write_refusal(request: web.Request) -> str:
     """Why this caller may not change shared access, or ``""``."""
     if request.get("internal_auth") is True or request.get("app"):
@@ -91,7 +84,9 @@ async def api_shared_access_get(request: web.Request) -> web.Response:
     Reads the live config Slack admits on, not the saved file: after a write the
     gateway did not apply (409 ``not_applied``), the page shows who still has access.
     """
-    gate_refusal = await _owner_refusal(request, "slack.shared_access.read")
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, "slack.shared_access.read")
     if gate_refusal is not None:
         return gate_refusal
     shared = _live_shared()
@@ -196,7 +191,9 @@ async def api_shared_access_put(request: web.Request) -> web.Response:
     """PUT /api/slack/shared-access -- turn shared access on or off."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.switch"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)
@@ -232,7 +229,9 @@ async def api_shared_access_add(request: web.Request) -> web.Response:
     """POST /api/slack/shared-access/users -- add one Slack user, once Slack confirms it."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.add"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)
@@ -293,7 +292,9 @@ async def api_shared_access_remove(request: web.Request) -> web.Response:
     """DELETE /api/slack/shared-access/users/{user_id} -- applies to the next event."""
     caller = request.get("user", "dashboard")
     op = "slack.shared_access.remove"
-    gate_refusal = await _owner_refusal(request, op)
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    gate_refusal = await require_owner_dashboard_request(request, op)
     if gate_refusal is not None:
         return gate_refusal
     refusal = _write_refusal(request)

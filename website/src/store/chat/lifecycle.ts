@@ -2,6 +2,7 @@
  *  history list and its paging, resume and delete of a history row (with the
  *  notices a failed attempt leaves), and creating or forking a slot. `deleteSlot`
  *  stays in chatSlice.ts, where its fallback navigation dispatches `switchSlot`. */
+import type { PrivateForkMemoryMode } from '../../utils/forkMemoryModes'
 import { createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatSlot, SessionInfo } from '../../types'
@@ -318,9 +319,9 @@ function newestResumeOf(chat: Pick<ChatState, 'pendingResumes'>, key: string): {
 /** The action that lists a successful fork in the sidebar. Every fork path
  *  dispatches this before activating the fork: the chat page clears an active
  *  session its slot list lacks. `openCreatedSlot` uses it the same way for a
- *  session another server route created. memory_mode is the parent's, echoed by the
- *  server; without it the new tab would read as persistent until the next
- *  slots refresh. */
+ *  session another server route created. memory_mode is the child's (the parent's,
+ *  or the stricter one the fork asked for), echoed by the server; without it the new
+ *  tab would read as persistent until the next slots refresh. */
 export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot, 'title' | 'messages' | 'folder_id' | 'memory_mode' | 'pinned'>>) {
   return addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode, ...(d.pinned ? { pinned: true } : {}) })
 }
@@ -398,14 +399,17 @@ export function forkMayOpen(state: Pick<RootState, 'chat'>, origin: ForkOrigin):
 export const forkSlot = createAsyncThunk(
   'chat/forkSlot',
   async (
-    { slot, atIndex, messageId, prompt, mode, direction }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail' },
+    { slot, atIndex, messageId, prompt, mode, direction, memoryMode }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail'; memoryMode?: PrivateForkMemoryMode },
     { dispatch, rejectWithValue },
   ) => {
     let d
     try {
-      d = messageId
-        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
-        : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+      // A more private mode for the child rides last; without one each call keeps its shape.
+      d = memoryMode
+        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId, memoryMode)
+        : messageId
+          ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
+          : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
     } catch (e) {
       // `miniSerializeError` at the thunk boundary drops the backend `code`, so
       // reject with it as a value. The check is STRUCTURAL (duck-typed on

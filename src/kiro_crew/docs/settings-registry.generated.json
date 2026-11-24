@@ -594,6 +594,14 @@
       "configKey": "teams.tenant_id"
     },
     {
+      "id": "channels.tracked-channels-slack",
+      "label": "Tracked channels (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.tracked-channels-slack",
+      "description": "Channels the agent can post, react and read in. Applies when you save.",
+      "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent."
+    },
+    {
       "id": "channels.webex-bot-token-webex",
       "label": "Webex bot token (Webex)",
       "tab": "channels",
@@ -1083,6 +1091,13 @@
       "description": "The most sessions one Bot or agent can keep open at once. 10 to 450. Default 50.",
       "hint": "A creator is a Bot, or any chat whose agent opens other sessions. A creator at this limit cannot open another session until it closes one. Chats you open yourself do not count. All sessions together still stop at 500. Applies from the next new session.",
       "configKey": "session.max_per_creator"
+    },
+    {
+      "id": "chat.show-all-bots-in-my-sessions",
+      "label": "Show all bots in my Sessions",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.show_bot_sessions_in_list",
+      "configKey": "dashboard.show_bot_sessions_in_list"
     },
     {
       "id": "chat.show-context-percentage",

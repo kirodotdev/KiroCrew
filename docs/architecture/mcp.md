@@ -1198,8 +1198,11 @@ server that file holds or that only another scope (an agent file, a provider
 global) holds. A server the Kiro global file does not hold but Kiro Crew's own
 store does, such as a custom add, has its flag set in `~/.kiro/crew/mcp.json`
 instead, and the Kiro global file is not created or changed; a name that is the
-alias of several store keys is refused with the same `409`, and a store that does
-not parse is refused with `500` and `"code": "config_corrupt"`. A file holding
+alias of several store keys is refused with the same `409`, a store that does
+not parse is refused with `500` and `"code": "config_corrupt"`, and a store that
+exists but cannot be read (another program holds it, or no permission) is refused
+with `500` and `"code": "config_unreadable"`; the Discover install and the batch
+apply answer the same two codes, and the store's bytes stay as they were. A file holding
 comments blocks only a toggle that would rewrite it.
 
 Listing and probe rows say why a server is off. `disabledIn` is `"kirocrew"` for a
@@ -1567,7 +1570,12 @@ without a display omits both fields. The refusal record carries each command arg
 with its redacted declared environment, scrubbed and bounded before they enter it,
 and the row's **Details** and the Review dialog display them. A refusal whose
 display was cut is stored `complete: false` with no `expected_launch`, so its
-row offers no Approve. A `too_many_launches` refusal reaches the page as display
+row offers no Approve. So is one whose target reached the gateway's last target
+filter (`launch_approval.filter_target_env`) without the rewrite pass recording
+its launch, such as a kept overlay's. A server whose env holds a `secret://`
+reference stays wrapped while its launch is refused, so that filter drops its
+target too; the pass already recorded that launch with its display, so a changed
+command still offers **Approve update**. A `too_many_launches` refusal reaches the page as display
 only: the launches the cap kept, `complete: false`, no `expected_launch`, and
 `launch_cap`, the cap itself. Its row reads **Can't share** with **Remove** and one
 line naming `launch_cap` and the way back; `kirocrew doctor` names the server and
@@ -6375,7 +6383,13 @@ that is only such a marker from the saved reply
 (`session_directive.strip_quoted_markers`) and keeps the reply's other lines, and
 the channel `TurnDriver` drops the same lines from the streamed reply, as do the native
 Slack thread turn, the plain monitor-loop wake, a team-channel agent's post and
-`kirocrew chat`.
+`kirocrew chat`. The other turns whose collected text a person reads drop them too: a
+cron run's result, the parent's reply to a sub-agent's report, a workflow step's text,
+a task step's result, a sub-agent's result, a webhook agent turn's result, an app's
+agent turn reply, a side chat or thread reply and the task refine draft. A turn where
+no directive tool can run keeps its text as it is: the heartbeat (its allowlist holds
+none and its spec pre-grants none), and the prompt optimizer and an app's one-shot turn
+(a tool-less agent).
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and

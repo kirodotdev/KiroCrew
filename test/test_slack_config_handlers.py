@@ -1086,3 +1086,168 @@ def test_slack_cancellation_after_successful_env_write_does_not_rollback_config(
     assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in env.read_text(encoding="utf-8")
     assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-NEW"
     assert json.loads(cfg.read_text(encoding="utf-8"))["slack"]["command"] == "new"
+
+
+def test_tracked_channels_save_adds_and_removes_and_keeps_each_entry(tmp_path, monkeypatch) -> None:
+    """Settings → Slack → Tracked channels saves an edit, not a whole list.
+
+    A channel added in Slack since the page loaded (C0SLACK) stays, a kept
+    channel keeps its activation and agent, a removed one goes, and an added one
+    lands as a plain entry.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "slack": {
+                    "tracking_channels": [
+                        {"channel_id": "C0KEEP", "activation": "always", "agent": "ops"},
+                        {"channel_id": "C0GONE"},
+                        {"channel_id": "C0SLACK", "activation": "observe"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (status, body), _ = _client_put(
+        mod,
+        monkeypatch,
+        tmp_path,
+        {"tracking_channels_add": ["G0NEWPRIV"], "tracking_channels_remove": ["C0GONE"]},
+    )
+    assert status == 200, body
+    assert body["restart_required"] is False
+    stored = json.loads(cfg.read_text(encoding="utf-8"))["slack"]["tracking_channels"]
+    assert stored == [
+        {"channel_id": "C0KEEP", "activation": "always", "agent": "ops"},
+        {"channel_id": "C0SLACK", "activation": "observe"},
+        {"channel_id": "G0NEWPRIV"},
+    ]
+
+
+def test_tracked_channels_save_refuses_a_non_channel_id(tmp_path, monkeypatch) -> None:
+    """Only C… / G… channel IDs are tracked; a DM or user ID is refused, nothing written."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"slack": {}}', encoding="utf-8")
+    for bad in (["D0DMCHAN"], ["U0PERSON"], ["c0lower"], "C0NOTALIST"):
+        (status, body), _ = _client_put(mod, monkeypatch, tmp_path, {"tracking_channels_add": bad})
+        assert status == 400, bad
+        assert "tracking_channels_add" in body["error"]
+    assert json.loads(cfg.read_text(encoding="utf-8")) == {"slack": {}}
+
+
+def test_tracked_channels_save_refuses_a_malformed_stored_list(tmp_path, monkeypatch) -> None:
+    """A hand-edited non-list value is never overwritten by an add: 409, file unchanged."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    raw = '{"slack": {"tracking_channels": {"channel_id": "C0ODD"}}}'
+    cfg.write_text(raw, encoding="utf-8")
+    (status, body), _ = _client_put(
+        mod, monkeypatch, tmp_path, {"tracking_channels_add": ["C0NEW"]}
+    )
+    assert status == 409
+    assert "not a list" in body["error"]
+    assert json.loads(cfg.read_text(encoding="utf-8")) == json.loads(raw)
+
+
+def test_tracked_channels_save_is_local_only(monkeypatch) -> None:
+    """Tracking stays owner-only: a remote dashboard session cannot add a channel."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: False)
+    req = make_mocked_request("PUT", "/api/slack/config")
+    resp = asyncio.run(mod.api_slack_config_save(req))
+    assert resp.status == 403
+
+
+def test_the_untracked_refusal_names_the_settings_rows_real_label() -> None:
+    """The refusal's dashboard path is the Settings row's English label, so the
+    agent repeats a path the owner can find; renaming the row must update it."""
+    from kiro_crew.slack.tracked_channels import TRACK_ROUTE
+
+    en = Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.json"
+    panel = json.loads(en.read_text(encoding="utf-8"))["pages"]["settings"]["slackPanel"]
+    assert f"Slack → {panel['tracked_channels']}" in TRACK_ROUTE
+
+
+@pytest.mark.parametrize("overlay_text", ['{"slack": {"tracking_channels": []}}', "{ torn"])
+def test_tracked_channels_save_refuses_when_config_local_sets_or_may_set_the_list(
+    tmp_path, monkeypatch, overlay_text
+) -> None:
+    """config.local.json wins over config.json, so a remove saved there would
+    report success while the channel stayed tracked: refused with 409 instead,
+    and so is an overlay that cannot be read."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    raw = '{"slack": {"tracking_channels": [{"channel_id": "C0KEEP"}]}}'
+    cfg.write_text(raw, encoding="utf-8")
+    overlay = tmp_path / "config.local.json"
+    overlay.write_text(overlay_text, encoding="utf-8")
+    monkeypatch.setattr(loader, "config_local_path", lambda: overlay)
+    (status, body), _ = _client_put(
+        mod, monkeypatch, tmp_path, {"tracking_channels_remove": ["C0KEEP"]}
+    )
+    assert status == 409
+    assert "config.local.json" in body["error"]
+    assert json.loads(cfg.read_text(encoding="utf-8")) == json.loads(raw)
+
+
+def test_tracked_channels_save_removes_a_stored_id_an_add_would_refuse(
+    tmp_path, monkeypatch
+) -> None:
+    """The loader keeps a hand-written D… entry; Settings shows it, so its Remove
+    must work even though an add of the same ID is refused."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        '{"slack": {"tracking_channels": [{"channel_id": "D0DMCHAN"}, {"channel_id": "C0KEEP"}]}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    (status, body), _ = _client_put(
+        mod, monkeypatch, tmp_path, {"tracking_channels_remove": ["D0DMCHAN"]}
+    )
+    assert status == 200, body
+    stored = json.loads(cfg.read_text(encoding="utf-8"))["slack"]["tracking_channels"]
+    assert stored == [{"channel_id": "C0KEEP"}]
+
+
+def test_tracked_channels_remove_matches_the_stored_id_verbatim(tmp_path, monkeypatch) -> None:
+    """A remove drops the entry the owner picked, never a different one: a
+    space-padded hand-written ID is not trimmed into the valid entry beside it."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "slack": {
+                    "tracking_channels": [
+                        {"channel_id": "C0123ABC456 "},
+                        {"channel_id": "C0123ABC456", "activation": "always"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    (status, body), _ = _client_put(
+        mod, monkeypatch, tmp_path, {"tracking_channels_remove": ["C0123ABC456 "]}
+    )
+    assert status == 200, body
+    stored = json.loads(cfg.read_text(encoding="utf-8"))["slack"]["tracking_channels"]
+    assert stored == [{"channel_id": "C0123ABC456", "activation": "always"}]
+    for bad in ("C0X", [""], [5], ["C" * 129]):
+        (status, _body), _ = _client_put(
+            mod, monkeypatch, tmp_path, {"tracking_channels_remove": bad}
+        )
+        assert status == 400, bad

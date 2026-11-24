@@ -26,8 +26,10 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(registry, "_baseline", {KIRO, KAS})
     monkeypatch.setattr(registry, "_selectable", {KIRO, KAS})
     monkeypatch.setattr(registry, "_host_unservable", {})
-    # The floor's positive verdict, which is what moves a Kiro CLI pick onto KAS.
+    # The floor's positive verdict for a stored pick (help and a v3 start), which is
+    # what moves a Kiro CLI pick onto KAS.
     monkeypatch.setattr(registry, "_kiro_cli_offers_kas", True)
+    monkeypatch.setattr(registry, "_kiro_cli_kas_started", True, raising=False)
     return tmp_path
 
 
@@ -80,6 +82,7 @@ def test_no_note_without_a_positive_verdict(home, monkeypatch):
     """An unknown probe never confirmed v3, so the pick is still on kiro-cli."""
     _stored(monkeypatch, True)
     monkeypatch.setattr(registry, "_kiro_cli_offers_kas", False)
+    monkeypatch.setattr(registry, "_kiro_cli_kas_started", False, raising=False)
     assert notice.prepare_note() is None
     assert not (home / notice.MARKER_FILENAME).exists()
 
@@ -140,6 +143,7 @@ def test_a_failed_floor_sends_nothing(home, monkeypatch):
     """A failed probe confirmed nothing, so the pick stays on kiro-cli and no note goes out."""
     _stored(monkeypatch, True)
     monkeypatch.setattr(registry, "_kiro_cli_offers_kas", False)
+    monkeypatch.setattr(registry, "_kiro_cli_kas_started", False, raising=False)
     state = MagicMock()
 
     async def _run():

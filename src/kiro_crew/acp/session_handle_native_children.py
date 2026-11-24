@@ -57,6 +57,9 @@ NATIVE_CHILD_ROSTER_CAP = 4096
 #: Far above any real sub-agent name, so a clipped label means a hostile or
 #: broken payload rather than a long one.
 NATIVE_CHILD_LABEL_CAP = 512
+#: :attr:`AcpEvent.auto_reject_reason`: why the handle auto-rejected a child's request.
+AUTO_REJECT_STRANDED_BETWEEN_TURNS = "stranded_between_turns"
+AUTO_REJECT_MISSING_SECURITY_CONTEXT = "missing_security_context"
 
 
 class NativeChildIds(Protocol):

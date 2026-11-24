@@ -32,6 +32,7 @@ from kiro_crew.config.integration_sections import (
 )
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
+    KIRO_CLI_PICK_STORED_ATTR,
     _build_agent_config,
     _build_dashboard_config,
     _build_session_config,
@@ -900,6 +901,7 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
+        setattr(cfg.agent, KIRO_CLI_PICK_STORED_ATTR, False)
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
@@ -1126,6 +1128,7 @@ def build_config(
                     # Hand-editable, and a safety switch: only a real bool is
                     # honoured; anything else reads as the default (off).
                     dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
+                    show_sessions_in_list=crew.read("show_sessions_in_list", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.

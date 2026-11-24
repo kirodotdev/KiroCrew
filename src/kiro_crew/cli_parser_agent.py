@@ -232,7 +232,9 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the default timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted. "
+        "An ISO 8601 time with its own zone ('2026-10-01T09:00:00Z', "
+        "'2026-10-01T09:00+02:00') names an instant and ignores --timezone.",
     )
     cron_add.add_argument(
         "--timezone",

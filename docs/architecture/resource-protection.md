@@ -390,6 +390,14 @@ posture's figure never rises above that threshold, so at start-up the gateway lo
 naming that limit and the settings to lower
 (`resource_status_container_limit.start_container_limit_notice`).
 
+The tight and critical bell notes also carry one **Reduce memory use** button while a
+sharing switch is off (`notifications/memory_sharing_hint.py`); the page it opens names
+the switch, and the body gains no line, since the banner card shows only two. MCP sharing (`mcp_gateway.enabled`) is offered first and opens
+`/mcp?view=sharing`; once it is on, ACP runtime sharing (the `chat_runtime_sharing`
+Feature Preview) opens Settings > Developer > Feature Previews, except in a build that
+locks Feature Previews. With both on, or the config unreadable, the notes carry no
+button. The recovery note never does.
+
 The kernel enforces both ceilings at `fork()` and allocation time, so there is no reaper
 race. `--scope` execs into the target rather than forking a wrapper, so the gateway's PID
 tracking, `killpg` and descendant scan are unaffected. It composes *outside* the OS-level

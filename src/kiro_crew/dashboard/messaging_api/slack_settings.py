@@ -109,6 +109,11 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             # ignores both), so surfacing editors would create access rules
             # that are never honored. Re-add when multi-user Slack lands.
             "allowed_enterprise_ids": list(slack.allowed_enterprise_ids),
+            # IDs only: the per-channel activation and agent are set in Slack's
+            # /kirocrew channels modal, and a save here keeps them (see the PUT).
+            "tracking_channels": [
+                str(c["channel_id"]) for c in slack.tracking_channels if c.get("channel_id")
+            ],
             "reactions_enabled": slack.reactions_enabled,
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
@@ -150,6 +155,13 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         CRED_OWNER_ID,
         ConfigReadError,
         config_path,
+    )
+    from kiro_crew.dashboard.slack_code_settings import _overlay_state
+    from kiro_crew.slack.tracked_channels import (
+        STORED_CHANNEL_ID_MAX,
+        TRACKED_CHANNEL_ID_RE,
+        TrackingListMalformed,
+        apply_tracking_edit,
     )
     from kiro_crew.validation import USER_ID_RE  # noqa: F811
 
@@ -266,6 +278,50 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_enterprise_ids"] = new_ents
             applied.append("allowed_enterprise_ids")
 
+    # Tracked channels arrive as the edit (adds and removes), not the whole list:
+    # Slack's /kirocrew channels modal writes the same list live, and each entry
+    # carries its activation and agent, so a whole-list save from a page loaded
+    # earlier would drop a channel added there since, or reset its settings.
+    track_adds: list[str] = []
+    track_removes: list[str] = []
+    # Adds are channel IDs only. A remove names a stored entry exactly as GET
+    # listed it -- not trimmed, not shape-checked -- so it drops that entry and
+    # never a different one (a hand-written ``D…`` or space-padded ID included).
+    if "tracking_channels_add" in body:
+        try:
+            track_adds = _clean_id_list(
+                body.get("tracking_channels_add"),
+                lambda v: bool(TRACKED_CHANNEL_ID_RE.fullmatch(v)),
+                "channel ID",
+            )
+        except ValueError as exc:
+            return _deny(f"tracking_channels_add: {exc}")
+    if "tracking_channels_remove" in body:
+        raw_removes = body.get("tracking_channels_remove")
+        if not isinstance(raw_removes, list) or not all(
+            isinstance(v, str) and 0 < len(v) <= STORED_CHANNEL_ID_MAX for v in raw_removes
+        ):
+            return _deny("tracking_channels_remove must be a list of stored channel IDs")
+        track_removes = list(raw_removes)
+    if track_adds or track_removes:
+        # config.local.json deep-merges over config.json, so an edit saved here
+        # would report success while the overlay's list stayed in force (a
+        # removed channel still writable). Refused instead, like the Slack Code
+        # switches the overlay pins.
+        overlay = await asyncio.to_thread(_overlay_state, "slack", "tracking_channels")
+        if overlay == "pinned":
+            return _deny(
+                "Tracked channels are set in config.local.json (slack.tracking_channels), "
+                "which overrides this setting; change them there",
+                status=409,
+            )
+        if overlay == "unreadable":
+            return _deny(
+                "config.local.json cannot be read, so whether it sets the tracked "
+                "channels (slack.tracking_channels) is unknown; fix the file and try again",
+                status=409,
+            )
+
     for key in ("reactions_enabled", "show_thinking", "auto_link_sessions", "show_in_session_list"):
         if key in body:
             val = body.get(key)
@@ -315,6 +371,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     if follows_enable:
         staged.pop(DISPATCH_KEY)
 
+    track_moved: list[bool] = []
+
+    def _finalize(section: dict) -> None:
+        if follows_enable:
+            _unless_stored(section)
+        if track_adds or track_removes:
+            if apply_tracking_edit(section, track_adds, track_removes):
+                track_moved.append(True)
+
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
     # where the user can act on it — instead of being stored and silently
@@ -345,15 +410,16 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         "slack",
         staged,
         merge_nested=("code_channel_defaults",),
-        finalize=_unless_stored if follows_enable else None,
+        finalize=_finalize,
     )
+    writes_config = bool(staged or track_adds or track_removes)
     # Hold the live-config watcher for the whole config+credential transaction:
     # the two files commit separately and a failed .env write rolls the config
     # back, so nothing between here and the end of the block may be applied to
     # the running gateway (a widened allow-list must never go live on a save
     # that then fails). The release wakes the watcher on the committed state.
     with live.hold():
-        if staged:
+        if writes_config:
             slack_cfg.update(staged)
             # Through ``update_config_locked``: it holds the advisory lock on the
             # sidecar ``<path>.lock`` across the whole read-modify-write, so a
@@ -366,12 +432,19 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
                 await _cfg_write.commit()
             except ConfigReadError:
                 return _deny("config.json is corrupt", status=500)
+            except TrackingListMalformed:
+                return _deny(
+                    "slack.tracking_channels in config.json is not a list; fix it there first",
+                    status=409,
+                )
             if follows_enable and not turned_on:
                 applied.remove(DISPATCH_KEY)
+            if track_moved:
+                applied.append("tracking_channels")
         if env_updates:
             # A failed .env write undoes the config commit above, so a refused
             # save changes nothing (see _write_env_or_roll_back).
-            rollback = functools.partial(_cfg_write.rollback, "Slack") if staged else None
+            rollback = functools.partial(_cfg_write.rollback, "Slack") if writes_config else None
             await _write_env_or_roll_back(env_updates, rollback)
             # A Slack credential write that changes what an open owner-claim
             # window pinned closes it: a new token may name another workspace.

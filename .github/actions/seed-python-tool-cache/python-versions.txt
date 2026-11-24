@@ -1,0 +1,17 @@
+# Pinned CPython archives the seed installs into RUNNER_TOOL_CACHE.
+#
+# One row per (os, os-version, arch): the archive actions/setup-python itself
+# downloads for that runner, from the same publisher (the release assets of
+# github.com/actions/python-versions), with the SHA-256 the seed checks before
+# it opens the archive. `os` and `arch` use the publisher's manifest names;
+# `os-version` is VERSION_ID from /etc/os-release on Linux and `-` on Windows,
+# whose archive is not built per OS version.
+#
+# A runner with no row here is not seeded: setup-python installs Python as it
+# does without the seed, and the job log carries a warning that says so.
+# test/test_ci_seed_python_tool_cache.py checks that every Python version a
+# seeded job requests has a row for each OS that job can run on.
+#
+# os     os-version  arch  version  sha256                                                            url
+linux    22.04       x64   3.12.16  ebdd874c6bb02d1ade9069da60b6b09f8346ba0ae0db11e60e6ce90cf5542fb7  https://github.com/actions/python-versions/releases/download/3.12.16-40260402378/python-3.12.16-linux-22.04-x64.tar.gz
+win32    -           x64   3.12.10  17e4ee587e0ecee4674040da8b248e151475ff65becae18fe0ec81f8312b5035  https://github.com/actions/python-versions/releases/download/3.12.10-14343898437/python-3.12.10-win32-x64.zip

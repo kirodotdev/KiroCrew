@@ -250,6 +250,7 @@ describe('the recalled-memory fixture in the decisions spec', () => {
       store: 'default',
       baselineKeys: ['mem-a', 'mem-b', 'mem-c'],
       jevKeys: ['mem-a', 'mem-c'],
+      unaskedKeys: [],
       agree: false,
       p: 0.81,
       charsSaved: 2100,
@@ -263,7 +264,7 @@ describe('the recalled-memory fixture in the decisions spec', () => {
 
   it('names every key the reader needs, so a dropped promise is visible here', () => {
     for (const key of [
-      'turn_id', 'point', 'baseline_keys', 'jev_keys', 'p',
+      'turn_id', 'point', 'baseline_keys', 'jev_keys', 'unasked_keys', 'p',
       'chars_saved', 'candidates', 'message_chars', 'latency_ms', 'error',
     ]) {
       expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)

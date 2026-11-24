@@ -1,0 +1,228 @@
+name: Seed Python into the runner tool cache
+description: >-
+  On a CodeBuild-hosted runner, install the pinned CPython archive for this
+  runner into RUNNER_TOOL_CACHE before actions/setup-python runs, so
+  setup-python finds it there and skips its two GitHub API manifest calls.
+  No-op on GitHub-hosted runners, whose images already carry a tool cache.
+inputs:
+  python-version:
+    description: Python version to seed. Must match the following setup-python step's pin.
+    required: false
+    default: "3.12"
+runs:
+  using: composite
+  steps:
+    # Why: the CodeBuild images ship no tool cache, so every setup-python step
+    # there misses, and a miss reads actions/python-versions' manifest through
+    # api.github.com -- two calls carrying the job's GITHUB_TOKEN (the
+    # repository tree, then the manifest blob), spent from the hourly budget
+    # every workflow shares. setup-python looks in
+    # RUNNER_TOOL_CACHE/Python/<version>/<arch> (with the <arch>.complete
+    # marker) BEFORE the manifest, so an install that is already there removes
+    # both calls.
+    #
+    # Where that order lives, in the pinned actions/setup-python (v7.0.0,
+    # 5fda3b9): src/find-python.ts `useCpythonVersion` calls tc.find('Python',
+    # <version>, <arch>) and only on a miss calls `findReleaseFromManifest`,
+    # which reaches @actions/tool-cache's `getManifestFromRepo` (GET
+    # .../git/trees/main, then GET the versions-manifest.json blob). On a miss
+    # it downloads the release archive, unpacks it, and runs the archive's own
+    # setup.sh / setup.ps1, which copies or installs Python into the tool
+    # cache and writes the marker last.
+    #
+    # What the seed does: the same install, from the same archive, with two
+    # differences. The version and the archive's SHA-256 come from
+    # python-versions.txt beside this file instead of the manifest, and the
+    # archive is checked against that SHA-256 before it is opened (setup-python
+    # checks none). The download carries no token.
+    #
+    # Outcomes. A SHA-256 mismatch fails the job: nothing is unpacked or run.
+    # Everything else that stops the seed -- no row for this runner, an
+    # install already in the tool cache, a failed download, a verified archive
+    # whose installer fails -- leaves no install and no marker of its own in
+    # the tool cache, prints one `::warning::` naming the reason, and exits 0,
+    # so setup-python installs Python itself, the behaviour without the seed.
+    # The installer writes the marker last, and a tree it left without one is
+    # removed, so setup-python never finds a partial install.
+    #
+    # The two steps below are one procedure in two shells; keep them in step.
+    - name: Seed Python ${{ inputs.python-version }} into the tool cache (CodeBuild only)
+      if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      shell: bash
+      env:
+        PYTHON_SPEC: ${{ inputs.python-version }}
+        SEED_TABLE: ${{ github.action_path }}/python-versions.txt
+        # Each attempt is cut off at this many seconds, so the seed can hold a
+        # job for at most attempts x seconds before setup-python takes over.
+        SEED_DOWNLOAD_ATTEMPTS: "2"
+        SEED_DOWNLOAD_ATTEMPT_SECONDS: "60"
+      run: |
+        set -euo pipefail
+        fall_through() {
+          echo "::warning title=seed-python-tool-cache::$1; setup-python installs Python itself"
+          exit 0
+        }
+        if [ -z "${RUNNER_TOOL_CACHE:-}" ] || [ -z "${RUNNER_TEMP:-}" ]; then
+          fall_through "RUNNER_TOOL_CACHE or RUNNER_TEMP is not set"
+        fi
+        # setup-python and the installer both prefer AGENT_TOOLSDIRECTORY when
+        # it is set; no CodeBuild image sets it.
+        if [ -n "${AGENT_TOOLSDIRECTORY+x}" ]; then
+          fall_through "AGENT_TOOLSDIRECTORY is set"
+        fi
+        case "${RUNNER_ARCH:-}" in
+          X64) arch=x64 ;;
+          ARM64) arch=arm64 ;;
+          *) fall_through "no pinned Python for RUNNER_ARCH=${RUNNER_ARCH:-}" ;;
+        esac
+        # sed and awk only: the image is not guaranteed to have python or jq
+        # before this step.
+        os_version="$(sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release 2>/dev/null | head -n 1)"
+        row="$(awk -v os_version="$os_version" -v arch="$arch" -v spec="$PYTHON_SPEC" \
+          '$1 == "linux" && $2 == os_version && $3 == arch && ($4 == spec || index($4, spec ".") == 1) { print; exit }' \
+          "$SEED_TABLE")"
+        if [ -z "$row" ]; then
+          fall_through "no pinned Python $PYTHON_SPEC for linux ${os_version:-unknown} $arch"
+        fi
+        read -r _ _ _ version sha256 url <<<"$row"
+        dest="$RUNNER_TOOL_CACHE/Python/$version/$arch"
+        if [ -f "$dest.complete" ]; then
+          fall_through "Python $version ($arch) is already in the tool cache"
+        fi
+        work="$(mktemp -d "$RUNNER_TEMP/seed-python.XXXXXX")"
+        trap 'rm -rf "$work"' EXIT
+        archive="$work/archive"
+        downloaded=""
+        for _ in $(seq 1 "$SEED_DOWNLOAD_ATTEMPTS"); do
+          if curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --max-time "$SEED_DOWNLOAD_ATTEMPT_SECONDS" \
+            --output "$archive" "$url"; then
+            downloaded=yes
+            break
+          fi
+          rm -f "$archive"
+        done
+        if [ -z "$downloaded" ]; then
+          fall_through "the download of $url failed $SEED_DOWNLOAD_ATTEMPTS times"
+        fi
+        actual="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+        if [ "$actual" != "$sha256" ]; then
+          echo "::error title=seed-python-tool-cache::SHA-256 mismatch for $url: expected $sha256, got $actual"
+          exit 1
+        fi
+        mkdir "$work/unpacked"
+        # The installer is run the way setup-python runs it: from the unpacked
+        # directory, with the archive's own lib directory on the loader path.
+        if tar -xzf "$archive" -C "$work/unpacked" \
+          && (cd "$work/unpacked" && LD_LIBRARY_PATH="$work/unpacked/lib" bash ./setup.sh) \
+          && [ -f "$dest.complete" ]; then
+          echo "seeded Python $version ($arch) at $dest"
+        else
+          rm -rf "$dest" "$dest.complete"
+          fall_through "the verified Python $version archive did not install"
+        fi
+
+    - name: Seed Python ${{ inputs.python-version }} into the tool cache (CodeBuild only)
+      if: runner.environment == 'self-hosted' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        PYTHON_SPEC: ${{ inputs.python-version }}
+        SEED_TABLE: ${{ github.action_path }}/python-versions.txt
+        # Each attempt is cut off at this many seconds, so the seed can hold a
+        # job for at most attempts x seconds before setup-python takes over.
+        SEED_DOWNLOAD_ATTEMPTS: "2"
+        SEED_DOWNLOAD_ATTEMPT_SECONDS: "60"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        function Skip-Seed([string] $Reason) {
+          Write-Host "::warning title=seed-python-tool-cache::$Reason; setup-python installs Python itself"
+          exit 0
+        }
+        if (-not $env:RUNNER_TOOL_CACHE -or -not $env:RUNNER_TEMP) {
+          Skip-Seed 'RUNNER_TOOL_CACHE or RUNNER_TEMP is not set'
+        }
+        # setup-python and the installer both prefer AGENT_TOOLSDIRECTORY when
+        # it is set; no CodeBuild image sets it.
+        if ($null -ne $env:AGENT_TOOLSDIRECTORY) {
+          Skip-Seed 'AGENT_TOOLSDIRECTORY is set'
+        }
+        $arch = switch ($env:RUNNER_ARCH) { 'X64' { 'x64' } 'ARM64' { 'arm64' } default { $null } }
+        if (-not $arch) {
+          Skip-Seed "no pinned Python for RUNNER_ARCH=$env:RUNNER_ARCH"
+        }
+        $spec = $env:PYTHON_SPEC
+        $row = $null
+        foreach ($line in Get-Content -LiteralPath $env:SEED_TABLE) {
+          $fields = -split $line
+          if ($fields.Count -eq 6 -and $fields[0] -ceq 'win32' -and $fields[2] -ceq $arch -and
+              ($fields[3] -ceq $spec -or $fields[3].StartsWith("$spec.", [StringComparison]::Ordinal))) {
+            $row = $fields
+            break
+          }
+        }
+        if (-not $row) {
+          Skip-Seed "no pinned Python $spec for win32 $arch"
+        }
+        $version, $sha256, $url = $row[3], $row[4], $row[5]
+        $dest = Join-Path $env:RUNNER_TOOL_CACHE "Python\$version\$arch"
+        if (Test-Path -LiteralPath "$dest.complete") {
+          Skip-Seed "Python $version ($arch) is already in the tool cache"
+        }
+        $work = Join-Path $env:RUNNER_TEMP ('seed-python.' + [IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Path $work | Out-Null
+        $archive = Join-Path $work 'archive.zip'
+        $downloaded = $false
+        if ($url.StartsWith('https://', [StringComparison]::Ordinal)) {
+          $attempts = [int]$env:SEED_DOWNLOAD_ATTEMPTS
+          foreach ($attempt in 1..$attempts) {
+            try {
+              # .NET follows a redirect from https only to https. The timeout
+              # covers the whole response, body included.
+              $handler = [System.Net.Http.HttpClientHandler]::new()
+              $handler.SslProtocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13'
+              $client = [System.Net.Http.HttpClient]::new($handler)
+              $client.Timeout = [TimeSpan]::FromSeconds([int]$env:SEED_DOWNLOAD_ATTEMPT_SECONDS)
+              $client.DefaultRequestHeaders.UserAgent.ParseAdd('seed-python-tool-cache')
+              [IO.File]::WriteAllBytes($archive, $client.GetByteArrayAsync($url).GetAwaiter().GetResult())
+              $downloaded = $true
+              break
+            } catch {
+              Write-Host "download attempt $attempt failed: $($_.Exception.GetType().Name)"
+              Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+            }
+          }
+        }
+        if (-not $downloaded) {
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          Skip-Seed "the download of $url failed $env:SEED_DOWNLOAD_ATTEMPTS times"
+        }
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+        if ($actual -cne $sha256) {
+          Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "::error title=seed-python-tool-cache::SHA-256 mismatch for ${url}: expected $sha256, got $actual"
+          exit 1
+        }
+        $installed = $false
+        try {
+          $unpacked = Join-Path $work 'unpacked'
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
+          # The installer is run the way setup-python runs it: Windows
+          # PowerShell, from the unpacked directory.
+          Push-Location -LiteralPath $unpacked
+          try {
+            & powershell ./setup.ps1
+            $installed = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath "$dest.complete")
+          } finally {
+            Pop-Location
+          }
+        } catch {
+          Write-Host "install failed: $($_.Exception.GetType().Name)"
+        }
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not $installed) {
+          Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$dest.complete" -Force -ErrorAction SilentlyContinue
+          Skip-Seed "the verified Python $version archive did not install"
+        }
+        Write-Host "seeded Python $version ($arch) at $dest"

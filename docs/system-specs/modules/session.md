@@ -3228,6 +3228,19 @@ a stale wake). Telegram gives it back on the same refusals it has. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
 
+The dashboard builds the restore against the history replay the same prompt carries:
+`build_cancelled_turn_preamble(conversation_log, session_key, replay=compressed)`. A
+cold start rebuilds that replay from the transcript, and the first-turn history debt
+stays armed after a cancel, so the first Stop of a fresh chat leaves a next prompt whose
+replay already holds the stopped turn. When the replay holds the stopped request as a
+whole `User:` row (compared after the image-reference strip and punctuation fold the
+replay applies), the restore is `""` and the request reaches the model once, through the
+replay. The replay keeps the newest rows that fit its budget, so a stopped turn whose
+reply pushed the request row out of it keeps the restore: nothing else names the request.
+Slack and the channel pipelines pass no replay and are unchanged. Tests:
+`test/test_dashboard_first_turn_cancel_restore.py` and `TestCancelledTurnPreambleReplay`
+in `test/test_history_restore_preambles.py`.
+
 ### Owner-fenced deadline cancel: `cancel_owned_turn`
 
 `SessionManager.cancel_owned_turn(key, owner_task, wait_ack_timeout=...)` is the

@@ -203,7 +203,7 @@ goes to the owner of its responsibility:
 |---|---|
 | `token_auth_paths.py` | Requests that skip token auth (static assets, self-authenticating webhooks, CSRF exemptions, the SPA shell and app-window paths), and the refusal and auth-log helpers |
 | `token_auth_tokens.py` | Minting, validating, pinning and revoking session tokens; app secrets; the per-process token state |
-| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes |
+| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes; the refusal body when it reaches past them, worded by `app_scope_refusal.py` (not a facade owner) |
 | `token_auth_callers.py` | Unix-socket peer verification, and attributing a request to its app, cron job, sub-agent or member |
 
 #### Token Format
@@ -217,6 +217,18 @@ goes to the owner of its responsibility:
 `generate_token` always emits these six claims: `nonce` makes each token distinct,
 and `gen` is the revocation generation `validate_token` compares against the persisted
 value. `app`, `prompt`, `peer_key` and the scoping claims below are added only when set.
+
+A token that carries a `prompt` is capped at `LINK_TOKEN_MAX_CHARS` (3,000)
+characters. The prompt is signed into the URL as ASCII-escaped JSON, so a long or
+non-ASCII message makes a long link, and Slack splits a message line at about
+4,000 bytes. A cut link fails its signature, so it signs nobody in, and a channel
+challenge link never opens its window. When the token would pass the cap,
+`generate_token` drops the `prompt` claim and logs a warning; the other claims
+stay. The dashboard still reconnects to the signed `session_key`, or creates a
+session and links it to the signed `channel` + `thread_ts`. It skips prompt
+prefill and auto-send when no prompt is present; the message is still in the
+chat it came from (`test_token_auth_link_prompt_size.py`). A token with neither
+a prompt nor Slack context does not route a session.
 
 `kind` is `"session"` only on a token minted as a session: the middleware's
 link→session exchange and the refresh rotation pass `generate_token(...,
@@ -604,7 +616,7 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-An owner-only Public route (`/v1/models`) registers through
+An owner-only Public route (`/v1/models`, `/v1/responses`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each owner-only Public path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. Any other caller, an app token included, gets
@@ -904,6 +916,7 @@ published, even when the file cannot be read
 An **app token** (payload carries a non-empty `app` claim, minted by the `X-App-Secret` exchange at `POST /api/apps/<name>/token`) must not have the same reach as a dashboard-user token. `_enforce_app_scope(request, app_name, path)` applies least privilege, **deny-by-default**:
 
 - An app token may access **only** (1) its **own namespace** — `/apps/<name>/...` and `/api/apps/<name>/...`, matched on a path boundary so app `foo` cannot reach app `foo-bar` — and (2) the API path prefixes the app declared in its manifest `permissions.api` allowlist (`_app_api_allowlist`, cached ~30s; any load failure returns an empty tuple → confined to its own namespace only; entries an update added stay out until the owner approves them, see `approved-grants.json` in app-kit-platform §13). Everything else is a 403 with an `app_scope_check` SEL audit event.
+- On an `/api/` path the 403 body says why and what clears it (`app_scope_refusal.py`): `code` is `app_disabled` when the owner-enable marker is gone (the prime and the allowlist read both record it, and it outranks every other cause), `app_permission_not_approved` when a declared entry the owner has not approved covers the path, `app_permission_not_declared` when no declared entry covers it, and `app_permission_unavailable` when the grant could not be read or an update is swapping the app's files. `error` holds the cause and the steps in text the app can log; for the first three codes that includes the app's page (`/apps/detail/<name>`) where the owner clicks "Enable" or "Approve new permissions", and `pending_approval` lists the held-back entries that cover the path. The wording reads only what the allowlist read stored beside its entry under the same timestamp (`_app_grant_facts`, filled by `_read_grant_facts` through `apps.manager.held_back_app_grants`), so the refusal path reads no disk, and a failure there never changes the allowlist. Any other path keeps `_deny`'s sign-in page with its fixed reason, because that page quotes the reason unescaped.
 - It is enforced in **every** middleware branch that admits a token (the normal cookie/query-param flow and the cross-app `/apps/<other>/api` reverse-proxy re-check) — otherwise an app token could reach a mixed internal path (e.g. `/api/chat`, `/api/spawn`) with no app identity set and be mistaken for the dashboard user (privilege escalation).
 - It is a **no-op for dashboard-user tokens** (empty `app` claim), which bypass the gate entirely.
 
@@ -1459,6 +1472,7 @@ already names where to sign in.
 | Messaging link generated | `slack.dashboard_token`, `telegram.dashboard_token`, `teams.dashboard_token`, or `webex.dashboard_token` | `ok` | `ttl=<seconds>` |
 | Request accepted | `dashboard.token_auth` | `ok` | request path |
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
+| `?token=` refused, session cookie beside it authenticated instead | `dashboard.token_auth` | `query_token_rejected` | the link's refusal reason (`token expired`, `invalid signature`, `token superseded`, ...); the token itself is never logged. The request proceeds on the cookie, which grants nothing a cookie-only request would not: no exchange, no new cookie, and no `on_token_consumed` call, so a Slack challenge link refused this way opens no window. Written by the main flow and by both internal-path cookie branches (`_log_query_token_refused`); `_extract_and_validate_token` only returns the refusal reason, so each caller names the caller through `_audit_uid`, the verified peer login when a tailnet peer resolved, like the request's other rows. The request's own row follows it: `ok`, or `denied` when the cookie's peer pin does not match. |
 | Internal-route request granted (loopback `X-Internal-Secret`, or an agent-socket capability) | `internal_auth`, `source=token_auth` | `granted` | request path; caller is the peer address (empty on a unix socket, the dashboard's or the agent socket), or the verified tailnet login; `error` is `agent socket capability` for an agent-socket grant. The grant branch writes no `dashboard.token_auth` row with caller `internal` beside it, because that row would carry no fact this one lacks. An agent-socket request also carries the agent-socket gate's own `dashboard.token_auth` `granted` row (caller `agent-ipc`), which the same middleware writes earlier. The internal arm's secret refusals (no secret configured, a wrong or empty secret, a delegated caller whose record is gone) each write both an `internal_auth` and a `dashboard.token_auth` `denied` row. |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |
 

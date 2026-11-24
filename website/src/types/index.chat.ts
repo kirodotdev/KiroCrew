@@ -407,6 +407,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
+  /** On a crewmate thread's own row: `dashboard.show_bot_sessions_in_list`
+   *  (`crew_mode.MATE_LISTED_FIELD`). True keeps the sessions it dispatched in the
+   *  person's session lists (`mateThreadsHidingSessions`). Absent elsewhere. */
+  bot_sessions_listed?: boolean
   /** True on a conversation that started in Slack while
    *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
    *  The person's session lists leave it out unless it is the open session
@@ -440,6 +444,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * for the user, a terminal error and a tool-approval prompt still surface.
    * Durable, like `pinned`. */
   muted?: boolean
+  /** The user-owned per-session PR and Issue chip switch, set from the session
+   * menu. When true the gateway sends this row no `source_links` (and
+   * `source_links_total` 0) and refreshes none of its chips' status. Durable,
+   * like `muted`. */
+  source_links_off?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS

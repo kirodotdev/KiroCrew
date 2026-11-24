@@ -20,6 +20,7 @@ is attributable to the code rather than to the fixture:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -719,6 +720,37 @@ def test_a_cut_window_keeps_records_from_the_first_event(tmp_path, monkeypatch):
     assert "KEPTRECORD0199" in out, "whole records after the boundary must survive"
 
 
+def test_a_cut_window_of_json_events_keeps_records_and_honours_since(tmp_path, monkeypatch):
+    """A kiro-cli 3.x ``mcp.log`` line is one JSON event, and it starts a record.
+
+    Its ``timestamp`` field is what both the boundary trim and ``since`` read, so a
+    cut window of such lines keeps its newest records instead of only the note.
+    """
+    body = "".join(
+        json.dumps(
+            {
+                "timestamp": f"2026-11-23T02:{i // 60:02d}:{i % 60:02d}.000Z",
+                "level": "INFO",
+                "message": f"JSONRECORD{i:04d} mcp.callTool.ok",
+            }
+        )
+        + "\n"
+        for i in range(300)
+    )
+    _source(monkeypatch, tmp_path, body)
+    monkeypatch.setattr(diagnostics, "_MAX_LOG_READ_BYTES", 4096)
+
+    out = diagnostics.read_kiro_cli_logs()
+
+    assert "truncated" in out, "the cut must still be announced"
+    assert "JSONRECORD0280" in out and "JSONRECORD0299" in out, "JSON events were trimmed away"
+
+    out = diagnostics.read_kiro_cli_logs(since="2026-11-23T02:04:50")
+
+    assert "JSONRECORD0280" not in out, "since did not read the event's timestamp field"
+    assert "JSONRECORD0299" in out
+
+
 def test_an_untruncated_window_is_not_trimmed(tmp_path, monkeypatch):
     """Nothing was cut, so the first line is real output and must be kept.
 
@@ -762,18 +794,18 @@ def test_a_numeric_frame_line_is_not_a_record_boundary(tmp_path, monkeypatch):
     assert payload not in out, "a numeric JSON line was treated as a record boundary"
 
 
-def test_starts_a_record_accepts_real_records_and_rejects_frame_lines():
+def test_record_timestamp_accepts_real_records_and_rejects_frame_lines():
     """The predicate's two directions, stated as a unit test.
 
     Both ISO variants the module's `since` semantics describe are records; a JSON
     number, a quoted key and an indented continuation are not.
     """
-    assert diagnostics._starts_a_record("2026-09-06T16:00:00.123Z ERROR boot failed\n")
-    assert diagnostics._starts_a_record("2026-09-06 16:00:00 ERROR boot failed\n")
-    assert not diagnostics._starts_a_record("      1000000,\n")
-    assert not diagnostics._starts_a_record("      1234-5,\n")
-    assert not diagnostics._starts_a_record('    "query": "text"\n')
-    assert not diagnostics._starts_a_record("  continuation of an event\n")
+    assert diagnostics._record_timestamp("2026-09-06T16:00:00.123Z ERROR boot failed\n")
+    assert diagnostics._record_timestamp("2026-09-06 16:00:00 ERROR boot failed\n")
+    assert not diagnostics._record_timestamp("      1000000,\n")
+    assert not diagnostics._record_timestamp("      1234-5,\n")
+    assert not diagnostics._record_timestamp('    "query": "text"\n')
+    assert not diagnostics._record_timestamp("  continuation of an event\n")
 
 
 def test_session_transcripts_are_not_read(tmp_path, monkeypatch):
