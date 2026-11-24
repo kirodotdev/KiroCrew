@@ -111,7 +111,7 @@ function buildTabs() {
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
     // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus', 'lesson'] },
     // Kiro sign-in, on its own tab: the agent harness is one of several things
     // that run as this account (Team Crews and Shared Crews do too), so it is
     // reachable whichever harness is selected.

@@ -28,6 +28,7 @@ when the store itself broadcast it.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections import OrderedDict
 from typing import Any
@@ -468,9 +469,14 @@ def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
 # ── lessons ──
 
 _LESSON_RULE_MAX = 300
+# A semantic lesson key as ``vector_memory._lesson_key`` writes it. The row is
+# agent-writable, so only this shape is ever handed to the dashboard as a link.
+_LESSON_KEY_RE = re.compile(r"lesson\.[0-9a-f]{12,64}")
 
 
-def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> None:
+def record_lesson_saved(
+    state: Any, slot_key: str, rule: Any, outcome: Any, *, key: Any = None, store: Any = None
+) -> None:
     """Put one just-saved lesson into the conversation that saved it. Never raises.
 
     A lesson is re-injected into every later session, so a write the agent made
@@ -480,10 +486,14 @@ def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> N
     row is display-only and carries the redacted rule text and the outcome, which
     the dashboard words as "saved" or "updated". It authorizes nothing, so there
     is nothing to read back from it.
+
+    ``key`` is the semantic row the write landed on, when the store has one, so
+    the row's "Review lessons" link can open that exact lesson.
     """
     try:
         # The store's own "this write changed me" set. ``LessonWriteOutcome`` is a
         # ``str`` enum, so the JSONL tier's plain outcome strings match it too.
+        from kiro_crew.memory_stores import memory_store_name_defect
         from kiro_crew.vector_memory import _LESSON_WROTE_OUTCOMES
 
         status = str(outcome or "")
@@ -494,7 +504,16 @@ def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> N
         if slot is None or not text:
             return
         item_id = uuid.uuid4().hex[:16]
-        meta = _row_meta(SURFACE_LESSON, item_id, slot_key, rule=text, status=status)
+        lesson_key = key if isinstance(key, str) and _LESSON_KEY_RE.fullmatch(key) else None
+        meta = _row_meta(
+            SURFACE_LESSON,
+            item_id,
+            slot_key,
+            rule=text,
+            status=status,
+            key=lesson_key,
+            store=store if memory_store_name_defect(store) is None else None,
+        )
         _append_row(slot, f"Lesson {'updated' if status == 'enriched' else 'saved'}: {text}", meta)
     except Exception:
         logger.warning("could not record a saved lesson in its conversation", exc_info=True)

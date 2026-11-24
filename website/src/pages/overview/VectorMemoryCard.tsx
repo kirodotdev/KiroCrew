@@ -199,7 +199,7 @@ function SetupDiagnostic({ text }: { text: string }) {
  *  vector memory holds them (`?focus=lessons`, see MemoryTab). */
 export const SEMANTIC_CARD_ID = 'memory-semantic-card'
 
-export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onSettledChange, onDirtyChange, initialSemanticFilter, diagnosticsOnly = false }: {
+export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onSettledChange, onDirtyChange, initialSemanticFilter, focusKey, diagnosticsOnly = false }: {
   onActiveChange?: (active: boolean) => void
   onMigratedChange?: (migrated: boolean) => void
   /** True once the status reads that decide `active` have answered, so a caller
@@ -210,6 +210,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   onDirtyChange?: (dirty: boolean) => void
   /** The Semantic filter's text on mount: a link that names what to show. */
   initialSemanticFilter?: string
+  /** One row a link opened (`?lesson=`): read on its own, so it is found past
+   *  the render cap, then pinned first, highlighted and scrolled to. */
+  focusKey?: string
   diagnosticsOnly?: boolean
 }) {
   // One instance covers every input in this card; the binding's focus/blur reset makes sharing safe.
@@ -294,6 +297,24 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   }
   const [embeddingStartError, setEmbeddingStartError] = useState('')
   const [semFilter, setSemFilter] = useState(initialSemanticFilter ?? '')
+  // The pin holds until the person changes the filter, which asks for other rows.
+  const [pinFocus, setPinFocus] = useState(true)
+  const focusRead = useQuery({
+    queryKey: ['member-memory', 'default', 'semantic-focus', focusKey],
+    queryFn: () => api.vectorSemanticSearch(focusKey as string),
+    enabled: !!focusKey && !diagnosticsOnly,
+    staleTime: 0,
+    retry: false,
+  })
+  const focused = pinFocus && focusKey ? (focusRead.data?.entries ?? []).find(e => e.key === focusKey) as SemanticEntry | undefined : undefined
+  const focusScrolled = useRef(false)
+  useEffect(() => {
+    if (!focused || focusScrolled.current) return
+    const row = document.querySelector('[data-semantic-focus="true"]')
+    if (!row) return
+    focusScrolled.current = true
+    row.scrollIntoView({ block: 'center' })
+  }, [focused])
 
   const ALLOWLIST_PREFIXES = useMemo(() => [
     'pref.frontend.', 'pref.backend.', 'pref.streaming.', 'pref.editor.', 'pref.os', 'pref.shell',
@@ -319,13 +340,15 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       String(e.key ?? '').toLowerCase().includes(q) || semanticValueText(e).toLowerCase().includes(q))
   }, [semantic, semFilter])
   const visibleSemantic = useMemo(() => filteredSemantic.slice(0, SEMANTIC_RENDER_CAP), [filteredSemantic])
+  const shownSemantic = useMemo(() => focused ? [focused, ...visibleSemantic.filter(e => e.key !== focused.key)] : visibleSemantic, [focused, visibleSemantic])
 
   const { refetch: refetchStats } = statsRead
   const { refetch: refetchEmbedding } = embeddingRead
   const { refetch: refetchSemantic } = semanticRead
+  const { refetch: refetchFocus } = focusRead
   const load = useCallback(() => Promise.all([
-    refetchStats(), refetchEmbedding(), ...(diagnosticsOnly ? [] : [refetchSemantic()]),
-  ]), [refetchStats, refetchEmbedding, refetchSemantic, diagnosticsOnly])
+    refetchStats(), refetchEmbedding(), ...(diagnosticsOnly ? [] : [refetchSemantic()]), ...(focusKey && !diagnosticsOnly ? [refetchFocus()] : []),
+  ]), [refetchStats, refetchEmbedding, refetchSemantic, refetchFocus, focusKey, diagnosticsOnly])
 
   useEffect(() => { if (stats?.migrated != null) onMigratedChange?.(stats.migrated) }, [stats?.migrated, onMigratedChange])
 
@@ -425,7 +448,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   useEffect(() => { onActiveChange?.(!!active) }, [active, onActiveChange])
   const settled = !statsRead.isPending && !embeddingRead.isPending
   useEffect(() => { onSettledChange?.(settled) }, [settled, onSettledChange])
-  const editing = editKey === null ? undefined : semantic.find(e => e.key === editKey)
+  const editing = editKey === null ? undefined : semantic.find(e => e.key === editKey) ?? (focused?.key === editKey ? focused : undefined)
   const dirty = !!newKey || !!newVal || (editing !== undefined && editVal !== semanticValueText(editing))
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
 
@@ -627,12 +650,15 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       )}
     </Card>
 
-    {(active || queryReadFailed(semanticRead)) && view === 'semantic' && !diagnosticsOnly && (
+    {(active || queryReadFailed(semanticRead) || queryReadFailed(focusRead)) && view === 'semantic' && !diagnosticsOnly && (
       <Card id={SEMANTIC_CARD_ID}>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_key_value_facts_about_you_confidence')} /></CardTitle>
         {/* No hand-off: retain new and inline memory drafts while retrying the read. */}
         <ErrorNotice message={semanticRead.error ? extractError(semanticRead.error) : undefined} />
         {queryReadFailed(semanticRead) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={semanticRead.isFetching || undefined} onClick={() => { if (!semanticRead.isFetching) void refetchSemantic() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
+        {/* No hand-off: retain the unsaved semantic key, value and inline edit drafts. */}
+        <ErrorNotice message={focusRead.error ? extractError(focusRead.error) : undefined} />
+        {queryReadFailed(focusRead) && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={focusRead.isFetching || undefined} onClick={() => { if (!focusRead.isFetching) void refetchFocus() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {semanticRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         {/* Two inputs and a button. `flex-wrap` so the button drops to its own
             line at a narrow width instead of the three of them competing: with
@@ -651,8 +677,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {/* No hand-off: preserve the rejected value and inline edit for retry. */}
         <ErrorNotice message={writeError} className="mb-2" />
         <div className="flex gap-2 items-center flex-wrap mb-3">
-          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.filter_entries_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
-          {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
+          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.filter_entries_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null); setPinFocus(false) }} />
+          {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null); setPinFocus(false) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
@@ -664,11 +690,12 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             '',
           ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map((e, i) => {
+          {shownSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : shownSemantic.map((e, i) => {
             const valStr = semanticValueText(e)
             const isEditing = editKey === e.key
+            const isFocus = focused?.key === e.key
             return (
-              <tr key={e.key} className="hover:bg-bg-hover transition-colors group">
+              <tr key={e.key} className={`hover:bg-bg-hover transition-colors group${isFocus ? ' bg-accent-subtle' : ''}`} data-semantic-focus={isFocus || undefined}>
                 <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-accent/80">{e.key}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm cursor-pointer max-w-[400px]" onClick={() => { if (!isEditing) { setEditKey(e.key); setEditVal(valStr) } }}>
                   {isEditing ? (

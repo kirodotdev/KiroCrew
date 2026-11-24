@@ -403,6 +403,27 @@ the store keeps lessons as `lesson.*` rows. Before that answer it scrolls nowher
 because the Lessons card renders until the status hides it. Drawing is best effort: a failure is logged and
 the route's response is unchanged.
 
+On the vector tier the row also carries `key`, the semantic row the write landed
+on (`LessonWriteResult.key`), kept only when it has the `lesson.<hex>` shape. The
+link then adds `&lesson=<key>`, and the Semantic browser reads that row on its own
+(`GET /api/memory/semantic?q=<key>`, exact match kept), so a lesson past the
+browser's render cap is still found. It pins the row first, highlights it and
+scrolls to it until the person changes the filter. A failed focused read renders
+through `ErrorNotice` with a Retry that repeats that lookup without discarding
+semantic drafts. The JSONL tier has no key, so its link stays the plain lessons
+focus.
+
+A named-store write also carries `store`, taken from the resolved `_lesson_silo`
+and kept only when `memory_store_name_defect` accepts it. Global writes omit it.
+The dashboard checks the store's shape and adds `&store=<store>` to the link;
+this selects the existing member memory panel, not the global Semantic browser.
+For a lesson landing, its records editor starts with the lesson key as the search
+and `kind=directive`. The records endpoint searches semantic keys as well as
+content, so the lesson is found beyond the unfiltered first page. The exact row
+is highlighted and scrolled to once; changing the filter releases the highlight.
+The landing filter does not replace the store's previously saved browser filter.
+Store ownership and read authorization remain enforced by the existing endpoints.
+
 ### `learn_add` Session Authorization
 
 The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-scope checks that `dashboard/handlers/cron_lessons.py:api_lessons_create` runs through `_recognize_session` (`dashboard/handlers/cron_caller_session.py`):
