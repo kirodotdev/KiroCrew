@@ -13,7 +13,9 @@ not report, and the card therefore never shows a figure for: credits, tokens, co
 use and the model of one child, and a way to stop one child while the turn goes on.
 
 A card of such a turn carries ``engine: true`` on its ``subagent_spawn``,
-``subagent_done`` and replayed frames, so the page can say those two things in words.
+``subagent_done`` and replayed frames, so the page can say those two things in words,
+and ``engine_turn`` (:func:`engine_turn_key`), so the page draws one turn's cards as
+one batch.
 
 Every string such a card, its approval card or its record shows is model-written and
 is cut to a display bound. Each of those cuts goes through :func:`shown_cut`, or
@@ -22,6 +24,7 @@ is cut to a display bound. Each of those cuts goes through :func:`shown_cut`, or
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 from kiro_crew.agent_sdk.kas_subagent_runs import NATIVE_CHILD_ROSTER_CAP, liveness_key
@@ -57,6 +60,8 @@ ASKER_MAX = 80
 #: every scan made here: the longest tail the stream redactor holds back for one
 #: (a JWT). A credential that runs further past a bound than this is cut like text.
 SHOWN_LOOKAHEAD = 4096
+#: The card field naming the turn an engine card belongs to (:func:`engine_turn_key`).
+ENGINE_TURN_FIELD = "engine_turn"
 
 
 def shown_cut(text: str, bound: int) -> str:
@@ -178,6 +183,19 @@ def session_runs_engine_children(slot: Any) -> bool:
         return False
 
 
+def engine_turn_key(turn: Any) -> str:
+    """An opaque key for *turn*, made once per turn: the page groups the turn's cards by it.
+
+    Random, so it says nothing about the chat, and new each turn, so a card from an
+    earlier turn of the same chat never reads as this one's.
+    """
+    key = getattr(turn, "_engine_turn_key", None)
+    if not isinstance(key, str) or not key:
+        key = secrets.token_hex(8)
+        turn._engine_turn_key = key
+    return key
+
+
 class EngineRow(dict[str, Any]):
     """A roster row of a KAS engine turn's own sub-agent, as its card reads it.
 
@@ -186,8 +204,13 @@ class EngineRow(dict[str, Any]):
     """
 
 
-def engine_rows(rows: object, tracker: dict[str, dict[Any, Any]]) -> list[EngineRow]:
+def engine_rows(
+    rows: object, tracker: dict[str, dict[Any, Any]], turn_key: str = ""
+) -> list[EngineRow]:
     """The roster *rows* of an engine turn, each as the card reads it.
+
+    *turn_key* (:func:`engine_turn_key`), when given, goes on each row as
+    :data:`ENGINE_TURN_FIELD`, which the card keeps and its frames carry.
 
     For each row the session handle kept (``acp.session_handle_native_children``):
 
@@ -217,6 +240,8 @@ def engine_rows(rows: object, tracker: dict[str, dict[Any, Any]]) -> list[Engine
         if stage == ENGINE_NOT_STARTED and drawn is None:
             continue
         card = EngineRow(row)
+        if turn_key:
+            card[ENGINE_TURN_FIELD] = turn_key
         target = row.get("target")
         prompt = row.get("prompt")
         if drawn is None and isinstance(target, str) and target.strip():
@@ -324,12 +349,14 @@ __all__ = [
     "ENGINE_TASK_MAX",
     "ENGINE_TOOL_CALLS_KEPT",
     "ENGINE_TOOL_TITLE_MAX",
+    "ENGINE_TURN_FIELD",
     "EngineRow",
     "SHOWN_LOOKAHEAD",
     "approval_card_fields",
     "child_tool_frame",
     "cut_unsplit",
     "engine_rows",
+    "engine_turn_key",
     "remember_dispatch_tasks",
     "session_runs_engine_children",
     "shown_cut",

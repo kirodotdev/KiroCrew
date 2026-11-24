@@ -13034,11 +13034,15 @@
         "engine_no_output": "(출력 없음)"
       },
       "engineSubagentRecord": {
-        "title": "이번 턴의 하위 에이전트: {{n}}",
         "end_completed": "완료",
         "end_failed": "실패",
         "end_not_reported": "엔진이 종료를 보고하지 않음",
-        "more_children": "목록에 없는 다른 하위 에이전트: {{n}}"
+        "more_children": "목록에 없는 다른 하위 에이전트: {{n}}",
+        "took": "소요 시간 {{duration}}",
+        "duration_title": "첫 하위 에이전트 시작부터 마지막 하위 에이전트 종료까지",
+        "ran_title": "이 하위 에이전트가 실행된 시간",
+        "turn_credits": "{{credits}} 크레딧, 턴 전체",
+        "turn_credits_title": "하위 에이전트를 포함한 턴 전체의 크레딧입니다. 엔진은 하위 에이전트 하나의 크레딧을 보고하지 않습니다."
       },
       "assistantMessage": {
         "share_load_failed": "공유 대화 상자를 불러오지 못했습니다",

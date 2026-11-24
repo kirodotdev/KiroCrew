@@ -13034,11 +13034,15 @@
         "engine_no_output": "（无输出）"
       },
       "engineSubagentRecord": {
-        "title": "本轮的子代理：{{n}}",
         "end_completed": "已完成",
         "end_failed": "失败",
         "end_not_reported": "引擎未报告结束状态",
-        "more_children": "未列出的其他子代理：{{n}}"
+        "more_children": "未列出的其他子代理：{{n}}",
+        "took": "用时 {{duration}}",
+        "duration_title": "从第一个子代理开始到最后一个子代理结束",
+        "ran_title": "这个子代理运行了多久",
+        "turn_credits": "{{credits}} 额度（整个轮次）",
+        "turn_credits_title": "整个轮次的额度，包含子代理。引擎不报告单个子代理的额度。"
       },
       "assistantMessage": {
         "share_load_failed": "无法加载分享对话框",

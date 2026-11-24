@@ -13626,11 +13626,15 @@
         "engine_no_output": "(sin salida)"
       },
       "engineSubagentRecord": {
-        "title": "Subagentes en este turno: {{n}}",
         "end_completed": "Completado",
         "end_failed": "Fallido",
         "end_not_reported": "El motor no informó del final",
-        "more_children": "Otros subagentes no listados: {{n}}"
+        "more_children": "Otros subagentes no listados: {{n}}",
+        "took": "Tardó {{duration}}",
+        "duration_title": "Desde que empezó el primer subagente hasta que terminó el último",
+        "ran_title": "Cuánto tiempo se ejecutó este subagente",
+        "turn_credits": "{{credits}} créditos, todo el turno",
+        "turn_credits_title": "Créditos de todo el turno, subagentes incluidos. El motor no informa de los créditos de un solo subagente."
       },
       "assistantMessage": {
         "share_load_failed": "No se pudo cargar el cuadro de compartir",

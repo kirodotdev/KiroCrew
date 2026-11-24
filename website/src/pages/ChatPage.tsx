@@ -15,6 +15,7 @@ import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
+import { EngineSubagentLiveCard } from './chat/EngineSubagentRecord'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { usePromoteSlot } from './chat/usePromoteSlot'
@@ -1285,6 +1286,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               footerActivityKey={!slotLoading && slotSwitchTarget !== activeSlot && (slotRunning || !currentSlot?.preparing) ? transcriptActivityKey(messages) : undefined}
               footerSentHere={turnSentHere(messages)}
               footerToolsReturned={footerToolsReturned}
+              liveFoot={<EngineSubagentLiveCard slot={activeSlot} running={slotRunning} turnMark={`${currentSlot?.turn_gen ?? ''}:${currentSlot?.turn ?? ''}`} />}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}

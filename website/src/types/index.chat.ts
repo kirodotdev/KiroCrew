@@ -781,6 +781,10 @@ export interface SubagentActivity {
    *  stopped or retried alone, and the engine reports no credits or model for
    *  it. Every other `native:*` card leaves this unset. */
   engine?: boolean
+  /** The turn an engine sub-agent belongs to: the gateway's random per-turn key
+   *  (`engine_turn` on its frames), so the chat draws one turn's sub-agents as one
+   *  batch card. */
+  engineTurn?: string
 }
 
 /** Where `clampToolOutput` (wire.ts in store/chat) removed the middle of a tool

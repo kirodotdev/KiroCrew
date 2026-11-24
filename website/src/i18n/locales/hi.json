@@ -13330,11 +13330,15 @@
         "engine_no_output": "(कोई आउटपुट नहीं)"
       },
       "engineSubagentRecord": {
-        "title": "इस बारी के सब-एजेंट: {{n}}",
         "end_completed": "पूरा हुआ",
         "end_failed": "विफल",
         "end_not_reported": "इंजन ने अंत की जानकारी नहीं दी",
-        "more_children": "सूची में न दिखाए गए अन्य सब-एजेंट: {{n}}"
+        "more_children": "सूची में न दिखाए गए अन्य सब-एजेंट: {{n}}",
+        "took": "{{duration}} लगे",
+        "duration_title": "पहले सब-एजेंट के शुरू होने से आखिरी के खत्म होने तक",
+        "ran_title": "यह सब-एजेंट कितनी देर चला",
+        "turn_credits": "{{credits}} क्रेडिट, पूरा टर्न",
+        "turn_credits_title": "पूरे टर्न के क्रेडिट, सब-एजेंट समेत। इंजन किसी एक सब-एजेंट के क्रेडिट नहीं बताता।"
       },
       "assistantMessage": {
         "share_load_failed": "साझा करने का डायलॉग लोड नहीं हो पाया",

@@ -13330,11 +13330,15 @@
         "engine_no_output": "(keine Ausgabe)"
       },
       "engineSubagentRecord": {
-        "title": "Sub-Agenten in diesem Durchgang: {{n}}",
         "end_completed": "Abgeschlossen",
         "end_failed": "Fehlgeschlagen",
         "end_not_reported": "Ende von der Engine nicht gemeldet",
-        "more_children": "Weitere, nicht aufgeführte Sub-Agenten: {{n}}"
+        "more_children": "Weitere, nicht aufgeführte Sub-Agenten: {{n}}",
+        "took": "Dauer {{duration}}",
+        "duration_title": "Vom Start des ersten Sub-Agenten bis zum Ende des letzten",
+        "ran_title": "Wie lange dieser Sub-Agent lief",
+        "turn_credits": "{{credits}} Credits, ganzer Durchlauf",
+        "turn_credits_title": "Credits für den ganzen Durchlauf, Sub-Agenten eingeschlossen. Die Engine meldet keine Credits für einen einzelnen Sub-Agenten."
       },
       "assistantMessage": {
         "share_load_failed": "Teilen-Dialog konnte nicht geladen werden",
