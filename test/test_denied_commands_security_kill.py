@@ -735,6 +735,13 @@ class TestSelfProtectionKillTargetScoping:
                 _RULE_KILL,
             ),
             (f"echo for w in x&&kiro*rew/ {_TOK}", _RULE_MINT),
+            # A `{ …; }` loop body, with a decoy `do` later in an echo argument.
+            (
+                'for w in a/; { function p*ll/ { /usr/bin/p?ill "$@"; }; '
+                f"'p*ll/' -f {_NAME}; }}; echo do done",
+                _RULE_KILL,
+            ),
+            (f"for w in a/; {{ 'kiro*rew/' {_TOK}; }}; echo do done", _RULE_MINT),
             # An outer frame shadows a body program, then a nested shell runs the loop.
             (
                 "ln() { ${1%/} -f $2; }; export -f ln; "

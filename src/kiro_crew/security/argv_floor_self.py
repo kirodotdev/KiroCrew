@@ -205,11 +205,12 @@ def _for_list_directory_globs(tokens: "list[str]", text: str, root: bool) -> "fr
         return frozenset()
     if len(tokens) < 6 or tokens[0] != "for" or tokens[2] != "in" or tokens[-1] != "done":
         return frozenset()
-    if not tokens[1].isidentifier() or "do" not in tokens:
+    if not tokens[1].isidentifier() or any(c in t.rstrip(";") for t in tokens for c in ";&\n"):
         return frozenset()
-    if any(c in t.rstrip(";") for t in tokens for c in ";&\n"):
+    # The list ends at its first ``;``-ended word and ``do`` comes next (no ``{ …; }`` body).
+    do = next((j for j in range(3, len(tokens)) if tokens[j].endswith(";")), len(tokens)) + 1
+    if do >= len(tokens) or tokens[do] != "do":
         return frozenset()
-    do = tokens.index("do")
     starts = [do + 1] + [j + 1 for j in range(do + 1, len(tokens) - 1) if tokens[j].endswith(";")]
     for j in starts:
         if tokens[j] != ";" and _shell_normalizer._program_basename(tokens[j]) not in (
