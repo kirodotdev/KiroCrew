@@ -883,6 +883,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_bound,
         _parse_row_dt,
         _sessions_dir,
+        _shard_counted_harnesses,
         _token_usage_dir,
         is_session_slot,
         resolve_window,
@@ -891,18 +892,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
-    from kiro_crew.agent_sdk.backends import (  # noqa: F401
-        ACP_BACKEND_ANTIGRAVITY,
-        ACP_BACKEND_CLAUDE,
-        ACP_BACKEND_CODEX,
-        ACP_BACKEND_COPILOT,
-        ACP_BACKEND_DEEPSEEK,
-        ACP_BACKEND_GOOSE,
-        ACP_BACKEND_MIMOCODE,
-        ACP_BACKEND_OPENCODE,
-        ACP_BACKEND_PI,
-        ACP_BACKEND_STRANDS,
-    )
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN  # noqa: F401
+    from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
     from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
