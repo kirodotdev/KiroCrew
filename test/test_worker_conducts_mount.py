@@ -103,29 +103,67 @@ class TestTheProviderKeysBothPopulations:
 
 
 class TestTheStartReadsTheKeyOffTheLoop:
-    """The key may load the config for a worker (the switch), so the session start
-    reads it in a worker thread and hands that answer to whichever session path it
-    runs: ``session/load`` for a resume, ``session/new`` otherwise."""
+    """The key may load the config for a worker (the switch), so a session on a backend
+    that can mount session control reads it in a worker thread and hands that answer
+    to whichever path it runs: ``session/load`` for a resume, ``session/new``
+    otherwise, and the session provider's own ``session/new`` for a new conversation.
+    Every other backend (kiro) passes an empty key with no thread hop and never calls
+    the read, as on main (harness-parity H13)."""
+
+    BACKENDS = pytest.mark.parametrize(
+        ("backend", "reads"),
+        [(ACP_BACKEND_KAS, True), (ACP_BACKEND_KIRO, False)],
+        ids=["kas", "kiro"],
+    )
+
+    @staticmethod
+    def _record(monkeypatch) -> tuple[int, list[int], list[str]]:
+        """The loop's thread, where each key read ran, and every ``to_thread`` target."""
+        import asyncio
+        import threading
+
+        read_in: list[int] = []
+        hopped: list[str] = []
+        real_to_thread = asyncio.to_thread
+
+        def key(self):
+            read_in.append(threading.get_ident())
+            return WORKER
+
+        async def to_thread(func, /, *args, **kwargs):
+            hopped.append(getattr(func, "__name__", ""))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(AcpProvider, "_member_session_key", key)
+        monkeypatch.setattr(asyncio, "to_thread", to_thread)
+        return threading.get_ident(), read_in, hopped
+
+    @staticmethod
+    def _check(sent: str, reads: bool, loop_thread: int, read_in: list, hopped: list) -> None:
+        if reads:
+            assert sent == WORKER
+            assert read_in and loop_thread not in read_in
+            assert "key" in hopped
+        else:
+            # No hop, and no call at all: the key read never runs off the kiro path.
+            assert "key" not in hopped
+            assert read_in == []
+            assert sent == ""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("resume", [False, True])
-    async def test_the_session_path_gets_the_key_read_off_the_loop(self, monkeypatch, resume):
-        import threading
+    @BACKENDS
+    @pytest.mark.parametrize("resume", [False, True], ids=["start", "resume"])
+    async def test_the_session_path_gets_the_key_read_off_the_loop(
+        self, monkeypatch, backend, reads, resume
+    ):
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from test_acp_provider import _build_provider
 
         from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
-        loop_thread = threading.get_ident()
-        read_in: list[int] = []
-
-        def key(self):
-            read_in.append(threading.get_ident())
-            return WORKER
-
-        monkeypatch.setattr(AcpProvider, "_member_session_key", key)
-        provider = _build_provider(backend="")
+        loop_thread, read_in, hopped = self._record(monkeypatch)
+        provider = _build_provider(backend=backend)
         provider._client._work_dir = "/tmp/ws"
         provider._client._agent = "kirocrew-mate-worker"
         provider._client._sandbox_mode = "auto"
@@ -150,8 +188,31 @@ class TestTheStartReadsTheKeyOffTheLoop:
         ):
             await provider._start_kiro_runtime()
         path = runtime.load_session if resume else runtime.create_session
-        assert path.await_args.kwargs["member_session_key"] == WORKER
-        assert read_in and loop_thread not in read_in
+        sent = path.await_args.kwargs["member_session_key"]
+        self._check(sent, reads, loop_thread, read_in, hopped)
+
+    @pytest.mark.asyncio
+    @BACKENDS
+    async def test_a_new_conversation_gets_the_key_read_off_the_loop(
+        self, monkeypatch, backend, reads
+    ):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from test_acp_provider import _build_provider
+
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        loop_thread, read_in, hopped = self._record(monkeypatch)
+        provider = _build_provider(backend=backend)
+        client = MagicMock(spec=AcpSessionProvider)
+        client.backend = backend
+        client._session_key = WORKER
+        client.new_conversation = AsyncMock()
+        provider._client = client
+        monkeypatch.setattr(provider, "_apply_initial_effort", AsyncMock())
+        await provider.new_conversation()
+        sent = client.new_conversation.await_args.kwargs["member_session_key"]
+        self._check(sent, reads, loop_thread, read_in, hopped)
 
 
 class TestTheRuntimePaths:

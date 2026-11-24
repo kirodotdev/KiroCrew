@@ -85,7 +85,7 @@ async def predicted_start_mounts(state: Any, slot: Any, config: Any) -> bool:
 
     The start's own predicate (``mate_worker_conducts.start_mounts_session_control``)
     on what a cold start of *slot* uses: the backend it selects under *config*
-    (``slot_effort.configured_backend_for_session``), the slot's agent and folder (the
+    (``chat_handlers.configured_backend_for_session``), the slot's agent and folder (the
     worktree admission picks first), its key for the spec its Bot's file shapes, and
     *config* for its Bot's switch, read off the loop. False with no read for any slot
     but a worker its Bot's thread opened, and for one whose session is live, which the
@@ -106,7 +106,7 @@ async def predicted_start_mounts(state: Any, slot: Any, config: Any) -> bool:
 def _cold_start_mounts(slot: Any, config: Any) -> bool:
     """The blocking half of :func:`predicted_start_mounts`."""
     from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
-    from kiro_crew.dashboard.chat_api.slot_effort import configured_backend_for_session
+    from kiro_crew.dashboard.chat_handlers import configured_backend_for_session
     from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
     from kiro_crew.mate_worker_conducts import start_mounts_session_control
 

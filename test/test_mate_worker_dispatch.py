@@ -743,7 +743,7 @@ class TestTheFirstTurnOnTheKit:
         the mode a person set, at the cold start and after the claim, while one whose
         start mounts is held to its Profile."""
         from kiro_crew.acp import session_mcp
-        from kiro_crew.dashboard.chat_api import slot_effort
+        from kiro_crew.dashboard import chat_handlers
         from kiro_crew.members import MEMBER_DISPATCH_SERVER
 
         state, caller, _execution = crewmate
@@ -751,8 +751,9 @@ class TestTheFirstTurnOnTheKit:
         _switch(tmp_path, on=True)
         worker = state.get_slot(_create(state, caller)["target"])
         _hold(worker, "trust")
+        # The facade is the import path and the patch surface.
         monkeypatch.setattr(
-            slot_effort, "configured_backend_for_session", lambda _key, _config: backend
+            chat_handlers, "configured_backend_for_session", lambda _key, _config: backend
         )
         off = {"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabled": True}}}
         monkeypatch.setattr(

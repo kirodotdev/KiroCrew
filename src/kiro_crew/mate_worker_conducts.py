@@ -142,7 +142,7 @@ def start_mounts_session_control(
     from kiro_crew import members
     from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
     from kiro_crew.agent_sdk.agent_specs import session_mcp_server_is_disabled
-    from kiro_crew.agent_sdk.backends_mcp import overlay_project_scope
+    from kiro_crew.agent_sdk.backends import overlay_project_scope
 
     if backend not in ACP_BACKENDS_MEMBER_DISPATCH:
         return False
