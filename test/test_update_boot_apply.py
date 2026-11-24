@@ -373,7 +373,9 @@ def test_a_manual_update_that_finishes_clears_a_stale_boot_apply_error(
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     update_next_start.finish(error="the update command failed")
     ran: list[bool] = []
-    monkeypatch.setattr("kiro_crew.cli_server._update", lambda force=False: ran.append(force))
+    monkeypatch.setattr(
+        "kiro_crew.cli_server._update", lambda force=False, release=None: ran.append(force)
+    )
     monkeypatch.setattr(sys, "argv", ["kirocrew", "update"])
 
     main()

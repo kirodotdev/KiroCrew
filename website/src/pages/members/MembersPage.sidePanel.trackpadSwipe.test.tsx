@@ -395,6 +395,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).toBe('1')
     })
 
+    it('does nothing while Settings → Chat → Side panel turns the swipe off', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      localStorage.setItem('mc-chat-config', JSON.stringify({ sidePanelSwipe: false }))
+      const chat = await openOncall()
+      expect(swipe(chat, 20, 30)).toBe(0)
+      expect(sliding()).toBe(false)
+      expect(screen.queryByTestId('member-side-panel')).toBeNull()
+      expect(localStorage.getItem(`${PANEL_OPEN_KEY}:oncall`)).not.toBe('1')
+    })
+
     /** The width the chat gives up for the sheet during a desktop drag, px. */
     const spacerW = () => {
       const el = screen.queryByTestId('member-side-panel-spacer') as HTMLElement | null

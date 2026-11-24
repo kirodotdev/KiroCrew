@@ -53,7 +53,7 @@ def _installing(state: dict[str, Any]) -> bool:
 def _status_payload(app: web.Application) -> dict[str, Any]:
     """Blocking (reads config and the engines directory); call off the loop."""
     from kiro_crew.agent_sdk import kas_bundle
-    from kiro_crew.agent_sdk.kas_bundle import KAS_PIN_VERSION, pinned_version
+    from kiro_crew.agent_sdk.kas_bundle import host_pin_version, pinned_version
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.loader_document import kas_bundle_declared
 
@@ -85,7 +85,7 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
         # next KAS spawn takes. ``choice_saved`` says which.
         "engine_choice": "engine" if on_engine else "kiro_cli",
         "choice_saved": saved,
-        "pinned_version": KAS_PIN_VERSION,
+        "pinned_version": host_pin_version(),
         "runs_version": pinned_version(),
         "installed": (
             {

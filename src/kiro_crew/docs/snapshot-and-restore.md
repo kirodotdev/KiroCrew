@@ -52,7 +52,7 @@ declares more than the free space where it extracts.
 |-----------|-------|
 | memory | `memory.db`, `memory_index.db`, `workspace/memory/`, `workspace/knowledge/`, `memory_stores/` |
 | crons | `crons.json` |
-| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
+| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `mcp.json` (the servers added on the MCP Servers page), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
 | crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
@@ -86,6 +86,10 @@ Crew agent templates in `<kiro home>/agents` (`~/.kiro/agents`) are not carried
 either, by `kirocrew snapshot` or by the dashboard export. The dashboard names
 the templates your crews use that the export leaves out, and on import names the
 ones this machine is missing.
+
+The servers you add on the MCP Servers page are kept in `mcp.json` in the data
+home, which rides in `config`. The dashboard export does not carry that file, and
+neither tool carries `~/.kiro/settings/mcp.json`, the MCP list Kiro CLI also reads.
 
 `memory` is self-contained: it names the markdown half of memory (preferences,
 projects, history) and the knowledge base explicitly, so `--components memory`
@@ -325,7 +329,7 @@ component was being replaced.
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,
-  because only then would the merge install it. A restored `config.json`, `config.local.json` or `ui-prefs.json` is
+  because only then would the merge install it. A restored `config.json`, `config.local.json`, `ui-prefs.json` or `mcp.json` is
   installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
   where the receiving install has none: that overlay outranks `config.json`, so
   it is reported (`↩️  config.local.json: not applied ...`) instead. To take the

@@ -824,8 +824,13 @@ class SignIn:
         """Hold this consent's own callback listener on loopback *port*."""
         from aiohttp import web
 
+        from kiro_crew.connections.crew_oauth_dcr import titled_page
+
+        async def _answer(request: Any) -> Any:
+            return titled_page(await self._callback(request))
+
         app = web.Application()
-        app.router.add_get(path, self._callback)
+        app.router.add_get(path, _answer)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         # Loopback only, the exact host and port the operator registered, and only

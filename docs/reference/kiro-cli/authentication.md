@@ -1,6 +1,6 @@
 # Authentication
 
-Source: https://kiro.dev/docs/getting-started/authentication/ (fetched 2026-09-06)
+Source: https://kiro.dev/docs/getting-started/authentication/ (fetched 2026-11-23)
 
 Providers: GitHub, Google, AWS Builder ID, AWS IAM Identity Center, external IdP
 (Entra ID, Okta). API key is CLI-only, and the CLI is the only surface that has it.
@@ -18,7 +18,10 @@ asks for a Start URL and a Region first.
 
 Device flow covers Builder ID, IAM Identity Center, Google and GitHub: the CLI
 prints a URL and a one-time code you enter in any browser, and no port
-forwarding is needed. External IdP login does not support device flow.
+forwarding is needed. External IdP login does not support device flow. An
+organization can turn device flow off for a Kiro profile; the CLI then hides that
+profile during device-flow login and profile switching, and if none is left you
+sign in with `kiro-cli login` on a machine that can open a browser.
 
 ```bash
 kiro-cli login    # pick a method, then open the printed URL and enter the code
@@ -42,9 +45,9 @@ credits.
 
 ## AWS GovCloud (US)
 
-IAM Identity Center and external IdPs only; the social providers are not
-available there. The Start URL must contain `us-gov-home`, and IAM Identity
-Center routes to the GovCloud region from the same installer.
+Sign in through IAM Identity Center or an external IdP. The Start URL must
+contain `us-gov-home`, and IAM Identity Center routes to the GovCloud region from
+the same installer. GovCloud needs Kiro CLI 1.25.0 or later.
 
 ## Sign out
 

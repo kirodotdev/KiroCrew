@@ -51,6 +51,7 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from kiro_crew.acp.kas_deny_alternatives import deny_alternatives
 from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names is re-exported
     APPROVED_MCP_SERVER_PREFIX,
     auto_approved_mcp_servers,
@@ -76,7 +77,7 @@ from kiro_crew.acp.kas_tool_rows import (  # noqa: F401 - re-exported
     KAS_TOOL_MATCH_VOCABULARY,
     kas_tool_match_names,
 )
-from kiro_crew.acp.kas_unread_commands import (
+from kiro_crew.acp.kas_unread_commands import (  # noqa: F401 - read through here by kas_permissions_tools_settings
     fails_closed_on_uncarried_blocked,
     placed_allowed_commands,
     unreadable_allowlist_entries,
@@ -440,17 +441,20 @@ def shell_deny_globs(policy: Any) -> set[str]:
     return carried
 
 
-def shell_deny_carried(raw: str, globs: set[str]) -> bool:
+def shell_deny_carried(raw: str, globs: set[str], *, splits: bool = True) -> bool:
     """Whether the ``deniedCommands`` entry *raw* reaches KAS as one of *globs*
     (:func:`shell_deny_globs`) and holds no redirect character KAS never sees. A
-    blank entry needs no rule."""
+    blank entry needs no rule. With *splits* false, a split one is not carried."""
     if not raw.strip():
         return True
-    glob = _regex_to_glob(raw.strip())
-    return glob is not None and not set(glob) & _REDIRECT_CHARACTERS and glob in globs
+    alternatives = deny_alternatives(raw.strip())
+    if not splits and alternatives != [raw.strip()]:
+        return False
+    each = [_regex_to_glob(alt) for alt in alternatives]
+    return all(g is not None and not set(g) & _REDIRECT_CHARACTERS and g in globs for g in each)
 
 
-def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
+def shell_denies_carried(tools_settings: Any, policy: Any, *, splits: bool = True) -> bool:
     """Whether every ``deniedCommands`` entry of both shell keys reaches *policy*
     as a KAS shell ``deny`` rule.
 
@@ -471,7 +475,7 @@ def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
         if not isinstance(denied, list):
             return False
         for raw in denied:
-            if not isinstance(raw, str) or not shell_deny_carried(raw, carried):
+            if not isinstance(raw, str) or not shell_deny_carried(raw, carried, splits=splits):
                 return False
     return True
 
@@ -500,10 +504,13 @@ def spec_shell_allowlist(
 
     Read whatever the governance ceiling says: it is a restriction, not a grant.
     A command it keeps still prompts unless :func:`crew_answered_commands` answers it.
+    A split deny never lifts it: kiro-cli keeps the allowlist as an engine rule.
     """
     if not shell_denies_by_default(tools_settings):
         return None
-    if allowed_tools_grant_shell(allowed_tools) and shell_denies_carried(tools_settings, policy):
+    if allowed_tools_grant_shell(allowed_tools) and shell_denies_carried(
+        tools_settings, policy, splits=False
+    ):
         return None
     return crew_answered_commands(tools_settings) + unreadable_allowlist_entries(tools_settings)
 
@@ -1695,289 +1702,20 @@ def _approved_under(policy: Any, unprompted: Iterable[str]) -> frozenset[str]:
     return frozenset(approved)
 
 
-# --- kiro-cli ``toolsSettings`` -> KAS ``permissions`` -------------------------
-#
-# KAS declares ``toolsSettings`` a CLI-only field and replaces it with
-# ``permissions``; its migration guide maps each field onto a capability rule.
-# The translation below follows that guide, with two limits of its own:
-#
-# * Only what can be said faithfully is translated. A kiro-cli regex becomes a
-#   glob only when it is a literal plus ``.*``; anything else is reported, never
-#   guessed at, because a guessed deny can silently stop matching.
-# * No ALLOW is emitted. The gap being closed is lost restrictions; an allow
-#   left behind only means the call keeps prompting, and shell/filesystem allows
-#   are a family Crew never auto-approves here (:data:`WITHHELD_CAPABILITIES`).
-#   Every allow key is reported as not carried instead.
-#
-# The block this produces is fed to :func:`merge_user_permissions` like an
-# authored one, so its denies travel as written.
+# The ``toolsSettings`` translation lives in its own module by size; these names
+# stay importable from here. Imported after this module's tables, which it reads,
+# and before ``kas_hook_coverage``, which reads ``_chunked_rules`` from here.
+from kiro_crew.acp.kas_permissions_tools_settings import (  # noqa: E402,F401
+    _REDIRECT_CHARACTERS,
+    _REGEX_METACHARACTERS,
+    _chunked_rules,
+    _patterns,
+    _regex_to_glob,
+    _url_glob,
+    tools_settings_to_permissions,
+)
 
-#: Characters that keep a regex from being read as a literal. ``*`` is here too:
-#: outside ``.*`` it is a quantifier on the character before it.
-_REGEX_METACHARACTERS = frozenset(".^$*+?()[]{}|\\")
-
-#: Shell redirect operators. KAS matches a shell rule against the command's
-#: words, and a redirect and its target are not among them, so a deny written
-#: to match one never sees it.
-_REDIRECT_CHARACTERS = frozenset("<>")
-
-
-def _regex_to_glob(pattern: str) -> str | None:
-    """A kiro-cli regex (anchored ``\\A..\\z``) as a KAS glob, or ``None``.
-
-    Only ``.*`` and backslash-escaped punctuation are understood; any other regex
-    syntax returns ``None`` so the caller reports it instead of guessing. A
-    literal character KAS would read as glob syntax (``*?[]{}!``) has no glob
-    spelling, so it returns ``None`` too.
-    """
-    body = pattern.strip()
-    for prefix in ("\\A", "^"):
-        body = body.removeprefix(prefix)
-    for suffix in ("\\z", "$"):
-        if body.endswith(suffix) and not body.endswith("\\" + suffix):
-            body = body[: -len(suffix)]
-    out: list[str] = []
-    i = 0
-    while i < len(body):
-        ch = body[i]
-        if body.startswith(".*", i):
-            out.append("*")
-            i += 2
-        elif ch == "\\" and i + 1 < len(body) and not body[i + 1].isalnum():
-            if body[i + 1] in _GLOB_METACHARACTERS:
-                return None
-            out.append(body[i + 1])
-            i += 2
-        elif ch in _REGEX_METACHARACTERS or ch in _GLOB_METACHARACTERS:
-            return None
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out) or None
-
-
-def _url_glob(raw: str) -> str | None:
-    """A ``web_fetch.blocked`` entry as a KAS host glob, or ``None``. KAS matches
-    web_fetch rules against the URL's host, so a pattern that names a scheme or a
-    path can never match there."""
-    glob = _regex_to_glob(raw)
-    return glob if glob is not None and not set(glob) & set("/:") else None
-
-
-def _patterns(value: Any) -> list[str]:
-    return (
-        [p.strip() for p in value if isinstance(p, str) and p.strip()]
-        if isinstance(value, list)
-        else []
-    )
-
-
-def _chunked_rules(
-    capability: str,
-    effect: str,
-    patterns: list[str],
-    *,
-    exclude: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """One rule per :data:`_MAX_PATTERNS_PER_RULE` patterns, so no rule is refused for size.
-
-    *exclude*, when given, is carried whole on every part.
-    """
-    step = _MAX_PATTERNS_PER_RULE
-    narrowing = {} if exclude is None else {"exclude": list(exclude)}
-    return [
-        {"capability": capability, "match": patterns[i : i + step], **narrowing, "effect": effect}
-        for i in range(0, len(patterns), step)
-    ]
-
-
-def tools_settings_to_permissions(
-    tools_settings: Any,
-) -> tuple[dict[str, Any] | None, list[str]]:
-    """Translate a kiro-cli ``toolsSettings`` object into a KAS ``permissions`` block.
-
-    Returns ``(block, not_carried)``: the block (``None`` when no rule came out)
-    and the ``<tool>.<key>`` paths that have no faithful rule, so the caller can
-    name exactly what this session runs without.
-    """
-    if not isinstance(tools_settings, dict):
-        return None, []
-    rules: list[dict[str, Any]] = []
-    lost: list[str] = []
-    star_subtrees: list[tuple[str, str, list[str]]] = []
-    # Allows go in last (below), so an over-long list can never sink the denies.
-    allow_groups: list[tuple[str, list[dict[str, Any]]]] = []
-
-    def converted(where: str, values: Any, convert: Callable[[str], str | None]) -> list[str]:
-        out: list[str] = []
-        for raw in _patterns(values):
-            glob = convert(raw)
-            # An over-long pattern would make the merge refuse the WHOLE block,
-            # so it is dropped and reported here instead.
-            if glob is None or len(glob) > _MAX_PATTERN_LENGTH:
-                lost.append(where)
-            else:
-                out.append(glob)
-        return list(dict.fromkeys(out))
-
-    for tool in sorted(tools_settings, key=str):
-        settings = tools_settings[tool]
-        family = _TOOLS_SETTINGS_FAMILY.get(tool) if isinstance(tool, str) else None
-        if not isinstance(settings, dict):
-            if settings:
-                lost.append(str(tool))
-            continue
-        if family is None:
-            lost.extend(f"{tool}.{key}" for key in sorted(settings, key=str) if settings[key])
-            continue
-        # Only shapes run live on KAS are carried: the plain deny lists, and the
-        # `subagent` rules below (a deny with an `exclude`, and a name-scoped
-        # allow). The deny-all-but shapes on a command or a path, where
-        # `exclude` has not been run, are enforced by Crew's gate instead: the
-        # shell's `denyByDefault` and the write tool's `fallbackAction: "deny"`
-        # (below).
-        handled: set[str] = set()
-
-        if family == "shell":
-            handled.add("deniedCommands")
-            denied = converted(
-                f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
-            )
-            rules.extend(_chunked_rules("shell", "deny", denied))
-            # kiro-cli matches the regex over the whole command line; KAS matches
-            # the glob over the command's words, which do not include a redirect
-            # or its target. The deny still travels, since it does stop
-            # the character inside a word, but the entry is named as not carried.
-            if any(set(glob) & _REDIRECT_CHARACTERS for glob in denied):
-                lost.append(f"{tool}.deniedCommands")
-            # No rule either: Crew's gate refuses every shell call the spec's
-            # usable `allowedCommands` do not match (`spec_shell_allowlist`).
-            handled.add("denyByDefault")
-            # No rule: Crew answers the shell requests these match itself, at
-            # the gate (`crew_answered_commands`). Only an entry it cannot use
-            # is named.
-            handled.add("allowedCommands")
-            allowed = settings.get("allowedCommands")
-            # Named when an entry is unusable, and when the bound cuts the list:
-            # those commands keep prompting. The notice then names each such entry
-            # in place of the key (`name_unreadable_entries`).
-            if allowed and (
-                not isinstance(allowed, list)
-                or any(allowed_command_pattern(p) is None for p in allowed)
-                or len(_usable_allowed_commands(tools_settings)) > _MAX_ALLOWED_COMMANDS
-            ):
-                lost.append(f"{tool}.allowedCommands")
-            # No rule: Crew's read-only row answers a read-only command, also
-            # under `denyByDefault` (`kas_spec_grants`). A non-boolean is named.
-            if isinstance(settings.get("autoAllowReadonly"), bool):
-                handled.add("autoAllowReadonly")
-        elif family in ("read", "write"):
-            capability = "fs_read" if family == "read" else "fs_write"
-            handled.add("deniedPaths")
-            # kiro-cli globs and KAS's filesystem globs share one syntax. A path
-            # not already ending in a wildcard also gets a `/**` twin, so a bare
-            # directory denies what is inside it, not just the directory entry.
-            # Denying a file's non-existent subtree is harmless: wider, never looser.
-            # A path ending in one `*` gets the twin too: kiro-cli's globset `*`
-            # crosses `/` and KAS's minimatch `*` stops at it, so `/etc/*` alone
-            # would leave `/etc/a/b` open on KAS. `/etc/*/**` closes it.
-            denied_paths = converted(f"{tool}.deniedPaths", settings.get("deniedPaths"), str)
-            fits = [p for p in denied_paths if len(p) + 3 <= _MAX_PATTERN_LENGTH]
-            subtrees = [f"{p.rstrip('/')}/**" for p in fits if not p.endswith("*")]
-            denied_paths = list(dict.fromkeys(denied_paths + subtrees))
-            rules.extend(_chunked_rules(capability, "deny", denied_paths))
-            if tool in READ_SETTINGS_KEYS:
-                # No rule: Crew's gate answers a covered read (`crew_answered_read_paths`).
-                handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths")):
-                    lost.append(f"{tool}.allowedPaths")
-            # Kept apart so they never cost the denies above their place: they
-            # travel only when the whole block still fits (below).
-            star_twins = [
-                f"{p}/**"
-                for p in fits
-                if p.endswith("*")
-                and not p.endswith(("**", "\\*"))
-                and f"{p}/**" not in denied_paths
-            ]
-            if star_twins:
-                star_subtrees.append((f"{tool}.deniedPaths", capability, star_twins))
-            if family == "write":
-                # `interactive` is the default: nothing is lost by leaving it out.
-                # `deny` travels as no rule: Crew's gate refuses every write the
-                # usable `allowedPaths` do not cover (`spec_write_allowlist`).
-                handled.add("fallbackAction")
-                # No rule: Crew's gate answers a covered write (`crew_answered_paths`).
-                # Named when an entry is unusable.
-                handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths")):
-                    lost.append(f"{tool}.allowedPaths")
-                if settings.get("fallbackAction") not in (
-                    None,
-                    "",
-                    "interactive",
-                ) and not _write_falls_back_to_deny(settings):
-                    lost.append(f"{tool}.fallbackAction")
-        elif family == "web_fetch":
-            # KAS matches a host only, so a `blocked` regex is carried here as a host deny
-            # and `trusted` (an allow) is named. A `blocked` entry with no host deny is
-            # named unless the gate refuses it (`kas_spec_denies.gate_refused_blocked`);
-            # with `agent.kas_fail_closed_web_fetch_blocked` on, one deny over "*" takes
-            # the key's place and refuses every fetch. Crew's gate grants a plain-URL
-            # `trusted` entry itself (`kas_spec_denies.web_fetch_gate`); the session
-            # notice drops it then, and a crewmate's policy check reads only this side.
-            handled.add("blocked")
-            blocked = converted(f"{tool}.blocked", settings.get("blocked"), _url_glob)
-            if f"{tool}.blocked" in lost and fails_closed_on_uncarried_blocked():
-                blocked = ["*"]
-            rules.extend(_chunked_rules("web_fetch", "deny", blocked))
-        elif family == "subagent":
-            # KAS's `subagent` capability matches the sub-agent's name (its consent
-            # names it as the resource), and it is the shape KAS itself writes for
-            # trusted sub-agents (`{capability: "subagent", match: [ids], effect:
-            # "allow"}`). Run live on kiro-cli 2.35.1: a deny over "*"
-            # with the target in `exclude` let the call reach its permission
-            # request, the same deny with another name excluded refused it, and
-            # an allow naming it ran it unprompted.
-            handled.update({"availableAgents", "trustedAgents"})
-            if "availableAgents" in settings:
-                rules.extend(
-                    _available_agents_rules(
-                        f"{tool}.availableAgents", settings["availableAgents"], lost
-                    )
-                )
-            # An allow, so the merge puts it to the governance ceiling (the refs
-            # that name the sub-agent tool) and drops it when the ceiling refuses.
-            trusted = converted(f"{tool}.trustedAgents", settings.get("trustedAgents"), _agent_glob)
-            allows = _chunked_rules("subagent", "allow", trusted)
-            allow_groups.append((f"{tool}.trustedAgents", allows))
-
-        lost.extend(
-            f"{tool}.{key}"
-            for key in sorted(settings, key=str)
-            if key not in handled and settings[key]
-        )
-
-    if len(rules) > _MAX_RULES:
-        return None, sorted(set(lost) | {"(all: too many rules)"})
-    # The trailing-`*` subtree twins widen denies that already travel. Over the
-    # rule bound they would sink the WHOLE block, so they are left out and the
-    # key is named instead: the originals still deny what KAS's `*` reaches.
-    for where, capability, twins in star_subtrees:
-        extra = _chunked_rules(capability, "deny", twins)
-        if len(rules) + len(extra) > _MAX_RULES:
-            lost.append(where)
-        else:
-            rules.extend(extra)
-    # Each key's allows whole, or named and left prompting: every deny still travels.
-    for where, allows in allow_groups:
-        if len(rules) + len(allows) > _MAX_RULES:
-            lost.append(where)
-        else:
-            rules.extend(allows)
-    return ({"rules": rules} if rules else None), sorted(set(lost))
-
-
+# isort: split
 # The PreToolUse hook coverage lives in its own module by size; these names stay
 # importable from here, where every caller has always read them. Imported last:
 # that module reads this one's tables.

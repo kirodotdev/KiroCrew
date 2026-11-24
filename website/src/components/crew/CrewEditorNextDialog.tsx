@@ -30,6 +30,7 @@ import { effortLabel } from '../../lib/effort'
 import { crewCapabilitiesApi, crewCapabilitiesKey, crewWorkerKitKey, capabilityKey, type CapabilityRow, type CapabilityPreview, type CapabilityDraft } from '../../api/crewCapabilities'
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import WorkerKitPane from './WorkerKitPane'
+import { workerKitErrorText } from './workerKitErrors'
 import { templateDisplayName, mateAbilitiesLabel } from './builtFromName'
 import { skillLabel } from './workerKitLabels'
 import { crewDisplayName } from '../AgentSelector'
@@ -52,10 +53,12 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
 
-/** The sentence under the Abilities pane's load error. A read past either
- *  deadline (the gateway's `reason: timed_out`, or the dashboard's own, the
- *  untranslated `deadline exceeded`) names the likely causes; any other
- *  `capabilities_unavailable` points at the gateway log. Neither shows the code. */
+/** The sentence under the Abilities pane's load error, never the code. A read
+ *  past either deadline (the gateway's `reason: timed_out`, or the dashboard's
+ *  own, the untranslated `deadline exceeded`) names the likely causes; any other
+ *  `capabilities_unavailable` points at the gateway log; any other refusal, such
+ *  as `invalid_spec` for a Bot file that no longer parses, reads as the sentence
+ *  Add abilities shows for the same code. */
 function capabilitiesLoadErrorText(error: unknown): string {
   const timedOut = isDeadlineError(error)
     || (error instanceof ApiError && parseErrorField(error.body, 'reason') === 'timed_out')
@@ -63,7 +66,7 @@ function capabilitiesLoadErrorText(error: unknown): string {
   if (apiErrorCode(error) === 'capabilities_unavailable') {
     return i18nT('crewEditorNext.load_error_details')
   }
-  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error_details')
+  return workerKitErrorText(error) ?? i18nT('crewEditorNext.load_error_details')
 }
 
 /** Split a skill id into owner/namespace + skill name, and de-slugify the name
@@ -410,7 +413,7 @@ export default function CrewEditorNextDialog({
         setRemoveError(i18nT('crewEditorNext.band_remove_stale'))
         return
       }
-      setRemoveError(e instanceof Error ? e.message : i18nT('crewEditorNext.load_error'))
+      setRemoveError(workerKitErrorText(e) ?? i18nT('crewEditorNext.load_error'))
     } finally {
       setRemoveBusy(null)
     }

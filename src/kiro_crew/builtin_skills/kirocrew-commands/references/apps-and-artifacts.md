@@ -14,6 +14,7 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew artifact show SLUG` | Print artifact content |
 | `kirocrew artifact show SLUG --version 2` | Show specific version |
 | `kirocrew artifact show SLUG --meta` | Show metadata as JSON |
+| `kirocrew artifact show SLUG --docx out.docx` | Write a markdown or text artifact as a new Word file, one paragraph per line, headings styled |
 | `kirocrew artifact save --name "My Widget" --content-file widget.html` | Save new artifact |
 | `kirocrew artifact save --name "X" --content "..." --tags ops,cr` | Save with inline content |
 | `kirocrew artifact update SLUG --content-file widget.html` | Update artifact content |
@@ -27,6 +28,7 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 |---------|-------------|
 | `kirocrew app list` | List installed apps |
 | `kirocrew app install /path/to/app-dir` | Install app from local directory (needs app.json) |
+| `kirocrew app install GIT_URL [--ref REF] [--subdirectory DIR]` | Clone a git repo (`https://`, `ssh://` or `git@host:org/repo.git`) with your own git setup, then install the folder holding `app.json`; `--ref` picks a branch or tag. A URL with a password or token, or a plaintext `http://`/`git://` URL, is refused |
 | `kirocrew app enable NAME` | Enable an installed app (an app that asks to control your chats is allowed in the dashboard only) |
 | `kirocrew app disable NAME` | Disable an installed app |
 | `kirocrew app update NAME [--source DIR]` | Update an installed app in place from its source directory (the one it was installed or last updated from, unless `--source` names another, which then becomes the recorded one), keeping its data and enabled state. Needs a running gateway; with none reachable it changes nothing |

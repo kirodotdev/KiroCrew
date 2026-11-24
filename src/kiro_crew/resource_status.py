@@ -15,14 +15,17 @@ The advisory surfaces carry no enforcement, no lease, no cross-session
 coordination. Two sessions can both read "ample" and both launch heavy work —
 the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
-cron firings, task-runner steps, background helper turns) while posture is CRITICAL,
-so the scheduler stops piling work onto a host about to freeze. Subagent spawns are not
-gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``),
-which the pull tool reports on the gate's own figure (:func:`spawn_floor_reading`)
-because the posture can read AMPLE while that floor holds every start. Direct user chat turns
-and the gateway's own operation are never gated, and the gate fails open on an
-unknown posture. (A hard, cross-session admission lease is a separate, heavier
-design.)
+cron firings, task-runner steps, background helper turns) while the decision
+posture is CRITICAL, so the scheduler stops piling work onto a host about to
+freeze. When a container limit sits above the visible cgroup, an ample host
+reading reports an UNKNOWN posture while real tight and critical host readings
+stay visible; ``decision_posture`` keeps admission on that same host figure.
+Subagent spawns are not gated here: they admit on their own memory floor
+(``agent.spawn_min_memory_gb``), which the pull tool reports on the gate's own
+figure (:func:`spawn_floor_reading`) because the posture can read AMPLE while
+that floor holds every start. Direct user chat turns and the gateway's own
+operation are never gated, and a genuinely unreadable decision posture fails
+open. (A hard, cross-session admission lease is a separate, heavier design.)
 
 The memory figure reuses :func:`kiro_crew.subagent._available_memory_gb`, the
 same cgroup-clamped, container-aware probe behind the sub-agent cap's
@@ -97,6 +100,17 @@ def _read_available_gb() -> float:
     except Exception:  # pragma: no cover - defensive; probe must never raise
         logger.debug("available-memory probe failed", exc_info=True)
         return -1.0
+
+
+def _memory_limit_out_of_view() -> bool:
+    """Whether a container memory limit can sit above the visible cgroup mount."""
+    try:
+        from kiro_crew.subagent import out_of_view_memory_pressure_file
+
+        return out_of_view_memory_pressure_file() is not None
+    except Exception:  # pragma: no cover - defensive; probe must never raise
+        logger.debug("memory-cgroup visibility probe failed", exc_info=True)
+        return False
 
 
 def _read_measured_available_gb() -> float:
@@ -445,6 +459,21 @@ class ResourceStatus:
     # host's (see AgentCeiling). Read only under pressure, so None on an ample
     # reading whatever binds.
     agent_ceiling: AgentCeiling | None = None
+    # True when this process sees a child cgroup without the memory controller:
+    # ``available_gb`` is then the host figure, not the container's headroom.
+    memory_limit_out_of_view: bool = False
+
+    @property
+    def decision_posture(self) -> str:
+        """The visible-memory classification used by existing admission decisions.
+
+        Reporting turns an ample reading unknown when a container limit is out
+        of view. Decisions keep classifying the host figure, so visibility adds
+        no hold.
+        """
+        if self.memory_limit_out_of_view:
+            return _classify(self.available_gb, self.pressure_gb, self.critical_gb)
+        return self.posture
 
     @property
     def memory_subject(self) -> str:
@@ -674,14 +703,16 @@ class ResourceStatus:
     def _tasks_only_line(self) -> str:
         """The advisory for a slice tight on tasks while memory is not the constraint.
 
-        The memory half is stated from the posture rather than assumed: a host
-        whose memory probe is unreadable classifies as ``unknown``, which is not
-        under pressure, so this line would otherwise report memory as fine on a
-        reading it never obtained.
+        The memory half distinguishes a truly unreadable host figure from an
+        ample host figure whose container limit is out of view. Neither is under
+        pressure, but calling the measured host figure unreadable would hide the
+        actual blind spot.
         """
         if not self.slice_tasks_tight:
             return ""
-        if self.posture == POSTURE_UNKNOWN:
+        if self.memory_limit_out_of_view:
+            memory = "The container's memory limit cannot be read from this cgroup view"
+        elif self.posture == POSTURE_UNKNOWN:
             memory = "Host memory is unreadable here"
         else:
             memory = "Host memory is fine"
@@ -695,7 +726,15 @@ class ResourceStatus:
     def summary_lines(self) -> list[str]:
         """Human/agent-readable multi-line report for the pull tool."""
         lines = ["Host resources (advisory — not an enforced limit):"]
-        if self.available_gb < 0:
+        if self.memory_limit_out_of_view:
+            figure = (
+                f"{self.available_gb:.1f} GB on the host" if self.available_gb >= 0 else "unknown"
+            )
+            lines.append(
+                f"  Available memory: {figure}; the container's memory limit cannot be read "
+                "from this cgroup view"
+            )
+        elif self.available_gb < 0:
             lines.append("  Available memory: unknown (probe unavailable on this host)")
         else:
             lines.append(
@@ -1121,6 +1160,8 @@ class SpawnFloorReading:
     min_start_gb: float  # floor plus the lowest price a top-level start can carry
     unknown_note: str = ""  # set when the gate defers on a figure it cannot read
     remote: bool = False  # the caller's workspace is remote: its children owe no floor
+    # The gate keeps using the host figure, but the report names the unreadable limit.
+    memory_limit_out_of_view: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -1148,13 +1189,25 @@ class SpawnFloorReading:
         if self.unknown_note:
             return f"{head}; {self.unknown_note} — BLOCKED: {_BLOCKED_NOTE}"
         if self.available_gb < 0:
+            if self.memory_limit_out_of_view:
+                return (
+                    f"{head}; the container's memory limit cannot be read from this cgroup "
+                    "view, and host memory is unreadable, so starts are not held"
+                )
             return f"{head}; the gate's memory figure is unreadable here, so starts are not held"
         figure, bar = self._figure_and_bar_text()
-        line = (
-            f"{head}; the gate reads {figure} GB, a top-level start needs at least "
-            f"{bar} GB (more for a dedicated one or while other "
-            "starts are warming)"
-        )
+        if self.memory_limit_out_of_view:
+            line = (
+                f"{head}; the container's memory limit cannot be read from this cgroup view; "
+                f"the gate uses {figure} GB of host memory, and a top-level start needs at least "
+                f"{bar} GB (more for a dedicated one or while other starts are warming)"
+            )
+        else:
+            line = (
+                f"{head}; the gate reads {figure} GB, a top-level start needs at least "
+                f"{bar} GB (more for a dedicated one or while other "
+                "starts are warming)"
+            )
         if self.blocked:
             return line + f" — BLOCKED: {_BLOCKED_NOTE}"
         return line
@@ -1267,7 +1320,13 @@ def spawn_floor_reading(cfg: object | None = None, *, remote: bool = False) -> S
             if cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
             else ""
         )
-        return SpawnFloorReading(floor_gb, avail, min_start, note)
+        return SpawnFloorReading(
+            floor_gb,
+            avail,
+            min_start,
+            note,
+            memory_limit_out_of_view=_memory_limit_out_of_view(),
+        )
     except Exception:  # pragma: no cover - defensive; the probe must never raise
         logger.debug("spawn floor reading failed", exc_info=True)
         return SpawnFloorReading(0.0, -1.0, 0.0)
@@ -1289,8 +1348,11 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     """Take an advisory resource snapshot.
 
     *cfg* is an optional pre-loaded ``KiroCrewConfig``; when omitted it is
-    loaded (the loader is fingerprint-cached, so this is cheap). Never raises —
-    on any failure it returns an ``unknown`` posture so callers stay silent.
+    loaded (the loader is fingerprint-cached, so this is cheap). An ample host
+    reading becomes ``unknown`` when a container limit sits above the visible
+    cgroup; tight and critical readings stay visible, and the host figure remains
+    available to existing decisions. Never raises — on any failure it returns an
+    ``unknown`` posture so callers stay silent.
     """
     if cfg is None:
         cfg = _load_config()
@@ -1298,7 +1360,13 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     available_gb = _read_posture_available_gb(pressure_gb, critical_gb)
     cpu_count = os.cpu_count() or 1
     load_per_cpu = _read_load_per_cpu(cpu_count)
-    posture = _classify(available_gb, pressure_gb, critical_gb)
+    decision_posture = _classify(available_gb, pressure_gb, critical_gb)
+    memory_limit_out_of_view = _memory_limit_out_of_view()
+    posture = (
+        POSTURE_UNKNOWN
+        if memory_limit_out_of_view and decision_posture == POSTURE_AMPLE
+        else decision_posture
+    )
     slice_tasks, slice_tasks_limit, slice_tasks_own = _read_agent_slice_tasks()
     # Only a pressured reading is worded, so only a pressured probe pays for the
     # attribution reads.
@@ -1315,6 +1383,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         slice_tasks_own=slice_tasks_own,
         memory_pressure_level=read_memory_pressure_level(),
         agent_ceiling=agent_ceiling,
+        memory_limit_out_of_view=memory_limit_out_of_view,
     )
 
 
@@ -1455,16 +1524,18 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
     """Decide whether new *background* work may start right now.
 
     The single enforcement point layered on the advisory posture tier: a
-    CRITICAL posture refuses; every other posture — ample, tight, and unknown —
-    admits. Callers on the gated paths (scheduled cron firings, task-runner
-    steps, background helper turns) consult this once per admission decision; it reuses the
-    same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
-    config, one memory read, and a handful of single-value cgroup reads for the
-    slice's task figure) and never scans processes. The task figure is reported,
-    not gated: the verdict below turns on the memory posture alone, so no task
-    count can refuse work here.
+    CRITICAL decision posture refuses; every other posture admits. When a
+    container limit is out of view, an ample reading reports ``unknown`` while
+    the decision posture still classifies the visible host figure, so reporting
+    visibility neither adds nor removes a hold. Callers on the gated paths
+    (scheduled cron firings, task-runner steps, background helper turns) consult
+    this once per admission decision; it reuses the same cheap :func:`probe` the
+    advisory surfaces use (fingerprint-cached config, one memory read, and a
+    handful of single-value cgroup reads for the slice's task figure) and never
+    scans processes. The task figure is reported, not gated: no task count can
+    refuse work here.
 
-    Fail-open by construction: an unreadable memory probe classifies as
+    Fail-open by construction: an unreadable memory figure classifies as
     ``unknown`` (admitted), a disabled gate (``agent.admission_gate: false``)
     always admits, and any unexpected error admits — the gate must never be
     the thing that strands the scheduler. *cfg* is an optional pre-loaded
@@ -1481,14 +1552,15 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 # only a genuine critical posture refuses.
                 return AdmissionDecision(admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0)
         status = probe(cfg)
+        decision_posture = status.decision_posture
         if not _gate_enabled(cfg):
             return AdmissionDecision(
-                admitted=True, posture=status.posture, available_gb=status.available_gb
+                admitted=True, posture=decision_posture, available_gb=status.available_gb
             )
-        if status.posture == POSTURE_CRITICAL:
+        if decision_posture == POSTURE_CRITICAL:
             return AdmissionDecision(
                 admitted=False,
-                posture=status.posture,
+                posture=decision_posture,
                 available_gb=status.available_gb,
                 reason=(
                     f"{status.memory_subject.lower()} is critical ({status.memory_reading()}, "
@@ -1496,7 +1568,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 ),
             )
         return AdmissionDecision(
-            admitted=True, posture=status.posture, available_gb=status.available_gb
+            admitted=True, posture=decision_posture, available_gb=status.available_gb
         )
     except Exception:
         logger.debug("admission check failed — admitting (fail-open)", exc_info=True)

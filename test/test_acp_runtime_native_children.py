@@ -547,7 +547,15 @@ async def test_child_tool_call_chunk_stays_fail_closed_but_visible():
     # fidelity-unaware consumer auto-rejects it (the ⛔ notice is the
     # observable), and no yielded permission event ever carries verified
     # identity. Either way, nothing can auto-APPROVE.
-    assert any("auto-rejected" in (ev.text or "") for ev in activity)
+    rejected = [ev for ev in activity if "auto-rejected" in (ev.text or "")]
+    assert rejected
+    # The reason (AUTO_REJECT_MISSING_SECURITY_CONTEXT's wire value) and the tool
+    # title ride beside the unchanged English line, so the dashboard can localize it.
+    assert getattr(rejected[0], "auto_reject_reason", "") == "missing_security_context"
+    assert rejected[0].title == "@example-server/get-item"
+    assert rejected[0].text == (
+        "Blocked: permission auto-rejected (missing security context): @example-server/get-item"
+    )
     for ev in events:
         if ev.kind == EVENT_PERMISSION_REQUEST:
             assert ev.child_mcp_identity_trusted is False
@@ -678,7 +686,11 @@ async def test_notice_yield_abandonment_clears_turn_state():
     gen = handle.prompt("hi", timeout=3.0)
     first = await gen.__anext__()
     assert first.kind == EVENT_SUBAGENT_ACTIVITY
-    assert "auto-rejected" in (first.text or "")
+    assert first.text == (
+        "Blocked: permission auto-rejected (stranded between turns): Running: sha256sum x"
+    )
+    assert getattr(first, "auto_reject_reason", "") == "stranded_between_turns"
+    assert first.title == "Running: sha256sum x"
     # Consumer abandons the stream at the notice yield.
     await gen.aclose()
 

@@ -62,14 +62,11 @@ def device_rows() -> list[dict[str, Any]]:
     return rows
 
 
-async def _owner(request: web.Request, operation: str) -> Any:
+async def api_devices(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    return await require_owner_dashboard_request(request, operation)
-
-
-async def api_devices(request: web.Request) -> web.Response:
-    if (refusal := await _owner(request, "connected_computers.devices")) is not None:
+    refusal = await require_owner_dashboard_request(request, "connected_computers.devices")
+    if refusal is not None:
         return refusal
     # Off the loop: without a live config snapshot the switch is read from disk.
     off = await asyncio.to_thread(remote_refusal)
@@ -80,9 +77,10 @@ async def api_devices(request: web.Request) -> web.Response:
 
 async def _end(request: web.Request, *, remove: bool) -> web.Response:
     from kiro_crew.connected_computers.broker import get_broker
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     op = "connected_computers.remove" if remove else "connected_computers.revoke"
-    if (refusal := await _owner(request, op)) is not None:
+    if (refusal := await require_owner_dashboard_request(request, op)) is not None:
         return refusal
     record = await end_device(
         _registry(), get_broker(), request.match_info["device_id"], remove=remove

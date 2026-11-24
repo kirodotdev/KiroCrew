@@ -42,13 +42,24 @@ function write(next: CrewWindowTarget | null) {
   listeners.forEach(l => l())
 }
 
+// Counts every open and close call, a no-op one too: a sidebar pick closes
+// whether or not a window is open, and a pending address link yields to it.
+let calls = 0
+
 export function openCrewWindow(target: CrewWindowTarget) {
+  calls++
   if (current?.instanceId === target.instanceId && current.key === target.key) return
   write({ instanceId: target.instanceId, key: target.key })
 }
 
 export function closeCrewWindow() {
+  calls++
   if (current) write(null)
+}
+
+/** How many open and close calls this document has made. */
+export function crewWindowCalls(): number {
+  return calls
 }
 
 function subscribe(listener: () => void) {

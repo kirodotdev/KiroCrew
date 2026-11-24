@@ -24,7 +24,9 @@ conduct, bounded so neither protection is given up:
   drop every message whose author fails ``access.is_allowed_user`` before it is
   routed. A channel-origin turn is admitted only when every Slack author whose
   message was ROUTED into this slot -- as a turn or as a steer -- IS the owner
-  (``is_owner``, by identity, so the clause does not widen with the allow-list) NOW (:func:`note_channel_sender` records them at routing); a
+  (``is_owner``, by identity, so the clause does not widen with the allow-list), or
+  the shared user who opened that very channel and is one still (``opener_admitted``),
+  NOW (:func:`note_channel_sender` records them at routing); a
   dashboard turn and the slot's own patrol wake carry no routed channel text and
   pass. This clause is about who DRIVES the conversation, not about what it reads:
   third-party text the session reads as content -- the origin thread the first
@@ -41,6 +43,16 @@ conduct, bounded so neither protection is given up:
   :data:`EXEMPT_TARGET_OPERATIONS` are admitted -- worker transcripts are never
   read into the channel -- and nothing it creates may create in turn
   (:func:`code_channel_root`).
+
+**Conductor threads.** A binding with ``thread`` set (one thread of an ordinary
+channel or DM, kept in the store's ``thread_bindings``) is judged by the same
+clauses, with three differences: its switch is ``slack.thread_conductor``
+(:func:`~kiro_crew.slack.code_channels.binding.thread_conductor_on`, which needs no
+code-channel scope and cannot turn on before the thread runtime is built), not
+the code-channel pair; an ended thread refuses; and its ROOM must be admitted --
+the owner's DM with the app, a private channel Slack confirms is still private,
+or a public channel only while ``slack.thread_conductor_public_channels`` is on
+(:func:`_thread_room_refusal`).
 
 Fails CLOSED throughout: an unloaded store, an unreadable mirror, an unknown share
 state or an unrecorded sender all refuse. One switch turns it all on:
@@ -170,6 +182,28 @@ def note_channel_sender(slot: Any, user_id: str) -> None:
             _senders.popitem(last=False)
 
 
+def note_thread_conductor_start(slot: Any, user_id: str) -> bool:
+    """Record the owner as the author of a Conductor thread's first turn.
+
+    The start command opens that turn itself, so it is never routed and
+    :func:`note_channel_sender` would not see its author; without this the
+    conductor's first ``session_create`` is refused as "not on record". Records
+    *user_id* only when it IS the Slack owner (``is_owner``, by identity) and
+    answers whether it did; anyone else records nothing, so their turn refuses.
+    """
+    try:
+        from kiro_crew.slack.handler import is_owner
+
+        owner = bool(user_id) and is_owner(user_id)
+    except Exception:
+        logger.debug("Conductor thread owner check failed", exc_info=True)
+        return False
+    if not owner:
+        return False
+    note_channel_sender(slot, user_id)
+    return True
+
+
 def _recorded_senders(slot: Any) -> tuple[frozenset[str], bool]:
     """``(authors, overflowed)`` on record for *slot* (empty when none)."""
     with _senders_lock:
@@ -193,8 +227,15 @@ def _turn_carries_channel_text(slot: Any) -> bool:
     )
 
 
-def _sender_refusal(slot: Any) -> str:
-    """Why the running turn is not one the owner alone drove; ``""`` when it is."""
+def _sender_refusal(slot: Any, binding: Any = None) -> str:
+    """Why the running turn is not one the owner (or *binding*'s opener) alone drove;
+    ``""`` when it is.
+
+    A code channel a shared user opened admits its opener as an author too
+    (:func:`kiro_crew.slack.code_channels.shared_refusal.opener_admitted`, asked of
+    the person now), so their turns follow the owner's helper-agent switch like the
+    owner's own. Any other shared user's text still refuses.
+    """
     if not _turn_carries_channel_text(slot):
         # A dashboard turn (the owner typed it), the slot's own patrol or monitor
         # wake, or a worker's report. None carries channel text. Another session
@@ -209,14 +250,15 @@ def _sender_refusal(slot: Any) -> str:
             "kept across a gateway restart, so send a message in the channel and retry"
         )
     try:
+        from kiro_crew.slack.code_channels.shared_refusal import opener_admitted
         from kiro_crew.slack.handler import is_owner
     except Exception:  # pragma: no cover - import failure fails closed
         return "the Slack owner check is unavailable"
     try:
         # The OWNER, by identity: the clause is "only the owner's Slack text drove
         # this conversation", which must not widen if the Slack allow-list ever
-        # admits other people again.
-        if all(is_owner(author) for author in authors):
+        # admits other people again. The one other author is the channel's opener.
+        if all(is_owner(author) or opener_admitted(binding, author) for author in authors):
             return ""
     except Exception:
         logger.debug("code-channel sender check failed", exc_info=True)
@@ -257,6 +299,16 @@ def _torn_config_file() -> str:
 #: outbound binding; nothing is wrong, so the conductor may simply try again.
 SESSION_MAP_BUSY_REFUSAL = "the session store is busy saving; try again in a moment"
 
+#: A Conductor thread's switch is off (or its runtime is not built yet).
+THREAD_SWITCH_OFF_REFUSAL = "Conductor threads are off (slack.thread_conductor)"
+#: A Conductor thread whose binding was stamped ended.
+THREAD_ENDED_REFUSAL = "the Conductor thread has ended"
+#: Whether a private channel is still private is not freshly on record.
+THREAD_PRIVACY_UNREAD_REFUSAL = (
+    "whether the Conductor thread's channel is still private is not freshly on "
+    "record -- it is being checked now, so retry in a moment"
+)
+
 #: Whether the channel is shared is not freshly on record (no reading, or one older
 #: than ``audience.READING_TTL_SECS``); a read was just started, so it passes.
 AUDIENCE_UNREAD_REFUSAL = (
@@ -277,8 +329,13 @@ DISPATCH_OFF_REFUSAL = (
 )
 
 
-def _switch_refusal() -> str:
-    """Why the exemption is switched off; ``""`` when it is on."""
+def _switch_refusal(*, thread: bool = False) -> str:
+    """Why the exemption is switched off; ``""`` when it is on.
+
+    *thread*: judge a Conductor thread's switch (``slack.thread_conductor``)
+    instead of the code-channel pair. The degraded and torn-file readings apply
+    to both: an opt-in switch whose file could not be read whole is unknown.
+    """
     try:
         cfg = _live_config()
     except Exception:
@@ -306,11 +363,14 @@ def _switch_refusal() -> str:
             "code-channel dispatch is turned off is unknown; fix the file and restart "
             "the gateway"
         )
-    from kiro_crew.slack.code_channels.binding import code_channels_on
+    from kiro_crew.slack.code_channels.binding import code_channels_on, thread_conductor_on
 
-    if not code_channels_on(cfg):
+    if thread:
+        if not thread_conductor_on(cfg):
+            return THREAD_SWITCH_OFF_REFUSAL
+    elif not code_channels_on(cfg):
         return "Slack code channels are off"
-    if getattr(getattr(cfg, "slack", None), "code_channel_dispatch", False) is not True:
+    elif getattr(getattr(cfg, "slack", None), "code_channel_dispatch", False) is not True:
         return DISPATCH_OFF_REFUSAL
     if torn := _torn_config_file():
         return (
@@ -352,8 +412,12 @@ def _channel_state_refusal(binding: Any) -> str:
     """Archived (stamped, fenced or in Slack's fresh reading), Stop-fenced, workspace not admitted, or shared beyond the workspace."""
     try:
         from kiro_crew.slack.code_channels import audience, surface
+        from kiro_crew.slack.code_channels.store import ROOM_IM
     except Exception:  # pragma: no cover
         return "the code-channel surface is unavailable"
+    thread = getattr(binding, "thread", False) is True
+    if thread and binding.ended_at:
+        return THREAD_ENDED_REFUSAL
     if binding.archived_at or binding.channel_id in getattr(surface, "_archived_here", ()):
         return "the code channel is archived"
     if surface.channel_stopped(binding.channel_id):
@@ -368,6 +432,12 @@ def _channel_state_refusal(binding: Any) -> str:
         audit=False,
     ):
         return "the security policy does not admit the code channel"
+    if thread:
+        why = _thread_room_refusal(binding)
+        if why or binding.room == ROOM_IM:
+            # A DM is not a channel Slack can share out or archive: its room
+            # clause is the whole of its audience check.
+            return why
     shared = audience.channel_shared(binding.channel_id)
     archived = audience.channel_archived(binding.channel_id)
     if shared is None or archived is None:
@@ -382,6 +452,45 @@ def _channel_state_refusal(binding: Any) -> str:
     return ""
 
 
+def _thread_room_refusal(binding: Any) -> str:
+    """Why a Conductor thread's room is not admitted; ``""`` when it is.
+
+    The room is the one the start recorded. A DM must be a DM id (Slack's ``D``
+    prefix). A private channel must still read as private in Slack's fresh
+    answer (a channel made public since the start is refused); an unknown
+    reading starts a refresh and refuses. A public channel -- one recorded
+    public, or a private one that now reads public -- is admitted only while
+    ``slack.thread_conductor_public_channels`` is on, because every member of it
+    reads what the thread shows.
+    """
+    from kiro_crew.slack.code_channels import audience
+    from kiro_crew.slack.code_channels.binding import thread_public_rooms_on
+    from kiro_crew.slack.code_channels.store import ROOM_IM, ROOM_PRIVATE, ROOM_PUBLIC
+
+    room = str(getattr(binding, "room", "") or "")
+    channel = str(binding.channel_id or "")
+    if room == ROOM_IM:
+        return "" if channel.startswith("D") else "the Conductor thread's DM is not a DM"
+    try:
+        public_ok = thread_public_rooms_on(_live_config())
+    except Exception:
+        public_ok = False
+    if room == ROOM_PRIVATE:
+        private = audience.channel_private(channel)
+        if private is None:
+            audience.refresh_soon(channel)
+            return THREAD_PRIVACY_UNREAD_REFUSAL
+        if private or public_ok:
+            return ""
+    elif room == ROOM_PUBLIC and public_ok:
+        return ""
+    elif room != ROOM_PUBLIC:
+        return "the Conductor thread's room is not on record"
+    return (
+        "Conductor threads in public channels are off " "(slack.thread_conductor_public_channels)"
+    )
+
+
 def _publish_clauses(
     state: "DashboardState | Any", slot: Any, binding: Any
 ) -> tuple[str, dict[str, Any] | None]:
@@ -391,7 +500,8 @@ def _publish_clauses(
     ONE read of the slot's outbound binding, which must name the channel's room
     and nothing else. The admission is built from that same read.
     """
-    why = _switch_refusal() or _channel_state_refusal(binding)
+    why = _switch_refusal(thread=getattr(binding, "thread", False) is True)
+    why = why or _channel_state_refusal(binding)
     if why:
         return why, None
     sessions = getattr(state, "sessions", None)
@@ -459,9 +569,12 @@ def judge_code_channel(
         why = f"a code channel's session may not use {operation or 'this verb'} on other sessions"
     else:
         why, admission = _publish_clauses(state, slot, binding)
-        _note_handoff_state(binding.channel_id)
+        if getattr(binding, "thread", False) is not True:
+            # The "Turn on helper agents" notice is a code channel's; a thread's
+            # start already refused while its own switch was off.
+            _note_handoff_state(binding.channel_id)
     if not why:
-        why = _sender_refusal(slot)
+        why = _sender_refusal(slot, binding)
     verdict = CodeChannelVerdict(
         applies=True,
         refusal=why,

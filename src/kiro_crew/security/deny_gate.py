@@ -103,46 +103,13 @@ def _emit_push_allow_event(command: str) -> None:
         )
 
 
-def _strip_win_program_suffix(word: str) -> str:
-    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
-
-
-def _cmd_line_args(args: "list[str]") -> "list[str] | None":
-    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
-
-    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
-    ``/c"dir"``); the rest of that word is then the first word of the line.
-    """
-    for i, arg in enumerate(args):
-        if not arg.startswith("/"):
-            return None
-        low = arg.lower()
-        for switch in ("/c", "/k"):
-            at = low.find(switch)
-            if at != -1:
-                tail = arg[at + 2 :]
-                return ([tail] if tail else []) + args[i + 1 :]
-    return None
-
-
-def _win_program_index(tokens: "list[str]") -> "int | None":
-    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
-    start = 0
-    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
-        program, args = found
-        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
-        if not rest:
-            return len(tokens) - len(args) - 1
-        start = len(tokens) - len(rest)
-    return None
-
-
 def _cmd_c_payload(tokens: "list[str]") -> "list[str]":
     """The quoted line of ``cmd /c "<line>"`` (or ``/k``), read as a nested command."""
-    found = _submodule("argv_rules")._program_args(tokens)
-    if found is None or _strip_win_program_suffix(found[0]) != "cmd":
+    rules = _submodule("argv_rules")
+    found = rules._program_args(tokens)
+    if found is None or rules._strip_win_program_suffix(found[0]) != "cmd":
         return []
-    rest = _cmd_line_args(found[1])
+    rest = rules._cmd_line_args(found[1])
     return rest if rest is not None and len(rest) == 1 and " " in rest[0].strip() else []
 
 
@@ -334,9 +301,11 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 candidates.append(stripped)
             # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
             # program as ``aws``; the program word only, appended, never substituted.
-            at = _win_program_index(tokens)
-            if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
-                words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
+            rules = _submodule("argv_rules")
+            at = rules._win_program_index(tokens)
+            strip = rules._strip_win_program_suffix
+            if at is not None and strip(tokens[at]) != tokens[at]:
+                words = [*tokens[:at], strip(tokens[at]), *tokens[at + 1 :]]
                 candidates.append(" ".join(words))
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:

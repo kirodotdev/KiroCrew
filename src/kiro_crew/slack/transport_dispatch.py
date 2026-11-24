@@ -772,13 +772,16 @@ async def handle_message_transport(
         # kiro_agent as the mode, its name as crew_agent, its workspace as cwd
         # (slack/channel_crew.py). Only when the selected agent IS the channel's
         # binding -- a thread value equal to it is that binding restored from the
-        # transcript header by ``_hydrate_thread_overrides`` -- and the session is
-        # Slack's own: a dashboard-linked session keeps its slot's project.
+        # transcript header by ``_hydrate_thread_overrides`` -- or the thread's own
+        # agent (``!bot`` puts a thread on a Crew Bot; a name that is no
+        # ``config.agents`` key resolves to nothing and passes through), and the
+        # session is Slack's own: a dashboard-linked session keeps its slot's project.
         # ``_agent`` stays the record's name for the transcript header; the
         # context builder takes the record's template (``context_template``).
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, agent_override)
-            if agent_override and _agent == agent_override and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), agent_override)
+            and is_slack_born(session_key)
             else None
         )
         _context_agent = await asyncio.to_thread(context_template, _agent, _channel_crew)

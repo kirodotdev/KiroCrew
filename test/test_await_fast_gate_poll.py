@@ -553,9 +553,44 @@ def _sleep_recorder(tmp_path: Path) -> tuple[Path, Path]:
     return rec, log
 
 
+def _advancing_sleep(tmp_path: Path) -> tuple[Path, Path]:
+    """An ``AWAIT_FG_SLEEP`` that logs each requested wait and moves the fake clock by it."""
+    log = tmp_path / "naps"
+    log.write_text("", encoding="utf-8")
+    clock = tmp_path / "clock"
+    rec = tmp_path / "advance-nap"
+    rec.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$1\" >> {log}\n"
+        f'echo "$(( $(cat {clock}) + $1 ))" > {clock}\n',
+        encoding="utf-8",
+    )
+    rec.chmod(0o755)
+    return rec, log
+
+
+def _script_number(name: str, script: Path = _SCRIPT) -> int:
+    """The one bare ``NAME=<digits>`` assignment a script makes: a production value, not a seam."""
+    found = re.findall(rf"^{name}=(\d+)$", script.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    assert len(found) == 1, f"{name} is assigned {len(found)} time(s) in {script.name}"
+    return int(found[0])
+
+
+_POLL = _script_number("POLL_INTERVAL")
+_PROBE_POLL = _script_number("PROBE_POLL_INTERVAL")
+# The wait a missing run and a failed read start from, shorter than either poll.
+_STARTUP_NAP = 10
+
+
+def _elapsed_at_exit(stdout: str, phrase: str) -> int:
+    found = re.search(rf"{phrase} (\d+)s", stdout)
+    assert found, stdout
+    return int(found.group(1))
+
+
 @needs_bash
 class TestThePollInterval:
-    def test_a_pending_run_is_polled_every_30s_and_a_missing_one_every_10s(
+    def test_a_pending_run_is_polled_at_the_interval_and_a_missing_one_sooner(
         self, tmp_path: Path
     ) -> None:
         # The listed-but-pending wait is the one that sets the barrier's REST
@@ -573,21 +608,104 @@ class TestThePollInterval:
         )
         proc = h.run(extra_env={"AWAIT_FG_SLEEP": str(rec)})
         assert proc.returncode == 0, proc.stdout
-        assert log.read_text(encoding="utf-8").split() == ["10", "30", "30"]
+        assert log.read_text(encoding="utf-8").split() == [
+            str(_STARTUP_NAP),
+            str(_POLL),
+            str(_POLL),
+        ]
+        assert _STARTUP_NAP < _PROBE_POLL <= _POLL
 
-    def test_the_last_pending_wait_never_oversleeps_the_total_budget(self, tmp_path: Path) -> None:
-        # The clock advances 25s per poll, so after the poll at 700s only 20s of
-        # the 720s budget is left: the wait shrinks to 20 instead of 30, and the
-        # next poll is the one that fails closed at the budget.
+    @pytest.mark.parametrize("tick", [13, 25, 59])
+    def test_no_pending_wait_oversleeps_the_budget(self, tmp_path: Path, tick: int) -> None:
+        # The fake clock moves `tick` seconds per poll and not at all across a
+        # wait, so the poll numbered k runs at k * tick. Each wait is the interval
+        # unless less than that is left of the budget, and then it is what is
+        # left: the poll after it is the one at the budget, never one interval on.
+        budget = 720
         rec, log = _sleep_recorder(tmp_path)
-        h = _Harness(tmp_path, [_page(_run(17, "in_progress", None))], tick=25)
-        proc = h.run(total_budget=720, extra_env={"AWAIT_FG_SLEEP": str(rec)})
+        h = _Harness(tmp_path, [_page(_run(17, "in_progress", None))], tick=tick)
+        # The STALL budget is put out of reach, so the clamp to it stays out of
+        # these waits and the one under test is the clamp to the deadline.
+        proc = h.run(
+            total_budget=budget, stall_budget=budget * 10, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
         assert proc.returncode == 1, proc.stdout
-        assert "still 'in_progress' after 725s" in proc.stdout
-        naps = log.read_text(encoding="utf-8").split()
-        assert naps[-1] == "20"
-        assert set(naps[:-1]) == {"30"}
-        assert len(naps) == 28
+        naps = [int(n) for n in log.read_text(encoding="utf-8").split()]
+        assert naps == [min(_POLL, budget - tick * k) for k in range(1, len(naps) + 1)]
+        assert naps and all(n > 0 for n in naps)
+        failed_at = _elapsed_at_exit(proc.stdout, "still 'in_progress' after")
+        assert failed_at == tick * (len(naps) + 1)
+        assert budget <= failed_at < budget + tick
+
+    @pytest.mark.parametrize("status", ["pending", "in_progress"])
+    def test_a_gate_that_never_reports_fails_at_the_budget_whatever_the_interval(
+        self, tmp_path: Path, status: str
+    ) -> None:
+        # Real waits this time: the clock moves by each wait the script asks for
+        # and by nothing else. The budget falls between two polls of a plain
+        # interval, and the exit still lands on it to the second, so the interval
+        # decides how many reads the wait costs and not how long a gate that never
+        # reports holds the job.
+        budget = 35 * _POLL + _POLL // 2
+        rec, _log = _advancing_sleep(tmp_path)
+        h = _Harness(tmp_path, [_page(_run(18, status, None))], tick=0)
+        proc = h.run(
+            total_budget=budget, stall_budget=budget * 10, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
+        assert proc.returncode == 1, proc.stdout
+        assert _elapsed_at_exit(proc.stdout, f"still '{status}' after") == budget
+        # One read per interval, and the one the clamp to the budget adds.
+        assert sum("head_sha=" in c for c in h.calls) == budget // _POLL + 2
+
+    def test_a_lagging_green_gate_is_released_at_the_stall_budget_not_an_interval_later(
+        self, tmp_path: Path
+    ) -> None:
+        # The STALL budget falls between two polls of a plain interval; the jobs
+        # read that releases a gate whose status lags its green jobs still happens
+        # on it to the second.
+        stall = 12 * _POLL + _POLL // 2
+        rec, _log = _advancing_sleep(tmp_path)
+        h = _Harness(
+            tmp_path,
+            [_page(_run(19, "in_progress", None))],
+            tick=0,
+            jobs=_jobs(("completed", "success", _LONG_DONE)),
+        )
+        (tmp_path / "clock").write_text(str(_CLOCK_LATER), encoding="utf-8")
+        proc = h.run(
+            stall_budget=stall, total_budget=stall * 3, extra_env={"AWAIT_FG_SLEEP": str(rec)}
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert _elapsed_at_exit(proc.stdout, "still reads 'in_progress' after") == stall
+
+    def test_the_probe_polls_at_its_own_interval(self, tmp_path: Path) -> None:
+        rec, log = _sleep_recorder(tmp_path)
+        h = _Harness(
+            tmp_path,
+            [
+                _page(_run(16, "queued", None)),
+                _page(_run(16, "in_progress", None)),
+                _page(_run(16, "completed", "success")),
+            ],
+            tick=1,
+        )
+        proc = h.run(
+            extra_env={"AWAIT_FG_SLEEP": str(rec), "SUPERSEDED_FILE": str(tmp_path / "proof")}
+        )
+        assert proc.returncode == 0, proc.stdout
+        assert log.read_text(encoding="utf-8").split() == [str(_PROBE_POLL), str(_PROBE_POLL)]
+
+    def test_the_cancel_wait_covers_the_probe_finding_the_proof_and_the_cancel_landing(
+        self,
+    ) -> None:
+        # The barrier proves a supersession and waits CANCEL_WAIT. The probe is in
+        # another job on its own phase, so it reads the same proof up to one of its
+        # intervals later, and the cancel it then sends may take LAND_BUDGET to land.
+        # A wait shorter than the two together fails a superseded run closed that
+        # was about to be cancelled.
+        cancel_wait = _script_number("CANCEL_WAIT")
+        land = _script_number("LAND_BUDGET", _CANCEL_SCRIPT)
+        assert cancel_wait >= _PROBE_POLL + land, (cancel_wait, _PROBE_POLL, land)
 
 
 # A run whose status lags its jobs: every job is done and green, the run still
@@ -1238,7 +1356,9 @@ class TestTheProductionDefaultsAreIntact:
         assert 'APPEAR_BUDGET="${APPEAR_BUDGET:-180}"' in text
         assert 'STALL_BUDGET="${STALL_BUDGET:-720}"' in text
         assert 'TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"' in text
-        assert "POLL_INTERVAL=30\n" in text
+        # The two poll waits are plain assignments, so no environment reaches them.
+        assert _POLL > 0 and _PROBE_POLL > 0
+        assert "${POLL_INTERVAL:-" not in text and "${PROBE_POLL_INTERVAL:-" not in text
         assert "READ_RETRY_CAP=60\n" in text
 
     def test_the_clock_and_sleep_default_to_the_real_tools(self) -> None:

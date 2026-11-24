@@ -557,6 +557,11 @@ def _unlisted_files(batch: Path) -> list[Path]:
     An unreadable manifest yields every file, which is the safe direction: without
     the manifest nothing in the batch is accounted for.
 
+    A link to a directory counts as such a file. Both walks list one with the
+    directories, never with the files, so it is read there or it is never seen and the
+    removal unlinks it. A link to a regular file is already a file here; a broken link
+    and a real subdirectory are not.
+
     There is deliberately NO exemption for the incoming name
     :func:`_copy_across_filesystems` writes, even though a crash can leave one here and
     a caller then cannot empty the batch until an operator removes it. A name is not
@@ -603,7 +608,20 @@ def _unlisted_files(batch: Path) -> list[Path]:
         # but the guard's contract is that NO traversal failure escapes as a
         # crash, so the impossible case still lands in the failure list.
         try:
-            for root, _dirs, names, rootfd in fwalk(batch, onerror=failures.append):
+            for root, dirs, names, rootfd in fwalk(batch, onerror=failures.append):
+                for name in dirs:
+                    try:
+                        st = os.stat(name, dir_fd=rootfd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        failures.append(exc)
+                        continue
+                    path = Path(root) / name
+                    if not stat.S_ISLNK(st.st_mode):
+                        continue
+                    if path.relative_to(batch).as_posix() not in listed:
+                        unlisted.append(path)
                 for name in names:
                     if name == MANIFEST_NAME:
                         continue
@@ -628,7 +646,14 @@ def _unlisted_files(batch: Path) -> list[Path]:
         except RecursionError as exc:
             failures.append(OSError(f"traversal exceeded the recursion limit: {exc}"))
     else:
-        for root, _dirs, names in os.walk(batch, onerror=failures.append):
+        for root, dirs, names in os.walk(batch, onerror=failures.append):
+            for name in dirs:
+                path = Path(root) / name
+                # Not is_symlink(): this is the Windows branch, and a junction is not one.
+                if not platform_compat.is_link_or_junction(path):
+                    continue
+                if path.relative_to(batch).as_posix() not in listed:
+                    unlisted.append(path)
             for name in names:
                 path = Path(root) / name
                 if name == MANIFEST_NAME:

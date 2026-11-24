@@ -39,6 +39,11 @@ RECEIPT_INVALIDATING_EVENTS = frozenset(
 # Other slash commands (/help, /model, /context, …) keep prior evidence.
 RECEIPT_RESETTING_COMMANDS = frozenset({"/compact", "/clear"})
 
+#: The slot a bind takes when it names none: a member's essential context.
+ESSENTIALS_SLOT = "essentials"
+#: The slot of the reply-format rules block, which any interactive turn carries.
+RULES_SLOT = "reply-format-rules"
+
 
 @asynccontextmanager
 async def _closing_events(
@@ -71,7 +76,13 @@ def _tool_call_ended(event: object) -> bool:
 
 
 class EssentialDelivery:
-    """One provider's current candidate and last acknowledged conversation state.
+    """One provider's current candidates and last acknowledged conversation state.
+
+    Each candidate sits in its own slot (:data:`ESSENTIALS_SLOT`,
+    :data:`RULES_SLOT`), with its own acknowledgment, so a member turn can carry
+    both its essentials and the reply-format rules and the conversation is sent
+    each once. A forced bind drops only its own slot's acknowledgment; anything
+    that can drop what the conversation holds drops every slot's.
 
     It also records :attr:`request_floor`, the latest monotonic moment of the
     last stream that made a model request, known to be no later than the start of
@@ -86,8 +97,8 @@ class EssentialDelivery:
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.Lock()
-        self._pending: EssentialReceipt | None = None
-        self._acknowledged: tuple[object, str, int] | None = None
+        self._pending: dict[str, EssentialReceipt] = {}
+        self._acknowledged: dict[str, tuple[object, str, int]] = {}
         self._epoch = 0
         self._clock = clock
         #: ``None`` until the first stream starts.
@@ -111,9 +122,11 @@ class EssentialDelivery:
         incarnation: object,
         force: bool = False,
         native_envelope: str | None = None,
+        slot: str = ESSENTIALS_SLOT,
     ) -> None:
-        """Stage trusted builder output; retain complete text until wire dispatch.
+        """Stage trusted builder output in *slot*; retain complete text until wire dispatch.
 
+        *force* drops *slot*'s acknowledgment, so the next send carries it.
         Callers must serialize builds/sends with their existing session lease.
         Previews omit the delivery object and cannot change live receipts.
         """
@@ -122,9 +135,8 @@ class EssentialDelivery:
         ).hexdigest()
         with self._lock:
             if force:
-                self._epoch += 1
-                self._acknowledged = None
-            self._pending = EssentialReceipt(
+                self._acknowledged.pop(slot, None)
+            self._pending[slot] = EssentialReceipt(
                 envelope, digest, native_envelope or envelope, incarnation, self._epoch
             )
 
@@ -132,7 +144,7 @@ class EssentialDelivery:
         """Compaction, clear or replacement makes prior delivery evidence unusable."""
         with self._lock:
             self._epoch += 1
-            self._acknowledged = None
+            self._acknowledged.clear()
 
     def prepare_command(self, command: str) -> bool:
         """Invalidate before a history-discarding slash command reaches the wire.
@@ -146,11 +158,11 @@ class EssentialDelivery:
             self.invalidate()
         return resets
 
-    def _invalidate_attempt(self, candidate: EssentialReceipt | None, epoch: int) -> None:
+    def _invalidate_attempt(self, attempt: list[tuple[str, EssentialReceipt]], epoch: int) -> None:
         with self._lock:
-            if candidate is not None and self._pending is candidate and self._epoch == epoch:
+            if self._epoch == epoch and any(self._pending.get(s) is c for s, c in attempt):
                 self._epoch += 1
-                self._acknowledged = None
+                self._acknowledged.clear()
 
     async def stream(
         self,
@@ -173,16 +185,18 @@ class EssentialDelivery:
 
         identity = incarnation()
         with self._lock:
-            candidate = self._pending
+            pending = list(self._pending.items())
             epoch = self._epoch
-            acknowledged = self._acknowledged
+            acknowledged = dict(self._acknowledged)
             report, self._report = self._report, None
         if report is not None and report[0] is not message:
             report = None
-        if candidate is not None and candidate.envelope not in message:
-            candidate = None
-        if candidate is not None:
-            if acknowledged == (identity, candidate.digest, epoch):
+        # The candidates this message carries; only these are acknowledged or voided.
+        attempt: list[tuple[str, EssentialReceipt]] = []
+        for slot, candidate in pending:
+            if candidate.envelope not in message:
+                continue
+            if acknowledged.get(slot) == (identity, candidate.digest, epoch):
                 replacement = ""
             elif candidate.incarnation == identity and candidate.epoch == epoch:
                 replacement = candidate.native_envelope
@@ -190,6 +204,7 @@ class EssentialDelivery:
                 replacement = candidate.envelope
             # Provenance survives the rewrite: the envelope is injected context.
             message = replace_in_injected(message, candidate.envelope, replacement)
+            attempt.append((slot, candidate))
         if report is not None:
             report[1](message)
         productive = False
@@ -225,23 +240,26 @@ class EssentialDelivery:
                             and not event.synthetic_completion
                             and not event.refusal
                         )
-                        if (
-                            candidate is not None
-                            and completed
-                            and productive
-                            and candidate.incarnation == identity
-                            and incarnation() == identity
-                        ):
+                        if attempt and completed and productive and incarnation() == identity:
                             with self._lock:
-                                if self._pending is candidate and self._epoch == epoch:
-                                    self._acknowledged = (identity, candidate.digest, epoch)
+                                if self._epoch == epoch:
+                                    for slot, candidate in attempt:
+                                        if (
+                                            candidate.incarnation == identity
+                                            and self._pending.get(slot) is candidate
+                                        ):
+                                            self._acknowledged[slot] = (
+                                                identity,
+                                                candidate.digest,
+                                                epoch,
+                                            )
                     yield event
         except GeneratorExit:
             # Collectors may close immediately after consuming a raw terminal.
             raise
         except BaseException:
-            self._invalidate_attempt(candidate, epoch)
+            self._invalidate_attempt(attempt, epoch)
             raise
         finally:
             if not (completed and productive):
-                self._invalidate_attempt(candidate, epoch)
+                self._invalidate_attempt(attempt, epoch)

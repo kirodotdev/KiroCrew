@@ -89,7 +89,7 @@ class _McpFileLockSync:
     def __enter__(self) -> None:
         try:
             _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
-            _MCP_LOCK_PATH.touch(exist_ok=True)
+            _MCP_LOCK_PATH.touch(mode=0o600, exist_ok=True)
             # Non-truncating "r+", kept inline for the same reason as
             # :class:`_McpFileLock` in handlers/mcp.py.
             fd = open(_MCP_LOCK_PATH, "r+")
@@ -325,23 +325,38 @@ def _load_config_or_refusal(
     writers refuse a commented file separately (:func:`_refuse_commented_config`).
     *name* is how the refusal names the file.
     """
+    loaded = _load_config_or_reason(path)
+    if isinstance(loaded, dict):
+        return loaded
+    if loaded == "unreadable":
+        return _mcp_config_unreadable(name)
+    return _mcp_config_corrupt(name)
+
+
+def _load_config_or_reason(path: Path) -> dict[str, Any] | str:
+    """:func:`_load_config_or_refusal` for a caller with no reply.
+
+    Answers the document, or ``"unreadable"`` (the file exists but could not be
+    read) or ``"corrupt"`` (it does not decode, parse, or hold an object), so a
+    caller can still name which refusal applies.
+    """
     try:
         data = loads_user_jsonc(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {"mcpServers": {}}
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return _mcp_config_corrupt(name)
+        return "corrupt"
     except OSError:
-        return _mcp_config_unreadable(name)
+        return "unreadable"
     if not isinstance(data, dict) or not isinstance(data.setdefault("mcpServers", {}), dict):
-        return _mcp_config_corrupt(name)
+        return "corrupt"
     return data
 
 
 def _load_config_for_update(path: Path) -> dict[str, Any] | None:
     """:func:`_load_config_or_refusal` for a caller with no reply: ``None`` when refused."""
-    loaded = _load_config_or_refusal(path)
-    return None if isinstance(loaded, web.Response) else loaded
+    loaded = _load_config_or_reason(path)
+    return loaded if isinstance(loaded, dict) else None
 
 
 def _mcp_write_failed(route: str, name: str = "global mcp.json") -> web.Response:

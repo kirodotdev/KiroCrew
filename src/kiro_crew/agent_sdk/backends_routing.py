@@ -365,16 +365,26 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 #: rows refuse what they do not cover, ``AUTO_APPROVE`` included. KAS gets the same
 #: stamps from the shared runtime's session handle, so it is not a member here.
 #:
-#: claude is the member. Its settings seed adds ``permissions.ask`` rules for the
+#: claude is a member. Its settings seed adds ``permissions.ask`` rules for the
 #: shell and the file-write tools while either allowlist is set, so a call the
 #: harness would approve on its own (a read-only command, an edit under
 #: ``acceptEdits``) still raises the request the gate answers.
+#:
+#: opencode is a member. Its seed (``ACP_BACKEND_PERMISSION_SETTING``) puts
+#: ``"*": "ask"`` last in its resolved ``permission`` rules, which the read-back
+#: confirms before the session starts, and denies its ``task`` sub-agent. Measured
+#: on 1.18.30: every ``bash``, ``write`` and ``edit`` call then sent
+#: ``session/request_permission``, a project config allowing ``bash`` and ``edit``
+#: included. Its own allow-always would stop it asking, so the client answers it
+#: once only (``client_permissions.approve_tool``).
 #:
 #: kiro-cli is NOT a member and must never become one: it reads ``toolsSettings``
 #: off disk and enforces it itself, and Crew's narrower pattern subset would refuse
 #: commands kiro-cli allows. The other backends stay out until their seed is shown
 #: to make every shell and write call ask.
-ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_OPENCODE}
+)
 
 #: Backends whose session never reads the agent spec's ``resources``, so Crew puts
 #: the steering documents its ``file://`` entries name into the prompt, with the

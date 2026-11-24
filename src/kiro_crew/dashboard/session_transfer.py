@@ -133,6 +133,7 @@ from kiro_crew.instances.constants import (  # noqa: F401
     SESSION_IMPORT_MEMORY_WAIT_SECS,
 )
 from kiro_crew.security import (
+    _LOCAL_PATH_PLACEHOLDER,
     redact_credentials,
     redact_exfiltration_urls,
     redact_local_paths,
@@ -213,6 +214,12 @@ def build_source_record(
         scrubbed, _ = redact_exfiltration_urls(project)
         scrubbed, _ = redact_credentials(scrubbed)
         scrubbed, _ = redact_local_paths(scrubbed)
+        # ``project`` holds ONE path and no prose, but the shared pass stops at a
+        # space so a quoted diagnostic keeps its tail -- which here would keep
+        # ``<last>\source\repos\app`` of ``D:\Users\<first> <last>\...``. A value
+        # that starts with a path root is therefore replaced whole.
+        if scrubbed.lstrip().startswith(_LOCAL_PATH_PLACEHOLDER):
+            scrubbed = _LOCAL_PATH_PLACEHOLDER
         source["project"] = scrubbed
     source["exported_at"] = _iso_now()
     # Which code wrote the file, for diagnosis when a key is unexpectedly absent.

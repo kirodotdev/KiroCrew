@@ -59,21 +59,28 @@ def _calls(fake: FakeBrowser, helper: str) -> list[dict[str, Any]]:
 # --- folders ------------------------------------------------------------------
 
 
-def test_a_folder_into_a_folder_field_is_refused_not_reported_sent(
+def test_a_folder_into_a_folder_field_is_staged_with_its_layout(
     fake: FakeBrowser, audits: list, tmp_path: Path
 ) -> None:
-    # Neither a set nor a drop fills a webkitdirectory field on every build, and both
-    # answered ok while the field stayed empty: refused, nothing staged or sent.
+    top = _tree(tmp_path)
+    (top / "notes.txt").unlink()
+    (top / ".env").write_bytes(b"SECRET=1")
     fake.page["fileInput"] = {"ok": True, "multiple": False, "directory": True}
-    out = _upload(fake, {"path": str(_tree(tmp_path))})
-    assert out["code"] == "folder_field_unsupported"
-    assert "via: drop" in out["error"] and "<folder>/*" in out["error"]
-    assert _calls(fake, "set_files") == [] and _calls(fake, "drop_files") == []
-    assert not (fake.tmp / "uploads").exists() or not any((fake.tmp / "uploads").rglob("*.png"))
-    assert {row[2] for row in audits} == {"folder_field_unsupported"}
-    # Its files, by a glob, still go to a field that takes several.
-    fake.page["fileInput"] = {"ok": True, "multiple": True, "directory": True}
-    assert _upload(fake, {"path": str(tmp_path / "work" / "photos" / "*")})["ok"] is True
+    out = _upload(fake, {"path": str(top)})
+    assert out == {
+        "ok": True,
+        "ref": "e4",
+        "files": [{"file": "photos/a.png", "size": 3}, {"file": "photos/sub/b.png", "size": 4}],
+        "skipped": 1,
+    }
+    (call,) = _calls(fake, "set_files")
+    (staged,) = [Path(f) for f in call["files"]]
+    assert staged.name == "photos"
+    assert sorted(p.relative_to(staged).as_posix() for p in staged.rglob("*") if p.is_file()) == [
+        "a.png",
+        "sub/b.png",
+    ]
+    assert {row[2] for row in audits} == {"ok"}
 
 
 def test_a_folder_into_a_plain_file_field_is_refused(
@@ -343,6 +350,115 @@ def test_the_chooser_helper_answers_only_its_own_page_s_frames() -> None:
         assert ("DOM.setFileInputFiles" in [m for m, _ in cdp.sent]) is ok
         if not ok:
             assert out["code"] == "frame_refused"
+
+
+class _FolderField(_Cdp):
+    """A ``webkitdirectory`` node holding *files*, whose armed ``input`` listener fires on
+    the *fires_on*-th flag read after the set (``None``: never)."""
+
+    def __init__(self, files: int, fires_on: int | None) -> None:
+        super().__init__([])
+        self.files = files
+        self.fires_on = fires_on
+        self.flag_reads = 0
+        self.flag: Any = True  # left set by an earlier upload in the same world
+        self.armed_at: int | None = None
+
+    def cdp(self, method: str, **params: Any) -> Any:
+        if method != "Runtime.callFunctionOn":
+            return super().cdp(method, **params)
+        self.sent.append((method, params))
+        body = params["functionDeclaration"]
+        if "this.webkitdirectory" in body:
+            return {"result": {"value": True}}
+        if helper_worker._ARM_FOLDER_INPUT in body:
+            self.flag, self.armed_at = False, len(self.sent) - 1
+            return {"result": {}}
+        if "this.files.length" in body:
+            return {"result": {"value": self.files}}
+        assert f"this.{helper_worker._FOLDER_INPUT_FLAG}" in body
+        if self.armed_at is not None and "DOM.setFileInputFiles" in [m for m, _ in self.sent]:
+            self.flag_reads += 1
+            self.flag = self.flag or self.flag_reads == self.fires_on
+        return {"result": {"value": self.flag}}
+
+
+def test_the_set_helper_brings_the_tab_to_the_front_for_a_folder_field() -> None:
+    # The full build lists a folder into a folder field only for the active tab.
+    cdp = _FolderField(files=2, fires_on=2)
+    assert helper_worker._local_set_files(cdp, "W", ["/s/photos"]) == {"ok": True}
+    methods = [m for m, _ in cdp.sent]
+    assert methods.index("Page.bringToFront") < methods.index("DOM.setFileInputFiles")
+    assert cdp.armed_at is not None and cdp.armed_at < methods.index("DOM.setFileInputFiles")
+    assert methods[-1] == "Runtime.releaseObject"
+
+
+def test_a_folder_field_the_page_cleared_after_its_input_event_is_filled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The page's own change handler read the files, then set ``this.value = ''``.
+    monkeypatch.setattr(helper_worker, "_FOLDER_WAIT_S", 0.0)
+    cdp = _FolderField(files=0, fires_on=1)
+    assert helper_worker._local_set_files(cdp, "W", ["/s/photos"]) == {"ok": True}
+
+
+def test_a_folder_field_left_empty_is_refused_and_nothing_reported_sent(
+    fake: FakeBrowser, audits: list, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(helper_worker, "_FOLDER_WAIT_S", 0.0)
+    # Files the field held before, and the flag an earlier upload left set, do not count.
+    cdp = _FolderField(files=2, fires_on=None)
+    answer = helper_worker._local_set_files(cdp, "W", ["/s/photos"])
+    assert answer == {"ok": False, "code": "folder_field_unsupported"}
+    assert cdp.sent[-1][0] == "Runtime.releaseObject"
+    # The op drops the staged copy and writes that outcome for every file.
+    fake.page["fileInput"] = {"ok": True, "multiple": False, "directory": True}
+    fake.helpers["set_files"] = answer
+    out = _upload(fake, {"path": str(_tree(tmp_path))})
+    assert out["code"] == "folder_field_unsupported" and "via: drop" in out["error"]
+    assert not any((fake.tmp / "uploads").rglob("*.png"))
+    assert len(audits) == 3 and {row[2] for row in audits} == {"folder_field_unsupported"}
+
+
+def test_a_page_listener_that_stops_the_fields_input_does_not_hide_the_browsers_own() -> None:
+    # The root, not ``window``: there a shadow-root field's event is retargeted to its host.
+    cdp = _FolderField(files=2, fires_on=1)
+    assert helper_worker._local_set_files(cdp, "W", ["/s/photos"]) == {"ok": True}
+    assert cdp.armed_at is not None
+    body = cdp.sent[cdp.armed_at][1]["functionDeclaration"]
+    assert "this.addEventListener" not in body
+    assert "(this, this.getRootNode())" in body and "r.addEventListener('input'," in body
+    assert "e.target === n" in body and body.count("}, true)") == 1
+
+
+class _GoneAfterSet(_FolderField):
+    """A folder field whose world is gone at the first flag read after the set; the top
+    frame's ``loaderId`` is then *after* (``L1`` before)."""
+
+    def __init__(self, after: str) -> None:
+        super().__init__(files=2, fires_on=None)
+        self.after = after
+
+    def cdp(self, method: str, **params: Any) -> Any:
+        set_sent = "DOM.setFileInputFiles" in [m for m, _ in self.sent]
+        if method == "Page.getFrameTree":
+            self.sent.append((method, params))
+            loader = self.after if set_sent else "L1"
+            return {"frameTree": {"frame": {"id": "TOP", "loaderId": loader}}}
+        body = params.get("functionDeclaration") or ""
+        if set_sent and f"this.{helper_worker._FOLDER_INPUT_FLAG}" in body:
+            raise RuntimeError("Cannot find context with specified id")
+        return super().cdp(method, **params)
+
+
+def test_a_folder_field_whose_page_navigated_after_the_set_is_filled() -> None:
+    # A page that submits on its own change: the new document destroyed the world.
+    assert helper_worker._local_set_files(_GoneAfterSet("L2"), "W", ["/s/photos"]) == {"ok": True}
+    # The same document: the read failed for another reason, which still fails the call.
+    cdp = _GoneAfterSet("L1")
+    with pytest.raises(RuntimeError, match="context"):
+        helper_worker._local_set_files(cdp, "W", ["/s/photos"])
+    assert cdp.sent[-1][0] == "Runtime.releaseObject"
 
 
 def test_the_drop_helper_drops_files_without_pressing() -> None:

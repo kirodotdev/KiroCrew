@@ -20,10 +20,14 @@ Four properties are pinned:
 from __future__ import annotations
 
 import gzip
+import io
+import itertools
 import json
 import os
+import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -200,15 +204,19 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     map_path.write_text(json.dumps(MAP), encoding="utf-8")
     out = tmp_path / "bundle.json.gz"
     argv = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
+    before = datetime.now(timezone.utc).replace(microsecond=0)
     assert ctm.main(argv) == 0
     doc = json.loads(gzip.decompress(out.read_bytes()))
+    # The command stamps the file with the time it wrote it, in UTC.
+    assert before <= datetime.fromisoformat(doc.pop("built_at")) <= datetime.now(timezone.utc)
+    assert "built_at" not in ctm.bundle(MAP, repo, timeout=FALLBACK_TIMEOUT_SECS)[0]
     # The map as it was, with the two tables beside it.
     assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
     assert doc["guard"] == TIER
     assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
     assert doc["os_sensitive"] == {"src/kiro_crew/lock.py": "W2"}
     assert doc["windows_targeting"] == ["test/test_windows_x.py"]
-    assert ctm.load_map(out) == doc
+    assert {k: v for k, v in ctm.load_map(out).items() if k != "built_at"} == doc
     # select reads the bundle as it reads a schema-1 map.
     diff = tmp_path / "diff.txt"
     diff.write_text("M\tsrc/kiro_crew/b.py\n", encoding="utf-8")
@@ -273,7 +281,7 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     assert "bundle: tables os_sensitive, windows_targeting," in printed
     assert all(f"::warning::{table} left out" in printed for table in ("cochange", "guard"))
     left = {k: v for k, v in ctm.load_map(out).items() if k not in ctm.BUNDLE_TABLES}
-    assert left == MAP
+    assert {k: v for k, v in left.items() if k != "built_at"} == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
@@ -663,11 +671,12 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     page = {"total_count": len(jobs), "jobs": jobs}
     monkeypatch.setattr(shadow, "_gh_json", lambda args, root: listed.append(args) or page)
 
-    def fake_run(argv: list[str], root: Path) -> str:
+    def fake_run(argv: list[str], root: Path, most: int) -> bytes:
         fetched.append(argv)
-        return "2026-11-18T00:00:00.0Z FAILED test/test_a.py::test_one - assert 1 == 2\n"
+        assert most == shadow.MAX_LOG_BYTES
+        return b"2026-11-18T00:00:00.0Z FAILED test/test_a.py::test_one - assert 1 == 2\n"
 
-    monkeypatch.setattr(shadow, "_run", fake_run)
+    monkeypatch.setattr(shadow, "_gh_bytes", fake_run)
     run = {"id": 9, "run_attempt": 2, "head_sha": "f" * 40, "pull_requests": [{"number": 7}]}
     row = shadow._red_row(run, ROOT, shadow._nodeid_parser())
     assert row == {"run": 9, "pr": 7, "head": "f" * 40, "failing": ["test/test_a.py"]}
@@ -675,12 +684,33 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     # The jobs of THIS attempt: a rerun keeps the run id.
     assert listed[0][1] == f"repos/{shadow.REPO}/actions/runs/9/attempts/2/jobs?per_page=100&page=1"
 
-    def unreadable(argv: list[str], root: Path) -> str:
+    def unreadable(argv: list[str], root: Path, most: int) -> bytes:
         raise subprocess.CalledProcessError(1, argv)
 
     # One unreadable shard log leaves the sample incomplete: none, not a partial row.
-    monkeypatch.setattr(shadow, "_run", unreadable)
+    monkeypatch.setattr(shadow, "_gh_bytes", unreadable)
     assert shadow._red_row(run, ROOT, shadow._nodeid_parser()) is None
+    # So does one larger than is ever held: it is cut off at the limit, not read whole.
+    monkeypatch.setattr(shadow, "_gh_bytes", lambda argv, root, most: None)
+    assert shadow._red_row(run, ROOT, shadow._nodeid_parser()) is None
+
+
+@pytest.mark.parametrize("size", [0, 1, 7, 8, 9, 64])
+def test_a_stream_is_held_to_its_limit_and_no_further(size: int) -> None:
+    most = 8
+
+    class Counting(io.BytesIO):
+        asked = 0
+
+        def read(self, wanted: int | None = -1) -> bytes:
+            assert wanted is not None and wanted >= 0
+            Counting.asked += wanted
+            return super().read(wanted)
+
+    held = shadow.capped(Counting(b"x" * size), most)
+    assert held == (b"x" * size if size <= most else None)
+    # One byte past the limit says it is over; nothing beyond that is ever asked for.
+    assert Counting.asked == most + 1
 
 
 def test_shadow_summary_states_both_invariants() -> None:
@@ -725,3 +755,140 @@ def test_only_the_shadow_workflow_loads_the_recorder() -> None:
     ]:
         if path != WORKFLOW:
             assert "ci_test_file_map" not in path.read_text(encoding="utf-8"), path
+
+
+SCRIPT = "scripts/ci_test_map.py"
+# The retention the publishing issue asks for at least: a reader must still find
+# a bundle after a run of red nights.
+MIN_RETENTION_DAYS = 14
+
+
+def _map_job_calls() -> dict[str, tuple[int, dict[str, Any], list[str]]]:
+    """Each subcommand of the script the `map` job runs: its step index, step and argv."""
+    calls: dict[str, tuple[int, dict[str, Any], list[str]]] = {}
+    for index, step in enumerate(_workflow()["jobs"]["map"]["steps"]):
+        for line in str(step.get("run", "")).splitlines():
+            words = list(shlex.shlex(line, posix=True, punctuation_chars=True))
+            if SCRIPT not in words:
+                continue
+            argv = words[words.index(SCRIPT) + 1 :]
+            piped = "|" in argv
+            argv = argv[: argv.index("|")] if piped else argv
+            assert argv[0] not in calls, f"{argv[0]} runs twice"
+            # Without pipefail a pipe ends green on its last command's status.
+            assert not piped or step.get("shell") == "bash", line
+            calls[argv[0]] = (index, step, argv)
+    return calls
+
+
+def _option(argv: list[str], name: str) -> str:
+    return argv[argv.index(name) + 1]
+
+
+def _tables_reported_missing(printed: str) -> set[str]:
+    """The bundle tables `check` printed an error for."""
+    return {t for t in ctm.BUNDLE_TABLES if f"::error::the bundle has no {t} table" in printed}
+
+
+def test_map_job_publishes_the_checked_bundle_as_its_one_artifact() -> None:
+    steps = _workflow()["jobs"]["map"]["steps"]
+    calls = _map_job_calls()
+    uploads = [
+        (i, s) for i, s in enumerate(steps) if "actions/upload-artifact@" in str(s.get("uses", ""))
+    ]
+    assert len(uploads) == 1
+    at, upload = uploads[0]
+    # What is built is what is bundled; what is bundled is what is checked and uploaded.
+    assert _option(calls["bundle"][2], "--map") == _option(calls["build"][2], "--out")
+    bundle_out = _option(calls["bundle"][2], "--out")
+    assert _option(calls["check"][2], "--bundle") == bundle_out == upload["with"]["path"]
+    order = [calls[name][0] for name in ("build", "bundle", "check")]
+    assert order == sorted(order) and order[-1] < at
+    # Nothing lets the upload run after a failed check, or a failed check pass.
+    for step in (upload, *(calls[name][1] for name in calls)):
+        assert "if" not in step and "continue-on-error" not in step
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["retention-days"] >= MIN_RETENTION_DAYS
+    # The checkout holds the window `bundle` reads by default, and the commit before it.
+    assert "--commits" not in calls["bundle"][2] and "--ref" not in calls["bundle"][2]
+    depths = [
+        s["with"].get("fetch-depth", 1)
+        for s in steps[: calls["bundle"][0]]
+        if "actions/checkout@" in str(s.get("uses", ""))
+    ]
+    assert len(depths) == 1
+    assert depths[0] == 0 or depths[0] > ctm.CO_CHANGE_COMMITS
+
+
+def test_map_job_commands_pass_only_on_a_clone_that_holds_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    calls = _map_job_calls()
+    window = 2
+    monkeypatch.setattr(ctm, "CO_CHANGE_COMMITS", window)
+    monkeypatch.setattr(ctm, "GIT_LOG_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    map_name = _option(calls["bundle"][2], "--map")
+    out_name = _option(calls["bundle"][2], "--out")
+    works = iter(tmp_path / f"work-{n}" for n in itertools.count())
+
+    def run(root: Path, tier: list[str]) -> tuple[int, str, Path]:
+        """The job's own `bundle` and `check` lines against `root`, in a new directory."""
+        work = next(works)
+        work.mkdir()
+        (work / map_name).write_text(json.dumps(MAP), encoding="utf-8")
+        monkeypatch.chdir(work)
+        monkeypatch.setattr(ctm, "guard_tier", lambda root: tier)
+        assert ctm.main(["--root", str(root), *calls["bundle"][2]]) == 0
+        capsys.readouterr()
+        status = ctm.main(["--root", str(root), *calls["check"][2]])
+        if status == 0:
+            doc = ctm.load_map(work / out_name)
+            assert all(doc[table] for table in ctm.BUNDLE_TABLES)
+        return status, capsys.readouterr().out, work / out_name
+
+    # The fixture has four commits: a shallow clone passes from `window + 1` commits up.
+    for depth in range(1, 5):
+        status, printed, _ = run(_shallow_clone(repo, depth), TIER)
+        assert status == (0 if depth > window else 1), depth
+        assert _tables_reported_missing(printed) == ({"cochange"} if depth <= window else set())
+    status, printed, written = run(repo, TIER)
+    assert status == 0 and "::error::" not in printed
+    # The summary line: the commit, the build time, the file's size and each table's rows.
+    assert f"commit `{MAP['commit']}`, built_at {ctm.load_map(written)['built_at']}," in printed
+    assert f"{written.stat().st_size} bytes" in printed
+    rows = ctm.bundle_rows(ctm.load_map(written))
+    assert all(f"{name} {count}" in printed for name, count in rows.items())
+    assert set(rows) > set(ctm.BUNDLE_TABLES) and all(rows.values())
+    # A dead guard scan fails the job as a short history does.
+    status, printed, _ = run(repo, [])
+    assert status == 1 and _tables_reported_missing(printed) == {"guard"}
+
+
+def test_check_fails_on_every_bundle_that_lacks_a_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    whole = {**MAP, **{table: ["row"] for table in ctm.BUNDLE_TABLES}}
+    path = tmp_path / "bundle.json.gz"
+    for count in range(len(ctm.BUNDLE_TABLES) + 1):
+        for gone in itertools.combinations(ctm.BUNDLE_TABLES, count):
+            # Absent and empty read the same: neither holds a row.
+            for doc in (
+                {k: v for k, v in whole.items() if k not in gone},
+                {k: (type(v)() if k in gone else v) for k, v in whole.items()},
+            ):
+                path.write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
+                assert ctm.main(["check", "--bundle", str(path)]) == (1 if gone else 0)
+                printed = capsys.readouterr().out
+                assert _tables_reported_missing(printed) == set(gone)
+    # The build time is printed when the file has one, and decides nothing.
+    for extra in ({}, {"built_at": "not a time"}):
+        path.write_bytes(gzip.compress(json.dumps({**whole, **extra}).encode("utf-8")))
+        assert ctm.main(["check", "--bundle", str(path)]) == 0
+        assert ("built_at not a time" in capsys.readouterr().out) == bool(extra)
+    # A file that is not a readable schema-1 map is a usage error, never a pass.
+    data = path.read_bytes()
+    for damaged in (data[: len(data) // 2], b"{}", gzip.compress(b"[]")):
+        path.write_bytes(damaged)
+        assert ctm.main(["check", "--bundle", str(path)]) == 2
+    assert ctm.main(["check", "--bundle", str(tmp_path / "absent.json.gz")]) == 2

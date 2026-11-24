@@ -32,12 +32,11 @@ argv it builds: `<this skill's dir>/references/tools-and-evaluator.md`.
 tool approval, never a reason to hand a worker's choice to the person. The full
 list: `<this skill's dir>/references/tools-and-evaluator.md`.
 
-A session or ledger tool that answers `does not exist` is deferred, not
-missing: load it by id with `tool_search` (`kirocrew-dashboard::<tool>` for
-the session tools; `kirocrew-work::work_ledger_read`,
-`kirocrew-work::work_ledger_record`, `kirocrew-work::work_ledger_rebuild` and
-`kirocrew-work::accept_eval`; `kirocrew-core::monitor_start`), then repeat the
-call.
+A session or ledger tool that answers `does not exist` or `not available` is
+deferred, not missing: load it as the `[TOOL NAMES]` block says, then repeat
+the call. The session tools are on server `kirocrew-dashboard`;
+`work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild` and
+`accept_eval` on `kirocrew-work`; `monitor_start` on `kirocrew-core`.
 
 ## What is a work item
 

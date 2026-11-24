@@ -592,7 +592,7 @@ mutation are served by a backend plugin the edition registers with
 `dashboard/handlers/source_providers.py`), under the same id. The
 two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
 both refuse the built-in ids (`github`, `gitlab`, `jira`, `bitbucket_server`,
-`gerrit`; the backend also refuses `linear`), so a descriptor can
+`gerrit`; the backend also refuses `linear` and `servicenow`), so a descriptor can
 never restyle a core provider and a payload provider id round-trips through both
 layers. A descriptor missing `parse`/`chipLabel`/`refLabel`/`capabilities`
 routes through `reportSeamCollision`.

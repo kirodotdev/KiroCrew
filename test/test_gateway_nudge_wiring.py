@@ -165,13 +165,18 @@ async def test_work_ledger_patrol_reads_session_owned_work() -> None:
 # ── the wake judge's evidence collector ──────────────────────────────────────
 
 
+#: The targets a tick hands the collector: one session and one pull request.
+_TARGETS = ["chat-9", "org/repo#7"]
+
+
 @pytest.mark.asyncio
 async def test_the_collector_reads_nothing_without_a_dashboard() -> None:
     orch = _orchestrator()
     orch.dashboard_state = None
     wired = await _wire(orch)
 
-    assert await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1")) == ([], 0, {})
+    collected = await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1"), _TARGETS)
+    assert collected == ([], 0, {})
 
 
 def _judge_seams(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> dict[str, Any]:
@@ -185,13 +190,7 @@ def _judge_seams(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> dict[str,
         seen["pr"] = await read_pr("org/repo#7")
         return [{"evidence": True}], 1
 
-    def _parse_targets(spec: Any, message: str, *, watched: str) -> list[str]:
-        return ["chat-9", "org/repo#7"]
-
     defaults: dict[str, Any] = {
-        "parse_targets": _parse_targets,
-        "spec_of": lambda loop: {},
-        "watched_pr_subject": lambda loop: "",
         "collect_evidence": _collect,
         "pr_target_is_unread": lambda observed: False,
         "pr_observation_is_about": lambda target, **kw: True,
@@ -224,9 +223,12 @@ async def test_the_collector_reads_the_session_page_the_judge_retains(
     loop = _loop("chat-1", monitor=monitor, judge_cursors={"chat-9": 4, "departed": 2})
     wired = await _wire(orch)
 
-    evidence, dropped, cursors = await wired.service_kwargs["collect_judge_evidence"](loop)
+    evidence, dropped, cursors = await wired.service_kwargs["collect_judge_evidence"](
+        loop, _TARGETS
+    )
 
     assert (evidence, dropped) == ([{"evidence": True}], 1)
+    assert seen["targets"] == _TARGETS, "it reads the targets the tick handed it"
     # Cursors are pruned to the targets this tick reads, and returned, not stored.
     assert cursors == {"chat-9": 4}
     assert seen["cursors_in"] == {"chat-9": 4}
@@ -266,7 +268,7 @@ async def test_the_collector_primes_app_reach_before_it_reads(
     _judge_seams(monkeypatch)
     wired = await _wire(orch)
 
-    await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1"))
+    await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1"), _TARGETS)
 
     assert order == ["prime", "read"]
 
@@ -298,7 +300,7 @@ async def test_the_pr_reader_counts_an_unusable_reading_as_unread(
         )
     wired = await _wire(orch)
 
-    await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1", monitor=monitor))
+    await wired.service_kwargs["collect_judge_evidence"](_loop("chat-1", monitor=monitor), _TARGETS)
 
     assert seen["pr"] is None
     # An empty page keeps the reader's own cursor and reports no total.

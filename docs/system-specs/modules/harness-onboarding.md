@@ -117,6 +117,7 @@ vocabulary.
 | `ACP_BACKENDS_READ_PATH_ARG` | The read tool names its file in `file_path`, so `AcpClient` marks a `read`-kind `tool_call` (`acp/read_path_arg.py`, `AcpEvent.read_path_arg`) and the tool row previews an image. Claude only. |
 | `ACP_BACKENDS_SUMMARIZED_THINKING` | The claude launch sets `CLAUDE_CODE_THINKING_DISPLAY=summarized` when the spawn environment does not name it and no Claude Code settings file decides thinking, so `agent_thought_chunk` carries text. Off the wire; claude-agent-acp 0.94.0 ignores it. Claude only. |
 | `ACP_BACKENDS_NATIVE_CHILD_CANCEL` | A Stop on a running native child's card sends `session/cancel` naming that child (`AcpClient.cancel_native_child`) when its announce granted `capabilities.cancel`, never the parent (H16); the card closes on the reported end. Claude only, for Agent-tool children; a Workflow agent's card closes alone. |
+| `ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD` | While a native sub-agent's card is open, a permission request on the session is that sub-agent's, not the parent's (`SessionCapabilities.permission_requests_name_child`), so the dashboard's native-crew auto-approve rung may answer it. kiro-cli and KAS only. A non-member, an unknown backend included, skips the rung and shows the approval card: claude and opencode requests name no child. Not the `..._CHILD_CALLS_MARKED` sets, which mark one request for a deny-rule override. |
 | `ACP_BACKENDS_TOOL_TITLE_REFINEMENT` | A `tool_call_update` retitles a call first named generically ("Terminal"); a Crew-spawned subagent's card renames its row (`SessionCapabilities.refines_tool_call_titles`, `subagent_manager/card_tool_titles.py`). Claude only; kiro-cli titles a failed call with its bare tool name. |
 | `ACP_BACKENDS_COMPACTION_SUMMARY` | The compaction card shows the summary on the `completed` compaction event's title (`acp/compaction_summary.py`): the `compaction_update`'s `summary`, else the streamed `compaction_summary_chunk` text, redacted and bounded. Claude only; within `ACP_BACKENDS_INLINE_COMPACTION`. |
 | `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` | The adapter runs ANY leading-slash `session/prompt` as one of its own commands (`SessionCapabilities.runs_own_slash_commands`), so the dashboard forwards every leading-slash word raw, with no context prefix, except a quick-prompt macro and the commands the dashboard answers itself. Claude only today (`claude/compact-live.jsonl`). A non-member keeps the word as prompt text unless it is one of kiro-cli's command names, because a word forwarded raw loses the turn's context. |
@@ -318,6 +319,20 @@ resolver ladder is shared either way:
 `codex_acp_not_found_message` sit in `client_spawn_env.py` with callers in the harness and in
 the install probe, so one wording answers "the adapter is not installed" wherever
 the question is asked.
+
+The ROUTING line above is about the spawn. After the spawn, a per-session harness,
+table member or not, splits its code by when it runs. What a routing read-back found
+stays in the adapter's `read_back`, as above, and a value the launch hands on to
+turn-time code is a field on the session. What the harness does during its session
+and its turns goes in an `AcpClient` subclass of its own,
+`class <Name>AcpClient(AcpClient, serves=<backend>)` in `acp/client_<name>.py`, whose
+bodies live in owner modules such as `acp/client_<name>_session.py` that the class
+binds. The class sets the fields that behaviour needs; a field its launch reads or
+writes is also declared on a `<Name>ProcessSession` protocol in
+`acp/harness/<name>.py`, as `ClaudeProcessSession` and `DeepseekProcessSession` are.
+Where a shared client file has to act for the harness, `AcpClient` declares a hook
+with the behaviour every other backend keeps, and the subclass fills it
+([acp-client.md](acp-client.md), the client-class paragraph).
 
 What a hand-written harness needs, using the Codex adapter as the shape:
 

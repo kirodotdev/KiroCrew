@@ -473,14 +473,15 @@ class TestRenderer:
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req1"), None)
 
     @pytest.mark.asyncio
-    async def test_prompt_falls_back_to_the_last_tool_without_a_title(self) -> None:
-        """Non-vacuity: the fallback still runs when the event carried no name."""
+    async def test_prompt_without_a_title_names_no_earlier_tool(self) -> None:
+        """No tool call id reaches the prompt, so an untitled request cannot be tied
+        to the last tool_call seen: it reads ``this tool``, never that call's name."""
         r, cli = self._renderer()
         await r.on_turn_start()
         await r.on_tool_call("t1", "fs_read")
         await r.on_prompt_choice([], request_id="req2")
         text, _ = cli.sent[-1]
-        assert "fs_read" in text
+        assert text == "🔐 Approve `this tool`?"
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req2"), None)
 
     @pytest.mark.asyncio

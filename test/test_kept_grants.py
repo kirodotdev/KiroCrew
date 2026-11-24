@@ -16,6 +16,7 @@ import json
 import signal
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from conftest import requires_symlinks
-from kiro_crew import kept_grants, kept_yolo
+from kiro_crew import atomic_write, kept_grants, kept_yolo
 from kiro_crew import safety_override as so
 from kiro_crew import safety_override_grant as so_grant
 from kiro_crew.dashboard import token_secret
@@ -212,6 +213,72 @@ class TestTheUserStopMark:
 
         kept_grants.run_user_stop(lambda: None, via="cli")
         assert _record_path(home, kept_grants.USER_STOP_FILE).exists()
+
+
+@pytest.fixture
+def syncs(home: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Every sync of the record directory: its thread, and the record and lock then."""
+    seen: list[dict] = []
+    real = atomic_write.fsync_dir
+
+    def _spy(path, **kwargs) -> None:
+        seen.append(
+            {
+                "dir": Path(path),
+                "thread": threading.get_ident(),
+                "yolo_record": _record_path(home, kept_grants.YOLO_RECORD).exists(),
+                "io_lock_held": kept_yolo._io_lock.locked(),
+            }
+        )
+        real(path, **kwargs)
+
+    monkeypatch.setattr(kept_grants, "fsync_dir", _spy, raising=False)
+    return seen
+
+
+class TestAnEndedGrantSurvivesAPowerLoss:
+    """A delete that ends a grant, a guarded write's rename and the user-stop mark are
+    synced to disk before they are acknowledged, never on the event loop's thread and
+    never under a lock the loop takes."""
+
+    def test_a_guarded_write_syncs_its_rename_after_the_lock(
+        self, home: Path, syncs: list[dict]
+    ) -> None:
+        _boot_and_arm()
+        _grant(3600)
+        assert syncs
+        assert all(s["yolo_record"] and not s["io_lock_held"] for s in syncs)
+
+    @pytest.mark.asyncio
+    async def test_settle_syncs_a_yolo_off_on_a_worker_thread_after_the_off(
+        self, home: Path, syncs: list[dict]
+    ) -> None:
+        _boot_and_arm()
+        _grant(3600)
+        syncs.clear()
+        # Slack turns YOLO off on the loop, then awaits ``settle`` before it answers.
+        so.safety_override().deactivate("slack")
+        assert syncs == [], "the off itself must not wait on the disk"
+        assert await kept_grants.settle() is True
+        [synced] = syncs
+        assert synced["dir"] == home / kept_grants.KEPT_GRANTS_LEAF
+        assert synced["thread"] != threading.get_ident()
+        assert synced["yolo_record"] is False and synced["io_lock_held"] is False
+
+    def test_the_user_stop_mark_is_synced_file_and_directory(
+        self, home: Path, syncs: list[dict], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fsync_flags: list[object] = []
+        real_write = kept_grants.atomic_write
+
+        def _write(path, text, **kwargs) -> None:
+            fsync_flags.append(kwargs.get("fsync"))
+            real_write(path, text, **kwargs)
+
+        monkeypatch.setattr(kept_grants, "atomic_write", _write)
+        assert kept_grants.mark_user_stop("cli")
+        assert fsync_flags == [True]
+        assert [s["dir"] for s in syncs] == [home / kept_grants.KEPT_GRANTS_LEAF]
 
 
 def _grant(ttl: int | None, source: str = "dashboard") -> None:

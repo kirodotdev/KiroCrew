@@ -1,7 +1,8 @@
 """The remote MCP ``oauth`` blocks a session's agent spec sets that its harness drops.
 
-Only kiro-cli honours the block (``ACP_BACKENDS_REMOTE_MCP_OAUTH``). KAS names what
-it drops through :func:`kiro_crew.agent_sdk.spec_hooks.crew_fired_spec_hooks`; this
+Only kiro-cli honours the block (``ACP_BACKENDS_REMOTE_MCP_OAUTH``). KAS from engine
+0.66.104 takes a public client's block but withholds a confidential one (``clientSecret``)
+on every engine; it names what it drops through :func:`kiro_crew.agent_sdk.spec_hooks.crew_fired_spec_hooks`; this
 leaf answers the same question for every other harness, for the session-start
 notice (``dashboard.chat_turn.mcp_oauth_notice``).
 """

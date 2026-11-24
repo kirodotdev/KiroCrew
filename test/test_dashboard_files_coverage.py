@@ -1705,6 +1705,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "show_bot_sessions_in_list",
             "new_chat_crew_mode",
             "auto_open_conductor_board",
         ]
@@ -1725,6 +1726,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel": "invalid_mcp_app_panel",
             "side_panel_always_open": "invalid_side_panel_always_open",
             "side_panel_pin_summary": "invalid_side_panel_pin_summary",
+            "show_bot_sessions_in_list": "invalid_show_bot_sessions_in_list",
             "new_chat_crew_mode": "invalid_new_chat_crew_mode",
             "auto_open_conductor_board": "invalid_auto_open_conductor_board",
         }
@@ -1813,6 +1815,7 @@ class TestDashboardConfigPut:
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,
+            "show_bot_sessions_in_list": True,
             "new_chat_crew_mode": True,
             "auto_open_conductor_board": False,
         }

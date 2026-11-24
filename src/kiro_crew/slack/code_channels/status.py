@@ -275,6 +275,36 @@ async def _apply_approval_status(binding: Binding, status: str) -> None:
         await set_status(binding.channel_id, status)
 
 
+async def clear_stranded(channel_id: str, session_key: str) -> bool:
+    """Move a channel nothing keeps busy to ``active``; False when Slack did not take it.
+
+    For the workspace watch, between the bound session's turns with no worker
+    running: Slack was last told ``processing`` (or ``suspended``) and no turn end
+    will clear it. Sent under the turn hooks' lock and decided there, so a turn
+    that starts meanwhile sends its ``processing`` after this ``active`` instead
+    of deduplicating against the stale record. Should that turn's start hook give
+    up waiting for the lock (its hook deadline), its ``processing`` is put back
+    here, with the same checks an answered approval's makes. Never raises.
+    """
+    try:
+        binding = _channel_of(session_key)
+        if binding is None or binding.channel_id != channel_id:
+            return True  # not this channel's bound session: nothing of ours to clear
+        async with _status_lock(channel_id):
+            # The turn end's own gate: the channels policy and an archive refuse.
+            if await _refused(binding, activation=False, stop=False):
+                return True
+            if after_turn(channel_id) != SESSION_STATUS_ACTIVE or not owes_clear(channel_id):
+                return True  # a turn started, or nothing is owed any more
+            taken = await set_status(channel_id, SESSION_STATUS_ACTIVE)
+        if after_turn(channel_id) != SESSION_STATUS_ACTIVE:
+            await _apply_approval_status(binding, SESSION_STATUS_PROCESSING)
+        return taken
+    except Exception:
+        logger.debug("code channel %s: stranded status not cleared", channel_id, exc_info=True)
+        return False
+
+
 def _turn_running(binding: Binding) -> bool:
     try:
         from kiro_crew.slack.code_channels.binding import bound_slot

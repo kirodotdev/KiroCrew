@@ -19,10 +19,18 @@ from .shell_normalizer import _cut_at_operator, _resolve_param_defaults
 # TEXT inside a single argv token.  The substitution forms are substring
 # matches ("$(hostname -f)" still hits); the variable forms are exact or
 # dot-suffixed ("$hostname", "$hostname.example") so an unrelated variable
-# like "$hostname_backup" is NOT read as this host.
+# like "$hostname_backup" is NOT read as this host.  The variable forms
+# include the Windows spellings of the same name: PowerShell's
+# "$env:COMPUTERNAME" (bare and braced) and cmd's "%COMPUTERNAME%".
 _HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
 
-_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
+_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = (
+    "$hostname",
+    "${hostname}",
+    "$env:computername",
+    "${env:computername}",
+    "%computername%",
+)
 
 _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
 
@@ -134,11 +142,74 @@ def _brace_expansions(token: str) -> "list[str] | None":
 
 _LITERAL_HOSTS = contextvars.ContextVar("ssh_floor_literal_hosts", default=False)
 
+# Set while the git floor reads a remote word (``_git_remote_targets_self``). A git
+# word is also a refspec or a remote name, so a Windows own-name counts there only
+# in clear transport syntax: a URL authority or after real ``user@`` userinfo.
+_GIT_WORD = contextvars.ContextVar("ssh_floor_git_word", default=False)
+
+
+_URI_SCHEMES: tuple[str, ...] = ("ssh://", "scp://", "sftp://", "rsync://")
+
+
+def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) -> bool:
+    """True if a Windows own-name spelling sits where *t* names a host.
+
+    It counts whole (``$env:computername``), after userinfo (``user@``, and
+    after the LAST ``@`` when userinfo holds a colon: ``user:pw@``), as a URI
+    authority (``ssh://[user@]host[:port]``), before a path colon, or dotted in
+    host position (``$env:computername.corp``).  A dotted word elsewhere is a
+    local file (``%computername%.log``); an ``@`` after a ``:`` or ``/`` is
+    remote-path data (``backup:/logs/a@%computername%.log``); and a
+    *file_operand* (an scp/rsync file, a git or tar remote word) with no host
+    colon is a local path or a name (``scp -r %computername% far:``).  In a git
+    word (``_GIT_WORD``) only clear transport syntax counts: a URL authority or
+    scp-like ``user@host:path``, never a refspec or a remote name.
+    """
+    # PowerShell's ``$env:`` colon is part of the variable, never a host colon.
+    if file_operand and ":" not in t.replace("env:", ""):
+        return False
+    git_word = _GIT_WORD.get()
+    spellings = [] if git_word else [t]
+    user, at, rest = t.partition("@")
+    if at and not {":", "/"} & set(user.replace("env:", "")):
+        spellings.append(rest)
+    if at and "/" not in t and not file_operand and not git_word:
+        # Only an ssh/sftp destination reads its host after the LAST ``@``; a
+        # file operand's host ends at its first colon (``far:job@x`` is far).
+        spellings.append(t.rsplit("@", 1)[1])
+    authority = ""
+    for scheme in _URI_SCHEMES:
+        if t.startswith(scheme):
+            authority = t[len(scheme) :].split("/", 1)[0].rsplit("@", 1)[-1]
+    for var in _HOSTNAME_VARIABLE_FORMS:
+        if "hostname" in var:
+            continue
+        if authority.startswith(var) and authority[len(var) : len(var) + 1] in ("", ":", "."):
+            return True
+        for spelling in spellings:
+            if not spelling.startswith(var):
+                continue
+            tail = spelling[len(var) :]
+            if (tail == "" and not git_word) or tail.startswith(":"):
+                return True
+            if tail.startswith(".") and (host_position or ":" in tail):
+                return True
+    return False
+
 
 def _operand_targets_self(
-    operand: str, *, host_position: bool = True, dns: bool = True, match_globs: bool = True
+    operand: str,
+    *,
+    host_position: bool = True,
+    dns: bool = True,
+    match_globs: bool = True,
+    file_operand: bool = False,
 ) -> bool:
     """True if *operand* names THIS machine as a connection target.
+
+    ``file_operand=True`` marks an scp/rsync file operand or a git/tar remote
+    word, which names no host unless it carries a ``host:`` colon (applied to
+    the Windows own-name spellings only, see ``_windows_name_is_host``).
 
     ``dns=False`` passes ``dns_fallback=False`` to every host check (no
     hosts-file or DNS alias verdict, no unread-address-table window), for a
@@ -183,15 +254,21 @@ def _operand_targets_self(
     # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
     cut = _cut_at_operator(t)
     if cut != t and _operand_targets_self(
-        cut, host_position=host_position, dns=dns, match_globs=match_globs
+        cut,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
             return True
     for var in _HOSTNAME_VARIABLE_FORMS:
-        if t == var or t.startswith(var + ".") or t.startswith(var + ":"):
+        if "hostname" in var and (t == var or t.startswith(var + ".") or t.startswith(var + ":")):
             return True
+    if _windows_name_is_host(t, host_position=host_position, file_operand=file_operand):
+        return True
     # An expansion's embedded default is the destination when the variable is
     # unset — check every ``${…:-word}``-style word (recursion terminates:
     # the word is strictly shorter than the operand).  Kept alongside the
@@ -200,7 +277,11 @@ def _operand_targets_self(
     # the resolved whole is not.
     for match in _EXPANSION_DEFAULT_RE.finditer(t):
         if _operand_targets_self(
-            match.group(1), host_position=host_position, dns=dns, match_globs=match_globs
+            match.group(1),
+            host_position=host_position,
+            dns=dns,
+            match_globs=match_globs,
+            file_operand=file_operand,
         ):
             return True
     # Bash substitutes a parameter default INTO the surrounding
@@ -212,7 +293,11 @@ def _operand_targets_self(
     # string with no such form left, so it does not recurse here again.
     resolved = _resolve_param_defaults(t)
     if resolved != t and _operand_targets_self(
-        resolved, host_position=host_position, dns=dns, match_globs=match_globs
+        resolved,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     # A single integer literal inside arithmetic expansion is
@@ -223,7 +308,11 @@ def _operand_targets_self(
     # so the recursion is a single level.
     normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
     if normalized != t and _operand_targets_self(
-        normalized, host_position=host_position, dns=dns, match_globs=match_globs
+        normalized,
+        host_position=host_position,
+        dns=dns,
+        match_globs=match_globs,
+        file_operand=file_operand,
     ):
         return True
     # An arithmetic expansion that SURVIVED normalization is an
@@ -248,11 +337,15 @@ def _operand_targets_self(
         return True
     for choice in choices:
         if choice != t and _operand_targets_self(
-            choice, host_position=host_position, dns=dns, match_globs=match_globs
+            choice,
+            host_position=host_position,
+            dns=dns,
+            match_globs=match_globs,
+            file_operand=file_operand,
         ):
             return True
     scheme_seen = False
-    for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
+    for scheme in _URI_SCHEMES:
         if t.startswith(scheme):
             # Isolate the URI authority before any path, so an ``@`` or ``:``
             # in the remote path cannot masquerade as userinfo or a port.

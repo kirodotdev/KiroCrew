@@ -58,8 +58,8 @@ def engine_discards_oauth(version: str | None) -> bool:
     """Whether an engine at *version* is KNOWN to drop a server's ``oauth`` block.
 
     Only a readable version below :data:`OAUTH_MIN_ENGINE_VERSION` counts. An
-    unknown one (the relay route, where ``initialize`` carries no ``agentInfo``)
-    is False: the engine may keep the block, so Crew does not claim it is lost.
+    unknown one is False: the engine may keep the block, so Crew does not claim
+    it is lost.
     """
     from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
 

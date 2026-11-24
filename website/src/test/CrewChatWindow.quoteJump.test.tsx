@@ -61,7 +61,7 @@ function renderWindow() {
 
 /** A peer row lands only after two chained queries (capabilities, then the slot detail). */
 const PEER_ROW_WAIT = { timeout: 5000 }
-const sentCard = async () => screen.findByTestId('quote-card-sent', {}, PEER_ROW_WAIT)
+const sentCard = async () => screen.findByTestId('quote-card-sent-jump', {}, PEER_ROW_WAIT)
 
 beforeEach(() => {
   vi.stubGlobal('EventSource', QuietEventSource)
@@ -215,7 +215,7 @@ describe('CrewChatWindow quote card jump', () => {
     Element.prototype.scrollIntoView = function () { if (scroller) scroller.scrollTop = 568 }
     onTestFinished(() => { Element.prototype.scrollIntoView = original })
     renderWindow()
-    const cards = await screen.findAllByTestId('quote-card-sent', {}, PEER_ROW_WAIT)
+    const cards = await screen.findAllByTestId('quote-card-sent-jump', {}, PEER_ROW_WAIT)
     const dock = screen.getByTestId('crew-window-dock')
     scroller = dock.parentElement!.querySelector<HTMLElement>('[aria-live="polite"]')
     expect(scroller).not.toBeNull()

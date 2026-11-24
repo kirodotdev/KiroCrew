@@ -831,6 +831,24 @@ class TestAcpClientToolHooks:
         assert "[REDACTED: credential]" in fired_output  # redaction survives truncation
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("length", "kept", "cut"), [(7901, 2000, True), (1500, 1500, False)])
+    async def test_post_fire_says_whether_the_output_was_cut(self, monkeypatch, length, kept, cut):
+        """The hook is told whether ``output`` was cut and how long the text was."""
+        store = self._Store()
+        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
+        client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
+        raw_output = "x" * length
+        await client._maybe_fire_post_tool_hooks(self._result_ev(output=raw_output))
+
+        post = [c for c in store.calls if c["event"] == "PostToolUse"]
+        assert post[0]["tool_response"] == {
+            "output": raw_output[:kept],
+            "truncated": cut,
+            "output_length": length,
+        }
+
+    @pytest.mark.asyncio
     async def test_pre_fire_redacts_credential_in_tool_input(self, monkeypatch):
         """Pre-fire MUST redact tool_input before handing it to the hook engine.
 

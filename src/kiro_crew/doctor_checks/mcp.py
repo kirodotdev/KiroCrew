@@ -9,8 +9,10 @@ The MCP Tools repair and probe and the MCP Governance read stay in
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import platform as _plat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.doctor_checks import agents, render
@@ -23,6 +25,25 @@ if TYPE_CHECKING:
 #: Mirrors ``agent._MAIN_AGENT_NAME``, which is private; the doctor row below
 #: reports on that spec because it is the one every default session resolves.
 _MAIN_AGENT_NAME = "kirocrew"
+
+
+@contextlib.contextmanager
+def _dry_projection() -> Iterator[None]:
+    """Silence WARNING records while the doctor projects a spec no session will run.
+
+    Each mirror logs a server it withholds as a starting session would, so without
+    this a stock report opens with one WARNING per mirror and withheld server, for
+    backends nobody selected, and appends the same lines to ``gateway.log``. The
+    ``mcp tool refs`` rows already say what each projection leaves out and why.
+    ``logging.disable`` is process-wide, which is fine in the short-lived
+    ``kirocrew doctor`` process and is why this lives here, not in the projection.
+    """
+    previous = logging.root.manager.disable
+    logging.disable(logging.WARNING)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
 
 
 def _doctor_unresolved_mcp_refs() -> None:
@@ -51,8 +72,9 @@ def _doctor_unresolved_mcp_refs() -> None:
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
 
     try:
-        spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
-        by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
+        with _dry_projection():
+            spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
+            by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
     except Exception:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
@@ -197,7 +219,8 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     reported = False
     for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
         try:
-            _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
+            with _dry_projection():
+                _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
         except Exception:
             continue
         for _backend, unresolved, _has_mirror in rows:

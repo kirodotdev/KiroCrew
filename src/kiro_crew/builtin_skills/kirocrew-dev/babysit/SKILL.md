@@ -194,7 +194,7 @@ security. Fix, commit and push only within the user's authorization.
    blocker/stall conditions and stop tool. Include worktree/branch and whether
    pushes are authorized. Pass positive cycle and runtime bounds. For Kiro Crew
    preparation use kirocrew-prepare-pr's budget; never raise its cap yourself.
-2. Load the MCP tool by exact `tool_search` ID before calling it. Report only
+2. Load the MCP tool by its exact id, as the `[TOOL NAMES]` block says, before calling it. Report only
    that monitoring was REQUESTED and END YOUR TURN immediately. Application
    happens when the turn's result is processed, not synchronously with the call.
 3. On a later turn, verify the applied transcript notice and session-bound state

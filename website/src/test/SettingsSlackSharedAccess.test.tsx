@@ -152,7 +152,7 @@ describe('Share Slack access', () => {
     expect(toggle()).toHaveAttribute('aria-busy', 'true')
     expect(toggle()).toHaveAttribute('tabindex', '0')
     expect(screen.getByRole('button', { name: 'Remove Ada' })).toBeDisabled()
-    await user.type(screen.getByRole('textbox', { name: 'Slack member ID to add' }), 'U0NEWPERS1{Enter}')
+    await user.type(screen.getByRole('textbox', { name: 'Email or Slack member ID to add' }), 'U0NEWPERS1{Enter}')
     expect(add).not.toHaveBeenCalled()
     // Once the answered confirm has animated out, a second press opens no other.
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -331,7 +331,7 @@ describe('Share Slack access', () => {
       users: [{ user_id: 'U0OWNER001', name: '', confirmed: false, reason: 'owner' }],
     }))
     renderWithProviders(<SlackSharedAccess />)
-    expect(await screen.findByText(/^This is your own ID\.$/)).toBeInTheDocument()
+    expect(await screen.findByText(/^This is you\. As the owner you already have access\.$/)).toBeInTheDocument()
     expect(screen.queryByText(/can't use this Crew/)).toBeNull()
   })
 
@@ -393,11 +393,11 @@ describe('Share Slack access', () => {
     )
     renderWithProviders(<SlackSharedAccess />)
     const user = userEvent.setup()
-    const input = await screen.findByRole('textbox', { name: 'Slack member ID to add' })
+    const input = await screen.findByRole('textbox', { name: 'Email or Slack member ID to add' })
     await user.type(input, 'B0BOT')
     await user.click(screen.getByRole('button', { name: /Add/ }))
     // The find-ID help comes with the refusal: the empty-list help is gone once anyone is listed.
-    expect(await screen.findByText("Use a Slack member ID that starts with U or W. To find a member ID, open the person's Slack profile, select ⋮, then Copy member ID.")).toBeInTheDocument()
+    expect(await screen.findByText("Enter an email, or a Slack member ID that starts with U or W. To find a member ID, open the person's Slack profile, select ⋮, then Copy member ID.")).toBeInTheDocument()
     // An input hint, not a failed operation.
     expect(screen.queryByRole('alert')).toBeNull()
     expect(add).not.toHaveBeenCalled()
@@ -406,7 +406,43 @@ describe('Share Slack access', () => {
     await user.type(input, 'U0BOTUSER1')
     await user.click(screen.getByRole('button', { name: /Add/ }))
     expect(await screen.findByText('This is an app account, not a person.')).toBeInTheDocument()
-    expect(add).toHaveBeenCalledWith('U0BOTUSER1')
+    expect(add).toHaveBeenCalledWith({ user_id: 'U0BOTUSER1' })
+  })
+
+  it('sends an email as an email, takes the ID out of a profile link, and refuses other links', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
+    const add = vi.spyOn(api, 'addSlackSharedUser').mockRejectedValue(
+      new ApiError(400, 'refused', JSON.stringify({ error: 'refused', code: 'email_lookup_unavailable' })),
+    )
+    renderWithProviders(<SlackSharedAccess />)
+    const user = userEvent.setup()
+    const input = await screen.findByRole('textbox', { name: 'Email or Slack member ID to add' })
+    await user.type(input, ' ada@example.com {Enter}')
+    await waitFor(() => expect(add).toHaveBeenCalledWith({ email: 'ada@example.com' }))
+    expect(await screen.findByText("This Slack app can't look people up by email. Add the users:read.email bot scope to the app and reinstall it, or enter their member ID instead.")).toBeInTheDocument()
+
+    await user.clear(input)
+    await user.type(input, 'https://acme.slack.com/team/U0FRIEND01{Enter}')
+    await waitFor(() => expect(add).toHaveBeenLastCalledWith({ user_id: 'U0FRIEND01' }))
+
+    add.mockClear()
+    for (const bad of ['https://evil.example/team/U0FRIEND01', 'http://acme.slack.com/team/U0FRIEND01', 'https://acme.slack.com/archives/C0123ABC']) {
+      await user.clear(input)
+      await user.type(input, `${bad}{Enter}`)
+      expect(await screen.findByText(/^Enter an email, or a Slack member ID/)).toBeInTheDocument()
+    }
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('says to save the owner ID first when the server has none', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data())
+    vi.spyOn(api, 'addSlackSharedUser').mockRejectedValue(
+      new ApiError(400, 'refused', JSON.stringify({ error: 'refused', code: 'owner_unset' })),
+    )
+    renderWithProviders(<SlackSharedAccess />)
+    const user = userEvent.setup()
+    await user.type(await screen.findByRole('textbox', { name: 'Email or Slack member ID to add' }), 'U0FRIEND01{Enter}')
+    expect(await screen.findByText('Save your Owner Slack member ID above first, so this list can tell you apart from the people you share with.')).toBeInTheDocument()
   })
 
   it('says under the switch that sharing is still on when turning it off was saved but not applied', async () => {
@@ -465,7 +501,7 @@ describe('Share Slack access', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Remove Ada' }))
     expect((await screen.findByText('Ada is still on the list Slack uses: removing them is saved but not applied yet.')).closest('[role="alert"]')).not.toBeNull()
-    await user.type(screen.getByRole('textbox', { name: 'Slack member ID to add' }), 'U0NEWPERS1')
+    await user.type(screen.getByRole('textbox', { name: 'Email or Slack member ID to add' }), 'U0NEWPERS1')
     await user.click(screen.getByRole('button', { name: /Add/ }))
     expect((await screen.findByText("U0NEWPERS1 isn't on the list Slack uses yet: adding them is saved but not applied.")).closest('[role="alert"]')).not.toBeNull()
     expect(screen.queryByText(/^Ada is still on the list Slack uses/)).toBeNull()
@@ -520,7 +556,7 @@ describe('Share Slack access', () => {
   it('names what only the owner can do in plain words, except on a remote session', async () => {
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
     const { unmount } = renderWithProviders(<SlackSharedAccess />)
-    expect(await screen.findByText('Only you can change this list or switch, approve tool prompts for a whole session, or use Slack Code channels.')).toBeInTheDocument()
+    expect(await screen.findByText("Only you can change this list or switch, or approve tool prompts for a whole session. In Slack Code, each person works only in the code channels they open, and only you can change a code channel's settings.")).toBeInTheDocument()
     unmount()
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true, read_only: true }))
     renderWithProviders(<SlackSharedAccess />)

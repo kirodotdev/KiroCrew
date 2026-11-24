@@ -791,8 +791,9 @@ def test_no_result_ever_carries_an_image_content_block(
 ):
     """**Text only, by construction.**
 
-    ``validation.build_tool_response`` is the transport's single exit and emits only
-    ``{"type": "text"}``, so a screenshot can only travel as a path.
+    ``validation.build_tool_response`` is the transport's single exit and adds an image
+    block only to a ``TextWithImage`` answer, which no computer-use handler returns, so a
+    screenshot can only travel as a path.
     """
     from kiro_crew.validation import build_tool_response
 

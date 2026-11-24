@@ -316,6 +316,8 @@ class TestLeafOnlyNamesHaveNoBetterHold:
             "~/.config/gcloud",
             "~/.config/gh",
             "~/.kiro/crew-auth-staging",
+            # ``~/.kiro/settings`` holds kiro-cli's other settings, which it writes.
+            "~/.kiro/settings/mcp.json",
         }
     )
 
@@ -461,6 +463,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "~/.gnupg": "standard",
         "~/.gpg": "standard",
         "~/.kiro/crew-auth-staging": "standard",
+        "~/.kiro/settings/mcp.json": "standard",
         "~/.kube": "cc",
         "~/.midway": "cc",
         "~/.netrc": "cc",
@@ -618,7 +621,12 @@ def _leaf_only_names(paths: list[str]) -> dict[str, int]:
         )
         if key is None:
             key = isolated.sub("<isolated>/", path, count=1)
-        if key == path and (path == home or path.startswith(home + "/")):
-            key = "~" + path[len(home) :]
+        if key == path:
+            # A home directory that is itself a symlink is sealed in both spellings,
+            # and both name the same protected file.
+            for spelling in dict.fromkeys((home, os.path.realpath(home))):
+                if path == spelling or path.startswith(spelling + "/"):
+                    key = "~" + path[len(spelling) :]
+                    break
         names[key] += 1
     return dict(names)

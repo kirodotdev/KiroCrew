@@ -143,6 +143,14 @@ def test_legacy_home_inferred_from_only_the_overlay(tmp_path):
     assert home_path_rewrite.archive_home(tmp_path) == ("/a/home/x",)
 
 
+def test_a_windows_export_guesses_no_home_from_its_user(tmp_path):
+    manifest = {"home": "C:\\Users\\x", "home_real": "C:\\Users\\x", "user": "x"}
+    (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "workspace_dir").write_text("/a/home/x/app\n", encoding="utf-8")
+
+    assert home_path_rewrite.archive_home(tmp_path) is None
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Home relocation is POSIX-only")
 @pytest.mark.parametrize("name", ["workspace_dir", "project_dir"])
 @pytest.mark.parametrize("quote", ['"', "'"])

@@ -7,7 +7,8 @@ between the pass that saw it and the pin, so a rewrite that changes nothing stil
 fails every spawn that starts in that second. A writer that asks this first, and
 writes only on ``False``, leaves the inode alone when nothing would change.
 
-Stdlib only, so near-leaf modules (``agent_state``) can import it.
+Stdlib only at import time, so near-leaf modules (``agent_state``) can import it;
+the owner check reaches ``platform_compat`` lazily, at call time.
 """
 
 from __future__ import annotations
@@ -18,16 +19,18 @@ from pathlib import Path
 
 
 def already_holds(path: Path | str, payload: bytes, *, mode: int | None = None) -> bool:
-    """Whether *path* is a regular, owner-only file whose bytes equal *payload*.
+    """Whether *path* is this user's regular, owner-only file holding *payload*.
 
     ``True`` only when skipping the write leaves the file exactly as the write
-    would: one link, the permissions the writer sets (*mode* when given, else any
-    mode with no group or other bits, which a writer that keeps the owner bits
-    reproduces), and the same bytes. Anything else, a read error included, is
-    ``False`` so the caller writes as it always did.
+    would: one link, owned by this process's effective user, the permissions the
+    writer sets (*mode* when given, else any mode with no group or other bits,
+    which a writer that keeps the owner bits reproduces), and the same bytes.
+    Anything else, a read error included, is ``False`` so the caller writes as it
+    always did.
 
     Always ``False`` on Windows: there the writers also lock the file's ACL down,
-    which a mode check cannot confirm, and the pin this avoids is a Linux mount.
+    which a mode check cannot confirm, there is no uid to compare, and the pin
+    this avoids is a Linux mount.
     """
     if os.name == "nt":
         return False
@@ -56,8 +59,15 @@ def already_holds(path: Path | str, payload: bytes, *, mode: int | None = None) 
 
 
 def _same_shape(info: os.stat_result, size: int, mode: int | None) -> bool:
-    """Regular, single-link, *size* bytes, and the permissions the writer would set."""
+    """Regular, single-link, *size* bytes, ours, and the permissions the writer would set."""
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != size:
+        return False
+    # The write would leave a file this process owns, so another owner's is replaced.
+    # No uid (Windows) is never a match.
+    from kiro_crew.platform_compat import effective_uid  # noqa: PLC0415  near-leaf import
+
+    uid = effective_uid()
+    if uid is None or info.st_uid != uid:
         return False
     perms = stat.S_IMODE(info.st_mode)
     if mode is not None:

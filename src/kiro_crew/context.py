@@ -1153,6 +1153,7 @@ def build_cancelled_turn_preamble(
     user_cap: int = 2000,
     assist_cap: int = 2000,
     newest_request: bool = False,
+    replay: str | None = None,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1162,6 +1163,10 @@ def build_cancelled_turn_preamble(
     backwards for a ``stop_event`` marker, then find the user message
     immediately before it plus any assistant text in between. Return a
     short bracketed preamble. Returns "" if nothing to inject.
+
+    *replay* is the ``build_session_replay`` text the same prompt carries. When
+    it already holds the stopped request, the stopped turn reaches the model
+    through it and the preamble is ``""``.
 
     Called by the dashboard, Slack and the shared channel pipeline after
     ``prev_turn_cancelled`` is observed on the session.
@@ -1174,7 +1179,11 @@ def build_cancelled_turn_preamble(
     except Exception:
         return ""
     return _replay.cancelled_turn_preamble(
-        rows[-20:], user_cap=user_cap, assist_cap=assist_cap, newest_request=newest_request
+        rows[-20:],
+        user_cap=user_cap,
+        assist_cap=assist_cap,
+        newest_request=newest_request,
+        replay=replay or "",
     )
 
 
@@ -1558,6 +1567,9 @@ class ContextBuilder:
         # `context_assembly.agent_spec._resolve_agent_prompt`.
         self._browser_gates: dict[str, bool] = {}
         self._browser_gates_lock = threading.Lock()
+        # The same, for whether the contract names KAS's own sub-agent tool.
+        self._engine_subagent_gates: dict[str, bool] = {}
+        self._engine_subagent_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it

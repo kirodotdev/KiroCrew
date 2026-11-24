@@ -567,14 +567,18 @@ class TestMarkKiroSignedOut:
 class TestDeliverLinkedSlackMessage:
     @pytest.mark.asyncio
     async def test_no_slack_client_is_a_noop(self, tmp_path):
+        # Linked, with no client and no reconnect running: nothing to post through.
         state = _state(tmp_path)
         state.slack_client = None
+        state.slack_reconnect_wait = None
+        state.sessions.get_slack_link = MagicMock(return_value=("111.222", "C123"))
 
         await chat_runner._deliver_linked_slack_message(
             state, _slot(), state.sessions, "dashboard:x", "signed out"
         )
 
-        state.sessions.get_slack_link.assert_not_called()
+        state.sessions.get_slack_link.assert_called_once_with("dashboard:x")
+        assert state.slack_client is None
 
     @pytest.mark.asyncio
     async def test_unlinked_session_is_a_noop(self, tmp_path):

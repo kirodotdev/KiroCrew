@@ -1050,6 +1050,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "teams.tenant_id"
   },
   {
+    "id": "channels.tracked-channels-slack",
+    "label": "Tracked channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.tracked_channels",
+    "labelSuffix": "Slack",
+    "description": "Channels the agent can post, react and read in. Applies when you save.",
+    "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.webex-bot-token-webex",
     "label": "Webex bot token (Webex)",
     "labelKey": "pages.settings.webexPanel.webex_bot_token",
@@ -1886,6 +1900,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.max_per_creator"
   },
   {
+    "id": "chat.show-all-bots-in-my-sessions",
+    "label": "Show all bots in my Sessions",
+    "labelKey": "pages.membersPage.bot_sessions_all_switch",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.show_bot_sessions_in_list"
+  },
+  {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
     "labelKey": "pages.settings.chatPanel.show_context_percentage",
@@ -2090,6 +2116,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "models"
+    }
+  },
+  {
+    "id": "chat.swipe-to-open-and-close-side-panel",
+    "label": "Swipe to Open and Close Side Panel",
+    "labelKey": "pages.settings.chatPanel.side_panel_swipe",
+    "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
     }
   },
   {
@@ -2531,6 +2569,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "developer.jev-api-key",
     "label": "Jev API key",
     "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
+  },
+  {
+    "id": "developer.kas-sub-agents",
+    "label": "KAS sub-agents",
+    "labelKey": "pages.developer.featurePreviewsTab.kas_subagents",
+    "description": "On KAS, the default agent runs quick sub-agents inside the engine, and some agent permissions are read the way kiro-cli reads them, in chats and sub-agents started after you switch this.",
+    "hint": "On, in KAS chats: the default agent hands quick tasks to its built-in helper or to up to 8 of your own agents inside its turn, held to the chat agent's rules and stopped with the turn; a sub-agent that spawn_run starts on another agent runs without asking only what the chat that started it runs without asking; a denyByDefault command list holds even when the agent pre-approves the shell; and an agent that excludes the sub-agent tool, or uses one of three deniedCommands forms, is read as kiro-cli reads it, which the chat says when it starts. Off: Kiro Crew starts the default agent's sub-agents as sessions of their own that you can open and stop in the Subagents panel.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.let-agents-control-your-other-sessions",

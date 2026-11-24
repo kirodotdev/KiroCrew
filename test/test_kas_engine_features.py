@@ -318,11 +318,11 @@ class TestRuntimeSeam:
 
 class TestOAuthNotice:
     """The "sign-in will not work here" notice shows only where Crew KNOWS the
-    engine drops the block: its own bundle below 0.66.104. The relay names no
-    engine version, so it shows nothing there."""
+    engine drops the block: its own bundle, or the engine kiro-cli's relay
+    unpacked, below 0.66.104. A relay whose engine version is unread shows nothing."""
 
     @staticmethod
-    def _discards(monkeypatch, bundle_engine_version: str) -> bool:
+    def _discards(monkeypatch, bundle_engine_version: str, relay_engine: str = "") -> bool:
         import asyncio
         from types import SimpleNamespace
 
@@ -347,6 +347,7 @@ class TestOAuthNotice:
             client=SimpleNamespace(
                 initialize_result=_initialize(),
                 kas_bundle_engine_version=bundle_engine_version,
+                kas_relay_engine_version=relay_engine,
             ),
         )
         asyncio.run(
@@ -362,6 +363,16 @@ class TestOAuthNotice:
 
     def test_the_relay_gets_no_notice(self, monkeypatch):
         assert self._discards(monkeypatch, "") is False
+
+    def test_a_relay_on_an_older_engine_gets_the_notice(self, monkeypatch):
+        assert self._discards(monkeypatch, "", "0.66.91") is True
+
+    def test_a_relay_on_an_engine_that_keeps_oauth_gets_no_notice(self, monkeypatch):
+        assert self._discards(monkeypatch, "", "0.66.111") is False
+
+    def test_the_bundle_version_wins_over_the_relay_reading(self, monkeypatch):
+        assert self._discards(monkeypatch, "0.66.117", "0.66.91") is False
+        assert self._discards(monkeypatch, "0.66.33", "0.66.111") is True
 
     def test_a_bundled_engine_that_keeps_oauth_gets_no_notice(self, monkeypatch):
         assert self._discards(monkeypatch, "0.66.104") is False
@@ -381,3 +392,12 @@ class TestBundleEngineVersionReachesTheHandle:
         harness.bundle_engine_version = ""
         harness.record_session_projection(handle, [], "")
         assert handle.kas_bundle_engine_version == ""
+
+    def test_the_relay_engine_version_is_recorded(self):
+        from types import SimpleNamespace
+
+        harness = KasHarness()
+        handle = SimpleNamespace()
+        harness.relay_engine_version = "0.66.91"
+        harness.record_session_projection(handle, [], "")
+        assert handle.kas_relay_engine_version == "0.66.91"

@@ -17,6 +17,8 @@ from kiro_crew.work_ledger_records import (
     ACCEPTANCE_CHECK_NAME,
     ACCEPTANCE_CHECK_REF,
     ACCEPTANCE_GH_REPO,
+    ACCEPTANCE_GIT_BASE,
+    ACCEPTANCE_GIT_BRANCH,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
     ACCEPTANCE_READ_FIELDS,
@@ -542,8 +544,9 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     Non-concrete means: an empty acceptance; a ``kind`` outside :data:`ACCEPTANCE_KINDS`;
     a placeholder STRING (blank, or ``"TBD"`` in any case) in a read field; or a read
     field mistyped: a ``pr_checks`` / ``pr_merged`` ``pr`` that is not a positive
-    integer, a ``pr_merged`` ``repo`` or ``edition_check`` ``check`` / ``ref`` that does
-    not match the evaluator's pattern, a ``file`` ``path`` that is not a string, a
+    integer, a ``pr_merged`` ``repo``, ``edition_check`` ``check`` / ``ref`` or
+    ``git_commit`` ``branch`` / ``base`` that does not match the evaluator's pattern, a
+    ``git_commit`` ``repo`` or ``file`` ``path`` that is not a string, a
     ``file`` ``exists`` that is not a bool. An explicit ``null`` in an OPTIONAL read
     field is absence, so concrete; in a required one the type rule refuses it.
 
@@ -581,6 +584,20 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         if not isinstance(check, str) or not ACCEPTANCE_CHECK_NAME.fullmatch(check):
             return False
         if not isinstance(ref, str) or not ACCEPTANCE_CHECK_REF.fullmatch(ref):
+            return False
+    if kind == "git_commit":
+        # A relative ``repo`` stays concrete: the evaluator REFUSES it, and that
+        # refusal must reach the conductor, as for ``cmd``.
+        repo = acceptance.get("repo")
+        if not isinstance(repo, str) or "\x00" in repo:
+            return False
+        branch = acceptance.get("branch")
+        if not isinstance(branch, str) or not ACCEPTANCE_GIT_BRANCH.fullmatch(branch):
+            return False
+        if ".." in branch:
+            return False
+        base = acceptance.get("base")
+        if not isinstance(base, str) or not ACCEPTANCE_GIT_BASE.fullmatch(base):
             return False
     if kind == "file":
         if not isinstance(acceptance.get("path"), str):

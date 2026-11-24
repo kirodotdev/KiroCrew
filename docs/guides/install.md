@@ -173,7 +173,8 @@ On Linux (glibc 2.28+) and macOS 11+ the installer takes the platform wheel,
 which already carries the [built-in KAS engine](#first-run) this release pins,
 so there is nothing more to download. Anywhere else it takes the plain wheel and
 then runs the new `kirocrew kas install` to download the engine (about 55-70 MB
-for your platform). If that download fails, for example on a host with no access
+for your platform). On x86_64 Linux with glibc 2.26 or 2.27, such as Amazon
+Linux 2, that download is an Amazon Linux 2 build of the same engine. If that download fails, for example on a host with no access
 to the CDN, a first install exits 1 with the command to retry, and the gateway
 tries again when it starts; a re-run over an existing install, and an LTS install
 that is not signed in yet, keep exit 0. On a host that cannot run the engine at all (no build for its
@@ -350,7 +351,11 @@ reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
 checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
-when `origin` has none of them. After the reset the update rebuilds the
+when `origin` has none of them. A checkout detached exactly at a release tag can
+instead take `kirocrew update --release VERSION`, which fetches only the release
+tag of VERSION and moves to it, and does nothing when the checkout is already on
+that release or a newer one; this is what **Update** runs on a cloud crew from a
+release-build hub. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
 `logs/frontend-build.log` in the data home; on Windows no log is written, so
 that output is not kept. If the build fails, the update still installs the new

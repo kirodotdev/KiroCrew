@@ -14,6 +14,7 @@ from kiro_crew import edition
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.connected_computers import flag, remote_routes, ws_route
+from kiro_crew.dashboard.handlers import _shared
 from kiro_crew.dashboard.handlers import session_environments as handlers
 from kiro_crew.dashboard.token_auth_paths import CONNECTOR_CONNECT_PATH, _exact_method_bypass
 from kiro_crew.shared_crew import preview
@@ -100,7 +101,7 @@ async def test_shared_connect_is_unserved_and_has_no_token_exemption(
 
 @pytest.mark.asyncio
 async def test_shared_device_list_reports_why_without_reading_devices(shared_active, monkeypatch):
-    monkeypatch.setattr(remote_routes, "_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", AsyncMock(return_value=None))
 
     def no_devices():
         raise AssertionError("a shared Crew must not read personal computers")

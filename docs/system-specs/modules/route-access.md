@@ -76,10 +76,9 @@ The baseline only shrinks:
   `test_a_labelled_route_has_no_baseline_row` fails otherwise.
 - A listed route that is removed loses its line too.
 - A change that generates a snapshot like this one from the live route table
-  regenerates it on current `main` right before it merges.
-  [#40990](https://github.com/kirodotdev/KiroCrew/pull/40990) built the baseline
-  at an older base, four routes that landed in between were in neither the table
-  nor the baseline, and `main` went red
+  regenerates it on current `main` right before it merges. A baseline built at an
+  older base misses the routes that landed in between, and they are then in
+  neither the table nor the baseline, which turns `main` red
   ([Merge-safe ratchets and counts](../common/testing-conventions.md#merge-safe-ratchets-and-counts)).
 
 ## What the test checks

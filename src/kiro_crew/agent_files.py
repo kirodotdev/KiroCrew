@@ -159,6 +159,16 @@ OWNED_KIRO_AGENT_FILES = (
     DASHBOARD_MANAGER_AGENT_FILENAME,
 )
 
+#: The agent names Kiro Crew writes those specs under: its service agents and the
+#: ones it derives from the default spec.
+OWNED_KIRO_AGENT_NAMES = frozenset(f[: -len(".json")] for f in OWNED_KIRO_AGENT_FILES)
+
+
+def is_owned_agent_name(name: object) -> bool:
+    """Whether *name* is one of Kiro Crew's own agents (case-folded)."""
+    return isinstance(name, str) and name.casefold() in OWNED_KIRO_AGENT_NAMES
+
+
 # The specs that MUST exist for the product to work at all. kiro-cli resolves an
 # agent by reading ``<agents dir>/<name>.json``; with the file absent it answers
 # every ``session/set_mode`` with "Mode '<name>' not found", so a missing entry

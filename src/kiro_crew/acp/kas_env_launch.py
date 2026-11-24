@@ -460,15 +460,15 @@ def refuses_plain_http_headers() -> bool:
 def bridgeable(entry: Mapping[str, Any]) -> bool:
     """Whether a projected entry is a remote server the launcher can bridge to.
 
-    Streamable HTTP only: an ``sse`` entry speaks the older two-endpoint transport,
-    which the bridge (:mod:`kiro_crew.kas_http_bridge`) does not, so its headers
-    stay withheld. A url KAS itself would accept (:func:`kas_accepts_url`) is
-    bridged. So is plain ``http`` to another host, which KAS refuses but reaches
-    as the bridge's local stdio server, unless :func:`refuses_plain_http_headers`:
-    that bridge sends the headers in cleartext.
+    Its ``type`` does not matter: like KAS, the bridge (:mod:`kiro_crew.kas_http_bridge`)
+    speaks streamable HTTP and falls back to the older ``sse`` transport. A url KAS
+    itself would accept (:func:`kas_accepts_url`) is bridged. So is plain ``http``
+    to another host, which KAS refuses but reaches as the bridge's local stdio
+    server, unless :func:`refuses_plain_http_headers`: that bridge sends the
+    headers in cleartext.
     """
     url = entry.get("url")
-    if not isinstance(url, str) or entry.get("command") or entry.get("type") == "sse":
+    if not isinstance(url, str) or entry.get("command"):
         return False
     url = url.strip()  # as kas_accepts_url and bridge_url read it
     if not url.lower().startswith(("https://", "http://")):
@@ -798,6 +798,23 @@ def batch_snapshot_names(custom_agents: Any) -> list[str]:
             if all(ref):
                 names.append(snapshot_name(*ref))
     return names
+
+
+def retain_batch(custom_agents: Any) -> None:
+    """Take one more hold on each shared snapshot *custom_agents* references.
+
+    For an entry that repeats another entry's declaration without a projection of
+    its own (the KAS helper repeats its parent's block). A batch lists a name once
+    per entry that references it and :func:`discard_batch` releases it as often,
+    so the repeat must hold it too: releases then equal holds. A name nobody holds
+    (a per-write file, a projection that fell back to withholding) is left alone.
+    """
+    with _SHARE_LOCK:
+        for name in batch_snapshot_names(custom_agents):
+            for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+                key = str(snapshot_dir(leaf) / name)
+                if key in _SHARED_HOLDS:
+                    _SHARED_HOLDS[key] += 1
 
 
 def discard_batch(custom_agents: Any, written: Any = ()) -> None:

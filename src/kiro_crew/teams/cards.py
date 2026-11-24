@@ -85,6 +85,7 @@ def approval_card(
     purpose: str,
     request_id: str,
     nonce: str,
+    identity: str = "",
 ) -> dict[str, Any]:
     """The Approve / Approve + auto-approve / Deny card for one tool request.
 
@@ -99,8 +100,14 @@ def approval_card(
     ``style`` is omitted on every action on purpose -- Teams does not render
     Adaptive Card positive/destructive action styling, so setting it would be a
     declaration with no effect.
+
+    *identity* is the renderer's MCP server and tool line
+    (:func:`kiro_crew.messaging.renderer.mcp_identity_line`), already escaped, shown
+    under the question; ``""`` adds no block.
     """
     body = [_text_block(f"Run `{title}`?", weight="bolder")]
+    if identity:
+        body.append(_text_block(identity))
     if purpose:
         body.append(_text_block(purpose))
     # The middle button's scope, stated BEFORE the press. "Auto-approve" on a button

@@ -698,10 +698,12 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # crew identity, workspace cwd) -- see slack/channel_crew.py. Same rule
         # as the messaging transport: only when the selected agent IS the
         # channel's binding (a thread value equal to it is that binding restored
-        # from the transcript header) and the session is Slack's own.
+        # from the transcript header) or the thread's own agent (``!bot``), and
+        # the session is Slack's own.
         _channel_crew = (
-            await asyncio.to_thread(resolve_channel_crew, channel_agent)
-            if channel_agent and _agent == channel_agent and is_slack_born(session_key)
+            await asyncio.to_thread(resolve_channel_crew, _agent)
+            if _agent in (_thread_agents.get(session_key), channel_agent)
+            and is_slack_born(session_key)
             else None
         )
         # The context builder takes the TEMPLATE the turn runs, never a record's

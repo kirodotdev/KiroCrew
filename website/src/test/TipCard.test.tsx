@@ -1,10 +1,17 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { TipCard, useTipTrigger } from '../components/TipCard'
+import { TipCard, useTipTrigger, loadCuratedTips, __resetCuratedTipsCache, type Tip } from '../components/TipCard'
 import { api } from '../api/client'
 import { COMPOSER_RADIUS } from '../components/composerRadius'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+// `/all` for the non-English catalogs: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
+import zh from '../i18n/locales/zh-CN.json'
+import enManual from '../i18n/locales/en.manual.json'
+import { localizedTip } from '../utils/curatedTips'
 
 const mockTip = {
   id: 'test-tip',
@@ -37,6 +44,11 @@ vi.mock('framer-motion', () => {
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   }
 })
+
+// TipCard localizes a curated tip only once its copy has loaded. A direct mount
+// does not wait for that load and the hook tests flush only fake timers, so every
+// test starts with it loaded.
+beforeAll(async () => { await loadCuratedTips() })
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -714,5 +726,85 @@ describe('TipCard action button', () => {
     }
     renderOpen(<TipCard tip={evil} onDismiss={onDismiss} />)
     expect(screen.queryByRole('button', { name: /Evil/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('curated tips in the dashboard language', () => {
+  // The server keeps each curated tip's English here; the catalog holds the same
+  // English under components.tipCard.curated, plus its translations.
+  const curated: Tip[] = JSON.parse(
+    readFileSync(join(__dirname, '../../../src/kiro_crew/data/tips_curated.json'), 'utf-8'),
+  ).tips
+  const browser = curated.find(t => t.id === 'agent-browsing') as Tip
+  const copy = zh.components.tipCard.curated
+
+  // Unmount first: a language change repaints every mounted tip outside act().
+  afterEach(async () => { cleanup(); await i18next.changeLanguage('en') })
+
+  it('renders a curated tip, its body and its button in the dashboard language', async () => {
+    await i18next.changeLanguage('zh-CN')
+    renderOpen(<TipCard tip={browser} onDismiss={vi.fn()} />)
+    expect(screen.getByText(copy.agent_browsing_title)).toBeInTheDocument()
+    expect(screen.getByTestId('tip-body')).toHaveTextContent(copy.agent_browsing_body.replaceAll('**', ''))
+    expect(screen.getByRole('button', { name: copy.agent_browsing_action })).toBeInTheDocument()
+  })
+
+  it('has a translation for every curated tip, from English that matches the server copy', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const english = curated.filter((tip) => {
+      const shown = localizedTip(tip)
+      return shown.title === tip.title || shown.body === tip.body
+        || (tip.action != null && shown.action?.label === tip.action.label)
+    })
+    // A tip listed here has no catalog copy, or its catalog English differs from
+    // tips_curated.json: keep the two byte-identical and translate the change.
+    expect(english.map(t => t.id)).toEqual([])
+  })
+
+  it('holds catalog copy for the curated tips only', () => {
+    const expected = curated.flatMap((tip) => {
+      const key = tip.id.replaceAll('-', '_')
+      return [`${key}_title`, `${key}_body`, ...(tip.action ? [`${key}_action`] : [])]
+    })
+    expect(Object.keys(enManual.components.tipCard.curated).sort()).toEqual(expected.sort())
+  })
+
+  it('keeps the served text of a tip that reuses a curated id with other English', async () => {
+    await i18next.changeLanguage('zh-CN')
+    // Only the body differs: the whole tip stays as served, never half translated.
+    const other = { ...browser, body: 'An edition tip with its own body.' }
+    expect(localizedTip(other)).toEqual(other)
+  })
+
+  it('shows a fetched curated tip in the dashboard language: the fetch loads its copy', async () => {
+    __resetCuratedTipsCache()
+    localStorage.clear()
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await i18next.changeLanguage('zh-CN')
+    const tipsNext = api.tipsNext as ReturnType<typeof vi.fn>
+    tipsNext.mockClear()
+    tipsNext.mockResolvedValue({ tip: browser, glow: true })
+    function ShownTip() {
+      const { tip, dismiss } = useTipTrigger(true, false)
+      return tip ? <TipCard tip={tip} onDismiss={dismiss} /> : null
+    }
+    renderWithQuery(<ShownTip />)
+    await act(async () => {
+      vi.advanceTimersByTime(11000)
+    })
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync()
+    })
+    expect(tipsNext).toHaveBeenCalled()
+    // Settle the load the fetch started: a tip already shown without its copy
+    // does not repaint when the copy arrives, so it would stay in English.
+    await act(async () => {
+      await loadCuratedTips()
+    })
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync()
+    })
+    expect(screen.getByText(copy.agent_browsing_title)).toBeInTheDocument()
   })
 })

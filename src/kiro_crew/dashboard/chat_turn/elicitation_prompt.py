@@ -233,6 +233,13 @@ async def _on_elicitation_request(turn: _ChatTurn, event) -> None:
             # MCP's ``cancel`` (dismissed without a choice), the answer every
             # other turn boundary sends, never a ``decline``.
             action, answer = ELICITATION_CANCEL, None
+        if answer:
+            # Someone's typed answer now reaches the turn, so a linked turn a
+            # shared Slack user opened answers to the owner alone from here on.
+            # Imported here: this body runs on the chat runner module's globals.
+            from kiro_crew.slack.turn_requester import forget_turn_requester
+
+            forget_turn_requester(slot)
         try:
             await client.answer_elicitation(event.request_id, action, answer)
         except ElicitationContentError:

@@ -534,7 +534,8 @@ class TestAppArmorNeverFailsTheInstall:
         from kiro_crew.service.common import Platform
 
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
-        monkeypatch.setattr(controller.linux, "install", lambda: outcome)
+        monkeypatch.setattr(controller.linux, "install", lambda **_kw: outcome)
+        monkeypatch.setattr(controller, "installed_unit_path", lambda: None)
         # The install also turns linger on for the service account and reports it
         # with its own warning sign; stub that step out so the assertions here see
         # the AppArmor outcome alone, whatever the host running the suite has set.
@@ -856,7 +857,7 @@ class TestProfileLoadsBeforeTheServiceStarts:
         order: list[str] = []
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux, "_current_user", lambda: "tester")
-        monkeypatch.setattr(svc_linux, "render_unit", lambda *_a: "unit")
+        monkeypatch.setattr(svc_linux, "render_unit", lambda *_a, **_kw: "unit")
         monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
         monkeypatch.setattr(
             svc_linux,

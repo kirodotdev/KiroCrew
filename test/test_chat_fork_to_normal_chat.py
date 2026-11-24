@@ -173,6 +173,26 @@ async def test_an_ephemeral_conductor_chat_forks_as_before(tmp_path, memory_mode
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("memory_mode", ["incognito", "temporary"])
+async def test_a_more_private_fork_of_a_root_lands_on_the_default_in_that_mode(
+    tmp_path, memory_mode
+) -> None:
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.execution_context import read_session_execution
+
+    state = _conductor_state(tmp_path)
+
+    status, body = await _fork(state, "root", {"memory_mode": memory_mode})
+
+    assert status == 200, body
+    child = state._slots[body["key"]]
+    assert (child.agent, child.memory_mode) == (_DEFAULT, memory_mode)
+    bound = read_session_execution(effective_session_key(child))
+    assert bound is not None
+    assert (bound.template_id, bound.memory_mode) == (_DEFAULT, memory_mode)
+
+
+@pytest.mark.asyncio
 async def test_a_crewmate_on_a_conductor_name_forks_as_before(tmp_path) -> None:
     state = _conductor_state(tmp_path)
     mate = state.get_or_create_slot("mate", agent=_CONDUCTOR)

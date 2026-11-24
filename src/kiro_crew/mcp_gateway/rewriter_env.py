@@ -367,6 +367,7 @@ class _SidecarLedger:
 def _collect_target_env(
     mcp_servers: dict[str, Any],
     target_env: dict[str, str],
+    key_owners: dict[str, str] | None = None,
 ) -> None:
     """Populate ``target_env`` with ``KIROCREW_MCP_TARGET_<SERVER>`` entries
     for every wrapped server in ``mcp_servers``.
@@ -384,7 +385,15 @@ def _collect_target_env(
       ``gatewayd.env_target_resolver`` spawns the command matching the
       caller's pool key instead of whichever agent sorted first
       alphabetically. The hash matches ``PoolKey.command_args_hash``.
+
+    ``key_owners`` maps each bare key to the server name that wrote it. A pass
+    that fills one ``target_env`` over several calls (one per agent spec)
+    passes one map to all of them: that is what tells one server name declared
+    with different args by two agents, which the hashed keys already serve,
+    apart from two different names sharing a key, which is warned about.
+    Without it only the names inside this call are known.
     """
+    owners: dict[str, str] = {} if key_owners is None else key_owners
     for server_name, entry in mcp_servers.items():
         if not isinstance(entry, dict) or not (
             entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
@@ -400,9 +409,14 @@ def _collect_target_env(
             # names can normalize to the same key ("my-server" vs "my_server",
             # case variants). The args-hashed key below is authoritative at
             # resolve time, but warn on a base collision so a genuinely
-            # ambiguous config is visible rather than silently first-wins.
+            # ambiguous config is visible rather than silently first-wins. The
+            # same name with other args is not a collision: its hashed key
+            # serves it.
             existing = target_env.get(env_key)
-            if existing is not None and existing != spec:
+            first_name = owners.get(env_key)
+            if existing is None:
+                owners[env_key] = server_name
+            elif existing != spec and first_name is not None and first_name != server_name:
                 with _collision_warn_lock:
                     first = env_key not in _collision_warned_keys
                     if first:
@@ -410,10 +424,12 @@ def _collect_target_env(
                 if first:
                     logger.warning(
                         "mcp-gateway rewriter: KIROCREW_MCP_TARGET env-key collision on "
-                        "%s (distinct server names normalize identically); the "
-                        "args-hashed key is used at resolve time, base stays "
+                        "%s (distinct server names %r and %r normalize identically); "
+                        "the args-hashed key is used at resolve time, base stays "
                         "first-wins",
                         env_key,
+                        first_name,
+                        server_name,
                     )
                 else:
                     logger.debug(

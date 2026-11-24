@@ -78,8 +78,11 @@ async def api_slack_pins(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -182,8 +185,11 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=f"channel={channel} action={action}",
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels"}, status=403
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
+            status=403,
         )
 
     try:
@@ -413,8 +419,10 @@ async def api_slack_history(request: web.Request) -> web.Response:
             downstream_service="slack",
             resources=resources,
         )
+        from kiro_crew.slack.tracked_channels import untracked_channel_error
+
         return web.json_response(
-            {"error": f"channel {channel} not in tracked channels", "code": "channel_not_tracked"},
+            {"error": untracked_channel_error(channel), "code": "channel_not_tracked"},
             status=403,
         )
     # The inbound gate's channels policy too: a channel it refuses is read by no one.

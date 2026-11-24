@@ -186,7 +186,7 @@ def _env_file_is_untouched_seed() -> bool:
         return False
 
 
-def _user_scope_remedy() -> str:
+def _user_scope_remedy(*, headless: bool = False) -> str:
     """The commands that stand up a working per-user unit on this host.
 
     Shared by :func:`selinux_refusal` and :func:`selinux_start_failure_hint` so
@@ -202,7 +202,7 @@ def _user_scope_remedy() -> str:
     verbatim: a home with a space would word-split and put the unit somewhere
     systemd never reads.
     """
-    unit_body = render_unit(user_scope=True)
+    unit_body = render_unit(user_scope=True, headless=headless)
     user = _current_user()
     home = _home_for_user(user) if user else str(Path.home())
     account = user or "<the service account>"
@@ -238,7 +238,7 @@ def _user_scope_remedy() -> str:
     )
 
 
-def selinux_refusal(reason: str) -> str:
+def selinux_refusal(reason: str, *, headless: bool = False) -> str:
     """Operator-facing refusal for a system unit SELinux proves cannot start.
 
     A refusal rather than a warning because everything after this point is
@@ -267,7 +267,7 @@ def selinux_refusal(reason: str) -> str:
         f"   does not run in PID 1's domain, so it is allowed to execute a binary\n"
         f"   under $HOME.\n"
         f"\n"
-        f"{_user_scope_remedy()}\n"
+        f"{_user_scope_remedy(headless=headless)}\n"
         f"\n"
         f"   Installing kirocrew outside $HOME (onto a system-labelled path such\n"
         f"   as /usr/local/bin) also resolves it. Relocating only the LAUNCHER\n"
@@ -309,8 +309,11 @@ def selinux_start_failure_hint() -> str:
     )
 
 
-def install() -> apparmor.ProfileOutcome:
+def install(*, headless: bool = False) -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
+
+    ``headless`` renders the unit that starts the gateway with ``--headless``
+    (:func:`render_unit`), and the unit the SELinux refusal prints.
 
     Calls ``sudo`` to write the unit and run ``systemctl``; its password prompt
     appears on the user's terminal. No kirocrew / LLM / agent code runs under
@@ -375,10 +378,10 @@ def install() -> apparmor.ProfileOutcome:
     # host without SELinux, or in permissive mode, is unaffected.
     blocked, selinux_reason = selinux.blocks_system_unit(kirocrew_bin())
     if blocked:
-        raise ServiceInstallError(selinux_refusal(selinux_reason))
+        raise ServiceInstallError(selinux_refusal(selinux_reason, headless=headless))
 
     needs_profile, profile_reason = apparmor.should_install()
-    write_res = _write_unit_via_sudo(render_unit())
+    write_res = _write_unit_via_sudo(render_unit(headless=headless))
     if write_res.returncode != 0:
         raise ServiceInstallError(
             "Failed to write the unit file. The sudo step is required because "

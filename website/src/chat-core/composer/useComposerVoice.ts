@@ -219,7 +219,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const isComposerFor = useCallback((target: string | null) =>
     isComposerForRef.current ? isComposerForRef.current(target) : target === sessionIdRef.current, [])
 
-  const { data: sttCfg } = useQuery({
+  const { data: sttCfg, refetch: refetchSttCfg } = useQuery({
     queryKey: ['sttConfig'],
     queryFn: () => api.sttConfig() as Promise<SttConfig>,
   })
@@ -834,7 +834,14 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // audio that never gets transcribed. Point the user at the enable setting
     // instead — unless this came from the keyboard (see `silent`).
     if (!sttConfigLoaded || !sttEnabled || !sttAvailable) {
-      if (!opts?.silent) setVoiceSetupOpen(true)
+      if (opts?.silent) return
+      // The cached answer can be from page load: the query never goes stale on
+      // its own, and signing in (here or in a terminal) does not refresh it. Ask
+      // again, and explain only if voice still cannot run. A press that finds it
+      // ready now changes the button, so the next press records.
+      void refetchSttCfg().then(({ data }) => {
+        if (!data?.enabled || data.available === false) setVoiceSetupOpen(true)
+      })
       return
     }
     // Exclusive sessions: the mic is a single shared device, so refuse to
@@ -880,7 +887,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // Only THIS start's settle clears the latch it set.
     return Promise.resolve(started).finally(() => { if (gen === startGenRef.current) startingRef.current = false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.transcribing, voice.start, sttEnabled, sttConfigLoaded, sttAvailable, instanceId])
+  }, [voice.transcribing, voice.start, sttEnabled, sttConfigLoaded, sttAvailable, instanceId, refetchSttCfg])
 
   /** Stop voice capture. Always allowed — only starting is gated. */
   const stopCapture = voice.stop

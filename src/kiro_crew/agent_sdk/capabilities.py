@@ -65,6 +65,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
+    ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
     ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
@@ -76,6 +77,10 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_
 #: that has not declared another falls back to. Named so a consumer can ask
 #: "is this the native namespace?" without spelling the literal.
 MODEL_NAMESPACE_ACP = "acp"
+
+#: The namespace of claude-agent-acp's ids, the only one besides ``acp`` that the
+#: model registry carries ids for (``model_registry.json`` ``providers``).
+MODEL_NAMESPACE_CLAUDE_CODE = "claude_code"
 
 
 @dataclass(frozen=True)
@@ -253,6 +258,15 @@ class SessionCapabilities:
     #: failed call carries the bare tool name, a worse title than the first.
     refines_tool_call_titles: bool
 
+    #: Whether a permission request raised while a native sub-agent's card is open
+    #: is that sub-agent's, not the parent's own
+    #: (:data:`ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD`), so the dashboard's
+    #: native-crew auto-approve rung may answer it.
+    #:
+    #: True for kiro-cli and KAS. False everywhere else, an unknown backend
+    #: included: there the rung is skipped and the request takes the normal gate.
+    permission_requests_name_child: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -284,6 +298,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
         refines_tool_call_titles=backend in ACP_BACKENDS_TOOL_TITLE_REFINEMENT,
+        permission_requests_name_child=backend in ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
     )
 
 
@@ -318,6 +333,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_remote_mcp_oauth=False,
     native_workflows=False,
     refines_tool_call_titles=False,
+    permission_requests_name_child=False,
 )
 
 
@@ -352,6 +368,7 @@ def capture_prompt_timeout(provider: object, deadline: float) -> float | None:
 
 __all__ = [
     "MODEL_NAMESPACE_ACP",
+    "MODEL_NAMESPACE_CLAUDE_CODE",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",

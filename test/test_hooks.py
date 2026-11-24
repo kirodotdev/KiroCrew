@@ -569,6 +569,13 @@ def _denied_grant():
     return SpecDeniedGrant(denied_commands=("make clean",))
 
 
+def _parent_limits():
+    """Built at use time from the gate's own binding, like :func:`_denied_grant`."""
+    from kiro_crew.hooks import SpecParentLimits
+
+    return SpecParentLimits(agent="boss", shell_allowlist=("git status",))
+
+
 class TestHookGateKwargs:
     """``hook_gate_kwargs`` is the ONE extraction of the event-derived
     ``on_tool_call`` arguments. A dispatcher that hand-copies the fields it
@@ -628,6 +635,7 @@ class TestHookGateKwargs:
         "spec_shell_readonly": "spec_shell_readonly",
         "spec_granted_paths": "spec_granted_paths",
         "spec_granted_read_paths": "spec_granted_read_paths",
+        "spec_parent_limits": "spec_parent_limits",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -665,6 +673,7 @@ class TestHookGateKwargs:
             spec_shell_readonly=True,
             spec_granted_paths=("/w/out/**",),
             spec_granted_read_paths=("/w/docs/**",),
+            spec_parent_limits=(_parent_limits(),),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -693,6 +702,7 @@ class TestHookGateKwargs:
             "spec_shell_readonly": True,
             "spec_granted_paths": ("/w/out/**",),
             "spec_granted_read_paths": ("/w/docs/**",),
+            "spec_parent_limits": (_parent_limits(),),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -734,6 +744,7 @@ class TestHookGateKwargs:
             "spec_shell_readonly": False,
             "spec_granted_paths": (),
             "spec_granted_read_paths": (),
+            "spec_parent_limits": (),
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -841,6 +852,7 @@ class TestHookGateKwargs:
         probe.spec_shell_readonly = True
         probe.spec_granted_paths = ("<spec_granted_paths>",)
         probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
+        probe.spec_parent_limits = (_parent_limits(),)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -882,6 +894,8 @@ class TestHookGateKwargs:
                 assert got[kwarg] == (f"<{attr}>",)
             elif kwarg == "spec_denied_grant":
                 assert got[kwarg] == _denied_grant()
+            elif kwarg == "spec_parent_limits":
+                assert got[kwarg] == (_parent_limits(),)
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg
 

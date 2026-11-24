@@ -58,6 +58,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     stream_and_collect_json,
 )
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -85,6 +86,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.task_models import (
     MAX_RECOVERIES,
     MAX_RETRIES,
@@ -958,7 +960,10 @@ async def execute_task(
             # A call whose own silence timer ends the prompt is handed back to the
             # model on this session (``acp.timed_out_continuation``), so the step
             # goes on with what it already did instead of re-running from the top.
-            async for event in continue_timed_out_calls(client.stream, full_prompt):
+            # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+            async for event in continue_timed_out_calls(
+                lambda prompt: drop_echo(client.stream(prompt)), full_prompt
+            ):
                 await _refuse_person_only(event)
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
@@ -1023,8 +1028,9 @@ async def execute_task(
                     _complete_event = event
                     break
 
-            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
-            result_text = strip_steering_markers(result_text)
+            # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+            # protocol, not the step's result.
+            result_text = strip_quoted_markers(strip_steering_markers(result_text))
             final_result = "\n\n".join([*refusals, result_prefix + result_text])
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the

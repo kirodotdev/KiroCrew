@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         sel,
         user_json,
         warm_backend,
+        withheld_by_auto_deny_tools,
         withheld_by_confirm_tools,
         without_mcp_refs,
     )
@@ -238,12 +239,18 @@ def _doctor_mcp_tools(
         # both whether doctor may mint a grant and whether an existing one stands.
         # A grant is the bare ref or any per-tool ``@server/tool`` spelling of it.
         granted = any(mcp_ref_owned_by(t, (name,)) for t in allowed)
-        # The operator's own ``hooks.confirm_tools`` withholds through the same
-        # chokepoint; name it, so it does not read as an enterprise ceiling.
-        by_confirm = withheld_by_confirm_tools(ref)
+        # The operator's own ``hooks.confirm_tools`` and ``hooks.auto_deny_tools``
+        # withhold through the same chokepoint; name them, so they do not read as
+        # an enterprise ceiling.
+        if withheld_by_confirm_tools(ref):
+            operator_key: str | None = "hooks.confirm_tools"
+        elif withheld_by_auto_deny_tools(ref):
+            operator_key = "hooks.auto_deny_tools"
+        else:
+            operator_key = None
         if not may_skip_gate_now(ref) and granted and declined:
             config_changed = True
-            cause = "withheld by hooks.confirm_tools" if by_confirm else "forbidden by ceiling"
+            cause = f"withheld by {operator_key}" if operator_key else "forbidden by ceiling"
             issues.append(f"{ref} auto-approve {cause} (repair from the owning install)")
         elif not may_skip_gate_now(ref):
             # REVOKE, not merely "do not add". A grant can predate the ceiling —
@@ -272,7 +279,7 @@ def _doctor_mcp_tools(
                         source="cli_doctor",
                         resources=(
                             f"{ref} auto-approve revoked "
-                            f"({'hooks.confirm_tools' if by_confirm else 'governance ceiling'}); "
+                            f"({operator_key or 'governance ceiling'}); "
                             "calls go through the approval gate"
                         ),
                     )
@@ -281,7 +288,7 @@ def _doctor_mcp_tools(
             # Governed hosts otherwise give no reason why a server the user
             # enabled still prompts on every call — say it once, here, so
             # `kirocrew doctor` explains it.
-            source = "hooks.confirm_tools" if by_confirm else "security policy"
+            source = operator_key or "security policy"
             print(f"  {ref}: 🔒 auto-approve withheld by {source} — calls will prompt")
         elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS and not gate_closed:
             # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.

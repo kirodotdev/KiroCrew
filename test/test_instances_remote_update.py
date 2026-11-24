@@ -400,6 +400,12 @@ async def _finished(mgr, iid):
 
 @pytest.mark.asyncio
 class TestUpdateJob:
+    @pytest.fixture(autouse=True)
+    def _nightly_hub(self, _floor_monkeypatch):
+        """A hub with no release tag sends the bare ``update`` these rows pin;
+        a release hub's ``--release`` is ``TestUpdateSendsTheHubsRelease``."""
+        _floor_monkeypatch.setattr(kiro_crew, "__version__", "0.15.0.dev3")
+
     async def test_runs_the_literal_update_then_restart(self, tmp_path, monkeypatch):
         from kiro_crew.instances.remote_update import REMOTE_UPDATE_TIMEOUT_SECS
 
@@ -795,6 +801,118 @@ class TestUpdateJob:
 
         assert mgr.remote_update_job("box") is None
         assert runner.calls == []
+        await mgr.shutdown()
+
+
+class TestUpdateSubcommand:
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("0.13.1", "update --release 0.13.1"),
+            ("0.13.0-rc.5", "update --release 0.13.0-rc.5"),
+            ("0.13.1rc2", "update --release 0.13.1rc2"),
+            ("0.15.0.dev3", "update"),  # a nightly: no release tag exists
+            ("junk", "update"),
+            ("0.13.1; rm -rf ~", "update"),  # never a version's shape
+            ("", "update"),
+        ],
+    )
+    def test_a_release_hub_names_its_own_version(self, version, expected):
+        from kiro_crew.instances.remote_update import update_subcommand
+
+        assert update_subcommand(version) == expected
+
+    def test_the_default_is_this_hubs_own_version(self, monkeypatch):
+        from kiro_crew.instances.remote_update import update_subcommand
+
+        monkeypatch.setattr(kiro_crew, "__version__", "0.13.1")
+        assert update_subcommand() == "update --release 0.13.1"
+
+
+@pytest.mark.asyncio
+class TestUpdateSendsTheHubsRelease:
+    async def test_a_release_hub_sends_update_release(self, tmp_path, monkeypatch):
+        from kiro_crew.instances.remote_update import REMOTE_UPDATE_TIMEOUT_SECS
+
+        monkeypatch.setattr(kiro_crew, "__version__", "0.13.1")
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((0, ""), (0, ""))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "succeeded"
+        assert [sub for sub, _ in runner.calls] == ["update --release 0.13.1", _WHEN_IDLE]
+        assert runner.calls[0][1]["timeout_secs"] == REMOTE_UPDATE_TIMEOUT_SECS
+        await mgr.shutdown()
+
+    async def test_a_crew_predating_release_reruns_the_bare_update_once(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.instances.remote_update import REMOTE_UPDATE_TIMEOUT_SECS
+
+        monkeypatch.setattr(kiro_crew, "__version__", "0.13.1")
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((2, "kirocrew update: error: unrecognized arguments"), (0, ""), (0, ""))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "succeeded"
+        assert [sub for sub, _ in runner.calls] == [
+            "update --release 0.13.1",
+            "update",
+            _WHEN_IDLE,
+        ]
+        assert runner.calls[1][1]["timeout_secs"] == REMOTE_UPDATE_TIMEOUT_SECS
+        assert runner.calls[1][1]["stdout_tail"] is True
+        await mgr.shutdown()
+
+    async def test_the_fallback_result_is_the_one_the_job_reports(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kiro_crew, "__version__", "0.13.1")
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((2, "usage"), (2, "usage: still refused"))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        # Once only: a bare update that also exits 2 fails the job, never loops.
+        assert job["state"] == "failed" and job["error"] == "usage: still refused"
+        assert [sub for sub, _ in runner.calls] == ["update --release 0.13.1", "update"]
+        await mgr.shutdown()
+
+    async def test_a_release_refusal_is_not_retried(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kiro_crew, "__version__", "0.13.1")
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((1, "origin has none of the release tags"))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "failed"
+        assert [sub for sub, _ in runner.calls] == ["update --release 0.13.1"]
+        await mgr.shutdown()
+
+    async def test_a_nightly_hub_answering_2_is_not_retried(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kiro_crew, "__version__", "0.15.0.dev3")
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((2, "usage"))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "failed"
+        assert [sub for sub, _ in runner.calls] == ["update"]
         await mgr.shutdown()
 
 

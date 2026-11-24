@@ -179,6 +179,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     _queued_depth_off_loop,
+    cron_tab_name,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -232,6 +233,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    _normalize_slot_key,
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
@@ -338,6 +340,7 @@ from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
     consume_reinjection,
+    open_turn_crew_log,
     rearm_reinjection,
     rollback_skill_bodies,
     stop_reason_landed,
@@ -572,6 +575,8 @@ from kiro_crew.slack.gateway_runtime.nudge_channel_fire import (
 from kiro_crew.slack.gateway_runtime.process_entry import (
     _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
     BOOT_RESTART_HINT,
+    _ask_again_while_pick_open,
+    _kas_floor_defaulted,
     _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
@@ -582,6 +587,7 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _start_kas_cli_floor,
     _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
+    _watch_saved_kiro_pick,
     run_gateway,
     signing_key_preflight,
 )

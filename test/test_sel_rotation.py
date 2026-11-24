@@ -1004,6 +1004,49 @@ class TestCollisionRetryReanchorsUnconditionally:
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed verification"
 
+    # may_rotate=False is the inline path (a critical audit): it skips the pre-append
+    # re-anchor, so the append guard's collision retry is what re-reads the tip.
+    @pytest.mark.parametrize("may_rotate", [True, False])
+    def test_a_foreign_append_re_anchors_without_a_log_line(
+        self, sel_dir, small_segments, caplog, may_rotate
+    ):
+        """Every process sharing the data home appends here, so a foreign append is
+        the routine case: re-reading the tip for it must not write a log line."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 5)
+        live = sel_dir / "security_events.jsonl"
+        sibling = _make_event(event_id="grow1", resources="sibling-grew")
+        sibling.prev_hash = log._last_hash
+        sibling.entry_hash = log._compute_hash(sibling)
+        with open(live, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(sibling)) + "\n")
+
+        with patch.object(SecurityEventLog, "_may_rotate", return_value=may_rotate):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.sel"):
+                _fill(log, 1, start=7000)
+
+        ours = json.loads(live.read_text(encoding="utf-8").splitlines()[-1])
+        assert ours["prev_hash"] == sibling.entry_hash, "the tip was not re-read"
+        noise = [r.getMessage() for r in caplog.records if "moved on" in r.getMessage()]
+        assert noise == []
+
+    @pytest.mark.parametrize("may_rotate", [True, False])
+    def test_a_replaced_live_log_still_logs_at_info(
+        self, sel_dir, small_segments, caplog, may_rotate
+    ):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 5)
+        live = sel_dir / "security_events.jsonl"
+        live.rename(sel_dir / "rotated-away.jsonl")
+
+        with patch.object(SecurityEventLog, "_may_rotate", return_value=may_rotate):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.sel"):
+                _fill(log, 1, start=8000)
+
+        assert json.loads(live.read_text(encoding="utf-8").splitlines()[-1])["prev_hash"] == ""
+        moved = [r for r in caplog.records if "moved on" in r.getMessage()]
+        assert [r.levelno for r in moved] == [logging.INFO]
+
     def test_reanchor_now_refreshes_without_asking(self, sel_dir, small_segments):
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)

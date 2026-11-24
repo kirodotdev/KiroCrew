@@ -387,6 +387,7 @@ def test_cli_writes_a_select_verdict_for_a_tree(
         "tiers",
         "would_skip",
         "would_run_share",
+        "windows",
     }
     assert verdict["schema"] == 1 and verdict["bundle_commit"] == "c0ffee"
     assert verdict["base"] is None and verdict["head"] is None

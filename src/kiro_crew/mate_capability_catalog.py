@@ -133,7 +133,7 @@ def gateway_lacks(spec: dict[str, Any], catalog: dict[str, str]) -> dict[str, An
 #: Bounds of the dispatch summary: names listed per line, characters per name.
 _SUMMARY_NAMES = 12
 _SUMMARY_NAME_CHARS = 48
-_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/ -]+")
+_SUMMARY_NAME_STRIP = re.compile(r"[^A-Za-z0-9_.@/: -]+")
 
 
 def _summary_names(names: list[str], how: dict[str, str] | None = None) -> str:

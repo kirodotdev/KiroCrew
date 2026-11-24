@@ -1458,7 +1458,7 @@
 12.501 test/test_browser_reflex_realtime.py
 13.072 test/test_browser_run_budget.py
 1.341 test/test_browser_session_contexts.py
-0.686 test/test_browser_sign_in.py
+0.686 test/test_browser_sign_in_guard.py
 0.815 test/test_browser_tabs_close_with_chat.py
 4.769 test/test_browser_turn_replay.py
 0.620 test/test_browser_upload_many.py

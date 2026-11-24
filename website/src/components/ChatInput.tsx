@@ -94,6 +94,7 @@ import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } 
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
+import { AskedBySubagent, ApprovalSubagentTask } from './chat-input/ApprovalSubagent'
 import { useTypingLockKeys } from './chat-input/typingLockKeys'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
@@ -391,7 +392,7 @@ function ChatInput({
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsUnattended,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, approvalSubagentTask, approvalAskedBySubagent, showGhost, showInChat,
   } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
@@ -1172,6 +1173,7 @@ function ChatInput({
                                   <Lock size={12} className="text-warn shrink-0" style={{ marginTop: '3px' }} />
                                   <span className="text-muted break-words min-w-0 line-clamp-2">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
                               </div>
+                              <AskedBySubagent name={approvalAskedBySubagent} />
                               <ToolDetails
                                   purpose={approvalPurpose}
                                   pillLabel={approvalLabel}
@@ -1192,10 +1194,11 @@ function ChatInput({
                       </motion.div>
                   )}
               </AnimatePresence>
+              <ApprovalSubagentTask task={approvalSubagentTask} />
               <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                   {!showGhost && <>
                       <Lock size={12} className="text-warn shrink-0" />
-                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} />
+                      <span className="text-[13px] font-mono text-muted truncate flex-1 min-w-0">{approvalLabel}</span><RaisedBy name={approvalRaisedBy} /><AskedBySubagent name={approvalAskedBySubagent} />
                   </>}
                   {showGhost && <div className="flex-1 min-w-0" />}
                   {showGhost && approvalToolCallId && (

@@ -14,8 +14,9 @@ sent as its bare url runs here instead, on a KAS engine process of its own:
 2. The session reports the server. Connected means the vault already holds a
    working sign-in, or the server needs none: the row is ``granted``.
 3. A server that needs authorization is sent ``_kiro/mcp/resetServer`` with
-   ``startOAuth``. Its consent URL arrives as ``_kiro/openExternalUrl`` and passes
-   the credential gate a kiro-cli URL passes before the row shows it.
+   ``startOAuth``. Its consent URL arrives as ``_kiro/openExternalUrl`` and runs
+   the discovery step and credential gate a kiro-cli URL runs before the row
+   shows it.
 4. The process is held while the user consents: the engine's callback listener
    and its PKCE verifier live in it. The row turns ``granted`` once the vault holds
    the server's ``tokens`` entry from this sign-in, and ``expired`` when the engine
@@ -44,6 +45,7 @@ from kiro_crew.connections import mint as _mint
 from kiro_crew.connections import status as _status
 from kiro_crew.connections.mint import MintState
 from kiro_crew.connections.registry import Provider, get_provider, is_preregistered
+from kiro_crew.mcp_oauth_discovery import approve_discovered_oauth_endpoint
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import (
     oauth_url_contains_credential,
@@ -511,6 +513,10 @@ async def mint_on_kas(slug: str, mcp_url: str, token: str, entry: dict[str, Any]
             oauth_url = await asyncio.wait_for(
                 _consent_url(process, alias), timeout=_mint._MINT_READY_TIMEOUT_SECONDS
             )
+            # The discovery step the kiro-cli mint and the chat banner run, so a
+            # configured server's own advertised authorization endpoint is not
+            # refused for its PKCE values. It never raises.
+            await approve_discovered_oauth_endpoint(alias, oauth_url)
             if not await asyncio.to_thread(oauth_url_contains_credential, oauth_url, alias):
                 break
             # The same refusal the kiro-cli mint applies; the value is never logged.

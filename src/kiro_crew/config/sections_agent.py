@@ -255,9 +255,9 @@ class AgentConfig:
             "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
             "is working correctly and is never counted, and one success clears the "
             "count. The server stays mounted, but while its streak is at or over "
-            "this threshold MCP discovery stops spawning it for probes; the count "
-            "survives a gateway restart and holds until it is cleared (the "
-            "dashboard offers a one-click reset). 0 turns it off.",
+            "this threshold MCP discovery stops spawning it for probes; the count survives "
+            "a gateway restart and holds until it is cleared (the dashboard offers a "
+            "one-click reset) or the server's command, args, env or url changes. 0 turns it off.",
         ),
     )
     acp_backend: str = field(
@@ -1050,7 +1050,9 @@ class AgentConfig:
             "While available memory is at or below resource_critical_gb, defer scheduled cron "
             "firings to the next tick, and TaskRunner steps and workflow ctx.agent() calls by "
             "admit_wait_secs, until memory frees. Background helper turns (titles, labels, "
-            "summaries, history consolidation) are skipped while it lasts. Subagent "
+            "summaries, history consolidation) are skipped while it lasts. Scheduled "
+            "auto-nudge prompt-loop ticks are held and re-checked every 30 seconds; the loop stays "
+            "on and spends no cycle, and a Fire now press still runs. Subagent "
             "spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. "
             "Manually triggered cron runs and direct chat turns are never gated; an unreadable "
             "probe admits (fail-open). Set false to make the critical posture advisory-only "

@@ -466,7 +466,10 @@ Tenants PULL the record rather than being pushed it. A tenant learns of the deat
 the way it already does — its poisoned session queue raises into whatever turn it
 had — and reads the record while handling it. A tenant with no turn in flight has
 nothing to recover and re-acquires on its next turn, which drops a dead runtime on
-the way past. There is deliberately no observer registry: a notification channel
+the way past. A sub-agent run parked on a wait cannot: nothing restarts an `AcpRuntime`
+under it, so the sub-agent reaper asks that run's own handle each sweep and ends the run
+([subagent.md](subagent.md), *Transient Retry (mid-stream 5xx) and dependency waits*).
+There is deliberately no observer registry: a notification channel
 with no subscriber is a mechanism whose first real consumer would have to redesign
 it.
 
@@ -855,9 +858,7 @@ recover.
   chain pid (`session_keys_bound_to_pid`, read by
   `token_auth._bound_session_keys_on_chain`). The residual gap is the empty case:
   when neither table speaks about the pid the check changes nothing and the token
-  keeps fail-open bearer semantics. Tracked in issue #14646 together with the
-  recycled-ancestor case, where the lenient MCP identity refuses every call for an
-  identity-less caller.
+  keeps fail-open bearer semantics.
 - **The `tenancy` seam in `acp.liveness.LivenessOracle` has no production
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means

@@ -7,12 +7,17 @@ deny, a narrowed match, a value with no Crew form, and no rule (the baseline).
 
 from __future__ import annotations
 
+import ntpath
 import sys
 
 import pytest
 
 from kiro_crew.platform import enterprise_policy_translate as t
 from kiro_crew.platform import governance
+from kiro_crew.platform.guest_paths import GuestPath
+
+#: The remote workspace's directory on its Linux guest.
+_GUEST_ROOT = "/workspace/app"
 
 
 @pytest.fixture(name="enterprise", autouse=True)
@@ -751,3 +756,49 @@ class TestBatchOneMeta:
         assert not _permits(
             _ceiling("{capability: all, effect: allow, match: ['x']}"), _INSTALL, ""
         )
+
+
+def _nt_expand(path: str) -> str:
+    return ntpath.expanduser(ntpath.expandvars(path))
+
+
+def _nt_norm_item(path: str) -> str:
+    """``_norm_item`` as a Windows gateway running from ``C:\\gateway`` computes it."""
+    return ntpath.normpath(ntpath.join("C:\\gateway", _nt_expand(path)))
+
+
+class TestDrivelessPathsOnWindows:
+    """A ``/``-rooted ``fs_*`` rule is kept on a Windows gateway.
+
+    It names remote-workspace (guest) files, which are POSIX paths on every gateway
+    OS, and it meets no local drive-letter path. Translation therefore neither
+    refuses nor drops it. Runs on every host: the Windows reading is ``ntpath``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _windows_reading(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
+        _floor_monkeypatch.setattr(governance, "_expand", _nt_expand)
+        _floor_monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
+
+    @pytest.mark.parametrize(
+        "capability, scope", [("fs_read", "filesystem.read"), ("fs_write", "filesystem.write")]
+    )
+    def test_a_driveless_deny_binds_guest_paths_and_no_local_path(self, capability, scope):
+        ceiling = _ceiling(
+            f"{{capability: {capability}, effect: allow}}",
+            f"{{capability: {capability}, effect: deny, match: ['/srv/data/**']}}",
+        )
+        assert not _permits(ceiling, scope, GuestPath("/srv/data/x", _GUEST_ROOT))
+        assert not _permits(ceiling, scope, GuestPath("../../srv/data/x", _GUEST_ROOT))
+        assert _permits(ceiling, scope, GuestPath("/srv/other/x", _GUEST_ROOT))
+        # ``/srv/data/x`` is denied under a POSIX reading, so this row also proves the
+        # Windows reading is live: there the item gains a drive.
+        for local in ("/srv/data/x", "C:\\srv\\data\\x", "C:/srv/data/x", "c:\\SRV\\DATA\\x"):
+            assert _permits(ceiling, scope, local), local
+
+    def test_a_driveless_allow_confines_guest_paths_and_admits_no_local_path(self):
+        ceiling = _ceiling(*_grant("fs_write", "['/workspace/**']"))
+        assert _permits(ceiling, "filesystem.write", GuestPath("x", _GUEST_ROOT))
+        assert not _permits(ceiling, "filesystem.write", GuestPath("/etc/x", _GUEST_ROOT))
+        assert not _permits(ceiling, "filesystem.write", "C:\\workspace\\app\\x")

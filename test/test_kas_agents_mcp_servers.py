@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from kas_agents_helpers import _spec
+from kas_agents_helpers import _spec, without_own_agents_deny
 
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
@@ -1244,7 +1244,8 @@ class TestRuntimeSuppliesTheStubbedSet:
         from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 
         assert [
-            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+            {k: v for k, v in without_own_agents_deny(a).items() if k != CREW_SETTINGS_MCP_KEY}
+            for a in out.custom_agents
         ] == [{"id": "kirocrew"}]
 
 
@@ -1746,6 +1747,34 @@ class TestHoistManagedServers:
         assert array[0] is user_stdio, "a server Crew does not own is untouched"
         assert array[1] is user_remote, "a managed name with no command is not Crew's launch"
         assert "versionNegotiation" not in json.dumps(agents), "the block path carries no pin"
+
+    def test_a_pooled_stub_gets_its_servers_connect_timeout(self, tmp_path):
+        # KAS reads no top-level ``timeout`` on a session-level element: without
+        # one in ``_meta.kiro`` a pooled server's stub gets the engine's 60 s.
+        from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp
+        from kiro_crew.mcp_gateway import STUB_MODULE
+
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        (settings / "cli.json").write_text(json.dumps({"mcp.initTimeout": 150_000}))
+        [stamped] = stamp_settings_mcp([self._projected()], "kirocrew", tmp_path)
+
+        def stub(name, **keys):
+            args = ["-m", STUB_MODULE, "--server", name, "--agent", "kirocrew"]
+            return {"name": name, "command": "/usr/bin/python3", "args": args, "env": [], **keys}
+
+        slow = stub("slow", timeout=200_000)  # flake-ok: server spec data, not a wait
+        _, array = hoist_servers_for_session(
+            [stamped], "kirocrew", [slow, stub("aliased", timeoutMs=90_000), stub("plain")]
+        )
+        timeouts = {e["name"]: e.get("_meta", {}).get("kiro", {}).get("timeout") for e in array}
+        assert timeouts == {
+            "kirocrew-core": 120_000,
+            "slow": 200_000,
+            "aliased": 90_000,
+            "plain": 150_000,
+        }, "its own timeout, else the default the agent block gets"
+        assert "_meta" not in slow, "the caller's entry is copied, never mutated"
 
     def test_the_non_kas_path_returns_its_array_unpinned(self):
         # The kiro backend sends no custom agents; its array must stay as built.

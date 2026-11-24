@@ -268,6 +268,8 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     })()
     // A switch can keep every status field unchanged while replacing the account.
     void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
+    // A hosted voice provider reports "needs a sign-in" through this query.
+    void queryClient.invalidateQueries({ queryKey: ['sttConfig'] })
     // Team Crews are listed for the account: the new one's list, not the old one's.
     void queryClient.resetQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
   }, [queryClient])

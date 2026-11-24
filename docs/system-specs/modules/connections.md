@@ -472,7 +472,7 @@ the vault. The session's MCP report places the server:
 | `ready` at once | `granted`, no URL: the vault already holds a working sign-in, or the server needs none |
 | `failed`, no saved tokens for the url | `failed`, `mint_server_failed` |
 | `failed`, saved tokens for the url | as `awaiting_auth`: the engine keeps tokens whose refresh the vendor refused with an error other than `invalid_grant` / `invalid_client` / `unauthorized_client`, reports the server failed and asks for no sign-in, so Connect replaces them (the `startOAuth` reset drops every credential first) |
-| `awaiting_auth` | the engine is sent `_kiro/mcp/resetServer` with `startOAuth`; the consent URL it opens as `_kiro/openExternalUrl` passes the same credential gate (one fresh process before `mint_url_rejected` is final) and the row turns `waiting` |
+| `awaiting_auth` | the engine is sent `_kiro/mcp/resetServer` with `startOAuth`; the consent URL it opens as `_kiro/openExternalUrl` runs the same discovery step and credential gate (one fresh process before `mint_url_rejected` is final) and the row turns `waiting` |
 
 The process and its PID claim are held while the user consents, because the engine's callback
 listener and PKCE verifier live in it. The watcher marks the row `granted` once the vault holds
@@ -518,12 +518,12 @@ chat's `mcp_sign_in_needed` notice names only the chat way in, never this page
 signs in on KAS: a warm URL was minted by kiro-cli, so adopting it would write the grant back
 into kiro-cli's cache. It asks the rule above (`kas_sign_in_entry`, through `_signs_in_on_kas`)
 after the card has written the entry, so a Connect the mint keeps on kiro-cli still adopts its
-warm URL. The premint asks before the click, so it warms only providers whose Connect would
-still sign in on kiro-cli (`kiro_cli_sign_in_providers`): a pre-registered provider, or one
-whose main-spec entry the engine is not sent bare. A provider the spec does not hold yet is
-judged by the bare registry url its Connect writes first. Test enumerates through kiro-cli's
-grant, so the card offers none for such a provider (`crewHeld`) and `api_connections_test`
-refuses it with 409 `kas_sign_in_test_unsupported`.
+warm URL. The premint asks before the click, so it and both automatic re-arms warm only
+providers whose Connect would still sign in on kiro-cli (`kiro_cli_sign_in_providers`): a
+pre-registered provider, or one whose main-spec entry the engine is not sent bare. A provider
+the spec does not hold yet is judged by the bare registry url its Connect writes first. Test
+enumerates through kiro-cli's grant, so the card offers none for such a provider (`crewHeld`)
+and `api_connections_test` refuses it with 409 `kas_sign_in_test_unsupported`.
 
 ### The handoff: how a premint reaches the click it was minted for
 
@@ -593,11 +593,12 @@ its dependent slice lands.
 **One automatic replacement, single-flight, disarmed by shutdown.** Resilience is owned by the
 same reaper that detects process death. An explicit page warm arms ONE automatic replacement
 (`arm_supervision`, `_WARM_REARM_ATTEMPTS = 1`). A dead generation reserves one single-flight
-re-arm task that reuses the ordinary tri-state candidate scan plus `warm_mint_all` without
-granting itself another attempt, so a second death cannot form a restart loop; a present grant
-and an unreadable grant cache are both skipped by that scan. Concurrent observers share the one
-task rather than each starting their own. Deliberate shutdown disarms recovery, settles the
-in-flight task, then retires the process. No provider-level recovery state crosses the API.
+re-arm task that reuses the ordinary tri-state candidate scan, the premint's KAS sign-in filter
+and `warm_mint_all` without granting itself another attempt, so a second death cannot form a
+restart loop; a present grant and an unreadable grant cache are both skipped by that scan.
+Concurrent observers share the one task rather than each starting their own. Deliberate shutdown
+disarms recovery, settles the in-flight task, then retires the process. No provider-level recovery
+state crosses the API.
 
 **Parked generations are drained, not leaked.** `sweep_retiring` is the only thing that retires
 a parked process, and every route to it runs off a new mint — so `_drain_parked_generations`
@@ -1435,8 +1436,12 @@ drop the parameter to save the extra screen.
 **Which backend can use it.** The client reaches a chat's sign-in only through
 the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 (`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
-`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
-schema with no slot for it (#27711). A pre-registered provider's Connect
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS engines before 0.66.104 had
+no slot for it (#27711); from 0.66.104 KAS takes a public client's `clientId` and
+`redirectUri`, but Crew withholds a block that names a `clientSecret` on every
+engine (`kas_engine_features.carry_oauth`), and every pre-registered provider is
+confidential. KAS joins the set once Crew sends the secret through
+`_kiro/mcp/oauth/setClientSecret` (#41723). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
 chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`
@@ -1674,6 +1679,9 @@ a pending sign-in (constant-time) is the only admission, each `state` answers
 once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
 HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
 echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Both loopback listeners (the shared port and a consent's own port) answer with
+the same titled page (`crew_oauth_dcr.titled_page`), so the tab reads the same
+wherever the vendor sends the browser back.
 A callback that carries an `error`, or no `code`, is a refusal, even beside a
 code: `crew_oauth.callback_refusal` maps the `error` value onto the closed RFC
 6749 §4.1.2.1 set (`callback_access_denied`, `callback_invalid_request`,
@@ -1777,6 +1785,17 @@ owner-only `PUT` / `DELETE /api/connections/oauth-clients/{slug}`. The launch
 gate keeps governing the entry's quality claims: a configured GitHub still runs
 the normal first-connect (`not-verified`) flow, and `launch_gate_passed` flips
 only after the manual L2 walk with an operator-registered app.
+
+**Creating the app from the card.** When the gateway can generate a
+pre-registered card's OAuth app, owner-only
+`GET /api/connections/app-manifests` answers `{slug: {create_url, manifest}}`
+(handlers/connections_app_manifest.py). Only Slack has a generator: the
+`slack_manifest.deep_link()` link and its payload, for this install's alias and
+Slack Code switches plus `slack_mcp`, so one app serves the channel bot and the
+card. While the card is `needs-configuration` and its client is not saved, the
+"Before you connect" tip carries **Create the <provider> app** (the link, https
+only, new tab), **Copy manifest** and one line on what Slack does next. The card
+names no vendor; a refused or failed route leaves the tip without the buttons.
 
 **Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
 (index in its `README.md`): console, app type, scopes, the exact redirect URI,

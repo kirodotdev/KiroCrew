@@ -378,7 +378,9 @@ class McpServerInfo:
     # in-process fallback for a managed server whose probe could not spawn —
     # the tool list is correct (same declaration the server serves) but nothing
     # verified the server can start. Surfaced so the UI can tell the two
-    # apart instead of rendering both as an identical green badge.
+    # apart instead of rendering both as an identical green badge. "refused" is
+    # a handshake the server answered with a JSON-RPC error (signed out, say):
+    # it started and spoke, so the probe quarantine does not count it.
     probe_mode: str = "handshake"
     # Wall-clock time (``time.time()``) of the probe that produced ``status``,
     # or 0.0 when no probe has run. Carried through the caches and into the

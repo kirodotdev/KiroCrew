@@ -23,6 +23,7 @@ from kiro_crew.dashboard.chat_delivery import (
     queued_text_for_display,
     quote_meta,
 )
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY, merged_pastes
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
@@ -1392,6 +1393,8 @@ async def _start_next_queued_turn(
         # send the row stands for. Membership in `sendIds` is the proof a client
         # should read on a merged row; on a plain row `sendId` is the whole story.
         _drained_meta["sendIds"] = _drained_send_ids
+    if _row_pastes := merged_pastes(consumed):
+        _drained_meta[PASTES_META_KEY] = _row_pastes
     if len(_drained_decision_ids) > 1:
         # A merged row: `spec_decision_delivery_id` stays as the union left it
         # (last writer) and `spec_decision_delivery_ids` names every decision

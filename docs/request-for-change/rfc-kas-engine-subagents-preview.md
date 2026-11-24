@@ -190,7 +190,7 @@ as a move, and which name a tool call keeps for its hooks). Its body lists them.
 | The person's own agents, user-level and project-level, first 8 in name order | Run | **next** |
 | A person's agent file named `kirocrew-helper` | Never takes the helper's place; that chat keeps Kiro Crew's own sub-agents | **head**: `_HELPER_TAKEN` in `kas_engine_subagents.py` |
 | Kiro Crew's own agents | Refused by name, always | **head**: `deny_own_agents` |
-| An own agent with its own `preToolUse` hooks, a shell or file-write allowlist, or URL-scoped limits | Kept out and refused by name; `spawn_run` runs it with its limits | **head** for hooks and allowlists (`_GATE_ONLY` in `kas_subagent_targets.py`); **next** for URL-scoped limits and the by-name refusal |
+| An own agent with its own `preToolUse` hooks, a shell or file-write allowlist, or URL-scoped limits | Kept out and refused by name; `spawn_run` runs it with its limits | **head** for hooks, allowlists and blocked web addresses KAS cannot carry as a host deny (`_gate_only_limits` and `_GATE_ONLY` in `kas_subagent_targets.py`, `gate_refused_blocked` in `kas_spec_denies.py`); **next** for the other URL-scoped limits and the by-name refusal |
 | An own agent past the eighth | Refused; `spawn_run` runs it | **next** |
 
 The engine's own tool text lists every agent the engine finds, the refused

@@ -35,7 +35,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader_builders import _build_session_config
 from kiro_crew.dashboard import chat_utils_completion
-from kiro_crew.essential_delivery import EssentialDelivery
+from kiro_crew.essential_delivery import ESSENTIALS_SLOT, EssentialDelivery
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_COMPACTED,
@@ -1168,8 +1168,8 @@ def _acknowledge(delivery: EssentialDelivery, incarnation: object) -> None:
     """Stage *_ENVELOPE* as the snapshot an earlier turn already acknowledged."""
     delivery.bind(_ENVELOPE, scope=("s1",), incarnation=incarnation)
     with delivery._lock:
-        assert delivery._pending is not None
-        delivery._acknowledged = (incarnation, delivery._pending.digest, delivery._epoch)
+        pending = delivery._pending[ESSENTIALS_SLOT]
+        delivery._acknowledged[ESSENTIALS_SLOT] = (incarnation, pending.digest, delivery._epoch)
 
 
 class TestUnresolvedCompactionDelivery:

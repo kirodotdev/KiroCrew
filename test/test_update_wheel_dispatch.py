@@ -1104,7 +1104,7 @@ class TestUpdateDivergenceGuard:
             from kiro_crew.cli import main
 
             main()
-            mock_update.assert_called_once_with(force=True)
+            mock_update.assert_called_once_with(force=True, release=None)
 
     def test_cli_defaults_force_off(self, monkeypatch) -> None:
         """A bare ``kirocrew update`` keeps the guard armed (force=False)."""
@@ -1118,4 +1118,4 @@ class TestUpdateDivergenceGuard:
             from kiro_crew.cli import main
 
             main()
-            mock_update.assert_called_once_with(force=False)
+            mock_update.assert_called_once_with(force=False, release=None)

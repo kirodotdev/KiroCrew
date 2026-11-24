@@ -830,7 +830,7 @@ with `403 owner_only`, and rejects a disabled feature with `403`. Every call, su
 | `GET /api/instances/{id}/status[?diagnose=1]` | Live status; `?diagnose=1` runs the failure ladder and merges the result. For a chained crew it probes the parent hop and can answer `chain_parent_missing`. |
 | `POST /api/instances/{id}/restart` | Restart the remote gateway over SSH. Refused for a chained crew, which this dashboard cannot run commands on ("Restart it from that crew"). Runs `restart --when-idle --max-wait 0` on the remote: one check of its in-flight work, then a restart only if there is none. The route answers synchronously, so a busy crew is refused `409 busy` with `turns` and `background`, a crew too old to check is refused `409 peer_cannot_wait`, and a crew that cannot establish it is idle (including a busy exit whose marker is not exactly `kirocrew-restart-busy` and a JSON object with non-negative integer `turns` and `background`) is refused `409 idle_check_failed`. The optional body `{"force": true}` runs the bare `restart`. Any other body is `400 invalid_body`. No dashboard control posts to this route (the panel's restart is the Update job's "Restart now", below); its callers are API clients, which send `force` themselves. |
 | `GET /api/instances/versions` | Every CONNECTED crew's version beside this gateway's: `{local_version, instances: [{id, name, version, behind, updatable, error}]}`. One `/api/version` read per connected crew through `SshTunnelManager.peer_capability` (the closed path set capabilities uses), run concurrently. `behind` is `_remote_is_behind(local, peer)`: strictly older by the update checker's own pre-release-aware ordering (`_is_newer`), so `0.9.0rc3` is behind `0.9.0`; an empty or unparseable version is never behind. A crew that does not answer reports `version: ""` and its read failure in `error` (the carrier's code, e.g. `capability_unreachable`), which the row and the post-update offer report. A reply naming no version, or an all-zero placeholder such as `0` (`apps.version.known_version`), reports `version: ""` with `error: capability_malformed_reply`, never a version to compare. `updatable` is false for a chained, fargate or headless crew (`_can_run_remote_commands`, the display side of the manager's refusals), so the dashboard offers Update only where the gateway would run it. The capabilities reply carries the same `behind` beside `version_match`, which the crew-window header reads, and `ahead`, the same compare with the two sides swapped. Strings cross `_cap_str` (redact + clamp). Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`. |
-| `POST /api/instances/{id}/update` | The explicit "Update remote" action. Starts a background job (`SshTunnelManager.start_remote_update`) that runs the fixed literal `kirocrew update` on the remote through `_run_remote_subcommand` -- the same SSH / SSM runner `restart` uses, resolved through the same run-marker launcher -- with a `REMOTE_UPDATE_TIMEOUT_SECS` (600s) budget and a redacted stdout tail on failure, then, only when the update exits 0, a restart that waits for the crew's in-flight work (`_restart_when_idle`). Each check is one remote `restart --when-idle --max-wait 0` (see [cli](cli.md)). The crew's own gateway counts its turns, subagents, workflows and other background work with the quiescence census, and restarts only at zero. While it is busy the job is in phase `waiting_for_idle` with the last counts in `waiting: {turns, background}`, and it asks again every `REMOTE_UPDATE_IDLE_POLL_SECS` (15s) for up to `REMOTE_UPDATE_IDLE_WAIT_SECS` (600s, pinned equal to the CLI's `--when-idle` default wait). If the crew is still busy then, the job fails with `code: still_busy` and nothing restarted. Each check asks the runner for its stdout tail and reads the busy marker, the last line, by an exact prefix and `json.loads` of the counts after it, because the CLI prints the marker last on stdout while the runner keeps only the head of stderr. A crew whose CLI or gateway predates the check (argparse exit 2, or exit 69) fails with `code: peer_cannot_wait` ("Update it from its own dashboard"), also without restarting. A crew that cannot establish it is idle (exit 78 with its refused marker: the check failed, or a restart there would reach more than the gateway it checked) fails with `code: idle_check_failed` and the crew's reason in `error`. The optional body `{"force": true}` is the panel's confirmed "Restart now", offered on all three codes. The panel's message for each of these codes, and for a failed restart, says only that the update ran: `update` also exits 0 when nothing was newer, so it never says a new version is installed, and it offers "Restart now" as the way to start a version the update may have installed. It skips the `update` that job already ran, runs the bare `kirocrew restart`, then verifies as usual, and `job.force` records it. Any other body is `400 invalid_body`. A zero exit does not prove an install (`kirocrew update` also exits 0 when it is already current or managed elsewhere, and the running gateway reports a new version only after its restart), so the job then reads the crew's own `/api/version` through `peer_capability` until it differs from the version read before the update, for up to `REMOTE_UPDATE_VERIFY_SECS` (180s, every 5s): a different version is `succeeded`, the same one `unchanged`, no answer `unverified`. When the version before the update could not be read, any answer is `unverified` too, with that answer in `version_after`: nothing proves it changed, so the panel shows that version without calling it an upgrade (an all-zero placeholder such as `0` is no answer: `peer_version` reads it through `known_version`). Peer version strings are kept only when version-shaped (`clean_version`) and unchanged by the credential redactor. Nothing from the request body reaches the command: `force` only picks between two fixed literals. Refused before anything runs, by the gate `restart` shares (`_remote_command_target`): `404 not_found`, `400 invalid_transport`, `409 chained`, `409 headless` (fargate or a headless provisioner), and `409 already_running` while this crew's job runs. Answers `202 {ok, job}`. The remote's own update policy provider, install layout and updater decide what `update` does; an expired transport credential surfaces as the runner's own error. Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`, so an app token is refused. Nothing schedules it: it runs only on this request. |
+| `POST /api/instances/{id}/update` | The explicit "Update remote" action. Starts a background job (`SshTunnelManager.start_remote_update`) that runs `kirocrew update` on the remote through `_run_remote_subcommand` -- the same SSH / SSM runner `restart` uses, resolved through the same run-marker launcher -- with a `REMOTE_UPDATE_TIMEOUT_SECS` (600s) budget and a redacted stdout tail on failure, then, only when the update exits 0, a restart that waits for the crew's in-flight work (`_restart_when_idle`). Each check is one remote `restart --when-idle --max-wait 0` (see [cli](cli.md)). The crew's own gateway counts its turns, subagents, workflows and other background work with the quiescence census, and restarts only at zero. While it is busy the job is in phase `waiting_for_idle` with the last counts in `waiting: {turns, background}`, and it asks again every `REMOTE_UPDATE_IDLE_POLL_SECS` (15s) for up to `REMOTE_UPDATE_IDLE_WAIT_SECS` (600s, pinned equal to the CLI's `--when-idle` default wait). If the crew is still busy then, the job fails with `code: still_busy` and nothing restarted. Each check asks the runner for its stdout tail and reads the busy marker, the last line, by an exact prefix and `json.loads` of the counts after it, because the CLI prints the marker last on stdout while the runner keeps only the head of stderr. A crew whose CLI or gateway predates the check (argparse exit 2, or exit 69) fails with `code: peer_cannot_wait` ("Update it from its own dashboard"), also without restarting. A crew that cannot establish it is idle (exit 78 with its refused marker: the check failed, or a restart there would reach more than the gateway it checked) fails with `code: idle_check_failed` and the crew's reason in `error`. The optional body `{"force": true}` is the panel's confirmed "Restart now", offered on all three codes. The panel's message for each of these codes, and for a failed restart, says only that the update ran: `update` also exits 0 when nothing was newer, so it never says a new version is installed, and it offers "Restart now" as the way to start a version the update may have installed. It skips the `update` that job already ran, runs the bare `kirocrew restart`, then verifies as usual, and `job.force` records it. Any other body is `400 invalid_body`. A zero exit does not prove an install (`kirocrew update` also exits 0 when it is already current or managed elsewhere, and the running gateway reports a new version only after its restart), so the job then reads the crew's own `/api/version` through `peer_capability` until it differs from the version read before the update, for up to `REMOTE_UPDATE_VERIFY_SECS` (180s, every 5s): a different version is `succeeded`, the same one `unchanged`, no answer `unverified`. When the version before the update could not be read, any answer is `unverified` too, with that answer in `version_after`: nothing proves it changed, so the panel shows that version without calling it an upgrade (an all-zero placeholder such as `0` is no answer: `peer_version` reads it through `known_version`). Peer version strings are kept only when version-shaped (`clean_version`) and unchanged by the credential redactor. Nothing from the request body reaches the command: `force` only skips the update step and the idle wait. On a release-build hub (`release_channel.release_refs(__version__)` non-empty and the version passing `clean_version`) the update step is `update --release <this hub's own version>` (`remote_update.update_subcommand`), so a crew detached at a release tag moves to the hub's release tag instead of origin's main branch (see [cli](cli.md)); any other hub sends the bare `update`. When the crew answers argparse's exit 2 (`_ARGPARSE_USAGE_EXIT`: a CLI that predates `--release`), the job reruns the bare `update` once, with the same budget, and uses that result. Refused before anything runs, by the gate `restart` shares (`_remote_command_target`): `404 not_found`, `400 invalid_transport`, `409 chained`, `409 headless` (fargate or a headless provisioner), and `409 already_running` while this crew's job runs. Answers `202 {ok, job}`. The remote's own update policy provider, install layout and updater decide what `update` does; an expired transport credential surfaces as the runner's own error. Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`, so an app token is refused. Nothing schedules it: it runs only on this request. |
 | `GET /api/instances/{id}/update` | The latest update job for this crew (`instances/remote_update.py`): `{job: {state: running/succeeded/unchanged/unverified/failed, phase: updating/waiting_for_idle/restarting/verifying/done, started_at, finished_at, elapsed_secs, error, code, waiting: {turns, background}, force, version_before, version_after}}` (`code` is `still_busy`, `peer_cannot_wait` or `idle_check_failed` on a job that stopped short of its restart, else `""`), or `{job: null}` when none ran since the gateway started. A failed job keeps the phase it failed in and a redacted, clamped error tail; an exception in the job body records only its type name. The job outlives the crew's restart and reconnect, so the dashboard reads the outcome here, not from the tunnel state. Gateway shutdown cancels a running job. Same owner gate as the POST, and every allowed read is audited. |
 | `POST /api/instances/{id}/crew-turn` | One chat turn against a CONNECTED headless crew on the MicroVM lane (`src/kiro_crew/dashboard/handlers_crew_turn.py`). Body `{"thread", "message", "stream"}`: `thread` is the crew's slot id, so the same id continues one conversation for as long as the VM holds its transcript; `stream` defaults to `true`. Owner-only, like the proxy: it runs with the owner's AWS credentials and sends the crew's control secret. Only `TURN_LANE` (`microvm`) is served; any other lane, Fargate included, is refused `409 crew_lane_not_served` BEFORE any secret is read, and its crew stays reachable at the turn URL its card shows. The gateway resolves the target from the live status's `turn_url` (`409 crew_not_connected` when there is none), reads the per-crew control secret named by the lane's crew record through the AWS CLI off the event loop (`503 crew_secret_unavailable` when the reference is unrecorded or unreadable), addresses the turn to the crew name the deployment serves rather than the instance's display name (`503 crew_name_unavailable`), and sends the secret in the control header. The reply passes the peer redactor on the way out: a non-streamed body that cannot be redacted is refused `502 crew_reply_unredactable`, and a streamed reply is reassembled into whole SSE events, each redacted before it is relayed, with an event too large to scrub ending the stream. An unreachable crew answers `502 crew_unreachable`. Request validation answers `400 bad_request`, `413 message_too_large`, `404 instance_unknown` and `503 instances_unavailable`. |
 | `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, read by New chat on crew and the crew window: `version` (+ `local_version` and `version_match`, which is `versions_compatible(local, peer)`: same major.minor, exact string equality for a non-semver build id, false for an empty peer version; an all-zero placeholder such as `0` reads as empty, and an empty version always carries its reason in `unavailable.version`, `capability_malformed_reply` when the read answered without one), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy below, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models` + up to 3s entitlement revalidation, ~18s worst case — the named production bounds `_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS`, `_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS` and `_READ_PATH_PROBE_DEADLINE_SECS`), so an 8s budget would kill every cold read and report a healthy peer as `capability_unreachable`. One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, `capability_peer_revalidating`, …), so the frontend disables exactly that control. A peer whose `/api/models` answers its deliberate `503 model_list_revalidating` (an entitlement revalidation in flight) maps to `capability_peer_revalidating`; any other non-2xx is `capability_peer_refused`. The dashboard reads it in two places: New chat on crew (`chat-sidebar/create.ts`) refuses to create a session on a peer whose `version_match` is false, and the crew window (`CrewChatWindow`) re-reads it every 5s until `version_match` is true, so a reconnect unlocks the window; both word a mismatch through `crewVersionMismatchText` (the reason for an unknown version, else which side is older from `behind` / `ahead`); the window's model picker (`useCrewWindowModelPicker`) marks the model list failed when `unavailable.models` is set rather than showing an empty list. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
@@ -995,10 +995,11 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   characters, the hint store's limit. The resolver rebuilds it as
   `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
   same-named local session; a `crew` that is not an id becomes the value-free
-  `/chat?crewError=1`. The hub reads the route only from the native navigate
-  channel, never from its URL, and matches the id against a crew list read
+  `/chat?crewError=1`. The hub runs the link (pane switch, connect rule) only
+  from the native navigate channel, and matches the id against a crew list read
   fresh for the link (not the cached `['instances']`, which can still say
-  `connected` for a tunnel that died while the window was hidden). The newest
+  `connected` for a tunnel that died while the window was hidden). The same
+  route on the dashboard's own address only opens the crew window (below). The newest
   native link wins: a crew link whose read answers after a later link arrived,
   or after the user switched panes, is dropped silently. A link that arrives
   before a reloading window has restored its remembered pane wins over that
@@ -1025,6 +1026,30 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
     switches there. Known limit: a dead forwarder the gateway has not noticed yet
     still reads `connected`, so the key reaches the pane on screen, which a tab
     click would show just as broken.
+  - **On the dashboard address.** `/chat?crew=<crew id>&crewSid=<key>` (and
+    `/chat/<slug>?…`) typed or linked into the hub's own address opens that
+    session in the crew window over the local chat page, the window the
+    sidebar's crew rows open (`useCrewAddressLink`). It runs in the hub only,
+    never in a pane, a popout or an `/embed/` frame (the embedded chat keeps its
+    own `?crew=&key=`), on every new address entry that carries the route. It
+    drops `crew`, `crewSid` and `crewError` from the live address at once (the
+    chat page's URL writer copies every other param, so a reload never re-reads
+    them; it copies the router's committed search, which can still hold the
+    route while the replace's transition is pending, so it leaves out each of
+    the three the live address no longer carries, `withoutSpentCrewLink`),
+    forgets a remembered pane and brings the local crew forward, then
+    checks the id against the shared `['instances']` list: a malformed link, an
+    unknown id, a crew turned off, a crew with no dashboard pane or a list that
+    failed to load raises the same message as the native link and opens nothing.
+    A link whose list read answers after a newer address link arrived, after
+    the user picked or opened a session or closed the window, or while a crew
+    pane is in front or another page is shown, opens nothing and shows nothing.
+    It has no connect rule: it never switches to the crew's pane and never
+    starts a tunnel, because any web page can open a dashboard address. A crew
+    that is not connected opens the window in its not-connected state, which
+    goes live once the tunnel is up; known limit: a crew outside the warm set
+    stays not connected until the user connects it from its tab. The address
+    takes no `sid`: a `sid` beside it is read as a local session, as always.
 - **Active pane on reload.** `mc-active-pane` in sessionStorage
   (`lib/activePaneMemory.ts`) stores only the crew id, never a port or token.
   Reload keeps it. A new window starts empty and opens on Local. The first
@@ -1473,7 +1498,7 @@ token mint, `restart_remote`, the diagnostics probes — therefore goes through
 `token_mint.ssh_spawn_argv_env`: the `ssh` head is resolved against the inherited
 `PATH` only, and the child gets `deploy.engine.tool_spawn_env`, the env the
 SSM transport's `aws` child is built from. That helper APPENDS the well-known install dirs
-(`/opt/homebrew/bin`, `/usr/local/bin`) and withholds them for a bare head, so
+(`/opt/homebrew/bin`, `/usr/local/bin`; none on Windows) and withholds them for a bare head, so
 the inherited `PATH` keeps first claim on every name and an `ssh` found only in
 those dirs is never exec'd. Before building that env, each spawn re-runs the
 provenance walk for `session-manager-plugin` and `aws`, so a dir holding a
@@ -2210,9 +2235,65 @@ verdict and runs no probe, since the SSH ladder would dial whatever `ssh_host`
 the record holds.
 
 SSM-only registry fields: `ssm_target` (an EC2 `i-…` or SSM managed-instance
-`mi-…` id), plus optional `aws_profile`, `aws_region` and `ssm_run_as`. Only the
-profile **name** is persisted — never a credential; the AWS CLI resolves
-credentials via its own provider chain.
+`mi-…` id, or a resolver, below), plus optional `aws_profile`, `aws_region` and
+`ssm_run_as`. Only the profile **name** is persisted — never a credential; the
+AWS CLI resolves credentials via its own provider chain.
+
+**Resolver targets.** On the `ssm` method only, `ssm_target` may say where the
+id is found instead of being one: `asg:<group>` names an Auto Scaling group,
+whose one `InService` instance is the target, and `param:<name>` names an SSM
+parameter whose value is the id. `validation.split_ssm_resolver` owns both
+shapes (charset-bound, never starting with `-`, AWS's own length caps); the
+registry's ssm arm admits them beside `ssm_target_matches`, which stays closed
+to them, as does `validate_ssm_target`. `cloud.ssm.resolve_ssm_target` makes the
+one read-only call (`autoscaling describe-auto-scaling-groups`, or `ssm
+get-parameter` without decryption) with the row's own profile and region, and
+raises `validation.SsmTargetUnresolvedError` (an `SsmValidationError`) unless it
+gets exactly one EC2 or managed-instance id; its message never quotes the
+parameter's value. The id it returns still goes through `_resolve_transport`
+and `validate_ssm_target` before any argv is built, and nothing writes it back
+to the row.
+
+Where it is looked up follows what the call is for. The paths that build a
+forward -- `connect` and `_recover` -- call `_with_resolved_target` before
+`_resolve_transport`, off the event loop, so a replaced instance is reached on
+the next rebuild. `_recover` still validates under its Phase 1 lock (against the
+dead forward's dialled id), looks the target up after releasing it, and then
+re-reads its stamp under the lock and stands down if a connect or disconnect
+landed during the lookup, as it does after a chained mint; it retries an
+unresolved lookup on the usual backoff within the attempt cap, because zero or
+two `InService` instances is what a rolling replacement looks like for a moment,
+and any other invalid target still stands it down. Tier 1 reuses the held
+token, which only the instance the old forward reached issued: when the lookup
+names another instance the token is dropped, and a resolver crew holding none
+goes straight to tier 2, which mints from the new instance before it rebuilds
+and stores that credential only once the rebuild has installed the forward to
+it. The stamp moves as a failed tier-1 install would move it, so tier 2 binds to
+the generation it expects and a mint still in flight for the old forward is
+refused. One that lands first -- a refresh started after that move still mints
+over the old forward -- is dropped by the install itself: `_rebuild` drops the
+held token whenever the forward it installs dials another `ssm_target` than the
+one it replaces. A failed tier-2 mint retries the same way next attempt, so the
+crew is never left connected without a credential from the instance it reaches,
+nor with one from another. The mints that serve an
+already open forward -- the token refresh, the lent hop and the parent-hop
+re-mint -- call `_with_dialled_target` instead, which takes the id from the live
+tunnel's `TunnelStatus.ssm_target`: a fresh lookup could name a replacement the
+open port does not reach, and the credential has to come from the machine it
+leads to. The remote verbs do the same while the crew is connected, so restart
+and update act on, and read back, the machine its pane shows; with no connected
+forward they look the target up. Diagnose always makes its own lookup: it
+answers what a connect would reach now. A failed spawn of `aws`
+during a lookup is raised as `SsmTargetUnresolvedError` too, so no caller dials
+anything. `connect` reports it as "could not look up the SSM target: …".
+
+A resolver row is never a launched or correlated cloud crew: `is_launched_instance`,
+`cloud destroy`'s `unregister_instance`, `register_instance`'s re-launch match,
+the Stop/Start row match, `handlers_crew_turn._record_for` and the panel's
+cloud-tag lookup (which alone offers the Stop/Start/Delete buttons that call
+`coordsOf`) all compare the row's literal `ssm_target` with an instance or node
+id, which an `asg:`/`param:` value never equals. `hasDashboardPane` reads only
+the method, so a resolver row keeps its pane.
 
 `ssm_run_as` is the **remote POSIX user** SSM commands run as: `cloud.ssm.run_command`
 wraps every remote command in `sudo -u <user> -i bash`, and its default
@@ -2286,6 +2367,12 @@ window is a Session Manager preference, not a value this code knows.
 `diagnose_instance_ssm` mirrors the SSH ladder with an SSM first rung, so an
 offline agent is not reported as a dead remote gateway:
 
+0. for a resolver target only: does the lookup name one id? → no ⇒
+   `ssm_target_unresolved`, with the lookup's own message as the reason (a
+   sandbox refusal of the `aws` spawn is `unknown`, as in rung 1); the later
+   rungs probe the id it names, and a `ssm_target_missing` for that id says to
+   wait for its agent to register or to update the parameter, never to type a
+   fixed id over the resolver
 1. managed node online? (`describe-instance-information`) → no ⇒ `ssm_unreachable`,
    or `ssm_target_missing` when the read succeeded and SSM lists no node with that id
 2. remote dashboard up? (`send-command` + curl on the remote loopback) → no ⇒ `remote_down`,
@@ -2336,7 +2423,8 @@ profile, no agent, no route to SSM) and a wrong account or region also list no n
 the reason names all three causes. A terminated instance SSM still lists, a read that prints
 nothing, and a read that errors all read as `ssm_unreachable`, so if SSM answers an
 unknown id with an error rather than an empty list the result is the less specific code,
-never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement.
+never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement; a
+row that should follow one uses a resolver target instead (above).
 
 A `SandboxUnavailableError` from rung 1's `aws` spawn is not an SSM answer: the hub's
 own sandbox refused to start the CLI, so no call reached AWS. The ladder stops there
@@ -4455,7 +4543,7 @@ the `exclude_incognito` arm reports as retryable) is `503 crew_peer_busy`, its
 naming the status and nothing from the peer's body, and a reply over the read cap
 is `502 crew_reply_too_large`; `crew_malformed_reply` is reserved for a 2xx that is
 not JSON. Every call emits a SEL audit event
-(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+(tool name `instances_` plus `crew_search`, `crew_list` or `crew_read`) carrying the resolved instance id
 **and the originating MCP caller's session key**, so an audit reviewer can see
 which agent session read which remote crew's history.
 

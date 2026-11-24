@@ -160,7 +160,7 @@ _BASE_IMPORTS = frozenset("""
     spec_permissions_supported stdlib_shadow stt subprocess sweep_agents_dir sys
     tempfile textwrap TYPE_CHECKING unhealthy_jobs_from_disk unsandboxed_exec_declared
     urllib user_json UTF8_TEXT verify_vendored_libs warm_backend
-    withheld_by_confirm_tools without_mcp_refs
+    withheld_by_auto_deny_tools withheld_by_confirm_tools without_mcp_refs
     """.split())
 
 #: The one name the facade's composition glue imports.

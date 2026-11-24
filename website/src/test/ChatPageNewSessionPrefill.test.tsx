@@ -1145,6 +1145,50 @@ describe('Signed channel link', () => {
     slackLink.mockResolvedValue({ ok: true })
   })
 
+  it('reconnects a context-only link without sending or overwriting the target draft', async () => {
+    const draft = 'Keep my unsent notes'
+    saveDrafts({ 'chat-old': draft })
+    openLink({ session_key: 'dashboard:chat-old' })
+    const store = await renderAt('/chat', undefined, 'chat-other')
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    await waitFor(() => expect(composer().value).toBe(draft))
+    expect(chatSlotDetail).toHaveBeenCalledWith('chat-old', 100)
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(slackLink).not.toHaveBeenCalled()
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it.each([undefined, '1700.6'])('creates and links a context-only fresh thread without sending (msg_ts=%s)', async (msgTs) => {
+    openLink({ channel: 'C123', thread_ts: '1700.5', ...(msgTs ? { msg_ts: msgTs } : {}) })
+    const store = await renderAt('/chat', undefined, 'chat-old')
+
+    await waitFor(() => expect(slackLink).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    expect(slackLink.mock.calls[0]).toEqual([NEW_SLOT, 'C123', '1700.5', ...(msgTs ? [msgTs] : [])])
+    expect(composer().value).toBe('')
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it.each([{}, { channel: 'C123' }, { thread_ts: '1700.5' }])('ignores a token without a prompt or usable Slack context (%j)', async (claims) => {
+    openLink({ sub: 'U1', ...claims })
+    const store = await renderAt('/chat?sid=chat-old')
+
+    // Normal URL selection finishing proves that the token guard was released.
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    expect(createChatSlot).not.toHaveBeenCalled()
+    expect(slackLink).not.toHaveBeenCalled()
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(composer().value).toBe('')
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
   it('sends the link prompt tagged as already in the channel thread, and nothing after it', async () => {
     openLink({ prompt: PROMPT, channel: 'C123', thread_ts: '1700.5' })
     await renderAt('/chat')

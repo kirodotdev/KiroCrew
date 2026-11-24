@@ -212,7 +212,8 @@ ACCEPTANCE_SHAPES: str = (
     'One of: {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}; {"kind": '
     '"pr_merged", "pr": 123, "repo": "owner/name"}; {"kind": "file", "path": '
     '"/absolute/path"} (add "exists": false for a path that must be gone); {"kind": '
-    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}.'
+    '"human_approval"}; {"kind": "edition_check", "check": "<name>", "ref": "<id>"}; '
+    '{"kind": "git_commit", "repo": "/abs/repo", "branch": "<name>", "base": "<sha>"}.'
 )
 
 

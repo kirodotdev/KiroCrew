@@ -345,7 +345,22 @@ async def api_ask_question(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": "duplicate_question_key"}, status=400)
     if answers is None:
         return web.json_response({"status": "timeout", "ask_id": ask_id})
+    _answer_reaches_turn(state, session_key)
     return web.json_response({"status": "answered", "ask_id": ask_id, "answers": answers})
+
+
+def _answer_reaches_turn(state: Any, session_key: str) -> None:
+    """Someone answered the turn's question card: those words now reach the turn.
+
+    The answer goes back to the model as tool output, so a linked turn a shared
+    Slack user opened now carries someone else's words too, and its approval cards
+    go back to the owner alone (``slack.turn_requester``).
+    """
+    from kiro_crew.slack.turn_requester import forget_turn_requester
+
+    slot = (getattr(state, "_slots", None) or {}).get(_slot_key_from_session(session_key))
+    if slot is not None:
+        forget_turn_requester(slot)
 
 
 def pending_question_cards(state: DashboardState, slot_key: str | None = None) -> list[dict]:
@@ -867,6 +882,8 @@ async def api_agent_ask_wait(request: web.Request) -> web.Response:
             {"error": "no such ask for this session", "code": "question_not_found"},
             status=404,
         )
+    if isinstance(outcome, dict) and outcome.get("status") == "answered":
+        _answer_reaches_turn(state, session_key)
     return web.json_response(outcome)
 
 

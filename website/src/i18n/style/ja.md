@@ -171,6 +171,7 @@ copy must not add fragments: one key per sentence.
 | em dash kept where the English has one | `jaStyle.test.ts` |
 | interpolated values quoted with 「」 | `jaStyle.test.ts` |
 | no ideographic space | `jaStyle.test.ts` |
+| no space after `。` | `sentenceJoin.test.ts` |
 | a space between `Kiro CLI` / `{{productName}}` and Japanese | `jaStyle.test.ts` |
 | no space inside a katakana compound | `jaStyle.test.ts` |
 | trailing long-vowel mark kept | `jaStyle.test.ts` |
