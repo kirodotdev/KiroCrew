@@ -474,9 +474,14 @@ def _parse_dt(value: str, params: str) -> datetime | None:
     if raw.endswith("Z"):
         return parsed.replace(tzinfo=timezone.utc)
     zone = _tzid_of(params)
-    if zone is not None:
+    if zone is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    try:
         return parsed.replace(tzinfo=zone).astimezone(timezone.utc)
-    return parsed.replace(tzinfo=timezone.utc)
+    except OverflowError:
+        # A wall time on the first or last day of the calendar has no UTC instant
+        # in a zone with an offset; skip this one value, not the whole feed.
+        return None
 
 
 def _mailto_name(value: str, params: str) -> str:
