@@ -42,14 +42,31 @@ def is_owner_stop(channel: str, event: dict[str, Any], text: str, sender_id: str
     review or off mode can still hold a thread, and Stop only removes work), so
     :func:`decide` sees it. Anyone else's, and any other message, is not exempt.
     """
+    from kiro_crew.slack.code_channels import binding as _binding
     from kiro_crew.slack.code_channels import routing
     from kiro_crew.slack.handler import is_owner
 
+    thread = binding_of(channel, event)
     return (
-        routing.strip_leading_mention(text).strip().lower() == "!stop"
+        thread is not None
+        and routing.strip_leading_mention(text).strip().lower() == "!stop"
         and is_owner(sender_id)
-        and binding_of(channel, event) is not None
+        # Only what :func:`decide` acts on: else it would pass the message on, and a
+        # channel in off mode would be answered.
+        and acts_on(thread, _binding.live_config())
     )
+
+
+def acts_on(binding: Binding, cfg: Any) -> bool:
+    """Whether the thread's Stop is live: its switch is on, or its conductor still runs.
+
+    With the switch off a conductor still running is stopped, as a code channel's Stop
+    does, so turning the switch off never strands a running turn.
+    """
+    from kiro_crew.slack.code_channels import routing
+
+    slot = routing.bound_slot(routing._dashboard_state(), binding)
+    return thread_runtime.room_runtime_on(binding, cfg) or getattr(slot, "running", False) is True
 
 
 async def decide(
@@ -72,10 +89,7 @@ async def decide(
 
     if from_trusted_bot or routing.strip_leading_mention(text).strip().lower() != "!stop":
         return routing.PASS
-    slot = routing.bound_slot(routing._dashboard_state(), binding)
-    if not (
-        thread_runtime.room_runtime_on(binding, cfg) or getattr(slot, "running", False) is True
-    ):
+    if not acts_on(binding, cfg):
         return routing.PASS
     channel = binding.channel_id
     resources = f"channel={channel} thread={binding.anchor_ts}"

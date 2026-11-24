@@ -49,7 +49,7 @@ def thread_store(tmp_path):
     set_store(None)
 
 
-async def _route(activation: str, *, user: str, text: str) -> AsyncMock:
+async def _route(activation: str, *, user: str, text: str, switch_on: bool = True) -> AsyncMock:
     orch = _make_orch(channels={CHANNEL: ChannelConfig(activation=activation)})
     gate = AsyncMock(return_value=routing.DROP)
     event = _event(channel=CHANNEL, user=user, text=text, thread_ts=ANCHOR, ts="200.000009")
@@ -57,6 +57,10 @@ async def _route(activation: str, *, user: str, text: str) -> AsyncMock:
         patch("kiro_crew.slack.events.is_allowed_user", return_value=True),
         patch("kiro_crew.slack.events.code_channel_gate", gate),
         patch("kiro_crew.slack.handler.is_owner", lambda u: u == "U_OWNER"),
+        patch(
+            "kiro_crew.slack.code_channels.thread_runtime.thread_conductor_on",
+            lambda _cfg: switch_on,
+        ),
         patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock),
     ):
         await ev._route_message(orch, event, ev.SeenCache())
@@ -77,3 +81,13 @@ async def test_anything_else_is_still_dropped(thread_store, activation: str) -> 
     for user, text in (("U_OWNER", "hello"), ("U_OWNER", "!stop now"), ("U_OTHER", "!stop")):
         gate = await _route(activation, user=user, text=text)
         gate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("activation", [ACTIVATION_OFF, ACTIVATION_REVIEW, ACTIVATION_MENTION])
+async def test_an_idle_conductor_with_the_switch_off_leaves_the_drop_in_place(
+    thread_store, activation: str
+) -> None:
+    """The gate would pass the message on, so the channel's own drop must still apply."""
+    gate = await _route(activation, user="U_OWNER", text="!stop", switch_on=False)
+    gate.assert_not_awaited()
