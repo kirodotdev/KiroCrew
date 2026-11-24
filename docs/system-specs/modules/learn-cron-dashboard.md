@@ -6148,6 +6148,13 @@ process (`may_keep_live_process=True`).
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 
+The dashboard's Edit & Resend press calls `rewind` (`rewindWithRollback` in
+`website/src/lib/rewindCall.ts`). On a refusal it restores the transcript it cut
+and shows the server's reason through the refused-press notice
+(`could_not_regenerate`). The editor has already closed by then, so without the
+notice the press reads as nothing sent. Pinned by `rewindCall.test.ts` and
+`transcriptRowCallbacksStable.test.tsx`.
+
 **`POST /v1/chat/completions` also fails closed**, for a different reason: it has
 no transcript the caller reads. It returns the `kiro_prerequisite_required` 503
 in OpenAI error shape, which names the fix, rather than starting a turn that

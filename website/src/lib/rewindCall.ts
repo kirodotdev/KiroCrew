@@ -7,22 +7,22 @@
 import { api } from '../api/client'
 
 /**
- * Call `/api/chat/slots/{slot}/rewind` and invoke `rollback` if the request
- * rejects. Logs a warning on failure (debug only).
+ * Call `/api/chat/slots/{slot}/rewind` and invoke `rollback` with the error if
+ * the request rejects. Logs a warning on failure too.
  */
 export async function rewindWithRollback(
   slot: string,
   ts: string,
   content: string,
-  rollback: () => void,
+  rollback: (e: unknown) => void,
 ): Promise<void> {
   try {
     await api.rewind(slot, ts, content)
   } catch (e) {
-    // Intentional diagnostic: a rewind failure is silent to the user (the
-    // optimistic edit is rolled back), so surface it in the console.
+    // Intentional diagnostic beside the caller's notice: the console keeps
+    // the stack the notice does not show.
     // eslint-disable-next-line no-console
     console.warn('rewind failed', e)
-    rollback()
+    rollback(e)
   }
 }

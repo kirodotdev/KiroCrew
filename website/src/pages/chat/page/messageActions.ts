@@ -21,6 +21,7 @@ import { revealComposer } from '../composerFocus'
 import { rewindWithRollback } from '../../../lib/rewindCall'
 import { i18nT } from '../../../i18n/t'
 import { speakReply } from '../speakReply'
+import type { RefusedPressAction } from './turnActions'
 
 interface PageSelectionActionsOptions {
   dispatch: AppDispatch
@@ -92,6 +93,7 @@ interface MessageActionsOptions {
   /** The `/embed/chat` frame or the pop-out session window: its own document with no session sidebar (not a companion chat). */
   embedChatFrame: boolean
   setRegenerating: Dispatch<SetStateAction<boolean>>
+  showRefusedPress: (action: RefusedPressAction, e: unknown) => void
 }
 
 /**
@@ -104,7 +106,7 @@ interface MessageActionsOptions {
  */
 export function useMessageActions({
   dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
-  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating,
+  tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, embedChatFrame, setRegenerating, showRefusedPress,
 }: MessageActionsOptions) {
   // Reads `messagesRef`, not `messages`: the array is new on every streamed
   // frame, and this callback feeds the transcript renderers memo, so a
@@ -121,11 +123,14 @@ export function useMessageActions({
     // truncated forward turns can't resurface on resume. Mirrors kiro-cli's
     // native /rewind slash command, but swaps the session under the same
     // slot identity so the UI stays in place (no new tab, no title change).
-    rewindWithRollback(activeSlot, ts, newContent, () => {
+    // A refusal (a signed-out CLI, a turn already running) is shown above the
+    // composer: the editor has closed, so a silent rollback reads as nothing sent.
+    rewindWithRollback(activeSlot, ts, newContent, (e) => {
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
+      showRefusedPress('regenerate', e)
     })
-  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating])
+  }, [activeSlot, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, setRegenerating, showRefusedPress])
 
   // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
   // Edit & resend editor. The chord itself is claimed by the composer
