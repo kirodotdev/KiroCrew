@@ -12,6 +12,10 @@ def _pending(gateway: Any) -> dict[str, str]:
     return {"request_id": gateway.pending_grant_request()}
 
 
+def _answered(gateway: Any) -> dict[str, str]:
+    return {"request_id": gateway.answered_grant_request()}
+
+
 def _is(status: str) -> Callable[[Any], None]:
     def check(body: Any) -> None:
         assert body["status"] == status, body
@@ -43,6 +47,23 @@ CASES = [
         "invalid_request",
         json={"decision": "maybe"},
         path=_pending,
+    ),
+    Case(
+        # The app asked for responses:write and conversations:read.
+        "an approval that names a scope the app did not ask for is refused",
+        OWNER,
+        400,
+        "invalid_scope",
+        json={"decision": "approve", "scopes": ["bots:chat"]},
+        path=_pending,
+    ),
+    Case(
+        "a grant request already answered is refused",
+        OWNER,
+        409,
+        "grant_request_already_resolved",
+        json={"decision": "approve"},
+        path=_answered,
     ),
     Case(
         "a grant request nobody made is not found",
