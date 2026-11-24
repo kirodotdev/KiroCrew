@@ -336,7 +336,9 @@ def _start_install_job(
     is still going down, and a second Redownload meanwhile still gets the usual 409.
 
     A job that installs the harness holds *supervisor*'s (default: this home's)
-    browser starts for as long as it runs: the install empties the venv in place.
+    browser starts while it rebuilds the venv in place: from the ``creating_venv``
+    stage until the first stage past the harness step. An install that leaves the
+    venv as it is, and the Chromium download after it, hold nothing.
     """
     loop = asyncio.get_running_loop()
     job = InstallJob.start(components)
@@ -344,9 +346,15 @@ def _start_install_job(
     holding: HarnessSupervisor | None = None
     if harness_install.COMPONENT_HARNESS in components:
         holding = supervisor if supervisor is not None else get_supervisor(config_dir())
-        holding.installing_harness = True
 
     def _on_stage(stage: str, _detail: str) -> None:
+        # Set here, on the install's thread and before the step runs, so the hold is
+        # in place before ``venv --clear`` empties the directory.
+        if holding is not None:
+            if stage == harness_install.STAGE_CREATING_VENV:
+                holding.installing_harness = True
+            elif stage != harness_install.STAGE_INSTALLING_HARNESS:
+                holding.installing_harness = False
         loop.call_soon_threadsafe(job.apply_stage, job.id, stage)
 
     async def _run() -> None:

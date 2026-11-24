@@ -321,20 +321,45 @@ async def test_redownload_keeps_kiros_own_chromium_down_while_it_runs(
     assert sup.replacing_chromium is False, "the gate opens again when the job ends"
 
 
+_PREPARING = harness_install.STAGE_PREPARING
+_VENV = harness_install.STAGE_CREATING_VENV
+_HARNESS = harness_install.STAGE_INSTALLING_HARNESS
+_DOWNLOAD = harness_install.chromium.STAGE_DOWNLOADING
+_FINISHING = harness_install.STAGE_FINISHING
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("components", "held"),
-    [(["harness"], True), (["harness", "chromium"], True), (["chromium"], False)],
+    ("components", "stages", "held"),
+    [
+        # A rebuild clears the venv: held from creating_venv through the harness
+        # step, released before the Chromium download.
+        (
+            ["harness", "chromium"],
+            [_PREPARING, _VENV, _HARNESS, _DOWNLOAD, _FINISHING],
+            [False, True, True, False, False],
+        ),
+        (["harness"], [_PREPARING, _VENV, _HARNESS, _FINISHING], [False, True, True, False]),
+        # A current harness is left as it is: nothing is held, the download included.
+        (
+            ["harness", "chromium"],
+            [_PREPARING, _HARNESS, _DOWNLOAD, _FINISHING],
+            [False, False, False, False],
+        ),
+        (["chromium"], [_PREPARING, _VENV, _DOWNLOAD], [False, False, False]),
+    ],
 )
-async def test_a_harness_install_holds_browser_starts_until_it_ends(
-    sel, sup, monkeypatch, components: list[str], held: bool
+async def test_a_harness_install_holds_browser_starts_only_while_it_rebuilds_the_venv(
+    sel, sup, monkeypatch, components: list[str], stages: list[str], held: list[bool]
 ) -> None:
-    """The harness install empties the venv in place, so no start may spawn its
-    interpreter while the job runs; a Chromium-only install leaves the venv alone."""
+    """The rebuild empties the venv in place, so no start may spawn its interpreter
+    then; outside that window, starts that worked before keep working."""
     during: list[bool] = []
 
     async def fake_install(home, progress, *, components, refresh=False):
-        during.append(sup.installing_harness)
+        for stage in stages:
+            progress(stage, "")
+            during.append(sup.installing_harness)
         return harness_install.install_state(home)
 
     monkeypatch.setattr(harness_install, "install", fake_install)
@@ -342,7 +367,7 @@ async def test_a_harness_install_holds_browser_starts_until_it_ends(
     resp = await routes.api_browser_harness_install(req)
     assert resp.status == 202
     await req.app["state"]._browser_harness_install_task
-    assert during == [held]
+    assert during == held
     assert sup.installing_harness is False, "the gate opens again when the job ends"
 
 
@@ -351,6 +376,7 @@ async def test_a_failed_harness_install_opens_the_start_gate_again(sel, sup, mon
     during: list[object] = []
 
     async def failing_install(home, progress, *, components, refresh=False):
+        progress(_VENV, "")
         during.append(getattr(sup, "installing_harness", None))
         raise harness_install.InstallError(harness_install.STAGE_CREATING_VENV, "boom")
 
