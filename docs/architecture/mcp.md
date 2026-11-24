@@ -3710,7 +3710,9 @@ change card, and the server is written to the template's additions record
   folds an alias onto its target on every read and write. A session with no
   template is refused `409 no_template`, and a Bot's own thread, its worker
   sessions and any Bot-owned template are refused `403 crewmate_caller`,
-  which points at `request_capabilities`.
+  which points at `request_capabilities`. On Codex, the Bot's own chat has
+  that tool only while `kirocrew-core` is shared, so its refusal also names
+  that row's Share switch on the MCP Servers page.
 - **The default agent and the worker get a mount-only card.** Both normally
   take their servers from the MCP page
   (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
