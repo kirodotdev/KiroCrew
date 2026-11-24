@@ -532,7 +532,9 @@ Mechanics:
   ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
-  the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
+  the config GET carries `locked_by_policy: true` (plus `locked_by_edition: true`
+  when no policy term can turn the key on, `enable_state.locked_by_edition`, so the
+  page names the edition instead of a policy), and a PUT with `enabled: true`
   answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
