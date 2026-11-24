@@ -8444,6 +8444,18 @@ or an unreadable file is an empty table, which is today's behaviour. A
 first-adoption pin's `version` must equal the wheel built-in's (D12, so a
 one-release downgrade is data-safe).
 
+**A pin keeps its bundle styled.** A pinned tree's UI bundle ships no stylesheet:
+its Tailwind utilities resolve against the dashboard's sheet, which compiles only
+what `website/src/` uses. A PR that adds or changes a row therefore also runs
+`npm run gen:adopted-app-classes` in `website/` and commits the regenerated
+`website/src/tailwind-adopted-app-classes.css`, the append-only list of every
+utility a pinned tree's `ui/src/` or wheel copy uses; `adoptedAppClassSafelist.test.ts`
+fails while the list's recorded commits differ from the table. That list, not the
+wheel copy, is what keeps an adopted app styled once its copy under
+`website/src/apps/<name>/` is deleted
+([theming-contract](../../../website/docs/theming-contract.md), *Adopted apps'
+utilities*).
+
 **The wheel copy stops being the place to fix a pinned app.** An adopted host runs
 the pinned repository tree, so a change made only to the wheel copy
 (`apps/builtins/<name with _>/` or `website/src/apps/<name>/`) never reaches it. PR
