@@ -838,7 +838,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // isolated (no error row, no text back in the box: the card is where the
   // result shows) and `onOutcome` hears what it came to. A `false` with no
   // undelivered call (a send that stopped before the POST) did not go out.
-  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files: readonly string[] = []): ComposeSendResult | null => {
+  // A `queue` send (the MCP sign-in notice's button) never steers: it queues
+  // behind a running turn as its own message.
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files: readonly string[] = [], queue = false): ComposeSendResult | null => {
     // A split view draws a composer per cell (ChatPane takes its own cards).
     if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
     const stopState = currentSlot?.stop_state
@@ -850,7 +852,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // The composer's own busy reading (a turn, or only sub-agents running), so
     // the card steers, queues or starts a turn exactly where its Send would.
-    const flag = busySteerFlag({ slotKey: slot, busy: composerBusy, turnRunning: !!slotRunning, stopState, jevAutoConsented, busyMode: currentCrewRoot && currentSlot ? 'steer-only' : undefined })
+    const flag = queue ? false : busySteerFlag({ slotKey: slot, busy: composerBusy, turnRunning: !!slotRunning, stopState, jevAutoConsented, busyMode: currentCrewRoot && currentSlot ? 'steer-only' : undefined })
     // The refusal's framed reason too: an isolated send shows it nowhere else.
     let undelivered: 'refused' | 'indeterminate' | undefined
     let why: string | undefined

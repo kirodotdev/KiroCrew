@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { i18next } from '../../i18n/all'
@@ -19,13 +19,29 @@ const SEVERAL: ChatMessage = {
   meta: { kind: 'mcp_sign_in_needed', servers: ['s0', 's1', 's2', 's3', 's4'], more: 2 },
 }
 
-function draw(m: ChatMessage) {
+function draw(m: ChatMessage, slot?: string) {
   return render(
     <MemoryRouter>
-      <McpSignInNeededNotice content={m.content} meta={m.meta} />
+      <McpSignInNeededNotice content={m.content} meta={m.meta} slot={slot} />
     </MemoryRouter>,
   )
 }
+
+type Detail = { text: string; slot: string; queue?: boolean; result: string | null; onOutcome: (o: string, reason?: string) => void }
+
+/** A page that serves `slot` for compose-send presses, answering each with `result`. */
+function host(result: string | null) {
+  const seen: Detail[] = []
+  const handler = (e: Event) => {
+    const d = (e as CustomEvent<Detail>).detail
+    seen.push(d)
+    d.result = result
+  }
+  window.addEventListener('mc:compose-send', handler)
+  return { seen, stop: () => window.removeEventListener('mc:compose-send', handler) }
+}
+
+const buttons = () => screen.queryAllByTestId('mcp-sign-in-needed-send') as HTMLButtonElement[]
 
 function noticeText(): string {
   return screen.getByTestId('notice-card-text').textContent ?? ''
@@ -89,6 +105,81 @@ describe('McpSignInNeededNotice', () => {
     expect(noticeText()).toContain('notes (an MCP server you added) needs you to sign in')
   })
 
+  it('offers no button where no chat is named', () => {
+    draw(ROW)
+    expect(buttons()).toHaveLength(0)
+  })
+
+  it('sends "Sign in to <name>" for the chat as a queue-only message, once per press', async () => {
+    const h = host('pending')
+    try {
+      draw(ROW, 'chat-1')
+      expect(buttons().map(b => b.textContent)).toEqual(['Sign in to notes'])
+      fireEvent.click(buttons()[0])
+      expect(h.seen).toHaveLength(1)
+      expect(h.seen[0]).toMatchObject({ text: 'Sign in to notes', slot: 'chat-1', queue: true })
+      // Pending: the button holds still, so a second press sends nothing.
+      expect(buttons()[0].disabled).toBe(true)
+      fireEvent.click(buttons()[0])
+      expect(h.seen).toHaveLength(1)
+      act(() => { h.seen[0].onOutcome('sent') })
+      expect(buttons()[0].disabled).toBe(true)
+      expect(screen.queryByTestId('mcp-sign-in-needed-failed')).toBeNull()
+    } finally {
+      h.stop()
+    }
+  })
+
+  it('gives each named server its own button in the reader language, with the name kept as typed', async () => {
+    await i18next.changeLanguage('de')
+    const h = host('pending')
+    try {
+      draw({ ...SEVERAL, meta: { ...SEVERAL.meta, servers: ['s0', '{{x}}'] } }, 'chat-1')
+      expect(buttons().map(b => b.textContent)).toEqual(['Bei s0 anmelden', 'Bei {{x}} anmelden'])
+      fireEvent.click(buttons()[1])
+      expect(h.seen.map(d => d.text)).toEqual(['Bei {{x}} anmelden'])
+      expect(buttons().map(b => b.disabled)).toEqual([false, true])
+    } finally {
+      h.stop()
+    }
+  })
+
+  it('says a refused send did not go out and offers the button again', () => {
+    const h = host('pending')
+    try {
+      draw(ROW, 'chat-1')
+      fireEvent.click(buttons()[0])
+      act(() => { h.seen[0].onOutcome('refused', 'busy') })
+      expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toBe('Send failed: busy')
+      expect(buttons()[0].disabled).toBe(false)
+    } finally {
+      h.stop()
+    }
+  })
+
+  it('holds the button once the text went into the chat box', () => {
+    const staged = host('staged')
+    try {
+      draw(ROW, 'chat-1')
+      fireEvent.click(buttons()[0])
+      expect(buttons()[0].disabled).toBe(true)
+    } finally {
+      staged.stop()
+    }
+  })
+
+  it('leaves the button as it was when no page serves the chat', () => {
+    const none = host(null)
+    try {
+      draw(ROW, 'crew:x')
+      fireEvent.click(buttons()[0])
+      expect(none.seen).toHaveLength(1)
+      expect(buttons()[0].disabled).toBe(false)
+    } finally {
+      none.stop()
+    }
+  })
+
   it('claims only a notice row of its kind', () => {
     expect(isMcpSignInNeededNotice(ROW)).toBe(true)
     expect(isMcpSignInNeededNotice({ ...ROW, meta: { kind: 'crew_paused_notice' } })).toBe(false)
@@ -100,5 +191,19 @@ describe('McpSignInNeededNotice', () => {
     const renderers = createTranscriptRenderers({})
     const claimed = renderers.find(r => r.roles.includes('notice') && (r.match ? r.match(ROW) : true))
     expect(claimed?.id).toBe('mcp_sign_in_needed')
+  })
+
+  it('hands the row the chat the renderer set serves, so its button names that chat', () => {
+    const renderers = createTranscriptRenderers({ slot: 'chat-7' })
+    const entry = renderers.find(r => r.id === 'mcp_sign_in_needed')
+    const ctx = { index: 0, messages: [ROW], running: false, key: 'k', row: (node: React.ReactNode) => node } as unknown as Parameters<NonNullable<typeof entry>['render']>[1]
+    const h = host('pending')
+    try {
+      render(<MemoryRouter>{entry?.render(ROW, ctx)}</MemoryRouter>)
+      fireEvent.click(buttons()[0])
+      expect(h.seen.map(d => d.slot)).toEqual(['chat-7'])
+    } finally {
+      h.stop()
+    }
   })
 })

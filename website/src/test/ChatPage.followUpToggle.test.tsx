@@ -394,8 +394,8 @@ describe('ChatPage command-shaped follow-ups under quick send', () => {
 })
 
 /** A discussion card's Start / No thanks, as GrillCard dispatches it. */
-function cardSend(text: string, slot: string, files?: string[]) {
-  const detail: { text: string; slot: string; files?: string[]; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+function cardSend(text: string, slot: string, files?: string[], queue?: boolean) {
+  const detail: { text: string; slot: string; files?: string[]; queue?: boolean; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), ...(queue ? { queue } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
   act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
   return detail.result
 }
@@ -488,6 +488,16 @@ describe('ChatPage discussion-card sends (a deliberate press: sent whatever Quic
     expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
     await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
     await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][5]).toBeTruthy()
+  })
+
+  it('a queue send (the MCP sign-in notice button) never steers a running turn', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    expect(cardSend('Sign in to notes', 'chat-1', undefined, true)).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['Sign in to notes', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][5]).toBeFalsy()
   })
 
   it('reads busy as the composer does: sub-agents still running count', async () => {

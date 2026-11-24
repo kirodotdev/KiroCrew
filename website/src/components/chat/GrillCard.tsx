@@ -51,6 +51,9 @@ export interface ComposeSendDetail {
   /** Paths of files the card uploaded itself, sent with `text` (or, where
    *  nothing can go out, put in the chat box beside it). */
   files?: string[]
+  /** Never steer: while a turn runs the text queues behind it, whatever the
+   *  composer's busy mode says (the MCP sign-in notice's button). */
+  queue?: boolean
   result: ComposeSendResult | null
   /** `reason`: why a `refused` send was refused, already framed for the
    *  reader, when the host knows (the main chat's isolated send shows it

@@ -503,7 +503,7 @@ export function createTranscriptRenderers(
       id: 'mcp_sign_in_needed',
       roles: ['notice'],
       match: isMcpSignInNeededNotice,
-      render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} />),
+      render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} slot={o.slot} />),
     },
     {
       // The main chat's one "You paused the crew" row (conductor mode Pause all).

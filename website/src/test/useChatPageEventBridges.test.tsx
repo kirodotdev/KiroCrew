@@ -227,8 +227,16 @@ describe('redaction-card bridges', () => {
     const noSlot = { text: '不用讨论了', result: null, onOutcome }
     const noCallback = { text: '不用讨论了', slot: 'slot-a', result: null }
     const taken = { text: '不用讨论了', slot: 'slot-a', result: 'pending', onOutcome }
-    for (const detail of [mine, other, empty, noSlot, noCallback, taken]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
-    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a', onOutcome, []], ['不用讨论了', 'slot-b', onOutcome, []]])
+    // Only a literal `true` asks for a queue-only send (the MCP sign-in notice button).
+    const queued = { text: 'Sign in to notes', slot: 'slot-a', queue: true, result: null, onOutcome }
+    const truthy = { text: 'Sign in to notes', slot: 'slot-a', queue: 'yes', result: null, onOutcome }
+    for (const detail of [mine, other, empty, noSlot, noCallback, taken, queued, truthy]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+    expect(composeSend.mock.calls).toEqual([
+      ['不用讨论了', 'slot-a', onOutcome, [], false],
+      ['不用讨论了', 'slot-b', onOutcome, [], false],
+      ['Sign in to notes', 'slot-a', onOutcome, [], true],
+      ['Sign in to notes', 'slot-a', onOutcome, [], false],
+    ])
     expect([mine.result, other.result, empty.result, noSlot.result, noCallback.result, taken.result]).toEqual(['staged', null, null, null, null, 'pending'])
   })
 
