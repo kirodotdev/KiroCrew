@@ -179,6 +179,18 @@ class TelegramConfig:
             tags=["telegram"],
         ),
     )
+    owner_user_id: int = field(
+        default=0,
+        metadata=_meta(
+            "Owner User ID",
+            "Your own numeric Telegram user ID, the way KIROCREW_OWNER_ID names "
+            "you on Slack. A /kirocrew dashboard link you request in a DM then "
+            "opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. The ID must also be in "
+            "Allowed User IDs. 0 = no owner here.",
+            tags=["telegram"],
+        ),
+    )
     soft_threshold_pct: int = field(
         default=80,
         metadata=_meta(

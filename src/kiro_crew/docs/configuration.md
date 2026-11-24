@@ -1231,6 +1231,7 @@ See [Telegram](telegram-integration.md).
 |-----|-------------|---------|
 | `telegram.enabled` | Enable the Telegram Bot API channel (long-polling). Requires TELEGRAM_BOT_TOKEN (env/.env) or telegram.bot_token. | false |
 | `telegram.allowed_user_ids` | Numeric Telegram user IDs permitted to DM the bot. Empty = deny all (fail closed): a Telegram bot is globally reachable by @username. | empty |
+| `telegram.owner_user_id` | Your own numeric Telegram user ID, the way `KIROCREW_OWNER_ID` names you on Slack. A `/kirocrew dashboard` link you request in a DM then opens your own dashboard session, chat included; every other allow-listed user's link stays theirs. The ID must also be in `allowed_user_ids`. `0` = no owner here. | 0 |
 | `telegram.allowed_forum_chat_ids` | Numeric supergroup chat_ids permitted to run forum-topic sessions. Empty = deny all groups (fail closed). | empty |
 | `telegram.soft_threshold_pct` | Prompt the user to /compact or /new when context passes this percentage. | 80 |
 | `telegram.show_thinking` | Post the model's reasoning after each answer as a collapsed, expandable quote. Off by default: Telegram's rate limit is per chat and shared with the streaming edits the answer already spends, so reasoning costs an extra message per turn. | false |
@@ -1265,6 +1266,7 @@ See [Webex](webex-integration.md).
 |-----|-------------|---------|
 | `webex.enabled` | Enable the Webex Messaging channel (device WebSocket, no public URL needed). Requires WEBEX_BOT_TOKEN (env/.env) or webex.bot_token. | false |
 | `webex.allowed_emails` | Webex account emails permitted to DM the bot. Empty = deny all (fail closed): anyone in the org can message a Webex bot. | empty |
+| `webex.owner_email` | Your own Webex account email, the way `KIROCREW_OWNER_ID` names you on Slack. A `/kirocrew dashboard` link you request in a direct message then opens your own dashboard session, chat included; every other allow-listed user's link stays theirs. The email must also be in `allowed_emails`. Empty = no owner here. | empty |
 | `webex.allowed_room_ids` | Webex space IDs the bot may answer in when group spaces are enabled. Empty = deny all (fail closed), so turning the switch on alone grants nothing; the sender must ALSO be on the email allow-list. | empty |
 | `webex.reply_in_thread` | Reply under the message's own thread when it has one, keeping a space readable. Webex threads are flat, so a reply always attaches to the thread root. | true |
 | `webex.soft_threshold_pct` | When a DM's context passes this, prompt the user to /compact or /new instead of auto-compacting. | 80 |
@@ -1280,6 +1282,7 @@ See [Microsoft Teams](teams-integration.md).
 | `teams.app_id` | Microsoft App (Client) ID of the Azure Bot registration. Prefer the MICROSOFT_APP_ID credential (env/.env) over storing it here. | empty |
 | `teams.app_password` | Azure Bot client secret. Set ONLY via the MICROSOFT_APP_PASSWORD credential (env/.env); it is deliberately NOT read from config.json so the agent-readable config never holds the secret. | empty |
 | `teams.tenant_id` | Azure AD tenant id for a single-tenant bot. Leave empty for a multi-tenant bot (uses the botframework.com token authority). | empty |
+| `teams.owner_id` | Your own Teams identity, your UPN/email or your AAD object id, the way `KIROCREW_OWNER_ID` names you on Slack. A `/dashboard` link you request then opens your own dashboard session, chat included; every other allow-listed user's link stays theirs. Empty = no owner here. | empty |
 | `teams.soft_threshold_pct` | When a DM's context passes this, prompt the user to /compact or /new instead of auto-compacting. | 80 |
 | `teams.hard_threshold_pct` | Force a compaction when context reaches this, even without a user decision, so the window never overflows. | 95 |
 | `teams.session_folder` | Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it. | empty |

@@ -3362,7 +3362,9 @@ is owner-gated by default:
 
 | Caller | Outcome |
 |---|---|
-| no app claim (the dashboard user, an internal-secret call with no derived app) | passes; the handler's own owner and identity checks apply |
+| a dashboard session (present, empty app claim) that is the owner or an admitted Shared Crew teammate | passes; the handler's own owner and identity checks apply |
+| any other dashboard session (a messaging-allowlist link) | 403 `owner_only` (`require_owner_for_dashboard_caller`); `POST /api/chat`, which names its slot in the body, asks the same gate |
+| no app claim (an internal-secret call with no derived app) | passes; the handler's own owner and identity checks apply |
 | app that owns the slot (`slot._app == request["app"]`) while the slot still runs on its own session and writes its own transcript | passes. The slot's own session is `dashboard:<key>`, or, for a task-runner result tab `task-review-<token>`, the `taskrunner:<task_id>:chat:<token>` session minted for that tab (`own_session_key`) |
 | app that owns the slot, but the slot is linked to another session or writes another transcript | 404 `slot_not_found`, plus an SEL `app_isolation` denial naming the route |
 | any other app, including on a slot with no app scope | 404 `slot_not_found`, plus an SEL `app_isolation` denial naming the route (`slot_route <METHOD> <template>`) |

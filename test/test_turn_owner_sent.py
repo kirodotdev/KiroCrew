@@ -29,6 +29,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from teammate_caller import enable_teammates, publish_relay_teammate, publish_teammate
 
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
@@ -36,6 +37,9 @@ from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
 from kiro_crew.stats import Stats
 
 NON_OWNER = "telegram:4242"
+# An admitted Shared Crew teammate passes the owner gate, so its sends carry the mark.
+TEAMMATE = "teammate"
+RELAY_TEAMMATE_KIND = "relay-teammate"
 
 
 def _busy(slot):
@@ -57,8 +61,13 @@ def _as(subject: str):
 
     @web.middleware
     async def _mw(request: web.Request, handler):
-        request["app"] = ""
-        request["user"] = subject
+        if subject == TEAMMATE:
+            publish_teammate(request)
+        elif subject == RELAY_TEAMMATE_KIND:
+            publish_relay_teammate(request)
+        else:
+            request["app"] = ""
+            request["user"] = subject
         return await handler(request)
 
     return _mw
@@ -467,7 +476,9 @@ def test_editing_a_queued_entry_gives_it_the_editors_mark(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_an_idle_send_passes_the_mark_to_its_dispatch(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -488,7 +499,9 @@ async def test_an_idle_send_passes_the_mark_to_its_dispatch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_a_send_into_a_busy_slot_marks_its_queue_entry(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -506,7 +519,9 @@ async def test_a_send_into_a_busy_slot_marks_its_queue_entry(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_a_send_held_behind_sub_agents_marks_its_queue_entry(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -536,7 +551,9 @@ async def test_a_send_held_behind_sub_agents_marks_its_queue_entry(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_a_steer_reports_its_senders_mark_to_the_seam(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -575,7 +592,9 @@ def _conversation(state, key: str = "s1"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_a_regenerate_passes_the_mark_to_its_dispatch(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -598,7 +617,9 @@ async def test_a_regenerate_passes_the_mark_to_its_dispatch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("subject", "expected"), [(None, True), (NON_OWNER, False)])
+@pytest.mark.parametrize(
+    ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
+)
 async def test_a_rewind_passes_the_mark_to_its_dispatch(
     tmp_path, monkeypatch, subject: str | None, expected: bool
 ) -> None:
@@ -659,3 +680,28 @@ async def test_a_hard_kill_pops_the_owner_map_with_the_other_steer_maps(
     assert slot._pending_steers == []
     assert slot._steer_owner_origin == {}, "popped in lockstep with the other maps"
     assert slot._steer_user_origin == {} and slot._steer_channel_origin == {}
+
+
+@pytest.fixture(autouse=True)
+def _teammates_admitted(_floor_monkeypatch):
+    enable_teammates(_floor_monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_send_from_an_allow_listed_channel_user_is_refused_before_any_mark(
+    tmp_path, monkeypatch
+) -> None:
+    """A dashboard session for a channel user who is neither the owner nor a
+    teammate never reaches dispatch, so it neither runs a turn nor queues one."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    ran = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", ran)
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("s1"))
+
+    async with TestClient(TestServer(_app(state, NON_OWNER))) as client:
+        resp = await client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
+        assert resp.status == 403
+        assert (await resp.json())["code"] == "owner_only"
+    ran.assert_not_called()
+    assert not slot._queue
