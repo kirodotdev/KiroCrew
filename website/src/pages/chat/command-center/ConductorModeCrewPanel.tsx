@@ -20,6 +20,7 @@ import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
+import TruncatedText from '../../../components/TruncatedText'
 import { isNotFoundError } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
 import { closeActivityPanel, pendingQuestionFor } from '../../../store/chatSlice'
@@ -1078,7 +1079,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
               : i18nT(stuck || quiet ? 'components.crewMode.conductor_mode_needs_you_none_stuck' : 'components.crewMode.conductor_mode_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="conductor-mode-main-question">
-                <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>
+                <TruncatedText full={pendingQuestion.questions[0].question} className="flex-1 min-w-0 text-[13px] text-text" />
                 <button type="button" onClick={answerInChat} data-testid="conductor-mode-answer-in-chat"
                   className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
                   {i18nT('components.crewMode.conductor_mode_answer_in_chat')}<ArrowDown size={12} aria-hidden="true" />

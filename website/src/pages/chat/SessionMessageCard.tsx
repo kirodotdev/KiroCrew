@@ -12,6 +12,7 @@
 import { useState } from 'react'
 
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import TruncatedText from '../../components/TruncatedText'
 import { i18nT } from '../../i18n/t'
 
 export interface SessionParty {
@@ -103,10 +104,11 @@ export function SessionMessageCard({ sender, recipient, body, time = null, onOpe
       <div className="flex items-center gap-2 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
           {/* The title IS this session, so it is plain text, never a self-link;
-              "This session" reads right in its own chat, the title stays on hover. */}
-          <span className="min-w-0 truncate text-[12px] font-medium text-text-strong" title={sender.title} data-testid="session-card-title">
+              "This session" reads right in its own chat, the title shows in the
+              tip on hover and on focus. */}
+          <TruncatedText full={sender.title} className="min-w-0 text-[12px] font-medium text-text-strong" data-testid="session-card-title">
             {i18nT('pages.chat.sessionMessageCard.this_session')}
-          </span>
+          </TruncatedText>
           <span className="text-[11.5px] text-muted" aria-hidden="true">·</span>
           <SentTo recipient={recipient} onOpenSession={onOpenSession} />
         </div>
