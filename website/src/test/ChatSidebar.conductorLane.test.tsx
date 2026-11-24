@@ -753,6 +753,8 @@ describe('chat sidebar — conductor lane', () => {
     expect(summary).toHaveTextContent('Could not load the crew.')
     expect(summary).not.toHaveTextContent('needs you')
     expect(summary.querySelector('[role="alert"]')).not.toBeNull()
+    // The row cuts the sentence short, so hovering it gives the whole of it.
+    expect(within(summary).getByText('Could not load the crew.')).toHaveAttribute('title', 'Could not load the crew.')
     unmount()
     // Never any data: the row still says the read failed, in place of its last message.
     const second = renderSidebar(slots, [], null, {}, [], slots)
