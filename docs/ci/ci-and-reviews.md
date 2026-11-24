@@ -5139,7 +5139,13 @@ status plus one `readiness:` label**.
   required status — and a record whose author the collaborators permission API
   does not confirm as a writer is ignored, exactly as `codex-review.yml`'s
   adjudication ledger ignores it, so the gate never blocks on a record that holds
-  no downgrade power. One consequence to know: readiness has **no
+  no downgrade power. A comment that carries the disposition prefix but a marker
+  the gate cannot parse blocks only while it names the current head (or a head
+  the gate cannot read) and the same writer has posted no later well-formed
+  record for that lane and span. Otherwise the gate prints it under `notices`
+  and does not block, so posting a corrected disposition clears it without
+  deleting anything; its `target=` and `span=` still go through the claim
+  checks, because the ledger still reads it. One consequence to know: readiness has **no
   `issue_comment` trigger**, so correcting the offending comment fires nothing by
   itself. `pr-readiness-sweep.yml` mode 5 covers that — it treats a disposition
   record whose `updated_at` is newer than the verdict as evidence the verdict is
