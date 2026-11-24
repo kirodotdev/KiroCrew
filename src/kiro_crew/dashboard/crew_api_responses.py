@@ -1,15 +1,17 @@
-"""``POST /v1/responses``: run one turn for the machine owner and answer it as JSON.
+"""``POST /v1/responses``: run one turn for the machine owner, answered as JSON or a stream.
 
 The Crew API's Responses subset (``docs/request-for-change/rfc-crew-api.md``, section
 3.3). Each request runs on a session of its own, through the engine entry every turn
-uses (``_run_chat``), and is answered with one ``Response`` object once the turn ends.
+uses (``_run_chat``). It is answered with one ``Response`` object once the turn ends,
+or, with ``stream: true``, as the stream events of ``crew_api_response_stream`` that
+end on that same object.
 
 What this route serves:
 
 * The machine owner alone. A Shared Crew teammate, an app credential and an internal
   caller get ``403 owner_only``.
 * A new conversation per request. ``conversation``, ``previous_response_id``,
-  ``stream``, ``background``, tools and the phase 2 fields answer
+  ``background``, tools and the phase 2 fields answer
   ``422 capability_unavailable``: the endpoint exists and this Kiro Crew cannot do
   them yet.
 * A turn charged to its caller. Fair admission (``shared_crew.turn_gate``) judges the
@@ -27,6 +29,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -34,14 +37,25 @@ from aiohttp import web
 
 from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED
 from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCEL_UNACKED
-from kiro_crew.dashboard.chat_handlers import _retract_failed_newborn, stop_slot_turn
+from kiro_crew.dashboard.chat_handlers import (
+    _retract_failed_newborn,
+    stop_slot_turn,
+    write_sse_or_abort,
+)
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
-from kiro_crew.dashboard.crew_api_errors import contract_error, request_id_for
+from kiro_crew.dashboard.crew_api_errors import (
+    CREW_API_VERSION,
+    REQUEST_ID_HEADER,
+    VERSION_HEADER,
+    contract_error,
+    request_id_for,
+)
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 from kiro_crew.dashboard.crew_api_models import usable_models_off_loop
 from kiro_crew.dashboard.crew_api_owner import owner_route
+from kiro_crew.dashboard.crew_api_response_stream import Events, encode
 from kiro_crew.dashboard.kiro_readiness import (
     KAS_TURN_REFUSED_CODE,
     reject_if_kiro_unverified,
@@ -171,15 +185,21 @@ class ParsedRequest:
     prompt: str
     metadata: dict[str, str] = field(default_factory=dict)
     ignored: list[str] = field(default_factory=list)
+    stream: bool = False
+
+
+def _flag(body: dict[str, Any], name: str) -> bool:
+    value = body.get(name)
+    if value is None or value is False:
+        return False
+    if value is not True:
+        raise _invalid(f"{name} must be a boolean")
+    return True
 
 
 def _switch(body: dict[str, Any], name: str) -> None:
-    value = body.get(name)
-    if value is None or value is False:
-        return
-    if value is not True:
-        raise _invalid(f"{name} must be a boolean")
-    raise _not_served(f"{name}: true")
+    if _flag(body, name):
+        raise _not_served(f"{name}: true")
 
 
 def _content_text(content: object) -> str:
@@ -285,7 +305,7 @@ def parse_request(body: object) -> ParsedRequest:
     for name in ("conversation", "previous_response_id"):
         if body.get(name) is not None:
             raise _not_served(name)
-    _switch(body, "stream")
+    stream = _flag(body, "stream")
     _switch(body, "background")
     _tools(body)
     _output_format(body)
@@ -314,46 +334,53 @@ def parse_request(body: object) -> ParsedRequest:
         prompt=prompt,
         metadata=_metadata(body.get("metadata")),
         ignored=sorted(name for name in body if name not in _READ_FIELDS),
+        stream=stream,
     )
 
 
-def _response(
-    response_id: str,
-    created_at: int,
-    parsed: ParsedRequest,
-    status: str,
-    text: str = "",
-    *,
-    error: str | None = None,
-    incomplete: str | None = None,
-) -> web.Response:
-    output: list[dict[str, Any]] = []
-    if text:
-        output.append(
-            {
-                "type": "message",
-                "id": "msg_" + uuid.uuid4().hex,
-                "role": "assistant",
-                "status": "completed" if status == "completed" else "incomplete",
-                "content": [{"type": "output_text", "text": text, "annotations": []}],
-            }
-        )
-    return web.json_response(
-        {
-            "id": response_id,
+@dataclass(frozen=True)
+class _Answering:
+    """One response being answered: what every ``Response`` object of it repeats."""
+
+    response_id: str
+    created_at: int
+    parsed: ParsedRequest
+    item_id: str = field(default_factory=lambda: "msg_" + uuid.uuid4().hex)
+
+    def response(
+        self,
+        status: str,
+        text: str = "",
+        *,
+        error: str | None = None,
+        incomplete: str | None = None,
+    ) -> dict[str, Any]:
+        """The ``Response`` object: the JSON answer, and what a stream's events carry."""
+        output: list[dict[str, Any]] = []
+        if text:
+            output.append(
+                {
+                    "type": "message",
+                    "id": self.item_id,
+                    "role": "assistant",
+                    "status": "completed" if status == "completed" else "incomplete",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                }
+            )
+        return {
+            "id": self.response_id,
             "object": "response",
-            "created_at": created_at,
+            "created_at": self.created_at,
             "status": status,
-            "model": parsed.model,
+            "model": self.parsed.model,
             "output": output,
             "error": None if error is None else {"code": "server_error", "message": error},
             "incomplete_details": None if incomplete is None else {"reason": incomplete},
-            "metadata": parsed.metadata,
+            "metadata": self.parsed.metadata,
             # Token counts are not known at this layer: null, never a made-up zero.
             "usage": None,
-            "crew": {"ignored_parameters": parsed.ignored},
+            "crew": {"ignored_parameters": self.parsed.ignored},
         }
-    )
 
 
 def _client_gone(request: web.Request) -> bool:
@@ -405,11 +432,14 @@ async def _answer(
     state: DashboardState,
     slot: Any,
     task: "asyncio.Task[Any]",
-    response_id: str,
-    created_at: int,
-    parsed: ParsedRequest,
-) -> web.Response:
-    """Read the turn's rows until it ends, and build the answer."""
+    answering: _Answering,
+    said: "Callable[[str | None], Awaitable[None]] | None" = None,
+) -> dict[str, Any]:
+    """Read the turn's rows until it ends, and build the ``Response`` it is answered with.
+
+    *said* is how a stream follows the turn: it is awaited with each piece of reply
+    text as it is read, and with ``None`` when a wait ended with nothing new.
+    """
     collected: list[str] = []
     outcome = _TurnOutcome()
     ended = False
@@ -424,10 +454,10 @@ async def _answer(
             if row.get("cls") == "done":
                 ended = True
                 break
-            if row.get("role") == "chunk":
+            if row.get("role") == "chunk" or (row.get("role") == "assistant" and not collected):
                 collected.append(row.get("content") or "")
-            elif row.get("role") == "assistant" and not collected:
-                collected.append(row.get("content") or "")
+                if said is not None:
+                    await said(collected[-1])
         if ended or finished:
             break
         if _client_gone(request):
@@ -438,33 +468,83 @@ async def _answer(
         # without a row sets no event.
         row_written = asyncio.ensure_future(slot.event.wait())
         try:
-            await asyncio.wait(
+            woke, _ = await asyncio.wait(
                 {row_written, task}, timeout=WAKE_SECS, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
             row_written.cancel()
+        if not woke and said is not None:
+            await said(None)
     failure = await _settled(task)
     text = _redact("".join(collected))
     if isinstance(failure, TurnTimeoutError):
-        return _response(
-            response_id, created_at, parsed, "incomplete", text, incomplete="turn_time_limit"
-        )
+        return answering.response("incomplete", text, incomplete="turn_time_limit")
     cancelled = isinstance(failure, asyncio.CancelledError)
     if failure is not None and not cancelled:
         # It raised: the same answer whether or not a Stop was pressed meanwhile.
-        logger.warning("Crew API turn %s failed: %s", response_id, type(failure).__name__)
+        logger.warning("Crew API turn %s failed: %s", answering.response_id, type(failure).__name__)
         raise Refusal(500, "internal_error", "the turn could not be run")
     # The owner can stop this session from another client: the turn absorbs the
     # cancel and still ends its cycle.
     if cancelled or _stop_took_effect(slot):
-        return _response(response_id, created_at, parsed, "cancelled", text)
+        return answering.response("cancelled", text)
     if not ended:
         # It ended without the row that closes a turn's cycle.
-        logger.warning("Crew API turn %s failed: no end", response_id)
+        logger.warning("Crew API turn %s failed: no end", answering.response_id)
         raise Refusal(500, "internal_error", "the turn could not be run")
     if outcome.reason is not None:
-        return _response(response_id, created_at, parsed, "failed", error=outcome.reason)
-    return _response(response_id, created_at, parsed, "completed", text)
+        return answering.response("failed", error=outcome.reason)
+    return answering.response("completed", text)
+
+
+async def _stream(
+    request: web.Request,
+    state: DashboardState,
+    slot: Any,
+    task: "asyncio.Task[Any]",
+    answering: _Answering,
+) -> web.StreamResponse:
+    """Answer the turn as Responses stream events.
+
+    The events end on the ``Response`` the JSON answer would be. The headers leave
+    before the turn ends, so a turn that cannot be answered is an ``error`` event.
+    """
+    resp = web.StreamResponse()
+    resp.content_type = "text/event-stream"
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    # The owner gate adds these after the handler returns, when a stream's headers have left.
+    resp.headers[REQUEST_ID_HEADER] = request_id_for(request)
+    resp.headers[VERSION_HEADER] = CREW_API_VERSION
+    events = Events(answering.item_id)
+
+    async def _write(batch: list[dict[str, Any]]) -> None:
+        for event in batch:
+            await write_sse_or_abort(request, resp, encode(event))
+
+    async def _said(text: str | None) -> None:
+        if text is None:
+            await write_sse_or_abort(request, resp, b": keepalive\n\n")
+        else:
+            await _write(events.text(text))
+
+    try:
+        await resp.prepare(request)
+        await _write(events.start(answering.response("in_progress")))
+        try:
+            final = await _answer(request, state, slot, task, answering, _said)
+        except Refusal as refusal:
+            await _write(events.error(refusal.message))
+        else:
+            await _write(events.end(final))
+    except ConnectionResetError:
+        # The reader is gone: nobody is left to read this turn. A recovery may have
+        # handed it to a new task meanwhile.
+        task = slot.task or task
+        if not task.done():
+            await stop_slot_turn(state, slot, source="crew_api", escalate=False)
+            await _settled(task)
+    return resp
 
 
 async def _engine_refusal(request: web.Request, state: DashboardState, slot: Any) -> Refusal | None:
@@ -508,7 +588,7 @@ async def _audit(request: web.Request, response_id: str, slot_key: str, model: s
         logger.warning("No audit row written for %s %s", OPERATION, response_id)
 
 
-async def _run(request: web.Request) -> web.Response:
+async def _run(request: web.Request) -> web.StreamResponse:
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -556,7 +636,10 @@ async def _run(request: web.Request) -> web.Response:
             slot.task = task
             with state.suspend_slots_push():
                 state.push_slots_update()
-            return await _answer(request, state, slot, task, response_id, int(time.time()), parsed)
+            answering = _Answering(response_id, int(time.time()), parsed)
+            if parsed.stream:
+                return await _stream(request, state, slot, task, answering)
+            return web.json_response(await _answer(request, state, slot, task, answering))
     finally:
         task = slot.task or task
         if task is not None and not task.done():
