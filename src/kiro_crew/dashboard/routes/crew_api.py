@@ -11,11 +11,12 @@ own routes do not have (``crew_api_approvals``).
 here, and ``test_crew_api_owner.py`` fails when a route and its description
 disagree.
 
-Public tier: ``/v1/models`` and ``/v1/responses``, each served by its own handler
-behind the same ``owner_route`` gate. ``/v1/models`` also serves a verified app
+Public tier: ``/v1/models``, ``/v1/responses``, ``/v1/crew/capabilities`` and
+``/v1/crew/info``, each served by its own handler behind the same ``owner_route``
+gate. ``/v1/models`` also serves a verified app
 credential with an empty list until a grant carries a Bot range or a route lets
 an app run an agent. The owner gets the full catalog; ``/v1/responses`` serves the
-owner alone.
+owner alone, and so do the two ``/v1/crew/`` routes.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import crew_api_approvals, crew_api_grant_requests, handlers
+from kiro_crew.dashboard.crew_api_instance import api_capabilities, api_info
 from kiro_crew.dashboard.crew_api_models import api_models
 from kiro_crew.dashboard.crew_api_owner import owner_route
 from kiro_crew.dashboard.crew_api_responses import api_responses
@@ -69,3 +71,5 @@ def register(app: web.Application) -> None:
     )
     app.router.add_get("/v1/models", api_models)
     app.router.add_post("/v1/responses", api_responses)
+    app.router.add_get("/v1/crew/capabilities", api_capabilities)
+    app.router.add_get("/v1/crew/info", api_info)

@@ -10,9 +10,9 @@ Capability negotiation.
 
 | About | This endpoint |
 |---|---|
-| Status | Planned |
+| Status | Available now: owner only |
 | Tier | Public |
-| Stability | stable |
+| Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with any credential the user granted it. |
 
 Call this first. The result is what the engine reports, filtered by the gateway for the current API version and the caller's grant; a capability the gateway cannot confirm is not reported as available. Using a feature reported as false returns 422 capability_unavailable.
@@ -63,9 +63,9 @@ Instance information.
 
 | About | This endpoint |
 |---|---|
-| Status | Planned |
+| Status | Available now: owner only |
 | Tier | Public |
-| Stability | stable |
+| Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with any credential the user granted it. |
 
 Request headers:
