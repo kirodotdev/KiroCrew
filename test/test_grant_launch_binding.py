@@ -248,10 +248,25 @@ def test_the_gate_reads_the_agent_that_serves_the_session_not_the_alias(agents):
     assert _approved(manager, _call(resolved_agent="a"), alias="my-alias")
 
 
-def test_a_call_with_no_resolved_agent_asks_on_a_bound_grant(agents, default_template):
-    # The surface did not say which spec runs; the default template is not assumed.
-    _spec(agents, NPX)
-    assert not _approved(_manager({REF: [_id(NPX)]}), _call(resolved_agent=""), alias="a")
+def test_a_call_with_no_resolved_agent_approves_a_bound_grant_as_before(agents, default_template):
+    # Slack, cron, subagents and the task runner stamp no agent: the binding is
+    # not checked, and the default template is not assumed in its place.
+    _spec(agents, OTHER)
+    spec_less = _call(resolved_agent="")
+    assert _approved(_manager({REF: [_id(NPX)]}), spec_less, alias="a")
+    # The same call from a surface that names its agent still asks on a changed launch.
+    assert not _approved(_manager({REF: [_id(NPX)]}), _call(resolved_agent="a"), alias="a")
+
+
+def test_a_call_with_no_resolved_agent_matches_a_bound_grant_case_insensitively(agents):
+    manager = _manager({REF: [_id(NPX)]})
+    assert _approved(manager, _call(server="OPS", resolved_agent=""))
+    assert not _approved(manager, _call(server="OPS", resolved_agent="a"))
+
+
+def test_a_call_with_no_resolved_agent_still_needs_the_grant(agents):
+    manager = _manager({REF: [_id(NPX)]})
+    assert not _approved(manager, _call(tool="other", resolved_agent=""))
 
 
 def test_the_tool_list_toggle_binds_the_default_templates_launches(agents, default_template):

@@ -23,11 +23,13 @@ Both sides read the definitions of the agent that actually serves the session
 slot's alias, which can name a different spec than the one the session runs.
 The MCP tool list's toggle has no session and binds the configured default
 template's (:func:`grant_agent`). A call whose surface stamps no resolved agent
-has an unknown spec, so a bound grant asks there.
+has an unknown spec and is not checked against the binding: the grant approves it
+as before this change.
 
 shortcut: only the dashboard chat stamps ``resolved_agent`` today, so on other
-surfaces (Slack, cron, subagents, the task runner) a bound grant asks; upgrade
-by stamping the served agent at those gate sites.
+surfaces (Slack, cron, subagents, the task runner) a bound grant is not enforced;
+upgrade by stamping the served agent at those gate sites. The default template is
+never assumed for them: it can mount a different server of the same name.
 
 Stage 1 (unbound grants, observe only). A grant with no record -- every grant
 written before stage 2, and every ``auto_approve_tools`` pattern -- approves as
@@ -281,7 +283,7 @@ def grant_agent(resolved_agent: str) -> str:
     read from the published alias snapshot and loaded off the event loop when
     cold. ``""`` when it cannot be known: the writer then writes the grant
     unbound. The gate never calls this: a call with no resolved agent is one
-    whose spec is unknown, so a bound grant asks. Never raises.
+    whose spec is unknown, so its binding is not checked. Never raises.
     """
     if isinstance(resolved_agent, str) and resolved_agent:
         return resolved_agent
@@ -312,7 +314,8 @@ def bound_launch_holds(server: str, bound: frozenset[str], *, agent: str, work_d
     True only when the session can see at least one definition of *server* and
     every launch id it sees is in *bound*. No definition, an unreadable one, a
     failed read, or no *agent* to read the spec of answers False, so the call
-    asks. Never raises.
+    asks (the gate does not call this for a call with no agent: see
+    :func:`identity_grant_approves`). Never raises.
     """
     if not agent:
         return False
@@ -352,17 +355,21 @@ def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: st
 
     The bound check reads the spec of the call's ``resolved_agent``, the agent
     that actually serves the session and the one a writer bound from
-    (:func:`grant_agent`). A call with none is from a surface that does not
-    stamp it, whose spec is unknown, so a bound grant asks there rather than
-    guess the default template. *agent* (the surface's slot alias) only labels
-    the stage-1 observation.
+    (:func:`grant_agent`). A call with none comes from a surface that does not
+    stamp it (Slack, cron, subagents, the task runner): its spec is unknown, the
+    binding is not checked, and the grant approves exactly as an unbound one
+    does. *agent* (the surface's slot alias) only labels the stage-1
+    observation.
     """
     bindings = config.auto_approve_tool_identity_launches
     grants = config.auto_approve_tool_identities
-    bound = bindings.get(identity_ref)
+    spec_agent = str(getattr(call, "resolved_agent", "") or "")
+    # A call that names no served agent (Slack, cron, subagents, the task runner)
+    # has no spec to check a binding against, so it approves as an unbound grant
+    # does, below. The default template is never assumed for it.
+    bound = bindings.get(identity_ref) if spec_agent else None
     if bound is not None and identity_ref in grants:
         work_dir = str(getattr(call, "spec_write_cwd", "") or "")
-        spec_agent = str(getattr(call, "resolved_agent", "") or "")
         if bound_launch_holds(call.mcp_server, bound, agent=spec_agent, work_dir=work_dir):
             return True
         logger.info(
@@ -371,7 +378,7 @@ def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: st
         )
         return False
     folded = identity_ref.lower()
-    if any(ref.lower() == folded for ref in bindings):
+    if spec_agent and any(ref.lower() == folded for ref in bindings):
         return False
     if any(grant.lower() == folded for grant in grants):
         observe_granted_call(call, agent, "identity")

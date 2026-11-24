@@ -6435,9 +6435,15 @@ the MCP tool list toggle has no session and binds the configured default
 template's (`tool_grant_launch_audit.grant_agent`). A bound grant matches its
 identity case-sensitively and approves a call only when every definition of the
 server the calling session can see has a launch id in its binding; a changed,
-added or unidentifiable launch, no definition at all, a call with no resolved
-agent (every surface but the dashboard chat today), or a settings file that
-exists but cannot be read or parsed gets no verdict and the call asks. The
+added or unidentifiable launch, no definition at all, or a settings file that
+exists but cannot be read or parsed gets no verdict and the call asks. A call
+with no `resolved_agent` (every surface but the dashboard chat today: Slack,
+cron, subagents, the task runner) has no known spec to check, so its binding is
+not checked and the grant approves it as an unbound one does. That is an accepted
+residual, not a design: a server swapped under the same name is approved on those
+surfaces until the gate is given the session's agent spec at every call (follow-up:
+pass the served agent at every gate call site). The default template is never
+assumed for such a call: it can mount a different server of the same name. The
 settings files are parsed as JSONC like the session's own reader, re-read on
 each check and cached by content digest, never by mtime and size, which a
 rewrite can restore. An explicit `null` binding map is read like any other
