@@ -72,8 +72,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
-from kiro_crew.slack.code_channels import surface, thread_runtime
-from kiro_crew.slack.code_channels.binding import code_channels_on, live_config, thread_conductor_on
+from kiro_crew.slack.code_channels import resume_thread, surface, thread_runtime
+from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.store import Binding, store
 
 logger = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ def _admitted_now(state: Any, channel_id: str, conductor: Any, *, caller: str = 
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
 
     if thread_runtime.ROOM_SEP in channel_id:
-        return _admitted_thread_now(state, channel_id, conductor, caller=caller)
+        return resume_thread.admitted_now(state, channel_id, conductor, caller=caller)
     if not code_channels_on(live_config()):
         return "code channels are off"
     binding = store().get_binding(channel_id)
@@ -513,40 +513,6 @@ def _admitted_now(state: Any, channel_id: str, conductor: Any, *, caller: str = 
 CHANNEL_POLICY_REFUSAL = "the channel policy refuses this channel"
 
 
-def _admitted_thread_now(state: Any, room: str, conductor: Any, *, caller: str) -> str:
-    """:func:`_admitted_now` for a Conductor thread (*room* is its ``channel:anchor``).
-
-    The thread switch, the stored thread still this session's and neither ended
-    nor wrapped up, this process's Stop, the workspace, the per-channel policy
-    ceiling, the channel's activation, the room (private, or public by opt-in,
-    never shared out) and the conductor's strict identity. No disk access.
-    """
-    from kiro_crew.slack.code_channels.routing import channel_and_origin_permit
-
-    cfg = live_config()
-    if not thread_conductor_on(cfg):
-        return "Conductor threads are off"
-    binding = binding_for_room(room)
-    if binding is None or thread_runtime.live_thread_binding(binding) is None:
-        return "no longer a Conductor thread"
-    if binding.wrapped_up_at:
-        return "wrapped up"
-    channel = binding.channel_id
-    if surface.channel_stopped(channel):
-        return "archived or stopped"
-    if not surface.workspace_admitted(binding.team_id):
-        return "workspace not admitted"
-    if surface.channel_policy_refusal(channel, operation=OPERATION, caller=caller, audit=False):
-        return CHANNEL_POLICY_REFUSAL
-    if not channel_and_origin_permit(cfg, channel, channel):
-        return "channel or origin does not admit the bot"
-    if why := thread_runtime.room_refusal(binding):
-        return why
-    if not _is_the_channels_session(state, binding, conductor):
-        return "not the thread's session"
-    return ""
-
-
 def binding_for_room(room: str) -> Binding | None:
     """The binding a resume key names (a code channel, or ``channel:anchor``); None when unknown."""
     return thread_runtime.binding_for_room(room)
@@ -557,7 +523,7 @@ async def _channel_admitted(
 ) -> str:
     """:func:`_admitted_now` plus channels governance (an await)."""
     if thread_runtime.ROOM_SEP in channel_id:
-        await _prime_room(channel_id)
+        await resume_thread.prime_room(channel_id)
     why = _admitted_now(state, channel_id, conductor, caller=caller)
     if why:
         return why
@@ -577,7 +543,7 @@ async def _archive_refusal(binding: Binding) -> str:
     from kiro_crew.slack.code_channels import lifecycle
 
     if thread_runtime.is_thread(binding):
-        return await _thread_archive_refusal(binding)
+        return await resume_thread.archive_refusal(binding)
     if await surface.is_archived(binding):
         return "archived"
     seen = await lifecycle.reconcile_archived(binding)
@@ -586,31 +552,6 @@ async def _archive_refusal(binding: Binding) -> str:
     if seen is None:
         return ARCHIVE_UNREADABLE
     return ""
-
-
-async def _prime_room(room: str) -> None:
-    """:func:`.thread_runtime.prime_room` for the thread *room* names (a no-op for a channel)."""
-    binding = await asyncio.to_thread(binding_for_room, room)
-    if binding is not None:
-        await thread_runtime.prime_room(binding)
-
-
-async def _thread_archive_refusal(binding: Binding) -> str:
-    """:func:`_archive_refusal` for a Conductor thread: ``""`` only when Slack says its channel is live.
-
-    A DM is never archived. Otherwise the channel's archived state is read now
-    (:func:`_prime_room`) and an unreadable answer refuses, as for a code channel.
-    """
-    from kiro_crew.slack.code_channels import audience
-    from kiro_crew.slack.code_channels.store import ROOM_IM
-
-    if binding.room == ROOM_IM:
-        return ""
-    await _prime_room(thread_runtime.room_id(binding))
-    archived = audience.channel_archived(binding.channel_id)
-    if archived is None:
-        return ARCHIVE_UNREADABLE
-    return "archived" if archived else ""
 
 
 class _LiveCheck:
@@ -925,6 +866,13 @@ async def resume_channel(state: Any, binding: Binding) -> ResumeReport | None:
     channel = thread_runtime.room_id(binding)
     conductor = bound_slot(state, binding)
     why = await _channel_admitted(state, channel, conductor)
+    if why and thread_runtime.is_thread(binding) and resume_thread.room_unknown(why):
+        # Slack could not say what the room is (the bounded read failed): that is
+        # not a refusal. Nothing runs by itself and nothing is posted, but each
+        # interrupted session is held (:data:`HELD_UNCONFIRMED`) and the owner is
+        # told in the dashboard, instead of the work being silently dropped.
+        surface.audit("system", OPERATION, "denied", f"channel={channel}", why)
+        why = ""
     if why:
         surface.audit("system", OPERATION, "denied", f"channel={channel}", why)
         return None
@@ -1425,20 +1373,6 @@ async def _ephemeral(channel: str, user: str, text: str) -> None:
         logger.debug("code channel ephemeral failed", exc_info=True)
 
 
-async def _binding_of_click(value: Any, channel: str) -> Binding | None:
-    """The binding a notice button's value names, when it names one in *channel*.
-
-    The value's ``channel`` is the room id: the channel itself for a code
-    channel, ``channel:anchor`` for a Conductor thread. Either must live in the
-    channel the press came from; anything else (a forged value, another
-    channel's button) names nothing.
-    """
-    room = value.get("channel") if isinstance(value, dict) else None
-    if not channel or not isinstance(room, str) or thread_runtime.channel_of_room(room) != channel:
-        return None
-    return await asyncio.to_thread(binding_for_room, room)
-
-
 def _say_in(binding: Binding, channel: str, user: str) -> Callable[[str], Awaitable[None]]:
     """A private reply to *user* about *binding*'s room, worded for a thread when it is one."""
 
@@ -1471,7 +1405,7 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not surface.workspace_admitted(team):
         surface.audit(user, OPERATION, "denied", f"{resources} team_id={team}", "workspace")
         return True
-    binding = await _binding_of_click(value, channel)
+    binding = await resume_thread.binding_of_click(value, channel)
     if binding is None:
         surface.audit(user, OPERATION, "denied", resources, "not a bound code channel")
         await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
@@ -1747,7 +1681,7 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     if not surface.workspace_admitted(team):
         surface.audit(user, STOP_OPERATION, "denied", f"{resources} team_id={team}", "workspace")
         return True
-    binding = await _binding_of_click(value, channel)
+    binding = await resume_thread.binding_of_click(value, channel)
     if binding is None:
         surface.audit(user, STOP_OPERATION, "denied", resources, "not a bound code channel")
         await _ephemeral(channel, user, STOP_NOT_ALLOWED_TEXT)

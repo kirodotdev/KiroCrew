@@ -37,7 +37,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition, thread_runtime
+from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -353,18 +353,10 @@ async def _inbound_gate(
     channel = str(event.get("channel") or "")
     if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
         return DROP
-    # A Conductor thread of an ordinary channel or DM: it needs no code-channel
-    # scope, so it is judged before that gate. Only its Stop is decided here
-    # (the thread's other messages take the linked-thread route).
-    in_thread = _thread_binding_of(channel, event)
+    in_thread = thread_stop_gate.binding_of(channel, event)
     if in_thread is not None:
-        return await _thread_stop_gate(
-            orch,
-            cfg,
-            in_thread,
-            text=text,
-            sender_id=sender_id,
-            from_trusted_bot=from_trusted_bot,
+        return await thread_stop_gate.decide(
+            orch, cfg, in_thread, text=text, sender_id=sender_id, from_trusted_bot=from_trusted_bot
         )
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
@@ -493,70 +485,6 @@ async def _inbound_gate(
         )
         return DROP
     return InboundResult(Gate.DIRECTED, binding=binding, info=info)
-
-
-def _thread_binding_of(channel: str, event: dict[str, Any]) -> Binding | None:
-    """The live Conductor thread *event* is in, or None.
-
-    From the store's loaded snapshot only (never a cold load on the event loop);
-    an ended thread is not live here.
-    """
-    loaded = store().loaded_thread_bindings() if channel else None
-    for binding in loaded or ():
-        if (
-            binding.channel_id == channel
-            and not binding.ended_at
-            and _in_thread(event, binding.anchor_ts)
-        ):
-            return binding
-    return None
-
-
-THREAD_STOP_OPERATION = "slack.conductor_thread.stop"
-
-
-async def _thread_stop_gate(
-    orch: Any,
-    cfg: Any,
-    binding: Binding,
-    *,
-    text: str,
-    sender_id: str,
-    from_trusted_bot: bool,
-) -> InboundResult:
-    """``!stop`` in a Conductor thread stops its conductor and its workers; PASS for anything else.
-
-    Owner only, by identity: another member, a shared user or the allow-list
-    gets nothing stopped (and the word reaches no other Stop). With the switch
-    off it stops only a conductor still running, as a code channel's Stop does,
-    so turning the switch off never strands a running turn.
-    """
-    if from_trusted_bot or strip_leading_mention(text).strip().lower() != "!stop":
-        return PASS
-    slot = bound_slot(_dashboard_state(), binding)
-    if not (
-        thread_runtime.room_runtime_on(binding, cfg) or getattr(slot, "running", False) is True
-    ):
-        return PASS
-    channel = binding.channel_id
-    resources = f"channel={channel} thread={binding.anchor_ts}"
-    from kiro_crew.slack.handler import is_owner
-
-    if not is_owner(sender_id):
-        _audit(sender_id, THREAD_STOP_OPERATION, "denied", resources, "unauthorized sender")
-        return DROP
-    if not channel_and_origin_permit(cfg, channel, channel):
-        _audit(
-            sender_id,
-            THREAD_STOP_OPERATION,
-            "denied",
-            resources,
-            "channel activation does not admit the bot",
-        )
-        return DROP
-    _audit(sender_id, THREAD_STOP_OPERATION, "allowed", resources)
-    await _stop_bound(orch, binding, sender_id, channel, source=THREAD_STOP_OPERATION)
-    return DROP
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────
@@ -1972,18 +1900,12 @@ async def _stop_bound(
     """Stop the channel's session, its helper agents and their sub-agents (:mod:`.stop_helpers`)."""
     from kiro_crew.slack.code_channels import stop_helpers, surface
 
-    # A Conductor thread sets no channel-wide stop fence or status hold (both are
-    # keyed by the channel, which holds other threads): its Stop fences the
-    # stopped turn's dispatch itself (stop_helpers.fence_thread_dispatch).
-    # shortcut: a thread's own Slack writes admitted before the Stop are not
-    # fenced; key the fence by thread when part C's board writes need it.
-    if not thread_runtime.is_thread(binding):
-        # First, before any await: work admitted before this press (an in-flight
-        # tool call, a wrap-up) writes nothing more to Slack.
-        surface.mark_stopped(channel)
-        from kiro_crew.slack.code_channels.status import hold_after_turn
+    # First, before any await: work admitted before this press (an in-flight
+    # tool call, a wrap-up) writes nothing more to Slack.
+    surface.mark_stopped(channel)
+    from kiro_crew.slack.code_channels.status import hold_after_turn
 
-        hold_after_turn(channel, None)  # a Stop clears the agent's "suspended" hold
+    hold_after_turn(channel, None)  # a Stop clears the agent's "suspended" hold
     return await stop_helpers.stop_channel(
         orch, binding, sender_id, channel, source=source, say_idle=say_idle
     )

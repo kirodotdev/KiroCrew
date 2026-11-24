@@ -538,6 +538,18 @@ def test_only_the_owner_can_press_the_threads_resume(interrupted: Any) -> None:
     assert e.continued == [CONDUCTOR, CONDUCTOR]
 
 
+def test_a_room_slack_cannot_read_at_start_up_holds_the_work_and_tells_the_dashboard(
+    interrupted: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    e = interrupted
+    audience.clear()
+    _refresh_with(monkeypatch, private=None)  # the start-up read of the room fails
+    reports = asyncio.run(resume.resume_after_restart(e.state))
+    assert len(reports) == 1 and reports[0].held == [CONDUCTOR] and reports[0].resumed == []
+    assert e.continued == [] and e.slack.blocks_posts == []  # nothing runs, nothing posted
+    assert e.notified, "the owner is told in the dashboard"
+
+
 def test_nothing_resumes_with_the_switch_off_or_the_thread_ended(interrupted: Any) -> None:
     e = interrupted
     e.thread_on = False
