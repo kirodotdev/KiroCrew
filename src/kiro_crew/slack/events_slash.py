@@ -193,11 +193,12 @@ async def _handle_voice(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open voice config modal with current TTS settings."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
     from kiro_crew.slack.handler import (
         _vc,  # circular import: handler.py imports events.py for command dispatch
     )
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("❌ Missing trigger_id — cannot open modal.")
         return
@@ -261,11 +262,11 @@ async def _handle_conductor(
     identity; every refusal is ephemeral and posts nothing.
     """
     from kiro_crew.dashboard.session_control_parts.code_channel_exemption import published_goal
-    from kiro_crew.slack import conductor_thread
+    from kiro_crew.slack import conductor_thread, slash_context  # local: see its docstring
     from kiro_crew.slack.code_channels.binding import live_config, thread_conductor_on
 
     goal = args.strip()
-    channel, team = getattr(orch, "_last_slash_room", ("", ""))
+    channel, team = slash_context.room.get()
     if not is_owner(caller_id):
         await respond("⛔ Owner-only command.")
         return
@@ -284,6 +285,7 @@ async def _handle_conductor(
         slack, channel, "", caller_id, "", in_thread=True, new_thread=True
     )
     if why:
+        conductor_thread._audit(caller_id, "denied", f"channel={channel}", why)
         await respond(f"❌ {why}")
         return
     try:
@@ -406,6 +408,8 @@ async def _handle_config(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open config modal (owner-only) — users and channels."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
         await respond("⛔ Only the owner can change config.")
         return
@@ -443,7 +447,7 @@ async def _handle_config(
         "blocks": blocks,
     }
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
@@ -527,6 +531,8 @@ async def _handle_channel_cmd(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
     """Open modal showing tracked channels with per-channel activation mode."""
+    from kiro_crew.slack import slash_context  # local: see its docstring
+
     if not is_owner(caller_id):
         await respond("⛔ Only the owner can manage tracked channels.")
         return
@@ -544,7 +550,7 @@ async def _handle_channel_cmd(
     agent_names = await asyncio.to_thread(_get_agent_names)
     modal = channels_modal(channels, agent_names=agent_names)
 
-    trigger_id = getattr(orch, "_last_trigger_id", "")
+    trigger_id = slash_context.trigger_id.get()
     if not trigger_id:
         await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
@@ -897,12 +903,12 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:
         handler, _ = entry
-        # Stash trigger_id so modal-opening handlers can use it
-        orch._last_trigger_id = payload.get("trigger_id", "")  # type: ignore[attr-defined]
-        # And where it was typed: ``conductor`` posts its parent message there.
-        orch._last_slash_room = (  # type: ignore[attr-defined]
-            str(payload.get("channel_id") or ""),
-            str(payload.get("team_id") or ""),
+        from kiro_crew.slack import slash_context  # local: see its docstring
+
+        # For this command's handler task alone (``slash_context``).
+        slash_context.trigger_id.set(payload.get("trigger_id", ""))
+        slash_context.room.set(
+            (str(payload.get("channel_id") or ""), str(payload.get("team_id") or ""))
         )
         _spawn(handler(orch, caller_id, args, _respond))
         return
