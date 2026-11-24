@@ -573,10 +573,50 @@ def _artifact(args: argparse.Namespace) -> None:
         path = f"/api/artifacts/{seg}"
         if version is not None:
             path = f"/api/artifacts/{seg}/versions/{int(version)}"
+        docx_arg = getattr(args, "docx", None)
+        shown = ""
+        if docx_arg is not None:  # an empty name is refused below, never swallowed
+            shown = safe_terminal_line(Path(docx_arg).name) or "an empty name"
+            try:
+                target = Path(docx_arg).expanduser()
+                refused = not target.name or is_sensitive_path(str(target.resolve()))
+            except (OSError, RuntimeError, ValueError):
+                refused = True
+            if refused:
+                print(f"Error: cannot write a Word file to {shown}", file=sys.stderr)
+                sys.exit(1)
         d = _request("GET", path)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
+        if docx_arg is not None:
+            kind = str(d.get("kind"))
+            if kind not in ("markdown", "text"):
+                print(
+                    f"Error: a {safe_terminal_line(kind)} artifact cannot be written as a "
+                    "Word file (markdown or text only)",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            from kiro_crew.artifact_docx import DocxTooLarge, write_docx
+
+            source = d.get("content")
+            try:
+                write_docx(source if isinstance(source, str) else "", target, kind == "markdown")
+            except DocxTooLarge:
+                print("Error: too large to write as a Word file", file=sys.stderr)
+                sys.exit(1)
+            except FileExistsError:
+                print(f"Error: {shown} already exists; nothing written", file=sys.stderr)
+                sys.exit(1)
+            except (OSError, RuntimeError, ValueError) as exc:  # never str(exc): it quotes a path
+                print(
+                    f"Error: could not write {shown}: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"Wrote {shown}")
+            return
         if getattr(args, "meta", False):
             d.pop("content", None)
             print(json.dumps(d, indent=2))
