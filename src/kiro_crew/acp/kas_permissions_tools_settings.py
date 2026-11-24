@@ -11,20 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from kiro_crew.acp import kas_permissions
 from kiro_crew.acp.kas_deny_alternatives import deny_alternatives
 from kiro_crew.acp.kas_deny_cli_forms import take_cli_written
-from kiro_crew.acp.kas_permissions import (
-    _GLOB_METACHARACTERS,
-    _MAX_ALLOWED_COMMANDS,
-    _MAX_PATTERN_LENGTH,
-    _MAX_PATTERNS_PER_RULE,
-    _MAX_RULES,
-    _paths_not_all_carried,
-    _usable_allowed_commands,
-    _write_falls_back_to_deny,
-    allowed_command_pattern,
-)
 from kiro_crew.acp.kas_spec_grants import READ_SETTINGS_KEYS
 from kiro_crew.acp.kas_subagent_rules import _agent_glob, _available_agents_rules
 from kiro_crew.platform.tools_settings_aliases import _TOOLS_SETTINGS_FAMILY
@@ -318,3 +306,19 @@ def tools_settings_to_permissions(
         else:
             rules.extend(allows)
     return ({"rules": rules} if rules else None), sorted(set(lost))
+
+
+# Imported last: ``kas_permissions`` imports this module's names on its own last
+# lines, so whichever of the two is imported first finds the other's names bound.
+from kiro_crew.acp import kas_permissions  # noqa: E402
+from kiro_crew.acp.kas_permissions import (  # noqa: E402
+    _GLOB_METACHARACTERS,
+    _MAX_ALLOWED_COMMANDS,
+    _MAX_PATTERN_LENGTH,
+    _MAX_PATTERNS_PER_RULE,
+    _MAX_RULES,
+    _paths_not_all_carried,
+    _usable_allowed_commands,
+    _write_falls_back_to_deny,
+    allowed_command_pattern,
+)
