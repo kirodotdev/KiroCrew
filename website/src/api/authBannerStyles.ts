@@ -33,3 +33,13 @@ export const QR_SCAN_VIDEO_CSS =
 export const QR_SCAN_CANCEL_CSS =
   'padding:6px 16px;border-radius:4px;border:1px solid #fff;'
   + 'background:transparent;color:#fff;font-size:14px;cursor:pointer;'
+
+/** The session banner's token paste field. */
+export const AUTH_BANNER_INPUT_CSS =
+  'margin-left:12px;padding:4px 8px;border-radius:4px;border:1px solid #fca5a5;'
+  + 'background:#7f1d1d;color:#fff;font-size:13px;width:280px;cursor:text;caret-color:#fff;'
+  + 'outline:2px solid transparent;outline-offset:2px;transition:border-color 0.2s,box-shadow 0.2s;'
+
+/** The session banner's dismiss button. */
+export const AUTH_BANNER_DISMISS_CSS =
+  'margin-left:12px;background:none;border:none;color:#fca5a5;cursor:pointer;font-size:18px;vertical-align:middle;'
