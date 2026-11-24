@@ -10727,6 +10727,7 @@
         "auto_open_git_panel": false,
         "side_panel_always_open": false,
         "side_panel_pin_summary": false,
+        "show_bot_sessions_in_list": false,
         "auto_open_conductor_board": true,
         "session_card_source_links": true,
         "terminal": {
@@ -11991,6 +11992,20 @@
       "tags": [],
       "label": "Pin Summary in the side panel",
       "help": "Show the session Summary as the first side panel tab, which cannot be closed, and show it each time the panel opens. A panel opened for something specific, such as a file, still shows that. Works only while session summaries are on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.show_bot_sessions_in_list",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show all bots in my Sessions",
+      "help": "List the sessions your bots open in your Sessions list, each in its bot's folder. While on, no bot's own switch applies.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -13807,6 +13822,20 @@
       "tags": [],
       "label": "Dashboard card send (preview)",
       "help": "Preview, off by default. When on, a button on this crewmate's Dashboard tab may send its reply straight into the crewmate's own thread with one click. Off (the default), such a button only puts the reply in the chat box and the person presses send, which is what every card did before. A card-sent turn is tagged '[Dashboard card]', is never an approval, and is refused while the thread has an open approval or question.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agents.*.show_sessions_in_list",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show in my Sessions list",
+      "help": "List the sessions this bot opens in your Sessions list. Show all bots in my Sessions lists every bot's, whatever this says.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

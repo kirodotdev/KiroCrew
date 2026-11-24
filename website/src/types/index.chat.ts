@@ -407,6 +407,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
+  /** On a crewmate thread's own row: `dashboard.show_bot_sessions_in_list`
+   *  (`crew_mode.MATE_LISTED_FIELD`). True keeps the sessions it dispatched in the
+   *  person's session lists (`mateThreadsHidingSessions`). Absent elsewhere. */
+  bot_sessions_listed?: boolean
   /** True on a conversation that started in Slack while
    *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
    *  The person's session lists leave it out unless it is the open session

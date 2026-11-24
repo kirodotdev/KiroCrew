@@ -760,6 +760,18 @@ class DashboardConfig:
             "while session summaries are on.",
         ),
     )
+    # Off by default: the sessions a live Bot thread dispatched are listed in that
+    # Bot's side panel and left out of the person's own session lists
+    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On lists every
+    # Bot's sessions there too, under each Bot's own folder.
+    show_bot_sessions_in_list: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show all bots in my Sessions",
+            "List the sessions your bots open in your Sessions list, each in its "
+            "bot's folder. While on, no bot's own switch applies.",
+        ),
+    )
     auto_open_conductor_board: bool = field(
         default=True,
         metadata=_meta(

@@ -23957,6 +23957,8 @@
       "profile_dashboard_card_send_failed_off": "Impossible de désactiver l'envoi en un clic. Il reste activé. Réessaie.",
       "goals_loading": "Chargement des objectifs…",
       "goals_load_failed": "Impossible de charger les objectifs.",
+      "bot_sessions_all_switch": "Afficher tous les bots dans mes sessions",
+      "bot_sessions_this_switch": "Afficher {{name}} dans mes sessions",
       "goals_save_failed": "Impossible d'enregistrer ce changement. Réessaie.",
       "goals_page_gone": "Cet élément a été supprimé ailleurs et ne peut pas être enregistré. Copie ton texte si tu veux le garder.",
       "goals_page_gone_draft": "Ton texte non enregistré",

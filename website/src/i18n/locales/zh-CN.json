@@ -22781,6 +22781,8 @@
       "profile_dashboard_card_send_failed_off": "无法关闭一键发送，仍为开启。请重试。",
       "goals_loading": "正在加载目标…",
       "goals_load_failed": "无法加载目标。",
+      "bot_sessions_all_switch": "在我的会话中显示所有 bot",
+      "bot_sessions_this_switch": "在我的会话中显示 {{name}}",
       "goals_save_failed": "无法保存这项更改，请重试。",
       "goals_page_gone": "这一项已在别处删除，无法保存。需要的话，请先复制你的文字。",
       "goals_page_gone_draft": "你未保存的文字",

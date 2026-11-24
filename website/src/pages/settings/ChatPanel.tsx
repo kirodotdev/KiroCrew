@@ -32,6 +32,7 @@ import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
 import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
+import { ShowAllBotsSessionsRow } from './ShowAllBotsSessionsRow'
 import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
@@ -1155,6 +1156,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} hint={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab')} hint={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab_desc')} checked={chatCfg.sidebarClickOpensTab} onChange={v => setChat('sidebarClickOpensTab', v)} />
+          <ShowAllBotsSessionsRow />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.hide_empty_folders')} hint={i18nT('pages.settings.chatPanel.hide_empty_folders_description')} checked={chatCfg.hideEmptyFolders} onChange={v => setChat('hideEmptyFolders', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />

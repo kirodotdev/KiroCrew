@@ -9698,6 +9698,8 @@
       "profile_dashboard_card_send_failed_off": "Couldn't turn off one-click send. It's still on. Try again.",
       "goals_loading": "Loading goals…",
       "goals_load_failed": "Couldn't load the goals.",
+      "bot_sessions_all_switch": "Show all bots in my Sessions",
+      "bot_sessions_this_switch": "Show {{name}} in my Sessions",
       "goals_save_failed": "Couldn't save that change. Please try again.",
       "goals_page_gone": "This was removed somewhere else, so it can't be saved. Copy your text if you want to keep it.",
       "goals_page_gone_draft": "Your unsaved text",
