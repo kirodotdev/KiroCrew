@@ -2863,6 +2863,13 @@ Mutating routes fall into two categories:
 
 All mutating routes require an unrestricted (non-restricted) session.
 
+Every mutating route also answers a dashboard session that is neither the owner nor
+a Shared Crew teammate (a messaging allowlist link session) with 403 `owner_only`
+(`require_owner_for_dashboard_caller`, applied by `_owner_gated` where the route is
+registered, before the cloud-deployment gate). Withdrawal (recall, destroy,
+teardown) is owner-gated but not cloud-gated. An internal-secret caller keeps its
+`@_internal_denied` and allowlist judgement. The `GET` routes are unchanged.
+
 #### Deploy handler owners
 
 `deploy/handlers.py` is the import path and the patch seam of these routes: the dashboard
