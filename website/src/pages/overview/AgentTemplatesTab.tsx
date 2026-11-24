@@ -1161,7 +1161,11 @@ export default function AgentTemplatesTab() {
                           ? <span className="text-[12px] text-muted italic">{i18nT('pages.overview.agentTemplatesTab.none')}</span>
                           : <ul className="text-[12px] font-mono text-text space-y-0.5">{resources.map(u => <li key={u} className="truncate">{u}</li>)}</ul>}
                       </Section>
-                      <Section title={i18nT('pages.overview.agentTemplatesTab.mcp_servers')} hint={<><Lock className="lucide-inline" aria-hidden /> {i18nT('pages.overview.agentTemplatesTab.mcp_read_only_hint')}</>}>
+                      {/* Servers added on the MCP Servers page are merged into the built-in
+                          default agent and the specs mirroring it, so a built-in row keeps
+                          pointing there; any other agent gets them only through Kiro's global
+                          mcp.json, and only when it loads that file. */}
+                      <Section title={i18nT('pages.overview.agentTemplatesTab.mcp_servers')} hint={<><Lock className="lucide-inline" aria-hidden /> {templateSourceKind(selected) === 'builtin' ? i18nT('pages.overview.agentTemplatesTab.mcp_read_only_hint') : i18nT('pages.overview.agentTemplatesTab.mcp_reach_via_kiro_global_hint')}</>}>
                         {mcpServers.length === 0 ? (
                           <span className="text-[12px] text-muted italic">{i18nT('pages.overview.agentTemplatesTab.none')}</span>
                         ) : (
