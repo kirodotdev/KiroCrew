@@ -24,7 +24,7 @@ export const SESSION_SORT_CONFIG_PATH = 'dashboard.session_sort'
 export const LEGACY_SESSION_SORT_STORAGE_KEY = 'mc-session-sort'
 // Mirrors SESSION_SORT_MODES in src/kiro_crew/config/sections.py.
 const SORT_KEYS = new Set<SortKey>([
-  'date-desc', 'date-asc', 'created-desc', 'created-asc', 'name-asc', 'name-desc', 'manual',
+  'date-desc', 'date-asc', 'created-desc', 'created-asc', 'name-asc', 'name-desc', 'manual', 'active-then-date',
 ])
 
 function isSessionSortKey(raw: unknown): raw is SortKey {
@@ -50,8 +50,9 @@ export function readLegacySessionSortKey(): SortKey | null {
 }
 
 /** `manual` is the person's own drag order, kept on the gateway (each slot row
- *  carries its place as `manual_rank`). */
-export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc' | 'manual'
+ *  carries its place as `manual_rank`). `active-then-date` is the running rows
+ *  first, then the rest, each part `date-desc`. */
+export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc' | 'manual' | 'active-then-date'
 
 /** Catalog key per sort option, the label the sort menu shows for it. */
 export const SORT_LABEL_KEY: Record<SortKey, string> = {
@@ -62,6 +63,14 @@ export const SORT_LABEL_KEY: Record<SortKey, string> = {
   'name-asc': 'pages.chatSidebar.sort_name_asc',
   'name-desc': 'pages.chatSidebar.sort_name_desc',
   manual: 'pages.chatSidebar.sort_manual',
+  'active-then-date': 'pages.chatSidebar.sort_active_then_date',
+}
+
+/** Whether the stale-session collapse applies under a sort: the sorts that end
+ *  in the oldest activity. `active-then-date` only lifts running rows, which are
+ *  never stale. */
+export function staleCollapseApplies(key: SortKey): boolean {
+  return key === 'date-desc' || key === 'active-then-date'
 }
 
 /** The subset of a session either surface needs in order to rank it. Active
@@ -138,9 +147,22 @@ export function lastActivityEpoch(item: Sortable): number {
   return epoch
 }
 
-/** Shared comparator for both active sessions and history items. */
-export function compareBySort(a: Sortable, b: Sortable, key: SortKey): number {
+/** Shared comparator for both active sessions and history items. `running`
+ *  is the set `active-then-date` lifts to the top; a list without one (the
+ *  pinned rows) reads that sort as `date-desc`. */
+export function compareBySort<T extends Sortable>(
+  a: T,
+  b: T,
+  key: SortKey,
+  running?: (item: T) => boolean,
+): number {
   if (key === 'manual') return compareManual(a, b)
+  if (key === 'active-then-date') {
+    const ra = !!running?.(a)
+    const rb = !!running?.(b)
+    if (ra !== rb) return ra ? -1 : 1
+    return compareBySort(a, b, 'date-desc')
+  }
   if (key === 'name-asc' || key === 'name-desc') {
     // Session titles are free text, so ordering follows the app language:
     // `compareText` is case- and accent-insensitive with numeric collation, so

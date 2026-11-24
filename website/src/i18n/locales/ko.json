@@ -15053,6 +15053,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "수동",
+      "sort_active_then_date": "진행 중 우선, 그다음 최신순",
       "folder_order": "폴더 순서",
       "folder_order_custom": "사용자 지정",
       "folder_order_name": "이름순",

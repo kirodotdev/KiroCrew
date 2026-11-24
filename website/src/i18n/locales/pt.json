@@ -15813,6 +15813,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "Manual",
+      "sort_active_then_date": "Em execução primeiro, depois mais recentes",
       "folder_order": "Ordem das pastas",
       "folder_order_custom": "Personalizada",
       "folder_order_name": "Por nome",

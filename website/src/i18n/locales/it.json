@@ -15813,6 +15813,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "Manuale",
+      "sort_active_then_date": "In corso prima, poi più recenti",
       "folder_order": "Ordine delle cartelle",
       "folder_order_custom": "Personalizzato",
       "folder_order_name": "Per nome",

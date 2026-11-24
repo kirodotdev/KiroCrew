@@ -15433,6 +15433,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "Manuell",
+      "sort_active_then_date": "Laufende zuerst, dann neueste",
       "folder_order": "Ordnerreihenfolge",
       "folder_order_custom": "Eigene",
       "folder_order_name": "Nach Name",

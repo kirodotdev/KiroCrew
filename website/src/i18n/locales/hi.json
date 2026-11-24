@@ -15433,6 +15433,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "मैन्युअल",
+      "sort_active_then_date": "चल रहे पहले, फिर नवीनतम",
       "folder_order": "फ़ोल्डर क्रम",
       "folder_order_custom": "कस्टम",
       "folder_order_name": "नाम के अनुसार",

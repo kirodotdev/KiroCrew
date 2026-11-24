@@ -16193,6 +16193,7 @@
       "sort_name_asc": "А → Я",
       "sort_name_desc": "Я → А",
       "sort_manual": "Вручную",
+      "sort_active_then_date": "Сначала в работе, затем новые",
       "folder_order": "Порядок папок",
       "folder_order_custom": "Свой",
       "folder_order_name": "По имени",
