@@ -44,7 +44,8 @@ The bulk stub action consults whichever of the two the global sharing switch mak
 A routed server's backend runs in one fixed folder outside the session sandbox
 (`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
 an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
-works on the project's files would therefore act on the wrong project once routed.
+reads the folder it starts in, like git or file search, would therefore read the
+wrong project once routed.
 No detector decides which servers do: the operator answers per server in MCP
 Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 `not_used`, or absent for unanswered).

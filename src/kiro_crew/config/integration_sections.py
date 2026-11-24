@@ -201,14 +201,15 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
         )
     else:
         resolved = roster
-    # A server the operator said works on the project folder is never routed: a
+    # A server the operator kept one per chat is never routed: a
     # routed backend runs in one fixed directory, so it would act on the wrong one.
     cwd_use = _resolve_cwd_use(mcp_gateway_data)
     return [name for name in resolved if cwd_use.get(name) != _CWD_USES]
 
 
-#: ``mcp_gateway.cwd_use`` values: the operator's answer to "does this server
-#: work on the files of the project a chat runs in?". Absent means unanswered.
+#: ``mcp_gateway.cwd_use`` values: the operator's answer to "share this server
+#: across chats?". ``uses_cwd`` keeps one per chat because the server reads the
+#: folder it starts in; ``not_used`` shares it. Absent means unanswered.
 _CWD_USES = "uses_cwd"
 _CWD_NOT_USED = "not_used"
 _CWD_ANSWERS = frozenset({_CWD_USES, _CWD_NOT_USED})
@@ -788,8 +789,9 @@ class McpGatewayConfig:
         default_factory=dict,
         metadata=_meta(
             "Working Folder Answers",
-            "Per server, whether it works on the files of the project a chat runs "
-            "in: uses_cwd (it does) or not_used (it does not care which folder). "
+            "Per server, whether it reads the folder it starts in: uses_cwd (it "
+            "does, so each chat launches its own) or not_used (it can start in one "
+            "folder for all chats). "
             "A routed server runs in one fixed folder outside the project, shared "
             "by every chat, so MCP Management routes a server only after it is "
             "answered not_used, and a server answered uses_cwd is never routed. "
