@@ -23,6 +23,7 @@ from email.parser import Parser
 from pathlib import Path
 
 import pytest
+import yaml
 
 from kiro_crew.acp import kas_bundle, kas_engine_install, kas_engine_startup
 from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
@@ -331,6 +332,27 @@ def test_every_list_of_platform_tags_is_the_same_list():
     cli_sh = (_REPO / "cli.sh").read_text(encoding="utf-8")
     assert set(re.findall(r'"((?:manylinux|macosx)_[a-z0-9_]+)"', cli_sh)) == builder
     assert set(_load_signer().PLATFORM_WHEEL_TAGS) == builder
+
+
+def test_every_platform_wheel_leg_runs_the_pip_check_the_update_runs():
+    """The update refuses a venv `pip check` rejects, and pip install alone cannot
+    see a misplaced WHEEL Tag, so each leg runs the same check on its installed
+    wheel, in the venv it installed into, and a failure stops the leg."""
+    build_yml = _REPO / ".github/workflows/build-platform-wheels.yml"
+    steps = yaml.safe_load(build_yml.read_text(encoding="utf-8"))["jobs"]["build-platform-wheels"][
+        "steps"
+    ]
+    runs = [step.get("run", "") for step in steps]
+    install = next(
+        i for i, run in enumerate(runs) if "--force-reinstall platform-dist/*.whl" in run
+    )
+    check = next(i for i, run in enumerate(runs) if "-m pip check" in run)
+    assert check > install
+    assert '"$RUNNER_TEMP/kc/bin/python" -I -m pip check' in runs[check]
+    assert "set -euo pipefail" in runs[check]
+    assert "if" not in steps[check] and "continue-on-error" not in steps[check]
+    updater = (_REPO / "src/kiro_crew/platform/wheel_engine.py").read_text(encoding="utf-8")
+    assert '"-I", "-m", "pip", "check"' in updater
 
 
 def test_the_boot_path_calls_the_facade_the_test_floor_stubs():
