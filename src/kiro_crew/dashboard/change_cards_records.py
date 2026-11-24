@@ -13,10 +13,10 @@ and this module never imports it.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
+import kiro_crew.dashboard.signed_json_store as _signed
 from kiro_crew import change_card_catalog as catalog
 
 CARD_TTL_SECONDS = 24 * 60 * 60
@@ -50,8 +50,8 @@ _PRE_APPLY_STATUSES = frozenset(
 
 #: The vault subkey purpose the persisted records are MACed under.
 STORE_MAC_PURPOSE = "change-card-store"
-_MAC_FIELD = "mac"
-_MAC_RE = re.compile(r"[0-9a-f]{64}")
+_MAC_FIELD = _signed.MAC_FIELD
+_MAC_RE = _signed.MAC_RE
 #: ``error.code`` of a card whose step was cut off before it reported back.
 CODE_INTERRUPTED = "interrupted"
 #: ``error.code`` of a card whose step ran but whose result could not be saved.
@@ -113,7 +113,7 @@ CardError.__module__ = "kiro_crew.dashboard.change_cards"
 
 def canonical(value: Any) -> str:
     """The one serialization two bodies or snapshots are compared through."""
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return _signed.canonical(value)
 
 
 def clean_reason(reason: Any) -> str:

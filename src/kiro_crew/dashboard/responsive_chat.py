@@ -556,6 +556,7 @@ async def accept(
         banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
         queued_work=queued_admission,
         knowledge=knowledge_meta(meta),
+        shown_at_send=_shown_at_send(request),
     )
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True
@@ -721,6 +722,15 @@ def steer_unconsumed(slot: Any, message: str) -> bool:
     return message in slot._pending_steers
 
 
+def _shown_at_send(request: web.Request) -> dict[str, Any] | None:
+    """The asks the owner could see when the send arrived, read by the send handler
+    before its awaits (``waiting_on_you_events.shown_at_arrival``)."""
+    from kiro_crew.dashboard.waiting_on_you_events import SHOWN_AT_SEND_REQUEST_KEY
+
+    shown = request.get(SHOWN_AT_SEND_REQUEST_KEY)
+    return shown if isinstance(shown, dict) else None
+
+
 async def _steer_first(
     request: web.Request,
     state: Any,
@@ -751,6 +761,7 @@ async def _steer_first(
         delivery_id=delivery_id,
         responsive=True,
         banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
+        shown_at_send=_shown_at_send(request),
     )
     if outcome not in (STEER_STEERED, STEER_REQUEUED):
         return None

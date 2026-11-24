@@ -680,6 +680,12 @@ behind them and the row itself is the record. `self` is a Bot's own
 `chat_cards.record_lesson_saved` ([learn-cron-dashboard](learn-cron-dashboard.md),
 "`learn_add` in the conversation"). Neither row authorizes anything.
 
+`waiting` records when a waiting-on-you ask was pinned, answered, dismissed,
+cleared, expired or closed: one row per change, appended by
+`chat_cards.record_waiting` and drawn as a quiet line with nothing to press
+(`cards/WaitingHistoryRow`). The live ask is the waiting-on-you store's
+(`dashboard/waiting_on_you.py`), so nothing is read back from the row.
+
 `card` is in `history_projection.DISPLAY_ONLY_ROLES`: no model-bound reader
 (provenance citations, consolidation, skill detection) carries it, and the other
 model-bound readers already filter to conversation roles. The agent hears an outcome

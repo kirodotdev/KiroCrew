@@ -3433,7 +3433,9 @@ answers `tools/list` from):
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
 - **Lessons:** `learn_update`
-- **Questions:** `ask_question`
+- **Questions:** `ask_question`, and `waiting_on_you` / `waiting_on_you_clear`,
+  which pin and clear an ask above the composer that stays across turns (see
+  [waiting-on-you](../../src/kiro_crew/docs/waiting-on-you.md))
 - **The session's own MCP servers:** `mcp_server_wait` (one parked call that
   returns when a named server of the calling session has connected, or says why
   it will not; see "A server that is still starting" below)
@@ -3849,6 +3851,7 @@ of its responsibility:
 | `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `chat_rename`, `suggest_followup` |
 | `control_parts/monitor.py` | `monitor_start`, `monitor_watch`, `monitor_inspect`, `monitor_update`, `monitor_stop`, `autonudge_stop`, and their context and preflight refusals |
 | `control_parts/mcp_wait.py` | `mcp_server_wait` with its deferred step, and the text the model is given for each state a server can be in |
+| `control_parts/waiting.py` | `waiting_on_you` and `waiting_on_you_clear`: validate the declaration and forward it to the strict `/api/agent-waiting/*` routes under the caller's attested session key |
 | `spawn.py` | `spawn_run` with its deferred step and receipt, `spawn_continue`, `spawn_steer`, `spawn_release`, `resource_status`, `HANDLERS` |
 | `spawn_parts/schemas.py` | every spawn descriptor, the agent roster hint and the parent allowlist filter |
 | `spawn_parts/listing.py` | `spawn_list`, `spawn_status` and the queued-wait wording |

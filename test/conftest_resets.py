@@ -1117,6 +1117,37 @@ def _isolate_member_identity_cache(_floor_monkeypatch):
 
 
 @per_test_guard
+def _isolate_waiting_on_you_stores(_floor_monkeypatch):
+    """Keep the waiting-on-you store a test caches per data home inside that test.
+
+    ``store_for`` caches one ``WaitingStore`` per store path for the process, and a
+    store holds its loaded asks in memory. Without a reset, a later test whose data
+    home resolves to the same path reads the earlier test's asks. Only a module
+    already imported can hold a cached store, so a run that never imports it pays
+    nothing. Each test gets a COPY, and the undo puts the original back.
+
+    The events module's answer marks (``_ANSWERING``, ``_IN_FLIGHT``), its retry
+    queues (``_RETIRE_RETRIES``, ``_FORGET_RETRIES``) and its task registries
+    (``_RETIRE_TASKS``, ``_RETIRE_TASK_SLOTS``, ``_SWEEP_TASKS``) start empty per
+    test: a retire that failed or was cancelled at loop teardown leaves its mark,
+    which would refuse a later test's answer to the same slot and ask, and a task
+    left on a closed loop would hold a later test's turn for its full wait.
+    """
+    waiting = sys.modules.get("kiro_crew.dashboard.waiting_on_you")
+    if waiting is not None:
+        _floor_monkeypatch.setattr(waiting, "_STORES", dict(waiting._STORES))
+    events = sys.modules.get("kiro_crew.dashboard.waiting_on_you_events")
+    if events is not None:
+        _floor_monkeypatch.setattr(events, "_ANSWERING", set())
+        _floor_monkeypatch.setattr(events, "_IN_FLIGHT", set())
+        _floor_monkeypatch.setattr(events, "_RETIRE_RETRIES", {})
+        _floor_monkeypatch.setattr(events, "_FORGET_RETRIES", set())
+        _floor_monkeypatch.setattr(events, "_RETIRE_TASKS", set())
+        _floor_monkeypatch.setattr(events, "_RETIRE_TASK_SLOTS", {})
+        _floor_monkeypatch.setattr(events, "_SWEEP_TASKS", set())
+
+
+@per_test_guard
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

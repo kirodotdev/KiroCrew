@@ -2,14 +2,16 @@
  *  which rows earn a card, what each ask says, and the recap line.
  *
  *  Pure on purpose. The card reads three sources that already exist -- the
- *  slot row (`pending_approval`, `needs_input`, `has_options`, `last_message`),
+ *  slot row (`pending_approval`, `needs_input`, `has_options`, `last_message`,
+ *  `waiting_on_you`),
  *  the slot's question card in `chat.pendingQuestions`, and the slot's own
  *  transcript window (`chatSlotDetail`) for the permission and elicitation rows
  *  -- and this module only shapes them, so every rule here has a unit test. */
-import type { ChatMessage, ChatSlot } from '../../types'
+import type { ChatMessage, ChatSlot, WaitingOnYouAsk } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { ElicitationField, ElicitationMeta } from '../chat/ElicitationCard'
 import { offeredReplyOptions } from '../chat/command-center/model'
+import { pinnedAsks } from '../../lib/waitingOnYou'
 
 /** One question of a question card, as `chat.pendingQuestions` stores it. */
 export interface CardQuestion {
@@ -37,6 +39,9 @@ export type NeedsMeAsk =
   | { kind: 'question'; questions: CardQuestion[] }
   | { kind: 'form'; asker: string; message: string; fields: ElicitationField[] }
   | { kind: 'reply'; text: string; options: string[] }
+  /** The asks the agent pinned, in stack order, answered and dismissed through
+   *  the same routes and component as the composer's stack. */
+  | { kind: 'waiting'; asks: readonly WaitingOnYouAsk[] }
 
 
 /** The newest assistant reply in a transcript window, in full. The slot row's
@@ -49,15 +54,15 @@ export function lastAssistantText(messages: readonly ChatMessage[]): string {
 }
 
 /** Whether a row is in a state the person owes: an approval, an open question
- *  card, or an idle session whose last reply asks for a choice
+ *  card, an ask the agent pinned, or an idle session whose last reply asks for a choice
  *  (`offeredReplyOptions`, the rule the Command Center keys its card on, so a
  *  reply whose every option is command-shaped still counts). A blocked row (a safety
  *  rule refused a call, or the session waits on other work) is not one, and a
  *  row whose only pending approval turns out to be a safety-rule refusal gets no
  *  card either: `collectAsks` drops that ask, and the card shows only when at
  *  least one ask remains. */
-export function slotNeedsMe(slot: Parameters<typeof offeredReplyOptions>[0] & Pick<ChatSlot, 'pending_approval' | 'needs_input'>, hasQuestion: boolean): boolean {
-  return !!slot.pending_approval || !!slot.needs_input || hasQuestion || offeredReplyOptions(slot).length > 0
+export function slotNeedsMe(slot: Parameters<typeof offeredReplyOptions>[0] & Pick<ChatSlot, 'pending_approval' | 'needs_input' | 'waiting_on_you'>, hasQuestion: boolean): boolean {
+  return !!slot.pending_approval || !!slot.needs_input || hasQuestion || pinnedAsks(slot).length > 0 || offeredReplyOptions(slot).length > 0
 }
 
 function str(v: unknown): string {
@@ -87,13 +92,13 @@ function approvalCommand(meta: Record<string, unknown>): string {
   return ''
 }
 
-/** Every ask a slot holds, oldest first, from its transcript rows and its
- *  question card. `settled` keeps a row the card itself just decided on screen,
+/** Every ask a slot holds, oldest first, from its transcript rows, its
+ *  question card and its pinned asks. `settled` keeps a row the card itself just decided on screen,
  *  so the in-place result survives the refetch that reports it resolved. */
 export function collectAsks(
   messages: readonly ChatMessage[],
   questions: readonly CardQuestion[] | undefined,
-  opts: { settled?: ReadonlySet<string>; reply?: { text: string; options: string[] } } = {},
+  opts: { settled?: ReadonlySet<string>; reply?: { text: string; options: string[] }; waiting?: readonly WaitingOnYouAsk[] } = {},
 ): NeedsMeAsk[] {
   const asks: NeedsMeAsk[] = []
   for (const m of messages) {
@@ -120,6 +125,7 @@ export function collectAsks(
     }
   }
   if (questions && questions.length > 0) asks.push({ kind: 'question', questions: [...questions] })
+  if (opts.waiting && opts.waiting.length > 0) asks.push({ kind: 'waiting', asks: opts.waiting })
   if (opts.reply && (opts.reply.text || opts.reply.options.length)) asks.push({ kind: 'reply', ...opts.reply })
   return asks
 }

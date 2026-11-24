@@ -395,6 +395,95 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "waiting_on_you",
+            "description": (
+                "Pin what you need from the person above the dashboard composer, when "
+                "you are blocked on them: an action they must take ('post the scope "
+                "override on #38289') or a decision with 1-6 options. The card stays "
+                "on screen across turns, loop cycles and restarts. It is not blocking: "
+                "this call returns at once and your turn continues. The ask ends when "
+                "the person answers it or writes in the chat, when you call "
+                "waiting_on_you_clear (do that as soon as the blocker resolves on its "
+                "own), or after 7 days. Calling again with a pinned key replaces that "
+                "ask in place. Each turn's [WAITING ON YOU] block lists your pinned "
+                "asks and tells you, once, which were answered, dismissed or closed; "
+                "declare again any closed ask that still stands. Limits: at most 4 "
+                "asks per session; key is 1-40 of a-z, 0-9 and '-'; title at most 120 "
+                "characters, one line; detail at most 1,000; option label at most 200, "
+                "description at most 500; over-long text is refused, never cut. "
+                "A label starting with '/' or '@' or holding a $name token is "
+                "refused: write it as plain text. "
+                "Dashboard sessions only: elsewhere, ask in plain text or end with an "
+                "[OPTIONS: a | b] tag. For a decision you need before this turn can "
+                "continue, use ask_question instead."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": (
+                            "Your handle for this ask, e.g. 'scope-override'. A pinned "
+                            "key is replaced in place."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "What is needed, in one line (max 120)",
+                    },
+                    "detail": {
+                        "type": "string",
+                        "description": (
+                            "Optional markdown: why, and what the person needs to act "
+                            "(max 1,000)"
+                        ),
+                    },
+                    "options": {
+                        "type": "array",
+                        "description": (
+                            "0-6 choices for a decision; leave out for an action, "
+                            "which the person answers with Done and optional text"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string",
+                                    "description": (
+                                        "Option text, sent as the person's message "
+                                        "when chosen (max 200)"
+                                    ),
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Optional gloss (max 500)",
+                                },
+                            },
+                            "required": ["label"],
+                        },
+                    },
+                },
+                "required": ["key", "title"],
+            },
+        },
+        {
+            "name": "waiting_on_you_clear",
+            "description": (
+                "Remove asks you pinned with waiting_on_you: pass the ask's key, or "
+                "all: true. Call it when a blocker resolves without the person (a "
+                "review landed, a build turned green), so the card does not ask for "
+                "something already done. An ask the person answered or dismissed is "
+                "already gone. Returns the asks still pinned."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "The pinned ask to remove"},
+                    "all": {"type": "boolean", "description": "Remove every pinned ask"},
+                },
+            },
+        },
+        {
             "name": "nothing_to_do",
             "description": (
                 "End this turn with NO reply. The turn-end contract: after your tool "

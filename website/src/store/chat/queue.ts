@@ -6,7 +6,7 @@ import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { messageAuthor } from '../../api/sharedCrewUi'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryDecisionStrip, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryDecisionStrip, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, queueEntryWaitingOnYouAnswer, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** A queued row's paste blocks (`queueEntryPastes` put them there): what the
@@ -98,18 +98,18 @@ export function hydrateQueuedBubbles(
     const entry = listing.get(m.meta?.queueId as string)
     if (m.role !== 'queued' || !entry) return m
     const meta = { ...m.meta }
-    for (const key of ['durable', 'restored', 'held', 'written'] as const) delete meta[key]
-    return { ...m, meta: { ...meta, ...(entry.durable === false ? { durable: false } : {}), ...(entry.restored ? { restored: true } : {}), ...(entry.held ? { held: true } : {}), ...(entry.written ? { written: true } : {}) } }
+    for (const key of ['durable', 'restored', 'held', 'written', 'waitingOnYouAnswer'] as const) delete meta[key]
+    return { ...m, meta: { ...meta, ...(entry.durable === false ? { durable: false } : {}), ...(entry.restored ? { restored: true } : {}), ...(entry.held ? { held: true } : {}), ...(entry.written ? { written: true } : {}), ...(entry.waitingOnYouAnswer ? { waitingOnYouAnswer: entry.waitingOnYouAnswer } : {}) } }
   })
   const liveIds = new Set([...live, ...base.filter(m => m.role === 'queued')].map(m => m.meta?.queueId))
-  for (const { content, queueId, ts, kind, appLabel, quote, restored, held, written, ...attachments } of queue ?? []) {
+  for (const { content, queueId, ts, kind, appLabel, quote, restored, held, written, waitingOnYouAnswer, ...attachments } of queue ?? []) {
     if (liveIds.has(queueId)) continue
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
     // though the send happened on another tab or before a reload. The paste
     // blocks ride the same way, so the card draws the `[ Paste #N ]` token
     // the sent bubble draws, not the expanded wire text.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(held ? { held } : {}), ...(written ? { written } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(held ? { held } : {}), ...(written ? { written } : {}), ...(waitingOnYouAnswer ? { waitingOnYouAnswer } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base
@@ -260,6 +260,19 @@ export const queueReducers = {
       const { banner: _b, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = rest
     }
+    const claim = msgs[idx].meta?.waitingOnYouAnswer
+    if (claim !== undefined) {
+      // The server drops a card-answer claim when an edit changes the text, and
+      // only its own frame (`attachments` set) says the edit landed: a local edit
+      // whose save fails leaves the answer queued, so its card stays locked.
+      const answered = (msgs[idx].meta?.waitingOnYouAnsweredText as string | undefined) ?? msgs[idx].content
+      if (attachments === undefined) {
+        if (content !== answered) msgs[idx].meta = { ...msgs[idx].meta, waitingOnYouAnsweredText: answered }
+      } else if (content !== answered) {
+        const { waitingOnYouAnswer: _w, waitingOnYouAnsweredText: _t, ...rest } = msgs[idx].meta ?? {}
+        msgs[idx].meta = rest
+      }
+    }
     if (msgs[idx].meta?.automationSteer !== undefined) {
       // An edited entry holds the editor's words; the server drops its automation origin too.
       const { automationSteer: _a, ...rest } = msgs[idx].meta ?? {}
@@ -316,8 +329,8 @@ export const queueReducers = {
   },
   /** Add a queued message (from backend queue_push WS event). */
   appendQueuedMessage: {
-    reducer(state: ChatState, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string; meta?: unknown }>) {
-      const { slot, content, ts, queueId, meta } = action.payload
+    reducer(state: ChatState, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string; meta?: unknown; waiting_on_you_answer?: unknown }>) {
+      const { slot, content, ts, queueId, meta, waiting_on_you_answer } = action.payload
       const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
       // A row with this queueId may ALREADY exist: slot-detail hydration
       // can land before a delayed `queue_push` for the same entry. Appending
@@ -330,9 +343,9 @@ export const queueReducers = {
       // `durable: false` too: the card's "won't survive a restart" label, and
       // `written`, so a requeued send whose row is written offers only Send now.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryWaitingOnYouAnswer(waiting_on_you_answer), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
-    prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
+    prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown; waiting_on_you_answer?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
     },
   },

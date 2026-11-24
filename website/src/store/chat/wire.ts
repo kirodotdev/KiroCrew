@@ -147,6 +147,16 @@ export function queueEntrySendId(meta: unknown): { sendId?: string } {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? { sendId: id } : {}
 }
 
+export type WaitingOnYouAnswerClaim = { key: string; ask_id: string }
+
+/** The server-derived claim identifying the ask a queued answer will retire. */
+export function queueEntryWaitingOnYouAnswer(value: unknown): { waitingOnYouAnswer?: WaitingOnYouAnswerClaim } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const claim = value as Record<string, unknown>
+  if (Object.keys(claim).length !== 2 || typeof claim.key !== 'string' || typeof claim.ask_id !== 'string') return {}
+  return { waitingOnYouAnswer: { key: claim.key, ask_id: claim.ask_id } }
+}
+
 /** The paste blocks behind a queue entry's text, when THIS browser sent it.
  *  The entry holds the wire text, in which every `[ Paste #N ]` token is
  *  already expanded, and the gateway carries no blocks on it (it stores
@@ -187,7 +197,7 @@ export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; automationSteer?: true; quote?: MessageQuote; banner?: string; restored?: boolean; held?: boolean; written?: boolean; durable?: false; knowledgeEnvelope?: KnowledgeEnvelopeMark; editRev?: number } & QueueEntryAttachments
+export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; automationSteer?: true; quote?: MessageQuote; banner?: string; restored?: boolean; held?: boolean; written?: boolean; durable?: false; knowledgeEnvelope?: KnowledgeEnvelopeMark; waitingOnYouAnswer?: WaitingOnYouAnswerClaim; editRev?: number } & QueueEntryAttachments
 
 /** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
  *
@@ -228,6 +238,6 @@ export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<Response[
  *  `normalizeSlotDetail` and the app-SDK `ChatEmbed`, which reads the same
  *  payload without the store, so both surfaces see one entry shape. */
 export function normalizeQueueEntries(raw: unknown): SlotQueueItem[] {
-  type QueueItem = string | { content: string; id: string; meta?: unknown; editRev?: unknown }
-  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.automationSteer === true ? { automationSteer: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.held === true ? { held: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.written === true ? { written: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
+  type QueueItem = string | { content: string; id: string; meta?: unknown; waiting_on_you_answer?: unknown; editRev?: unknown }
+  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.automationSteer === true ? { automationSteer: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.held === true ? { held: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.written === true ? { written: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...queueEntryWaitingOnYouAnswer(q.waiting_on_you_answer), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
 }

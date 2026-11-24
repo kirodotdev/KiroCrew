@@ -1078,6 +1078,10 @@ class SlotQueueRepository:
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
                 meta.pop("relay", None)
+                # Edited words differ from the option a card offered: the entry
+                # lands as an ordinary message, and the card can be answered again.
+                if previous != item["content"]:
+                    meta.pop("waitingOnYouAnswer", None)
                 # The label summarized the old text; an edited row shows its own.
                 if previous != item["content"]:
                     meta.pop("banner", None)

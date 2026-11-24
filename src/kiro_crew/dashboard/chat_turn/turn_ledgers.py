@@ -47,6 +47,12 @@ async def _report_consumed(turn, consumed: bool = True, *, irreversible: bool = 
     slot = turn.slot
     if irreversible and not turn._irreversible_consumption_reported:
         turn._irreversible_consumption_reported = True
+        # The model answered this prompt, so the closed asks its context named
+        # were heard; a turn refused before its prompt was sent keeps them.
+        from kiro_crew.dashboard.waiting_on_you_events import acknowledge_shown
+
+        acknowledge_shown(turn.state, turn._waiting_on_you_shown)
+        turn._waiting_on_you_shown = None
         if _on_irreversibly_consumed is not None:
             try:
                 result = _on_irreversibly_consumed()

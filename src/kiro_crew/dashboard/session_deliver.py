@@ -424,6 +424,8 @@ def _broadcast_queue_push(state: "DashboardState", slot: "_ChatSlot", queue_id: 
     }
     if view.get("meta"):
         push["meta"] = view["meta"]
+    if view.get("waiting_on_you_answer"):
+        push["waiting_on_you_answer"] = view["waiting_on_you_answer"]
     from kiro_crew.dashboard import responsive_chat as _rc
 
     _rc.mark_written_on_push(slot, queue_id, push)

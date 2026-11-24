@@ -649,13 +649,10 @@ export function useWebSocket() {
             break
           case 'queue_cancel':
             dispatch(cancelQueuedMessage(data))
-            // A cancelled queued message is an answer that never lands. The
-            // card was cleared optimistically when it was submitted, so without
-            // this the slot would keep reporting needs_input with nothing on
-            // screen to answer or dismiss. Re-syncing brings the card back from
-            // the server's own record — the question is genuinely unanswered
-            // again. Harmless when the cancelled message was not an answer: the
-            // snapshot then lists nothing for the slot and adds nothing.
+            // A cancelled queued message is an answer that never lands. Re-sync
+            // the pinned asks from the server as a fallback for tabs that did not
+            // retain the queue claim; the shared queue row removal restores the
+            // controls immediately on tabs that did.
             cards.syncPendingQuestions()
             break
           case 'queue_edit':

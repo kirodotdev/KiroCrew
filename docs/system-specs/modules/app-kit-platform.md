@@ -6058,12 +6058,15 @@ the live state, the message count and the newest message. `needsFullChat` is the
 list's `needs_full_chat`, read as a literal `true`: the session waits on a change card the
 person can still act on (not dismissed, and `pending`, `failed` or `applying` in a state
 the store's own expiry pass, `CardStore._refresh`, would leave as it is), a live
-guide offer (`offered`, `active` or `target_missing` before its expiry) or a browser `ask`
-parked on the live card before its deadline. `ChatEmbed` draws none of these, so a host
+guide offer (`offered`, `active` or `target_missing` before its expiry), a browser `ask`
+parked on the live card before its deadline, or a waiting-on-you ask the agent pinned and
+nothing has retired yet. `ChatEmbed` draws none of these, so a host
 sends the person to the session. `dashboard/full_chat_waits.py` reads each from the store
 that owns it (`CardStore.holds_open_card`, `GuideStore.holds_live_guide`, the live hub's
-quick-ask binding), never from transcript rows, and the card and guide broadcasts and the
-hub's ask listener push the slot list when one moves. An MCP elicitation is not in it:
+quick-ask binding, the waiting-on-you store's `slot_payload`), never from transcript rows,
+and the card and guide broadcasts and the hub's ask listener push the slot list when one
+moves. A waiting-on-you change patches the slot's `waiting_on_you` and `needs_full_chat`
+together. An MCP elicitation is not in it:
 it already sets `pending_approval`. `send` is chat-core's `sendTurn`
 over the dashboard wire, `decide` is `api.decideApproval` and `create` is
 `api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row

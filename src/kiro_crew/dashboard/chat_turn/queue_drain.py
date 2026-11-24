@@ -1327,6 +1327,14 @@ async def _start_next_queued_turn(
         _addresses = [_address_of(item, _address_key) for item in consumed]
         if any(_address != _addresses[0] for _address in _addresses):
             _drained_meta.pop(_address_key, None)
+    from kiro_crew.dashboard import waiting_on_you_events as _wy
+
+    # A merged row retires what each of its sends saw pinned, not the last one's alone.
+    _consumed_metas = [item.get("meta") for item in consumed]
+    _drained_meta.pop(_wy.SHOWN_ASKS_META_KEY, None)
+    _drained_meta.pop(_wy.OWNER_EDIT_META_KEY, None)
+    _drained_meta.update(_wy.merged_shown_asks(_consumed_metas))
+    _drained_meta.update(_wy.merged_owner_edit(_consumed_metas))
     if "relay" in _drained_meta:
         # Every consumed entry is the same sender's send (above), so the row is
         # their texts: rebuild its relay with one envelope span per send, so the

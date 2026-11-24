@@ -111,6 +111,8 @@ export type {
   CrewTimelineLane,
   CrewTimelineMark,
   CrewTimelineSegment,
+  WaitingOnYouAsk,
+  WaitingOnYouOption,
 } from './index.chat'
 export type {
   PullRequestCommit,
