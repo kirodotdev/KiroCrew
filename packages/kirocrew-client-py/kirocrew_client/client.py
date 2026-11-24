@@ -9,6 +9,7 @@ Mirrors the TypeScript @kirocrew/client API surface.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -154,21 +155,91 @@ def _read_app_secret(app_name: str) -> str:
         return ""
 
 
+#: Longest wait a refused app token exchange imposes. The Gateway answers a repeated
+#: refusal with ``Retry-After: 60``; a larger or malformed value must not park an
+#: app's sign-in for a day.
+_EXCHANGE_MAX_WAIT = 300.0
+
+#: The answers that refuse the secret. Only these hold the next exchange: a 5xx says
+#: nothing about the secret, so it fails as before and the next call asks again.
+_EXCHANGE_REFUSALS = frozenset({401, 403, 429})
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _retry_after_secs(raw: str | None) -> float:
+    """A delta-seconds ``Retry-After`` as a finite wait in seconds, 0 when absent.
+
+    The HTTP-date form is read as absent: the Gateway sends delta-seconds.
+    """
+    try:
+        secs = float(raw) if raw else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(secs) or secs < 0:
+        return 0.0
+    return min(secs, _EXCHANGE_MAX_WAIT)
+
+
+@dataclass
+class _ExchangeHold:
+    refusals: int = 0
+    not_before: float = 0.0
+
+
+#: Per (Gateway, app, secret fingerprint): when the next exchange may be sent. Keyed
+#: by module rather than by client so an app that builds a new client per call still
+#: backs off, and by secret so a corrected secret is tried at once.
+_exchange_holds: dict[tuple[str, str, str], _ExchangeHold] = {}
+
+
+def _exchange_key(base_url: str, app_name: str, secret: str) -> tuple[str, str, str]:
+    return (base_url, app_name, hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16])
+
+
 async def _exchange_app_token(base_url: str, app_name: str, secret: str) -> str:
-    """Exchange an app secret for an app-scoped token via the Gateway."""
+    """Exchange an app secret for an app-scoped token via the Gateway.
+
+    A refusal (401, 403 or 429) holds the next exchange for the refusal's
+    ``Retry-After``, and at least the backoff over the refusals in a row (1 s doubling
+    to 30 s). An exchange asked for inside that hold raises ``RATE_LIMITED`` without
+    sending a request, so an app whose secret went stale stops asking on every 401.
+    Any other failed answer holds nothing. A grant clears the hold.
+    """
+    key = _exchange_key(base_url, app_name, secret)
+    hold = _exchange_holds.get(key)
+    if hold is not None:
+        wait = hold.not_before - _now()
+        if wait > 0:
+            raise KiroCrewError(
+                ErrorCode.RATE_LIMITED,
+                f"App token exchange was refused; next attempt in {math.ceil(wait)}s",
+                status=429,
+            )
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{base_url}/api/apps/{quote(app_name, safe='')}/token",
             headers={"X-App-Secret": secret, "Content-Type": "application/json"},
         ) as resp:
             if not resp.ok:
+                if resp.status in _EXCHANGE_REFUSALS:
+                    hold = _exchange_holds.setdefault(key, _ExchangeHold())
+                    delay = max(
+                        _retry_after_secs(resp.headers.get("Retry-After")),
+                        _compute_backoff(hold.refusals, _DEFAULT_RETRY_BASE_DELAY),
+                    )
+                    hold.refusals += 1
+                    hold.not_before = _now() + min(delay, _EXCHANGE_MAX_WAIT)
                 raise KiroCrewError(
-                    ErrorCode.AUTH_EXPIRED,
+                    ErrorCode.RATE_LIMITED if resp.status == 429 else ErrorCode.AUTH_EXPIRED,
                     f"App token exchange failed: HTTP {resp.status}",
                     status=resp.status,
                 )
             data = await resp.json()
-            return str(data.get("token", ""))
+    _exchange_holds.pop(key, None)
+    return str(data.get("token", ""))
 
 
 @dataclass

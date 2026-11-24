@@ -19,7 +19,7 @@ from kiro_crew.apps.builtin_unavailable import record_unavailable_builtin
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
-from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard import app_token_denials, handlers
 from kiro_crew.dashboard.handlers import agent_plugins_list
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
@@ -342,3 +342,5 @@ def register(app: web.Application) -> None:
 
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)
+    # Refusals it is still counting are written before the process exits.
+    app_token_denials.install(app)
