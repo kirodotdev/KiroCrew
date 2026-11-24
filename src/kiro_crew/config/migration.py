@@ -13,6 +13,7 @@ not on the loader. This module imports neither the loader nor schema/validation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -213,6 +214,21 @@ def shared_access_verify_due(data: dict, overlay: dict | None = None) -> dict | 
     if not isinstance(shared, dict) or shared.get("enabled") is not True:
         return None
     return None if "verify_with_slack" in shared else shared
+
+
+def base_shared_access_verify_due(path: Path) -> bool:
+    """Whether ``config.json`` ITSELF (not the merged view) needs ``verify_with_slack: true``.
+
+    The load's document is the base with ``config.local.json`` merged over it, so a
+    section the overlay alone turns on looks due there while the base holds nothing
+    to write. This reads the base file, and only when the merged view already looks
+    due, so an ordinary load pays nothing. An unreadable file is never due.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(raw, dict) and shared_access_verify_due(raw) is not None
 
 
 def apply_document_migrations(

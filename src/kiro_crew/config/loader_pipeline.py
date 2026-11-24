@@ -1476,7 +1476,9 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         # check (see MIGRATE_SHARED_ACCESS_VERIFY). Decided on the BASE document;
         # skipped where the overlay names the key, which then wins. In memory at
         # once: the move only keeps the stricter check this load already ran with.
-        if _migration.shared_access_verify_due(data, overlay=local_data) is not None:
+        if _migration.shared_access_verify_due(
+            data, overlay=local_data
+        ) is not None and _migration.base_shared_access_verify_due(path):
             cfg.slack.shared_access.verify_with_slack = True
             pending.add(_migration.MIGRATE_SHARED_ACCESS_VERIFY)
 

@@ -97,3 +97,28 @@ def test_the_due_rule_reads_the_document_only() -> None:
     ):
         assert shared_access_verify_due(data) is None
     assert MIGRATE_SHARED_ACCESS_VERIFY == "shared_access_verify"
+
+
+def test_an_overlay_alone_turning_sharing_on_migrates_nothing_and_settles(
+    tmp_path, monkeypatch
+) -> None:
+    # The merged document looks due, config.json holds nothing to write: no write, no
+    # in-memory change, and no migration left pending on a later load.
+    local = {"slack": {"shared_access": {"enabled": True, "user_ids": ["U0ADA00001"]}}}
+    cfg, _ = _load(tmp_path, monkeypatch, {"agent": {"provider": "acp"}}, local)
+    assert cfg.slack.shared_access.enabled is True
+    assert cfg.slack.shared_access.verify_with_slack is False
+    before = (tmp_path / "config.json").read_text(encoding="utf-8")
+    again = KiroCrewConfig.load()
+    assert again.slack.shared_access.verify_with_slack is False
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == before
+    assert "verify_with_slack" not in before
+
+
+def test_an_overlay_touching_slack_does_not_stop_the_base_from_migrating(
+    tmp_path, monkeypatch
+) -> None:
+    local = {"slack": {"reactions_enabled": False}}
+    cfg, stored = _load(tmp_path, monkeypatch, _shared(enabled=True), local)
+    assert cfg.slack.shared_access.verify_with_slack is True
+    assert stored["verify_with_slack"] is True
