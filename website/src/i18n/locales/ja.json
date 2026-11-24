@@ -14694,6 +14694,7 @@
       "mcp_session_restart_to_load": "{{name}} の認証情報がないか、拒否されました。認証情報が使えるようになったら、新しいセッションを開始して {{name}} を読み込んでください。",
       "mcp_session_started": "このセッションで起動済み",
       "mcp_sign_in_needed_single": "<name/>（追加した MCP サーバー）のツールをこのチャットで使うには、サインインが必要です。<name/> の名前を含むメッセージ（例: 「<name/> にサインイン」）を送信してください。",
+      "mcp_sign_in_needed_menu": "サインイン",
       "mcp_sign_in_needed_send": "{{name}} にサインイン",
       "mcp_sign_in_needed_several": "追加した次の MCP サーバーのツールをこのチャットで使うには、サインインが必要です：<names/>。サインインはサーバーごとに行います。サーバー名を含むメッセージ（例: 「<first/> にサインイン」）を送信してください。",
       "mcp_sign_in_needed_more_other": "ほか {{count}} 件",

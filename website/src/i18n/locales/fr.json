@@ -15424,6 +15424,7 @@
       "mcp_session_restart_to_load": "Il manque un identifiant à {{name}}, ou il a été refusé. Une fois l’identifiant fonctionnel, démarre une nouvelle session pour charger {{name}}.",
       "mcp_session_started": "Démarré dans cette session",
       "mcp_sign_in_needed_single": "<name/> (un serveur MCP que tu as ajouté) a besoin que tu te connectes pour que ses outils fonctionnent dans ce chat. Envoie un message qui nomme <name/>, par exemple « Connexion à <name/> ».",
+      "mcp_sign_in_needed_menu": "Se connecter",
       "mcp_sign_in_needed_send": "Connexion à {{name}}",
       "mcp_sign_in_needed_several": "Ces serveurs MCP que tu as ajoutés ont besoin que tu te connectes pour que leurs outils fonctionnent dans ce chat : <names/>. Chacun a besoin de sa propre connexion. Envoie un message qui le nomme, par exemple «Connexion à <first/>».",
       "mcp_sign_in_needed_more_one": "{{count}} autre",

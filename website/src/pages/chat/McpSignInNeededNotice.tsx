@@ -2,8 +2,10 @@ import { memo, useState } from 'react'
 import { Trans } from 'react-i18next'
 
 import NoticeCard from './NoticeCard'
+import ErrorNotice from '../../components/ErrorNotice'
 import { COMPOSE_SEND_EVENT, type ComposeSendDetail, type ComposeSendOutcome } from '../../components/chat/GrillCard'
-import { fmtList } from '../../i18n/format'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import { fmtList, withReason } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import type { ChatMessage } from '../../types'
@@ -19,6 +21,8 @@ export function isMcpSignInNeededNotice(m: ChatMessage): boolean {
  *  the text went out or into the chat box, `failed` when it did not go out. */
 type Press = { state: 'pending' | 'done' } | { state: 'failed'; reason?: string }
 
+const LINK = 'break-all underline underline-offset-2 hover:text-text focus-visible:text-text disabled:opacity-50 disabled:no-underline disabled:cursor-default'
+
 /**
  * That row, drawn in the reader's language from `meta.servers` (the names it
  * shows) and `meta.more` (how many it leaves out). It names the chat way in:
@@ -30,9 +34,10 @@ type Press = { state: 'pending' | 'done' } | { state: 'failed'; reason?: string 
  * that text for the person as an ordinary message of its own, through the
  * page that serves `slot` (`COMPOSE_SEND_EVENT`, `queue`): it queues behind a
  * running turn, never steers into it, and takes nothing from the draft. So the
- * sign-in starts exactly the way the typed message starts it. A host that
- * serves no composer for `slot` (a crew window) takes no press, and the
- * button does nothing.
+ * sign-in starts exactly the way the typed message starts it. Up to two
+ * servers get inline buttons; three or more share one "Sign in" menu. A press
+ * no page takes (a crew window serves no composer for `slot`) says nothing
+ * went out, and a refused one says why, both through `ErrorNotice`.
  */
 export default memo(function McpSignInNeededNotice({
   content,
@@ -48,6 +53,8 @@ export default memo(function McpSignInNeededNotice({
   // and back offers its buttons again; a second press only sends the message
   // again, and a sign-in already live for the server starts no second one.
   const [presses, setPresses] = useState<Record<string, Press>>({})
+  // A press no page took (a crew window serves no composer for `slot`).
+  const [unhandled, setUnhandled] = useState(false)
   const servers = Array.isArray(meta?.servers)
     ? meta.servers.filter((s): s is string => typeof s === 'string' && s !== '')
     : []
@@ -71,41 +78,81 @@ export default memo(function McpSignInNeededNotice({
   )
   const press = (name: string, text: string) => {
     if (!slot) return
+    setUnhandled(false)
     const settle = (outcome: ComposeSendOutcome, reason?: string) =>
       setPresses(cur => ({ ...cur, [name]: outcome === 'refused' ? { state: 'failed', reason } : { state: 'done' } }))
     const detail: ComposeSendDetail = { text, slot, queue: true, result: null, onOutcome: settle }
     window.dispatchEvent(new CustomEvent(COMPOSE_SEND_EVENT, { detail }))
     if (detail.result === 'pending') setPresses(cur => ({ ...cur, [name]: { state: 'pending' } }))
     else if (detail.result === 'staged') setPresses(cur => ({ ...cur, [name]: { state: 'done' } }))
+    // No page serves this chat's composer (a crew window): nothing went out.
+    else setUnhandled(true)
   }
-  const failed = servers.map(name => presses[name]).find(p => p?.state === 'failed')
-  const action = slot ? (
+  // Stored text as an i18nT value, never a key or a <Trans> value.
+  const sendText = (name: string) => i18nT('pages.chatPage.mcp_sign_in_needed_send', { name })
+  const held = (name: string) => presses[name]?.state === 'pending' || presses[name]?.state === 'done'
+  const failedName = servers.find(name => presses[name]?.state === 'failed')
+  const failed = failedName ? presses[failedName] : undefined
+  // At most two inline buttons; three or more servers share one menu.
+  const action = !slot ? undefined : servers.length <= 2 ? (
     <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
-      {servers.map(name => {
-        // Stored text as an i18nT value, never a key or a <Trans> value.
-        const text = i18nT('pages.chatPage.mcp_sign_in_needed_send', { name })
-        const state = presses[name]?.state
-        return (
-          <button
-            key={name}
-            type="button"
-            data-testid="mcp-sign-in-needed-send"
-            disabled={state === 'pending' || state === 'done'}
-            className="break-all underline underline-offset-2 hover:text-text focus-visible:text-text disabled:opacity-50 disabled:no-underline disabled:cursor-default"
-            onClick={() => press(name, text)}
-          >
-            {text}
-          </button>
-        )
-      })}
-      {failed?.state === 'failed' && (
-        <span role="status" data-testid="mcp-sign-in-needed-failed" className="text-danger">
-          {failed.reason
-            ? i18nT('pages.chatPage.send_failed_with_error', { error: failed.reason })
-            : i18nT('pages.chatPage.send_failed')}
-        </span>
-      )}
+      {servers.map(name => (
+        <button
+          key={name}
+          type="button"
+          data-testid="mcp-sign-in-needed-send"
+          disabled={held(name)}
+          className={LINK}
+          onClick={() => press(name, sendText(name))}
+        >
+          {sendText(name)}
+        </button>
+      ))}
     </span>
-  ) : undefined
-  return <NoticeCard content={content} tone="warn" body={body} action={action} />
+  ) : (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" data-testid="mcp-sign-in-needed-menu" className={LINK}>
+          {i18nT('pages.chatPage.mcp_sign_in_needed_menu')}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-w-[min(24rem,90vw)]">
+        {servers.map(name => (
+          <DropdownMenuItem
+            key={name}
+            data-testid="mcp-sign-in-needed-send"
+            disabled={held(name)}
+            className="break-all"
+            onSelect={() => press(name, sendText(name))}
+          >
+            {sendText(name)}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+  return (
+    <>
+      <NoticeCard content={content} tone="warn" body={body} action={action} />
+      {/* No hand-off: the fix is to press again, not to ask the agent. */}
+      {failedName && failed?.state === 'failed' && (
+        <ErrorNotice
+          message={withReason(failed.reason, i18nT('components.grillCard.send_failed'))}
+          variant="inline"
+          askAgent={false}
+          onDismiss={() => setPresses(cur => { const next = { ...cur }; delete next[failedName]; return next })}
+          testId="mcp-sign-in-needed-failed"
+        />
+      )}
+      {unhandled && (
+        <ErrorNotice
+          message={i18nT('components.grillCard.not_sent')}
+          variant="inline"
+          askAgent={false}
+          onDismiss={() => setUnhandled(false)}
+          testId="mcp-sign-in-needed-unhandled"
+        />
+      )}
+    </>
+  )
 })

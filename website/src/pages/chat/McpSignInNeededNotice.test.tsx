@@ -150,7 +150,8 @@ describe('McpSignInNeededNotice', () => {
       draw(ROW, 'chat-1')
       fireEvent.click(buttons()[0])
       act(() => { h.seen[0].onOutcome('refused', 'busy') })
-      expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toBe('Send failed: busy')
+      // Through the shared error surface, with the reason first.
+      expect(screen.getByTestId('mcp-sign-in-needed-failed').textContent).toContain('busy. It did not go out. Try again.')
       expect(buttons()[0].disabled).toBe(false)
     } finally {
       h.stop()
@@ -168,15 +169,41 @@ describe('McpSignInNeededNotice', () => {
     }
   })
 
-  it('leaves the button as it was when no page serves the chat', () => {
+  it('says nothing went out when no page serves the chat, and leaves the button as it was', () => {
     const none = host(null)
     try {
       draw(ROW, 'crew:x')
+      expect(screen.queryByTestId('mcp-sign-in-needed-unhandled')).toBeNull()
       fireEvent.click(buttons()[0])
       expect(none.seen).toHaveLength(1)
       expect(buttons()[0].disabled).toBe(false)
+      expect(screen.getByTestId('mcp-sign-in-needed-unhandled').textContent).toContain('This view has no chat box to send to.')
     } finally {
       none.stop()
+    }
+  })
+
+  it('puts two servers in inline buttons and three or more in one menu', async () => {
+    draw({ ...SEVERAL, meta: { ...SEVERAL.meta, servers: ['s0', 's1'], more: 0 } }, 'chat-1')
+    expect(buttons().map(b => b.textContent)).toEqual(['Sign in to s0', 'Sign in to s1'])
+    expect(screen.queryByTestId('mcp-sign-in-needed-menu')).toBeNull()
+  })
+
+  it('offers three or more servers from one Sign in menu, each item a queue-only send', async () => {
+    const h = host('pending')
+    try {
+      draw(SEVERAL, 'chat-1')
+      // No row of five peer buttons: one trigger only.
+      expect(buttons()).toHaveLength(0)
+      const trigger = screen.getByTestId('mcp-sign-in-needed-menu')
+      expect(trigger.textContent).toBe('Sign in')
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      const items = await screen.findAllByTestId('mcp-sign-in-needed-send')
+      expect(items.map(i => i.textContent)).toEqual(['Sign in to s0', 'Sign in to s1', 'Sign in to s2', 'Sign in to s3', 'Sign in to s4'])
+      fireEvent.click(items[2])
+      expect(h.seen.map(d => [d.text, d.slot, d.queue])).toEqual([['Sign in to s2', 'chat-1', true]])
+    } finally {
+      h.stop()
     }
   })
 

@@ -15424,6 +15424,7 @@
       "mcp_session_restart_to_load": "A {{name}} le falta una credencial, o se rechazó. Cuando la credencial funcione, inicia una sesión nueva para cargar {{name}}.",
       "mcp_session_started": "Iniciado en esta sesión",
       "mcp_sign_in_needed_single": "<name/> (un servidor MCP que agregaste) necesita que inicies sesión para que sus herramientas funcionen en este chat. Envía un mensaje que nombre <name/>, por ejemplo \"Iniciar sesión en <name/>\".",
+      "mcp_sign_in_needed_menu": "Iniciar sesión",
       "mcp_sign_in_needed_send": "Iniciar sesión en {{name}}",
       "mcp_sign_in_needed_several": "Estos servidores MCP que agregaste necesitan que inicies sesión para que sus herramientas funcionen en este chat: <names/>. Cada uno necesita su propio inicio de sesión. Envía un mensaje que lo nombre, por ejemplo \"Iniciar sesión en <first/>\".",
       "mcp_sign_in_needed_more_one": "{{count}} más",
