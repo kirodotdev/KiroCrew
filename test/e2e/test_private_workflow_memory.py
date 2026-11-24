@@ -253,12 +253,12 @@ def test_private_workflows_execute_over_real_projected_mcp():
         # These calls originate in workflow workers, not the owner HTTP client.
         nested_source = 'META = {"name": "nested"}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:NEST:A]]")\n'
         # A crewmate's chat runs on its conductor, which starts no sub-agents, and
-        # a workflow it starts runs its steps on that same template: the nested
-        # workflow runs on the crewmate's store, the nested spawn is refused.
+        # a workflow it starts runs its steps on that same template. A step may
+        # not start a workflow of its own, and the nested spawn is refused.
         start = _post_as(client, "/api/workflows/run", {"source": nested_source}, session)
         nested = json.loads(_finished(client, start["run_id"])["result"])
-        nested_id = re.search(r"wf_\d+", json.dumps(nested["nested_workflow"])).group()
-        _assert_result(_finished(client, nested_id), "A")
+        nested_run = json.dumps(nested["nested_workflow"])
+        assert "cannot start another workflow" in nested_run, nested["nested_workflow"]
         refused = json.dumps(nested["nested_spawn"])
         assert "starts no sub-agents" in refused, nested["nested_spawn"]
         # The conductor hands work off with session_create instead: the child is
@@ -280,9 +280,8 @@ def test_private_workflows_execute_over_real_projected_mcp():
                 elif tool == "workflow_result":
                     assert "WF_E2E_A_PRIVATE_LESSON" in text
                 elif tool == "workflow_rerun_subtree":
-                    assert not result.get("isError"), (tool, result)
-                    replay_id = re.search(r"wf_\d+", text).group()
-                    _assert_result(_finished(client, replay_id), "A")
+                    # A rerun starts a new run, which a workflow step may not do.
+                    assert "cannot start another workflow" in text, (tool, result)
                 else:
                     assert "refused" not in text.lower(), (tool, result)
         config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))

@@ -108,7 +108,9 @@ async def resolve_session_memory_mode(state: DashboardState, key: str) -> str:
         from kiro_crew.subagent_persistence import read_run_memory_mode
 
         return await asyncio.to_thread(read_run_memory_mode, key.removeprefix("subagent:"))
-    if key.startswith(("wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:")):
+    from kiro_crew.workflow_step_keys import is_workflow_step_key
+
+    if is_workflow_step_key(key):
         from kiro_crew.workflow_memory import WorkflowMemoryError, read_binding
 
         try:

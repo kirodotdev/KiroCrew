@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from kiro_crew.workflow_step_keys import WORKFLOW_RUN_STEP_KEY_PREFIXES
+
 if TYPE_CHECKING:
     import asyncio
 
@@ -109,7 +111,7 @@ async def _subagent_nested_live(manager: Any, batch_id: str) -> bool:
 #: Session-key prefixes of a workflow RUN's step sessions, each followed by
 #: ``<run_id>:``: per-call (``wf:``), pooled worker, unpooled call, and the
 #: memory-scoped worker key.
-_WORKFLOW_STEP_PREFIXES = ("wf:", "wf-pool:", "wf-unpooled:", "wf-worker:")
+_WORKFLOW_STEP_PREFIXES = WORKFLOW_RUN_STEP_KEY_PREFIXES
 
 
 def _spawn_parent_slot(parent_key: str, workflow_service: Any) -> str:

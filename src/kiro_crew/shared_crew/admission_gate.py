@@ -91,6 +91,7 @@ from kiro_crew.shared_crew.scheduler import (
     WorkClass,
 )
 from kiro_crew.shared_crew.work_store import IdempotencyConflict, WorkStore, new_work_id
+from kiro_crew.workflow_step_keys import WORKFLOW_RUN_STEP_KEY_PREFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -136,10 +137,7 @@ _SESSION_BINDINGS_MAX = 20000
 _WORKER_SUBKEY_NAMESPACES = (
     "taskrunner:",
     "cron:",
-    "wf:",
-    "wf-pool:",
-    "wf-unpooled:",
-    "wf-worker:",
+    *WORKFLOW_RUN_STEP_KEY_PREFIXES,
 )
 _QUEUE_IDS_MAX = 4096
 #: Unattached work ended before its execution started, remembered so the late
