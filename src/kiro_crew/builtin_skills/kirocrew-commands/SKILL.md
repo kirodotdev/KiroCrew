@@ -316,6 +316,24 @@ Read `references/cloud-network-desktop.md` for the tailnet commands.
 
 Read `references/cloud-network-desktop.md` for the computer-use commands.
 
+## Connected Computers (feature preview, Linux only)
+
+Share a folder on this computer with a remote gateway. Off unless
+`dashboard.feature_previews.connected_computers` is on. Some commands run on
+the remote gateway (called over SSH), others on the computer that shares.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew connected-computer status [--json]` | (this computer) list its grants |
+| `kirocrew connected-computer off` | (this computer) turn off every grant now |
+| `kirocrew connected-computer reset-protection` | (this computer) start over after the OS keyring lost this computer's key |
+| `kirocrew connected-computer desktop-host` | (this computer) the desktop app's local controller, on stdin/stdout only |
+| `kirocrew connected-computer devices [--json]` | (remote gateway) list enrolled computers |
+| `kirocrew connected-computer revoke DEVICE_ID` | (remote gateway) refuse a computer's credentials |
+| `kirocrew connected-computer remove DEVICE_ID` | (remote gateway) retire a computer; its files are untouched |
+| `kirocrew connected-computer enroll --stdin` | (remote gateway, over SSH) enroll the calling computer |
+| `kirocrew connected-computer forget --stdin` | (remote gateway, over SSH) revoke the calling computer |
+
 ## Snapshot & Restore
 
 Read `references/snapshot-slack-env.md` for the snapshot and restore commands.
