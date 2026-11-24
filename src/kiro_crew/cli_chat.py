@@ -54,6 +54,7 @@ from kiro_crew.permission_floor import (
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.providers.base import (
+    EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -70,8 +71,8 @@ from kiro_crew.start_priority import StartPriority
 from kiro_crew.terminal_safe import safe_terminal_line
 
 if TYPE_CHECKING:
-    from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
     from kiro_crew.cli_chat_context import CliSessionContext
+    from kiro_crew.messaging.tool_hooks import ChannelTurnHooks
 
 logger = logging.getLogger(__name__)
 
@@ -1058,7 +1059,7 @@ def _audit(
 
 
 async def _spec_hook_refusal(
-    provider: LLMProvider, gate: _ToolGate, event: LLMEvent, spec: TurnSpecHooks | None = None
+    provider: LLMProvider, gate: _ToolGate, event: LLMEvent, hooks: ChannelTurnHooks | None = None
 ) -> str | None:
     """Why the running agent spec's own PreToolUse hooks refuse *event*, or ``None``.
 
@@ -1066,8 +1067,9 @@ async def _spec_hook_refusal(
     harness never receives them); there the projection sends every call such a hook
     covers here. The agent-channel member's gate (:mod:`kiro_crew.channel_spec_hooks`):
     the spec's hooks alone, through an empty store, so the CLI runs none of the Hooks
-    page's, and a spec that cannot be read refuses. *spec* is the one the turn read
-    (:mod:`kiro_crew.cli_chat_spec_hooks`); ``None`` reads it here.
+    page's, and a spec that cannot be read refuses. *hooks* are the ones the turn
+    read (:mod:`kiro_crew.cli_chat_spec_hooks`), which also learn the id the request
+    names the tool by, for its PostToolUse; ``None`` reads the spec here.
     """
     # Deferred, as in messaging.tool_hooks: the agent_sdk package reaches acp.client.
     from kiro_crew.agent_sdk.capabilities import capabilities_of
@@ -1076,7 +1078,10 @@ async def _spec_hook_refusal(
 
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return None
-    if spec is None:
+    if hooks is not None:
+        hooks.note_permission_request(event)
+        spec = hooks.spec
+    else:
         spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
     return await pre_tool_refusal(spec, provider, event, gate.session_key)
 
@@ -1088,7 +1093,7 @@ async def _answer_permission(
     interactive: bool,
     gate: _ToolGate | None = None,
     undelivered_replies: list[str] | None = None,
-    spec: TurnSpecHooks | None = None,
+    hooks: ChannelTurnHooks | None = None,
 ) -> None:
     """Answer a pending permission request so the backend can resume the turn.
 
@@ -1195,7 +1200,7 @@ async def _answer_permission(
         )
         spec_refusal: str | None = None
         if decision.action != TOOL_DENY:
-            spec_refusal = await _spec_hook_refusal(provider, gate, event, spec)
+            spec_refusal = await _spec_hook_refusal(provider, gate, event, hooks)
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
         await _reject_internal_failure(
@@ -1465,12 +1470,13 @@ async def _send_and_print(
     :mod:`kiro_crew.cli_chat_spec_hooks`; *new_session* says the message is the
     first of a session, which fires ``AgentSpawn`` and prints the spec's notices.
     """
-    from kiro_crew.cli_chat_spec_hooks import start, stop
+    from kiro_crew.cli_chat_spec_hooks import start, stop, switched
     from kiro_crew.messaging.turn_bracket import stop_reason_landed
 
+    session_key = gate.session_key if gate is not None else _CLI_SESSION_KEY
     hooks, message = await start(
         provider,
-        gate.session_key if gate is not None else _CLI_SESSION_KEY,
+        session_key,
         gate.kiro_agent if gate is not None else "",
         message,
         new_session=new_session,
@@ -1491,6 +1497,8 @@ async def _send_and_print(
             if event.kind == EVENT_TEXT_CHUNK:
                 reply.append(event.text)
                 print(quoted.feed(event.text), end="", flush=True)
+            elif event.kind == EVENT_AGENT_SWITCHED and hooks is not None:
+                hooks = await switched(provider, hooks, event)
             elif event.kind == EVENT_TOOL_CALL and hooks is not None:
                 await hooks.on_tool_call(event)
             elif event.kind == EVENT_TOOL_RESULT and hooks is not None:
@@ -1506,7 +1514,7 @@ async def _send_and_print(
                     interactive=interactive,
                     gate=gate,
                     undelivered_replies=undelivered,
-                    spec=hooks.spec if hooks is not None else None,
+                    hooks=hooks,
                 )
             elif event.kind == EVENT_COMPLETE:
                 print(quoted.flush(), end="", flush=True)

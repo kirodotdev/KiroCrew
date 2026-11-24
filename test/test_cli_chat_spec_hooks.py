@@ -6,6 +6,8 @@ terminal prompt. So the spec's guard answers first, and a call it refuses is nev
 put to the person at the terminal.
 """
 
+import types
+
 import pytest
 from cli_helpers import _TestChatPermissionRequestHarness
 
@@ -84,21 +86,22 @@ class TestCliChatSpecPreToolHooks(_TestChatPermissionRequestHarness):
 _AGENT = "cli-guard"
 
 
-def _write_spec(raw: str | None = None) -> None:
+def _write_spec(raw: str | None = None, *, name: str = _AGENT, hooks: dict | None = None) -> None:
     import json
 
     import kiro_crew.config.paths as paths_mod
 
     agents = paths_mod.kiro_agents_dir()
     agents.mkdir(parents=True, exist_ok=True)
-    hooks = {
-        "agentSpawn": [{"command": "spawn"}],
-        "userPromptSubmit": [{"command": "prompt"}],
-        "postToolUse": [{"matcher": "execute_bash", "command": "post"}],
-        "stop": [{"command": "stop"}],
-    }
-    spec = {"name": _AGENT, "prompt": "p", "tools": ["*"], "hooks": hooks}
-    (agents / f"{_AGENT}.json").write_text(raw or json.dumps(spec), encoding="utf-8")
+    if hooks is None:
+        hooks = {
+            "agentSpawn": [{"command": "spawn"}],
+            "userPromptSubmit": [{"command": "prompt"}],
+            "postToolUse": [{"matcher": "execute_bash", "command": "post"}],
+            "stop": [{"command": "stop"}],
+        }
+    spec = {"name": name, "prompt": "p", "tools": ["*"], "hooks": hooks}
+    (agents / f"{name}.json").write_text(raw or json.dumps(spec), encoding="utf-8")
 
 
 class _KasProvider:
@@ -161,8 +164,9 @@ class TestCliChatSpecObserverHooks:
                 hook_id=hook.id,
                 hook_name=hook.name,
                 event=hook.event,
-                exit_code=0,
+                exit_code=2 if hook.command == "guard" else 0,
                 stdout=f"out-{hook.command}",
+                stderr="no shell here" if hook.command == "guard" else "",
             )
 
         monkeypatch.setattr(hooks_mod, "run_script_hook", run)
@@ -170,19 +174,21 @@ class TestCliChatSpecObserverHooks:
         return seen
 
     @staticmethod
-    async def _send(tmp_path, *, new_session: bool) -> _KasProvider:
+    async def _send(
+        tmp_path, *, new_session: bool, provider=None, message: str = "run echo hi"
+    ) -> _KasProvider:
         import asyncio
 
         import kiro_crew.cli_chat as cli_chat
         from kiro_crew.hooks import HookManager, HooksConfig
 
-        provider = _KasProvider(str(tmp_path))
+        provider = provider or _KasProvider(str(tmp_path))
         gate = cli_chat._ToolGate(
             hooks=HookManager(HooksConfig.from_dict({})), agent=_AGENT, kiro_agent=_AGENT
         )
         await asyncio.wait_for(
             cli_chat._send_and_print(
-                provider, "run echo hi", interactive=False, gate=gate, new_session=new_session
+                provider, message, interactive=False, gate=gate, new_session=new_session
             ),
             timeout=10.0,
         )
@@ -212,3 +218,132 @@ class TestCliChatSpecObserverHooks:
 
         assert runs == []
         assert f"The hooks of agent {_AGENT} could not be read" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_a_slash_command_reaches_the_harness_bare(self, tmp_path, runs):
+        _write_spec()
+
+        provider = await self._send(tmp_path, new_session=False, message="/compact")
+
+        assert "prompt" in [command for command, _ in runs]
+        assert provider.prompts == ["/compact"]
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_matches_the_id_the_permission_request_names(
+        self, tmp_path, runs, monkeypatch
+    ):
+        """KAS names a built-in's id (``fs_write``) only on the permission request."""
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(
+            cli_chat, "sel", lambda: types.SimpleNamespace(log_tool_invocation=lambda **kw: None)
+        )
+        _write_spec(hooks={"postToolUse": [{"matcher": "fs_write", "command": "post"}]})
+
+        await self._send(tmp_path, new_session=False, provider=_FileWriteProvider(str(tmp_path)))
+
+        assert [command for command, _ in runs] == ["post"]
+
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_switch_is_gated_by_the_new_agents_guard(
+        self, tmp_path, runs, monkeypatch
+    ):
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(
+            cli_chat, "sel", lambda: types.SimpleNamespace(log_tool_invocation=lambda **kw: None)
+        )
+        _write_spec(hooks={})
+        _write_spec(
+            name="strict",
+            hooks={"preToolUse": [{"matcher": "execute_bash", "command": "guard"}]},
+        )
+        provider = _SwitchProvider(str(tmp_path))
+
+        await self._send(tmp_path, new_session=False, provider=provider)
+
+        assert [command for command, _ in runs] == ["guard"]
+        assert provider.rejected == ["r1"]
+
+
+class _ScriptedKasProvider(_KasProvider):
+    """A KAS session whose turn raises one permission request, then completes."""
+
+    def __init__(self, cwd: str) -> None:
+        super().__init__(cwd)
+        self.rejected: list = []
+
+    def _frames(self) -> list:
+        raise NotImplementedError
+
+    async def stream(self, message):
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        self.prompts.append(str(message))
+        for frame in self._frames():
+            if callable(frame):
+                frame()
+                continue
+            yield frame
+        yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+    async def reject_tool(self, request_id):
+        self.rejected.append(request_id)
+
+    async def approve_tool(self, request_id, *, always: bool = False):
+        return True
+
+
+class _FileWriteProvider(_ScriptedKasProvider):
+    def _frames(self) -> list:
+        from kiro_crew.providers.base import (
+            EVENT_PERMISSION_REQUEST,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        return [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, tool_call_id="t1", title="Writing file", tool_kind="edit"
+            ),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="r1",
+                tool_call_id="t1",
+                title="Writing file",
+                tool_kind="edit",
+                harness_tool_id="fs_write",
+            ),
+            LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t1", tool_status="completed"),
+        ]
+
+
+class _SwitchProvider(_ScriptedKasProvider):
+    def _switch(self) -> None:
+        self.kas_projected_agent = "strict"
+
+    def _frames(self) -> list:
+        import json
+
+        from kiro_crew.providers.base import (
+            EVENT_AGENT_SWITCHED,
+            EVENT_PERMISSION_REQUEST,
+            LLMEvent,
+        )
+
+        return [
+            self._switch,
+            LLMEvent(kind=EVENT_AGENT_SWITCHED, text="strict"),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="r1",
+                tool_call_id="t1",
+                title="Run echo",
+                tool_kind="execute",
+                is_shell=True,
+                shell_classified=True,
+                tool_input=json.dumps({"command": "echo hi"}),
+                harness_tool_id="run_command",
+            ),
+        ]

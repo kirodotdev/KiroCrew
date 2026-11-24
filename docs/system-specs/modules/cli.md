@@ -1377,8 +1377,12 @@ backends each message reads the spec once (`cli_chat_spec_hooks.turn_hooks`, a
 uses). The first message of a session (the first of the process, and the first
 after a compaction restart) fires `agentSpawn`; every message fires
 `userPromptSubmit` with the prompt the backend receives, and both outputs go in
-front of it in a `[Hook context]` block. `postToolUse` fires on each call's
-terminal result and `stop` with the redacted reply once the turn landed. Those
+front of it in a `[Hook context]` block, except in front of a slash command
+(`/compact`), which a harness runs only bare. `postToolUse` fires on each call's
+terminal result, matched by the id the call's permission request names (KAS states
+a built-in's id, `fs_write`, only there), and `stop` with the redacted reply once
+the turn landed. A mid-turn agent switch re-reads the spec of the agent switched
+to, so its `preToolUse` guard answers the turn's later requests. Those
 events run the spec's hooks only: neither the Hooks page's nor the user's
 standalone `~/.kiro/hooks` files. The first message of a session also prints, on
 stderr, the notice a dashboard posts for spec keys this backend never receives

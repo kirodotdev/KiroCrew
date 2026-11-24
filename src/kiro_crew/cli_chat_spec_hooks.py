@@ -9,7 +9,8 @@ runner, a channel turn and a cron turn already do. ``kirocrew chat`` does throug
 * ``AgentSpawn`` on a new session, then ``UserPromptSubmit`` with the prompt the
   backend receives, into the prompt's ``[Hook context]`` block;
 * the spec's ``PreToolUse`` on each permission request, before the y/n prompt
-  (``cli_chat._spec_hook_refusal``, which reads :attr:`ChannelTurnHooks.spec`);
+  (``cli_chat._spec_hook_refusal``, which reads :attr:`ChannelTurnHooks.spec`),
+  re-read for the new agent after a mid-turn switch (:func:`switched`);
 * ``PostToolUse`` on each call's terminal result;
 * ``Stop`` with the reply once the turn landed.
 
@@ -58,6 +59,7 @@ async def start(
     On a new session prints the spec's notices and fires ``AgentSpawn``; always
     fires ``UserPromptSubmit``. Their output goes in front of *prompt*.
     """
+    from kiro_crew.cli_chat_context import _is_harness_command
     from kiro_crew.messaging.script_hooks import with_hook_context
 
     hooks = await turn_hooks(provider, session_key, kiro_agent, prompt)
@@ -66,7 +68,24 @@ async def start(
     if new_session:
         print_session_notices(provider, hooks, kiro_agent)
     injected = await hooks.prompt_context(is_new=new_session)
+    # A harness runs a slash command (``/compact``) only when it opens the prompt.
+    if await _is_harness_command(prompt):
+        return hooks, prompt
     return hooks, await with_hook_context(prompt, injected)
+
+
+async def switched(provider: Any, hooks: ChannelTurnHooks, event: Any) -> ChannelTurnHooks:
+    """The hooks of the agent a mid-turn switch moved the session to.
+
+    Its ``preToolUse`` guard answers the turn's later permission requests, and its
+    other hooks the turn's later events. Nothing fires on the switch itself.
+    """
+    from kiro_crew.agent_sdk.spec_hooks import session_agent
+
+    agent = session_agent(provider, str(getattr(event, "text", "") or ""))
+    turn = hooks.turn
+    renewed = await turn_hooks(provider, turn.session_key, agent, turn.prompt)
+    return renewed if renewed is not None else hooks
 
 
 def print_session_notices(provider: Any, hooks: ChannelTurnHooks, kiro_agent: str) -> None:
