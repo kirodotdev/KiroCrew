@@ -205,6 +205,12 @@ opens that page with `find_ui` or a guide, or offers an MCP card through
 `propose_change`. It does not tell you to hand-edit `kirocrew.json` or run
 `jq`/`sed` on it.
 
+An agent cannot write `~/.kiro/settings/mcp.json` itself: its file tools
+refuse the file and the agent sandbox holds it read-only, so kiro-cli's in-chat
+`/mcp` add is refused too. To add a server there, the agent's `request_server`
+card takes `target: "kiro-cli"`, and the card names the file it also writes.
+`kiro-cli mcp add` in your own terminal is not affected.
+
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the
 rebuild, and the gateway log names it (`Dropping MCP server ...: command not
