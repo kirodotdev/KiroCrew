@@ -620,9 +620,9 @@ def stdlib_run_killing_tree_on_timeout(
         proc.poll()
         raise
     except BaseException:
-        # The stdlib's own cleanup for any other interruption (a Ctrl-C).
-        with contextlib.suppress(OSError):
-            proc.kill()
+        # The stdlib's own cleanup for any other interruption (a Ctrl-C): the
+        # whole tree, as on a timeout, or a grandchild keeps running.
+        kill_popen_tree(proc)
         raise
     retcode = proc.wait()  # communicate() already waited; this reads the status
     if check and retcode:
