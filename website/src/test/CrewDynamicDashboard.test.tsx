@@ -9,7 +9,7 @@
  * its case has ended lands a state update on whichever case runs next. The page
  * file mocks this component and pins only the identity it passes in.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api, type DashboardManifest } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -383,6 +383,26 @@ describe('CrewDynamicDashboard', () => {
       // Off: the host offers no send, so there is nothing to warn about.
       renderWithProviders(
         <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" onAct={vi.fn()} />,
+      )
+      await screen.findByTestId('crew-dashboard-frame')
+      expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull()
+    })
+
+    it('hides the one-click-send badge for good once dismissed, on every bot', async () => {
+      localStorage.removeItem('mc-dashboard-card-send-badge-dismissed')
+      onTestFinished(() => localStorage.removeItem('mc-dashboard-card-send-badge-dismissed'))
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      const onSend = vi.fn().mockResolvedValue('sent')
+      const { unmount } = renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" onAct={vi.fn()} onSend={onSend} />,
+      )
+      fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+      await waitFor(() => expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull())
+      expect(localStorage.getItem('mc-dashboard-card-send-badge-dismissed')).toBe('1')
+      unmount()
+      // Another bot with the switch on: still hidden, the reader already knows.
+      renderWithProviders(
+        <CrewDynamicDashboard target={{ kind: 'member', slug: 'research', member: 'research' }} displayName="Research" onAct={vi.fn()} onSend={onSend} />,
       )
       await screen.findByTestId('crew-dashboard-frame')
       expect(screen.queryByTestId('crew-dashboard-card-send-badge')).toBeNull()
