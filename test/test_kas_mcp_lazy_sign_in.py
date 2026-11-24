@@ -33,9 +33,25 @@ def _runtime(*holders: tuple[str, list[str]]) -> AcpRuntime:
     """A KAS runtime with one registered session per (session id, servers it sent)."""
     runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
     for session_id, servers in holders:
-        runtime._session_queues[session_id] = asyncio.Queue()
-        runtime._open_mcp_report(session_id, [{"name": name} for name in servers])
+        _register(runtime, session_id, servers)
     return runtime
+
+
+def _register(runtime: AcpRuntime, session_id: str, servers: list[str], *, heard=True) -> None:
+    """Register a session whose host status snapshot reported *servers* connected."""
+    runtime._session_queues[session_id] = asyncio.Queue()
+    runtime._open_mcp_report(session_id, [{"name": name} for name in servers])
+    if heard:
+        runtime._fold_mcp_frame(
+            session_id,
+            JsonRpcMessage(
+                method=METHOD_KAS_MCP_STATUS,
+                params={
+                    "sessionId": session_id,
+                    "servers": [{"name": name, "status": "connected"} for name in servers],
+                },
+            ),
+        )
 
 
 def _answers(runtime: AcpRuntime, monkeypatch) -> list[tuple]:
@@ -237,8 +253,11 @@ async def test_a_completion_matches_by_flow_id_before_server_name(monkeypatch):
 
     await _complete(runtime, serverName="remote", success=True, oauthFlowId="another-flow")
     assert _frames(runtime, "s1") == []
-
+    # Without an id it may be another connection's wait: it settles no flow that has one.
     await _complete(runtime, serverName="remote", success=True)
+    assert _frames(runtime, "s1") == []
+
+    await _complete(runtime, serverName="remote", success=True, oauthFlowId="flow-1")
     assert [f.method for f in _frames(runtime, "s1")] == [METHOD_MCP_SERVER_INITIALIZED]
 
 
@@ -303,3 +322,128 @@ async def test_the_reader_routes_the_link_and_its_end_to_the_holder_only():
     written = b"".join(call.args[0] for call in proc.stdin.write.call_args_list)
     assert b'"id": 11' in written or b'"id":11' in written
     assert b'"success"' in written
+
+
+# ── what might hold the server unseen fails delivery closed ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_session_still_starting_blocks_delivery(monkeypatch):
+    """Its queue and report come after the engine answers, so it could hold the server."""
+    runtime = _runtime(("s1", ["remote"]))
+    replies = _answers(runtime, monkeypatch)
+    runtime._session_inits_in_flight = 1
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert replies == [("error", 5, "a session is still starting on this runtime")]
+    assert _frames(runtime, "s1") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heard", [False, True], ids=["unheard", "wire-roster-only"])
+async def test_a_session_that_may_hold_the_server_unseen_blocks_delivery(monkeypatch, heard):
+    """No host frame yet, or the server is only on the wire Crew sent: not proof either way."""
+    runtime = _runtime(("s1", ["remote"]))
+    _register(runtime, "s2", [], heard=heard)
+    runtime._mcp_reports()["s2"].begin_session([{"name": "remote"}])
+    if heard:
+        runtime._fold_mcp_frame(
+            "s2",
+            JsonRpcMessage(method=METHOD_KAS_MCP_STATUS, params={"sessionId": "s2", "servers": []}),
+        )
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert [kind for kind, _id, _msg in replies] == ["error"]
+    assert _frames(runtime, "s1") == [] and _frames(runtime, "s2") == []
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_report_would_cut_is_refused(monkeypatch):
+    """A stored name at the cap may be a longer server's name cut short."""
+    long_name = "r" * 128
+    runtime = _runtime(("s1", [long_name]))
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy(server=long_name))
+
+    assert replies == [("error", 5, "the MCP server name is not a plain name")]
+
+
+@pytest.mark.asyncio
+async def test_a_child_of_another_session_blocks_delivery(monkeypatch):
+    runtime = _runtime(("s1", ["remote"]), ("s2", ["other"]))
+    runtime._announced_children["child-of-s2"] = "s2"
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert [kind for kind, _id, _msg in replies] == ["error"]
+    assert _frames(runtime, "s1") == []
+
+
+@pytest.mark.asyncio
+async def test_a_link_during_an_explicit_sign_in_of_that_server_goes_to_its_slot(monkeypatch):
+    """The engine tags a link opened after the handshake ``notification`` even then."""
+    runtime = _runtime(("s1", ["remote"]), ("s2", ["remote"]))
+    replies = _answers(runtime, monkeypatch)
+    runtime._mcp_sign_in = ("s2", "remote")
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert replies == [("result", 5, {"success": True})]
+    assert _frames(runtime, "s1") == []
+    assert len(_frames(runtime, "s2")) == 1
+
+
+# ── a completion reaches only the queue that was shown the link ──────────────
+
+
+@pytest.mark.asyncio
+async def test_a_completion_for_a_session_that_left_reaches_no_new_queue(monkeypatch):
+    runtime = _runtime(("s1", ["remote"]))
+    _answers(runtime, monkeypatch)
+    await runtime._answer_open_external_url(5, _lazy())
+    runtime.unregister_session("s1")
+    _register(runtime, "s1", ["remote"])
+
+    await _complete(runtime, serverName="remote", success=True, oauthFlowId="flow-1")
+
+    assert _frames(runtime, "s1") == []
+
+
+# ── a replacing link reaches the chat ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_new_link_in_a_flow_passes_the_handles_one_link_per_server_rule(monkeypatch):
+    """The handle shows one link per server until the sign-in ends; the new one must pass."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp import session_handle_mcp
+
+    runtime = _runtime(("s1", ["remote"]))
+    _answers(runtime, monkeypatch)
+    await runtime._answer_open_external_url(5, _lazy())
+    await runtime._answer_open_external_url(6, _lazy(url=_URL_2))
+    first, second = _frames(runtime, "s1")
+    handle = SimpleNamespace(_oauth_emitted_servers=set())
+
+    shown = [session_handle_mcp._accept_oauth_request(handle, f) for f in (first, first, second)]
+
+    assert [s and s["oauthUrl"] for s in shown] == [_URL, None, _URL_2]
+
+
+@pytest.mark.asyncio
+async def test_a_server_only_on_the_wire_is_not_proof_of_holding_it(monkeypatch):
+    """Crew sent it, but no host frame says this session's engine mounted it."""
+    runtime = _runtime(("s1", []))
+    runtime._mcp_reports()["s1"].configured = ("remote",)
+    replies = _answers(runtime, monkeypatch)
+
+    await runtime._answer_open_external_url(5, _lazy())
+
+    assert [kind for kind, _id, _msg in replies] == ["error"]
+    assert _frames(runtime, "s1") == []

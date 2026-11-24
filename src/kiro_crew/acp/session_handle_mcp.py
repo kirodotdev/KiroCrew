@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
