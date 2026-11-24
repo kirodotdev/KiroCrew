@@ -724,7 +724,7 @@ def interactive_guidance(
     Every built message carries them. Whether the engine is sent them again is
     the provider's call at the wire (``build_message`` binds the block as the
     turn's delivery envelope): once per engine conversation on a harness whose
-    compaction Kiro Crew sees, every message elsewhere and in a member's chat.
+    compaction Kiro Crew sees (a member's chat included), every message elsewhere.
 
     *producer_is_user_facing* says a person sent this turn on a dashboard
     slot. It defaults to False, the applier's own default, so a caller that
