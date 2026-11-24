@@ -17391,6 +17391,8 @@
       "why_shared": "Alle neuen Chats nutzen eine Kopie.",
       "why_credentials": "Gibt Zugangsdaten aus, daher behält jeder Chat seine eigene Kopie.",
       "why_no_stdio": "Es hat keine stdio-Pipe, daher verbindet sich jeder Chat selbst.",
+      "why_roots": "Er hat einen Chat nach dem Projektordner gefragt, also läuft in jedem Chat eine eigene Kopie.",
+      "stub_error_cwd_roots": "{{name}} hat einen Chat nach dem Projektordner gefragt, also läuft in jedem Chat eine eigene Kopie.",
       "hero_title": "MCP-Server zwischen Chats teilen",
       "share_switch_label": "MCP-Server-Freigabe einschalten",
       "share_diagram_label": "Teilen aus: Jeder Chat startet seine eigene Kopie eines Servers. Teilen an: Alle Chats nutzen eine Kopie.",

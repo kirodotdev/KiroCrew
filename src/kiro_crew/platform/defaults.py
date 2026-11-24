@@ -360,6 +360,9 @@ class DefaultMcpToolingProvider:
     def kas_relayed_env_references(self) -> FrozenSet[str]:
         return frozenset()
 
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
+        return frozenset()
+
 
 class DefaultAgentCatalogProvider:
     """No edition agent-catalog rows — discovery is the on-disk scan only."""

@@ -69,6 +69,18 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 - Third-party servers that advertise `kirocrew.caller-identity`, and stdio remote
   proxies, are asked like any other: the extension says nothing about the folder,
   and a proxy cannot be told apart from a local server by its command alone.
+- The question is skipped when a declared fact answers it
+  (`mcp_gateway/folder_use.py`). Kiro Crew's own servers and the servers the
+  edition lists (`McpToolingProvider.folder_free_mcp_servers()`, none in the public
+  build) are cleared without an answer, and the row reports `cwd_proven` for both.
+  A server the gateway saw send `roots/list` (`hazards.HAZARD_ROOTS_REQUESTED`,
+  recorded with any number of chats attached) reads the chat's folder: the toggle
+  refuses it (`409 cwd_roots`, before its launch is resolved, or a `cwd_roots` skip
+  under `resolve_eligibility`) whatever was answered, its row reports `cwd_roots`
+  with `can_stub` false so it has no Share switch and is not asked, and
+  `rewriter.rewrite_agents` drops it from the routed set on every pass but a probe,
+  so it is unrouted at the next start or overlay refresh. Config hints such as a
+  `.` argument are not read; an unknown server is asked.
 
 The answer only gates routing today. Whether `work_dir` joins the pool signature
 for `uses_cwd` servers is a separate decision.

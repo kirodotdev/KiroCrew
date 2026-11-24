@@ -792,6 +792,9 @@ async def _route_backend_message(
     # Otherwise (multiple stubs, no relatedRequestId) we recycle the backend
     # rather than guess, to avoid a cross-tenant leak.
     if method is not None and msg_id is not None:
+        if method == "roots/list":
+            # Still routed below: the chat that owns it answers with its folder.
+            self._record_hazard(hazards.HAZARD_ROOTS_REQUESTED, any_client=True)
         target_stub: Optional[str] = None
         # Priority 1: _meta.relatedRequestId lookup
         params = msg.get("params")
@@ -834,8 +837,12 @@ async def _route_backend_message(
     logger.debug("backend pid=%s emitted malformed JSON-RPC: %r", self.pid, msg)
 
 
-def _record_hazard(self: Backend, code: str) -> None:
+def _record_hazard(self: Backend, code: str, *, any_client: bool = False) -> None:
     """Note that this server exhibited per-client behaviour while shared.
+
+    *any_client* records with one client attached, or on a private backend: for
+    a ``roots/list`` request the request itself is the evidence that the server
+    works on the chat's folder, whoever else shares the backend.
 
     Only meaningful once MORE THAN ONE client is attached. A backend serving
     a single client legitimately owns it, so an unattributable frame there
@@ -857,7 +864,7 @@ def _record_hazard(self: Backend, code: str) -> None:
 
     In-memory only — the flush is off-loop.
     """
-    if self.exclusive_token or self.refcount <= 1:
+    if not any_client and (self.exclusive_token or self.refcount <= 1):
         return
     key = self.pool_key
     name = key.server_name
