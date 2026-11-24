@@ -15,8 +15,8 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks, the Windows by-name kill reader (``self_kill_windows``) and the
+shared name vocabulary below it, and imports no other part of the argv floor.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .self_kill_windows import _windows_self_kill
 from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
@@ -891,6 +892,9 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
                 if depth <= 0 and _ends_argv(arg):
                     break
                 depth = max(depth, 0)
+        # ``taskkill``, ``Stop-Process`` and ``wmic`` name their target in one place.
+        if _windows_self_kill(tokens):
+            return whole
     # Bare ``kill`` whose PID comes out of a substitution naming the product.
     # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
     # quoted spelling all count -- a raw-text pattern anchored on separators sees

@@ -1346,6 +1346,27 @@ def _reset_waiting_sends():
 
 
 @per_test_guard
+def _reset_app_scope_grant_facts():
+    """Start each test with no app grant facts stored for a scope refusal's wording.
+
+    The entries hold what one test's manifest, install record and clock said about
+    an app. Tests reuse app names, so an entry one test left could word the next
+    test's refusal.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.token_auth_app_scope")
+        if module is not None:
+            module._app_grant_facts.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_persisted_truncation_reports():
     """Start each test with no truncated spawn listing already reported.
 

@@ -1122,7 +1122,7 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     from kiro_crew.browser_harness import keys
 
     if not keys.known_key(key):
-        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
+        return refusal("bad_key", keys.unknown_key_error(key))
     if key == "Space":
         key = " "
     modifiers = keys.modifier_mask(args.get("modifiers"))

@@ -1265,7 +1265,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // only then can the id be checked against the switcher: a crew that is gone
   // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
   // user made before that poll answered wins over the stored one (a crew deep
-  // link arriving first clears the stored id: lib/crewDeepLink.ts). The connect
+  // link, native or on the address, arriving first clears the stored id:
+  // lib/crewDeepLink.ts). The connect
   // goes through the viewport's own connectMutation (the one Retry and the
   // panel use), with the same condition as a tab click: no warm iframe yet, or
   // the listed status is not connected. Its error and pending state reach the

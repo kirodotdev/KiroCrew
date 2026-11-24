@@ -197,8 +197,10 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
         assert KAS in registry.selectable_backends()
-        # A Kiro CLI pick made later in this process runs on KAS too.
-        assert registry.kiro_cli_pick_backend() == KAS
+        # The help verdict: the panel's Kiro CLI row and a Bot's Kiro CLI pin read KAS.
+        assert registry.kiro_cli_listed_backend() == KAS
+        # Nothing was started, so a pick saved later waits for its own start check.
+        assert registry.kiro_cli_pick_backend() == KIRO
 
     def test_unknown_verdict_keeps_kas(self, monkeypatch, pinned_cli, kas_selectable):
         _help(monkeypatch, None)
@@ -1421,6 +1423,9 @@ class TestTheVerdictReachesTheLiveFactory:
 
         class _Watch:
             started = True
+
+            def subscribe(self, *prefixes, callback, name=None):
+                return None
 
             async def refresh_now(self):
                 # What the live watcher sees at this moment: the stored pick

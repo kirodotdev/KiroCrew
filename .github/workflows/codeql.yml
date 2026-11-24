@@ -53,6 +53,21 @@ name: CodeQL
 #
 # A failed upload fails the job: the wait never stands in for it, so the job is
 # green only when the upload succeeded.
+#
+# THE ACTION'S LINT OF THIS FILE IS OFF. `init` lints the workflow file it runs
+# from, and to find that file it asks the API twice (`GET actions/runs/<id>`,
+# then the workflow): two requests per job out of the pool above, six per run,
+# for a lint that only ever prints a warning. `init` skips it, and both
+# requests, when `CODEQL_ACTION_SKIP_WORKFLOW_VALIDATION` is `true`
+# (`checkWorkflow` in the action's `src/workflow.ts`), so the job sets it. No
+# part of the scan, the upload or the result reads that lint.
+# The action's source calls the variable "intended for internal use". A
+# version that stops reading it brings the two requests back and changes
+# nothing else, so test_ci_codeql_workflow_lint.py holds the variable to the
+# action commit it was read at. Nothing in this repository stands in for the
+# lint. It warned of four things: `github/codeql-action` steps on more than one
+# version, `pull_request` with no `push` trigger, a `git checkout HEAD^2` step,
+# and one language under two entries of the `language` matrix.
 on:
   pull_request:
     branches: [main]
@@ -136,6 +151,9 @@ jobs:
       # path and this job's id. Set here so that no step has to ask the API
       # for it (see the header). test_gh_rate_limit_wait.py holds it to both.
       CODEQL_ACTION_ANALYSIS_KEY: .github/workflows/codeql.yml:analyze
+      # No lint of this file by `init`, and so no API requests to locate it
+      # (see the header).
+      CODEQL_ACTION_SKIP_WORKFLOW_VALIDATION: "true"
     permissions:
       actions: read
       contents: read

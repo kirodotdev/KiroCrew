@@ -748,6 +748,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _MEMBER_HARNESS_KEY,
         _POD_ENV,
         _SECURITY_BOUNDED_FIELDS,
+        KIRO_CLI_PICK_STORED_ATTR,
         MEMBER_BACKEND_INHERITED_ATTR,
         _agent_section_fields,
         _build_agent_config,

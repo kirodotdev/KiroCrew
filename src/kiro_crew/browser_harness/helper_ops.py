@@ -25,7 +25,7 @@ from typing import Any
 
 from kiro_crew.browser_harness import ops as _ops
 from kiro_crew.browser_harness.frames import split_frame_ref
-from kiro_crew.browser_harness.keys import known_key
+from kiro_crew.browser_harness.keys import known_key, unknown_key_error
 
 #: Longest ``fill`` text: Harness presses one key per character, about 6 ms each on a
 #: plain page in headless Chromium, so 1,000 stay well inside the slow-op budget.
@@ -103,7 +103,7 @@ async def dispatch_key(ctx: _ops.OpContext, args: dict[str, Any]) -> dict[str, A
         )
     key = args.get("key", "Enter")
     if not known_key(key):
-        return _ops.refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
+        return _ops.refusal("bad_key", unknown_key_error(key))
     event = args.get("event", "keypress")
     if event not in KEY_EVENTS:
         return _ops.refusal("bad_event", f"event must be one of {', '.join(KEY_EVENTS)}")

@@ -1171,15 +1171,15 @@ class TestAcceptEvaluatorInvariant:
     def test_run_refuses_a_command_it_did_not_build(self):
         """The internal guard fails closed if a handler ever leaks spec input."""
         mod = _load_evaluator()
-        verdict, evidence = mod._run(["git", "--version"])
+        verdict, evidence = mod._run(["python3", "--version"])
         assert verdict == "refused"
         assert "not a command this script builds" in evidence
-        assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew"}
+        assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew", "git"}
 
     def test_the_draft_probe_refuses_a_command_it_did_not_build(self):
         """Same guard, reached through the probe's own seam."""
         mod = _load_evaluator()
-        problem, proc = mod._exec(["git", "--version"])
+        problem, proc = mod._exec(["python3", "--version"])
         assert proc is None
         assert problem[0] == "refused"
         assert "not a command this script builds" in problem[1]

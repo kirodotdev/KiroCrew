@@ -155,9 +155,9 @@ path and size, never the content. A field that takes several files
 same way, and two files with the same name are refused.
 
 The step also takes a folder or a pattern. A folder (such as `~/Pictures/trip`)
-sends every ordinary file inside it, keeping its sub-folders, to a drop zone
-(a field that picks a folder cannot be filled from one yet; give a pattern
-such as `<folder>/*` instead); hidden files and folders (names starting with
+sends every ordinary file inside it, keeping its sub-folders, to a field that
+picks a folder, where each file keeps its path under the folder's name, or to
+a drop zone; hidden files and folders (names starting with
 a dot) and links inside are skipped, never followed. A
 pattern such as `~/Pictures/*.png` sends the files it matches, as if each were
 listed. Either way one step is at most 100 files and 25 MiB, and a protected
@@ -165,8 +165,9 @@ file anywhere inside stops the whole step. For a page with no file field, the
 agent can ask for the file picker a button opens (`via: chooser`: it presses
 the button and fills the picker, which you never see) or drop the files on a
 drop zone (`via: drop`), naming either by its ref or, for a zone the outline
-gives no ref, by its position on the page. A folder goes onto a drop zone, not
-into a file field or through a file picker a button opens.
+gives no ref, by its position on the page. A folder goes into a field that
+picks a folder or onto a drop zone, never into a plain file field or through
+a file picker a button opens.
 
 **Scripts, DevTools commands and plain fetches.** When no step above fits, the
 agent can run the browser engine's own three tools: `js` runs a piece of

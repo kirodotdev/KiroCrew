@@ -17,7 +17,8 @@ audit-logged. The evaluator accepts **no command, argv array or shell string
 from a spec**: it builds every argv from a fixed template (`pr_checks` becomes
 `gh pr checks <n>`, `pr_merged` becomes `gh pr view <n> --repo <owner/name>
 --json state`, `edition_check` becomes `kirocrew acceptance-check --json <check>
-<ref>`), and nothing else runs. A spec that could name a command would make this
+<ref>`, `git_commit` becomes `git -C <repo> rev-parse --verify` and `git -C
+<repo> rev-list --count`), and nothing else runs. A spec that could name a command would make this
 approved wrapper a general way to run one, which the denied-command floor cannot
 see inside. Widening means a purpose-built kind, never an accepted argv.
 
