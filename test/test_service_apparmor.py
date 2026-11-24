@@ -882,7 +882,14 @@ class TestProfileLoadsBeforeTheServiceStarts:
         outcome = svc_linux.install()
 
         assert outcome.ok is True
-        assert order == ["write-unit", "load-profile", "daemon-reload", "enable", "restart"], order
+        assert order == [
+            "write-unit",
+            "load-profile",
+            "daemon-reload",
+            "enable",
+            "reset-failed",
+            "restart",
+        ], order
         # The profile must be loaded strictly before the unit is started.
         assert order.index("load-profile") < order.index("restart")
 
