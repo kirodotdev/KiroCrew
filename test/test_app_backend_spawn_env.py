@@ -730,6 +730,46 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
         finally:
             pd.reset_process_state()
 
+    def test_the_cache_only_markers_ride_the_argv_past_a_stricter_tiers_scrub(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        """A ``sandbox.min_level`` floor can raise the spawn to ``cc``/``strict``, whose
+        launcher scrubs both markers from the environment it is handed. The wrap must
+        therefore get them as trusted ``env`` assignments ahead of the backend's own argv.
+        """
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew import sandbox
+        from kiro_crew.platform import policy_distribution as pd
+
+        # A trusted ``env`` binary on every host, so the shape under test does not
+        # depend on which absolute ``env`` this machine ships (Windows ships none).
+        env_binary = tmp_path / "env"
+        env_binary.write_text("")
+        env_binary.chmod(0o755)
+        monkeypatch.setattr(sandbox, "_ENV_BINARY_CANDIDATES", (str(env_binary),))
+        seen: list[list[str]] = []
+
+        def _confining_wrap(argv, **kw):
+            seen.append(list(argv))
+            return (["sandbox-launcher", *argv], None)
+
+        pd.reset_process_state()
+        self._spawn_with_wrap(bmod, tmp_path, monkeypatch, "strict-tier-app", _confining_wrap)
+        backend_argv = seen.pop()
+
+        monkeypatch.setenv(pd.POLICY_MAX_AGE_ENV, "120")
+        pd._record_installed(b'{"version": 1, "boot": {}}')
+        try:
+            bmod.start_app_backend("strict-tier-app")
+        finally:
+            pd.reset_process_state()
+        assert seen.pop() == [
+            str(env_binary),
+            f"{pd.POLICY_CACHE_ONLY_ENV}=1",
+            f"{pd.POLICY_MAX_AGE_ENV}=120",
+            *backend_argv,
+        ]
+
     def test_a_confined_host_says_nothing(self, app_env, tmp_path, monkeypatch, caplog):
         """The control: where the seal applies there is nothing to warn about."""
         import logging
