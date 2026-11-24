@@ -98,7 +98,8 @@ transcripts.
 ## Pods (Isolated Worktree Test Instances)
 
 Read `references/pods-and-browsing.md` for every `kirocrew pod` command (up,
-down, ls, status, logs, provision, install, token, restart, exec, api, prune).
+down, ls, status, logs, provision, install, token, restart, exec, api, prune,
+url, scenarios).
 
 ## Dashboard Access
 
