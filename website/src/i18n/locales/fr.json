@@ -13892,7 +13892,7 @@
         "no_response_returned": "Aucune réponse",
         "nudge_cap_reached": "limite de relances atteinte",
         "recovered_continuing": "reprise envoyée automatiquement",
-        "resuming_the_interrupted_turn": "reprise du tour interrompu",
+        "sent_without_a_new_instruction": "envoyé sans nouvelle instruction",
         "safety_policy_continuing": "la politique de sécurité a bloqué l’appel · reprise envoyée automatiquement",
         "safety_policy_told_in_turn": "la politique de sécurité a bloqué l’appel · l’agent a été informé du motif dans ce tour",
         "invalid_name_told_in_turn": "le nom de l'outil a échoué à la validation · l’agent a été informé du motif dans ce tour",

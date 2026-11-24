@@ -13892,7 +13892,7 @@
         "no_response_returned": "Nessuna risposta",
         "nudge_cap_reached": "limite di nudge raggiunto",
         "recovered_continuing": "continuazione inviata automaticamente",
-        "resuming_the_interrupted_turn": "ripresa del turno interrotto",
+        "sent_without_a_new_instruction": "inviato senza una nuova istruzione",
         "safety_policy_continuing": "la policy di sicurezza ha bloccato la chiamata · continuazione inviata automaticamente",
         "safety_policy_told_in_turn": "la policy di sicurezza ha bloccato la chiamata · l’agente è stato informato del motivo in questo turno",
         "invalid_name_told_in_turn": "il nome dello strumento non ha superato la convalida · l’agente è stato informato del motivo in questo turno",
