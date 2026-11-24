@@ -65,6 +65,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.admission_gate import actor_budget
 from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
@@ -805,8 +806,9 @@ async def _run_side_turn(
             )
             # Redact the assembled text before it is stored/broadcast as the
             # terminal frame (which replaces the streamed deltas). Never trust
-            # LLM output on an external surface.
-            response_text, redactions, reveals = _redact_answer(response_text)
+            # LLM output on an external surface. A line that only quotes a
+            # directive tool's marker is protocol, not the answer.
+            response_text, redactions, reveals = _redact_answer(strip_quoted_markers(response_text))
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",

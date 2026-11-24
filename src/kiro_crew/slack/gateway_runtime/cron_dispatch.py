@@ -475,6 +475,7 @@ async def _cron_stream_with_posttoken_resume(
     steps).
     """
     from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+    from kiro_crew.session_directive import strip_quoted_markers
 
     _refuse_person_only = person_only_directive_refuser(
         stream_kwargs.get("session_key", ""), directive_refusals
@@ -501,7 +502,8 @@ async def _cron_stream_with_posttoken_resume(
                 on_event=_refuse_person_only,
                 **stream_kwargs,
             )
-            return preserved + text, carried_credits
+            # A directive tool result the reply quotes is protocol, not the run's result.
+            return strip_quoted_markers(preserved + text), carried_credits
         except Exception as exc:
             partial = "".join(parts)
             if _resume_used:

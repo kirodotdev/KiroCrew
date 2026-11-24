@@ -33,6 +33,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.session_directive import strip_quoted_markers
 from kiro_crew.shared_crew.turn_gate import TurnRefused
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
@@ -1471,8 +1472,9 @@ async def _run_refine(
         state._refine_error = str(exc)
         state._refine_status = "error"
     finally:
-        # kiro-cli's [STEERING steer-…] ack is protocol: drop it before any await below.
-        state._refine_text = strip_steering_markers(state._refine_text)
+        # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are
+        # protocol: drop them before any await below.
+        state._refine_text = strip_quoted_markers(strip_steering_markers(state._refine_text))
         state._refine_answer_future = None  # type: ignore[attr-defined]
         state._refine_session_key = ""  # type: ignore[attr-defined]
         try:
