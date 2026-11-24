@@ -7489,11 +7489,15 @@
         "engine_no_output": "(no output)"
       },
       "engineSubagentRecord": {
-        "title": "Sub-agents in this turn: {{n}}",
         "end_completed": "Completed",
         "end_failed": "Failed",
         "end_not_reported": "End not reported by the engine",
-        "more_children": "More sub-agents not listed: {{n}}"
+        "more_children": "More sub-agents not listed: {{n}}",
+        "took": "Took {{duration}}",
+        "duration_title": "From the first sub-agent's start to the last one's end",
+        "ran_title": "How long this sub-agent ran",
+        "turn_credits": "{{credits}} credits, whole turn",
+        "turn_credits_title": "Credits for the whole turn, sub-agents included. The engine does not report credits for one sub-agent."
       },
       "assistantMessage": {
         "applied_to_tasks": "Applied to Tasks",

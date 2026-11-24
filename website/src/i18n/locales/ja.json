@@ -13034,11 +13034,15 @@
         "engine_no_output": "(出力なし)"
       },
       "engineSubagentRecord": {
-        "title": "このターンのサブエージェント: {{n}}",
         "end_completed": "完了",
         "end_failed": "失敗",
         "end_not_reported": "エンジンは終了を報告していません",
-        "more_children": "一覧にないその他のサブエージェント: {{n}}"
+        "more_children": "一覧にないその他のサブエージェント: {{n}}",
+        "took": "所要時間 {{duration}}",
+        "duration_title": "最初のサブエージェントの開始から最後のサブエージェントの終了まで",
+        "ran_title": "このサブエージェントの実行時間",
+        "turn_credits": "{{credits}} クレジット（ターン全体）",
+        "turn_credits_title": "サブエージェントを含むターン全体のクレジットです。エンジンは個々のサブエージェントのクレジットを報告しません。"
       },
       "assistantMessage": {
         "share_load_failed": "共有ダイアログを読み込めませんでした",

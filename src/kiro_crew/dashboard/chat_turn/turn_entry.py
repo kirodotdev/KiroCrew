@@ -825,6 +825,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._native_child_tc = _native_child_tc
     turn._engine_children = None
     turn._engine_dispatch_tasks = {}
+    turn._engine_turn_key = ""
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.

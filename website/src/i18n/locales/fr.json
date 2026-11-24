@@ -13626,11 +13626,15 @@
         "engine_no_output": "(aucune sortie)"
       },
       "engineSubagentRecord": {
-        "title": "Sous-agents de ce tour : {{n}}",
         "end_completed": "Terminé",
         "end_failed": "Échec",
         "end_not_reported": "Fin non signalée par le moteur",
-        "more_children": "Autres sous-agents non listés : {{n}}"
+        "more_children": "Autres sous-agents non listés : {{n}}",
+        "took": "A pris {{duration}}",
+        "duration_title": "Du début du premier sous-agent à la fin du dernier",
+        "ran_title": "Durée d'exécution de ce sous-agent",
+        "turn_credits": "{{credits}} crédits, tour entier",
+        "turn_credits_title": "Crédits du tour entier, sous-agents compris. Le moteur n'indique pas les crédits d'un seul sous-agent."
       },
       "assistantMessage": {
         "share_load_failed": "Impossible de charger la fenêtre de partage",

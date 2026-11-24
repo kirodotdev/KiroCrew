@@ -223,9 +223,15 @@ A KAS sub-agent has no Stop or Cancel of its own and no "Retry failed". Its card
 shows no credit or model figure, because the engine reports neither for one
 sub-agent: its credits are part of the answer's total.
 
-After the answer, the reply keeps a closed "Sub-agents in this turn" line, also after
-a reload or when you reopen the chat later. Open it to see each KAS sub-agent's task,
-how it ended and the names of its tool calls, as the engine reported them.
+While they run, the chat also shows them as one card at the end of the conversation,
+the same card Kiro Crew's own sub-agents get: it spins while any of them runs and
+counts how long the batch has taken. After the answer, the reply keeps that card,
+also after a reload or when you reopen the chat later: how many finished, how many
+succeeded or failed, how long the batch took and the turn's credits. Those credits
+are for the whole turn, sub-agents included; the engine does not report credits or a
+model for one sub-agent, so the card shows neither. Show details lists each KAS
+sub-agent's task, how it ended, how long it ran and the names of its tool calls, as
+the engine reported them.
 
 Turn it on or off under Settings > Developer > Feature previews; the change applies from the next chat, not to one already
 running. Off, Kiro Crew starts its own sub-agents for that chat, as before. Either
