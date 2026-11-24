@@ -3193,13 +3193,16 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   (`stop_helpers.stop_channel`, replying in the thread) and fences the stopped turn's dispatch
   (`stop_helpers.fence_thread_dispatch`: the turn is narrowed and the slot is marked stopped in the
   exemption, which refuses its further `create` and `send` until the owner writes in the thread
-  again; the recorded Slack authors are kept); anyone else gets nothing, and with the
+  again; the recorded Slack authors are kept). Before any await it also marks the Stop fence
+  under the thread's room id (`surface.mark_stopped(room_key(binding))`), so a board refresh
+  the thread admitted before the press edits or posts nothing more, while the channel's other
+  threads keep writing; anyone else gets nothing, and with the
   switch off it still stops a conductor that is running. `resume.resume_after_restart` walks
   live thread bindings too, keyed by room id (`channel:anchor`): one automatic resume per
   interrupted turn, then a held notice with an owner-only Resume, both posted in the thread;
   an ended thread is not resumed. The Workers-tab Stop (`worker_stop`) stays code-channel only
-  (a thread has no Workers tab). Not done for a thread: the channel-wide Stop fence on Slack
-  writes and the status settle (both keyed by channel, which holds other threads), and the
+  (a thread has no Workers tab). Not done for a thread: the channel-wide Stop fence and the
+  status settle (both keyed by channel, which holds other threads), and the
   "other sessions still running" count.
 
 ## Dependencies
