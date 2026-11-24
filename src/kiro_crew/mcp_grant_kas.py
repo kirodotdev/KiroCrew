@@ -56,10 +56,16 @@ logger = logging.getLogger(__name__)
 GRANT_STORE_PARTS = ("kas", "mcp-grants")
 _KEY_PREFIX = "kiro.mcp"
 _TOKENS_KIND = "tokens"
+#: Where a browser sign-in on the Kiro callback path keeps its tokens, from
+#: KAS 0.66.121 (``credential-storage-manager.ts``: ``kiro-path-client`` goes with
+#: ``kiro-path-tokens``). Same connection hash as ``tokens``.
+_PATH_TOKENS_KIND = "kiro-path-tokens"
 _CLIENT_KIND = "client"
 _PATH_CLIENT_KIND = "kiro-path-client"
+#: The engine entry kinds that hold a sign-in, under either engine version.
+TOKENS_KINDS = (_TOKENS_KIND, _PATH_TOKENS_KIND)
 #: The engine entry kinds that outlive its process: the sign-in and the client registration.
-PERSISTED_KINDS = (_TOKENS_KIND, _CLIENT_KIND, _PATH_CLIENT_KIND)
+PERSISTED_KINDS = (*TOKENS_KINDS, _CLIENT_KIND, _PATH_CLIENT_KIND)
 # The ASCII characters JavaScript's ``String.prototype.trim`` removes. Python's
 # ``str.strip()`` with no argument also removes \x1c-\x1f, which the engine keeps.
 _JS_TRIM_ASCII = " \t\n\v\f\r"
@@ -132,8 +138,14 @@ def kas_connection_hash(mcp_url: str) -> str:
 
 
 def kas_tokens_entry_name(mcp_url: str) -> str:
-    """The vault entry name the engine stores this server's tokens under."""
+    """The vault entry name an engine before 0.66.121 stores this server's tokens under."""
     return f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{_TOKENS_KIND}"
+
+
+def kas_tokens_entry_names(mcp_url: str) -> tuple[str, ...]:
+    """Every vault entry name an engine may store this server's tokens under."""
+    digest = kas_connection_hash(mcp_url)
+    return tuple(f"{_KEY_PREFIX}.{digest}.{kind}" for kind in TOKENS_KINDS)
 
 
 def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, ...]:
@@ -147,7 +159,7 @@ def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, ...]:
 
 
 def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool | None:
-    """Whether the KAS grant vault holds a ``tokens`` entry for *mcp_url*.
+    """Whether the KAS grant vault holds a ``tokens`` or ``kiro-path-tokens`` entry for *mcp_url*.
 
     ``True``/``False`` are observations; ``None`` means the question could not be
     answered: a non-ASCII url (the engine's normalization is not mirrored for it),
@@ -177,7 +189,7 @@ def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool 
         names = SecretVault(store_root).list_names()
     except (OSError, ValueError, RecursionError):
         return None
-    return kas_tokens_entry_name(mcp_url) in names
+    return any(name in names for name in kas_tokens_entry_names(mcp_url))
 
 
 async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> None:

@@ -57,3 +57,20 @@ def _isolate_kas_model_catalog_recording():
         yield
     finally:
         clear()
+
+
+@per_test_guard
+def _reset_kas_secret_storage_unknown_kind_warnings():
+    """No unknown engine key kind warned about yet: ``kas_secret_storage`` warns once
+    per kind per process, so leftover state silences the next test's WARNING."""
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_secret_storage")
+        if module is not None:
+            module._WARNED_UNKNOWN_KINDS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
