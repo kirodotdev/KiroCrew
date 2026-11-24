@@ -847,16 +847,16 @@ def _resolve_agent_prompt(
     )
 
 
-def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> bool:
-    """A live reading of whether *key*'s contract names the engine's sub-agent tool."""
+def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> str:
+    """A live reading of how *key*'s contract names the engine's sub-agent tool."""
     from kiro_crew.agent_sdk.kas_engine_subagents import (
         DEFAULT_AGENT,
-        contract_names_engine_subagents,
+        contract_engine_subagent_mode,
     )
 
     # No agent named is the default agent, as ``_resolve_agent_prompt`` reads it, so
     # this reading agrees with the session head's, which names it.
-    return contract_names_engine_subagents(provider_type, agent or DEFAULT_AGENT, key)
+    return contract_engine_subagent_mode(provider_type, agent or DEFAULT_AGENT, key)
 
 
 def _render_contract(
@@ -868,7 +868,7 @@ def _render_contract(
     computer_use: Callable[[], bool],
     browser: Callable[[], bool],
     substitute_bot_name: Callable[[str], str],
-    engine_subagents: Callable[[], bool] = lambda: False,
+    engine_subagents: Callable[[], str] = lambda: "",
 ) -> str:
     """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
 
@@ -906,8 +906,10 @@ def _render_contract(
     # ``spawn_sub_agents`` sentence names that tool instead (the kas_subagents preview).
     from kiro_crew.agent_sdk import kas_engine_subagents as _engine
 
-    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt and engine_subagents():
-        agent_prompt = _engine.with_engine_sentence(agent_prompt)
+    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt:
+        mode = engine_subagents()
+        if mode:
+            agent_prompt = _engine.with_engine_sentence(agent_prompt, mode)
     # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
     # shared core and conductor tail, the same constants Conductor mode carries)
     # rides here at agent rank. After any user prompt.md is read, so a custom

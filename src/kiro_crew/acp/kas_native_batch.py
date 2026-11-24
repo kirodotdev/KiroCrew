@@ -2,9 +2,10 @@
 
 ``KasHarness.session_extras`` hands this the session agent's projected entries and
 the targets ``kas_subagent_targets.project_subagent_targets`` registered. In a
-session ``kas_engine_subagents.engine_subagents_on`` names, the default agent's
-entry mounts the engine's sub-agent tool with the shipped helper and the person's
-own registered agents reachable.
+session ``kas_engine_subagents.engine_subagents_on`` names, on an agent that is not a
+person's own file, the session agent's entry mounts the engine's sub-agent tool with
+the shipped helper reachable, and the person's own registered agents too where
+``kas_engine_subagents.engine_replaces_spawn`` holds.
 Then Kiro Crew's own agents are denied to every entry, whether it mounts
 ``invoke_sub_agent`` or only a per-agent ``subagent_<id>`` tool, listed or not (``kas_subagent_targets.deny_own_agents``), and every engine
 sub-agent is denied to an entry whose ``excludedTools`` withhold the tool
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp import kas_excluded_tool_cli, kas_subagent_targets
+from kiro_crew.acp.default_crew_servers import is_custom_agent
 from kiro_crew.acp.kas_engine_subagent_target import KAS_HELPER_AGENT, mount_deny_last
 from kiro_crew.acp.kas_subagent_targets import deny_own_agents
 
@@ -74,6 +76,9 @@ def native_batch(
         if (
             cfg is not None
             and not remote_workspace
+            # A person's own agent file is read as kiro-cli reads it (below), never
+            # given Kiro Crew's helper.
+            and not is_custom_agent(agent, parent_spec)
             and engine.engine_subagents_on(
                 cfg,
                 agent,
@@ -82,6 +87,7 @@ def native_batch(
                 crew_panel=crew_panel,
             )
         ):
+            replace_spawn = engine.engine_replaces_spawn(agent, session_key)
             batch = engine.with_engine_subagents(
                 batch,
                 agent,
@@ -93,7 +99,12 @@ def native_batch(
                 notices=[] if notices is None else notices,
                 parent_spec=parent_spec,
                 mounted_out=mounted_out,
-                own_agents=own_agents,
+                # A person's own agents run as children only where the engine's tool
+                # replaces Kiro Crew's own: elsewhere a child's MCP servers beyond the
+                # chat agent's would be held by an ask alone, which an auto-approving
+                # chat answers, so those chats run the shipped helper only.
+                own_agents=own_agents if replace_spawn else None,
+                replace_spawn=replace_spawn,
             )
         # The chats the preview reaches, whatever their agent: the mount's own
         # test, asked as for the default agent.

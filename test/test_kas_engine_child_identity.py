@@ -204,12 +204,10 @@ async def test_with_no_own_agent_the_helper_is_judged_as_its_parent_whatever_the
     [
         ("off", {}),
         ("unset", {}),
-        ("on", {"key": "cron:job"}),
-        ("on", {"key": "dashboard:member-autofix"}),
-        ("on", {"member_dispatch": True}),
-        ("on", {"crew_panel": True}),
+        ("on", {"key": "subagent:1"}),
+        ("on", {"key": "heartbeat"}),
     ],
-    ids=["off", "never-set", "cron", "a-members-chat", "member-dispatch", "panel"],
+    ids=["off", "never-set", "kiro-crew-sub-agent", "heartbeat"],
 )
 async def test_a_session_without_the_mount_gives_no_child_a_grant(
     agents_dir, setting, tmp_path, value, kw

@@ -1281,7 +1281,7 @@ async def test_a_half_that_cannot_be_read_whole_leaves_the_run_no_grant(
 @pytest.mark.parametrize(
     "agent, key, parent",
     [
-        ("claims", "dashboard:c1", "broad"),
+        ("claims", "wf:c1", "broad"),
         ("claims", "subagent:c1", ""),
         ("claims", "subagent:c1", "claims"),
     ],

@@ -34,7 +34,12 @@ def setting(monkeypatch):
     return _set
 
 
-def _render(engine_on: bool) -> str:
+def _render(engine_on: bool | str) -> str:
+    """The contract with the engine reading *engine_on*: a mode, or True for "replace"."""
+    if isinstance(engine_on, bool):
+        mode = "replace" if engine_on else ""
+    else:
+        mode = engine_on
     return agent_spec._render_contract(
         "kirocrew",
         _PROMPT,
@@ -43,7 +48,7 @@ def _render(engine_on: bool) -> str:
         computer_use=lambda: False,
         browser=lambda: False,
         substitute_bot_name=lambda s: s,
-        engine_subagents=lambda: engine_on,
+        engine_subagents=lambda: mode,
     )
 
 
@@ -51,19 +56,42 @@ def test_the_shipped_prompt_holds_the_sentence_once():
     assert _PROMPT.count(engine.SPAWN_SUB_AGENTS_SENTENCE) == 1
 
 
-def test_engine_changes_only_the_spawn_sub_agents_sentence():
-    before, after = _render(False), _render(True)
-    assert engine.SPAWN_SUB_AGENTS_SENTENCE in before
-    assert engine.SPAWN_SUB_AGENTS_SENTENCE not in after
-    assert engine.ENGINE_SUB_AGENT_SENTENCE in after
-    assert after == before.replace(
-        engine.SPAWN_SUB_AGENTS_SENTENCE, engine.ENGINE_SUB_AGENT_SENTENCE
+def test_replace_names_only_the_engines_tool_where_both_spawn_tools_are_gone():
+    before, after = _render(""), _render("replace")
+    lead = engine.SPAWN_RUN_LEAD + engine.SPAWN_SUB_AGENTS_SENTENCE
+    assert lead in before and lead not in after
+    assert after == engine._with_engine_steps(before).replace(
+        lead, engine.ENGINE_ONLY_SUB_AGENT_SENTENCE
     )
-    bullet = next(line for line in after.splitlines() if line.startswith("- `spawn_run`:"))
+    # The three spawn_run steps become the in-turn steps; the fallback stays named.
+    assert engine.ENGINE_STEPS in after
+    assert "Report the dispatch and **END YOUR TURN**" not in after
+    assert "Report the dispatch and **END YOUR TURN**" in before
+    bullet = next(line for line in after.splitlines() if line.startswith("- `invoke_sub_agent`"))
     assert "These are the ONLY subagent mechanisms" in bullet
-    assert "`invoke_sub_agent`" in bullet and "`spawn_run`" in bullet
+    # The spawn tools are named only for a chat whose mount was refused, which keeps them.
+    head, _, tail = bullet.partition("When it is not in your tool list, ")
+    assert "`spawn_run`" not in head and "`spawn_sub_agents`" not in head
+    assert tail.startswith("`spawn_run` runs background subagents")
     lifecycle = next(line for line in before.splitlines() if line.startswith("- Reuse runs"))
     assert lifecycle in after.splitlines()
+
+
+def test_beside_names_both_paths_where_the_spawn_tools_stay():
+    before, after = _render(""), _render("beside")
+    assert after == before.replace(
+        engine.SPAWN_SUB_AGENTS_SENTENCE,
+        f"{engine.SPAWN_SUB_AGENTS_SENTENCE} {engine.ENGINE_HELPER_SUB_AGENT_SENTENCE}",
+    )
+    # Those chats run the shipped helper only, so it names no own agent as a choice.
+    assert "one of the user's own agents" not in engine.ENGINE_HELPER_SUB_AGENT_SENTENCE
+    assert "with agent `kirocrew-helper` only" in engine.ENGINE_HELPER_SUB_AGENT_SENTENCE
+    bullet = next(line for line in after.splitlines() if line.startswith("- `spawn_run`:"))
+    assert "`invoke_sub_agent`" in bullet and "`spawn_sub_agents`" in bullet
+    # Those chats keep spawn_run, so its steps stay as they are.
+    assert engine.ENGINE_STEPS not in after
+    assert "Report the dispatch and **END YOUR TURN**" in after
+    assert "These are the ONLY subagent mechanisms" in bullet
 
 
 def test_crew_renders_todays_contract():
@@ -81,21 +109,24 @@ def test_crew_renders_todays_contract():
 @pytest.mark.parametrize(
     ("label", "agent", "key", "value", "expected"),
     [
-        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:t1", True, True),
-        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:t1", False, False),
-        ("kiro", "kirocrew", "dashboard:t1", True, False),
-        ("claude", "kirocrew", "dashboard:t1", True, False),
-        (None, "kirocrew", "dashboard:t1", True, False),
-        (PROVIDER_LABEL_KAS, "kirocrew-conductor", "dashboard:t1", True, False),
-        (PROVIDER_LABEL_KAS, "kirocrew", "cron:j", True, False),
-        (PROVIDER_LABEL_KAS, "kirocrew", "subagent:x", True, False),
-        (PROVIDER_LABEL_KAS, "kirocrew", "slack:C:T", True, False),
-        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:member-ada", True, False),
+        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:t1", True, "replace"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:t1", False, ""),
+        ("kiro", "kirocrew", "dashboard:t1", True, ""),
+        ("claude", "kirocrew", "dashboard:t1", True, ""),
+        (None, "kirocrew", "dashboard:t1", True, ""),
+        (PROVIDER_LABEL_KAS, "kirocrew-research", "dashboard:t1", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew-conductor", "dashboard:t1", True, ""),
+        (PROVIDER_LABEL_KAS, "kirocrew-mate-conductor", "dashboard:member-ada", True, ""),
+        (PROVIDER_LABEL_KAS, "kirocrew", "cron:j", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "subagent:x", True, ""),
+        (PROVIDER_LABEL_KAS, "kirocrew", "slack:C:T", True, "beside"),
+        (PROVIDER_LABEL_KAS, "kirocrew", "dashboard:member-ada", True, "beside"),
     ],
 )
 def test_who_reads_the_engine_sentence(setting, label, agent, key, value, expected):
     setting(value)
-    assert engine.contract_names_engine_subagents(label, agent, key) is expected
+    assert engine.contract_engine_subagent_mode(label, agent, key) == expected
+    assert engine.contract_names_engine_subagents(label, agent, key) is bool(expected)
 
 
 def test_the_sharing_preview_keeps_todays_sentence(setting):
@@ -116,7 +147,7 @@ def test_a_session_keeps_the_reading_it_started_with(setting):
     builder._engine_subagent_gates_lock = threading.Lock()
     builder._CAP_FIGURE_SESSIONS = 64
 
-    def reading(start: bool) -> bool:
+    def reading(start: bool) -> str:
         return agent_spec._session_reading(
             builder,
             builder._engine_subagent_gates,
@@ -129,10 +160,10 @@ def test_a_session_keeps_the_reading_it_started_with(setting):
         )
 
     setting(True)
-    assert reading(True) is True
+    assert reading(True) == "replace"
     setting(False)
-    assert reading(False) is True
-    assert reading(True) is False
+    assert reading(False) == "replace"
+    assert reading(True) == ""
 
 
 @pytest.mark.parametrize("value", [True, False])
@@ -156,5 +187,10 @@ def test_the_engine_sentence_says_who_runs_and_what_a_refusal_means():
     assert "start it with `spawn_run` instead" in sentence
     # No agent the tool runs holds a Kiro Crew server.
     assert "No sub-agent it runs has a Kiro Crew tool" in sentence
-    assert sentence in _render(True)
+    assert engine.ENGINE_HELPER_SUB_AGENT_SENTENCE in _render("beside")
+    only = engine.ENGINE_ONLY_SUB_AGENT_SENTENCE
+    head, _, tail = only.partition("When it is not in your tool list, ")
+    assert "in this chat's own process" in head and "spawn_run" not in head
+    assert tail.endswith(engine.SPAWN_SUB_AGENTS_SENTENCE)
+    assert only in _render("replace")
     assert "invoke_sub_agent" not in _render(False)
