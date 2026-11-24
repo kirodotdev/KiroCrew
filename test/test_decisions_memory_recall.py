@@ -488,6 +488,32 @@ class TestEgress:
         assert outcome["jev_keys"] == ["a", "x" * (mr.MAX_KEY_CHARS + 1)]
         assert outcome["candidates"] == 2, "the MENU size, which is what was asked"
 
+    @pytest.mark.parametrize(
+        ("endpoint", "recalled", "offered"),
+        [
+            (local_models.endpoint_for(8102), 8, mr.LOCAL_MAX_CANDIDATES),
+            (DECISION_PROVIDER_ENDPOINT_DEFAULT, mr.MAX_CANDIDATES + 5, mr.MAX_CANDIDATES),
+        ],
+        ids=["on-this-machine", "hosted"],
+    )
+    def test_the_record_names_the_rows_jev_was_never_asked_about(
+        self, home, bg_loop, enabled, monkeypatch, endpoint, recalled, offered
+    ):
+        """They are in `jev_keys` because nobody may drop them, not because Jev kept them.
+
+        Without a list of its own the receipt reads every one of them as Jev's choice:
+        asked about 2 of 8 and keeping 1, it said Jev kept 7.
+        """
+        monkeypatch.setattr(gate, "configured_endpoint", lambda config=None: endpoint)
+        rows = [_episode(f"k{i}") for i in range(recalled)]
+        answers = _answers(("keep", 0.9), *[("drop", 0.9)] * (offered - 1))
+        _kept(rows, loop=bg_loop, monkeypatch=monkeypatch, answers=answers)
+        outcome = _rows(home)[-1]
+        unasked = [f"k{i}" for i in range(offered, recalled)]
+        assert outcome.get("unasked_keys") == unasked
+        assert outcome["jev_keys"] == ["k0", *unasked]
+        assert outcome["candidates"] == offered
+
     def test_an_id_less_row_is_named_in_neither_list(self, home, bg_loop, enabled, monkeypatch):
         """Naming it as ``""`` would cost the whole receipt.
 
