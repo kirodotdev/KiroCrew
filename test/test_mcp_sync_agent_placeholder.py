@@ -70,6 +70,8 @@ def test_enabling_one_server_never_grants_a_placeholder(placeholder_env, mounted
 def test_enable_all_never_grants_a_placeholder_and_grants_an_installed_server(
     placeholder_env, mounted
 ):
+    from kiro_crew.mcp_provenance import COPIED_KEY
+
     if mounted:
         _mount_notes(placeholder_env)
 
@@ -77,7 +79,7 @@ def test_enable_all_never_grants_a_placeholder_and_grants_an_installed_server(
     cfg = _load(placeholder_env)
     assert ("@notes-mcp" in cfg["tools"]) is mounted
     assert "@notes-mcp" not in cfg["allowedTools"]
-    assert cfg["mcpServers"]["slack-mcp"] == _GRANTED
+    assert cfg["mcpServers"]["slack-mcp"] == {**_GRANTED, COPIED_KEY: True}
     assert "@slack-mcp" in cfg["allowedTools"]
 
 

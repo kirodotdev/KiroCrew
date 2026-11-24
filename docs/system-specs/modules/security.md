@@ -4608,9 +4608,10 @@ and every gap fails closed:
   (`holding_parents_servers`), so both launch one thing. The rebuild rewrites
   the default agent's declaration and no other agent's (a bare `command`
   becomes the path it resolved to, beside the `x-kirocrew-derived` record of
-  both values), so `set_up_alike` compares like with like and takes either
-  match: the entry's declaration against the parent's as stored, the record
-  aside, or against the parent's as its file was written
+  both values, and a copy of a Kiro-global server carries the
+  `x-kirocrew-copied` stamp), so `set_up_alike` compares like with like and
+  takes either match: the entry's declaration against the parent's as stored,
+  the record and the stamp aside, or against the parent's as its file was written
   (`mcp_provenance.source_view`, which restores the command only while the
   stored one is the value the record says was emitted). A record in the
   entry's own file is never read, the name alone never matches, and a

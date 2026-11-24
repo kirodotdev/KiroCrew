@@ -1360,12 +1360,14 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does,
 # and so is the mount-only record's stamp (template_mcp_additions.MERGED_MARK),
 # which the managed refresh keeps on an opt-in entry the record mounted, and the
-# app-source stamp the rebuild writes on an app's entry (mcp_provenance.SOURCE_KEY).
+# app-source stamp the rebuild writes on an app's entry (mcp_provenance.SOURCE_KEY),
+# and the stamp on an entry copied from the Kiro global (mcp_provenance.COPIED_KEY).
 _NATIVE_INERT_KEYS = frozenset(
     {
         mcp_provenance.MARKER_KEY,
         mcp_provenance.DERIVED_KEY,
         mcp_provenance.SOURCE_KEY,
+        mcp_provenance.COPIED_KEY,
         SESSION_LABEL_MARKER,
         MERGED_MARK,
     }

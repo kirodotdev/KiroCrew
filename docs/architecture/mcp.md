@@ -74,7 +74,9 @@ evidence that the core reads that file.
 The existing `~/.kiro/agents/kirocrew.json` is the merge **base** when one
 exists and `clean=False`, so any server the user already customized survives
 (`autoApprove` edits, hand-edits, servers added with `kiro-cli mcp add --agent
-kirocrew`). Onto that base:
+kirocrew`), except an entry Kiro Crew copied from the Kiro global, which leaves
+with its source (*A server renamed or removed in the Kiro global* below; deleting
+its `x-kirocrew-copied` key keeps it). Onto that base:
 
 1. **App-contributed servers** (`_collect_app_mcp_servers()`), keyed
    `{app}:{server}`, are assigned first so an app's namespaced entry outranks a
@@ -160,6 +162,31 @@ Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
 `command`/`args` are set by `_refresh_dynamic_fields()` and must not be
 overwritten by a stale global entry.
+
+**A server renamed or removed in the Kiro global leaves the spec.** The base keeps
+every entry the previous rebuild wrote, so a copy would otherwise outlive the name
+it was copied from. An entry Kiro Crew creates in the spec from
+`~/.kiro/settings/mcp.json` -- step 2 adding an absent name, or the dashboard's
+switch-on copying a server the spec lacks (`mcp_agent_sync`) -- is stamped
+`x-kirocrew-copied` (`mcp_provenance.COPIED_KEY`). After step 4, a stamped entry is
+removed, with every ref to it (a dropped grant goes to SEL as
+`mcp_auto_approve_revoked`), when no scope global and no `~/.kiro/crew/mcp.json`
+entry launches a server (a `command`, a `url` or a registry pointer; a toggle stub
+launches nothing) under its alias, or, for a slashed name, under a `-<n>` sibling
+of the alias that name mints; managed and edition names are skipped. Nothing is
+removed while one of those files is there but was not read as an object holding
+an object `mcpServers` in that pass (unreadable, malformed, a dangling link, other
+keys under a misspelt one), since it then states nothing about what it declares;
+an absent file and a readable `{}` (the store Kiro Crew seeds) declare none
+(`user_json.read_user_json_object`). The stamp only ever lets the
+rebuild remove an entry: one the user wrote (a hand edit, `kiro-cli mcp add
+--agent kirocrew`) carries none and stays, and so does a copy an older build made,
+a slashed name's mount included (a raw key folding onto equal entries leaves the
+one it keeps without the stamp when any of them lacks it). A copy from a seam-contributed provider global is not
+stamped. The stamp is no launch field: the key dedup and KAS's pooled-server
+comparison read entries without it, the dashboard's copy of an entry and an app
+agent's grant leave it out, and the native control-plane check reads it as inert.
+The worker file mirrors this spec, so it follows.
 
 **A raw slash key's tool list reaches the alias it mounts as.** kiro-cli refuses a
 `/` in a server key, so `npm:@playwright/mcp` mounts as `playwright-mcp`, and a
