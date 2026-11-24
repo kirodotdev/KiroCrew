@@ -570,13 +570,13 @@ def test_config_save_answers_only_after_the_watcher_applied_it(tmp_path, monkeyp
 
     async def _go():
         async with TestClient(TestServer(app)) as client:
-            resp = await client.put("/api/weixin/config", json={"allowed_user_ids": ["u-1"]})
+            resp = await client.put("/api/weixin/config", json={"allowed_user_ids": ["wxid_u-1"]})
             return resp.status, await resp.json()
 
     status, body = asyncio.run(_go())
     assert status == 200 and body["ok"] is True
     applied.assert_awaited_once()
-    assert json.loads(cp.read_text(encoding="utf-8"))["weixin"]["allowed_user_ids"] == ["u-1"]
+    assert json.loads(cp.read_text(encoding="utf-8"))["weixin"]["allowed_user_ids"] == ["wxid_u-1"]
 
 
 # ── the confirmed sign-in persists under a live-config hold ────────────────

@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -593,6 +594,22 @@ async def weixin_config_get(request: web.Request) -> web.Response:
     )
 
 
+# The two shapes an iLink peer id takes: ``wxid_…`` and ``<opaque>@im.<kind>``
+# (``…@im.wechat`` for a person, ``…@im.bot`` for a bot identity).
+_ILINK_PEER_ID = re.compile(r"(?:wxid_[A-Za-z0-9_-]+|[^\s@]+@im\.[A-Za-z0-9.]+)\Z")
+
+
+def _is_ilink_peer_id(value: str) -> bool:
+    """True when *value* has the shape of an id iLink reports for a sender.
+
+    The transport matches an inbound sender against the allow-list by exact
+    string, so an entry of any other shape -- the WeChat handle shown in a
+    profile, a nickname, a phone number -- can never match and would leave the
+    allow-list authorizing nobody.
+    """
+    return _ILINK_PEER_ID.match(value) is not None
+
+
 async def weixin_config_save(request: web.Request) -> web.Response:
     """PUT /api/weixin/config — persist policy fields to config.json.
 
@@ -618,6 +635,19 @@ async def weixin_config_save(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid dm_policy"}, status=400)
     if "allowed_user_ids" in body and not isinstance(body["allowed_user_ids"], list):
         return web.json_response({"error": "allowed_user_ids must be a list"}, status=400)
+    for item in body.get("allowed_user_ids", ()):
+        user_id = str(item).strip()
+        if user_id and not _is_ilink_peer_id(user_id):
+            return web.json_response(
+                {
+                    "error": (
+                        f"invalid WeChat user id: {user_id} (expected the iLink id of the "
+                        "sender, such as ...@im.wechat, not a WeChat handle)"
+                    ),
+                    "code": "invalid_id",
+                },
+                status=400,
+            )
     if "session_folder" in body:
         try:
             session_folder = clean_session_folder(body["session_folder"])

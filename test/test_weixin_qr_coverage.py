@@ -280,6 +280,14 @@ def _save(monkeypatch, tmp_path: Path, body: Any, config: str = "{}", state: Any
         ({"enabled": "yes"}, {"error": "enabled must be a boolean"}),
         ({"dm_policy": "everyone"}, {"error": "invalid dm_policy"}),
         ({"allowed_user_ids": "u-1"}, {"error": "allowed_user_ids must be a list"}),
+        (
+            {"allowed_user_ids": ["wxid_ok", "some-handle"]},
+            {
+                "error": "invalid WeChat user id: some-handle (expected the iLink id of the "
+                "sender, such as ...@im.wechat, not a WeChat handle)",
+                "code": "invalid_id",
+            },
+        ),
         ({"session_folder": 5}, {"error": "Folder name must be text", **BAD_FOLDER}),
         ({"session_folder": "a/b"}, {"error": "Folder name cannot contain / or \\", **BAD_FOLDER}),
     ],
@@ -289,6 +297,24 @@ def test_config_save_rejects_a_bad_body_and_writes_nothing(monkeypatch, tmp_path
     assert (saved.status, saved.body) == (400, reply)
     assert saved.path.read_text(encoding="utf-8") == '{"keep": 1}'
     saved.applied.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("value", "is_peer_id"),
+    [
+        ("wxid_abc123", True),
+        ("o9cq801Z@im.wechat", True),
+        ("a5ace6fd482e@im.bot", True),
+        ("some-handle", False),
+        ("13800138000", False),
+        ("someone@example.com", False),
+        ("wxid_", False),
+        ("@im.wechat", False),
+        ("o9cq 801Z@im.wechat", False),
+    ],
+)
+def test_only_an_ilink_peer_id_passes_the_allow_list_shape_check(value, is_peer_id):
+    assert qr._is_ilink_peer_id(value) is is_peer_id
 
 
 @pytest.mark.parametrize("config", ["{not json", "[1, 2]"])
@@ -301,7 +327,11 @@ def test_config_save_refuses_to_overwrite_a_corrupt_config(monkeypatch, tmp_path
 
 def test_config_save_writes_each_field_and_keeps_the_rest_of_the_file(monkeypatch, tmp_path):
     state = object()
-    body = {"enabled": True, "dm_policy": "allowlist", "allowed_user_ids": [" u-1 ", "", 2]}
+    body = {
+        "enabled": True,
+        "dm_policy": "allowlist",
+        "allowed_user_ids": [" wxid_u-1 ", "", "o9cq@im.wechat"],
+    }
     body["session_folder"] = " Team "
     config = '{"other": {"a": 1}, "weixin": "garbled"}'  # a non-object section is replaced
     saved = _save(monkeypatch, tmp_path, body, config=config, state=state)
@@ -311,7 +341,7 @@ def test_config_save_writes_each_field_and_keeps_the_rest_of_the_file(monkeypatc
     assert written["weixin"] == {
         "enabled": True,
         "dm_policy": "allowlist",
-        "allowed_user_ids": ["u-1", "2"],
+        "allowed_user_ids": ["wxid_u-1", "o9cq@im.wechat"],
         "session_folder": "Team",
     }
     saved.applied.assert_awaited_once()
