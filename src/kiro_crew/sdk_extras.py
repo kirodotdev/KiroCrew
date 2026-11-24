@@ -316,7 +316,11 @@ def _redact_pip_output(text: str, index_env: dict[str, str]) -> str:
     secrets: set[str] = set()
     for name in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
         for url in index_env.get(name, "").split():
-            parts = urllib.parse.urlsplit(url)
+            try:
+                parts = urllib.parse.urlsplit(url)
+            except ValueError:  # e.g. an unclosed "[" host: remove the whole value
+                secrets.add(url)
+                continue
             path = parts.path.rstrip("/")
             for piece in (parts.username, parts.password, path, parts.query):
                 if piece and len(piece) > 1:
@@ -352,15 +356,18 @@ def _parse_pip_config(text: str) -> dict[str, str]:
     return {**found["global"], **found["install"]}
 
 
-def _pip_config_list() -> str:
-    """``pip config list`` from the gateway's own pip, or ``""`` on any failure."""
+def _pip_config_list(interpreter: str | None = None) -> str:
+    """``pip config list`` from *interpreter*'s pip (the gateway's own by default).
+
+    ``""`` on any failure.
+    """
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONIOENCODING"] = "utf-8"
     try:
         result = subprocess.run(
             # -I: no current directory on sys.path, so a planted pip.py in the
             # gateway's working directory cannot run in place of pip.
-            [sys.executable, "-I", "-m", "pip", "config", "list"],
+            [interpreter or sys.executable, "-I", "-m", "pip", "config", "list"],
             env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -373,8 +380,11 @@ def _pip_config_list() -> str:
     return (result.stdout or "") if result.returncode == 0 else ""
 
 
-def _configured_index_env() -> dict[str, str]:
+def _configured_index_env(interpreter: str | None = None) -> dict[str, str]:
     """The package index the user set up for pip, as ``PIP_*`` variables; ``{}`` if none.
+
+    *interpreter* is the Python whose pip runs the install and reads the config
+    (the gateway's own by default).
 
     A network that reaches only a company mirror needs it: the install's own
     environment drops every ``PIP_*`` variable and all pip config (see
@@ -385,7 +395,7 @@ def _configured_index_env() -> dict[str, str]:
     certificate kept in ``pip.conf``. Only those keys are kept.
     """
     from_env = {name: os.environ[name] for name in _PIP_INDEX_ENV if os.environ.get(name)}
-    return {**_parse_pip_config(_pip_config_list()), **from_env}
+    return {**_parse_pip_config(_pip_config_list(interpreter)), **from_env}
 
 
 def _describe_index(index_env: dict[str, str]) -> str:
