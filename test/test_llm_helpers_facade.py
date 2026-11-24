@@ -84,6 +84,7 @@ _VOCABULARY_HOMES = {
     "EVENT_PERMISSION_REQUEST": "kiro_crew.providers.base",
     "EVENT_TEXT_CHUNK": "kiro_crew.providers.base",
     "EVENT_TOOL_CALL": "kiro_crew.providers.base",
+    "EVENT_TOOL_CALL_UPDATE": "kiro_crew.providers.base",
     "EVENT_TOOL_RESULT": "kiro_crew.providers.base",
     "LLMEvent": "kiro_crew.providers.base",
     "LLMProvider": "kiro_crew.providers.base",

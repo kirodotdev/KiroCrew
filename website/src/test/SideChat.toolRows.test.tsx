@@ -1,0 +1,473 @@
+import { describe, it, expect, vi } from 'vitest'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
+import reducer, { sideRestore, sseSideResult } from '../store/chatSlice'
+import type { RootState } from '../store'
+import { renderWithProviders, createTestStore } from './helpers'
+
+/* A side turn's tool attempts are rows of the side transcript, drawn where they
+ * happened in the reply: `🔧 <title>` through the shared transcript's own tool
+ * pill, a refused one marked blocked by its hidden `🚫` sibling. The reducer owns
+ * the shape that makes this work with streaming: a tool row at the tail starts a
+ * NEW answer row under it, and the terminal frame (which carries the text after
+ * the last tool row) settles that last row alone. */
+
+vi.mock('../api/client', () => ({
+  api: new Proxy({} as Record<PropertyKey, unknown>, {
+    get: (_t, prop) => {
+      if (Object.prototype.hasOwnProperty.call(_t, prop)) return _t[prop]
+      const fn = vi.fn().mockResolvedValue(
+        prop === 'sideOpen' ? { ok: true, open: true, messages: 0, last_run_id: '', created_at: '' }
+          : prop === 'sideTurn' ? { ok: true, run_id: 'r1', messages: 1 }
+            : prop === 'sideClose' ? { ok: true, was_open: true }
+              : prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
+                : prop === 'acpBackends' ? { backends: [{ id: '', capabilities: [{ id: 'side_chat_tools', available: true }] }] }
+                  : {},
+      )
+      Object.defineProperty(_t, prop, { value: fn, writable: true, configurable: true })
+      return fn
+    },
+  }),
+  SEARCH_MIN_CHARS: 2,
+}))
+
+import SideChat from '../pages/chat/SideChat'
+
+const SLOT = 'parent-slot-1'
+const TOOL_META = { tool_call_id: 'call-1', kind: 'execute', purpose: 'read the hosts file', input_preview: 'cat /etc/hosts' }
+
+describe('side reducer: tool rows', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+
+  function turnUpToTool() {
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Let me check. ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', meta: TOOL_META }))
+    return state
+  }
+
+  it('a tool row lands at the tail with its meta and keeps the turn busy', () => {
+    const state = turnUpToTool()
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.role)).toEqual(['user', 'assistant', 'tool'])
+    expect(side.messages[2]).toMatchObject({ role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', run_id: 'r1', meta: TOOL_META })
+    // Output is arriving: the thinking dots' `pending` is over, the turn streams on.
+    expect(side.pending).toBe(false)
+    expect(side.streaming).toBe(true)
+  })
+
+  it('text after a tool row starts a new answer row instead of growing the one above', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'The file lists ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'two ' }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(side.messages[1].content).toBe('Let me check. ')
+    expect(side.messages[3].content).toBe('The file lists two ')
+  })
+
+  it('an update frame refines its tool row in place and leaves the text row below open', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'It lists ' }))
+    state = reducer(state, sseSideResult({
+      slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Read hosts\n/etc/hosts',
+      meta: { tool_call_id: 'call-1', update: '1', input_preview: '/etc/hosts' },
+    }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'two hosts.' }))
+    // An update for a call no row was drawn for changes nothing.
+    state = reducer(state, sseSideResult({
+      slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Read other', meta: { tool_call_id: 'call-9', update: '1' },
+    }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(side.messages[2].content).toBe('🔧 Read hosts\n/etc/hosts')
+    expect(side.messages[2].meta).toEqual({ ...TOOL_META, input_preview: '/etc/hosts' })
+    expect(side.messages[3].content).toBe('It lists two hosts.')
+  })
+
+  it('the terminal frame settles only the row under the last tool call', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'The file lists two ' }))
+    // The server sends the text written AFTER the last tool row, whole-text
+    // redacted, which extends what was streamed for that row.
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'The file lists two hosts.', final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.content)).toEqual([
+      'q',
+      'Let me check. ',
+      '🔧 Running: cat /etc/hosts\ncat /etc/hosts',
+      'The file lists two hosts.',
+    ])
+    expect(side.streaming).toBe(false)
+    expect(side.pending).toBe(false)
+  })
+
+  it('a settle frame before a tool row replaces the row above it, even when it rewrites the text', () => {
+    // When a row closes at a tool call the server settles it with the row's
+    // text as one redaction pass over the whole reply has it. The pass can
+    // rewrite the streamed deltas (a secret only visible whole), so the frame
+    // is marked `settle` and replaces the row rather than growing it; the
+    // tool row still lands under it. Text the server still holds at the call
+    // is not in that frame: it is drawn under the tool row, once the text
+    // after the call has decided it.
+    // The deltas spell a key header; only the source spelling is split, so the
+    // fork content scan does not read this test as a committed key.
+    const dashes = '-'.repeat(5)
+    const kind = 'RSA PRIVATE KEY'
+    const begin = `${dashes}BEGIN ${kind}${dashes}`
+    const end = `${dashes}END ${kind}${dashes}`
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: `key: ${begin}\n` }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: `FAKEKEYMATERIAL==\n${end}\nthen commit ` }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'key: [REDACTED: credential]\nthen commit ', settle: true }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: git show', meta: { ...TOOL_META, input_preview: 'git show' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '9f86d081884c7d659a2feaa0c55ad015 is the ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '9f86d081884c7d659a2feaa0c55ad015 is the one.', final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.content)).toEqual([
+      'q',
+      'key: [REDACTED: credential]\nthen commit ',
+      '🔧 Running: git show',
+      '9f86d081884c7d659a2feaa0c55ad015 is the one.',
+    ])
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a delta that is not a prefix extension still grows the row (only settle replaces)', () => {
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Commit ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'is the ' }))
+    expect(state.slotSide[SLOT].messages[1].content).toBe('Commit is the ')
+  })
+
+  it('every delta grows the row, including one equal to it or starting with it', () => {
+    // The server settles a row against exactly the deltas it sent, so the
+    // client may not drop or fold one: two "\n" deltas are two newlines, and a
+    // delta that happens to begin with the row's text is more text, not a
+    // replacement. Only a settle or terminal frame replaces.
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '\n' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '\n' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '\n\nThe ' }))
+    expect(state.slotSide[SLOT].messages[1].content).toBe('\n\n\n\nThe ')
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '\n\n\n\nThe ', final: true }))
+    expect(state.slotSide[SLOT].messages[1].content).toBe('\n\n\n\nThe ')
+    expect(state.slotSide[SLOT].streaming).toBe(false)
+  })
+
+  it('an empty settle or terminal frame removes the row it lands on', () => {
+    // The pass left the row no text of its own: what was streamed for it
+    // belonged to a credential whose tag the row below carries. An empty
+    // bubble would be noise.
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Bearer ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '', settle: true }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat token.txt', meta: { ...TOOL_META, input_preview: 'cat token.txt' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '[REDACTED: credential] ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '', final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.content)).toEqual(['q', '🔧 Running: cat token.txt'])
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a terminal frame that rewrites the streamed row replaces it, like a settle frame', () => {
+    // The server's terminal frame is the row's whole text redacted in one pass.
+    // A key header's newline was drawn before the body followed; the pass then
+    // absorbs that newline into the tag, so the frame is not an extension of
+    // the deltas. The row ends as the pass has it, never as deltas plus a
+    // second copy appended under them.
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'key: [REDACTED: credential]\n' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'key: [REDACTED: credential]', final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.content)).toEqual(['q', 'key: [REDACTED: credential]'])
+    expect(side.streaming).toBe(false)
+  })
+
+  it('an empty terminal frame after a tool row adds no row and ends the turn', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '', final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.role)).toEqual(['user', 'assistant', 'tool'])
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a restore keeps the rows this tab drew for a run with tool rows, not the one stored answer', () => {
+    let state = reducer(initial, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q', message_id: 'u1' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Let me check. ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', meta: TOOL_META }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Two hosts.', final: true, message_id: 'a1', reply: 'Let me check. Two hosts.' }))
+    state = reducer(state, sideRestore({
+      slot: SLOT,
+      snapshot: {
+        open: true,
+        created_at: '2026-10-21T06:00:00.000Z',
+        last_run_id: 'r1',
+        running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q', ts: '2026-10-21T06:00:01.000Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'Let me check. Two hosts.', ts: '2026-10-21T06:00:02.000Z' },
+        ],
+      },
+    }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => [m.role, m.content])).toEqual([
+      ['user', 'q'],
+      ['assistant', 'Let me check. '],
+      ['tool', '🔧 Running: cat /etc/hosts\ncat /etc/hosts'],
+      ['assistant', 'Two hosts.'],
+    ])
+    expect(side.pending).toBe(false)
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a restore after the socket dropped mid-run draws the stored answer, not the partial split', () => {
+    // The tab drew a text row and a tool row, then missed the rest of the run
+    // and its terminal frame: no local row carries the stored id.
+    let state = reducer(initial, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q', message_id: 'u1' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Let me check. ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat /etc/hosts', meta: TOOL_META }))
+    state = reducer(state, sideRestore({
+      slot: SLOT,
+      snapshot: {
+        open: true,
+        created_at: '2026-10-21T06:00:00.000Z',
+        last_run_id: 'r1',
+        running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q', ts: '2026-10-21T06:00:01.000Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'Let me check. Two hosts.', ts: '2026-10-21T06:00:02.000Z' },
+        ],
+      },
+    }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => [m.role, m.content])).toEqual([
+      ['user', 'q'],
+      ['assistant', 'Let me check. Two hosts.'],
+    ])
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a terminal frame whose reply the rows do not add up to replaces the partial rows with the reply', () => {
+    // The socket dropped after the first tool row: the text and tool row
+    // after it never arrived, only the terminal frame did.
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Two hosts.', final: true, message_id: 'a1', reply: 'Let me check. Then grep. Two hosts.' }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => [m.role, m.content])).toEqual([
+      ['user', 'q'],
+      ['assistant', 'Let me check. Then grep. Two hosts.'],
+    ])
+    expect(side.messages.at(-1)?.id).toBe('a1')
+    expect(side.streaming).toBe(false)
+  })
+
+  it('a turn that ends on a tool row keeps the stored id, so a restore keeps its rows', () => {
+    let state = reducer(initial, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q', message_id: 'u1' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Let me check.\n' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat /etc/hosts', meta: TOOL_META }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '', final: true, message_id: 'a1', reply: 'Let me check.\n' }))
+    expect(state.slotSide[SLOT].messages.find(m => m.role === 'assistant')?.id).toBe('a1')
+    state = reducer(state, sideRestore({
+      slot: SLOT,
+      snapshot: {
+        open: true,
+        created_at: '2026-10-21T06:00:00.000Z',
+        last_run_id: 'r1',
+        running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q', ts: '2026-10-21T06:00:01.000Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'Let me check.\n', ts: '2026-10-21T06:00:02.000Z' },
+        ],
+      },
+    }))
+    expect(state.slotSide[SLOT].messages.map(m => m.role)).toEqual(['user', 'assistant', 'tool'])
+  })
+
+  it('a restore with no local tool rows for the run draws the stored answer', () => {
+    const state = reducer(initial, sideRestore({
+      slot: SLOT,
+      snapshot: {
+        open: true,
+        created_at: '2026-10-21T06:00:00.000Z',
+        last_run_id: 'r1',
+        running: false,
+        messages: [
+          { id: 'u1', run_id: 'r1', role: 'user', content: 'q', ts: '2026-10-21T06:00:01.000Z' },
+          { id: 'a1', run_id: 'r1', role: 'assistant', content: 'Let me check. Two hosts.', ts: '2026-10-21T06:00:02.000Z' },
+        ],
+      },
+    }))
+    expect(state.slotSide[SLOT].messages.map(m => m.content)).toEqual(['q', 'Let me check. Two hosts.'])
+  })
+
+  it('a run this tab joined part-way drops its tool and settle frames and draws the whole reply', () => {
+    let state = reducer(initial, sideRestore({
+      slot: SLOT,
+      snapshot: {
+        open: true,
+        created_at: '2026-10-21T06:00:00.000Z',
+        last_run_id: 'r1',
+        running: true,
+        messages: [{ id: 'u1', run_id: 'r1', role: 'user', content: 'q', ts: '2026-10-21T06:00:01.000Z' }],
+      },
+    }))
+    expect(state.slotSide[SLOT].awaitingFinalRunId).toBe('r1')
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Let me check. ', settle: true }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: cat /etc/hosts', meta: TOOL_META }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Two hosts.', final: true, message_id: 'a1', reply: 'Let me check. Two hosts.' }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => [m.role, m.content])).toEqual([
+      ['user', 'q'],
+      ['assistant', 'Let me check. Two hosts.'],
+    ])
+    expect(side.messages.at(-1)?.id).toBe('a1')
+    expect(side.awaitingFinalRunId).toBeUndefined()
+    expect(side.pending).toBe(false)
+  })
+
+  it('a refused attempt keeps its 🚫 sibling beside the 🔧 row', () => {
+    let state = initial
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'user', content: 'q' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: rm -rf build', meta: { tool_call_id: 'call-9', kind: 'execute', purpose: '', input_preview: 'rm -rf build' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🚫 Running: rm -rf build', meta: { tool_call_id: 'call-9' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: "I can't change files here.", final: true }))
+    const side = state.slotSide[SLOT]
+    expect(side.messages.map(m => m.role)).toEqual(['user', 'tool', 'tool', 'assistant'])
+    expect(side.messages[2].meta?.tool_call_id).toBe('call-9')
+  })
+
+  it('the terminal frame marks the run\'s tool calls done, a refused one excepted', () => {
+    // The side wire carries no tool results, so the rows are open until the turn ends.
+    let state = turnUpToTool()
+    expect(state.slotSide[SLOT].messages[2].meta?.output).toBeUndefined()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: 'Two hosts. ' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🔧 Running: rm -rf build', meta: { tool_call_id: 'call-9', kind: 'execute', purpose: '', input_preview: 'rm -rf build' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'tool', content: '🚫 Running: rm -rf build', meta: { tool_call_id: 'call-9' } }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: "I can't change files here.", final: true }))
+    const rows = state.slotSide[SLOT].messages
+    expect(rows.map(m => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant', 'tool', 'tool', 'assistant'])
+    // The finished call: the empty output a main chat row with nothing to show carries.
+    expect(rows[2].meta).toEqual({ ...TOOL_META, output: '' })
+    // The refused call and its hidden sibling: blocked is their terminal state.
+    expect(rows[4].meta?.output).toBeUndefined()
+    expect(rows[5].meta?.output).toBeUndefined()
+    // A later turn's frames leave the earlier run's rows as they are.
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r2', role: 'user', content: 'again' }))
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r2', role: 'tool', content: '🔧 Running: ls', meta: { tool_call_id: 'call-2', kind: 'execute', purpose: '', input_preview: 'ls' } }))
+    const later = state.slotSide[SLOT].messages
+    expect(later[2].meta?.output).toBe('')
+    expect(later[later.length - 1].meta?.output).toBeUndefined()
+  })
+
+  it('an error notice ending the turn marks its tool calls done too', () => {
+    let state = turnUpToTool()
+    state = reducer(state, sseSideResult({ slot: SLOT, run_id: 'r1', role: 'assistant', content: '(side conversation interrupted — please retry)', is_error: true, final: true }))
+    expect(state.slotSide[SLOT].messages[2].meta?.output).toBe('')
+  })
+})
+
+describe('SideChat draws tool rows', () => {
+  function storeWith(messages: Array<Record<string, unknown>>, streaming = false) {
+    return createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        messages: [],
+        slotRunning: false,
+        slotStopping: false,
+        slotState: 'idle',
+        slotStatusDetail: {},
+        slotHasMore: false,
+        slotOldestIndex: 0,
+        loadingOlder: false,
+        lastChunkSeq: undefined,
+        _wsChunkedDuringFetch: false,
+        history: [],
+        historyHasMore: false,
+        historyOffset: 0,
+        pendingInput: null,
+        slotContextPct: {},
+        voicePlaying: false,
+        voiceAudio: null,
+        subagents: {},
+        toolLog: [],
+        activityOpen: true,
+        activityTab: 'side',
+        focusToolCallId: null,
+        slotActivity: {},
+        slotSide: { [SLOT]: { messages, lastRunId: 'r1', streaming, pending: false, openedAtTurnCount: 0 } },
+        slotHistory: [SLOT],
+        stopPressedAt: {},
+      } as unknown as RootState['chat'],
+    })
+  }
+
+  it('a finished tool call is a pill between the text rows, with its input in the panel', async () => {
+    const store = storeWith([
+      { role: 'user', content: 'what is in hosts?', ts: '2026-05-19T10:00:00Z', run_id: 'r1' },
+      { role: 'assistant', content: 'Let me check.', ts: '2026-05-19T10:00:01Z', run_id: 'r1' },
+      { role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', ts: '2026-05-19T10:00:02Z', run_id: 'r1', meta: TOOL_META },
+      { role: 'assistant', content: 'Two hosts.', ts: '2026-05-19T10:00:03Z', run_id: 'r1' },
+    ])
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await screen.findByRole('note')
+    // A finished turn folds its steps under the shared transcript's own header,
+    // exactly as the main chat does; the final text stays visible.
+    expect(screen.getByText('Two hosts.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '1 tool call' }))
+    // The pill reads the purpose as its label and the input preview as its panel.
+    // The turn has settled, so the shared pill reads done (green), not running.
+    const pill = await screen.findByRole('button', { name: 'read the hosts file' })
+    expect(pill.className).toContain('text-ok-text')
+    expect(screen.getByText('Let me check.')).toBeInTheDocument()
+    expect(pill.compareDocumentPosition(screen.getByText('Two hosts.')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('Let me check.').compareDocumentPosition(pill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(pill)
+    expect(screen.getByText(/cat \/etc\/hosts/)).toBeInTheDocument()
+  })
+
+  it('a finished call stays done while a later turn runs, from the output its terminal frame left', async () => {
+    // The panel is busy again (`streaming`), which alone would put every pill
+    // without an output back on the spinner.
+    const store = storeWith([
+      { role: 'user', content: 'what is in hosts?', ts: '2026-05-19T10:00:00Z', run_id: 'r1' },
+      { role: 'assistant', content: 'Let me check.', ts: '2026-05-19T10:00:01Z', run_id: 'r1' },
+      { role: 'tool', content: '🔧 Running: cat /etc/hosts\ncat /etc/hosts', ts: '2026-05-19T10:00:02Z', run_id: 'r1', meta: { ...TOOL_META, output: '' } },
+      { role: 'assistant', content: 'Two hosts.', ts: '2026-05-19T10:00:03Z', run_id: 'r1', id: 'm1' },
+      { role: 'user', content: 'and the ports?', ts: '2026-05-19T10:00:04Z', run_id: 'r2' },
+      { role: 'tool', content: '🔧 Running: ss -ltn\nss -ltn', ts: '2026-05-19T10:00:05Z', run_id: 'r2', meta: { tool_call_id: 'call-2', kind: 'execute', purpose: 'list the ports', input_preview: 'ss -ltn' } },
+    ], true)
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await screen.findByRole('note')
+    // The finished turn's call folds under its header, as a done call does.
+    fireEvent.click(await screen.findByRole('button', { name: '1 tool call' }))
+    const done = await screen.findByRole('button', { name: 'read the hosts file' })
+    expect(done.className).toContain('text-ok-text')
+    expect(done.querySelector('.animate-spin')).toBeNull()
+    // The running turn's own call, with no output yet, spins.
+    const running = await screen.findByRole('button', { name: 'list the ports' })
+    expect(running.className).not.toContain('text-ok-text')
+    expect(running.querySelector('.animate-spin')).not.toBeNull()
+  })
+
+  it('a refused tool call is drawn blocked, from its hidden 🚫 sibling', async () => {
+    const store = storeWith([
+      { role: 'user', content: 'delete build', ts: '2026-05-19T10:00:00Z', run_id: 'r1' },
+      { role: 'tool', content: '🔧 Running: rm -rf build', ts: '2026-05-19T10:00:01Z', run_id: 'r1', meta: { tool_call_id: 'call-9', kind: 'execute', purpose: '', input_preview: 'rm -rf build' } },
+      { role: 'tool', content: '🚫 Running: rm -rf build', ts: '2026-05-19T10:00:01Z', run_id: 'r1', meta: { tool_call_id: 'call-9' } },
+      { role: 'assistant', content: "I can't change files here.", ts: '2026-05-19T10:00:02Z', run_id: 'r1' },
+    ])
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await screen.findByRole('note')
+    // One tool call counted: the 🚫 sibling is state, not a row.
+    fireEvent.click(screen.getByRole('button', { name: '1 tool call' }))
+    const pills = await screen.findAllByRole('button', { name: /rm -rf build/ })
+    expect(pills).toHaveLength(1)
+    await waitFor(() => expect(pills[0].className).toContain('text-warn'))
+  })
+})
