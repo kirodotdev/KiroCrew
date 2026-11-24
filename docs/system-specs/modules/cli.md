@@ -657,9 +657,13 @@ launch approvals that let a stubbed server run outside the session sandbox
 sandbox until it is approved again in MCP Servers.
 
 The same staging step holds back the bundle's agent config under `workspace/`
-(`snapshot._hold_back_agent_config`, names in `_AGENT_CONFIG_NAMES`: `.claude`,
+(`snapshot_agent_config._hold_back_agent_config`, re-exported by `snapshot`; names in
+`_AGENT_CONFIG_NAMES`: `.claude`,
 `.mcp.json`, `.kiro`, `.codex`, `.goose`, `.goosehints`, `.opencode`, `opencode.json(c)`,
-`.pi`, `.mimocode`, `mimocode.json(c)`), at any depth and matched ignoring case. The
+`.pi`, `.mimocode`, `mimocode.json(c)`), at any depth and matched ignoring case. It covers
+every `workspace/` tree the selected components install, read from the component table
+(`_restored_workspace_trees`): the whole tree for `workspace`, and `workspace/memory` and
+`workspace/knowledge` for `memory` on its own. The
 archive's copy is removed from the staged tree, so Merge installs none of them; Replace
 also copies the live tree's own copies into the staged tree, so the live config survives
 the swap and a name the live tree lacks ends up absent. The restore names each held path
