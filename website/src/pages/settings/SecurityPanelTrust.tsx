@@ -14,9 +14,13 @@ import { SettingsCard, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import {
   api, ApiError, type TrustedAppsData, type TrustedRegistriesData, type TrustedRegistryRow,
+  type MemberRosterRow,
 } from '../../api/client'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import BotChatStopActions from '../../components/appstore/BotChatStopActions'
+import { botChatStopFailedNotice } from '../../components/appstore/backendRefused'
 
 /* ── Third-party trust confirm target ── */
 type TrustConfirmTarget =
@@ -40,11 +44,42 @@ type TrustConfirmTarget =
  * withdrawn. Collapsing either into "something went wrong" hides the only
  * actionable part.
  */
-export function trustFailureMessage(err: unknown): string {
+export function trustFailureMessage(err: unknown, appName?: string): string {
   if (err instanceof ApiError) {
     try {
-      const parsed = JSON.parse(err.body) as { error?: unknown }
-      if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error
+      const parsed = JSON.parse(err.body) as { error?: unknown; code?: unknown; bots?: unknown; failures?: unknown; botStopFailed?: unknown }
+      // bot_chat_stop_incomplete: trust was written but some Bot chats could not
+      // be stopped.  Use the localised key with the Bot slugs.
+      if (parsed.code === 'bot_chat_stop_incomplete') {
+        const rawBots = parsed.bots ?? parsed.failures
+        const slugs = Array.isArray(rawBots)
+          ? rawBots.filter((s): s is string => typeof s === 'string').join(', ')
+          : ''
+        if (slugs && appName) {
+          return i18nT('pages.appsPage.bot_chat_stop_incomplete', { slugs, name: appName })
+        }
+      }
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        // Avoid leaking raw slug arrays from the backend error string.
+        let msg = parsed.error.replace(/\s*Bot chats \[.*?\]\s*could not be stopped.*$/, '').trim()
+          || parsed.error.trim()
+        // blanket_trust_sweep_incomplete: append Bot slugs that could not be stopped
+        // so the UI names the surviving Bot chats even when only the error field is
+        // shown and the caller does not render the full response body.
+        if (parsed.code === 'blanket_trust_sweep_incomplete') {
+          const rawFailed = parsed.botStopFailed
+          const failedSlugs = Array.isArray(rawFailed)
+            ? rawFailed.filter((s): s is string => typeof s === 'string')
+            : []
+          if (failedSlugs.length && !msg.includes(failedSlugs[0])) {
+            msg = i18nT('pages.settings.securityPanel.trustedApps.bot_chats_not_stopped', {
+              message: msg,
+              slugs: failedSlugs.join(', '),
+            })
+          }
+        }
+        return msg
+      }
     } catch {
       // not JSON — fall through to the mapped message
     }
@@ -56,6 +91,16 @@ export function trustFailureMessage(err: unknown): string {
 }
 
 /* ── Third-party app execution ── */
+
+/** A failed call's JSON body as a record, or null. */
+function parseBody(body: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
 
 /** Per-app trust grants for third-party app code (`agent.apps_trusted`), plus the
  *  blanket `agent.apps_allow_third_party` escape hatch.
@@ -105,6 +150,24 @@ export function ThirdPartyAppsCard() {
   // "the thing you asked for did not happen" — silence here would reproduce, in
   // the UI, exactly the false-success the backend fixed.
   const [trustError, setTrustError] = useState<string | null>(null)
+  // bot_chat_stop_incomplete (409): trust WAS removed, but some Bot chats are
+  // still running.  Displayed WITHOUT the change_failed wrapper — the trust
+  // change did succeed; this message names the bot chats that could not stop.
+  const [trustRevokedMessage, setTrustRevokedMessage] = useState<string | null>(null)
+  // The app name from the last bot_chat_stop_incomplete 409, retained so the
+  // retry button can call untrust.mutate(name) even after the row is gone from
+  // the grant lists (trust was already written, so the row disappears).
+  const [revokedAppName, setRevokedAppName] = useState<string | null>(null)
+  // The Bots (display names) and their count from that 409, for the retry label.
+  const [revokedBots, setRevokedBots] = useState<{ names: string; count: number }>({ names: '', count: 0 })
+  // Set when that notice came from turning blanket trust off: its retry re-runs
+  // the same request, which repeats the sweep.
+  const [retryAllOff, setRetryAllOff] = useState(false)
+  const botName = (slug: string): string => {
+    if (slug === 'unknown') return i18nT('pages.appsPage.bot_chat_stop_unknown_bot')
+    const row = (qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? []).find(r => r.slug === slug)
+    return row?.display_name || row?.name || slug
+  }
 
   // The acknowledgment checkbox resets whenever the modal opens or closes.
   useEffect(() => { setAck(false) }, [confirm])
@@ -125,20 +188,95 @@ export function ThirdPartyAppsCard() {
     mutationFn: (value: boolean) => api.setTrustAllApps(value),
     onSuccess: snap => {
       setTrustError(null)
+      setTrustRevokedMessage(null)
+      setRevokedAppName(null)
+      setRetryAllOff(false)
       applyTrustSnapshot(snap)
     },
-    onError: (err: unknown) => setTrustError(trustFailureMessage(err)),
+    onError: (err: unknown) => {
+      // blanket_trust_sweep_incomplete (409): the flag IS off, and the body carries
+      // the fresh snapshot, so the switch shows off; what did not stop is shown on
+      // its own, not as a change that did not take effect.
+      const body = err instanceof ApiError ? parseBody(err.body) : null
+      if (body?.code === 'blanket_trust_sweep_incomplete' && Array.isArray(body.apps)) {
+        applyTrustSnapshot({
+          apps: body.apps as string[],
+          ineffective: Array.isArray(body.ineffective) ? body.ineffective as string[] : [],
+          allowAll: body.allowAll === true,
+        })
+        const bots = Array.isArray(body.botStopFailed)
+          ? body.botStopFailed.filter((s): s is string => typeof s === 'string')
+          : []
+        setTrustError(null)
+        const stillRunning = Array.isArray(body.stillRunning) ? body.stillRunning.length : 0
+        // Only Bot chats left: say so in words; apps still executing keep the
+        // gateway's own account, which names them.
+        setTrustRevokedMessage(stillRunning === 0 && bots.length > 0
+          ? i18nT('pages.appsPage.blanket_bot_chat_stop_failed', { count: bots.length, slugs: bots.map(botName).join(', ') })
+          : trustFailureMessage(err))
+        setRevokedBots({ names: bots.map(botName).join(', '), count: bots.length })
+        setRevokedAppName(null)
+        setRetryAllOff(bots.length > 0)
+        return
+      }
+      setTrustError(trustFailureMessage(err))
+    },
   })
   const untrust = useMutation({
     mutationFn: (name: string) => api.untrustApp(name),
     onSuccess: (snap, name) => {
       setTrustError(null)
+      setTrustRevokedMessage(null)
       applyTrustSnapshot(snap)
       // Only surface the notice when the backend actually disabled something —
       // revoking trust on an already-disabled app is a silent no-op there.
       setRevokeDisabledApp(snap.disabled ? name : null)
     },
-    onError: (err: unknown) => setTrustError(trustFailureMessage(err)),
+    onError: (err: unknown, name: string) => {
+      // bot_chat_stop_incomplete (409): trust WAS revoked, but some Bot chats
+      // could not be stopped.  Apply the fresh snapshot so the row shows the new
+      // trust state, then surface the new message that says trust is gone.
+      if (err instanceof ApiError) {
+        try {
+          const parsed = JSON.parse(err.body) as {
+            code?: unknown; bots?: unknown; failures?: unknown
+            apps?: unknown; ineffective?: unknown; allowAll?: unknown; disabled?: unknown
+          }
+          if (parsed.code === 'bot_chat_stop_incomplete') {
+            if (Array.isArray(parsed.apps)) {
+              applyTrustSnapshot({
+                apps: parsed.apps as string[],
+                ineffective: Array.isArray(parsed.ineffective) ? parsed.ineffective as string[] : [],
+                allowAll: parsed.allowAll === true,
+              })
+            }
+            const rawBots = parsed.bots ?? parsed.failures
+            const slugs = Array.isArray(rawBots)
+              ? rawBots.filter((s): s is string => typeof s === 'string')
+              : []
+            const roster = qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? []
+            const resolveSlug = (slug: string): string =>
+              slug === 'unknown'
+                ? i18nT('pages.appsPage.bot_chat_stop_unknown_bot')
+                : roster.find(r => r.slug === slug)?.display_name
+                  || roster.find(r => r.slug === slug)?.name
+                  || slug
+            const displayNames = slugs.map(resolveSlug).join(', ')
+            setTrustError(null)
+            setTrustRevokedMessage(botChatStopFailedNotice('revoke', name, slugs, resolveSlug))
+            setRevokedBots({ names: displayNames, count: slugs.length })
+            setRevokedAppName(name)
+            setRetryAllOff(false)
+            return
+          }
+        } catch {
+          // not JSON — fall through to generic message
+        }
+      }
+      // Any other refusal leaves a stop notice already on screen as it was: its
+      // Bot chats are no more stopped than before, so the retry stays offered.
+      setTrustError(trustFailureMessage(err, name))
+    },
   })
 
   // Granting blanket trust WEAKENS protection → acknowledgement gate. Revoking
@@ -296,6 +434,29 @@ export function ThirdPartyAppsCard() {
             message={i18nT('pages.settings.securityPanel.trustedApps.change_failed', { detail: trustError })}
             askAgent
             onDismiss={() => setTrustError(null)}
+          />
+        )}
+        {/* bot_chat_stop_incomplete: trust was removed but Bot chats still running.
+            Displayed directly (no change_failed wrapper) so it accurately says trust
+            was revoked rather than saying the change did not take effect.
+            The retry button calls untrust.mutate with the saved app name so it works
+            even after the row has disappeared from the grant lists. */}
+        {trustRevokedMessage && (
+          <ErrorNotice
+            className="mt-2"
+            message={trustRevokedMessage}
+            impact="blocking"
+            askAgent
+            actions={revokedAppName != null || retryAllOff
+              ? <BotChatStopActions
+                  app={revokedAppName ?? undefined}
+                  bots={revokedBots.names}
+                  count={revokedBots.count}
+                  retrying={untrust.isPending || setTrustAll.isPending}
+                  onRetry={() => (revokedAppName != null ? untrust.mutate(revokedAppName) : setTrustAll.mutate(false))}
+                />
+              : <Link to="/settings/system" className="text-sm font-medium underline">{i18nT('pages.appsPage.restart_gateway_link')}</Link>}
+            onDismiss={() => { setTrustRevokedMessage(null); setRevokedAppName(null); setRetryAllOff(false) }}
           />
         )}
         {revokeDisabledApp && (

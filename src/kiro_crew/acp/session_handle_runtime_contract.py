@@ -94,6 +94,33 @@ class AcpAgentUnavailable(AcpRuntimeError):
         self.agent = agent
 
 
+def host_refused(error: object) -> bool:
+    """Whether *error* is the host's own answer refusing a request: an error reply
+    the reader turned into an exception with its JSON-RPC frame (``rpc_error``).
+
+    Anything raised on this side is not: a frame too large to read, a reply that
+    did not parse, a lost connection, a timeout, a dead runtime. The host may have
+    acted on the request then, so a record of what it might have started stays.
+    """
+    return (
+        isinstance(error, AcpRuntimeError)
+        and getattr(error, "rpc_error", None) is not None
+        and not isinstance(error, (AcpRuntimeDead, AcpRequestTimeout, AcpFrameTooLarge))
+    )
+
+
+def answer_lost(error: object) -> bool:
+    """Whether *error* means a request reached the host and its answer was lost on
+    the way back: a frame too large to read, or the runtime dying under it.
+
+    For a caller that only holds what a whole start raised, where most failures
+    (a refusal this side made before anything was sent, a resume this side would
+    not restore) leave no session: those are not this. A timeout is not either:
+    its late answer has a collector of its own (``StartCollector``).
+    """
+    return isinstance(error, (AcpFrameTooLarge, AcpRuntimeDead)) and not host_refused(error)
+
+
 class AcpRequestTimeout(AcpRuntimeError):
     """Raised when a request's response does not arrive within its budget.
 

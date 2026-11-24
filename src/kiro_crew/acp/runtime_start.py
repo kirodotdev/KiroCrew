@@ -529,10 +529,28 @@ class StartCollector:
         self._task: asyncio.Task[None] | None = None
         self.created_at = time.monotonic()
         self._staged_init: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
+        #: The Bot chat whose start this is (``create_session``'s ``session_key``).
+        self.session_key: str = ""
+        self._start_token = ""
+        self._release_start: Callable[[], None] = lambda: None
+        #: Whether the host itself refused this start (``host_refused``) or answered
+        #: with no session; any other failure may have left a session running.
+        self._host_refused = False
 
     def start(self) -> "StartCollector":
         if self._task is None:
+            from kiro_crew.bot_chat_ending_fence import hold_start, hold_start_record
+
+            # Still a start of the chat until it settles: a stop beside it is not
+            # confirmed, and the session it may still produce is on the chat's
+            # record under this start's own token, with the snapshot it took.
+            self._release_start = hold_start(self.session_key)
+            if self.session_key:
+                self._start_token = hold_start_record(
+                    self._runtime, self.session_key, str(self.req_id)
+                )
             self._task = asyncio.ensure_future(self._run())
+            self._task.add_done_callback(lambda _t: self._release_start())
         return self
 
     @property
@@ -578,6 +596,43 @@ class StartCollector:
         """Forget the staged frames: no claimant is left."""
         self._staged_init.clear()
 
+    def _keep_unsettled(self, outcome: str) -> None:
+        """Keep what this start left for its Bot chat once it settled
+        (``bot_chat_ending_fence.keep_unsettled_start``): an adopted session a stop
+        ran beside goes to the close retry, as a recorded start's result does; a late
+        session whose teardown did not run or was not confirmed, and an answer that
+        never came while the host may hold a session, are kept until evidence
+        settles them. A refusal the host answered left nothing."""
+        from kiro_crew.bot_chat_ending_fence import (
+            keep_unsettled_start,
+            settle_start_record,
+            start_outran,
+        )
+
+        key, sid = self.session_key, self.session_id
+        if not key:
+            return
+        if self._start_token:
+            # This start's own record and token (``hold_start_record``) settle by
+            # this start's answer alone: an adopted session is bound to its own
+            # snapshot, a late one kept until its close is confirmed, no answer
+            # leaves the token, and a refusal leaves nothing.
+            if outcome == START_OUTCOME_ADOPTED or sid:
+                closed = None if outcome == START_OUTCOME_TORN_DOWN else False
+            else:
+                # No session: only the host's own refusal settles it; a local
+                # failure (a frame too large, a lost connection) or no answer stays.
+                closed = True if self._host_refused else None
+            settle_start_record(self._runtime, key, self._start_token, sid, closed)
+        elif outcome == START_OUTCOME_ADOPTED:
+            if start_outran(key):
+                keep_unsettled_start(self._runtime, key, sid, closed=False)
+        elif sid:
+            closed = None if outcome == START_OUTCOME_TORN_DOWN else False
+            keep_unsettled_start(self._runtime, key, sid, closed=closed)
+        elif not self._host_refused:
+            keep_unsettled_start(self._runtime, key, "")
+
     async def _run(self) -> None:
         from kiro_crew.acp.runtime import AcpRuntimeDead, AcpSessionHandle, time
 
@@ -616,7 +671,10 @@ class StartCollector:
             except AcpRuntimeDead:
                 outcome = START_OUTCOME_RUNTIME_DEAD
                 return
-            except Exception:
+            except Exception as exc:
+                from kiro_crew.acp.session_handle_runtime_contract import host_refused
+
+                self._host_refused = host_refused(exc)
                 logger.debug(
                     "start collector: session/new req_id=%d failed late",
                     self.req_id,
@@ -626,6 +684,7 @@ class StartCollector:
             session_id = str((resp or {}).get("sessionId") or "")
             self.session_id = session_id
             if not session_id:
+                self._host_refused = True  # the host answered and named no session
                 return
             adopted = False
             if self._adopter is not None:
@@ -649,6 +708,11 @@ class StartCollector:
             outcome = START_OUTCOME_TORN_DOWN
         finally:
             self.outcome = outcome
+            try:
+                self._keep_unsettled(outcome)
+            except Exception:  # noqa: BLE001 - the settle below must still run
+                logger.warning("start collector: could not keep req_id=%d's session", self.req_id)
+            self._release_start()
             # Settled on EVERY outcome: an adopted session already took its own
             # frames, and on any other outcome nothing will ever claim them.
             # Holding them would keep one attempt's registrations alive for the

@@ -868,12 +868,20 @@ async def discard_conversation(
     refuse_only_on_active_turn: bool = False,
     refuse_if: Callable[[], bool] | None = None,
     teardown_reason: str = "",
+    confirm_teardown: bool = False,
+    unconfirmed_handle_out: list | None = None,
 ) -> bool:
     """Drop only the native conversation while preserving channel linkage.
 
-    Returns whether a session was actually torn down. False means
+    Returns whether a session was actually torn down. ``False`` means
     ``skip_if_busy`` made it a no-op; nothing was changed, including the
-    replay flag and the session map.
+    replay flag and the session map.  When ``confirm_teardown=True``,
+    ``False`` is also returned when the session was popped and shutdown was
+    called but the shared-KAS ``session/close`` did not get a confirmation
+    from the host (timed out or refused): the local record is gone, but the
+    session may still be resident.  Other callers should leave
+    ``confirm_teardown`` at its default ``False``: for them an unconfirmed
+    close is equivalent to a confirmed one (best-effort semantics).
 
     ``teardown_reason`` is appended to the verb the stopped sub-agents' records
     name ("parent conversation ended (discard_conversation: <reason>)"), so a
@@ -961,6 +969,40 @@ async def discard_conversation(
         if session:
             await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
             await session.provider.shutdown()
+            if getattr(session.provider, "_kas_shutdown_unconfirmed", False):
+                rt = getattr(session.provider, "_kas_unconfirmed_runtime", None)
+                sid = getattr(session.provider, "_kas_unconfirmed_session_id", None)
+                # Always fire any registered hook so callers that need to persist the
+                # handle (e.g. bot_chat_app_tools' reset/fresh-start path) are notified
+                # even when confirm_teardown is False.
+                if rt is not None and sid is not None:
+                    # Only call note_unconfirmed_close when this session key is
+                    # recorded as having a mounted app server.  Calling it for
+                    # every discarded session would register close-retry timers
+                    # (30-480 s backoff) for sessions that never mounted any app
+                    # server, which is wasteful and an undeclared side-effect of
+                    # discard_conversation.
+                    try:
+                        from kiro_crew.bot_chat_app_tools import (
+                            _MOUNTED_SESSION_KEYS,
+                            note_unconfirmed_close,
+                        )
+
+                        if key in _MOUNTED_SESSION_KEYS.values():
+                            note_unconfirmed_close(key, rt, sid)
+                    except Exception:  # noqa: BLE001
+                        logging.getLogger(__name__).warning(
+                            "discard_conversation: note_unconfirmed_close failed for %s",
+                            key,
+                            exc_info=True,
+                        )
+                if confirm_teardown:
+                    # The KAS session/close was not confirmed: the session may still be
+                    # resident on the shared engine.  Return False so security-critical
+                    # callers (bot app stop) can treat this as a stop failure.
+                    if unconfirmed_handle_out is not None and rt is not None and sid is not None:
+                        unconfirmed_handle_out.append((rt, sid))
+                    return False
     finally:
         # See ``destroy``: in the finally because a shutdown that raises must not
         # carry the exception past the cancel, and cancel before release.

@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LayoutGroup, motion } from 'framer-motion'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, Lock, Trash2, X, ArrowUp, Compass,
   AlertTriangle, PowerOff,
@@ -48,7 +48,8 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import AppStoreDialog from '../../components/appstore/AppStoreDialog'
-import { appActionNotice } from '../../components/appstore/backendRefused'
+import { appActionNotice, botChatStopFailedSlugs } from '../../components/appstore/backendRefused'
+import { botStopAppState, initialFromRoute, stopResultOf, useBotChatStop } from '../../components/appstore/useBotChatStop'
 import { reportAppView } from '../../lib/appViewTelemetry'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
@@ -71,6 +72,10 @@ export default function LibraryPage() {
 
   const [query, setQuery] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const displayOf = (name: string): string => {
+    const row = installedApps.find(a => a.name === name)
+    return row ? appDisplayName(row) : name
+  }
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   // The app whose card ⋯ menu is open: a guide's "choose the app" step is done
   // once it is the one the person named (its Details and Uninstall are there).
@@ -86,6 +91,14 @@ export default function LibraryPage() {
   } = useAppActions({
     apps, browseApps, appsError, registryError, announceAppsChanged, sources, registriesUnknown,
   })
+  // A Bot-chat stop that did not finish under an uninstall or disable that did, or
+  // one the app detail page carried here after its uninstall.
+  const location = useLocation()
+  const { show: showBotStop, clear: clearBotStop, notice: botStopNotice } = useBotChatStop(
+    setError,
+    initialFromRoute(location.state),
+    name => botStopAppState(installedApps.find(a => a.name === name)),
+  )
 
   // Transient success surface for the shared update hook: the hook reports
   // outcomes, this page owns display + auto-dismiss (same 4s the other
@@ -221,13 +234,27 @@ export default function LibraryPage() {
       else if (action === 'disable') {
         // Disabled, but a hook, config sync or service notify failed: say so.
         const row = installedApps.find(a => a.name === name)
-        const warned = appActionNotice(row ? appDisplayName(row) : name, await api.disableApp(name), 'disable')
+        const display = row ? appDisplayName(row) : name
+        const result = await api.disableApp(name)
+        const warned = appActionNotice(display, result, 'disable')
+        // Trigger the app-list refetch BEFORE showing the warning so the tile
+        // moves to the Disabled section before the warning appears.
+        announceAppsChanged()
         if (warned) setError(warned)
+        showBotStop('disable', name, display, botChatStopFailedSlugs(result))
+        return  // skip the announceAppsChanged() call below (already called)
       }
       announceAppsChanged()
     } catch (e) {
       refocusApp.current = null
-      if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
+      // An app whose record is gone answers a disable from its Bot tracking
+      // tables: a 409 naming the Bots still running is the stop's own result.
+      const named = action === 'disable' ? stopResultOf(e) : null
+      if (named) {
+        announceAppsChanged()
+        showBotStop('disable', name, displayOf(name), named)
+      }
+      else if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
       // One whole sentence per verb: an English verb dropped into a translated
       // frame ("Не удалось enable app") reads as a broken string.
       else setError((e as Error)?.message || i18nT(action === 'enable' ? 'pages.appsPage.failed_to_enable' : 'pages.appsPage.failed_to_disable', { name }))
@@ -241,14 +268,23 @@ export default function LibraryPage() {
     const name = uninstallTarget.name
     setActionLoading(`${name}:uninstall`)
     setError('')
+    clearBotStop()
     try {
-      const res = await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
-      const warned = appActionNotice(appDisplayName(uninstallTarget), res, 'uninstall')
+      const result = await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
+      const warned = appActionNotice(appDisplayName(uninstallTarget), result, 'uninstall')
       recordEvent('app_uninstall', { app: name, version: uninstallTarget.version })
       announceAppsChanged()
       if (warned) setError(warned)
+      // Some Bot chats using this app could not be stopped. The uninstall itself
+      // succeeded; this is a cleanup notice, not an error.
+      showBotStop('uninstall', name, appDisplayName(uninstallTarget), botChatStopFailedSlugs(result))
     } catch (e) {
-      setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_uninstall', { name }))
+      const named = stopResultOf(e)
+      if (named) {
+        announceAppsChanged()
+        showBotStop('uninstall', name, appDisplayName(uninstallTarget), named)
+      }
+      else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_uninstall', { name }))
     } finally {
       setActionLoading(null)
       setUninstallTarget(null)
@@ -393,6 +429,8 @@ export default function LibraryPage() {
             <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
+
+        {botStopNotice}
 
         {remoteCmd && (
           <div

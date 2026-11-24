@@ -82,6 +82,7 @@ vi.mock('../api/client', () => ({
 vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: 'dark' }) }))
 
 import LibraryPage from '../pages/apps/LibraryPage'
+import { ApiError } from '../api/apiError'
 
 /** Route probe for tile-face navigation. */
 function RouteProbe() {
@@ -106,15 +107,21 @@ function installedApp(name: string, displayName: string, over: Record<string, un
 const SECRETARY = installedApp('secretary', 'Secretary')
 const RADAR = installedApp('oncall-radar', 'Oncall Radar')
 
+/** The route state of the current history entry, which a reload reads back. */
+function StateProbe() {
+  return <div data-testid="state-probe" data-state={JSON.stringify(useLocation().state ?? null)} />
+}
+
 function renderLibrary(
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }),
+  state: unknown = null,
 ) {
   return render(
     <Provider store={createConnectedTestStore()}>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={['/apps/library']}>
+        <MemoryRouter initialEntries={[{ pathname: '/apps/library', state }]}>
           <Routes>
-            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/library" element={<><LibraryPage /><StateProbe /></>} />
             <Route path="*" element={<RouteProbe />} />
           </Routes>
         </MemoryRouter>
@@ -717,5 +724,146 @@ describe('LibraryPage — a guide picks an app by its card menu', () => {
     // Closing it unpicks.
     fireEvent.click(within(await tile('secretary')).getByRole('button', { name: 'More actions for Secretary' }))
     await waitFor(() => expect(selectionState('app_tile_menu_open')).toBe('none'))
+  })
+})
+
+describe('LibraryPage — a Bot-chat stop that did not finish', () => {
+  beforeEach(() => {
+    listApps.mockResolvedValue([SECRETARY])
+    listRegistry.mockResolvedValue([])
+    listRegistries.mockResolvedValue([])
+    uninstallPreview.mockResolvedValue({ dependencies: { removable: [], shared: [], userInstalled: [] } })
+  })
+
+  const retry = () => screen.findByRole('button', { name: "Remove Secretary's tools from the bot \"atlas\"" })
+
+  it('names the app and the Bot after an uninstall, and a retry that stops it clears the notice', async () => {
+    // The uninstall landed; the retry asks again, and an uninstalled app with no
+    // Bot chat left answers 404. Drop the retry, or read the 404 as a failure,
+    // and the notice stays (or never offers the stop).
+    uninstallApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    uninstallApp.mockRejectedValueOnce(new ApiError(404, 'not installed', '{"error":"not installed"}'))
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Uninstall' }))
+    // role="alert": impact="blocking" keeps it announced at once.
+    const notice = await screen.findByText(/^Secretary is uninstalled, but the bot "atlas" still has its tools\./)
+    expect(notice.closest('[role="alert"]')).not.toBeNull()
+    expect(screen.getByText('The chat history is kept.')).toBeInTheDocument()
+    fireEvent.click(await retry())
+    await waitFor(() => expect(uninstallApp).toHaveBeenCalledTimes(2))
+    expect(uninstallApp).toHaveBeenLastCalledWith('secretary')
+    await waitFor(() => expect(screen.queryByRole('button', { name: "Remove Secretary's tools from the bot \"atlas\"" })).toBeNull())
+  })
+
+  it('gives a disable the same notice and retry, by the Bot name and not raw warnings', async () => {
+    // Show only appActionNotice's warnings and the disable has no retry and no Bot
+    // name; retry with anything but a second disable and the teardown never reruns.
+    disableApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    disableApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Disable' }))
+    expect(await screen.findByText(/^Secretary is disabled, but the bot "atlas" still has its tools\./)).toBeInTheDocument()
+    fireEvent.click(await retry())
+    await waitFor(() => expect(disableApp).toHaveBeenCalledTimes(2))
+    // Still failing: the notice stays, with its retry.
+    expect(await retry()).toBeInTheDocument()
+  })
+
+  it('reads an app-record-gone 409 from the first uninstall as the stop result', async () => {
+    // Treat it as a plain error and the page shows the gateway's raw English with
+    // no retry.
+    uninstallApp.mockRejectedValueOnce(new ApiError(
+      409,
+      "app 'secretary' is not installed, but its Bot chats could not be stopped",
+      JSON.stringify({ code: 'bot_chat_stop_incomplete', bot_chat_stop_failed: ['atlas'], retryable: true }),
+    ))
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Uninstall' }))
+    expect(await screen.findByText(/^Secretary is uninstalled, but the bot "atlas" still has its tools\./)).toBeInTheDocument()
+    expect(await retry()).toBeInTheDocument()
+    expect(screen.queryByText(/is not installed, but its Bot chats/)).toBeNull()
+  })
+
+  it('says the removal is under way while the retry runs', async () => {
+    // Keep the label while it runs and a second click looks like it did nothing.
+    disableApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    let finish: (v: unknown) => void = () => {}
+    disableApp.mockReturnValueOnce(new Promise(res => { finish = res }))
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Disable' }))
+    fireEvent.click(await retry())
+    const busy = await screen.findByRole('button', { name: 'Removing…' })
+    expect(busy).toBeDisabled()
+    finish({ ok: true, bot_chat_stop_failed: [] })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Removing…' })).toBeNull())
+  })
+
+  it('keeps the notice when the retry is refused for another reason, and shows that error', async () => {
+    // Read every 409 as a stop result and a refusal that names no Bot (a startup
+    // hook still running) parses as "nothing left running" and clears the notice.
+    disableApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    disableApp.mockRejectedValueOnce(new ApiError(
+      409,
+      'the app startup hook is still running',
+      JSON.stringify({ code: 'startup_hook_still_running', error: 'the app startup hook is still running' }),
+    ))
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Disable' }))
+    fireEvent.click(await retry())
+    expect(await screen.findByText('the app startup hook is still running')).toBeInTheDocument()
+    expect(screen.getByText(/^Secretary is disabled, but the bot "atlas" still has its tools\./)).toBeInTheDocument()
+    expect(await retry()).toBeInTheDocument()
+  })
+
+  it('drops a disable notice once the app is enabled again, so its retry cannot disable it again', async () => {
+    // Keep the notice and "Remove ... tools" re-runs the disable on an app the
+    // person just turned back on.
+    disableApp.mockResolvedValueOnce({ ok: true, bot_chat_stop_failed: ['atlas'] })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    renderLibrary(qc)
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Disable' }))
+    expect(await retry()).toBeInTheDocument()
+    listApps.mockResolvedValue([{ ...SECRETARY, enabled: false }])
+    await qc.invalidateQueries({ queryKey: ['apps'] })
+    expect(await retry()).toBeInTheDocument()
+    listApps.mockResolvedValue([SECRETARY])
+    await qc.invalidateQueries({ queryKey: ['apps'] })
+    await waitFor(() => expect(screen.queryByText(/still has its tools/)).toBeNull())
+    expect(disableApp).toHaveBeenCalledTimes(1)
+  })
+
+  const carried = { action: 'uninstall', app: 'secretary', display: 'Secretary', slugs: ['atlas'] }
+  const entryState = async () => JSON.parse((await screen.findByTestId('state-probe')).getAttribute('data-state') ?? 'null')
+
+  it('takes a notice the detail page carried out of the history entry, so a reload does not show it again', async () => {
+    // Leave botStop in the entry and a reload after the retry cleared the notice
+    // reads the old notice back from it.
+    const { unmount } = renderLibrary(undefined, { botStop: carried, from: 'detail' })
+    expect(await screen.findByText(/^Secretary is uninstalled, but the bot "atlas" still has its tools\./)).toBeInTheDocument()
+    await waitFor(async () => expect(await entryState()).toEqual({ from: 'detail' }))
+    const reloaded = await entryState()
+    unmount()
+    renderLibrary(undefined, reloaded)
+    await tile('secretary')
+    expect(screen.queryByText(/still has its tools/)).toBeNull()
+  })
+
+  it('takes the uninstall warnings out with it and shows both, keeping other fields', async () => {
+    // Clear the entry to null and other fields go too; clear one key per replace
+    // and the second replace writes the first one back.
+    renderLibrary(undefined, { botStop: carried, appNotice: 'Kept the shared helper app.', from: 'detail' })
+    expect(await screen.findByText('Kept the shared helper app.')).toBeInTheDocument()
+    expect(screen.getByText(/^Secretary is uninstalled, but the bot "atlas" still has its tools\./)).toBeInTheDocument()
+    await waitFor(async () => expect(await entryState()).toEqual({ from: 'detail' }))
   })
 })
