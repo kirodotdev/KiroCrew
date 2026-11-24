@@ -808,6 +808,19 @@ def interactive_guidance(
     return _interactive_guidance
 
 
+def recall_query(text: str, user_text_range: tuple[int, int]) -> str:
+    """What session-start recall ranks: the user's own span of *text*.
+
+    The context a dispatcher put in front of that span (a sub-agent notice, a
+    drained pending-context block, a cancelled-turn restore) ranks nothing, as
+    on the per-message and post-compaction lesson paths. An ``@prompt`` turn
+    reports an empty span where the prompt body that replaced its text begins,
+    so that body, still without what was put in front of it, is what ranks.
+    """
+    start, end = user_text_range
+    return text[start:end] or text[start:]
+
+
 def user_turn(
     text: str, hook_result: HookResult, user_text_range: tuple[int, int] | None
 ) -> tuple[str, tuple[int, int] | None]:

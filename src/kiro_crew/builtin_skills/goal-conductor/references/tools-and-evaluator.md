@@ -15,7 +15,8 @@ string), and is auto-approved, so a verify cycle never waits on a click.
 deliberately kept out of `allowedTools`, so every shell call prompts and is
 audit-logged. The evaluator accepts **no command, argv array or shell string
 from a spec**: it builds every argv from a fixed template (`pr_checks` becomes
-`gh pr checks <n>`, `pr_merged` becomes `gh pr view <n> --repo <owner/name>
+`gh pr checks <n> [--repo <owner/name>]`, and behind a `pending` verdict also
+`gh pr view <n> [--repo <owner/name>] --json isDraft -q .isDraft`, `pr_merged` becomes `gh pr view <n> --repo <owner/name>
 --json state`, `edition_check` becomes `kirocrew acceptance-check --json <check>
 <ref>`, `git_commit` becomes `git -C <repo> rev-parse --verify` and `git -C
 <repo> rev-list --count`), and nothing else runs. A spec that could name a command would make this
