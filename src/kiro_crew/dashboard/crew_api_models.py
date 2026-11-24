@@ -1,7 +1,7 @@
 """``GET /v1/models``: the agents and Bots the caller's grant allows.
 
-The owner gets the full catalog. An app credential gets an empty list until a grant
-carries a Bot range or a route lets an app run an agent.
+The owner gets the full catalog. An app credential gets an empty list until a route
+lets an app run a Bot in its grant or an agent.
 """
 
 from __future__ import annotations
@@ -62,10 +62,10 @@ async def usable_models_off_loop() -> list[dict[str, Any]]:
 def models_for_grant(credential: LocalCredential) -> list[dict[str, Any]]:
     """List only what the verified grant allows, without reading the owner catalog.
 
-    Add a grant's Bot range or an agent an app may run here when supported.
+    Add the grant's Bots or an agent an app may run here when a route runs them.
     """
-    # shortcut: grants have no Bot range and apps have no agent-run route;
-    # add allowed rows here when either is supported.
+    # shortcut: no route lets an app run a Bot in its grant or an agent; add the
+    # allowed rows here when one does.
     return []
 
 
@@ -80,7 +80,7 @@ async def _list_models(request: web.Request) -> web.Response:
 ROUTE_KEY: Final = ("GET", "/v1/models")
 
 #: GET /v1/models serves a verified app credential with no required scope. Its
-#: list is empty until a grant carries a Bot range or a route lets an app run an
-#: agent; the owner catalog is never read for it. Every other caller passes the
+#: list is empty until a route lets an app run a Bot in its grant or an agent;
+#: the owner catalog is never read for it. Every other caller passes the
 #: owner gate before the catalog is read.
 api_models = owner_route(_list_models, OWNER_ONLY_PUBLIC_ROUTES[ROUTE_KEY[1]], app_route=ROUTE_KEY)
