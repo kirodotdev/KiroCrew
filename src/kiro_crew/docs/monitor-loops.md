@@ -32,9 +32,11 @@ own messages defer a wake that comes due until your turn finishes, but they do
 not restart the clock. A loop stays on schedule in a conversation you are
 actively using.
 
-A loop the agent arms caps at **24** cycles by default; the goal control's own
-field starts at `0`, so a loop you arm there is unlimited unless you set a
-number. Either way the cap is a runaway backstop, not a finish line —
+A loop the agent arms that wakes on every interval (`gate=false`, or a loop
+with nothing to observe) caps at **24** cycles by default; a gated loop that
+watches a subject has no cycle cap by default, because a quiet cycle costs no
+turn. The goal control's own field starts at `0`, so a loop you arm there is
+unlimited unless you set a number. Either way the cap is a runaway backstop, not a finish line —
 a loop that reaches its cap ran out of rope rather than completing. A cap of `0`
 is unlimited, which is worth asking for only when you genuinely want an
 unbounded loop.
