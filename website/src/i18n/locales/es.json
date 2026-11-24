@@ -10401,6 +10401,7 @@
       "esc_to_cancel_click_mic_to_finish": "Esc para cancelar, haz clic en el micrófono para terminar",
       "esc_to_cancel_click_mic_to_send": "Esc para cancelar, Shift+clic guarda un borrador, haz clic en el micrófono para enviar",
       "esc_to_cancel_enter_to_send": "Esc para cancelar, Enter para enviar",
+      "editing_resumes_when_you_stop": "Podrás editar cuando te detengas",
       "listening": "Escuchando",
       "muted": "Silenciado"
     },
@@ -22552,7 +22553,7 @@
         "provider_off": "Desactivado (sin reconocimiento de voz)",
         "ready": "listo",
         "run_these_commands_in_your_terminal_first": "Ejecuta primero estos comandos en tu terminal:",
-        "show_an_animated_panel_while_recording_instead_of": "Muestra un panel animado durante la grabación en lugar de la barra de estado delgada. Vuelve a la barra cuando el navegador no admite WebGL2 o tu sistema solicita movimiento reducido.",
+        "show_an_animated_panel_while_recording_instead_of": "Muestra un panel animado durante la grabación en lugar de la barra de estado delgada. Vuelve a la barra cuando tu sistema solicita movimiento reducido.",
         "status": "Estado",
         "streaming": "Streaming",
         "system_default": "Predeterminado del sistema",

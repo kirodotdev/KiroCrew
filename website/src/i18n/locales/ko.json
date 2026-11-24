@@ -9921,6 +9921,7 @@
       "esc_to_cancel_click_mic_to_finish": "Esc로 취소, 마이크를 클릭하면 완료",
       "esc_to_cancel_click_mic_to_send": "Esc로 취소, Shift+클릭으로 초안 유지, 마이크를 클릭하면 전송",
       "esc_to_cancel_enter_to_send": "Esc로 취소, Enter로 전송",
+      "editing_resumes_when_you_stop": "중지하면 다시 편집할 수 있습니다",
       "listening": "듣는 중",
       "muted": "음소거됨"
     },
@@ -21420,7 +21421,7 @@
         "provider_off": "끄기(음성 인식 없음)",
         "ready": "준비됨",
         "run_these_commands_in_your_terminal_first": "먼저 터미널에서 다음 명령을 실행하세요:",
-        "show_an_animated_panel_while_recording_instead_of": "녹음 중에 얇은 상태 바 대신 애니메이션 패널을 표시합니다. 브라우저에 WebGL2가 없거나 시스템이 동작 줄이기를 요청하면 상태 바로 대체됩니다.",
+        "show_an_animated_panel_while_recording_instead_of": "녹음 중에 얇은 상태 바 대신 애니메이션 패널을 표시합니다. 시스템이 동작 줄이기를 요청하면 상태 바로 대체됩니다.",
         "status": "상태",
         "streaming": "스트리밍",
         "system_default": "시스템 기본값",

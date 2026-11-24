@@ -2417,7 +2417,7 @@
       "label": "Dictation panel",
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.dictation-panel",
-      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+      "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion."
     },
     {
       "id": "voice.enabled",

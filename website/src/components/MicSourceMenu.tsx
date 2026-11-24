@@ -198,11 +198,8 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
       </button>
 
       {open && rect && <OverlayPortal>{
-        // PORTALLED to the body-level overlay root on purpose: VoiceDictationPanel's root is
-        // `h-[168px] overflow-hidden` (it clips the shader), which clipped the
-        // bottom of an in-flow menu — "System default" and the footnote were
-        // simply not there. Fixed positioning off the trigger's rect is what
-        // lets the same component work inside a clipping host.
+        // PORTALLED to the body-level overlay root on purpose: VoiceDictationPanel's
+        // animated root uses `overflow-hidden`, which clips an in-flow menu.
         <div
           ref={menuRef}
           role="menu"

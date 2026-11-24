@@ -148,12 +148,12 @@ function measuredAtOtherWidth(el: HTMLTextAreaElement): boolean {
  *  The measurement happens on an off-screen twin (see `measuredContentHeight`),
  *  so this function's only write to the live element is its FINAL height.
  *
- *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
- *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
- *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
- *  textarea one pixel wide reports a `scrollHeight` of the better part of a
- *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
- *  inline height. That height outlives the parking (nothing re-measures until
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode keeps
+ *  the textarea mounted inside an `sr-only` box (value, caret and IME state have
+ *  to survive the swap), and `sr-only` is a 1px clip — a textarea one pixel wide
+ *  reports a `scrollHeight` of the better part of a viewport, which this function
+ *  would then clamp to `cap` and WRITE BACK as an inline height. That height
+ *  outlives the parking (nothing re-measures until
  *  `value` changes again), so a single voice round-trip left the composer stuck
  *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
  *  it — the drag handle's double-click — does not exist under a finger. */
