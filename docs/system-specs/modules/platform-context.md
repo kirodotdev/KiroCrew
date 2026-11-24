@@ -86,7 +86,7 @@ omit the policy.
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the built-in `aws_ec2` lane backed by `RealLaunchEngine`, **plus a conditional `aws_fargate` lane** backed by `FargateLaunchEngine` that is offered only when `cloud.json` carries a complete `fargate` block, and a conditional `microvm` lane backed by `MicroVmLaunchEngine` offered only when its `microvm` block is complete; id == kind by design for all three) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels, confirm_before_launch}` plus a `LaunchEngine` per id (`confirm_before_launch` carries what the operator must see and confirm before that lane may launch -- `POST /api/cloud/launch` requires `confirm_recipient` to equal it, so the requirement is derived from the row rather than hard-coded to one id, and a lane with nothing to confirm leaves it empty); the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
 | `cloud_instance_policy` | adapter | `DefaultCloudInstancePolicyProvider` (empty `CloudInstancePolicy`: nothing attached, boundary unchanged) | managed policies an organization requires on every EC2 crew's instance role, plus the `Allow` statements its permissions boundary needs so they are not capped away. Read and validated only by `cloud/host_policy.py`; a descriptor that fails validation refuses the launch, and so does a launch account that holds no policy at one of the ARNs. See `cloud.md` § Security model |
 | `feedback` | adapter | `DefaultFeedbackTrackerProvider` (`report_issue_url()` → `None`) | the edition's issue tracker behind **Report a Problem** and `kirocrew doctor`. **REPLACE-capable** like `tips`: a supplied URL takes over from the public pre-filled GitHub bug-report link rather than being appended to it, because that link's query string is GitHub's form. The backend half of the dashboard's `setFeedbackTracker` seam (`website/docs/extension-seams.md` § "Feedback tracker"): the frontend-built links live there; this one is built by the gateway because it carries the bundle's facts |
-| `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome; an optional `complete_sign_in` may finish a sign-in page an agent navigation landed on ([browser](browser.md) § Credentials) |
+| `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome; optional `sign_in_hosts` and `sign_in_for_origin` sign one site in when its page is sent to the edition's sign-in host ([browser](browser.md) § Credentials) |
 | `speech` | adapter | `DefaultSpeechProviderRegistry` (no STT or TTS providers, `default_stt()` / `default_tts()` → `None`) | edition-registered speech-to-text and text-to-speech providers and the edition's default choice. **ADD-only**: a registered name joins the built-in `stt.provider` / `voice_reply.provider` sets and can never shadow a built-in, a retired STT name or `off` (boot raises `PlatformCompositionError`). The edition default applies only to an absent key; a stored value always wins. Validation, defaults, STT/TTS dispatch, live dictation and the capability lists route through it (pluggable speech providers RFC, [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982)) |
 | `acceptance_checks` | adapter | `DefaultAcceptanceCheckProvider` (`run_acceptance_check()` → exit 2, no report) | the edition's checks behind `kirocrew acceptance-check`, the goal conductor's `edition_check` ([Acceptance check command](#acceptance-check-command-edition_check)) |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
@@ -626,7 +626,7 @@ Runtime code reads only the module constant, never the build variable or a confi
 
 The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an LTS build follows `lts`, its own channel, whatever the policy pins (RFC crew-lts-edition D11), and still ignores `$KIROCREW_HOME/channel`.
 
-Each locked config path is in `CONFIG_PATH_LOCKS`, or (for the preview switches) matched by its `dashboard.feature_previews` prefix in `config_path_locked`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A write of a `CONFIG_PATH_LOCKS` value is still stored and is ignored on read, so a saved setting never loops on an error. A preview path is refused instead: `PATCH /api/config/kirocrew` answers 409 `locked_by_policy` and a change card does not offer it, because the dashboard draws no switch for it to save from. A value written another way is still read as off. Tests: `test/test_lts_unkeyed_locks.py`, `test/test_lts_feature_previews_off.py`, `website/src/test/ltsFeaturePreviewsOff.test.tsx`.
+Each locked config path is in `CONFIG_PATH_LOCKS`, or (for the preview switches) matched by its `dashboard.feature_previews` prefix in `config_path_locked`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A lock no enterprise policy term can lift names the edition instead of a policy: `edition_locks.locked_by_edition(scope)` is true in an LTS build when no `enterprise_policy_translate.MANAGED` row lands on or inside the scope, every schema `lockedByPolicy` path belongs to an `UNKEYED_LOCKS` control and so always reads as the edition's, and the computer-use and credential-redaction GETs add `locked_by_edition`; the badge then reads "Not available in this edition". A new `MANAGED` term flips the wording back with no other change. A write of a `CONFIG_PATH_LOCKS` value is still stored and is ignored on read, so a saved setting never loops on an error. A preview path is refused instead: `PATCH /api/config/kirocrew` answers 409 `locked_by_policy` and a change card does not offer it, because the dashboard draws no switch for it to save from. A value written another way is still read as off. Tests: `test/test_lts_unkeyed_locks.py`, `test/test_lts_edition_lock_notice.py`, `test/test_lts_feature_previews_off.py`, `website/src/test/ltsFeaturePreviewsOff.test.tsx`.
 
 ### LTS gate (login half)
 
@@ -982,6 +982,20 @@ Wired sites:
   never hardcodes or interprets any credential path/content — the bytes are
   only hashed. Read through `safe_context_call` (fallback `[]`), so a
   pre-method companion adapter degrades to no-watcher instead of raising.
+- `slack/gateway_runtime/cron_fire.py` — before a scheduled agent turn (a
+  message job, a Bot's goal check-in or stale-wake tick) starts, the cron
+  callback asks `IdentityProvider.credential_freshness()` (v1 method addition;
+  Default returns `None`) through `preflight.expired_host_credential`, on a
+  worker thread under `safe_context_call` (fallback `None`), waiting at most
+  `_CREDENTIAL_FRESHNESS_TIMEOUT_SECS`, or the job's gate budget when that is
+  shorter (an answer later than that holds nothing). The answer is a
+  `CredentialFreshness(expired, remedy)`: an edition whose tools sign in with
+  the host operator's own credential reads it there, and says `expired` only
+  for a credential it READ as expired, never for one it could not read. An
+  expired answer leaves the run unstarted and tells its owner `remedy`, once
+  per wait ([learn-cron-dashboard](learn-cron-dashboard.md)). A manual Run, command and
+  script jobs are not asked. The public build answers `None`, so every run
+  starts as before.
 - `mcp_gateway/gatewayd.py::_compose_and_apply`: **the one exception to "the
   daemon never composes": telemetry only.** On a consenting non-standalone host
   the daemon calls `platform/bootstrap.py::compose_telemetry_provider` on a
@@ -1010,7 +1024,10 @@ Wired sites:
 - `apps/manager_builtins.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
 - `apps/registry_pipeline/sources.py` / `apps/routes_art.py` — clone-sandbox-mode decision routes
-  through `current_context().registry` (`_context_clone_sandbox_mode`).
+  through `current_context().registry` (`_context_clone_sandbox_mode`). Edition hooks may
+  block, so the async registry paths (`checkout.py`, `indexes.py`, `manifests.py`,
+  `store_art.py`, `routes_art.py`) never call it on the event loop; each awaits
+  `asyncio.to_thread(_context_clone_sandbox_mode, git_url)`.
 - Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
   at boot. Every engine that lands a model turn records one `interaction` event
   for it, beside its landed-turn bookkeeping (`record_success` or
@@ -1469,7 +1486,14 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   edition implements OPERATIONS and OWNS its own invocation grammar, output
   parsing, and error translation; the core (`/api/capability/*` handlers +
   `mcp.py` uninstall) calls an operation and only serializes the result / applies
-  side effects (config sync, agent rebuild). Ops: `available() -> bool`;
+  side effects (config sync, agent rebuild). Ops: `available() -> bool`
+  (asked on every request and never cached by the core, so a CLI installed after
+  boot is used from the next request; a manager MAY add an OPTIONAL synchronous,
+  I/O-free `unavailable_reason() -> str` saying why it is unavailable and what to
+  do, asked only right after `available()` returned False so it reads the state
+  that probe left, which `BoundedCapabilityManager` passes through and MCP
+  discovery search shows as the edition provider's `unavailable` outcome, see
+  [mcp.md](../../architecture/mcp.md), "Availability is asked on every search");
   `async list_mcp()/list_skills()/list_agents() -> List[Dict[str, Any]]`
   (structured entries — the manager parses its own output; the core keeps no
   text grammar; **`list_skills()` containment invariant:** every skill row MUST
@@ -1532,7 +1556,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   unbounded read would accumulate pending gateway tasks on every poll (the same
   wedge class the bound exists to prevent), even though reads mutate nothing.
   `sync_plugins` takes the INSTALL bound (it may shell a package manager once per
-  drifted package). Only the synchronous `available()` probe is unwrapped (no I/O). `/api/mcp/apply` orders the two mutations to be both
+  drifted package). Only the synchronous `available()` probe (no subprocess or network call; at most a cheap PATH lookup while a CLI is missing) and the optional, I/O-free `unavailable_reason()` beside it are unwrapped. `/api/mcp/apply` orders the two mutations to be both
   lock-safe and race-safe: it runs the companion `uninstall_mcp` calls FIRST, in
   a phase BEFORE acquiring the process-wide MCP file lock (`_get_mcp_lock`) —
   deduped by name, bounded-concurrent (`_MCP_DEFERRED_UNINSTALL_CONCURRENCY`)
@@ -1595,7 +1619,11 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   rows. The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. The Protocol names
-  operations so no external CLI grammar fossilizes in the core.
+  operations so no external CLI grammar fossilizes in the core. An MCP
+  provider's `is_available` (the capability one asks `available()`) is an
+  edition hook and may block, so `mcp_providers.base.ProviderRegistry.search_with_outcomes`, the
+  async `mcp_discover` handlers and the MCP change-card reader never call it on
+  the event loop; each runs it through `asyncio.to_thread`.
 
   > `query` is an optional free-text filter HINT, sent only by MCP discovery
   > search (`mcp_providers/capability.py`); the browse endpoint
@@ -1628,6 +1656,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   re-emitted, so a manifest round-trip migrates it; ledger keys/types likewise
   resolve the pre-rename `aim/*` / `aim.*` spellings so an upgraded install does
   not orphan tracked dependencies.
+- `McpToolingProvider.custom_agent_servers() -> Tuple[str, ...]` — WIRED:
+  `acp/default_crew_servers.with_default_crew_servers` adds each named
+  `extra_mcp_servers()` entry this host supplies to the spec a custom agent's
+  session runs, at spawn and never in the user's file, built as
+  `mcp_sources.seed_edition_servers` builds it and without `autoApprove`, under
+  the custom-agent opt-outs; not while a wildcard of the agent's own
+  `allowedTools` reaches it, and not for a Crew Mode conductor. An edition check
+  that reports where it is mounted judges the spec
+  `default_crew_servers.session_spec_on(backend, agent, spec)` returns, the one
+  list of the spawns that add it, so it never counts the server where a spawn
+  does not add it. Read through `getattr`, so an edition provider that predates
+  it names none. Default `()`. v1 addition, no `CONTRACT_VERSION` bump.
 - `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
   GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
   each returned scope's `global_json` (and strip its `agent_mcp_file`) IN
@@ -1687,6 +1727,11 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   result fields flow through the existing `_redact_external` scrub before
   reaching the dashboard. Read fail-closed through `safe_context_call` (fallback
   `[]`). Default `[]`, so the public edition searches only the built-in catalog.
+  A provider's `is_available` is an edition hook and may block, so the async
+  discover paths (`ProviderRegistry.search_with_outcomes`, `api_skills_discover`
+  and its featured rows, `api_skills_discover_install`,
+  `api_skills_discover_preview`) never call `provider_available` on the event
+  loop; each runs it through `asyncio.to_thread`.
   v1 addition; `Default` returns `[]`.
 - `ImportSourceProvider.import_sources() -> List[ImportSource]` — WIRED:
   `onboarding_import._sources()` unions the returned descriptors over the core
@@ -1755,20 +1800,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   cookie writes one SEL row (provider, count, domains). Read through
   `current_context()`; a `PlatformCompositionError` fails the browser start, any
   other lookup error means no provider. v1 addition.
-- `BrowserCredentialProvider.complete_sign_in(target, url) -> Optional[str]` —
-  OPTIONAL, not a Protocol member: read with `getattr(provider, "complete_sign_in",
-  None)`; missing, non-callable or raising means no completion, and the Default has
-  none, so the public browser never opens a completion URL (the browser budgets
-  still carry the sign-in allowance; [browser](browser.md) § Credentials). WIRED: `browser_harness.sign_in`,
-  after an agent `navigate` committed on an `https` page whose host is in BOTH
-  `domains()` and `browser.credentials.domains`, on Kiro's Chromium with the opt-in
-  on, at most once per op, in a worker thread bounded at 15 s; `target.reason` is
-  `sign_in`. It answers `None` (from memory, for a page it does not recognise) or a
-  single-use `https` URL on one of its domains that finishes the sign-in; the
-  gateway opens it in the same tab only past the browser's URL gate and both domain
-  lists, and the agent, the live card and the SEL see hosts and an outcome code,
-  never the URL ([browser](browser.md) § Credentials, "Finishing a sign-in"). v1
-  addition, no `CONTRACT_VERSION` bump.
+- `BrowserCredentialProvider.sign_in_hosts() -> Sequence[str]` and
+  `sign_in_for_origin(target, origin, sign_in_url, *, site_cookies) -> Mapping` —
+  OPTIONAL, not Protocol members: read with `getattr`; both must be callable and
+  `sign_in_hosts()` must name at least one exact host, else nothing is intercepted.
+  The Default has neither, so the public browser never intercepts. WIRED:
+  `browser_harness.sign_in_guard`, on Kiro's Chromium with the opt-in on, on the
+  relay's own session of each agent tab. `sign_in_hosts()` answers from memory;
+  `sign_in_for_origin` runs in a worker thread bounded at 15 s, `target.reason`
+  `navigate` or `renew`, and answers `{"ok": True, "cookies": [...]}` (the site's
+  own cookies for that one origin) or `{"ok": False, "reason": <code>, "message":
+  ...}` with a reason from a fixed generic set (`not_signed_in`,
+  `device_check_failed`, `signer_missing`, `signer_timeout`, `refused`, `other`).
+  The agent, the live card and the SEL see the host, the outcome and the code,
+  never a URL or value ([browser](browser.md) § Credentials, "Signing one origin
+  in"). v1 addition, no `CONTRACT_VERSION` bump. No other sign-in seam exists.
 
 **`McpToolingProvider` is intentionally scoped to MCP tooling only** —
 `extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. Agent

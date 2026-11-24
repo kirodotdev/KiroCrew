@@ -18,8 +18,13 @@ _PIN = (
     " It always acts on THIS session's own Slack code channel (the session must be one "
     "a code channel is bound to); it takes no channel and cannot reach any other channel."
     " No tool opens a code channel: Kiro Crew opens one by itself when someone asks it "
-    "for code work in Slack and it judges the work needs its own channel. Outside a code "
-    "channel, do the work where you are and tell the person."
+    "for code work in Slack and it judges the work needs its own channel, or when they "
+    "ask for a code channel. Outside a code channel, do the work where you are and tell "
+    "the person. To get one, they can ask for it again in this thread (in a DM, mention "
+    "Kiro Crew): that message is judged again, and a channel it opens starts with this "
+    "thread. A new top-level message starts without this thread. Slack can't open a code "
+    "channel from a Slack Connect conversation. Never promise to post into a code channel "
+    "that hasn't opened."
 )
 
 

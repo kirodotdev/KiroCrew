@@ -15,6 +15,7 @@ import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
+import { EngineSubagentLiveCard } from './chat/EngineSubagentRecord'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { usePromoteSlot } from './chat/usePromoteSlot'
@@ -987,7 +988,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
-    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
+    handleCancelQueued, handleCancelAllQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
     handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   } = useBusyTurnControls({
     activeSlot,
@@ -1285,6 +1286,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               footerActivityKey={!slotLoading && slotSwitchTarget !== activeSlot && (slotRunning || !currentSlot?.preparing) ? transcriptActivityKey(messages) : undefined}
               footerSentHere={turnSentHere(messages)}
               footerToolsReturned={footerToolsReturned}
+              liveFoot={<EngineSubagentLiveCard slot={activeSlot} running={slotRunning} turnMark={`${currentSlot?.turn_gen ?? ''}:${currentSlot?.turn ?? ''}`} />}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
@@ -1323,7 +1325,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel}
               cardOwnsRecovery={cardOwnsRecovery} resumeAfterSignIn={resumeAfterSignIn} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}
-              handleCancelQueued={handleCancelQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
+              handleCancelQueued={handleCancelQueued} handleCancelAllQueued={handleCancelAllQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
               keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} systemDeliveryCount={systemDeliveryCount}
               handleEditLastRequest={handleEditLastRequest} composerOptimizing={composerOptimizing} handleOptimizingChange={handleOptimizingChange} memorySwitching={memorySwitching}
               // Crew Mode is chosen on the welcome state: while it is on neither the

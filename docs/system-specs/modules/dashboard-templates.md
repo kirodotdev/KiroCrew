@@ -3,6 +3,12 @@
 A dashboard page is half of a template. This document is the other half, and the reason
 the two are shipped together.
 
+This covers the typed card templates registered in
+`src/kiro_crew/dashboard_templates/registry.py`. The page templates under
+`src/kiro_crew/dashboard_templates/builtin/<id>/` (a `manifest.json` and a scripted
+`template.html`, loaded by `catalog.py`) are a separate format, owned by
+[dashboard-instances.md](dashboard-instances.md).
+
 The host renders a card as `{html, data}`. The `html` is inert layout it sanitizes; the
 `data` is a flat map of text it binds into that layout by `data-dashboard-field`, setting
 each matching element's text. The host is two files, and both are worth reading before

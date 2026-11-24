@@ -631,8 +631,29 @@ def stop_event_notes(messages: list[dict]) -> str:
     return "\n".join(notes) + "\n\n"
 
 
+def _replay_holds_user_row(replay: str, content: str) -> bool:
+    """Whether *replay* holds a ``user`` row of exactly *content*.
+
+    ``replay_text`` writes each row as ``User: <content>`` and joins the rows with a
+    blank line, and ``build_session_replay`` then folds the multi-byte punctuation of
+    the whole text. *content* gets the same image-reference strip and fold, and the
+    match runs between two row boundaries, so a longer row that opens with the same
+    words is not a hit.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.image_refs import strip_image_refs
+
+    row = strip_image_refs(content).translate(ctx._MULTIBYTE_TABLE)
+    return f"\n\nUser: {row}\n\n" in f"\n\n{replay}\n\n"
+
+
 def cancelled_turn_preamble(
-    recent: list[dict], *, user_cap: int, assist_cap: int, newest_request: bool = False
+    recent: list[dict],
+    *,
+    user_cap: int,
+    assist_cap: int,
+    newest_request: bool = False,
+    replay: str = "",
 ) -> str:
     """The ``[PREVIOUS TURN WAS CANCELLED …]`` restore for *recent* rows, or ``""``.
 
@@ -646,6 +667,13 @@ def cancelled_turn_preamble(
     so a request after the marker is the stopped one and the marker is an older
     surface's Stop (a channel Stop writes none). The dashboard, whose drained
     queue row can already sit after its own marker, leaves it off.
+
+    *replay*: the history replay the same prompt carries. The backend drops the
+    stopped turn from its own log, and a replay built from the transcript puts that
+    turn back as ordinary rows, so a replay that holds the stopped request makes the
+    restore a second copy and it is left out (``""``). The replay keeps the newest
+    rows that fit its budget; when the stopped request row is not among them the
+    restore stays, since nothing else names the request.
     """
     if not recent:
         return ""
@@ -708,6 +736,8 @@ def cancelled_turn_preamble(
                     user_idx = i
                 break
     if user_idx < 0:
+        return ""
+    if replay and _replay_holds_user_row(replay, recent[user_idx].get("content") or ""):
         return ""
     # Collect the partial output between user_idx and the boundary: the assistant
     # text and the steers the turn took, by the same rule as the Resume restore.

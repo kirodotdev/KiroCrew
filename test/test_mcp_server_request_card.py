@@ -1445,3 +1445,88 @@ def test_option_operands_use_the_same_chat_folder_check(value, uses_folder):
     from kiro_crew.change_card_mcp_server import detects_chat_folder
 
     assert detects_chat_folder("weather", {"command": "node", "args": [value]}) is uses_folder
+
+
+def test_an_add_for_kiro_cli_names_its_file_and_writes_both_stores(env, tmp_path):
+    store = CardStore(tmp_path / "c.json")
+    kiro_file = tmp_path / "kiro.mcp.json"
+
+    async def go(c):
+        status, card = await _ask(c, {**ADD, "target": "kiro-cli"})
+        assert status == 200, card
+        return card, await _apply(c, card)
+
+    card, statuses = _run(store, env, go)
+    rows = {r["label"]: r for r in card["changes"]}
+    assert rows["Also written to"]["after"] == "~/.kiro/settings/mcp.json"
+    assert card["params"]["target"] == "kiro-cli"
+    assert all(s == 200 for s in statuses), statuses
+    assert _stored(env)["weather"] == ENTRY
+    assert json.loads(kiro_file.read_text(encoding="utf-8"))["mcpServers"]["weather"] == ENTRY
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "remove", "server": "weather", "target": "kiro-cli"},
+        {**ADD, "target": "elsewhere"},
+    ],
+)
+def test_a_target_other_than_an_add_to_crew_or_kiro_cli_raises_no_card(env, tmp_path, body):
+    store = CardStore(tmp_path / "c.json")
+    _write_store(env, {"weather": ENTRY})
+
+    async def go(c):
+        return await _ask(c, body)
+
+    status, out = _run(store, env, go)
+    assert status == 400, out
+    assert out["code"] == "invalid_param"
+    assert store.pending(None) == []
+
+
+def test_a_plain_add_writes_only_the_crew_store(env, tmp_path):
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        status, card = await _ask(c, ADD)
+        assert status == 200, card
+        return card, await _apply(c, card)
+
+    card, _statuses = _run(store, env, go)
+    assert "Also written to" not in {r["label"] for r in card["changes"]}
+    assert not (tmp_path / "kiro.mcp.json").exists()
+
+
+def test_a_typed_mcp_add_raises_the_same_card_and_apply_writes_both_files(env, tmp_path):
+    from kiro_crew.dashboard import mcp_typed_command
+
+    # Sharing on: a typed add must still stay per-chat, with no Share box.
+    env["sharing"]["sharing_on"] = True
+    store = CardStore(tmp_path / "c.json")
+    replies: list[str] = []
+    slot = SimpleNamespace(key="slot-typed", agent="kirocrew")
+
+    async def go(c):
+        state = c.server.app["state"]
+        state.push_slots_update = lambda: None
+        outcome = await mcp_typed_command.answer_typed_mcp(
+            state,
+            slot,
+            SK,
+            "/mcp add --name weather --command npx --args -y,@acme/weather-mcp "
+            "--env CITY=Paris --scope global",
+            channel=False,
+            reply_with=lambda _slot, text: replies.append(text),
+        )
+        (card,) = store.pending(None)
+        return outcome, card, await _apply(c, card)
+
+    outcome, card, statuses = _run(store, env, go)
+    assert (outcome, replies) == ("card", [])
+    assert card["kind"] == catalog.KIND_MCP_SERVER and card["params"]["target"] == "kiro-cli"
+    assert _offer(card) is None
+    assert all(s == 200 for s in statuses), statuses
+    assert _stored(env)["weather"] == ENTRY
+    kiro_file = tmp_path / "kiro.mcp.json"
+    assert json.loads(kiro_file.read_text(encoding="utf-8"))["mcpServers"]["weather"] == ENTRY

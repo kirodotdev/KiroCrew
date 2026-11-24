@@ -146,6 +146,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
     could_be_echo,
+    drop_echo,
     echo_prefix_len,
     is_echo,
 )

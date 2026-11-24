@@ -765,7 +765,7 @@ even if it looks like an outage.
 | Signature in the failing step | What it is | Bound |
 |---|---|---|
 | `The runner has received a shutdown signal` / `lost communication with the server` | Runner loss (hosted or CodeBuild). If it keeps hitting the same heavy shard, suspect memory pressure before blaming the host. | Re-run the failed jobs once. A second loss on the same job is a resource question, not luck. |
-| `Unexpected HTTP response: 429` (or `504`) in `setup-python` | Tool download throttled, or the GitHub release host timing out. `setup-python` already retries the download three times with a backoff, so a red after that is an upstream outage. CodeBuild has no tool cache, so every job downloads Python at the same moment (Node is pre-seeded by `seed-node-tool-cache`, Python is not). | Re-run once. A repeat means the Python download needs the same seeding. |
+| `Unexpected HTTP response: 429` (or `504`) in `setup-python` | Tool download throttled, or the GitHub release host timing out. `setup-python` already retries the download three times with a backoff, so a red after that is an upstream outage. CodeBuild has no tool cache, so every job downloads Python at the same moment. `seed-python-tool-cache` makes the same download first, so this line in a CodeBuild job means the seed fell through; its `::warning::` in the same log says why. | Re-run once. A repeat with the seed's warning naming a failed download is an upstream outage; a warning naming a missing row means `python-versions.txt` needs a row for that runner. |
 | `E: Failed to fetch ... Mirror sync in progress?` before `could not install lsof` | An apt index, often a third-party list, caught mid-sync. `run-as-runner` retries the install itself. | That composite carries the bound. A failure after its retries is a real mirror outage. |
 | `API rate limit exceeded for installation` (or the fail-closed wrappers that quote it: `Could not read this PR`, `could not query open PRs`, `could not publish it`) | The shared installation token is drained. This is the **primary** hourly limit, so a retry within seconds cannot succeed. The fork Opus 5.5 Review validation pass handles this itself: when it fails before the model runs and `GET /rate_limit` reports a spent bucket (or `Retry-After`), it waits for the reset, up to 20 minutes, and retries once. Past that wait it fails closed and names the reset time. The PR resolver (`gh_read`) in every fork review lane (GPT 6.1, Opus 5.5, Security Scope, Design, UX, First Principles and Internal Content Scan) does the same for each query: a failure whose error names a rate limit reads `GET /rate_limit`, and when the REST (`core`) bucket its queries draw on is spent it waits for the reset, up to 10 minutes (8 in Security Scope, whose resolver step times out at 10), then retries. Past that wait it fails at once with an `::error::` naming the reset time. Any other failure, including a secondary limit `GET /rate_limit` does not report as spent, keeps the seconds-long backoff. `test/test_fork_review_gh_read_rate_limit.py` runs it. Await Fast Gate (`.github/scripts/await-fast-gate.sh`) reads `GET /rate_limit` the same way when its listing read names a rate limit: a spent REST bucket that resets inside what is left of its 2100 s budget is waited out once, and one that resets later fails the job at once naming the reset, instead of retrying every 10 s until the budget runs out; `test/test_await_fast_gate_poll.py` runs it. | Wait for the reset. Do not mass re-run, because each re-run spends the same quota. A failed fork lane is cleared by re-running that lane's job after the reset; it needs no new push. A step that lists PR files through the API instead of local git is a defect: `test/test_paths_filter_local_git.py`. |
 | `curl: (7) Failed to connect to <host> port 443 after 1 ms` behind `egress-policy: block` | **Self-inflicted**: our own harden-runner allowlist refused the host. A 1 ms connect failure is a local refusal, not an outage. | Never re-run. Add the host the bootstrap actually fetches; `TestForkLaneBubblewrapBootstrapEgress` covers the claude-code-action install. |
@@ -1105,7 +1105,7 @@ yet decided: install from a committed constraints file, or set
 | `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork), clears the AppArmor userns restriction first, no SPA or browser |
 | `integration` | "Integration (in-process gateway)". The middle layer: `test/integration/` boots the real `GatewayOrchestrator.run()` inside the pytest process on a scratch `KIROCREW_HOME` with the packaged fake ACP backend and talks HTTP to the port it bound, so one test can assert across a restart, across two concurrent requests on one event loop, or on a file the boot itself wrote. Opt-in by `KIROCREW_INTEGRATION=1`, so the unit shards collect and skip it; Linux only. Gated on ROUTE coverage -- `scripts/check_integration_route_coverage.py` reports the share of registered dashboard routes the suite requested (`--min` is a ratchet kept a little under what `main` measures) and the report is uploaded as the `integration-route-coverage` artifact. Details: `docs/system-specs/common/testing-conventions.md`, "The integration layer" |
 | `wheel-engine-real-venv` | "Wheel Engine (real venv build)". Runs the one `real_venv`-marked test (`test/test_wheel_engine_lifecycle.py::TestBuildChildEnvironment::test_build_and_verify_a_real_shadow_venv`) on `ubuntu-latest`; the shards deselect that marker |
-| `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs and merge groups; a queue-landed push to `main` runs `macos-15` alone, and any other push to `main` runs all three. Every leg is fail-closed on missing prerequisites or a collapsed pass count |
+| `e2e-boot-matrix` | Boots a real fake-backed gateway and pins seven tests on Linux and Windows for PRs and merge groups; a queue-landed push to `main` runs `macos-15` alone, and any other push to `main` runs all three. Every leg is fail-closed on missing prerequisites or a collapsed pass count. The Linux leg then runs the Crew API contract cases on one more gateway ([e2e-gate.md](e2e-gate.md#the-crew-api-contract-cases)) |
 
 `backend-lint` also runs `scripts/check_python_audit.py` (report-only findings,
 fail-closed execution). It is on the gate path because it is
@@ -1579,6 +1579,40 @@ runners the composite does nothing. It changes no pin: the version input must
 match the following `setup-node` step, an authoring obligation that no test
 checks, and `test_node_version_pins.py` governs the `setup-node` pins
 themselves.
+
+`setup-python` has the same gap and a larger cost: a miss there reads
+`actions/python-versions`' manifest with two authenticated `api.github.com`
+calls (the repository tree, then the manifest blob). The composite
+`.github/actions/seed-python-tool-cache` runs directly before every
+`setup-python` step of a job whose `runs-on` can name a CodeBuild project,
+except in `fast-gate.yml`: that workflow's own contract
+(`test_fast_gate_barrier.py`) puts `setup-python` directly after the checkout,
+so its jobs are not seeded and still make the two calls each. In a workflow
+another repository can call (`workflow_call`), the checkout is the caller's
+tree, which does not hold the action, so there the seed step carries `if:
+github.repository == 'kirodotdev/KiroCrew'` and is skipped before the action is
+loaded. On
+`runner.environment == 'self-hosted'` it looks up the runner (OS, OS version,
+architecture) and the requested version in `python-versions.txt` beside it,
+downloads that row's archive -- the release asset `setup-python` itself would
+download -- without a token, checks it against the row's SHA-256 before
+opening it, and runs the archive's own installer, which writes
+`RUNNER_TOOL_CACHE/Python/<version>/<arch>` and the `<arch>.complete` marker.
+`setup-python` then logs `Successfully set up CPython` with no `Version 3.12
+was not found in the local cache` line before it. A SHA-256 mismatch fails the
+job with nothing unpacked. Any other stop (no row for the runner, an install
+already present, a failed download, an installer that fails) prints one
+`::warning title=seed-python-tool-cache::` naming the reason and leaves
+`setup-python` to install Python as it does without the seed, so a lost saving
+is visible in the log and never a new failure. On GitHub-hosted runners the
+composite does nothing. The version a runner gets is the row's until the row
+changes: a new upstream patch release reaches CodeBuild jobs only when
+`python-versions.txt` is updated (new version, URL and SHA-256 together).
+`test_ci_seed_python_tool_cache.py` derives the seeded steps from `runs-on`,
+holds each to the seed, its version and a checkout that contains the action,
+holds the Fast Gate jobs to carrying no seed,
+checks the table against every version those steps request, and runs the Linux
+step against a fixture archive.
 
 Rollback needs no AWS change: set Linux resolver outputs to `ubuntu-latest` and
 Windows to `windows-latest`, and return the two direct routes (`changes` and
@@ -5105,7 +5139,13 @@ status plus one `readiness:` label**.
   required status — and a record whose author the collaborators permission API
   does not confirm as a writer is ignored, exactly as `codex-review.yml`'s
   adjudication ledger ignores it, so the gate never blocks on a record that holds
-  no downgrade power. One consequence to know: readiness has **no
+  no downgrade power. A comment that carries the disposition prefix but a marker
+  the gate cannot parse blocks only while it names the current head (or a head
+  the gate cannot read) and the same writer has posted no later well-formed
+  record for that lane and span. Otherwise the gate prints it under `notices`
+  and does not block, so posting a corrected disposition clears it without
+  deleting anything; its `target=` and `span=` still go through the claim
+  checks, because the ledger still reads it. One consequence to know: readiness has **no
   `issue_comment` trigger**, so correcting the offending comment fires nothing by
   itself. `pr-readiness-sweep.yml` mode 5 covers that — it treats a disposition
   record whose `updated_at` is newer than the verdict as evidence the verdict is
@@ -5501,7 +5541,17 @@ Two subtleties:
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
-  remains only for an event that carries neither field. The default branch comes from
+  remains only for an event that carries neither field. Every `fork-*` workflow that
+  resolves its PR from a `workflow_run` head asks the same one-page question first.
+  The filter only narrows the list: each workflow's own match on head SHA, repository
+  and branch still decides, and a filtered page with no match falls through to the walk,
+  which also finds a PR whose head label differs from its head repository's owner. A
+  failed query ends the step; it is never answered by the walk. The fork review lanes
+  print the `rest-calls:` count as the same-repo lanes do (a `--paginate` read counts
+  once however many pages it took, so a walk shows in the step's "No open PR matched"
+  line, not in the count); `test_fork_pr_resolver_head_filter.py` runs every such
+  resolver against a `gh` that honours the filter and one that ignores it and requires
+  the same ending. The default branch comes from
   the event payload, and `pr_status.py --disposition-gate` reads the PR's comment pages
   once for both the disposition records and the reviewer markers (it walked them twice),
   and `pr_findings.py` uses the same shared read.

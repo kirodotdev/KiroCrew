@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from kas_agents_helpers import without_own_agents_deny
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
@@ -488,7 +489,33 @@ async def test_kas_projects_the_agent_spec(kas_projection_stubbed, monkeypatch, 
         lambda d, a, spec, *, stub_server_names, member_dispatch, crew_panel=False, session_key="", **_kw: projected,
     )
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
-    assert extras.custom_agents == projected
+    assert [without_own_agents_deny(a) for a in extras.custom_agents] == projected
+
+
+@pytest.mark.asyncio
+async def test_kas_gives_a_bots_own_chat_on_a_user_agent_the_goal_tools(
+    kas_projection_stubbed, monkeypatch, tmp_path
+):
+    """A Bot bound to a user agent sets goals in its chat, so that chat gains
+    ``kirocrew-mate``; the file on disk and a plain chat on the agent do not."""
+    monkeypatch.setattr(
+        agent_mod, "managed_mcp_spec_entry", lambda name, **_k: {"command": "kirocrew"}
+    )
+    seen: list[dict] = []
+
+    def build(_d, _a, spec, **_kw):
+        seen.append(spec)
+        return [{"id": "a"}]
+
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", build)
+    harness = harness_for(ACP_BACKEND_KAS)
+    await harness.session_extras("a", work_dir=str(tmp_path), session_key="dashboard:member-bot")
+    await harness.session_extras("a", work_dir=str(tmp_path), session_key="dashboard:chat-1")
+    bot_chat, plain_chat = seen
+    assert "@kirocrew-mate" in bot_chat["tools"]
+    assert "kirocrew-mate" in bot_chat["mcpServers"]
+    assert "kirocrew-mate" not in (plain_chat.get("mcpServers") or {})
+    assert json.loads((tmp_path / "a.json").read_text())["tools"] == []
 
 
 @pytest.mark.asyncio
@@ -740,7 +767,7 @@ async def test_kas_projection_survives_an_unreadable_overlay(
     monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", _build)
 
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
-    assert extras.custom_agents == [{"name": "a"}]
+    assert [without_own_agents_deny(a) for a in extras.custom_agents] == [{"name": "a"}]
     assert seen == [frozenset()]
 
 

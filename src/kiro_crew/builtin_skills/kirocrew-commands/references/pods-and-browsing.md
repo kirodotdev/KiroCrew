@@ -44,7 +44,7 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|read|click|drag|scroll|type|fill|paste|press_key|dispatch_key|hover|select_option|upload|wait_for|wait_for_element|wait_for_network_idle|console|screenshot|tabs|dialog|reflex|js|cdp|http_get|iframe_target|ask`.
+`op=navigate|back|snapshot|read|click|drag|scroll|type|fill|paste|press_key|dispatch_key|hover|select_option|upload|wait_for|wait_for_element|wait_for_network_idle|console|screenshot|tabs|dialog|reflex|js|cdp|http_get|iframe_target|set_appearance|resize|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
@@ -58,7 +58,7 @@ public `http(s)` URLs only, plus loopback origins the user listed under
 | `read {ref?, offset?}` | Read the page's text, not only the screen; `ref` scopes it to one element and a long page names the next `offset`. An unselected tab or a closed section (`details`) is left out, so click the tab or open the section first. |
 | `click {ref \| x,y}` / `type {ref?, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field. `type {ref?, steps: [{text} \| {key, modifiers?}]}` runs ordered text and key steps in one call |
 | `paste {ref?, text, html?}` | Put rich content (a table, headings, lists) into the field as a clipboard paste would, without touching the user's clipboard; refused where `type` is |
-| `upload {ref \| x,y, path, via?}` | Give the page local files: `path` is one absolute path or a list of up to 10, each a file, a folder or a glob (at most 100 files, 25 MiB in all). `via`: `input` (default) for a file field the snapshot marks `[file]`, `chooser` for the file picker a button opens, `drop` for a drop zone; a folder goes only onto a drop zone. It asks on a card unless the user trusted acting on that site |
+| `upload {ref \| x,y, path, via?}` | Give the page local files: `path` is one absolute path or a list of up to 10, each a file, a folder or a glob (at most 100 files, 25 MiB in all). `via`: `input` (default) for a file field the snapshot marks `[file]`, `chooser` for the file picker a button opens, `drop` for a drop zone; a folder goes into a folder field or onto a drop zone. It asks on a card unless the user trusted acting on that site |
 | `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
 | `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 

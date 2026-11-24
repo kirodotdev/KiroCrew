@@ -8,7 +8,9 @@ difference of its entry; the person's Apply is the only thing that writes it.
 
 The apply reuses the MCP page's own routes, so the card writes exactly what the
 page would: ``POST /api/mcp/custom`` to add, ``PUT /api/mcp/custom/{name}`` to
-change, ``POST /api/mcp/apply`` with ``uninstall`` to remove. With **Use in open chats now** checked
+change, ``POST /api/mcp/apply`` with ``uninstall`` to remove (every file, kiro-cli's
+``~/.kiro/settings/mcp.json`` included). An add with ``target`` ``kiro-cli`` also turns
+the page's kiro-cli toggle on (``kiroGlobal``), and the card names that file. With **Use in open chats now** checked
 (``use_now``, the default), ``POST /api/sessions/restart`` follows, so open chats
 load the change now; unchecked, new chats get it and open chats keep what they
 started with unless Apply restarts the broker or removes a served target. Those
@@ -46,6 +48,14 @@ EDITABLE = (OPTION_USE_NOW, OPTION_SHARE)
 #: The asking agent's claim: does the server read or write the chat's folder?
 #: Required on an add with an entry and on a change. Not editable on the card.
 PARAM_USES_CHAT_FOLDER = "uses_chat_folder"
+#: Where an added server goes besides the MCP page's store (``PARAM_TARGET``): kiro-cli's
+#: own user registry, which kiro-cli and other Kiro tools read too. Add only.
+PARAM_TARGET = "target"
+TARGET_CREW = "crew"
+TARGET_KIRO_CLI = "kiro-cli"
+TARGETS = (TARGET_CREW, TARGET_KIRO_CLI)
+#: The card row that names the second file an add to kiro-cli writes.
+KIRO_CLI_FILE_ROW = {"label": "Also written to", "after": "~/.kiro/settings/mcp.json"}
 #: ``mcp_gateway.cwd_use`` answers (``config.integration_sections``).
 CWD_USES = "uses_cwd"
 CWD_NOT_USED = "not_used"
@@ -170,6 +180,7 @@ def params_schema() -> dict[str, Any]:
             OPTION_USE_NOW: {"type": "boolean"},
             OPTION_SHARE: {"type": "boolean"},
             PARAM_USES_CHAT_FOLDER: {"type": "boolean"},
+            PARAM_TARGET: {"type": "string", "enum": list(TARGETS)},
         },
         "required": ["action", "server"],
         "additionalProperties": False,
@@ -186,7 +197,11 @@ def clean_params(p: dict[str, Any]) -> dict[str, Any]:
         valid_mcp_name,
     )
 
-    _only(p, {"action", "server", "entry", OPTION_USE_NOW, OPTION_SHARE, PARAM_USES_CHAT_FOLDER})
+    _only(
+        p,
+        {"action", "server", "entry", OPTION_USE_NOW, OPTION_SHARE, PARAM_USES_CHAT_FOLDER}
+        | {PARAM_TARGET},
+    )
     action = p.get("action")
     if action not in ACTIONS:
         raise _fail("invalid_param", "'action' must be add, change or remove")
@@ -194,6 +209,13 @@ def clean_params(p: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(server, str) or not valid_mcp_name(server):
         raise _fail("invalid_param", "invalid MCP server name")
     out: dict[str, Any] = {"action": action, "server": server}
+    target = p.get(PARAM_TARGET, TARGET_CREW)
+    if target not in TARGETS:
+        raise _fail("invalid_param", "'target' must be crew or kiro-cli")
+    if target != TARGET_CREW and action != ACTION_ADD:
+        raise _fail("invalid_param", "'target' is only for adding a server")
+    if target != TARGET_CREW:
+        out[PARAM_TARGET] = target
     entry = p.get("entry")
     if action == ACTION_REMOVE:
         if entry is not None:
@@ -397,6 +419,11 @@ def build_preview(p: dict[str, Any], snapshot: dict[str, Any], out: dict[str, An
         after: dict[str, Any] | None = _clean_spec(p["entry"])
         rows = entry_rows(None, after)
         apply = [step("POST", "/api/mcp/custom", {"servers": {name: p["entry"]}, "enable": True})]
+        if p.get(PARAM_TARGET) == TARGET_KIRO_CLI:
+            # The MCP page's own toggle: copy the entry just stored into kiro-cli's file.
+            rows.append(dict(KIRO_CLI_FILE_ROW))
+            change = {"name": name, "kirocrew": True, "kiroGlobal": True}
+            apply.append(step("POST", "/api/mcp/apply", {"changes": [change]}))
         out["risk"] = RISK_CODE_EXEC
     elif action == ACTION_CHANGE:
         if not snapshot.get("editable") or stored is None:

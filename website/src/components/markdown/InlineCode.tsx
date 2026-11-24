@@ -558,9 +558,13 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // present in EVERY state this span can be in — streaming, probe in flight,
     // and probe answered "not a path". A reserve that appeared only while a probe
     // was pending would simply move the re-wrap to the moment it went away.
-    // A session chip needs none: `isPathCandidate` demands a separator, a drive
-    // or an extension, and a session key carries none of the three, so the two
-    // chips cannot claim the same span.
+    // A session chip needs none: it draws no reserve of its own. A `chat-<n>-<ts>`
+    // key is never path-shaped (`isPathCandidate` demands a separator, a drive or
+    // an extension); a title-derived key that contains a separator plus an
+    // extension or a root is, and then its
+    // session chip waits until the stat probe has answered "not a path" (below):
+    // while the probe is held or in flight the span is the copy chip, so a file
+    // or directory of that name takes the span and no session chip withdraws.
     //
     // A FOLDER-shaped span (`goal/worker`, `goal › worker`) is reserved too, for
     // the same async reason with a different answer in flight: the folder roster
@@ -590,7 +594,11 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // span, where a button would write '' — clearing the clipboard — and then
     // confirm it). Stay an inert, selectable code span.
     if (visibleText === null || raw === '') return keep(<code className={CHIP_BASE} {...safeProps}>{reserve}{children}</code>)
-    const session = sessionTarget
+    // A path-shaped span (a separator plus an extension or a root) waits for its
+    // probe's answer, held or in flight; no `chat-<n>-<ts>` key or short name is
+    // path-shaped, so theirs never waits.
+    const pathUnsettled = pathResolution.shaped && (!pathResolution.candidate || pathResolution.probePending)
+    const session = pathUnsettled ? null : sessionTarget
     if (session) {
       return (
         <>

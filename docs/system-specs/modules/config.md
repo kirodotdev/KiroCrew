@@ -249,7 +249,7 @@ inside that window does not keep serving the attempted values. The Settings list
 off the event loop. Why, and the threat it closes:
 [security](../modules/security.md).
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice. `agent.acp_backend` then resolves to its default; `agent.member_acp_backend` follows the resolved `agent.acp_backend` instead (`crewmate_inherited_backend`, `agent_sdk/backends_members.py`): Kiro CLI reads as KAS, and a harness outside `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩ `ACP_BACKENDS_MATE_WORKER_KIT` (the Crew bot's workers run on the same backend, `mate_worker.worker_kit_backend_refusal`) gives KAS with a once-per-harness warning (`_note_member_fallback`, [harness-parity](harness-parity.md) H3) and a bell note (`crewmate_harness_notice`). A stored `agent.member_acp_backend` is the legacy setting and still wins over `agent.acp_backend`; `member_acp_backend_declared()` tells the two apart for the Settings readout (`crewmate_harness.inherited_harness_source`). A stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice. `agent.acp_backend` then resolves to its default; `agent.member_acp_backend` follows the resolved `agent.acp_backend` instead (`crewmate_inherited_backend`, `agent_sdk/backends_members.py`): Kiro CLI reads as KAS, and a harness outside `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩ `ACP_BACKENDS_MATE_WORKER_KIT` (the Crew bot's workers run on the same backend, `mate_worker.worker_kit_backend_refusal`) gives KAS with a once-per-harness warning (`_note_member_fallback`, [harness-parity](harness-parity.md) H3) and a bell note (`crewmate_harness_notice`). A stored `agent.member_acp_backend` is the legacy setting and still wins over `agent.acp_backend`; `member_acp_backend_declared()` tells the two apart for the Settings readout (`crewmate_harness.inherited_harness_source`). A stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and one v3 start was not refused, and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot or for a pick saved while it runs (`_watch_saved_kiro_pick`), and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -1730,7 +1730,9 @@ limits (`portability._in_rebuildable_dir`, read by both sides).
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
-component carries the same set.
+component carries the same set, and also `mcp.json`, the servers added on the
+MCP Servers page, which this export does not carry. A restore installs that file
+owner-only and names it when a merge keeps this install's copy.
 
 Every archive settings document is vetted before either mode applies one
 (`portability._vet_archive_settings`): a document that is not its reader's shape
@@ -2977,7 +2979,7 @@ name:
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
-  already sit in the file (owner-only, one link) is skipped, and
+  already sit in the file (this user's, mode `0600`, one link) is skipped, and
   `begin_managed_write` records no pending digest for bytes that reproduce the
   finalized one, so a rebuild that changes nothing keeps the file's inode. The
   sandbox pins this file for every spawn and refuses one whose pinned file was
@@ -3950,7 +3952,7 @@ class DashboardConfig:
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order), "active-then-date" (running sessions first, then the rest, each part by last activity). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
@@ -4753,7 +4755,8 @@ in either layout, and its `before`/`after` anchors name folders.
 
 `DashboardConfig.session_sort` is the chat sidebar's session sort key: `date-desc`
 (last settled activity, newest first; the default) or `date-asc`, `created-desc` /
-`created-asc` (the slot's creation time) and `name-asc` / `name-desc` (the title).
+`created-asc` (the slot's creation time), `name-asc` / `name-desc` (the title),
+`manual` (below) and `active-then-date`.
 It is stored here rather than in the browser so a pick follows the person to every
 browser and the desktop app. Written only through the `PATCH /api/config/kirocrew`
 allowlist (`dashboard.session_sort`, enum `SESSION_SORT_MODES`). A carry-over PATCH
@@ -4794,6 +4797,16 @@ writes it: the one writer refuses a caller whose origin is not `dashboard` (an
 agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
 app or member principal; no MCP tool writes it. A build without `manual` reads
 the key as `date-desc` and never touches the second file.
+
+`active-then-date` draws the unpinned sessions the In progress filter chip
+matches (the agent's own turn, a live workflow, a running automation, working
+sub-agents) above the rest, each part in `date-desc` order. Under `date-desc` a
+long turn ranks by when it began, so newer idle chats pass it; here it stays on
+top until the turn ends, then drops back to its date position. The running rows
+draw without date headers, as pinned rows do; the rest keep the date headers and
+the stale-session collapse. A drag in this sort seeds `manual` with the order on
+screen, running rows first. The History pane reads the key as `date-desc`. A
+build without `active-then-date` reads it as `date-desc`.
 
 ### Interactive model picker visibility
 

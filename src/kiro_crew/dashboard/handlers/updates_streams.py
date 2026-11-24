@@ -94,13 +94,21 @@ def apply_log_level_from_config(change: ConfigChange) -> None:
 async def api_log_level(request: web.Request) -> web.Response:
     """POST /api/logs/level — change the kiro_crew logger level at runtime.
 
-    Also persists the new level to config so it survives restarts.
+    Also persists the new level to config so it survives restarts, so a dashboard
+    session that is neither the owner nor an admitted teammate is refused first.
     """
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_for_dashboard_caller,
+    )
+
+    denied = await require_owner_for_dashboard_caller(request, "logs.level")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    from kiro_crew.dashboard.handlers._shared import body_not_object_error
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object

@@ -313,8 +313,9 @@ class TestPublishThenInstall:
         manifest = kas_bundle.parse_manifest(
             json.loads((release / "manifest.json").read_text(encoding="utf-8"))
         )
-        monkeypatch.setattr(kas_bundle, "KAS_PIN_VERSION", manifest.version)
-        monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-x64", (2, 26))
+        monkeypatch.setitem(
+            kas_bundle.KAS_PIN_GLIBC_FLOORS, manifest.version, {"linux-x64": (2, 26)}
+        )
         with patch("kiro_crew.constants._host_glibc_version", return_value=(2, 26)):
             installed = kas_bundle.install_bundle(
                 manifest, source=str(release), root=tmp_path / "root",

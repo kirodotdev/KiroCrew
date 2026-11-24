@@ -91,12 +91,14 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "quick_send",
             "session_grid",
             "tail_fork_enabled",
+            "fork_inherits_pin",
             "link_previews",
             "link_patterns",
             "mcp_app_panel",
             "auto_open_git_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "show_bot_sessions_in_list",
             "auto_open_conductor_board",
             "folder_suggestions_enabled",
             "folder_suggestions_auto_apply",
@@ -376,6 +378,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "tail_fork_enabled must be a boolean"}, status=400
                 )
             updates["tail_fork_enabled"] = val
+        if "fork_inherits_pin" in body:
+            val = body["fork_inherits_pin"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "fork_inherits_pin must be a boolean",
+                        "code": "invalid_fork_inherits_pin",
+                    },
+                    status=400,
+                )
+            updates["fork_inherits_pin"] = val
         if "folder_suggestions_enabled" in body:
             val = body["folder_suggestions_enabled"]
             if not isinstance(val, bool):
@@ -506,6 +522,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["side_panel_pin_summary"] = val
+        if "show_bot_sessions_in_list" in body:
+            val = body["show_bot_sessions_in_list"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "show_bot_sessions_in_list must be a boolean",
+                        "code": "invalid_show_bot_sessions_in_list",
+                    },
+                    status=400,
+                )
+            updates["show_bot_sessions_in_list"] = val
         if "auto_open_conductor_board" in body:
             val = body["auto_open_conductor_board"]
             if not isinstance(val, bool):
@@ -803,11 +833,13 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "side_panel_always_open": cfg.dashboard.side_panel_always_open,
             "side_panel_pin_summary": cfg.dashboard.side_panel_pin_summary,
+            "show_bot_sessions_in_list": cfg.dashboard.show_bot_sessions_in_list,
             "auto_open_conductor_board": cfg.dashboard.auto_open_conductor_board,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
             "default_session_folder": cfg.dashboard.default_session_folder,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
+            "fork_inherits_pin": cfg.dashboard.fork_inherits_pin,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
             "folder_suggestions_auto_apply": cfg.dashboard.folder_suggestions_auto_apply,

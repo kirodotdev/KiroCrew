@@ -128,8 +128,8 @@ class GateFacts:
         #: hook held (``ToolCall.spec_hook_held``); no deny tier consults it.
         self.pre_tool_hooks_fire = pre_tool_hooks_fire
         #: Why this call will ask when no row decides it, for the person who
-        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
-        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        #: answers the prompt. Set by :func:`grant_spec_builtin` and the parent-limits
+        #: row; the fall-through ``allow`` carries it as its reason. Never read to decide.
         self.ask_note = ""
         self._memo: dict[str, Any] = {}
 

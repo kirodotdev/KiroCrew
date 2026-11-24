@@ -638,7 +638,9 @@ def _staging_lock(static_parent: Path, timeout: Optional[float] = None) -> Itera
     """
     static_parent.mkdir(parents=True, exist_ok=True)
     lock_path = static_parent / _STAGING_LOCK_NAME
-    with open(lock_path, "a+") as lock_fh:
+    with open(
+        lock_path, "a+"  # owner-only-ok: lock in the install's static folder, outside the data home
+    ) as lock_fh:
         # required=True: Windows msvcrt acquisition failures are otherwise
         # swallowed, and running without exclusion is the very outage this
         # lock exists to prevent.

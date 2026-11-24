@@ -131,6 +131,7 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -538,8 +539,9 @@ jobs:
           # drifting run still records (worst case a spurious issue, which the
           # next green push closes), while a green run still declines to close
           # (worst case the issue stays open one push longer). A single symmetric
-          # default cannot do both.
-          HEAD_SHA="$(gh api "repos/$REPO/commits/main" --jq '.sha' 2>/dev/null || true)"
+          # default cannot do both. A failed read still prints gh's error body
+          # on stdout, so the fallback is its own assignment, not inside $(...).
+          HEAD_SHA="$(gh api "repos/$REPO/commits/main" --jq '.sha' 2>/dev/null)" || HEAD_SHA=""
           SUPERSEDED=""
           CONFIRMED_CURRENT=""
           if [ -n "$HEAD_SHA" ]; then

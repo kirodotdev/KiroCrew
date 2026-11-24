@@ -936,13 +936,13 @@ class AdmissionService:
 
     async def drain_promotions(self) -> None:
         """Await every in-flight promotion write (tests and shutdown)."""
-        while self._promotions:
-            await asyncio.gather(*list(self._promotions), return_exceptions=True)
+        while pending := [task for task in self._promotions if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def drain_relaunches(self) -> None:
         """Await every relaunched execution (tests and shutdown)."""
-        while self._relaunches:
-            await asyncio.gather(*list(self._relaunches), return_exceptions=True)
+        while pending := [task for task in self._relaunches if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def wait_admitted(self, work_id: str) -> AcceptedWork:
         live = self._live.get(work_id)

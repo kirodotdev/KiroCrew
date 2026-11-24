@@ -32,6 +32,7 @@ import GithubLogo from './icons/GithubLogo'
 import { Btn, IconButton } from './ui'
 import { initialCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
+import KasProfileChoice from './KasProfileChoice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { openAuthTab, useKasLoginFlow, type KasLoginExtra, type KasLoginFellBack } from '../hooks/useKasLogin'
@@ -1250,6 +1251,28 @@ function KasLoginFlow({
           onStartOver={flow.startOver}
           onCancel={flow.reset}
         />
+      )
+    }
+    if (pollQuery.data?.status === 'choose_profile') {
+      return (
+        <ViewShell
+          aside={{
+            ariaLabel: i18nT('components.kasLogin.choose_profile_title'),
+            panelHeadline: i18nT('components.kasLogin.aside_headline'),
+            panelBody: i18nT('components.kasLogin.aside_body'),
+            panelFootnote: i18nT('components.kasLogin.aside_footnote'),
+          }}
+        >
+          <KasProfileChoice
+            profiles={pollQuery.data.profiles ?? []}
+            selected={pollQuery.data.selected ?? ''}
+            busy={pollQuery.isFetching || settling}
+            notice={settleError}
+            askAgent={chrome.card}
+            onContinue={flow.chooseProfile}
+            onCancel={flow.reset}
+          />
+        </ViewShell>
       )
     }
     if (session.kind === 'loopback') {

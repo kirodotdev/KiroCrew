@@ -86,7 +86,7 @@ const R = {
   rowMeta: (host: string, branch: string) => i18nT(`${RK}.row_meta`, { host, branch }),
   grantConfirmBody: (name: string) => i18nT(`${RK}.grant_confirm_body`, { name }),
   // Rendered through <Trans> with the URL in its own <url> span; match the plain text.
-  grantConfirmRepo: (repo: string) => i18nT(`${RK}.grant_confirm_repo`, { repo }).replace(/<\/?url>/g, ''),
+  grantConfirmRepo: (repo: string) => i18nT(`${RK}.grant_confirm_repo`).replace(/<url\s*\/>/, () => repo),
   grantConfirmOk: () => i18nT(`${RK}.grant_confirm_ok`),
   changeFailed: (detail: string) => i18nT(`${RK}.change_failed`, { detail }),
   unavailable: () => i18nT(`${RK}.unavailable`),

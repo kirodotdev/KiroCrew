@@ -199,13 +199,15 @@ paths:
       - src/kiro_crew/dashboard/chat_runner.py:765 (_run_chat)
       - src/kiro_crew/dashboard/openai_compat.py:757 (how _stream_response reads the queue)
       x-crew-coverage: done
+      x-crew-stability: preview
       description: 'stream=true returns text/event-stream; background=true returns queued at once. Delegated credential:
         model must be the template id of the app''s capability bundle, <client_id>/<bundle.agent.id>, or a Bot the
         grant allows, and conversation must be one opened under this grant. Spends credits against the grant quota;
         a retry with the same Idempotency-Key is not charged again. Phase 1 accepts text only; `input_image`, `input_file`,
         `text.format: json_schema` and `reasoning.summary` are phase 2 and open per agent as capabilities reports;
         when the agent does not support one, 422 capability_unavailable. When json_schema validation fails the whole
-        turn is failed with error.code structured_output_invalid.'
+        turn is failed with error.code structured_output_invalid. In the preview, a turn that fair admission refuses
+        answers 200 with status failed and the capacity message.'
       requestBody:
         required: true
         content:

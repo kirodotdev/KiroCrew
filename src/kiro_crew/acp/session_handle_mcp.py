@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
@@ -1043,9 +1045,10 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             and name not in self._mcp_sign_in_needed
             and name not in self._mcp_reattempt_waiting
         ):
-            if is_recoverable_auth_failure(server.get("errorMessage")):
+            error = server.get("errorMessage")
+            if is_recoverable_auth_failure(error) or is_start_timeout_failure(error):
                 self._mcp_reattempt_waiting.add(name)
-            elif is_sse_fallback_failure(server.get("errorMessage")):
+            elif is_sse_fallback_failure(error):
                 self._probe_mcp_sign_in(name)
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
@@ -1389,11 +1392,12 @@ def _note_mcp_call_disconnected(self: AcpSessionHandle, update: dict[str, Any]) 
 
 
 def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
-    """Re-attempt servers that failed for want of a credential or dropped.
+    """Re-attempt servers that lacked a credential, ran out of time starting, or dropped.
 
     Called at turn start, beside the sign-in offer: by then the user or
-    the agent may have obtained the credential the server lacked, or
-    brought back what a dropped server's connection needed. Each
+    the agent may have obtained the credential the server lacked, a slow
+    start may finish in time, or what a dropped server's connection
+    needed may be back. Each
     waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
     session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
     so the budget holds however many names the engine reports. A healthy

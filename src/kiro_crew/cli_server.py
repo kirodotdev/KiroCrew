@@ -594,13 +594,15 @@ def _service_cmd(args: argparse.Namespace) -> int:
     """
     action = getattr(args, "service_action", None)
     if action == "install":
-        rc = service_controller.install_service()
+        # True / False for --headless / --no-headless, None for neither (keep).
+        headless = getattr(args, "headless", None)
+        rc = service_controller.install_service(headless=headless)
         sel().log_api_access(
             caller="cli",
             operation="service_install",
             outcome="allowed" if rc == 0 else "error",
             source="cli",
-            resources=f"rc={rc}",
+            resources=f"rc={rc} headless={'keep' if headless is None else int(headless)}",
         )
         return rc
     if action == "uninstall":

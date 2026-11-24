@@ -553,19 +553,33 @@ class TestQuarantinedServersAreNotSpawned:
 
         return fake_probe
 
+    @staticmethod
+    def _answers(spawned: list[str]):
+        """A ``probe_server`` stand-in for a server that answers its handshake."""
+
+        async def fake_probe(server):
+            spawned.append(server.name)
+            server.status = "ok"
+            server.error = ""
+            _cache_probe(server)
+            return server
+
+        return fake_probe
+
     async def _pass(self, monkeypatch, spawned: list[str]) -> list:
         """One discovery pass, folded back into the store like the dashboard's.
 
         ``dashboard/handlers/mcp_probe.py`` calls ``probe_all`` and then hands
         ``_record_probe_verdicts`` EVERY row it returned -- it does not know which
-        ones were spawned. This helper must do the same, or it tests a caller that
-        does not exist and hides what the real one does with an unprobed row.
+        ones were spawned. This helper calls that same function, or it would test a
+        caller that does not exist and hide what the real one does with an
+        unprobed row.
         """
-        from kiro_crew import mcp_quarantine
+        from kiro_crew.dashboard.handlers.mcp_probe import _record_probe_verdicts
         from kiro_crew.mcp_discovery import probe_all
 
         probed = await probe_all()
-        mcp_quarantine.record_verdicts([(s.name, s.status, s.error) for s in probed])
+        _record_probe_verdicts([s.to_dict() for s in probed], probed)
         return probed
 
     @pytest.mark.asyncio
@@ -679,6 +693,53 @@ class TestQuarantinedServersAreNotSpawned:
         # that clears it and the switch that turns the whole thing off.
         assert "/api/mcp/quarantine/clear" in message
         assert "agent.mcp_quarantine_after_failures" in message
+
+    @pytest.mark.asyncio
+    async def test_a_changed_launch_is_probed_again(self, tmp_path, monkeypatch) -> None:
+        """A fixed command is a launch that has never failed, so no reset is needed.
+
+        Held by name alone, a server whose dead versioned path is replaced by a
+        working one would never be probed, so the good handshake that clears its
+        record could never happen.
+        """
+        from kiro_crew import mcp_quarantine
+
+        self._wedged_config(tmp_path, monkeypatch)
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+        for _ in range(self.LIMIT + 1):
+            await self._pass(monkeypatch, spawned)
+        assert spawned == ["wedged"] * self.LIMIT
+
+        (tmp_path / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"wedged": {"command": "now-works"}}})
+        )
+        spawned.clear()
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._answers(spawned))
+        probed = await self._pass(monkeypatch, spawned)
+
+        assert spawned == ["wedged"]
+        assert probed[0].status == "ok"
+        assert mcp_quarantine.state_for("wedged") is None
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_names_no_launch_is_probed_again(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A crossing on file with no launch cannot say the current one failed."""
+        from kiro_crew import mcp_quarantine
+
+        self._wedged_config(tmp_path, monkeypatch)
+        for _ in range(self.LIMIT):
+            mcp_quarantine.record_verdicts([("wedged", "error", "boom")])
+        assert mcp_quarantine.state_for("wedged")["failing"] is True
+
+        spawned: list[str] = []
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_server", self._always_times_out(spawned))
+        await self._pass(monkeypatch, spawned)
+
+        assert spawned == ["wedged"]
+        assert mcp_quarantine.state_for("wedged")["fails"] == 1
 
     @pytest.mark.asyncio
     async def test_clearing_the_quarantine_restores_spawning(self, tmp_path, monkeypatch) -> None:

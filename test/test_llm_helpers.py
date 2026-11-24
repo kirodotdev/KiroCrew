@@ -782,6 +782,52 @@ class TestStreamAndCollectModelFallback:
         provider.set_model.assert_not_awaited()  # no silent swap
 
     @pytest.mark.asyncio
+    async def test_kas_unentitled_pin_retries_on_auto_without_a_served_list(self) -> None:
+        """KAS advertises no served list, so a pinned model the account is not
+        served (``exc.unentitled``, stamped from the backend's token) retries once
+        on ``auto``, the routing choice every account is served; a pinned
+        ``auto`` that is itself refused has no candidate and propagates."""
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                exc = AcpError("The model 'claude-nonexistent-9' is not available on your account.")
+                exc.rejected_model = "claude-nonexistent-9"
+                exc.advertised = []
+                exc.unentitled = True
+                raise exc
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="success")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = AsyncMock()
+        provider.cancel = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.stream = _stream
+        provider.set_model = AsyncMock()
+
+        result = await stream_and_collect(provider, "test", model_fallback=True)
+
+        assert result == "success"
+        assert call_count == 2
+        provider.set_model.assert_awaited_once_with("auto")
+
+        async def _auto_refused(msg):
+            exc = AcpError("The model 'auto' is not available on your account.")
+            exc.rejected_model = "auto"
+            exc.advertised = []
+            exc.unentitled = True
+            raise exc
+            yield  # pragma: no cover
+
+        provider.stream = _auto_refused
+        provider.set_model.reset_mock()
+        with pytest.raises(AcpError):
+            await stream_and_collect(provider, "test", model_fallback=True)
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_model_rejected_no_advertised_propagates(self) -> None:
         """When 'auto' is rejected but no advertised list, propagate."""
 

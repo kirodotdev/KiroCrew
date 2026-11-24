@@ -45,6 +45,9 @@ Answer with ONE JSON object and nothing else.
 {"route":"code_channel","title":"<3-8 word task title>"} when the request is \
 work that takes multiple steps: changing code, fixing a bug, building or \
 testing, opening a pull request, or iterating on something over several turns.
+Also answer code_channel when the request itself explicitly asks for a code \
+channel, its own channel or a working space for work in the request or the \
+context, e.g. "put that in a code channel"; take the title from that work.
 {"route":"stay"} when one message can answer it: a question, an explanation, \
 a lookup, a status check, small talk.
 When it is ambiguous, answer {"route":"stay"}.

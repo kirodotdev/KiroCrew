@@ -10,6 +10,11 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
+from kiro_crew.dashboard.slack_reconnect_wait import (
+    TURN_END_NOTICE,
+    slack_reply_client,
+    wait_for_slack_reconnect,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -631,6 +636,16 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             _deferred_options_expiry = False
             turn._deferred_options_expiry = _deferred_options_expiry
             await expire_slack_options(state, session_key)
+        if (
+            (_mirror_stream_ts or turn._mirror_thinking_ts)
+            and _mirror_chan
+            and not state.slack_client
+        ):
+            # A reconnect took the client: close the stream and remove the
+            # placeholder through the one it publishes. None published leaves
+            # them in the thread, which the owner is told once.
+            await wait_for_slack_reconnect(state)
+            slack_reply_client(state, session_key, _mirror_chan, turn=turn, notice=TURN_END_NOTICE)
         if _mirror_stream_ts and state.slack_client and _mirror_chan:
             try:
                 # Fenced for the same reason _on_tool_call's in-progress append is:

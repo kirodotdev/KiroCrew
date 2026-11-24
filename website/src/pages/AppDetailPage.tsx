@@ -33,7 +33,8 @@ import { desktopRequestOf } from '../components/appstore/desktopRequest'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
-import { appActionNotice, backendRefusedNotice } from '../components/appstore/backendRefused'
+import { appActionNotice, backendRefusedNotice, botChatStopFailedSlugs } from '../components/appstore/backendRefused'
+import { botStopAppState, carryState, stopResultOf, useBotChatStop } from '../components/appstore/useBotChatStop'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
@@ -95,20 +96,11 @@ export default function AppDetailPage() {
   const { theme: resolvedMode } = useTheme()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  /**
-   * Success reflection for an in-place sync. This page otherwise has only an
-   * error surface, so a successful ``update`` re-rendered a byte-identical page:
-   * re-copying a source directory normally carries the same version, which makes
-   * silence indistinguishable from a no-op. The list card states the outcome for
-   * the same reason, and both paths this fix wires need to say it.
-   */
+  /** Success for an in-place sync: a same-version re-copy changes nothing visible. */
   const [successMsg, setSuccessMsg] = useState('')
-  /**
-   * The app enabled, installed or updated, but the host refused its backend
-   * (`backend_refused`). A warning, not a success: nothing runs behind the app.
-   * Stays until the next action, which is the user's chance to act on it.
-   */
+  /** The action landed but the host refused the app's backend (`backend_refused`). */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
+  const botStop = useBotChatStop(setError, null, name => (app?.name === name ? botStopAppState(app) : undefined))
   // A fresh install and a widening update set this same flag, so the copy must hold for both.
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
@@ -821,18 +813,18 @@ export default function AppDetailPage() {
         await runEnable(app.name, memberThreads)
         return
       }
-      if (action === 'disable') setBackendRefusedMsg(appActionNotice(appDisplayName(app), await api.disableApp(app.name), 'disable'))
+      if (action === 'disable') {
+        const result = await api.disableApp(app.name)
+        setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'disable'))
+        botStop.show('disable', app.name, appDisplayName(app), botChatStopFailedSlugs(result))
+      }
       else if (action === 'update') updateResult = await api.updateApp(app.name)
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
       // Reload in place: Sync keeps its focus, and the page never drops to the loader.
       await load({ keepView: true })
-      // `load()` clears the error but does not speak to success, and a same-version
-      // re-copy changes nothing visible, so say it explicitly. The Sync button that
-      // reaches here is not gated on source, and `handle_update_app` re-clones a
-      // registry-sourced app from the registry rather than copying a directory, so
-      // each case has to name where the update actually came from.
+      // Say where the update came from: a registry app re-clones, a local one re-copies.
       // An update whose backend the host refused gets the warning, not the toast.
       const refused = action === 'update' ? backendRefusedNotice(appDisplayName(app), updateResult) : ''
       if (refused) setBackendRefusedMsg(refused)
@@ -863,6 +855,9 @@ export default function AppDetailPage() {
           ...trustGrants(app.manifest?.permissions),
           desktop: desktopRequestOf(app.manifest),
         })
+      } else if (action === 'disable' && stopResultOf(e)) {
+        botStop.show('disable', app.name, appDisplayName(app), stopResultOf(e) ?? [])
+        await load({ keepView: true })
       } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
         // The grant changed under the dialog (an update added a scope it did not
         // name). Reload so the next click shows the grant as it now stands.
@@ -885,9 +880,13 @@ export default function AppDetailPage() {
       if (res.uninstall_log) setInstallLog(res.uninstall_log)
       recordEvent('app_uninstall', { app: app.name, version: app.installedVersion || app.version })
       window.dispatchEvent(new Event('mc:apps-changed'))
-      navigate('/apps', { state: { appNotice: appActionNotice(appDisplayName(app), res, 'uninstall') } })
+      // Bot chats the uninstall could not stop: the Library shows the notice and its retry.
+      const carried = carryState({ action: 'uninstall', app: app.name, display: appDisplayName(app), slugs: botChatStopFailedSlugs(res) })
+      navigate(carried ? '/apps/library' : '/apps', { state: { ...carried, appNotice: appActionNotice(appDisplayName(app), res, 'uninstall') } })
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
+      const named = stopResultOf(e)
+      if (named?.length) navigate('/apps/library', { state: carryState({ action: 'uninstall', app: app.name, display: appDisplayName(app), slugs: named }) })
+      else setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {
       finishAction('uninstall')
       setShowUninstallConfirm(false)
@@ -1082,6 +1081,7 @@ export default function AppDetailPage() {
           </div>
         )}
 
+        {botStop.notice}
         {/* The action landed but the host refused the app's backend: a failure
             the server named, so it gets the error surface, not a success. */}
         {backendRefusedMsg && (

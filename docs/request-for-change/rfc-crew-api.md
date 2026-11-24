@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew API
 
-- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), though no `/v1` route serves the token yet: a valid one sent from this machine is recognised and answered 403 `owner_only` on every `/v1` path (`crew_api_auth.refuse_app_credential`). [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner. The rest is not built. This document changes no code.
+- Status: partial. A maintainer accepted the design on 2026-11-14, with open question Q7 decided. The first Owner-tier route is built: [#34104](https://github.com/kirodotdev/KiroCrew/pull/34104) serves `GET /v1/crew/owner/bots` (`src/kiro_crew/dashboard/routes/crew_api.py`), the twin of `GET /api/members`. [#39564](https://github.com/kirodotdev/KiroCrew/pull/39564), merged 2026-11-20, adds phase 1's local authorization: the four routes `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` and `/oauth/revoke` (`src/kiro_crew/dashboard/routes/local_authorization.py`), and one `/v1` route serves the token: a valid one sent from this machine reaches `GET /v1/models` and is answered 403 on every other `/v1` path, by the route's row in the scope table (`crew_api_auth.judge_app_credential`). [#39574](https://github.com/kirodotdev/KiroCrew/pull/39574) makes a `/v1/` path other than `POST /v1/chat/completions` take its credential from `Authorization: Bearer` and refuse `?token=` (`src/kiro_crew/dashboard/crew_api_auth.py`), and serves `GET /v1/models` for the owner and for a local app credential. An app credential gets `200` with `{"object": "list", "data": []}` until a grant carries a Bot range or a route lets an app run an agent; its list comes only from the grant, without reading the owner's catalog. `POST /v1/responses` is served for the machine owner (`src/kiro_crew/dashboard/crew_api_responses.py`): one turn in a new conversation, answered as JSON or, with `stream: true`, as the stream events of the subset. A stopped turn ends its stream with `response.incomplete`, and the `Response` inside it carries `status: cancelled`, the status the JSON answer gives. Every other field of [the Responses subset](#33-the-responses-subset) that needs more than that (`background`, `conversation`, `previous_response_id`, tools, the phase 2 fields) answers 422 `capability_unavailable`, the `Idempotency-Key` header is not read, and a turn that fair admission refuses is answered 200 with `status: failed`. The rest is not built. This document changes no code.
 - Machine-readable contract: the OpenAPI 3.1 drafts in [`assets/crew-api/`](assets/crew-api/crew-public.yaml):
   `crew-public.yaml` (the Public tier), `crew-owner.yaml` (the Owner tier) and `components.yaml`
   (shared schemas). Both `openapi-spec-validator` and `@redocly/cli lint` pass on them with the
@@ -354,7 +354,7 @@ concurrency or wake limit was hit).
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
 | 403 | `permission_error` | `entitlement_required` | The app lacks the entitlement this capability needs; the body's `entitlement` names it. Checked before the scope |
 | 403 | `permission_error` | `insufficient_scope` | Missing scope. The user can grant it on the consent page |
-| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`GET /v1/models`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
+| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`POST /v1/responses`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
 | 403 | `permission_error` | `approval_requires_first_party` | A delegated credential tried to answer an approval |
 | 403 | `permission_error` | `tool_not_registered` | A tool in the request is not in the grant's manifest |
 | 403 | `permission_error` | `connector_definition_changed` | The app's manifest changed its tools or permissions and the user has not consented again. The grant is paused with `pause.by: reconsent` and returns only this code |
@@ -636,6 +636,15 @@ accepted by a maintainer):
    local authorization. Every token under the grant is refused from the next request. A second
    call answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside
    issuer, so nothing is sent over the control channel.
+4. `GET /v1/crew/owner/grants`, already in this RFC, is served for grants made through local
+   authorization (amendment, 2026-11-24; proposed, to be accepted by a maintainer). It lists the
+   grants that work now, oldest first, paged with `after` and `limit`. A revoked or expired grant
+   is not listed, under any `status`. An `after` that names no grant in the list, one revoked
+   since the last page included, is 400 `invalid_request`; the caller starts again from the
+   first page. A row carries `id`, `kind` (`local`), `namespace`,
+   `client_id`, `app.name` (as the app reported it), `scopes`, `status`, `created_at` and
+   `expires_at`, and no token. Usage, quota and Bot range are not kept for such a grant and are
+   left out.
 
 ### 9. Versioning and compatibility
 

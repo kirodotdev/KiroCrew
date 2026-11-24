@@ -56,6 +56,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # and every permissions.browser verb.
     "app_browser_sdk",
     "artifact_deploy",
+    "bot_chat_app_tools",
     "bridge_approvals",
     "chat_runtime_sharing",
     # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
@@ -69,6 +70,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
+    # Has server behavior: kiro_crew.acp.kas_engine_subagents.kas_subagents_preview_on
+    # mounts the engine's sub-agent tool on a KAS chat's default agent.
+    "kas_subagents",
     "remote_crew_chat",
     "session_environments",
     "session_harness",
@@ -490,7 +494,9 @@ class DashboardConfig:
         default=15,
         metadata=_meta(
             "MCP Probe Timeout",
-            "Seconds to wait for MCP server handshake during probe (5-120).",
+            "Seconds to wait for an MCP server to answer during a probe (5-120). "
+            "A server that runs on this computer gets four times as long, up to "
+            "120 seconds, because the probe has to start it first.",
         ),
     )
     loop_stall_exit_after_secs: int | None = field(
@@ -651,6 +657,14 @@ class DashboardConfig:
             "earlier messages are dropped.",
         ),
     )
+    fork_inherits_pin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Pin forks of pinned sessions",
+            "A fork of a pinned session is pinned too, so it stays beside the "
+            "original. When off, forks start unpinned.",
+        ),
+    )
     auto_open_browser: bool = field(
         default=True,
         metadata=_meta(
@@ -758,6 +772,18 @@ class DashboardConfig:
             "closed, and show it each time the panel opens. A panel opened for "
             "something specific, such as a file, still shows that. Works only "
             "while session summaries are on.",
+        ),
+    )
+    # Off by default: the sessions a live Bot thread dispatched are listed in that
+    # Bot's side panel and left out of the person's own session lists
+    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On lists every
+    # Bot's sessions there too, under each Bot's own folder.
+    show_bot_sessions_in_list: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show all bots in my Sessions",
+            "List the sessions your bots open in your Sessions list, each in its "
+            "bot's folder. While on, no bot's own switch applies.",
         ),
     )
     auto_open_conductor_board: bool = field(
@@ -1135,10 +1161,11 @@ class DashboardConfig:
             "Sidebar Session Order",
             "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
             "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
-            "'name-desc' by title, 'manual' in the order the user drags them into. A "
-            "view preference only; pinned sessions keep their own order. Stored here "
-            "(not only in the browser) so the choice follows the user across browsers "
-            "and the desktop app.",
+            "'name-desc' by title, 'manual' in the order the user drags them into, "
+            "'active-then-date' with running sessions first and then the rest, each "
+            "part by last activity, newest first. A view preference only; pinned "
+            "sessions keep their own order. Stored here (not only in the browser) so "
+            "the choice follows the user across browsers and the desktop app.",
             enum=[
                 "date-desc",
                 "date-asc",
@@ -1147,6 +1174,7 @@ class DashboardConfig:
                 "name-asc",
                 "name-desc",
                 "manual",
+                "active-then-date",
             ],
         ),
     )

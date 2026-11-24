@@ -547,9 +547,11 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     )
     from kiro_crew.sandbox_seals import (  # noqa: F401
         _CREW_NO_ALIAS_LEAVES,
+        _EMPTY_KIRO_MCP_REGISTRY,
         SandboxCeilingUnsealable,
         _delete_file_command,
         _is_link_or_junction,
+        _materialize_kiro_mcp_registry,
         _materialize_sealable_ceilings,
         _materialize_sealable_parent_dirs,
         _mint_gateway_id_before_seal,
@@ -561,6 +563,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _refuse_linked_models_leaf,
         _require_real_dir_nofollow,
         _require_real_file_nofollow,
+        _resolved_kiro_mcp_registry_targets,
         _sealable_absent_ceilings,
         _symlink_target_display,
         _warn_aliased_strict_leaves,

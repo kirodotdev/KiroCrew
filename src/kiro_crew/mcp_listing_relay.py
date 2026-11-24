@@ -133,7 +133,6 @@ _LISTING_IMPORTS = (
     "monitoring/targets.py",
     "platform/__init__.py",
     "platform_compat.py",
-    "port_resolution.py",
     "resource_status.py",
     "security/__init__.py",
     "sel.py",

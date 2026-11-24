@@ -92,6 +92,8 @@ def _install(plat: Platform) -> int:
         patch.object(controller.linux, "enable_service_account_linger", return_value=None),
         patch.object(controller.macos, "install", MagicMock(return_value=None)),
         patch.object(controller, "headless_auth_warning", return_value=""),
+        # The mode an install keeps is read from the host's own service.
+        patch.object(controller, "installed_headless", return_value=False),
     ):
         return controller.install_service()
 

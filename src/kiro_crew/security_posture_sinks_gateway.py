@@ -296,11 +296,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "fence-neutralized and capped, before it leaves the op route.",
     ),
     (
-        "Browser sign-in completion",
-        "browser_harness/sign_in.py",
-        "The page URL a provider's sign-in completion lands on, the only part of it the "
-        "agent sees, passes the exfiltration-URL and credential redactors before it is "
-        "returned or written to the step label.",
+        "Browser per-origin sign-in",
+        "browser_harness/sign_in_guard.py",
+        "A provider's sign-in outcome reaches the agent as the site's host, a fixed "
+        "reason code and a note; the provider's own message passes the exfiltration-URL "
+        "and credential redactors whole before it is cut to 200 printable characters.",
     ),
     (
         "Browser action change reports",
@@ -986,6 +986,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
+    ),
+    (
+        "Crew API responses",
+        "dashboard/crew_api_responses.py",
+        "The reply text and the failure reason of a POST /v1/responses turn, redacted "
+        "before the answer leaves. `metadata`, the model name and the names of ignored "
+        "fields go back as the caller sent them.",
+    ),
+    (
+        "Crew API response stream",
+        "dashboard/crew_api_response_stream.py",
+        "The text deltas of a streamed POST /v1/responses turn pass through "
+        "StreamRedactor with the route's _redact before they leave. Its final text "
+        "is the concatenation of those deltas, including on failure. Held text is "
+        "redacted at the turn's end; oversized sensitive runs are replaced and their "
+        "continuations discarded. Approved links' token values are redacted too.",
     ),
     (
         "A conductor mode root's worker list and timeline",

@@ -16,6 +16,7 @@ from test_chat_runtime_sharing import KillableRuntime, a_key, shared_provider, s
 
 import kiro_crew.runtime_ownership as ro
 from kiro_crew.acp_backends import ACP_BACKEND_KAS
+from kiro_crew.testing.ids import unallocatable_pids
 
 
 class KasRuntime(KillableRuntime):
@@ -123,3 +124,69 @@ def test_a_failed_kill_of_the_last_holder_is_survived(table):
     rt.kill = boom
     asyncio.run(provider.shutdown())
     assert provider._runtime_lease is None and table.leases_on_runtime(rt) == 0
+
+
+CODEX_PID, SURVIVOR_PID = unallocatable_pids(2)
+
+
+class CodexRuntime(KillableRuntime):
+    """A codex runtime: its close leaves the session's MCP servers running, so only a
+    kill that confirms the whole tree dead settles the close."""
+
+    def __init__(self, pid: int, *, tree_dead: bool, kill_raises: bool = False) -> None:
+        super().__init__(pid)
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+        self.acp_backend = ACP_BACKEND_CODEX
+        self.process_tree_confirmed_dead = False
+        self._unconfirmed_teardowns: set[str] = set()  # the host acknowledged the close
+        self._tree_dead = tree_dead
+        self._kill_raises = kill_raises
+
+    async def kill(self, *, expected: bool = False, reason: str = "") -> None:
+        await super().kill(expected=expected, reason=reason)
+        self.process_tree_confirmed_dead = self._tree_dead
+        if self._kill_raises:
+            raise RuntimeError("WindowsTreeDrainPending")
+
+
+@pytest.mark.parametrize(
+    ("tree_dead", "kill_raises", "confirmed"),
+    [(False, False, False), (False, True, False), (True, True, False), (True, False, True)],
+    ids=["survivors", "kill-raised", "raised-after-dead", "tree-dead"],
+)
+def test_a_codex_last_holder_settles_only_on_a_dead_tree(table, tree_dead, kill_raises, confirmed):
+    """A clean ``session/close`` on codex is not a settled close: its MCP servers
+    keep running under the process. Treat the close as confirmed and a kill that
+    raised or left survivors reports a stopped Bot chat with no retry handle."""
+    from kiro_crew.acp.session_provider_shared import RuntimeTreeGone
+
+    rt = CodexRuntime(pid=CODEX_PID, tree_dead=tree_dead, kill_raises=kill_raises)
+    only = asyncio.run(table.acquire(a_key(), "dashboard:chat-1-1", spawner(rt), cap=10))
+    provider, handle = shared_provider(rt, "dashboard:chat-1-1", only.lease)
+    handle.session_id = "sess-1"
+    asyncio.run(provider.shutdown())
+    assert rt.kills and handle.destroyed == 1
+    assert provider._kas_shutdown_unconfirmed is (not confirmed)
+    if not confirmed:
+        assert isinstance(provider._kas_unconfirmed_runtime, RuntimeTreeGone)
+        assert provider._kas_unconfirmed_session_id == "sess-1"
+
+
+def test_the_retry_handle_confirms_only_once_the_tree_is_gone(monkeypatch):
+    import kiro_crew.session_pid_tracking as spt
+    from kiro_crew.acp.session_provider_shared import RuntimeTreeGone
+
+    rt = CodexRuntime(pid=CODEX_PID, tree_dead=False)
+    handle = RuntimeTreeGone(rt)
+    assert asyncio.run(handle.evict_session("sess-1")) is False  # still running
+    rt._alive = False
+    rt._unreaped_pids = (SURVIVOR_PID,)
+    gone: set[int] = set()
+    monkeypatch.setattr(spt, "_pid_gone_or_unmanaged", lambda pid: pid in gone)
+    assert asyncio.run(handle.evict_session("sess-1")) is False  # a survivor lives
+    gone.add(SURVIVOR_PID)
+    assert asyncio.run(handle.evict_session("sess-1")) is True
+    rt.process_tree_confirmed_dead = True
+    gone.clear()
+    assert asyncio.run(handle.evict_session("sess-1")) is True

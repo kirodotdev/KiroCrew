@@ -957,6 +957,14 @@ jobs:
                  caption, helper line or tooltip the diff ADDS or CHANGES is a
                  finding when the label, icon, heading or placement already
                  says it; quote the line and name what already says it.
+               - No reassurance lines: a sentence of the shape "Nothing is
+                 sent / saved / created / changes until you <act>" is a
+                 finding wherever the diff adds or changes it. The control
+                 already shows that nothing happens before it is used; delete
+                 the sentence. When the act has a consequence the reader
+                 cannot infer (a cost, a resource left running), state that
+                 consequence instead. website/src/i18n/noReassuranceCopy.test.ts
+                 enforces it on English catalog copy.
                - Errors: what happened + what to do next, ≤2 sentences, in the
                  user's vocabulary — never raw codes, exception text, or a bare
                  "Something went wrong".

@@ -81,6 +81,9 @@ POLL_SECS = float(os.environ.get("KIROCREW_HEADLESS_POLL_SECS") or 5.0)
 #: How long a finished background agent's result can be held before it reaches its
 #: parent: ``subagent_parts.run_limits._RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE``.
 _DELIVERY_GRACE_SECS = 60.0
+#: How long each sign-in request waits: as long as ``kirocrew token`` waits for the
+#: same mint, since a gateway that is up but busy can take 12-14 s to answer.
+_SIGN_IN_TIMEOUT_SECS = 20.0
 
 #: A turn that ends with an option list is asking the person to pick.
 _OPTIONS_MARK = "[OPTIONS:"
@@ -275,12 +278,12 @@ class GatewayClient:
             mint = urllib.request.Request(
                 f"{self.base}/api/token/local?ttl=1m", headers={"X-Local-Secret": secret}
             )
-            with self._open(mint, 10, "cli_headless_token") as resp:
+            with self._open(mint, _SIGN_IN_TIMEOUT_SECS, "cli_headless_token") as resp:
                 self._token = json.loads(resp.read())["token"]
             prime = urllib.request.Request(
                 f"{self.base}/api/status?token={urllib.parse.quote(self._token, safe='')}"
             )
-            with self._open(prime, 10, "cli_headless_session") as resp:
+            with self._open(prime, _SIGN_IN_TIMEOUT_SECS, "cli_headless_session") as resp:
                 jar = http.cookies.SimpleCookie()
                 for raw in resp.headers.get_all("Set-Cookie") or []:
                     jar.load(raw)

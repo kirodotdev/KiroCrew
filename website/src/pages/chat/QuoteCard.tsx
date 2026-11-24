@@ -1,4 +1,11 @@
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
 import { Quote, X } from 'lucide-react'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { LinkOverrideCtx, QuotedContentCtx, type LinkOverride } from '../../components/markdown/contexts'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MESSAGE_QUOTE_ATTR } from '../../messageActions/messageText'
 import { quoteExcerpt, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
 import { i18nT } from '../../i18n/t'
@@ -13,9 +20,10 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *   separate strip of chrome (the staged-file strip is chrome; this is content).
  *   Its text is the jump control when the host can jump (`onJump`).
  * - `sent`: at the top of the user bubble in place of the raw `>` lines. The
- *   whole card is the jump control when the host can jump (`onJump`), a plain
- *   box otherwise (a row re-read from another client, a quote of a message the
- *   transcript no longer has).
+ *   quoted text renders as markdown, clamped with a Show more toggle. The
+ *   author · time header is the jump control when the host can jump
+ *   (`onJump`), plain text otherwise (a row re-read from another client, a
+ *   quote of a message the transcript no longer has).
  *
  * Author label is derived from `role` at render time, so it follows the UI
  * language; the record itself stays language-free.
@@ -88,34 +96,121 @@ export default function QuoteCard({ quote, variant, onJump, onRemove }: {
       </div>
     )
   }
-  const body = (
-    <>
-      <span aria-hidden="true" className="w-[3px] self-stretch rounded-full bg-accent shrink-0" />
-      <span className="min-w-0 block text-left">
-        {head}
-        <span className="block text-[13px] leading-5 text-muted line-clamp-2">{excerpt}</span>
-      </span>
-    </>
-  )
   // `w-0 min-w-full`, not `w-full`: the bubble is `w-fit`, so a card whose
-  // intrinsic width is its one-line excerpt would inflate a short message to
-  // the full column. Contributing NO intrinsic width and then filling the
-  // bubble keeps the bubble sized by the message text (with the floor the
-  // bubble sets for a carried quote), so a quoted "why?" stays a 16rem bubble
-  // and the excerpt truncates to whatever width the text earned.
-  const cls = 'flex w-0 min-w-full items-stretch gap-2.5 mb-2 px-3 py-1.5 rounded-lg border border-border bg-bg'
-  return onJump ? (
-    <button
-      type="button"
-      onClick={() => onJump(quote)}
-      className={`${cls} cursor-pointer hover:bg-bg-hover transition-colors`}
-      title={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
-      aria-label={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
-      data-testid="quote-card-sent"
-    >
-      {body}
-    </button>
-  ) : (
-    <div className={cls} data-testid="quote-card-sent">{body}</div>
+  // intrinsic width is its quoted text would inflate a short message to the
+  // full column. Contributing NO intrinsic width and then filling the bubble
+  // keeps the bubble sized by the message text (with the floor the bubble sets
+  // for a carried quote), so a quoted "why?" stays a 16rem bubble.
+  // A div, never a button: the card holds the Show more toggle and the
+  // quoted markdown's own controls (copy buttons, chips), and a button cannot
+  // contain them. The header is the jump control.
+  // `MESSAGE_QUOTE_ATTR`: a message action reads the row's own words, not the
+  // quoted text (`readMessageText`).
+  return (
+    <div className="flex w-0 min-w-full items-stretch gap-2.5 mb-2 px-3 py-1.5 rounded-lg border border-border bg-bg" data-testid="quote-card-sent" {...{ [MESSAGE_QUOTE_ATTR]: '' }}>
+      <span aria-hidden="true" className="w-[3px] self-stretch rounded-full bg-accent shrink-0" />
+      <div className="min-w-0 flex-1 text-left">
+        {onJump ? (
+          <button
+            type="button"
+            onClick={() => onJump(quote)}
+            className="flex max-w-full rounded-sm cursor-pointer hover:underline underline-offset-2 decoration-accent"
+            title={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
+            aria-label={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
+            data-testid="quote-card-sent-jump"
+          >
+            {head}
+          </button>
+        ) : head}
+        <SentQuoteBody text={quote.text} softBreaks={quote.role === 'user'} />
+      </div>
+    </div>
+  )
+}
+
+/** Height the sent card shows before Show more: about five lines of its
+ *  13px/20px text. */
+export const QUOTE_CLAMP_PX = 104
+
+/** Links in a quote stay text. The quote is a copy of another row's raw text,
+ *  so the server's per-row link checks (`meta.link_blocks`) do not travel with
+ *  it: a link blocked on the original would turn live here. Images and
+ *  widgets are held back the same way, by `QuotedContentCtx`. */
+const inertLink: LinkOverride = ({ children }) => <span>{children}</span>
+
+/** The sent card's quoted text, rendered as the markdown it is (read-only
+ *  code, no widgets, images as their alt text) and clamped to
+ *  `QUOTE_CLAMP_PX` with a fade. Show more grows the same box in place up to
+ *  a third of the viewport, past which the box scrolls on its own, so a long
+ *  quote never pushes the message under the composer. `softBreaks`: a quoted user message keeps its Shift+Enter
+ *  line breaks, as its transcript row does. */
+function SentQuoteBody({ text, softBreaks }: { text: string; softBreaks: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  // Expanded, the box scrolls past a third of the viewport; the bottom fade
+  // stays while more sits below, so a long table does not read as complete.
+  const [attachBox, edges, , attachContent] = useScrollEdgesY<HTMLDivElement>()
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const boxRefCb = useCallback((node: HTMLDivElement | null) => {
+    boxRef.current = node
+    attachBox(node)
+  }, [attachBox])
+  const contentRefCb = useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    attachContent(node)
+  }, [attachContent])
+  // Show less turns the scrolled box back to overflow-hidden; start it from
+  // the top again, or the collapsed card shows a slice it cannot scroll off.
+  const toggle = () => {
+    if (expanded && boxRef.current) boxRef.current.scrollTop = 0
+    setExpanded(v => !v)
+  }
+  const reduceMotion = useReducedMotion()
+  useLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const measure = () => setOverflows(el.scrollHeight > QUOTE_CLAMP_PX + 1)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text])
+  const clamped = overflows && !expanded
+  const maxHeight = expanded ? Math.max(QUOTE_CLAMP_PX, Math.round(window.innerHeight / 3)) : QUOTE_CLAMP_PX
+  const fade = 'linear-gradient(to bottom, #000 55%, transparent)'
+  return (
+    <>
+      <motion.div
+        initial={false}
+        animate={{ maxHeight }}
+        transition={{ duration: reduceMotion ? 0 : 0.2, ease: 'easeOut' }}
+        ref={boxRefCb}
+        className={`text-[13px] leading-5 text-muted ${expanded ? `overflow-y-auto ${edges.bottom ? MORE_BELOW_MASK : ''}` : 'overflow-hidden'}`}
+        style={clamped ? { maskImage: fade, WebkitMaskImage: fade } : undefined}
+        data-testid="quote-card-body"
+        data-clamped={clamped ? '' : undefined}
+      >
+        <div ref={contentRefCb} className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+          <LinkOverrideCtx.Provider value={inertLink}>
+            <QuotedContentCtx.Provider value>
+              <MarkdownRenderer content={text} readOnlyCode compactImages softBreaks={softBreaks} />
+            </QuotedContentCtx.Provider>
+          </LinkOverrideCtx.Provider>
+        </div>
+      </motion.div>
+      {overflows && (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          className="mt-1.5 text-[12px] leading-5 text-accent hover:underline underline-offset-2"
+          data-testid="quote-card-toggle"
+        >
+          {expanded ? i18nT('pages.chat.quoteCard.show_less') : i18nT('pages.chat.quoteCard.show_more')}
+        </button>
+      )}
+    </>
   )
 }

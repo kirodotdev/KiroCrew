@@ -346,6 +346,12 @@ tracked channel is readable. It does not grant inbound access or enable member
 allowlisting: Slack remains owner-only, and member-join events do not prompt for
 new users.
 
+Only the owner changes the list, from either of two places, and both apply
+without a restart: **Settings → Messaging Channels → Slack → Tracked channels**
+in the dashboard (then Save), or `/kirocrew channels` in Slack, which also sets
+each channel's activation mode and agent. A refused post, reaction, pin or
+history read on an untracked channel names both routes.
+
 ### Channel Activation Modes
 
 Each tracked channel has an activation mode:
@@ -430,6 +436,11 @@ exactly as with the switch off, and the page says why under the switch.
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  Kiro Crew opens one when a request in Slack takes several steps, or when someone asks
+  for one ("put that in a code channel"); anything unclear is answered where it was
+  asked. Asking again in the same thread opens a channel that starts with that thread; a
+  new top-level message starts without it. Slack can't open a code channel from a Slack
+  Connect conversation.
   When the channel's agent starts helper agents for pieces of the work (**Let code
   channels start helper agents**), the channel also gets a pinned **work board**, kept
   up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),

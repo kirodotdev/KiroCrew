@@ -511,8 +511,10 @@ _pending: set[asyncio.Future[Any]] = set()
 
 async def drain() -> None:
     """Wait for reads in flight (tests, shutdown)."""
-    while _pending:
-        await asyncio.gather(*list(_pending), return_exceptions=True)
+    # Only the running reads: a finished one leaves the set on a later loop pass,
+    # and gathering only finished reads never yields (3.12+), so this would spin.
+    while pending := [read for read in _pending if not read.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def _idle(binding: Binding) -> bool:

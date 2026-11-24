@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         GatewayOrchestrator,
         LLMProvider,
         build_cron_ack_block,
+        ensure_cron_slot,
         inject_cron_result_to_dashboard,
         logger,
         prefetch_cron_history,
@@ -162,6 +163,16 @@ async def _deliver_cron_agent_result(
         # paths above only re-inject into an already-existing slot via has_slot(), so
         # they self-no-op when hide_in_chat is True.
         if job.persistent_session and not job.hide_in_chat:
+            # A tab closed during the run is bound and its line restored first, as
+            # at run start, so the injection below never publishes it before its
+            # stored settings are read back. Best-effort: on failure the injection
+            # binds it as before, and its saves still keep the stored values.
+            try:
+                await ensure_cron_slot(self.dashboard_state, job)
+            except Exception:
+                logger.warning(
+                    "Cron '%s': tab bind before delivery failed", job.name, exc_info=True
+                )
             inject_cron_result_to_dashboard(
                 self.dashboard_state,
                 job,

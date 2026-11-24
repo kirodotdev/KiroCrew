@@ -232,7 +232,9 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the default timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted. "
+        "An ISO 8601 time with its own zone ('2026-10-01T09:00:00Z', "
+        "'2026-10-01T09:00+02:00') names an instant and ignores --timezone.",
     )
     cron_add.add_argument(
         "--timezone",
@@ -785,6 +787,7 @@ Examples:
   kirocrew artifact show cr-queue
   kirocrew artifact show cr-queue --version 2
   kirocrew artifact show cr-queue --meta
+  kirocrew artifact show cr-queue --docx cr-queue.docx
   kirocrew artifact update cr-queue --content-file widget.html
   kirocrew artifact versions cr-queue
   kirocrew artifact delete cr-queue
@@ -807,10 +810,19 @@ Examples:
     art_show.add_argument(
         "--version", type=positive_int, help="Specific version, 1 or more (default: current)"
     )
-    art_show.add_argument(
+    show_form = art_show.add_mutually_exclusive_group()
+    show_form.add_argument(
         "--meta",
         action="store_true",
         help="Print metadata as JSON instead of the content body",
+    )
+    show_form.add_argument(
+        "--docx",
+        metavar="FILE",
+        help=(
+            "Write a markdown or text artifact to a NEW Word file, one paragraph per source "
+            "line with only headings styled; an existing file is refused"
+        ),
     )
 
     art_save = art_sub.add_parser("save", help="Save a new artifact")

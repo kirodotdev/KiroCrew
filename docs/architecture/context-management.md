@@ -63,7 +63,7 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed; on a KAS session whose default agent mounts the engine's sub-agent tool, the `kas_subagents` feature preview, its one `spawn_sub_agents` sentence names that tool instead, read once per session like the browse gate: `_engine_subagent_gates`, `kas_engine_subagents.contract_names_engine_subagents`); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false`, or the session head holds this exact text |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -339,7 +339,7 @@ Minimal-context calls, sessions without a Dashboard surface, and agents with
 `includeCrewContext: false` do not receive the hint. It shares the reply-format
 rules' envelope, so the engine is sent it when it is sent them (on a harness
 whose compaction Kiro Crew sees: once per engine conversation, and again when the
-text changes; on every other harness and in a member's chat: every message) and
+text changes; on every other harness: every message) and
 the current request remains at the recency edge.
 
 After the first turn `build_message` injects no transcript — the ACP session
@@ -367,7 +367,7 @@ it adds:
 | `[CURRENT USER] <name>` | the sender's display name (for example WeCom `allowed_users[].name`) | a channel turn that carries a display name |
 | `[Task checklist — automatic recovery]` | `todo_recovery_prompt`, prepended to the message by `dashboard/chat_turn/prompt_assembly.py`; task text inside the untrusted TODO fence | a cold start without provider history, or a recovery still pending; it settles on the provider's first event. Never on a harness that keeps its checklist itself (`SessionCapabilities.keeps_own_checklist`, claude), which has no `todo_list` tool |
 | `[Task checklist — person edited]` | `todo_sync_prompt`, prepended the same way | a warm turn with person edits not yet stated to the agent; marked stated on the provider's first event. Never on a harness that keeps its checklist itself, as above |
-| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions, in every built message. At the wire, on a harness whose compaction Kiro Crew sees (kiro, kas, codex, claude) and a turn with no member essentials: once per engine conversation, and again after anything that can drop it. Everywhere else: every message |
+| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions, in every built message. At the wire, on a harness whose compaction Kiro Crew sees (kiro, kas, codex, claude), a chat with a crew member included: once per engine conversation, and again after anything that can drop it. Everywhere else: every message |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
 
 The guidance paragraphs sit **before** the request header on purpose: trailing
@@ -379,9 +379,9 @@ Crew sees the harness's compaction.** Every built message carries the block, as
 it always did: the builder's output does not change, so everything that reads
 the built message (the user-span bookkeeping, the context extents below, a
 caller's own prefixes, logs) reads what it read before. The engine replays its
-own history, so a second copy only grows the context. On a turn with no member
-essentials, `build_message` binds the block as the provider's delivery envelope
-(`EssentialDelivery.bind`, the send-once writer the essentials already use, see
+own history, so a second copy only grows the context. `build_message` binds the
+block as the provider's delivery envelope in its own slot (`EssentialDelivery.bind`
+with `slot=RULES_SLOT`, the send-once writer a member's essentials use in theirs, see
 [providers](../system-specs/modules/providers.md)), and the provider takes the
 block out of the prompt at the wire while this conversation has acknowledged
 it. There is no second record of what was sent: the delivery is the one place
@@ -397,6 +397,13 @@ after the client is ready.
 | a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
 | the rules' text changed | another digest |
 | a compaction in a turn the agent started by itself | the bind is forced (below) |
+
+In a chat with a crew member the two slots are acknowledged apart and voided
+together: a failed turn, a clear, a compaction or another conversation drops
+both, and a forced bind
+drops only its own slot, so re-sending the member's essentials on a resume of
+the same conversation does not re-send the rules, as it would not in a chat with
+no member.
 
 The bind is forced for one event only, the one the delivery cannot see: a
 compaction in a turn the agent started by itself. Kiro Crew reads that turn with
@@ -414,10 +421,6 @@ taken out safely:
   (`LLMProvider.reports_compaction`). opencode, goose and pi compact on their
   own with no frame this client reads; copilot, strands and deepseek have no
   capture of one.
-- **A member's turn.** The delivery holds one envelope and the member's
-  essentials take it, so a chat with a crew member is unchanged from before
-  (a member turn whose essentials came out empty binds nothing either). A
-  second envelope slot is the follow-up that would cover it.
 - **Any path that does not send the built message through the provider's
   stream**, or that changes the block's text on the way.
 
@@ -450,6 +453,13 @@ The mechanism, when on:
   turn cannot use: `computer-use` while the session's Computer Use reading (the
   one its agent prompt's block is rendered from) is off. Matches are then
   truncated to `max_triggered`, highest score first.
+- The session's skill scope then narrows the matches in `build_message`: its
+  pinned scope (`skill_scope_pin.py`) when it has one, else the agent's `skill://`
+  mapping from `agent_skill_globs`. That lookup names the turn's session, so a
+  Bot's worker reads the mapping in its session's merged spec, as its session-start
+  skill directory does. Both lookups are strict, as `skill_search`'s are, so a
+  scope that cannot be resolved admits no triggered skill. A scope with no globs
+  narrows nothing, and a turn with no match looks up no scope.
 - The message matched is the person's own request, so a sub-agent completion the
   gateway injects into a channel or `cron:` parent passes `""` (`slack/gateway_runtime/subagent_injection.py`). The dashboard passes it as
   `skill_trigger_text`, without the context it prepends (sub-agent notices,

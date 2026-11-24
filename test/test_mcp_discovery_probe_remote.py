@@ -1097,6 +1097,30 @@ class TestProtocolVersionNegotiation:
         assert (result.status, result.error) == ("error", "boom")
         assert session.post.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_an_answered_error_is_marked_refused(self) -> None:
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+        boom = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32001, "message": "sign in"}}
+        session = self._session([_http_reply(200, boom)])
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=session):
+            result = await _probe_remote(server)
+
+        assert (result.status, result.probe_mode) == ("error", "refused")
+
+    @pytest.mark.asyncio
+    async def test_a_tools_list_error_is_marked_refused(self) -> None:
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+        ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}
+        denied = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32001, "message": "sign in"}}
+        session = self._session([_http_reply(200, ok), _http_reply(202), _http_reply(200, denied)])
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=session):
+            result = await _probe_remote(server)
+
+        assert (result.status, result.error) == ("error", "tools/list: sign in")
+        assert result.probe_mode == "refused"
+
 
 _REFUSED_ADDRESS = "URL host is a link-local or metadata address, or does not resolve"
 

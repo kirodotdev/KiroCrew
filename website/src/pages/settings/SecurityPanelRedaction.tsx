@@ -110,7 +110,9 @@ function CredentialRedactionCard() {
           {(view.locked_by_policy || refusedByPolicy) && (
             <p id={LOCKED_NOTE_ID} className="flex items-center gap-1.5 m-0 text-[12px] text-muted" data-testid="credential-redaction-locked">
               <Lock size={12} className="shrink-0" aria-hidden />
-              {i18nT('pages.settings.securityPanel.credential_redaction_locked')}
+              {view.locked_by_policy && view.locked_by_edition
+                ? i18nT('pages.settings.securityPanel.credential_redaction_locked_edition')
+                : i18nT('pages.settings.securityPanel.credential_redaction_locked')}
             </p>
           )}
           {/* A rejected PUT is an error the agent can usually fix (an owner-gate

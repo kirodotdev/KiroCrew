@@ -49,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
 )
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_CLAUDE_CODE
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -99,11 +100,15 @@ async def _end_started_provider(owner: Any, provider: Any) -> None:
     An unshared provider is hard-killed, as before. A provider on a SHARED chat
     runtime (``chat_runtime_sharing`` preview) is ended through its own shutdown:
     co-tenants may be mid-turn on that process, so it evicts this session and
-    kills only when it held the last lease. The shutdown runs as one task this
-    frame waits on through any cancellation, so the lease is always returned; a
-    shutdown that fails falls back to the hard kill.
+    kills only when it held the last lease. A Bot chat whose start already
+    recorded app servers is ended through its shutdown too, so the teardown's
+    verdict reaches the Bot's stop (``bot_chat_app_tools``): a hard kill reports
+    nothing back. The shutdown runs as one task this frame waits on through any
+    cancellation, so the lease is always returned; a shutdown that fails falls
+    back to the hard kill, which a Bot chat records as an unconfirmed close.
     """
-    if not is_shared_chat_runtime(provider):
+    bot_key = _bot_chat_mount_key(provider)
+    if not is_shared_chat_runtime(provider) and bot_key is None:
         owner._dispatch_hard_kill(provider)
         return
     ending = asyncio.ensure_future(provider.shutdown())
@@ -117,6 +122,25 @@ async def _end_started_provider(owner: Any, provider: Any) -> None:
         ending.result()
     except Exception:
         owner._dispatch_hard_kill(provider)
+        if bot_key is not None:
+            from kiro_crew.bot_chat_ending_fence import note_unobserved_kill
+
+            # The process owner the hard kill ends: its tree's death confirms the close.
+            inner = getattr(provider, "_client", None)
+            owner = getattr(inner, "_runtime", None) or inner
+            note_unobserved_kill(bot_key, f"refused-start:{id(provider)}", owner=owner)
+
+
+def _bot_chat_mount_key(provider: Any) -> str | None:
+    """The session key of *provider* when it is a Bot chat with app servers recorded."""
+    key = getattr(getattr(provider, "_client", None), "_session_key", None)
+    if not isinstance(key, str) or not key:
+        key = getattr(provider, "_session_key", None)
+    if not isinstance(key, str) or not key:
+        return None
+    from kiro_crew.bot_chat_app_tools import session_has_app_mount
+
+    return key if session_has_app_mount(key) else None
 
 
 def _pool_template_pick(cfg: Any, pool_agent: str, provider: Any, deps: Any) -> str:
@@ -1076,6 +1100,12 @@ async def _get_or_create_impl(
         # Crew-owned Connection on it kept the vendor's own element instead of
         # the gateway bridge. Cold-starting projects the bridge for this key.
         pool_decision = "bypass_crew_oauth_bridge"
+    elif key.startswith("subagent:") and await asyncio.to_thread(
+        _held_to_parent_denies, owner, key, agent
+    ):
+        # A pooled child's batch was built with no session key, so it holds none of
+        # the denies of the agents above this run. Cold-starting projects them.
+        pool_decision = "bypass_parent_denies"
     else:
         pool_decision = ""
 
@@ -1161,10 +1191,16 @@ async def _get_or_create_impl(
                             _namespace,
                             advertised,
                         )
-                    if self._deps.is_claude_backend(provider):
-                        switch_model = self._deps.to_provider_id(model, "claude_code")
+                    # The id the switch sends is spelled in the harness's model-id
+                    # namespace (``SessionCapabilities.model_id_namespace``). Only
+                    # ``claude_code`` has ids of its own in the registry; every
+                    # other namespace, an unknown backend's ``acp`` included, takes
+                    # kiro's ids.
+                    wire_namespace = self._deps.provider_model_namespace(provider)
+                    if wire_namespace == MODEL_NAMESPACE_CLAUDE_CODE:
+                        switch_model = self._deps.to_provider_id(model, wire_namespace)
                         comparable_pool = (
-                            self._deps.to_provider_id(pool_model, "claude_code")
+                            self._deps.to_provider_id(pool_model, wire_namespace)
                             if pool_model
                             else pool_model
                         )
@@ -1468,6 +1504,16 @@ async def _get_or_create_impl(
                             )
                             if limited:
                                 raise CapabilityStartupError("capability_tool_limits_unsupported")
+                    # A Bot's own chat on a harness that cannot carry its per-session
+                    # spec runs without the app tools its owner turned on: say so.
+                    from kiro_crew.members import is_member_session_key
+
+                    if is_member_session_key(key):
+                        from kiro_crew.bot_chat_app_tools import note_harness_without_app_tools
+
+                        await note_harness_without_app_tools(
+                            key, provider.mate_worker_kit_supported is True
+                        )
                     # The key may have been fenced while this call waited for the
                     # semaphore or the reads above: refuse before a process is
                     # spawned that the registration door would only refuse later.
@@ -1826,7 +1872,10 @@ async def _get_or_create_impl(
             await _end_started_provider(owner, provider)
         else:
             await release_session_lease(provider)
-            owner._dispatch_hard_kill(provider)
+            if _bot_chat_mount_key(provider) is not None:
+                await _end_started_provider(owner, provider)
+            else:
+                owner._dispatch_hard_kill(provider)
         raise
     finally:
         if starting_pid is not None:
@@ -1913,6 +1962,15 @@ def _crew_oauth_bridges_chat() -> bool:
     from kiro_crew.connections import crew_oauth
 
     return crew_oauth.bridges_chat_sessions()
+
+
+def _held_to_parent_denies(owner: Any, key: str, agent: str | None) -> bool:
+    """Whether a KAS sub-agent run on *key* carries a parent agent's denies. Blocking."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_subagent_runs import run_is_held
+
+    on_kas = owner._cfg.agent.acp_backend == ACP_BACKEND_KAS
+    return on_kas and run_is_held(key, agent or owner._pool_agent or "", owner._pool_cwd or "")
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

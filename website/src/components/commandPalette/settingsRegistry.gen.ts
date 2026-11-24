@@ -1050,6 +1050,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "teams.tenant_id"
   },
   {
+    "id": "channels.tracked-channels-slack",
+    "label": "Tracked channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.tracked_channels",
+    "labelSuffix": "Slack",
+    "description": "Channels the agent can post, react and read in. Applies when you save.",
+    "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.webex-bot-token-webex",
     "label": "Webex bot token (Webex)",
     "labelKey": "pages.settings.webexPanel.webex_bot_token",
@@ -1628,6 +1642,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.pin-forks-of-pinned-sessions",
+    "label": "Pin forks of pinned sessions",
+    "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
+    "description": "A fork of a pinned session is pinned too, so it stays beside the original.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",
@@ -1839,7 +1865,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.send-follow-ups-with-one-click",
     "label": "Send follow-ups with one click",
     "labelKey": "pages.settings.chatPanel.followup_start_sends",
-    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
+    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -1884,6 +1910,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "sessions"
     },
     "configKey": "session.max_per_creator"
+  },
+  {
+    "id": "chat.show-all-bots-in-my-sessions",
+    "label": "Show all bots in my Sessions",
+    "labelKey": "pages.membersPage.bot_sessions_all_switch",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.show_bot_sessions_in_list"
   },
   {
     "id": "chat.show-context-percentage",
@@ -2429,6 +2467,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.app-tools-in-bot-chats",
+    "label": "App tools in bot chats",
+    "labelKey": "pages.developer.featurePreviewsTab.bot_chat_app_tools",
+    "description": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting.",
+    "hint": "To stop one bot, untick it on the app's page.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.artifact-deploy",
     "label": "Artifact Deploy",
     "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
@@ -2471,7 +2522,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.connected-computers",
     "label": "Connected computers",
     "labelKey": "connectedComputers.preview.label",
-    "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+    "description": "Chats on this server can work in a folder on your own computer.",
     "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
     "tab": "developer",
     "type": "toggle",
@@ -2543,6 +2594,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "developer.jev-api-key",
     "label": "Jev API key",
     "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
+  },
+  {
+    "id": "developer.kas-sub-agents",
+    "label": "KAS sub-agents",
+    "labelKey": "pages.developer.featurePreviewsTab.kas_subagents",
+    "description": "On KAS, the default agent runs quick sub-agents inside the engine, and some agent permissions are read the way kiro-cli reads them, in chats and sub-agents started after you switch this.",
+    "hint": "On, in KAS chats: the default agent hands quick tasks to its built-in helper or to up to 8 of your own agents inside its turn, held to the chat agent's rules and stopped with the turn; a sub-agent that spawn_run starts on another agent runs without asking only what the chat that started it runs without asking; a denyByDefault command list holds even when the agent pre-approves the shell; and an agent that excludes the sub-agent tool, or uses one of three deniedCommands forms, is read as kiro-cli reads it, which the chat says when it starts. Off: Kiro Crew starts the default agent's sub-agents as sessions of their own that you can open and stop in the Subagents panel.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.let-agents-control-your-other-sessions",
@@ -2627,7 +2691,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Remote dispatch",
     "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
     "description": "Runs conductor mode tasks on connected machines.",
-    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2703,7 +2767,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.use-your-company-s-sign-in",
     "label": "Use your company's sign-in",
     "labelKey": "pages.developer.featurePreviewsTab.crew_client",
-    "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+    "description": "Uses your company's own sign-in for its portal.",
     "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
     "tab": "developer",
     "type": "toggle",

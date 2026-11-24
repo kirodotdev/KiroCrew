@@ -849,7 +849,10 @@ def test_the_live_adapter_reads_the_host_the_builders_always_read(live_host: Pat
     assert host.uid == os.getuid() and host.gid == os.getgid()
     assert host.tier_dirs == tuple(sandbox._sandbox_policy().strict_dirs())
     assert host.voice_runtime_roots == (str(crew / "run" / "voice-runtime"),)
-    assert host.kiro_agents_targets == (str(live_host / ".kiro" / "agents"),)
+    assert host.kiro_agents_targets == (
+        str(live_host / ".kiro" / "agents"),
+        str(live_host / ".kiro" / "settings" / "mcp.json"),
+    )
     assert host.carveout_probes == (_probe(str(probe)),)
     assert host.ssh_accept_new is False
     assert host.cwd == os.sep  # every request path that needs a cwd is absolute

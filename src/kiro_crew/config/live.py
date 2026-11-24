@@ -138,17 +138,31 @@ def watch_document(cfg: Any) -> dict[str, Any]:
     unchanged, yet it can move a Crew bot onto KAS
     (``crewmate_harness.worker_spec_forces_kas``), so it must reach that key's
     subscribers like any other change.
+
+    An ``agent.acp_backend`` that loads as Kiro CLI also says whether it is the
+    stored pick or the floor (``config.loader_builders.KIRO_CLI_PICK_STORED_ATTR``):
+    both read ``"kiro"``, and only the pick gets the gateway's start check
+    (``process_entry._watch_saved_kiro_pick``).
     """
-    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+    from kiro_crew.acp_backends import STORED_BACKEND_KIRO
+    from kiro_crew.config.loader_builders import (
+        KIRO_CLI_PICK_STORED_ATTR,
+        MEMBER_BACKEND_INHERITED_ATTR,
+    )
 
     doc = cfg.to_dict()
     agent = doc.get("agent")
-    inherited = getattr(getattr(cfg, "agent", None), MEMBER_BACKEND_INHERITED_ATTR, None)
+    loaded = getattr(cfg, "agent", None)
+    inherited = getattr(loaded, MEMBER_BACKEND_INHERITED_ATTR, None)
     if isinstance(agent, dict) and inherited is not None:
         agent["member_acp_backend"] = [
             agent.get("member_acp_backend"),
             "inherited" if inherited else "stored",
         ]
+    picked = getattr(loaded, KIRO_CLI_PICK_STORED_ATTR, None)
+    kiro_cli = isinstance(agent, dict) and agent.get("acp_backend") == STORED_BACKEND_KIRO
+    if kiro_cli and picked is not None:
+        agent["acp_backend"] = [STORED_BACKEND_KIRO, "pick" if picked else "floor"]
     return doc
 
 

@@ -324,7 +324,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     ``{ok, names, stub, ...}`` for the batch form.
 
     ``cwd_use`` (``uses_cwd`` / ``not_used``, single form only) records the
-    operator's answer to "does this server work on the project's files?" in
+    operator's answer to "share this server across chats?" in
     ``mcp_gateway.cwd_use``; sent without ``stub`` it records only that. A
     routed backend runs in one fixed folder outside the project, so ``stub: true``
     is refused (``cwd_unconfirmed``) for a server that is not Kiro Crew's own and
@@ -410,7 +410,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         if not _is_valid_mcp_name(name):
             return web.json_response({"error": "invalid server name"}, status=400)
         names = [name]
-    # The operator's answer to "does this server work on the project's files?"
+    # The operator's answer to "share this server across chats?"
     # (``mcp_gateway.cwd_use``). Sent alone (no ``stub``) it records the answer;
     # sent with ``stub`` it is recorded in the same write.
     cwd_answer = body.get("cwd_use")
@@ -875,8 +875,8 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             return web.json_response(
                 {
                     "error": (
-                        "answer whether this server works on the project's files "
-                        "before sharing it. Nothing was changed."
+                        "confirm this server can be shared across chats first. "
+                        "Nothing was changed."
                     ),
                     "code": "cwd_unconfirmed",
                 },

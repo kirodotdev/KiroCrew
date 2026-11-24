@@ -60,7 +60,9 @@ response exceeded size limit (67108864 bytes); request dropped
 For responses that fit within the read limit but exceed the spill threshold:
 
 1. Parse the response as JSON-RPC.
-2. Check if it's a `tools/call` result (has `result.content` list with `text` items).
+2. Check if it's a `tools/call` result whose `result.content` list has a `text` item over 16 KiB (the one
+   thing step 4 cuts). A result whose bulk is an image beside short text is forwarded whole and leaves
+   no sidecar.
 3. Write the **full original response** to `<data home>/mcp_spill/<server>-<request_id>-<timestamp>.json` (`KIROCREW_HOME`, default `~/.kiro/crew`).
 4. Truncate each text item to the first 16 KiB.
 5. Append a marker: `[KiroCrew: response truncated -- full <N> bytes at <path>. Read with bash: head/grep/jq.]`

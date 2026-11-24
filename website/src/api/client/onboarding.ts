@@ -331,8 +331,15 @@ export interface KasLoginDeviceSession {
   expires_at: string
 }
 
+/** One Kiro profile a company sign-in offers on `choose_profile`. */
+export interface KasLoginProfile {
+  arn: string
+  name: string
+  region: string
+}
+
 export interface KasLoginPollResult {
-  status: 'pending' | 'authorized' | 'expired' | 'error'
+  status: 'pending' | 'authorized' | 'expired' | 'error' | 'choose_profile'
   /**
    * Machine-readable failure code — error responses carry one too. On an
    * `authorized` answer it can be `previous_identity_not_removed`: the new
@@ -344,6 +351,10 @@ export interface KasLoginPollResult {
   /** On `authorized` after a begin with `replaces`: every other stored slot the
    *  switch removed so the new account is the one the store resolves to. */
   replaced?: string[]
+  /** On `choose_profile`: the profiles of every Kiro region this company sign-in
+   *  can use, and the one to preselect. The sign-in waits until a poll names one. */
+  profiles?: KasLoginProfile[]
+  selected?: string
 }
 
 /**
@@ -470,8 +481,12 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable, jKasLo
       post('/api/kas-login/device', { provider, ...(extra ?? {}) }).then(
         j,
       ) as Promise<KasLoginDeviceSession>,
-    kasLoginPoll: (login_id: string) =>
-      post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+    // `profile_arn` picks one of a `choose_profile` answer's profiles; a profile the
+    // sign-in did not offer answers 400 `unknown_profile`.
+    kasLoginPoll: (login_id: string, profile_arn?: string) =>
+      post('/api/kas-login/poll', profile_arn ? { login_id, profile_arn } : { login_id }).then(
+        j,
+      ) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
     // treats that as "start the device flow instead", not as a failure.

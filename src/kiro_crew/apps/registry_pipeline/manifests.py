@@ -281,7 +281,7 @@ async def _fetch_app_manifest(
         # HTTP fetch and needs no agent.
         if owner_designated:
             clone_env = minimal_env()
-            sandbox_mode = _context_clone_sandbox_mode(git_url)
+            sandbox_mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
             _sel_credential_grant("fetch_app_manifest", git_url)
         else:
             clone_env = anonymous_git_env()

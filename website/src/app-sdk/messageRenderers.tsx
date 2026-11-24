@@ -663,6 +663,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      engineSubagents={(m.meta as Record<string, unknown> | undefined)?.engine_subagents}
       onRegenerate={opts.onRegenerate}
       onSpeak={opts.onSpeak}
       revealActions={opts.revealActions}

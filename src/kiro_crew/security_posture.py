@@ -856,6 +856,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The display-redaction owner served by the ``dashboard/chat_utils.py`` facade:
         # the same redactor calls, moved verbatim, under the facade's classification.
         "dashboard/chat_utils_display.py",
+        # Returns a KAS engine sub-agent's text cut for display; sends, logs and writes
+        # nothing. chat_turn/native_cards.py and chat_turn/permission_prompt.py show it,
+        # and chat_turn/turn_stats.py puts the record built from it on the reply row.
+        "dashboard/engine_subagent_cards.py",
         # Slot-detail row JSON is an internal render projection, returned by
         # the existing dashboard handler sink. Its empty-string redaction key
         # shares that sink's policy context; it opens no separate output path.
@@ -1264,6 +1268,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings_download.py",
+        # Stores the own-entry diagnostic that GET /api/mcp and doctor show, with a
+        # user's URL already cut to its scheme and host; it sends nothing itself.
+        "mcp_dropped_servers.py",
         # The shared mark-collected sender: redacts only the gateway error text its
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",

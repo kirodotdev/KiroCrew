@@ -111,7 +111,7 @@ class _StubService(KasLoginService):
             "expires_at": "2026-01-01T00:00:00+00:00",
         }
 
-    async def poll_device(self, login_id):
+    async def poll_device(self, login_id, profile_arn=None):
         self.calls.append(("poll", login_id))
         if login_id == "gone":
             raise UnknownLoginError(login_id)
@@ -285,7 +285,7 @@ async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
     terminal answer -- that path restarts the provider on the device flow."""
 
     class _SignedOut(_StubService):
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             return {"status": "error", "code": "signed_out_during_login"}
 
     resp = await api_kas_login_poll(_FakeRequest(_SignedOut(), {"login_id": "lid-1"}))
@@ -297,7 +297,7 @@ async def test_poll_answers_a_sign_out_during_the_login_as_the_begin_409():
 @pytest.mark.asyncio
 async def test_poll_passes_a_profile_failure_code_through_to_the_card(code):
     class _NoProfile(_StubService):
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             return {"status": "error", "code": code}
 
     resp = await api_kas_login_poll(_FakeRequest(_NoProfile(), {"login_id": "lid-1"}))
@@ -409,7 +409,7 @@ async def test_begin_and_poll_return_502_on_transport_error():
         async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
             raise aiohttp.ClientError("connection refused")
 
-        async def poll_device(self, login_id):
+        async def poll_device(self, login_id, profile_arn=None):
             raise aiohttp.ClientError("connection refused")
 
     resp = await api_kas_login_begin_device(_FakeRequest(_OfflineService(), {"provider": "google"}))

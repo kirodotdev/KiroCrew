@@ -13,7 +13,8 @@ hostname, or open port to manage.
 > frame envelope), so it needs `lark-oapi`. It is **not** part of core, so install
 > it directly into the environment that runs the gateway:
 > `pip install "lark-oapi>=1.4,<2"`. Without it the gateway logs a line and skips
-> the channel — nothing else is affected.
+> the channel — nothing else is affected. On a `cli.sh` managed-venv install,
+> an in-app update keeps `lark-oapi`.
 >
 > **Desktop app: one click.** The app does not ship `lark-oapi`. Open
 > **Settings → Messaging Channels → Feishu** and press **Install**: the app

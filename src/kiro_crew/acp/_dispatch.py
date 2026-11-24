@@ -196,7 +196,8 @@ def attach_kas_custom_agents(
     so a crewmate whose id the engine keeps for itself still registers. The
     caller's list is not mutated: everything else reads it by the crewmate's id.
 
-    Keys in ``kas_permissions.CREW_ONLY_ENTRY_KEYS`` are dropped here: they are
+    Keys in ``kas_permissions.CREW_ONLY_ENTRY_KEYS`` are dropped here, and a
+    sub-agent run's ``kas_parent_limits.CREW_PARENT_LIMITS_KEY`` with them: they are
     Crew's record of what it answers itself at the permission request, not a
     field the engine defines. The one that carries the mcp.json reads is applied
     first, against the ``mcpServers`` array already in *params*
@@ -209,12 +210,15 @@ def attach_kas_custom_agents(
     """
     if not agents:
         return
+    from kiro_crew.acp.kas_parent_limits import CREW_PARENT_LIMITS_KEY
     from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
+
+    crew_only = CREW_ONLY_ENTRY_KEYS | {CREW_PARENT_LIMITS_KEY}
 
     def wire_entry(entry: Any) -> Any:
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
             return entry
-        out = {k: v for k, v in finish_settings_mcp(entry).items() if k not in CREW_ONLY_ENTRY_KEYS}
+        out = {k: v for k, v in finish_settings_mcp(entry).items() if k not in crew_only}
         out["id"] = kas_wire_agent_id(entry["id"])
         if "tools" in out:
             out["tools"] = kas_memory.mount_memory_tool(memory_mode, out["tools"])

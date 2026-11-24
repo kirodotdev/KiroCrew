@@ -213,7 +213,15 @@ class _ChatTurn:
     _mirror_stream_tried: "bool"
     _mirror_thinking_ts: "str"
     _mirror_echo_posted: "bool"
+    _mirror_owner_told: "bool"
     _msg: "str"
+    # Whether this turn's native cards are KAS engine sub-agents (``dashboard.engine_subagent_cards``);
+    # ``None`` until the turn's first roster reads it.
+    _engine_children: "bool | None"
+    # The task each engine dispatch named, by its call id, for its approval card.
+    _engine_dispatch_tasks: "dict[str, str]"
+    # The opaque key this turn's engine cards carry (``engine_subagent_cards.engine_turn_key``).
+    _engine_turn_key: "str"
     _native_card_output: "dict[str, list[str]]"
     _native_card_output_len: "dict[str, int]"
     _native_child_tc: "set[str]"

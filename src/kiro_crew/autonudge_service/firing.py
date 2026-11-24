@@ -35,6 +35,7 @@ from kiro_crew.autonudge_service.gate import (
     _record_delivered_reading,
     _record_delivered_revision,
 )
+from kiro_crew.autonudge_service.memory_hold import holds_for_critical_memory
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
@@ -136,6 +137,10 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
 
 async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """Run one admitted post-sleep callback through durable bookkeeping."""
+    # Ahead of everything else: a held tick re-arms itself and must leave the push
+    # marks and the owed boot replay below for the tick that does run.
+    if await holds_for_critical_memory(self, loop):
+        return
     # Whether THIS tick is one a worker's push armed. Moved off the armed-timer mark
     # the moment the tick starts, so a push landing from here on is news this tick may
     # not see and is free to arm the next one; and reset on every tick, so a tick that
@@ -1225,8 +1230,10 @@ async def fire_now(
         )
         return loop, "", 200
     # A person asked for this turn, so it must not meet the person-wait hold:
-    # forgetting what the last turn saw makes the next tick fire.
+    # forgetting what the last turn saw makes the next tick fire. Nor the memory
+    # hold: the press is the person's own call (``memory_hold``).
     loop.ledger_seen_fp = ""
+    self._manual_ticks.add(loop_id)
     logger.info(
         "AutoNudge: loop %s brought forward by hand — cycle %d armed to run now",
         loop.id,

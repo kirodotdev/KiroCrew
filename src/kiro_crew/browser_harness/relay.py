@@ -20,7 +20,12 @@ Why a tab ledger: the relay records a target the moment the daemon's
 ``Target.createTarget`` returns, whether or not the page then loads, so session end
 can close exactly the tabs the agent opened and never the person's. Each such target
 also gets a relay-owned session with focus emulation on: without it a tab behind
-another tab paints no frames and Harness's input calls on it hang.
+another tab paints no frames and Harness's input calls on it hang. The
+``set_appearance`` and ``resize`` ops send their overrides on that same session
+(:meth:`CdpRelay.emulate`), so a reset reaches the session that set them. The
+sign-in guard (``browser_harness.sign_in_guard``) intercepts on it too, through
+:attr:`CdpRelay.on_tab_adopted` and :attr:`CdpRelay.on_tab_event`; while it is on,
+the daemon hears of a new tab only once that session holds the interception.
 
 Why a create context: under ``browser.isolation: per_session`` each chat browses in
 its own browser context (``browser_harness.session_contexts``), and the relay puts
@@ -80,6 +85,15 @@ RELAY_ID_BASE = 1_000_000_000
 
 #: How long one relay-owned CDP request may wait for its reply.
 SEND_TIMEOUT_SECS = 15.0
+
+#: The commands :meth:`CdpRelay.emulate` sends: the ``set_appearance`` and ``resize`` ops.
+EMULATE_METHODS = frozenset(
+    {
+        "Emulation.setEmulatedMedia",
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+    }
+)
 
 #: The websocket path prefix the relay serves to the daemon, followed by the per-start
 #: secret. Chrome's own path shape, so a client that pattern-matches on
@@ -256,6 +270,14 @@ class CdpRelay:
         self.on_target_created: Callable[[str], Awaitable[None]] | None = None
         #: Called once when the upstream connection closes for any reason.
         self.on_upstream_closed: Callable[[], Awaitable[None]] | None = None
+        #: Called with ``(target_id, session_id)`` once the relay holds its own
+        #: session on an agent tab, and with ``(target_id, session_id, msg)`` for each
+        #: event on it: the sign-in guard (``browser_harness.sign_in_guard``).
+        self.on_tab_adopted: Callable[[str, str], Awaitable[None]] | None = None
+        self.on_tab_event: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None
+        #: Called with each ``Fetch.requestPaused`` on the browser target itself (no
+        #: session): the guard's browser-wide block of sign-in hosts. Never forwarded.
+        self.on_browser_paused: EventCallback | None = None
         self._secret = secrets.token_urlsafe(_SECRET_BYTES)
         self._up: Upstream | None = None
         self._up_lock: asyncio.Lock | None = None
@@ -276,6 +298,9 @@ class CdpRelay:
         #: them are swallowed, never broadcast to a daemon client.
         self._closing: set[str] = set()
         self._adopted: dict[str, str] = {}
+        #: The one adopting task per ledgered target, so two callers never attach two
+        #: sessions (an override set on one could not be cleared from the other).
+        self._adopting: dict[str, asyncio.Task[None]] = {}
         self._agent_targets: list[str] = []
         #: Ledgered target -> the browser context it opened in ("" is the default).
         self._target_contexts: dict[str, str] = {}
@@ -487,6 +512,7 @@ class CdpRelay:
         if target_id in self._agent_targets:
             self._agent_targets.remove(target_id)
         self._adopted.pop(target_id, None)
+        self._adopting.pop(target_id, None)
         self._target_contexts.pop(target_id, None)
 
     # ── per-chat browser contexts ──
@@ -544,11 +570,53 @@ class CdpRelay:
         if target_id in self._adopted or self._closed:
             return
         try:
-            sid = await self.attach(target_id, _ignore_event)
+            sid = await self.attach(target_id, self._tab_events(target_id))
             self._adopted[target_id] = sid
             await self.send("Emulation.setFocusEmulationEnabled", {"enabled": True}, sid)
+            if self.on_tab_adopted is not None:
+                await self.on_tab_adopted(target_id, sid)
         except (CdpError, RelayClosed, asyncio.TimeoutError) as exc:
+            if target_id not in self._adopted:
+                # Not attached: a later :meth:`emulate` tries again.
+                self._adopting.pop(target_id, None)
             logger.debug("relay: focus emulation on %s not enabled: %s", target_id, exc)
+
+    def _tab_events(self, target_id: str) -> EventCallback:
+        async def deliver(msg: dict[str, Any]) -> None:
+            sid, hook = self._adopted.get(target_id), self.on_tab_event
+            if sid is not None and hook is not None:
+                await hook(target_id, sid, msg)
+
+        return deliver
+
+    def adopted_sessions(self) -> dict[str, str]:
+        """Agent tab -> the relay's own session on it."""
+        return dict(self._adopted)
+
+    def _adopt_once(self, target_id: str) -> asyncio.Task[None]:
+        task = self._adopting.get(target_id)
+        if task is None:
+            task = asyncio.create_task(self._adopt(target_id))
+            self._adopting[target_id] = task
+        return task
+
+    async def emulate(self, target_id: str, method: str, params: dict[str, Any]) -> None:
+        """Send one :data:`EMULATE_METHODS` command on the relay's own session of an agent tab.
+
+        Chrome keeps an Emulation override per session and a reset from another
+        session leaves it, so every set and reset of a tab goes on this one session,
+        which lives as long as the tab. A tab outside the ledger (one the person
+        opened) is refused.
+        """
+        if method not in EMULATE_METHODS:
+            raise ValueError(f"relay: {method} is not an emulation command")
+        if target_id not in self._agent_targets:
+            raise CdpError(method, {"message": "not a tab the agent opened"})
+        await asyncio.shield(self._adopt_once(target_id))
+        sid = self._adopted.get(target_id)
+        if sid is None:
+            raise CdpError(method, {"message": "the relay holds no session on that tab"})
+        await self.send(method, params, sid)
 
     # ── the daemon side ──
 
@@ -670,6 +738,9 @@ class CdpRelay:
                 if msg.get("method") == "Target.detachedFromTarget" and isinstance(closed, str):
                     self._closing.discard(closed)
                 return
+        if not sid and msg.get("method") == "Fetch.requestPaused" and self.on_browser_paused:
+            asyncio.create_task(self.on_browser_paused(msg))
+            return
         await self._observe_event(msg)
         if msg.get("method") in _DISCOVERY_EVENTS and not sid and not self._client_discovers:
             return
@@ -687,6 +758,26 @@ class CdpRelay:
             tid = (msg.get("result") or {}).get("targetId")
             if isinstance(tid, str) and tid:
                 await self._record_agent_target(tid, context)
+                if self.on_tab_adopted is not None:
+                    # Off the reader task: the adoption's own replies come through it.
+                    asyncio.create_task(self._reply_once_adopted(tid, route, msg))
+                    return
+        await self._deliver_reply(route, msg)
+
+    async def _reply_once_adopted(
+        self, target_id: str, route: tuple[web.WebSocketResponse, Any] | None, msg: dict[str, Any]
+    ) -> None:
+        """The sign-in guard is on: the tab's interception lands before the daemon
+        hears of the tab, so its first navigate is covered."""
+        task = self._adopting.get(target_id)
+        if task is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(task)
+        await self._deliver_reply(route, msg)
+
+    async def _deliver_reply(
+        self, route: tuple[web.WebSocketResponse, Any] | None, msg: dict[str, Any]
+    ) -> None:
         if route is None:
             return
         ws, original = route
@@ -702,7 +793,7 @@ class CdpRelay:
             self._agent_targets.append(target_id)
         if context:
             self._target_contexts[target_id] = context
-        asyncio.create_task(self._adopt(target_id))
+        self._adopt_once(target_id)
         if self.on_target_created is not None:
             try:
                 await self.on_target_created(target_id)
@@ -741,10 +832,6 @@ class CdpRelay:
             if not fut.done():
                 fut.set_exception(exc)
         self._pending.clear()
-
-
-async def _ignore_event(_msg: dict[str, Any]) -> None:
-    return None
 
 
 async def _connect_ws(upstream_ws_url: str) -> _WsUpstream:

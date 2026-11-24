@@ -50,6 +50,7 @@ from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -191,8 +192,17 @@ def _scrub(text: str) -> tuple[str, int]:
     text, warnings = redact_credentials(text)
     count += len(warnings)
     for pattern, repl in _EXTRA_REDACTIONS:
-        text, n = pattern.subn(repl, text)
-        count += n
+        # A match spanning a credential tag re-redacts a secret the passes above
+        # already counted (the header rule over `Authorization: Bearer <tag>`), so
+        # it is replaced but not counted again.
+        # shortcut: such a line is counted once even if it held a second secret
+        # only this rule caught; split the value per secret if exact counts matter.
+        count += sum(
+            1
+            for m in pattern.finditer(text)
+            if not any(tag in m.group(0) for tag in CREDENTIAL_REDACTION_TAGS)
+        )
+        text = pattern.sub(repl, text)
     return text, count
 
 
@@ -825,7 +835,7 @@ _FRAME_BODY_MARKER = re.compile(r'"jsonrpc"\s*:|"params"\s*:\s*[{\[]|"result"\s*
 #: rather than being spelled twice.
 _TRUNCATION_NOTE_PREFIX = "...[truncated"
 
-#: The shape that STARTS a log record, on a text line's left edge or as a 3.x JSON
+#: The shape that STARTS a log record, at column 0 of a text line or as a 3.x JSON
 #: event's ``timestamp`` value: an ISO calendar date, then ``T`` or a space before
 #: the time. Any other line is a continuation of the record above it.
 #:
@@ -844,12 +854,12 @@ def _record_timestamp(line: str) -> str | None:
 
     One predicate for both :func:`_begin_at_event_boundary` and
     :func:`_filter_since`, which each need the same event/continuation split. Two
-    copies would drift, and here they would drift on a security boundary.
+    copies would drift, and here they would drift on a security boundary. The line is
+    judged as written: a record starts at column 0, and an indented line continues one.
     """
-    head = line.lstrip()
-    if _RECORD_START.match(head):
-        return head
-    return diagnostics_kiro_home_logs.json_event_timestamp(head)
+    if _RECORD_START.match(line):
+        return line
+    return diagnostics_kiro_home_logs.json_event_timestamp(line)
 
 
 def _begin_at_event_boundary(text: str) -> str:
@@ -1141,7 +1151,7 @@ def _kas_engine_version() -> str:
         if not kas_bundle.kas_bundle_route():
             return "not selected"
         engine = kas_bundle.installed_engine_label()
-        pin = kas_bundle.KAS_PIN_VERSION
+        pin = kas_bundle.host_pin_version()
         if engine is None:
             return f"not installed (release pins KAS {pin}; kirocrew kas install)"
         return f"{engine} (release pins KAS {pin})"

@@ -200,7 +200,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _publish_empty_ceiling _materialize_sealable_parent_dirs _note_established
         _mint_gateway_id_before_seal _materialize_sealable_ceilings _warn_aliased_strict_leaves
         require_unaliased_cloud_config _delete_file_command require_unaliased_launch_state
-        require_unaliased_model_file
+        require_unaliased_model_file _resolved_kiro_mcp_registry_targets
+        _EMPTY_KIRO_MCP_REGISTRY _materialize_kiro_mcp_registry
         """.split()),
     "kiro_crew.sandbox_aliases": tuple("""
         _CREW_ALIAS_TOLERATED_LEAVES _CREW_ALIAS_CHAIN_DEGRADE_LEAVES _CREW_HARDLINK_REFUSED_LEAVES

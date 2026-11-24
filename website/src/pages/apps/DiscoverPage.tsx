@@ -32,6 +32,7 @@ import SourcesPopover from '../../components/appstore/SourcesPopover'
 import { MarketStoreSections, isMarketSourceKey, marketRowTags, useMarketSourceRows, useRailStoreRows } from '../../components/appstore/MarketListingRows'
 import { registriesReadError, useMarketRegistriesQuery } from '../../components/appstore/marketAccount'
 import { categoryCounts, categoryFor, categoryLabel, type Category } from '../../components/appstore/categories'
+import { editorialCopy } from '../../components/appstore/editorialCopy'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { useConnected } from '../../hooks/useConnected'
@@ -692,7 +693,7 @@ function DiscoverPageBody() {
                          has no title by design, so its label is the app's
                          own name -- same line the old dedicated fallback
                          cards printed. */
-                      label={section.title || section.apps[0]?.displayName || section.apps[0]?.name}
+                      label={editorialCopy(section).title || section.apps[0]?.displayName || section.apps[0]?.name}
                       message={i18nT('pages.appsPage.this_section_could_not_be_displayed')}
                       className="mb-6"
                     />

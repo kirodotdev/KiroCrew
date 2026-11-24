@@ -1,10 +1,11 @@
-"""An app credential on the Crew API: recognised, and refused by tier.
+"""An app credential on the Crew API: recognised, served on its routes, refused elsewhere.
 
 An app credential is the access token local authorization issues for a grant the owner
 approved. Token auth recognises a valid one on a Crew API path (``/v1/`` except the
-frozen ``/v1/chat/completions``) and answers ``403 owner_only`` there: no route serves
-an app yet. One that does not verify stays a 401. Outside the Crew API the
-``Authorization`` header is not read, so the credential opens nothing.
+frozen ``/v1/chat/completions``). It reaches the handler of a route that serves apps
+(``crew_api_auth.APP_SERVED_ROUTES``) and is answered ``403`` on every other. One that
+does not verify stays a 401. Outside the Crew API the ``Authorization`` header is not
+read, so the credential opens nothing.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers 
     clear_nonces,
 )
 
-from kiro_crew.dashboard import crew_api_auth
+from kiro_crew.dashboard import crew_api_auth, crew_api_scopes
 from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
@@ -55,9 +56,15 @@ OWNER_ROUTES = [
     ("GET", "/v1/crew/owner/approvals/apr_0123456789abcdef"),
     ("POST", "/v1/crew/owner/approvals/apr_0123456789abcdef/decision"),
 ]
-#: Every Crew API path an app credential is tried on: the Owner routes, the Public
-#: route that serves the owner alone, and a path no route answers.
-CREW_API_ROUTES = [*OWNER_ROUTES, ("GET", "/v1/models"), ("POST", "/v1/responses")]
+#: A Crew API path the gateway registers no route for.
+UNSERVED = "/v1/conversations"
+#: Every Crew API path an app credential is refused on by tier: the Owner routes, the
+#: Public route that serves the owner alone, and a path no route answers.
+CREW_API_ROUTES = [
+    *OWNER_ROUTES,
+    ("POST", "/v1/responses"),
+    ("POST", UNSERVED),
+]
 
 
 class Clock:
@@ -204,9 +211,85 @@ async def test_a_valid_app_credential_is_403_owner_only_on_every_crew_api_path(
     assert audit.log_api_access.call_count == 1
     assert row["caller"] == f"app:{tokens['grant_id']}"
     # The path no route answers has no row in the scope table, and the row says so.
-    why = "owner_only:no-row" if path == "/v1/responses" else "owner_only"
+    why = "owner_only:no-row" if path == UNSERVED else "owner_only"
     assert (row["outcome"], row["error"]) == ("denied", why)
     assert row["resources"] == f"{path} client_id={CLIENT}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["responses:write", "artifacts:read"])
+async def test_a_valid_app_credential_reaches_the_models_handler(
+    store, clock, audit, scope
+) -> None:
+    tokens = _grant(store, clock, scope=scope)
+    resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
+    assert (resp.status, ran) == (200, True)
+    assert audit.log_api_access.call_count == 1
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"]) == (
+        f"app:{tokens['grant_id']}",
+        "allowed",
+        "",
+    )
+    assert row["resources"] == f"/v1/models client_id={CLIENT}"
+    # The handler's caller is the grant, with its verified credential, and no session.
+    published = _published(request)
+    assert published["user"] == f"app:{tokens['grant_id']}"
+    assert published["is_dashboard_user"] is False
+    assert published[crew_api_scopes.CREDENTIAL_KEY].grant_id == tokens["grant_id"]
+    assert "auth_token" not in published
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_app_credential_gets_no_session(store, clock) -> None:
+    """The steps the allow path leaves out judge a session, and it makes none.
+
+    The peer pin's place is taken by the direct-request rule
+    (``test_an_app_credential_from_another_address_is_401``), and the installed-app
+    allowlist's by the served list (``test_only_a_listed_route_serves_an_app_credential``,
+    ``test_an_app_credential_opens_nothing_outside_the_crew_api``).
+    """
+    tokens = _grant(store, clock)
+    cookie = {COOKIE: _session_token("owner")}
+    resp, request, ran = await _send(
+        path="/v1/models", headers=_bearer(tokens["access_token"]), cookies=cookie
+    )
+    assert (resp.status, ran) == (200, True)
+    # No link is redeemed: no cookie is minted and no session token is published.
+    assert not resp.cookies
+    published = _published(request)
+    assert "auth_token" not in published
+    # The owner's cookie beside it is not read: the caller stays the grant.
+    assert published["user"] == f"app:{tokens['grant_id']}"
+    assert published["is_dashboard_user"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_grant_is_401_on_the_next_call(store, clock) -> None:
+    tokens = _grant(store, clock)
+    headers = _bearer(tokens["access_token"])
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    assert (resp.status, ran) == (200, True)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    resp, _, ran = await _send(path="/v1/models", headers=headers)
+    _assert_401(resp, ran)
+
+
+@pytest.mark.asyncio
+async def test_only_a_listed_route_serves_an_app_credential(
+    store, clock, audit, monkeypatch
+) -> None:
+    token = _grant(store, clock)["access_token"]
+    # Off the list, the owner-only list refuses it before its row is read.
+    monkeypatch.setattr(crew_api_auth, "APP_SERVED_ROUTES", frozenset())
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(token))
+    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
+    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only"
+    # Off both lists the row alone would admit it, and it is still refused.
+    monkeypatch.setattr(crew_api_auth, "OWNER_ONLY_PUBLIC_ROUTES", {})
+    resp, _, ran = await _send(path="/v1/models", headers=_bearer(token))
+    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
+    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only:no-app-route"
 
 
 @pytest.mark.asyncio
@@ -316,7 +399,7 @@ async def test_an_app_credential_the_relay_delivered_is_401(store, clock, audit)
     relayed = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
     request.get = lambda key, default=None: relayed if key == RELAY_CALLER_KEY else default
     # ``None``: not an app credential here, so the caller's own 401 answers it.
-    assert await crew_api_auth.refuse_app_credential(request, tokens["access_token"]) is None
+    assert await crew_api_auth.judge_app_credential(request, tokens["access_token"]) is None
     assert "app" not in _published(request)
     assert audit.log_api_access.call_args.kwargs["error"] == "not-direct-local"
 
@@ -365,8 +448,8 @@ async def test_an_app_credential_opens_nothing_outside_the_crew_api(
     store, clock, monkeypatch, path
 ) -> None:
     tokens = _grant(store, clock)
-    asked = Mock(wraps=crew_api_auth.refuse_app_credential)
-    monkeypatch.setattr(crew_api_auth, "refuse_app_credential", asked)
+    asked = Mock(wraps=crew_api_auth.judge_app_credential)
+    monkeypatch.setattr(crew_api_auth, "judge_app_credential", asked)
     with_credential, request, ran = await _send(
         path=path, method="POST", headers=_bearer(tokens["access_token"])
     )
@@ -456,7 +539,7 @@ async def test_a_hostile_client_id_reaches_the_audit_row_cleaned_and_no_identity
 
     monkeypatch.setattr(store, "verify", _verify)
     resp, request, ran = await _send(path="/v1/models", headers=_bearer(tokens["access_token"]))
-    assert (resp.status, ran) == (403, False)
+    assert (resp.status, ran) == (200, True)
     row = audit.log_api_access.call_args.kwargs
     assert "\n" not in row["resources"] and "\r" not in row["resources"]
     assert "\x00" not in row["resources"]

@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         context_template,
         continue_timed_out_calls,
         credential_give_up_text,
+        drop_echo,
         enter_turn,
         exit_turn,
         expire_slack_options,
@@ -978,7 +979,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
-        async for event in continue_timed_out_calls(client.stream, full_message):
+        # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        async for event in continue_timed_out_calls(
+            lambda prompt: drop_echo(client.stream(prompt)), full_message
+        ):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 

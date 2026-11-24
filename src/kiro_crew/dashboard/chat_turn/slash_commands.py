@@ -30,6 +30,7 @@ from kiro_crew.dashboard.kas_local_commands import (
     answer_kas_inspect_command,
 )
 from kiro_crew.dashboard.kas_local_commands import answers_locally as kas_answers_locally
+from kiro_crew.dashboard.mcp_typed_command import answer_typed_mcp, typed_mcp_origin
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.prompt_assembly import _expand_prompt_mention_off_loop
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
+    from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACT_FAIL_REASON_MAX_CHARS,
         COMPACT_FRESH_SESSION_NOTICE,
@@ -584,6 +586,37 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         _refuse_blocked_slash(turn)
         return _Flow.END
 
+    # ── /mcp add|remove the person typed: an mcp.server card on every harness ──
+    # Only the person's own words: a wake, a synthetic prompt or an app's message
+    # keeps the existing path. A channel turn gets the MCP Servers page reply.
+    _typed_mcp = (
+        typed_mcp_origin(turn, message, synthetic=bool(_is_synthetic))
+        if first_word == "/mcp"
+        else None
+    )
+    if _typed_mcp is not None:
+        turn_exit.local_command = first_word
+
+        async def _reply_to_thread(text: str) -> None:
+            # The turn ends here, before the reply mirror, so the linked Slack
+            # thread is told directly, as the other early-ending notices are.
+            # shortcut: other linked channels see only the dashboard row; route
+            # them through the fenced cross-surface leg if one is ever needed.
+            await _deliver_linked_slack_message(
+                state, slot, getattr(state, "sessions", None), session_key, text
+            )
+
+        await answer_typed_mcp(
+            state,
+            slot,
+            session_key,
+            message,
+            channel=_typed_mcp == "channel",
+            reply_with=_append_command_reply,
+            reply_to_channel=_reply_to_thread,
+        )
+        return _Flow.END
+
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
     # v0 rides AutoNudgeService unchanged: the nudge instructs the agent to
     # self-check its Definition of Done each cycle and call autonudge_stop when
@@ -922,6 +955,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_thinking_ts = ""
     # Whether this turn posted its prompt echo; a recovery requeue reads it.
     turn._mirror_echo_posted = False
+    # Whether the owner was told Slack did not reconnect (``slack_reply_client``).
+    turn._mirror_owner_told = False
     _mirror_chan: str | None = ""
     turn._mirror_chan = _mirror_chan
     _mirror_active_task = ""

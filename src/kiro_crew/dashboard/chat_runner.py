@@ -246,6 +246,7 @@ from kiro_crew.dashboard.chat_turn.segment_flush import (
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
     _finish_harness_notices,
+    _keep_cleared_turns,
     _on_agent_switched,
     _on_clear_status,
     _on_compaction_status,
@@ -287,7 +288,7 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _operator_confirms_call,
     _slot_is_trusted,
 )
-from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
+from kiro_crew.dashboard.chat_turn.tool_results import _on_child_tool_finished, _on_tool_result
 from kiro_crew.dashboard.chat_turn.tool_rows import (
     _MAX_TCID_SOURCES,
     _on_tool_call,
@@ -446,6 +447,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     first_advertised_fallback,
     probe_fallback_restore,
     provider_last_turn_usage,
+    reactive_model_candidate,
     record_interaction_event,
     run_bg_oneliner,
     slot_switch_session_lock,
@@ -1330,7 +1332,9 @@ async def _run_chat(
             elif event.kind == EVENT_COMPACTION_STATUS:
                 await _on_compaction_status(turn, event)
             elif event.kind == EVENT_CLEAR_STATUS:
-                await _on_clear_status(turn, event)
+                _clear_is_ours = await _on_clear_status(turn, event)
+                if _clear_is_ours:
+                    await _keep_cleared_turns(turn)
                 _replay_pending = turn._replay_pending
             elif event.kind == EVENT_AGENT_SWITCHED:
                 _flow = await _on_agent_switched(turn, event)
@@ -1358,6 +1362,7 @@ async def _run_chat(
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
+                await _on_child_tool_finished(turn, event)
             elif event.kind == EVENT_COMPLETE:
                 await _settle_echo_hold(turn)
                 _flow = await _on_complete(turn, event)
@@ -1502,13 +1507,11 @@ async def _run_chat(
             and isinstance((_rejected_id := getattr(exc, "rejected_model", None)), str)
             and _rejected_id.strip()
             and len(_rejected_id) <= _MAX_MODEL_ID_LEN
-            and model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
             and (
-                _access_fb_candidate := first_advertised_fallback(
-                    getattr(exc, "advertised", None), _rejected_id
-                )
+                model_is_unusable(_rejected_id, getattr(exc, "advertised", None))
+                or getattr(exc, "unentitled", False) is True
             )
-            is not None
+            and (_access_fb_candidate := reactive_model_candidate(exc, _rejected_id)) is not None
             and len(_access_fb_candidate) <= _MAX_MODEL_ID_LEN
         ):
             await _on_acp_model_access(turn, exc, _rejected_id, _access_fb_candidate)

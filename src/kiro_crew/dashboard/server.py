@@ -1513,7 +1513,7 @@ async def start_dashboard(
     await cautious_boot.pause_before("MCP server probe")
     # Held in state._background_tasks: the loop keeps only a weak reference to a
     # task, so a dropped one can be garbage-collected before the probe finishes.
-    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
+    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
 
@@ -1605,6 +1605,14 @@ async def start_dashboard(
     from kiro_crew.dashboard import approve_for_me
 
     approve_for_me.install(state)
+    # The account's hidden models can change on another Kiro client, or land after
+    # a picker's first read; an open picker then reads again.
+    from kiro_crew.agent_sdk import kas_model_catalog
+    from kiro_crew.dashboard.handlers.models_cold_probe import MODELS_CHANGED_EVENT
+
+    kas_model_catalog.on_hidden_models_changed(
+        functools.partial(state.broadcast_ws, MODELS_CHANGED_EVENT, {})
+    )
 
     await _notify_restart_dropped_grant(state)
 

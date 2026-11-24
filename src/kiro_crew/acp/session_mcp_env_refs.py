@@ -10,10 +10,13 @@ codex, opencode, goose and DeepSeek pass both forms through verbatim, and Claude
 expands ``${VAR}`` but not ``${env:VAR}``.
 
 :func:`expand_entry_env` resolves the references in Crew before the element is built,
-against the same filtered view, with the same miss rule, as the broker's sidecar and
-the KAS launcher (``mcp_gateway.rewriter_env._expand_env_map``): a secret- or
-credential-named variable is never dereferenced, and a miss stays literal. The value
-then rides the in-process ACP pipe to a harness that does not write the array to disk.
+against the same filtered view, with the same miss rule, as the broker's sidecar
+(``mcp_gateway.rewriter_env._expand_env_map``): a secret- or credential-named variable
+is never dereferenced, and a miss stays literal. The KAS launcher uses the same view
+and rule but leaves out a key whose value is exactly a reference to that key and
+misses (``acp.kas_env_launch._resolved_env``), because the engine there hands the
+server its own environment. The value then rides the in-process ACP pipe to a harness
+that does not write the array to disk.
 
 goose does write it: each server's ``envs`` go into its own ``sessions.db``. So its
 mirror rebuilds those elements from the spec with :func:`keep_env_references`, and a

@@ -1294,7 +1294,26 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         _cache_target = str(policy_cache_dir())
         if not carveout_shadowed_by_foreign_mask(_cache_target):
             _visible = _visible + (_cache_target,)
-    sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    spawn_argv = cmd
+    if _cache_visible:
+        # A sandbox.min_level floor can raise this spawn to a tier whose launcher scrubs
+        # the cache-only markers from env; as trusted ``env`` assignments on the argv they
+        # are applied after that scrub, and ``env`` execs the backend in place.
+        from kiro_crew.mcp_discovery_probe import _with_post_scrub_markers
+
+        _markers = {
+            k: _platform_extra[k]
+            for k in (POLICY_CACHE_ONLY_ENV, POLICY_MAX_AGE_ENV)
+            if k in _platform_extra
+        }
+        spawn_argv = _with_post_scrub_markers(cmd, _markers)
+    sandboxed_cmd, cleanup_path = wrap_argv(
+        spawn_argv, mode="standard", extra_visible_dirs=_visible
+    )
+    _unconfined = list(sandboxed_cmd) == list(spawn_argv)
+    if _unconfined:
+        # No wrap was applied, so nothing scrubs the env: spawn the backend's own argv.
+        sandboxed_cmd = cmd
     # On Linux a non-null cleanup path is the namespace launcher script this process
     # generated, whose main() forks once: the Popen root waits for the server child.
     # IS_LINUX excludes the macOS seatbelt profile. A no-op wrap returns None, so an
@@ -1302,7 +1321,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # execs without adding a fork. A future Linux tier writing a cleanup artifact
     # without forking must revisit this predicate.
     _forking_sandbox_launcher = platform_compat.IS_LINUX and cleanup_path is not None
-    if _cache_visible and list(sandboxed_cmd) == list(cmd):
+    if _cache_visible and _unconfined:
         # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
         # or agent.sandbox='off' with the sandbox_allow_no_isolation opt-in. Said once,
         # because the combination is worth naming — a centrally governed host running app code

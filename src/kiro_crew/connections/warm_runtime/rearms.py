@@ -2,8 +2,9 @@
 
 An explicit page warm arms ONE automatic replacement (``warm._WarmMintRuntime.arm_supervision``);
 on a death ``start_rearm`` reserves the dead generation's single-flight task, which runs
-:func:`_rearm_dead_warm_mint`: the ordinary tri-state candidate scan, then ``warm_mint_all`` with
-``arm_supervision`` false, so the replacement cannot earn itself another attempt. An invalidated stored grant re-arms its one provider through
+:func:`_rearm_dead_warm_mint`: the ordinary tri-state candidate scan and the page warm's KAS
+sign-in filter, then ``warm_mint_all`` with ``arm_supervision`` false, so the replacement cannot
+earn itself another attempt. An invalidated stored grant re-arms its one provider through
 :func:`rearm_invalidated_provider`, fire-and-forget and single-flight per slug. The registry
 :data:`_invalidation_rearms` holds the only strong reference to each such task, and
 :func:`_settle_invalidation_rearms` cancels and awaits them at teardown, before the processes are
@@ -20,6 +21,7 @@ import asyncio
 import logging
 from types import ModuleType
 
+from kiro_crew.connections import mint_kas
 from kiro_crew.connections.mint import _mints, _mints_lock
 from kiro_crew.connections.warm_runtime.shared_rows import _LIVE_STATES
 
@@ -41,13 +43,17 @@ async def _rearm_dead_warm_mint(generation: int) -> list[str]:
     """Re-warm the still-unconnected eligible roster after one process death.
 
     Candidate selection reuses the ordinary tri-state grant scan: only a confirmed absence
-    initiates consent, while a present or unreadable grant is skipped. ``arm_supervision`` is
-    false so this replacement cannot recursively earn another automatic replacement.
+    initiates consent, while a present or unreadable grant is skipped. The page warm's filter
+    then drops a provider whose Connect signs in on the KAS engine, which never adopts a warm
+    URL. ``arm_supervision`` is false so this replacement cannot recursively earn another
+    automatic replacement.
     """
     try:
         candidates, audit_recorded = await asyncio.to_thread(
             _warm_facade()._audited_mintable_providers
         )
+        if candidates:
+            candidates = await asyncio.to_thread(mint_kas.kiro_cli_sign_in_providers, candidates)
     except Exception:  # noqa: BLE001 -- the cold path remains available to every Connect
         logger.debug("warm mint re-arm candidate scan failed", exc_info=True)
         return []
@@ -134,7 +140,8 @@ async def _rearm_invalidated_provider(slug: str) -> list[str]:
     something different from the registry, a grant that is still PRESENT because the revoke was
     refused or failed, and a grant cache that could not be read at all -- an absence nobody
     confirmed must not initiate consent. A provider the scan does not return is therefore
-    skipped rather than warmed into a mint that would itself fail cold.
+    skipped rather than warmed into a mint that would itself fail cold. So is one the page
+    warm's filter drops: its Connect signs in on the KAS engine and never adopts a warm URL.
 
     A live row is left alone. Re-arming a provider already ``minting`` or ``waiting`` would
     displace a URL the card is showing and the user may be part-way through redeeming, which
@@ -148,6 +155,8 @@ async def _rearm_invalidated_provider(slug: str) -> list[str]:
         candidates, audit_recorded = await asyncio.to_thread(
             _warm_facade()._audited_mintable_providers
         )
+        if candidates:
+            candidates = await asyncio.to_thread(mint_kas.kiro_cli_sign_in_providers, candidates)
     except Exception:  # noqa: BLE001 -- the cold path remains available to every Connect
         logger.debug("warm mint invalidation re-arm candidate scan failed", exc_info=True)
         return []

@@ -122,7 +122,7 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         # recovery, which is why it has its own pair rather than reusing the
         # posttoken labels above.
         "continued_by_you",
-        "resuming_the_interrupted_turn",
+        "sent_without_a_new_instruction",
         # The Stop-hook continuation card. Its own pair because the turn
         # completed: reusing an interruption label would report an event that
         # did not happen.

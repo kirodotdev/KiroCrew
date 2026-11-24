@@ -40,14 +40,20 @@ def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
     ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
     while it is critical. A runner short of memory would then stall every test that
     starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
-    pacing passes its own reader to ``BootPacer``.
+    pacing passes its own reader to ``BootPacer``. Every tick also asks
+    ``memory_hold.read_admission`` and is held while memory is critical, so that
+    reader admits here too; a test about the hold sets its own.
     """
-    from kiro_crew.autonudge_service import boot_pacer
+    from kiro_crew.autonudge_service import boot_pacer, memory_hold
 
     async def _ample() -> str:
         return "ample"
 
+    async def _admitted() -> tuple[bool, str]:
+        return True, ""
+
     _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+    _floor_monkeypatch.setattr(memory_hold, "read_admission", _admitted)
 
 
 @per_test_guard
@@ -1382,6 +1388,30 @@ def _reset_persisted_truncation_reports():
         reported = getattr(module, "_PERSISTED_TRUNCATION_REPORTED", None)
         if reported is not None:
             reported.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_kas_parent_notes():
+    """Start each test with no noted sub-agent run parents.
+
+    Every manager run notes the session that started it, keyed by run key. Tests
+    reuse run keys, so a parent one test noted would join the next test's run and
+    hold it to an unrelated agent's denies. The directory noted for a parent goes
+    with it: it would anchor the next test's limits in a folder of this one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_parent_limits")
+        if module is not None:
+            module._NOTED.clear()
+            module._NOTED_DIRS.clear()
+            module._INCOMPLETE.clear()
 
     clear()
     try:

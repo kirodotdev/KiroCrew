@@ -735,6 +735,89 @@ async def test_create_cleanup_puts_a_still_running_orphan_back_only_onto_a_free_
 
 
 @pytest.mark.asyncio
+async def test_create_cleanup_puts_a_still_running_orphan_back_without_a_deleted_tag(
+    tmp_path, monkeypatch
+):
+    """A tag deleted while the real teardown holds the orphan out of ``_slots`` stays off it.
+
+    A tag delete strips the slots in ``_slots`` and in the close-in-flight registry.
+    Without the registry, the put-back after the teardown restores the deleted id.
+    """
+    from unittest import mock
+
+    from kiro_crew.dashboard.snapshot_commit import slots_with_a_close_in_flight
+
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    task = types.SimpleNamespace(done=lambda: False)
+    orphan = types.SimpleNamespace(
+        key=orphan_slot,
+        _app=routes.APP_NAME,
+        running=False,
+        task=task,
+        _queue=[],
+        _pending_steers=[],
+        _pending_synthesis=False,
+        tags=["doomed", "kept"],
+    )
+
+    class _State:
+        _slots = {orphan_slot: orphan}
+
+        def get_slot(self, key):
+            return self._slots.get(key)
+
+    state = _State()
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot else None
+
+        async def deactivate_and_wait(self, loop_id, *, stopped_reason=None):
+            loop.active = False
+            return True
+
+        async def remove(self, loop_id, *, stop_reason=""):
+            raise AssertionError("the loop is kept while its worker runs")
+
+    reached: list[str] = []
+
+    async def _delete_tag_during_save(*_args, **_kwargs):
+        assert orphan_slot not in state._slots
+        for name, s in [*state._slots.items(), *slots_with_a_close_in_flight(state)]:
+            if "doomed" in s.tags:
+                s.tags = [t for t in s.tags if t != "doomed"]
+                reached.append(name)
+        return True
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    routes._save_index({})
+
+    with mock.patch(
+        "kiro_crew.dashboard.chat_persistence.save_slot_off_loop",
+        mock.AsyncMock(side_effect=_delete_tag_during_save),
+    ):
+        with pytest.raises(RuntimeError, match="still running"):
+            await routes._remove_orphaned_executions(state)
+
+    assert reached == [orphan_slot], "the tag delete could not see the popped orphan"
+    assert state._slots[orphan_slot] is orphan
+    assert orphan.tags == ["kept"]
+
+
+@pytest.mark.asyncio
 async def test_create_cleanup_loads_durable_loops_when_autonudge_is_disabled(tmp_path, monkeypatch):
     """Disabling timers cannot hide an old loop from Create recovery."""
     _redirect_state(monkeypatch, tmp_path)

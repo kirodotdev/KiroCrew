@@ -513,9 +513,12 @@ def _read_at(dir_fd: int, name: str) -> bytes:
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
-#: hold channel tokens, so a restored copy must not inherit a looser directory ACL
-#: on Windows, or the umask default on POSIX, from the copy that installed it.
-_OWNER_ONLY_SETTINGS_FILES = frozenset({"config.json", "config.local.json", "ui-prefs.json"})
+#: hold channel tokens and an MCP server's ``env`` and ``headers`` in ``mcp.json`` hold
+#: credentials, so a restored copy must not inherit a looser directory ACL on Windows,
+#: or the umask default on POSIX, from the copy that installed it.
+_OWNER_ONLY_SETTINGS_FILES = frozenset(
+    {"config.json", "config.local.json", "ui-prefs.json", "mcp.json"}
+)
 
 
 def _lock_down_restored(path: Path, component: str) -> None:
