@@ -403,8 +403,8 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
     # report once its kill has decided (see the ``finally``).
     reap_owns_report = False
     try:
-        # Inside the ``try``: a parent the run key cannot take (``TooManyParents``)
-        # ends this run as failed before its session starts, as any start error does.
+        # Inside the ``try``, so a failed read ends this run as any start error does.
+        # A parent past the key's cap is not recorded; a KAS session refuses it.
         above = _run_on(self._manager, parent_key) if parent_key.startswith("subagent:") else None
         bound = getattr(above, "_session_cwd", "")
         note_parent(session_key, parent_key, bound if isinstance(bound, str) else "")
