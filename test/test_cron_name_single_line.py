@@ -1,4 +1,4 @@
-"""Tests for the one-line rule a cron job's ``name`` must satisfy (#37746).
+"""Tests for the one-line rule a cron job's ``name`` must satisfy.
 
 A job's name is interpolated with ``%s`` into dozens of gateway log lines
 (``cron_exec``, ``cron_fire``, ``cron_failure``, ``cron_delivery`` and the
@@ -58,8 +58,8 @@ TAB_NAME = "nightly" + _TAB + "brief"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_cron_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
+def _isolate_cron_store(_floor_monkeypatch, tmp_path):
+    _floor_monkeypatch.setattr("kiro_crew.cron._DEFAULT_DIR", tmp_path)
     yield
 
 
