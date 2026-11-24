@@ -65,6 +65,9 @@ FIELDS: tuple[SpecField, ...] = (
         "systemPrompt", "string", "Another spelling of prompt; prompt wins when both are set."
     ),
     SpecField("slashCommand", "any", "Slash command settings, read by kiro-cli."),
+    SpecField(
+        "claudeCodeAgent", "string", "Kiro Crew: the Claude Code agent a claude session runs as."
+    ),
 )
 
 _BY_NAME = {field.name: field for field in FIELDS}

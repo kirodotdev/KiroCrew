@@ -33,6 +33,7 @@ def test_a_healthy_spec_reports_nothing() -> None:
         "includeCrewContext": False,
         "systemPrompt": "Review the diff.",
         "slashCommand": {"name": "review"},
+        "claudeCodeAgent": "local-MyPackage-my-agent",
     }
     assert schema.check_spec(spec) == []
 
