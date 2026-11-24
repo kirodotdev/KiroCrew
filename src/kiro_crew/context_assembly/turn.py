@@ -62,8 +62,10 @@ def post_compaction_parts(
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
-    The agent contract, the memory activity index, the skills index (same gate and
-    glob restriction as session start), the learned-lessons block (same store,
+    The agent contract, the critical rules (same variant and opt-out as session
+    start, left out where the session head holds that exact text), the memory
+    activity index, the skills index (same gate and glob restriction as session
+    start), the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
     own text for this turn), the CURRENT reply-style preferences, the Claude Code
     backend's steering resources (same gate as session start) and the CURRENT
@@ -77,6 +79,7 @@ def post_compaction_parts(
     resources and folder steering stay out of a prompt other people read.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
 
     parts: list[str] = []
     _essentials = essentials
@@ -101,6 +104,13 @@ def post_compaction_parts(
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The reply contract went with it, and only its short reminder rides the next
+    # message. A minimal session start sent none; a session head keeps its copy.
+    if not minimal_context and ctx._agent_includes_crew_context(agent):
+        _rules = ctx._critical_rules_for(session_key, runtime_source)
+        _held = context_provider.native_context_documents if context_provider is not None else {}
+        if not _session_head.holds(_held, _session_head.RULES_KEY, _rules):
+            parts.append(_rules)
     # The tool-name rule went with the session start too, and the contract just
     # restored names the tools bare again. Minimal turns carried it as well.
     _tool_names_part = _tool_names.tool_names_block(provider_type)

@@ -579,14 +579,13 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "follow_up_reinjection": (
-        "d0c4e7f2afd84daf02c663317a4fa56ee92a641320644e78430ba85c531ac964",
+        "541b4210b96c90bb178d98b821f172be32641a7483fd40cdce29f677015dabc0",
         [
             ("agent_instructions", 1675),
-            ("memory", 183),
+            ("unclassified", 235),
             ("memory_tools", 84),
             ("recovery", 167),
             ("skill_index", 439),
-            ("unclassified", 36),
             ("lessons", 259),
             ("response_preferences", 402),
             ("reply_format_rules", 1282),
