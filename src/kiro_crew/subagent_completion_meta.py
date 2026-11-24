@@ -43,6 +43,7 @@ def single_completion_meta(
     note: str = "",
     requested_model: str = "",
     resolved_model: str = "",
+    label: str = "",
 ) -> dict:
     """Structured facts for a per-agent completion card.
 
@@ -60,8 +61,13 @@ def single_completion_meta(
     — making a model-pinned review's real model auditable. Both
     default to ``""`` so existing callers are unchanged and the key is simply
     absent-equivalent when a provider cannot report a model.
+
+    ``label`` is the run's display name, the one ``spawn_run`` was given or the
+    gateway named the run with, which the card shows in place of the task text.
+    It is written only when the run has one, so a card without a name carries the
+    same facts as before.
     """
-    return {
+    meta = {
         "kind": "single",
         "agentId": agent_id,
         "agentName": agent_name,
@@ -71,6 +77,9 @@ def single_completion_meta(
         "requestedModel": requested_model,
         "resolvedModel": resolved_model,
     }
+    if label:
+        meta["label"] = label
+    return meta
 
 
 def wave_final_meta(
