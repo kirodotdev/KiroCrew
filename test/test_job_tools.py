@@ -51,14 +51,17 @@ JOB_TOOL_BUDGETS: dict[str, int] = {
     # +50 for the ``git_commit`` acceptance shape in ``work_ledger_record``; then +100
     # for the reach sentence on the session_send, session_read_message and
     # session_close ``target`` fields (108 measured: 7,733 -> 7,841, the next 50 up),
-    # so a fenced caller learns the rule before a refusal teaches it.
-    "kirocrew-pipeline-conductor": 7_850,
-    "kirocrew-security-conductor": 7_850,
+    # so a fenced caller learns the rule before a refusal teaches it; then +150 for a
+    # worker's trigger list, ``skills`` on ``session_create`` and ``work_dispatch``
+    # (137 measured: 7,841 -> 7,978, the next 50 up).
+    "kirocrew-pipeline-conductor": 8_000,
+    "kirocrew-security-conductor": 8_000,
     # 7,808 with it: the next 50 up; then +50 for the ``git_commit`` shape; then +100
-    # for the same reach sentence (7,888 -> 7,996, the next 50 up).
-    "kirocrew-conductor": 8_000,
-    "kirocrew-ledger-conductor": 8_000,
-    "kirocrew-team-lead": 8_000,
+    # for the same reach sentence (7,888 -> 7,996, the next 50 up); then +150 for
+    # ``skills`` (7,996 -> 8,133, the next 50 up).
+    "kirocrew-conductor": 8_150,
+    "kirocrew-ledger-conductor": 8_150,
+    "kirocrew-team-lead": 8_150,
 }
 
 

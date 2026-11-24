@@ -1,7 +1,7 @@
-"""The inherited model-pin check for a session ``session_create`` opens.
+"""The model-pin checks for a session ``session_create`` opens.
 
 Split from :mod:`.session_create` (the file-line cap); that module re-exports
-the name, so it stays the import path callers use.
+the names, so it stays the import path callers use.
 """
 
 from __future__ import annotations
@@ -10,6 +10,32 @@ from kiro_crew import model_scope
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import DEFAULT_MODEL
+from kiro_crew.security import redact, refuses
+from kiro_crew.validation import _MODEL_NAME_RE, MAX_SHORT_STRING
+
+
+def _model_pin_refusal(model_name: str, backend: str) -> str | None:
+    """Why ``model_name`` may not be pinned on a new session, or ``None`` to allow it.
+
+    The same guard the dashboard's model picker runs (``_model_rejected_reason``),
+    against *backend*, the harness the child runs on, so an id the picker would
+    refuse is refused here too. Length and charset are bounded
+    HERE, not left to the MCP schema: ``SESSION_CREATE_SCHEMA`` runs only in
+    ``mcp_dashboard``, and the HTTP route forwards the body's model string as-is,
+    so without this bound an internal-secret caller could persist, broadcast and
+    audit-log an arbitrarily long or arbitrarily shaped value. A credential-shaped
+    id is refused without being echoed: the reason is stored and broadcast.
+    """
+    if len(model_name) > MAX_SHORT_STRING or not _MODEL_NAME_RE.fullmatch(model_name):
+        return "model id is too long or contains characters outside the model-id charset"
+    # Never persist or broadcast a value the security scrubber classifies.
+    if refuses(model_name, redact):
+        return "model id looks like a credential and was refused"
+    # circular import: chat_handlers imports session_control lazily, and this
+    # module is imported by the dashboard package before chat_handlers loads.
+    from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+    return _model_rejected_reason(model_name, backend or "")
 
 
 def _inherited_pin_foreign_to_child(

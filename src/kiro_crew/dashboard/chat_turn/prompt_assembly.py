@@ -1150,6 +1150,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 steering_dirs=_folder_steering_dirs,
                 context_provider=client,
                 skill_trigger_text=_trigger_text,
+                trigger_skills=slot.trigger_skills,
                 # The same provenance the directive applier reads, so the
                 # prompt offers no tool that applier would refuse.
                 directive_user_origin=bool(turn._directive_user_origin),

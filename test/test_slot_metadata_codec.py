@@ -63,6 +63,7 @@ _POPULATED: dict = {
     "memory_store": "silo",
     "agent_kind": "member",
     "backend": "claude",
+    "trigger_skills": ("skill-a", "skill-b"),
     "crew_mode_agent": "kirocrew-conductor",
     "app_agent_owner": "pr-bulk-ops/agent-a",
     "project": "/srv/p",

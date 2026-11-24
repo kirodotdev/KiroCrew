@@ -862,11 +862,24 @@ template's `file://` steering glob, so the worker maps exactly what the default 
 `WHOLE_CATALOG_TEMPLATES` therefore puts the worker on the `kirocrew` rows of the
 table: with no mapping it sees the whole catalog its dispatcher sees, and with the
 default's mapping it sees that set, in its skill directory and in `skill_search`
-alike. Trigger matching is still gated on `not is_custom` in `build_message`, which
+alike. Trigger matching is gated on `not is_custom` in `build_message`, which
 reads `is_kirocrew_default_agent`, so per-message matching stays with the default
-agents and the worker is not one of them; a seed that wants a
-procedure followed names it. Memory, lessons, critical rules and hooks are
-unaffected: those are injected for every agent.
+agents and the worker is not one of them, unless its conductor chose a list.
+
+`session_create(skills=[...])` (and `work_dispatch`, which passes it on) gives a
+worker that list: per-message matching then runs for `kirocrew-worker` or a Bot's
+own worker over the listed keys only, before the `skills.max_triggered` cap, so at
+the shipped cap of 0 nothing triggers. `worker_trigger_skills.listed_for` takes a
+list only for those two templates, so a conductor never matches. The list narrows
+nothing else: `skill_search`, `$key`, file reads and the skill directory keep the
+worker's whole scope. The create route checks each key against the scope the
+child will have (`child_skill_globs`) and refuses an unknown one by name
+(`unknown_skills`). The list rides the transcript's metadata line
+(`trigger_skills`), so a restart keeps it. That line is a file the worker can
+write, so every turn first cuts the list to the session's own scope
+(`worker_trigger_skills.in_session_scope`, the reader `skill_search` uses). With no
+list, a seed that wants a procedure followed names it. Memory, lessons, critical
+rules and hooks are unaffected: those are injected for every agent.
 
 The generated agents whose own prompt names a skill carry a `skill://` entry for
 exactly the skills their prompt tells them to read: each conductor, the team lead,

@@ -126,6 +126,20 @@ def test_a_skill_the_turn_cannot_use_is_neither_offered_nor_in_the_baseline():
     assert baseline == ["matcher"]
 
 
+def test_a_worker_list_limits_both_the_menu_and_baseline():
+    loader = _loader(
+        ("alpha", {"triggers": "zebra", "description": "first"}),
+        ("beta", {"triggers": "zebra", "description": "second"}),
+        ("quiet", {"triggers": "unrelated", "description": "third"}),
+    )
+    baseline: list[str] = []
+
+    rows = sel.candidates_from_loader(loader, "zebra", None, baseline_out=baseline, only=("beta",))
+
+    assert rows == [{"key": "beta", "description": "second"}]
+    assert baseline == ["beta"]
+
+
 def test_a_repo_scope_the_loader_accepts_is_offered():
     loader = _loader(
         ("scoped", {"triggers": "zebra", "repo_scope": "src/kiro_crew"}),
