@@ -53,7 +53,7 @@ KiroCrew currently treats agent selection as a thin pass-through to kiro-cli's `
 1. THE Config_Loader SHALL define a `WorkspaceConfig` dataclass with a `dir` field (str) specifying the workspace directory path, with appropriate field metadata.
 2. THE `KiroCrewConfig.workspaces` field type SHALL change from `dict[str, str]` to `dict[str, WorkspaceConfig]`.
 3. THE Workspace_Config SHALL NOT contain any agent or memory store references — the binding flows from KiroCrew_Agent to workspace, not from workspace to agent.
-4. WHEN a workspace `dir` value starts with `/` or `~`, THE Config_Loader SHALL treat the path as absolute. WHEN the value is a relative path, THE Config_Loader SHALL resolve it relative to the KiroCrew data home (`~/.kiro/crew/`, or `KIROCREW_HOME` when set).
+4. WHEN a workspace `dir` value starts with `/` or `~`, THE Config_Loader SHALL treat the path as absolute. WHEN the value is a relative path, THE Config_Loader SHALL resolve it relative to the Kiro Crew data home (`~/.kiro/crew/`, or `KIROCREW_HOME` when set).
 5. THE `KiroCrewConfig` SHALL retain a `default_workspace` field (str) naming the fallback workspace when no KiroCrew_Agent binding applies.
 
 ### Requirement 4: Workspace Migration from Flat Format

@@ -448,9 +448,9 @@ existing `write_investigation`.
 selected        local only, pre-claim — never public
 claimed
 investigating
-implementing            ← editing phase
+implementing            ← the only editing phase
 awaiting-ci
-addressing-review       ← editing phase
+addressing-review
 awaiting-merge
 resolved                terminal
 ```
