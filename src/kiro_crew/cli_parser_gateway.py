@@ -437,6 +437,17 @@ def register_logout_parser(sub: _Commands) -> None:
         default=None,
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
     )
+    # ``None`` is "no --link was given", which is a different ask from a given
+    # value: omitting it revokes every session, so an empty default would make
+    # ``--link ""`` indistinguishable from omitting it and sign everyone out.
+    logout_parser.add_argument(
+        "--link",
+        default=None,
+        help=(
+            "Revoke only this dashboard link (the URL or its token): the link, every "
+            "session it opened and their refresh chains. Other sessions stay signed in."
+        ),
+    )
 
 
 def register_open_parser(sub: _Commands) -> None:
