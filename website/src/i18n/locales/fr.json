@@ -22319,6 +22319,7 @@
         "custom_model_not_used": "Inutilisé tant que {{model}} est sélectionné. Choisis Personnalisé pour utiliser ce fichier.",
         "status_custom_model_unusable": "problème de fichier de modèle",
         "download_model": "Télécharger maintenant",
+        "download_model_waits": "{{name}} est en cours de téléchargement. « Télécharger maintenant » sera disponible une fois le téléchargement terminé.",
         "download_failed": "Le téléchargement n’a pas pu démarrer.",
         "download_failed_reason": "Le téléchargement a échoué : {{error}}",
         "unavailable_disabled": "La reconnaissance vocale est désactivée. Activez-la ci-dessus.",

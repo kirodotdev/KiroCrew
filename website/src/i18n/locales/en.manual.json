@@ -10541,6 +10541,7 @@
         "custom_model_not_used": "Not used while {{model}} is selected. Pick Custom to use this file.",
         "status_custom_model_unusable": "model file problem",
         "download_model": "Download now",
+        "download_model_waits": "{{name}} is downloading. Download now becomes available when it finishes.",
         "download_failed": "The download could not be started.",
         "download_failed_reason": "The download failed: {{error}}",
         "unavailable_disabled": "Speech-to-text is turned off. Switch it on above.",

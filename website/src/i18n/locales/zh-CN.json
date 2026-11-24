@@ -21209,6 +21209,7 @@
         "custom_model_not_used": "选择 {{model}} 时不会使用。选择“自定义”即可使用这个文件。",
         "status_custom_model_unusable": "模型文件有问题",
         "download_model": "立即下载",
+        "download_model_waits": "{{name}} 正在下载。下载完成后即可使用“立即下载”。",
         "download_failed": "无法开始下载。",
         "download_failed_reason": "下载失败：{{error}}",
         "unavailable_disabled": "语音转文字已关闭。请在上方将其打开。",

@@ -21209,6 +21209,7 @@
         "custom_model_not_used": "{{model}} 모델을 선택한 동안에는 사용되지 않습니다. 이 파일을 쓰려면 사용자 지정을 고르세요.",
         "status_custom_model_unusable": "모델 파일 문제",
         "download_model": "지금 다운로드",
+        "download_model_waits": "{{name}}을(를) 다운로드하는 중입니다. 완료되면 ‘지금 다운로드’를 사용할 수 있습니다.",
         "download_failed": "다운로드를 시작할 수 없습니다.",
         "download_failed_reason": "다운로드에 실패했습니다: {{error}}",
         "unavailable_disabled": "음성 인식이 꺼져 있습니다. 위에서 켜세요.",

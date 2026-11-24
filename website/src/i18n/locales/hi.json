@@ -21764,6 +21764,7 @@
         "custom_model_not_used": "जब तक {{model}} चुना है, इसका उपयोग नहीं होता। इस फ़ाइल को इस्तेमाल करने के लिए कस्टम चुनो।",
         "status_custom_model_unusable": "मॉडल फ़ाइल में समस्या",
         "download_model": "अभी डाउनलोड करें",
+        "download_model_waits": "{{name}} डाउनलोड हो रहा है। इसके पूरा होने पर डाउनलोड बटन उपलब्ध होगा।",
         "download_failed": "डाउनलोड शुरू नहीं हो सका।",
         "download_failed_reason": "डाउनलोड विफल रहा: {{error}}",
         "unavailable_disabled": "वाक्-से-पाठ बंद है। इसे ऊपर चालू करें।",

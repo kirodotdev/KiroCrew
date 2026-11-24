@@ -21764,6 +21764,7 @@
         "custom_model_not_used": "{{model}} বেছে নেওয়া থাকলে এটি ব্যবহার হয় না। এই ফাইল ব্যবহার করতে কাস্টম বেছে নাও।",
         "status_custom_model_unusable": "মডেল ফাইলে সমস্যা",
         "download_model": "এখনই ডাউনলোড করুন",
+        "download_model_waits": "{{name}} ডাউনলোড হচ্ছে। এটি শেষ হলে ডাউনলোড বোতামটি ব্যবহার করা যাবে।",
         "download_failed": "ডাউনলোড শুরু করা যায়নি।",
         "download_failed_reason": "ডাউনলোড ব্যর্থ হয়েছে: {{error}}",
         "unavailable_disabled": "স্পিচ-টু-টেক্সট বন্ধ আছে। উপরে এটি চালু করুন।",

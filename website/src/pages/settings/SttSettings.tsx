@@ -1106,6 +1106,10 @@ export default function SttSettings({ cardIndex }: {
   const download =
     status?.download?.model === stt.model ? status?.download : undefined
   const downloading = download?.step === DOWNLOAD_STEP_RUNNING
+  // While another model's transfer runs, a prepare for the selected one starts
+  // nothing, so its Download now is disabled and names the model it waits for.
+  const otherDownloading = status?.download?.step === DOWNLOAD_STEP_RUNNING && status.download.model !== stt.model
+    ? status.download.model : ''
   // Availability comes from the status endpoint when it has answered, because it
   // carries the machine-readable reason. The config's plain boolean is the
   // fallback for the window before the first status response lands.
@@ -1524,9 +1528,14 @@ export default function SttSettings({ cardIndex }: {
                 <p className="text-[12px] text-muted">
                   {i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })}
                 </p>
-                <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending}>
+                <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending || !!otherDownloading}>
                   <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}
                 </Btn>
+                {otherDownloading && (
+                  <p className="text-[12px] text-muted">
+                    {i18nT('pages.settings.sttSettings.download_model_waits', { name: otherDownloading })}
+                  </p>
+                )}
               </div>
             ) : null}
             {/* A finished-and-failed transfer (the job's own `error`). Status

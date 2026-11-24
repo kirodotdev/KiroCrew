@@ -1490,7 +1490,7 @@ transcription surfaces are deliberately open to an app token):
   artifact exist. `os`/`arch` are the GATEWAY's, since a dashboard may be open
   against another machine and the agent hand-off has to name the host that needs
   fixing. `ffmpeg_missing` on `GET /api/config/stt` is kept for compatibility.
-- `POST /api/stt/prepare`: starts or joins the transfer and returns its current state. Concurrent callers share one transfer behind the store's lock.
+- `POST /api/stt/prepare`: starts the requested model's transfer and returns its current state. While any transfer runs it starts nothing, whichever model it was asked for, and returns the running transfer's state; concurrent callers share one transfer behind the store's lock.
 - `POST /api/stt/prewarm`: starts local-provider preparation without waiting for completion. `useVoiceInput` calls it while the user reaches for the microphone so local initialization can overlap capture.
 - `POST /api/stt/ffmpeg/download`: starts or joins the decoder fetch, 202 then
   poll, the same contract as `prepare`. Refused 409 on a bundled interpreter
@@ -1504,7 +1504,9 @@ transcription surfaces are deliberately open to an app token):
 Desktop installers intentionally contain no speech-model weights. Settings shows
 the selected model's exact size and a **Download now** action; that is the only
 setup action a desktop user needs because the recogniser and its dependencies are
-already in the application. First use can start or join the same download, and
+already in the application. While another model's transfer runs, that button is
+disabled and a line names the model being downloaded, because the gateway runs one
+transfer at a time. First use can start or join the same download, and
 every later session loads the verified model from disk. The digest is the trust
 anchor for that fetch: bytes are streamed to a
 staging file inside the target directory and renamed into place only after the

@@ -21764,6 +21764,7 @@
         "custom_model_not_used": "Nicht verwendet, solange {{model}} ausgewählt ist. Wähle Benutzerdefiniert, um diese Datei zu verwenden.",
         "status_custom_model_unusable": "Problem mit der Modelldatei",
         "download_model": "Jetzt herunterladen",
+        "download_model_waits": "{{name}} wird heruntergeladen. „Jetzt herunterladen“ ist verfügbar, sobald der Download abgeschlossen ist.",
         "download_failed": "Der Download konnte nicht gestartet werden.",
         "download_failed_reason": "Der Download ist fehlgeschlagen: {{error}}",
         "unavailable_disabled": "Die Spracherkennung ist ausgeschaltet. Schalten Sie sie oben ein.",

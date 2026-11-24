@@ -21209,6 +21209,7 @@
         "custom_model_not_used": "{{model}} を選んでいる間は使われません。このファイルを使うにはカスタムを選んでください。",
         "status_custom_model_unusable": "モデルファイルの問題",
         "download_model": "今すぐダウンロード",
+        "download_model_waits": "{{name}} をダウンロード中です。完了すると「今すぐダウンロード」を使用できるようになります。",
         "download_failed": "ダウンロードを開始できませんでした。",
         "download_failed_reason": "ダウンロードに失敗しました: {{error}}",
         "unavailable_disabled": "音声入力はオフになっています。上でオンにしてください。",

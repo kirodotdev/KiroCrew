@@ -22319,6 +22319,7 @@
         "custom_model_not_used": "No se usa mientras {{model}} esté seleccionado. Elige Personalizado para usar este archivo.",
         "status_custom_model_unusable": "problema con el archivo del modelo",
         "download_model": "Descargar ahora",
+        "download_model_waits": "{{name}} se está descargando. «Descargar ahora» estará disponible cuando termine.",
         "download_failed": "No se pudo iniciar la descarga.",
         "download_failed_reason": "La descarga falló: {{error}}",
         "unavailable_disabled": "El reconocimiento de voz está desactivado. Actívalo arriba.",
