@@ -358,6 +358,24 @@ class TestClientTransport:
         assert opener[-1].get_method() == "POST"
         assert "may take up to 5 minutes" in capsys.readouterr().err
 
+    def test_the_credential_mint_waits_as_long_as_kirocrew_token(self, monkeypatch, opener):
+        """A busy gateway can take seconds to answer the mint; a shorter wait fails the verb."""
+        import kiro_crew.app_lifecycle_client as client
+        from kiro_crew.cli_server_requests import _TOKEN_REQUEST_TIMEOUT
+
+        answer = client.unix_socket_urlopen
+        mint_waits: list[float] = []
+
+        def _timed(request, *, timeout, **kwargs):
+            if request.full_url.endswith("/api/token/local?ttl=2m"):
+                mint_waits.append(timeout)
+            return answer(request, timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(client, "unix_socket_urlopen", _timed)
+        client.app_config_request(NAME, "GET")
+        assert len(mint_waits) == 1
+        assert mint_waits[0] >= _TOKEN_REQUEST_TIMEOUT
+
     def test_an_answer_without_headers_has_no_etag(self, monkeypatch, opener):
         import kiro_crew.app_lifecycle_client as client
 
