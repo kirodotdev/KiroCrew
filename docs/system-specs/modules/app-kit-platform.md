@@ -8525,7 +8525,15 @@ only remove first-party status, never grant it. It gates:
   adoption state is read only when the catalog lists a key a packaged skill
   claims for an app, and then once per catalog TTL),
   so an adopted app shows only its repository's `skills/<name>/<skill>` copies and
-  an uninstalled one none. A copy already installed stays on disk, hidden;
+  an uninstalled one none. A copy already installed stays on disk, hidden. The
+  claim outlives the packaged copy: a key's app comes from `builtin_skills/` while
+  the copy ships there, else from the shipped table `data/packaged_skill_apps.json`
+  (`skills_builtin_provenance._recorded_skill_apps`, data like the pin table). So
+  removing a former built-in deletes its `builtin_skills/` copies outright: a host
+  that installed one keeps it hidden, and a host that never had it gets none, where
+  a kept copy would be installed on every fresh host as a skill naming an app it
+  does not have. `test_released_builtin_skill_copies.py` holds the table to every
+  packaged skill naming an app and every app it names to a pin row;
 - `register_builtin_apps`: a released name with no record, or an adopted record,
   gets no directory, record, snapshot or secret. A shadowing user app is not
   released and keeps the stand-down warning. A pinned name with no record while
