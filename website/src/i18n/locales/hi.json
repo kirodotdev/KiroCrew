@@ -10638,7 +10638,12 @@
       "automatic_https": "इस tailnet के लिए HTTPS सक्षम होने के बाद Tailscale निजी प्रमाणपत्र अपने-आप बनाता और नवीनीकृत करता है।",
       "setting_up": "फ़ोन एक्सेस सेट अप हो रहा है…",
       "setup_action": "सेट अप करें और QR दिखाएँ",
-      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।"
+      "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।",
+      "fix_overrides": "इसे ठीक करो",
+      "fix_overrides_title": "क्या ये ओवरराइड हटाने हैं?",
+      "fix_overrides_values": "config.local.json में <local/> सेट है; config.json से <applies/> लागू होगा",
+      "fix_overrides_body": "इसके बाद हर कुंजी config.json का मान लेगी और सेटअप फिर से चलेगा। config.local.json की कोई और कुंजी नहीं बदलेगी।",
+      "fix_overrides_confirm": "हटाओ और फिर से कोशिश करो"
     },
     "sessionTabStrip": {
       "close_tab_hint": "यह टैब बंद करें. सत्र साइडबार में बना रहता है.",

@@ -10638,7 +10638,12 @@
       "automatic_https": "Nachdem HTTPS für dieses Tailnet aktiviert wurde, erstellt und erneuert Tailscale das private Zertifikat automatisch.",
       "setting_up": "Telefonzugriff wird eingerichtet…",
       "setup_action": "Einrichten & QR-Code anzeigen",
-      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut."
+      "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut.",
+      "fix_overrides": "Beheben",
+      "fix_overrides_title": "Diese Überschreibungen entfernen?",
+      "fix_overrides_values": "config.local.json setzt <local/>; config.json würde <applies/> anwenden",
+      "fix_overrides_body": "Jeder Schlüssel übernimmt dann seinen Wert aus config.json, und die Einrichtung läuft erneut. Kein anderer Schlüssel in config.local.json ändert sich.",
+      "fix_overrides_confirm": "Entfernen und erneut versuchen"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Schließt diesen Tab. Die Sitzung bleibt in der Seitenleiste.",

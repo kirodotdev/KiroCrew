@@ -374,6 +374,11 @@ the same and the difference is the whole security story:
   Tailscale daemon as that allowed identity; persistence does not turn the QR
   into a tailnet-wide bearer session.
 
+  If `config.local.json` overrides one of those settings, setup stops and names
+  the key. **Fix this** shows each override next to the value that would apply;
+  confirm it and only those keys are removed from `config.local.json`, then
+  setup runs again.
+
   The basic CLI equivalent is:
   ```bash
   kirocrew config set dashboard.tailscale.enabled true   # once per machine

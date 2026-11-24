@@ -10393,7 +10393,12 @@
       "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
       "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
-      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요.",
+      "fix_overrides": "수정하기",
+      "fix_overrides_title": "이 재정의를 제거하시겠습니까?",
+      "fix_overrides_values": "config.local.json 설정: <local/>, 적용될 config.json 값: <applies/>",
+      "fix_overrides_body": "제거하면 각 키에 config.json 값이 적용되고 설정이 다시 실행됩니다. config.local.json의 다른 키는 바뀌지 않습니다.",
+      "fix_overrides_confirm": "제거 후 다시 시도"
     },
     "sessionTabStrip": {
       "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",
