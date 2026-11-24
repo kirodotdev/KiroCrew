@@ -518,9 +518,12 @@ def service_path(home: str) -> str:
 
     No entry names a versioned install tree, the rule ``ExecStart`` follows
     (:func:`_persistable_path_entry`): the next update replaces that tree.
+
+    The installer's ``$PATH`` is split on the host's ``os.pathsep``: on Windows
+    a ``:`` split cuts ``C:\\x;C:\\y`` into ``\\x;C``, a UNC-looking piece.
     """
     env_path = [
-        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
+        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(os.pathsep) if p
     ]
     required = [f"{home}/.local/bin"]
     linux, darwin = sys.platform.startswith("linux"), sys.platform == "darwin"
