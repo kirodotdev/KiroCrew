@@ -77,7 +77,7 @@ def _home(tmp_path, _floor_monkeypatch):
     )
     _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
-    _floor_monkeypatch.setattr(routes, "_owner_only", _none)
+    _floor_monkeypatch.setattr(routes, "require_owner_dashboard_request", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
     yield
 
