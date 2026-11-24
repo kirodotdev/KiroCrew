@@ -1219,9 +1219,7 @@ def _install_briefing(
             continue
         try:
             staged = PurePath("briefing", name)
-            _copy_file(
-                snap.parent, PurePath(snap.name, BOT_MEMBERS_DIR, slug, name), stage, staged
-            )
+            _copy_file(snap.parent, PurePath(snap.name, BOT_MEMBERS_DIR, slug, name), stage, staged)
             pending.append((dest, stage / staged, _read_staged(stage / staged, MAX_FILE_BYTES)))
             _ensure_real_dir(mc, dest[:-1])
         except _FAILURES:

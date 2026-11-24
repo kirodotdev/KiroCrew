@@ -18,7 +18,6 @@ import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew import mate_config, platform_compat
 
-
 #: Windows publishes with ``os.rename`` (its own tests below); the link and
 #: exclusive-create fallbacks and POSIX modes run everywhere else.
 posix_publish_only = pytest.mark.skipif(
