@@ -233,6 +233,48 @@ def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
         assert f"\n  {name}: " not in lp._BOOTSTRAP.split("const ctx = {", 1)[1].split("};", 1)[0]
 
 
+_LINK_DRIVER = r"""
+const link = { nodeType: 1, localName: 'a', baseURI: location.href,
+  hasAttribute: (k) => k === 'href', getAttribute: () => 'https://gw/chat' };
+const fire = (type, extra) => {
+  const e = { type, button: type === 'auxclick' ? 1 : 0, defaultPrevented: false,
+    composedPath: () => [link], preventDefault() { this.defaultPrevented = true; }, ...extra };
+  (listeners[type] || []).forEach((f) => f(e));
+};
+fire('click', {});
+for (const k of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) fire('click', { [k]: true });
+fire('auxclick', {});
+window.open('https://gw/scripted');
+console.log(JSON.stringify(posted.filter((m) => m.type === 'kirocrew-dashboard:open')));
+"""
+
+
+def test_a_middle_or_modified_link_click_asks_for_a_new_tab() -> None:
+    """Only a plain click may open a dashboard page in place (``useFrameLinkBridge``).
+
+    The frame marks a middle or modified click ``tab: true``, as the widget shim
+    does; a plain click and ``window.open`` carry no mark.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + _LINK_DRIVER],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    posted = json.loads(out.stdout.strip().splitlines()[-1])
+    assert [m.get("tab", False) for m in posted] == [False, True, True, True, True, True, False]
+    assert {m["url"] for m in posted} == {"https://gw/chat", "https://gw/scripted"}
+
+
 def test_the_frame_embeds_the_installed_name_not_the_request_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

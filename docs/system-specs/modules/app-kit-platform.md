@@ -5567,7 +5567,9 @@ owner each:
   this package ships register at the bottom of the module.
 - **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
   capability and renewal, `ctx.fetch`, module load, `init` / `capability` /
-  `theme` / `dispose`, the link bridge, `escape`) plus `_INVOCATION` plus the
+  `theme` / `dispose`, the link bridge, which posts a middle or modified click
+  with `tab: true` as the widget shim does so the dashboard opens a new tab for it
+  rather than one of its own pages in place, `escape`) plus `_INVOCATION` plus the
   point's script, which defines `POINT = { ctx, accepts(handler), missing, message(m) }`.
 - **The invocation contract**, for a point whose work starts with one user act.
   The host mints a string `invocationId` per act and sends it in the point's own
