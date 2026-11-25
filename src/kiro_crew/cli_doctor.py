@@ -879,6 +879,8 @@ def _doctor(
         print("  model pins:  ✅ no unusable spellings in agent specs")
     # The same specs' allowedCommands entries Kiro Crew's own gate cannot read.
     agents._doctor_unreadable_allowed_commands(cfg, proj or None, issues)
+    # The same specs' shell and write allowlists, which a Codex session does not apply.
+    agents._doctor_codex_unenforced_allowlists(cfg, proj or None, issues)
 
     # ── Config ──
     dashboard = services._doctor_configuration(cfg, issues)
