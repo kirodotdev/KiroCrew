@@ -20,13 +20,14 @@ export function RowIcon({ icon, tone = 'accent' }: { icon: ReactNode; tone?: key
   return <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
 }
 
-/** `wrap` lets the label run onto more lines instead of ending in an ellipsis:
- *  for a row whose label is the only text it has, so none of it may be cut off. */
+/** `wrap` lets the label, and the line under it, run onto more lines instead of
+ *  ending in an ellipsis: for a row whose text is all a reader gets about its
+ *  switch, so none of it may be cut off. */
 export function RowText({ label, sub, labelId, subId, wrap = false }: { label: string; sub?: string; labelId?: string; subId?: string; wrap?: boolean }) {
   return (
     <span className="flex-1 min-w-0 leading-tight">
       <span className={cn('block text-[13px] font-semibold', wrap ? 'break-words' : 'truncate')} id={labelId}>{label}</span>
-      {sub && <span className="block text-[12px] text-muted truncate" id={subId}>{sub}</span>}
+      {sub && <span className={cn('block text-[12px] text-muted', wrap ? 'break-words' : 'truncate')} id={subId}>{sub}</span>}
     </span>
   )
 }
@@ -82,7 +83,7 @@ export function RowStatic({ icon, tone = 'accent', label, sub, children, testId,
   sub?: string
   children?: ReactNode
   testId: string
-  /** The label wraps instead of truncating (`RowText`). */
+  /** The label and the line under it wrap instead of truncating (`RowText`). */
   wrap?: boolean
 }) {
   return (
