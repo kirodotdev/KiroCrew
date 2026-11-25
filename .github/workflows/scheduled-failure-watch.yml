@@ -98,6 +98,7 @@ on:
       - "Production Dependency Vulnerability Gate"
       - "Ship Report"
       - "Test Map"
+      - "Test Selection Ledger"
     types: [completed]
     # MUST equal the repository default branch, and a rename that misses this
     # line silences the watcher rather than breaking it: every `schedule:` run
