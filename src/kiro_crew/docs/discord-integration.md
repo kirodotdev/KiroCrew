@@ -218,7 +218,7 @@ before the `applications.commands` scope is installed.
 |---------|--------|
 | `!new` / `!start` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
-| `!model` / `!models` | Pick the model from a button list of what your account can use |
+| `!model [name]` / `!models` | Pick the model from a button list of what your account can use; `!model <name>` switches straight to a model on that list (`auto` for Auto) |
 | `!agent [name]` / `!agents` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back. A Bot is not an agent here: use `!bot` |
 | `!temporary <msg>` | Make this conversation temporary, then answer `<msg>`: it reads no memory and saves nothing |
 | `!incognito <msg>` | Make this conversation incognito, then answer `<msg>`: it can read memory but saves nothing |
@@ -228,6 +228,13 @@ before the `applications.commands` scope is installed.
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
 | `!stop` / `!cancel` | Stop the current reply and clear your queued messages (the reply's ⏹ Stop button does the same) |
 | `!help` | Show commands |
+
+In the `/` menu, the argument of `/agent`, `/model`, `/sessions` and `/bot`
+suggests matches as you type (up to 25). `/agent` and `/model` suggest in a DM
+and in an approved thread. `/sessions` and `/bot` suggest session and Bot titles
+only to the owner, and only in a DM; anywhere else the list stays empty, since
+those titles are private. A suggestion only fills the argument in: the command
+you send is checked as usual.
 
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
 are message prefixes rather than commands, so they are deliberately absent from

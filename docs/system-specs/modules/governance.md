@@ -2246,8 +2246,9 @@ disposition:
   audit row names the direction, `outbound:<channel>`), writes a governed allow
   `critical=True`, and fails closed. Discord re-checks it in
   `discord/client_recheck.py` after each REST wait and in
-  `discord/transport_dispatch_interactions.py` before the approval-verdict edit, so a
-  policy installed during a send stops it.
+  `discord/transport_dispatch_interactions.py` before the approval-verdict edit, each
+  private slash reply and a non-empty autocomplete answer, so a policy installed during
+  a send stops it.
   Detail: [messaging.md](messaging.md).
 - **Slack workspace admission (`slack.enterprise`)** audits via `log_api_access`
   (not `log_governance_decision`) and its posture probe fails **closed** (returns

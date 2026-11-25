@@ -1238,6 +1238,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GATEWAY_URL,
         _HANDLED_INTERACTIONS,
         _INTERACTION_APPLICATION_COMMAND,
+        _INTERACTION_AUTOCOMPLETE,
         _INTERACTION_MESSAGE_COMPONENT,
         _MAX_HEARTBEAT_SECS,
         _MIN_HEALTHY_CONN_SECS,
@@ -1255,6 +1256,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WS_HEARTBEAT_SECS,
         _command_options,
         _find_button_label,
+        _focused_option,
         _heartbeat_interval_secs,
         _reply_message_id,
     )

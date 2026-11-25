@@ -4337,11 +4337,39 @@ until the owner writes into the DM.
 `steer` are deliberately absent from the menu: they are message PREFIXES, and a
 menu tap sends the bare token with no message body to act on.
 
-The client accepts interaction types `APPLICATION_COMMAND` and
-`MESSAGE_COMPONENT` (`_HANDLED_INTERACTIONS`); PING, autocomplete and modal
+The client accepts interaction types `APPLICATION_COMMAND`, `MESSAGE_COMPONENT`
+and `APPLICATION_COMMAND_AUTOCOMPLETE` (`_HANDLED_INTERACTIONS`); PING and modal
 submit are dropped at the dispatch boundary, since each needs its own callback
 shape inside Discord's ~3s deadline and a handler that received one without
-knowing how to answer would leave the client spinning. Every command reply is
+knowing how to answer would leave the client spinning.
+
+**Autocomplete.** The `agent`, `model`, `sessions` and `bot` options carry
+`autocomplete: true` (`_COMMAND_OPTIONS`). Discord then sends a type-4
+interaction per keystroke, naming the focused option (`focused_option`), whose
+only valid answer is callback 8 (`APPLICATION_COMMAND_AUTOCOMPLETE_RESULT`) with at
+most 25 choices, within the same ~3s: no deferral, no message. `on_interaction`
+hands it to `_on_autocomplete_interaction` before every other gate, because the
+REST admission lookup, the governance read and the guild refusal MESSAGE that
+follow could each break that answer; only the DM pairing write (an allowed caller in a DM) runs ahead of it, so the answer's rate-limit re-check can admit the DM. Its own gates are the command's, read without
+the REST re-admission of a thread not yet on the roster: an allowed caller, a DM or
+an allow-listed thread Discord confirms is a thread, the inbound ceiling, then the
+outbound ceiling before a non-empty answer, all inside a 2s budget
+(`_AUTOCOMPLETE_BUDGET_SECS`), then the rosters once more with no await before the
+POST. `sessions` and `bot` suggest only to the owner and only in a DM, from the
+same eligibility their pickers apply (`DiscordSessionResume.suggestions`), and each
+lookup is SEL-audited like a picker listing. EVERY refusal is an empty choice list:
+a denied caller, a denied channel, a governance deny, a failed or slow lookup. An
+empty answer names no destination (it discloses nothing); a non-empty one names the
+channel and passes the caller check as `caller_permitted`, so a rate-limit wait
+re-reads the owner rule too. A `sessions`/`bot` choice's value is
+`session-key:<key>` rather than its title, because the title is shortened and
+redacted for display and the shortened text does not match the search it came from;
+`show_picker` and `show_bot_picker` resolve that key against the picker's own
+eligible list (a `!bot` key binds at once, a `!sessions` key offers that one
+session) and never echo it. A suggestion only fills the option in: the command
+that is then sent runs every gate below.
+
+Every command reply is
 private, because a slash command is invocable from an approved thread every member
 can read, and these replies carry runtime state or a model list. The first response
 is `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (5) with the EPHEMERAL flag (`1 << 6`), so a
@@ -4386,9 +4414,15 @@ credential-issuance audit path -- there is nothing to gate. Do not add them for
 parity's sake: parity is measured against what a channel should be able to do,
 not against the widest channel's command list.
 
-`model` is button-only and takes the same sink, so `/model` posts a picker only
-its caller can see and press, in a thread as in a DM; `!model` posts it in the
-channel. A press is acked with `DEFERRED_UPDATE_MESSAGE` as every press is, and its
+`model` takes the same sink, so `/model` posts a picker only its caller can see
+and press, in a thread as in a DM; `!model` posts it in the channel. A typed
+argument (`!model <name>`, or a `/model` suggestion) switches only when it exactly
+names a row of this session's advertised list, by id or label with case ignored,
+or `auto` for the Auto row (`_named_model`); anything else shows the picker with a
+line saying the name was not on it, so a guessed id never reaches `set_model`.
+Admission ran before routing's awaits, so the typed switch re-reads the inbound
+ceiling and then the caller and thread rosters immediately before `_apply_model`,
+and records `discord.set_model` in the SEL either way. A press is acked with `DEFERRED_UPDATE_MESSAGE` as every press is, and its
 result edits the picker through the PRESS's own token
 (`PATCH /webhooks/{app}/{press token}/messages/@original`, whose original is the
 message the button sits on): the one route that reaches an ephemeral message, so
@@ -4430,7 +4464,7 @@ to it:
 | `discord/transport_dispatch_origin.py` | `_QueuedOrigin`, its sender key, owner token and queue-entry spelling, `_CHANNEL` and `_CHAT_TYPE_THREAD` |
 | `discord/transport_dispatch_model_picker.py` | the `!model` picker: `_model_choices`, the `_ModelPicker` record and its prune, `_handle_model` and `_apply_model` (the tables stay on the dispatcher) |
 | `discord/transport_dispatch_commands.py` | `!link`, `!unlink`, `!compact` and `!status`, the step that applies `!temporary` / `!incognito` through `privacy_mode` (`_apply_privacy_mode`, which refuses a mode that would tighten the execution record of a conversation that ran in its dashboard tab) and its refusals, the channel reply sink and the single-reply command router |
-| `discord/transport_dispatch_interactions.py` | `on_interaction` (every button prefix and the slash-command gate), `_interaction_actionable`, `_on_command_interaction` and its ephemeral reply sink: every interaction response, and the one DM-pairing write |
+| `discord/transport_dispatch_interactions.py` | `on_interaction` (every button prefix and the slash-command gate), `_interaction_actionable`, `_on_command_interaction` and its ephemeral reply sink, `_on_autocomplete_interaction` (slash-option type-ahead, answered with callback 8 before every other gate): every interaction response, and the one DM-pairing write |
 | `discord/transport_dispatch_midturn.py` | `_handle_busy`: steer or queue a mid-turn message; `_handle_resumed_busy`: hand a message into a busy RESUMED dashboard session to that slot's own machinery |
 | `discord/transport_dispatch_spawn_approval.py` | `deliver_spawn_approval` and its destination and actionability checks |
 | `discord/transport_dispatch_ledger.py` | `_record_turn` and `_persist_turn` (the shared pipeline's `record` adapter), `_session_restricted` (its `restricted` adapter), `_blocks_memory_reads` (its `blocks_reads` adapter) and `_uploads_restricted` (the upload ceiling `handle_message`'s renderer reads) |
