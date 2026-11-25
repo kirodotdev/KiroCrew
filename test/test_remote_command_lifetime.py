@@ -18,6 +18,13 @@ posix_groups = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def no_coreutils_timeout(monkeypatch):
+    """The host has no ``timeout`` (stock macOS), whatever this machine has: ``run_command`` then signals the group itself."""
+    real_which = wt.shutil.which
+    monkeypatch.setattr(wt.shutil, "which", lambda name, *a, **kw: None if name == "timeout" else real_which(name, *a, **kw))
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -52,7 +59,7 @@ def _reap_leftover(pid: int) -> None:
 
 
 @posix_groups
-def test_a_timed_out_command_takes_its_whole_group_with_it(tmp_path):
+def test_a_timed_out_command_takes_its_whole_group_with_it(tmp_path, no_coreutils_timeout):
     # sleep 300 outlasts wait_until's deadline, so only a group stop can end it.
     marker = tmp_path / "bg.pid"
     ws = wt.Workspace(str(tmp_path))
@@ -66,7 +73,7 @@ def test_a_timed_out_command_takes_its_whole_group_with_it(tmp_path):
 
 
 @posix_groups
-def test_a_group_that_ignores_term_is_killed_after_the_grace(tmp_path, monkeypatch):
+def test_a_group_that_ignores_term_is_killed_after_the_grace(tmp_path, monkeypatch, no_coreutils_timeout):
     # The shell and its job both ignore TERM, so only the KILL after the grace ends them.
     monkeypatch.setattr(wt, "_KILL_GRACE_SECS", 0.2)
     marker = tmp_path / "bg.pid"
@@ -81,7 +88,7 @@ def test_a_group_that_ignores_term_is_killed_after_the_grace(tmp_path, monkeypat
 
 
 @posix_groups
-def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch):
+def test_a_retired_command_takes_its_whole_group_with_it(tmp_path, monkeypatch, no_coreutils_timeout):
     marker = tmp_path / "bg.pid"
     real_popen = subprocess.Popen
 
