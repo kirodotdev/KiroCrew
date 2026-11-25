@@ -149,6 +149,39 @@ async def test_symlink_root_and_nested_roots_are_refused(prepared, tmp_path):
     assert exc.value.code == "overlapping_roots"
 
 
+@pytest.mark.asyncio
+async def test_parent_alias_cannot_select_the_home_directory(prepared, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    _, _, state, app, _ = prepared
+    home = tmp_path / "people" / "owner"
+    home.mkdir(parents=True)
+    (home / "design.md").write_text("Home is not a prepared source", encoding="utf-8")
+    alias = tmp_path / "people-alias"
+    try:
+        alias.symlink_to(home.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable on this test host")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    p = catalog.validate_params(KIND, {"sources": [source(str(alias / "owner"))]})
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        await cards.build(KIND, p, state=state, app=app)
+    assert exc.value.code == "invalid_root"
+
+
+@pytest.mark.asyncio
+async def test_over_limit_source_is_rejected_instead_of_silently_truncated(prepared, monkeypatch):
+    from kiro_crew import change_card_knowledge
+
+    root, _, state, app, params = prepared
+    monkeypatch.setattr(change_card_knowledge, "MAX_FILES", 2)
+    for name in ("second.md", "third.md"):
+        (root / name).write_text("Another engineering document", encoding="utf-8")
+    with pytest.raises(catalog.CardCatalogError) as exc:
+        await cards.build(KIND, params, state=state, app=app)
+    assert exc.value.code == "source_file_limit"
+
+
 class _Extractor:
     """The external model boundary is offline; reader/chunker/store/retrieval are real."""
 

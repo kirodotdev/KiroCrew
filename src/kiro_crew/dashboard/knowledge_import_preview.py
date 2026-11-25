@@ -28,9 +28,9 @@ def read_sources(params: dict[str, Any], store: Any, watcher: Any) -> dict[str, 
                 "invalid_root", "use a prepared local directory, not a link or home"
             )
         probe = _probe_local_uri(str(path))
-        if probe.sensitive or not probe.is_dir:
-            raise CardCatalogError("invalid_root", "the prepared root is missing or restricted")
         root = Path(probe.resolved)
+        if probe.sensitive or not probe.is_dir or root == Path.home().resolve():
+            raise CardCatalogError("invalid_root", "the prepared root is missing or restricted")
         if any(root.is_relative_to(p) or p.is_relative_to(root) for p in roots):
             raise CardCatalogError("overlapping_roots", "prepared roots must not overlap")
         roots.append(root)
