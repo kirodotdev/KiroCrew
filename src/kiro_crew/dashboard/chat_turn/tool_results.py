@@ -221,7 +221,11 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # arrive, instead of reading the silence as a stall.
         if turn._undelivered_watch is not None:
             await turn._undelivered_watch.on_result(event)
-        _digest_backed = [held for held in _not_written if held.get("pre_call_digest")]
+        _digest_backed = [
+            held
+            for held in _not_written
+            if held.get("pre_call_digest") or held.get("before_missing")
+        ]
         if _digest_backed:
             _same, _changed = await asyncio.to_thread(_settle_failed_write, _digest_backed)
             _forget_entries(slot, _same)
