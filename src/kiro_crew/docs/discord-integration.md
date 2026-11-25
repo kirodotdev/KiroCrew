@@ -220,6 +220,8 @@ before the `applications.commands` scope is installed.
 | `!compact` | Compress the current conversation context |
 | `!model` / `!models` | Pick the model from a button list of what your account can use |
 | `!agent [name]` / `!agents` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back. A Bot is not an agent here: use `!bot` |
+| `!temporary <msg>` | Make this conversation temporary, then answer `<msg>`: it reads no memory and saves nothing |
+| `!incognito <msg>` | Make this conversation incognito, then answer `<msg>`: it can read memory but saves nothing |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
@@ -230,6 +232,30 @@ before the `applications.commands` scope is installed.
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
 are message prefixes rather than commands, so they are deliberately absent from
 the `/` menu: a menu tap sends the bare word, which has no message to act on.
+
+### Private conversations
+
+These work as Slack's `!temporary` and `!incognito` do, with the same limits.
+
+- **`!temporary` / `!incognito`** apply to the whole conversation from that message
+  on, not only to the one message. While a conversation is private, Kiro Crew keeps
+  no transcript of it and does not mirror it to the dashboard, and the agent cannot
+  write Kiro Crew memory. A temporary conversation also takes no Kiro Crew memory or
+  lessons into its prompt. Sent with nothing after it (or as `/temporary` or
+  `/incognito`), the modifier only turns the mode on. `!new` starts a new
+  conversation, which is no longer private.
+- **What they do not cover.** The agent process is not told about the mode: if
+  ACP frame recording is on, it still records the conversation, and a Claude Code
+  agent still uses its own automatic memory. Slack and Telegram have the same limit
+  today, so do not treat a modified conversation as fully private.
+- **On a file.** A modifier at the start of a file's caption applies too, and the
+  file is answered in the private conversation.
+- **Refusals.** Both are refused while a reply is running: send them again once it
+  finishes. They are also refused in a conversation that continues a dashboard
+  session or a Bot (`!sessions`, `!bot`), whose mode is set on the dashboard, and in
+  a conversation that also ran in its dashboard tab: send `!new` first there. They
+  cannot follow `!queue` or `!steer`. When a modifier is refused, Kiro Crew does
+  not process your message.
 
 ### Continuing a Discord conversation from the dashboard
 
