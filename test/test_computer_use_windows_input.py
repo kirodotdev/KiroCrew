@@ -31,7 +31,14 @@ from contextlib import contextmanager
 
 import pytest
 
-from kiro_crew.computer_use import apps_windows, keymap, policy, snapshot_windows, windows_driver
+from kiro_crew.computer_use import (
+    apps_windows,
+    keymap,
+    policy,
+    snapshot_windows,
+    tools,
+    windows_driver,
+)
 from kiro_crew.computer_use import windows_ffi
 from kiro_crew.computer_use import windows_ffi as ffi
 from kiro_crew.computer_use.types import (
@@ -229,6 +236,41 @@ class TestAutoNeverReachesThePointer:
         assert result.ok is False
         assert "macOS-only" in result.text
         assert "element_index" in result.text
+
+    @pytest.mark.parametrize(
+        "args", [{}, {"click_method": CLICK_METHOD_AUTO}], ids=["omitted", "auto"]
+    )
+    def test_dispatcher_auto_with_coordinates_names_auto(
+        self, driver: WindowsBackend, args: dict
+    ) -> None:
+        """The request the DISPATCHER builds, not a hand-built ``auto``.
+
+        ``_build_click_request`` resolves ``auto`` + coordinates onto ``app_post``
+        before any driver sees it, so the driver must still answer with the ``auto``
+        refusal rather than blame ``app_post``, which the model never named.
+        """
+        built = tools._build_click_request({"x": 100, "y": 100, **args})
+        assert isinstance(built, ClickRequest)
+        assert (
+            built.method == CLICK_METHOD_APP_POST
+        ), "auto still resolves upstream, never to global"
+        result = driver.click(_APP, None, built)
+        assert result.ok is False
+        assert "'auto'" in result.text
+        assert "global" in result.text
+        assert "macOS-only" not in result.text
+
+    def test_dispatcher_explicit_app_post_still_refuses_by_name(
+        self, driver: WindowsBackend
+    ) -> None:
+        """Naming ``app_post`` keeps its own macOS-only refusal through the dispatcher."""
+        built = tools._build_click_request(
+            {"x": 100, "y": 100, "click_method": CLICK_METHOD_APP_POST}
+        )
+        assert isinstance(built, ClickRequest)
+        result = driver.click(_APP, None, built)
+        assert result.ok is False
+        assert "'app_post' is macOS-only" in result.text
 
     def test_accessibility_without_an_index_refuses(self, driver: WindowsBackend) -> None:
         """There is no coordinate form of a pattern action."""
