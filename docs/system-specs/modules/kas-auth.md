@@ -1012,7 +1012,9 @@ engine instead ([aws-control.md](aws-control.md)).
   only compared by eye, never typed), and one waiting line with the expiry. The
   host takes the way back to the choices through `SignInBackContext`: the dialog
   puts it in its header as a back arrow, Settings as "Use another way" above the
-  screen. The one difference between the hosts is the slot's `ownsHeading`:
+  screen. The screen sets and clears that slot in layout effects, so the host's
+  header and back control change in the same paint as the screen, never one
+  frame later with the chooser's header. The one difference between the hosts is the slot's `ownsHeading`:
   Settings sets it, because its centered header already says "Finish in your
   browser" with its own hint, so the screen leaves its heading out; the dialog,
   whose header says "Sign in to Kiro", leaves it unset and the screen draws it.
