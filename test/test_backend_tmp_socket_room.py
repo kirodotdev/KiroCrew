@@ -27,7 +27,7 @@ _SHORT_HOME = "/" + "h" * 26
 
 @pytest.fixture(autouse=True)
 def _fresh_warned(monkeypatch):
-    monkeypatch.setattr(bt, "_warned_roots", set())
+    monkeypatch.setattr(bt, "_warned_roots", set(), raising=False)
 
 
 @pytest.mark.parametrize(
