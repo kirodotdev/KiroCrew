@@ -277,34 +277,48 @@ def _held_versions(held: Mapping[str, int], chosen: set[str]) -> dict[int, Mappi
 def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
     """Whether *package*'s live version on the source is a carriable package bound to *binding*.
 
-    The record's metadata must first pass the import's staged-gate meta rule,
-    ``portability_bot_stores.is_carriable_dashboard_meta``: ``kind`` and every
-    ``version_kinds`` value are ``dashboard_package.DASHBOARD_KIND`` and no
-    ``REFUSED_META_FIELDS`` field is set. That rule holds every case in which
-    ``scan_bound_dashboards`` names no binding (a record of another kind, which the
-    scan does not list; a live pointer, ``ArtifactStore._is_live_pointer``) and the
-    ones the scan binds but the gate refuses (a retained version of another kind, a
-    copy with provenance), so the export never carries bytes the import refuses for
-    their metadata. A record that passes is bound to ``dashboard_package.live_binding_of``
-    of its stored current content, as the scan reads it. The scan's
-    ``dashboard_package.MAX_BINDING_SCAN`` cap is no rule of a binding: past it the scan
-    reports itself incomplete, never a different binding. The record is read by
-    ``artifacts.read_stored_artifact``, the store's read that writes nothing (an export
-    never writes the source: no ``artifacts/`` is created and a record with no event log
-    is not backfilled), and anything it cannot read (``artifacts.STORED_READ_FAILURES``)
-    is no.
+    The record's raw ``meta.json`` document must first pass the import's whole
+    staged-gate metadata rule, by the gate's own function
+    ``portability_bot_stores.admitted_package_meta`` called on that document (it
+    decodes, names *package*, holds each ``REFUSED_META_FIELDS`` key only as the
+    store's own empty value and decodes with it empty, and is
+    ``dashboard_package.DASHBOARD_KIND`` in ``kind`` and every ``version_kinds``
+    value). That rule holds every case in which ``scan_bound_dashboards`` names no
+    binding (a record of another kind, which the scan does not list; a live pointer,
+    ``ArtifactStore._is_live_pointer``) and the ones the scan binds but the gate
+    refuses (a retained version of another kind, a copy with provenance, a forged
+    empty value or slug), so the export never carries a package the import refuses
+    for its metadata. The gate's file rules (every version file bound, ``current.html``
+    equal to the highest version, no extra files, the pinned page) are the import's
+    alone, so a package carried here can still be refused for its files, which the
+    import reports (``older_pages_not_restored``). A record that passes is bound to
+    ``dashboard_package.live_binding_of`` of its stored current content, as the scan
+    reads it. The scan's ``dashboard_package.MAX_BINDING_SCAN`` cap is no rule of a
+    binding: past it the scan reports itself incomplete, never a different binding.
+
+    The record is read once by ``artifacts.read_stored_record``, the store's read that
+    writes nothing (an export never writes the source: no ``artifacts/`` is created and
+    a record with no event log is not backfilled), bounded by ``MAX_RECORD_BYTES``,
+    the cap the gate reads the staged ``meta.json`` with, and refusing a link at
+    ``meta.json``; the one document it returns is what the rule judges and decodes.
+    Anything it cannot read (``artifacts.STORED_READ_FAILURES``) is no.
     """
     from pathlib import Path
 
     from kiro_crew.artifact_store import dashboard_package
-    from kiro_crew.artifacts import STORED_READ_FAILURES, read_stored_artifact
-    from kiro_crew.portability_bot_stores import is_carriable_dashboard_meta
+    from kiro_crew.artifacts import STORED_READ_FAILURES, read_stored_record
+    from kiro_crew.portability_bot_stores import admitted_package_meta
 
     try:
-        live = read_stored_artifact(Path(mc_real) / ARTIFACTS_DIR, package)
-        if not is_carriable_dashboard_meta(live):
-            return False
-        return dashboard_package.live_binding_of(live.content or "") == binding
+        stored = read_stored_record(
+            Path(mc_real) / ARTIFACTS_DIR, package, max_meta_bytes=MAX_RECORD_BYTES
+        )
+    except STORED_READ_FAILURES:
+        return False
+    if admitted_package_meta(stored.document, stored.meta_path, package) is None:
+        return False
+    try:
+        return dashboard_package.live_binding_of(stored.content) == binding
     except STORED_READ_FAILURES:
         return False
 
@@ -323,11 +337,10 @@ def _carried_package(
     version files could not be held (:func:`_hold_if_newest`): the import parses every
     archived version file, so a pin chosen from the rest could name a package it never
     uses, and a record that runs its template then carries none. When the record runs
-    its template the package
-    its versions pin is carried only while its live version is bound to
-    ``crewmate:<slug>`` on the source and its metadata passes the import's gate
-    (:func:`_live_binding_is`): a package since rebound to another Bot is that Bot's to
-    carry, and one the import would refuse is not carried.
+    its template the package its versions pin is carried only while its live version
+    is bound to ``crewmate:<slug>`` on the source and its metadata passes the import's
+    gate (:func:`_live_binding_is`): a package since rebound to another Bot is that
+    Bot's to carry, and one the import would refuse for its metadata is not carried.
     """
     from kiro_crew.dashboard_templates.instance import _package_field
 

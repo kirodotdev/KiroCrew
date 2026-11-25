@@ -89,7 +89,7 @@ import shutil
 import stat
 from collections.abc import Iterator, Sequence
 from pathlib import Path, PurePath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat, portability_bot_types
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
@@ -113,6 +113,9 @@ from kiro_crew.portability_bot_types import (
     safe_path_component,
     version_file_number,
 )
+
+if TYPE_CHECKING:
+    from kiro_crew.artifact_store.model import Artifact
 
 logger = logging.getLogger(__name__)
 
@@ -557,22 +560,41 @@ def _is_store_empty(raw: dict[str, Any], name: str) -> bool:
     return type(value) is type(empty) and value == empty
 
 
-def is_carriable_dashboard_meta(meta: Any) -> bool:
-    """Whether decoded package metadata passes the staged gate's rule for a carried package.
+def admitted_package_meta(raw: object, meta_path: Path, package: str) -> Artifact | None:
+    """Package *package*'s metadata decoded from its raw ``meta.json`` document *raw*, or ``None``.
 
-    *meta* is what ``records.decode_meta`` returns (an ``Artifact``, also what
-    ``artifacts.read_stored_artifact`` returns): ``kind`` and every ``version_kinds``
-    value are ``dashboard_package.DASHBOARD_KIND``, and no :data:`REFUSED_META_FIELDS`
-    field is set, so neither a live pointer nor a copy with provenance passes. The
-    gate (:func:`_check_staged_artifact`) applies it and the export's live-binding read
-    (``portability_bot_export._live_binding_is``) too, so the export never carries a
-    package the import refuses for its metadata.
+    The whole metadata rule for a carried package, the one entry point both sides
+    call on the document they read: the import's staged gate
+    (:func:`_check_staged_artifact`) and the export's carry decision for a template
+    record's package (``portability_bot_export._live_binding_is``), so the export
+    never carries a package the import refuses for its metadata. *raw* is what
+    ``json.loads`` gave for the file at *meta_path* (named by the decoder's errors).
+    It is admitted only when all of these hold:
+
+    * ``records.decode_meta`` decodes it (any failure, one nested past the decoder's
+      limit included, refuses) and its ``slug`` is *package*, the directory it is in;
+    * each :data:`REFUSED_META_FIELDS` key is absent or holds exactly the store's own
+      empty value of its type (:data:`REFUSED_META_EMPTY`: the decoder stringifies any
+      other value, so ``0`` or ``[]`` would still be a live pointer), and the decoded
+      fields are empty too, so neither a live pointer nor a copy with provenance passes;
+    * ``kind`` and EVERY ``version_kinds`` value are ``dashboard_package.DASHBOARD_KIND``.
     """
-    from kiro_crew.artifact_store import dashboard_package
+    from kiro_crew.artifact_store import dashboard_package, records
+    from kiro_crew.artifact_store.model import ArtifactError
 
+    if not isinstance(raw, dict):  # what decode_meta refuses too
+        return None
+    try:
+        meta = records.decode_meta(raw, meta_path)
+    except (ArtifactError, TypeError, ValueError, RecursionError):
+        return None
+    if meta.slug != package or not all(_is_store_empty(raw, name) for name in REFUSED_META_FIELDS):
+        return None
     if any(getattr(meta, name) for name in REFUSED_META_FIELDS):
-        return False
-    return {meta.kind, *meta.version_kinds.values()} == {dashboard_package.DASHBOARD_KIND}
+        return None
+    if {meta.kind, *meta.version_kinds.values()} != {dashboard_package.DASHBOARD_KIND}:
+        return None
+    return meta
 
 
 def _store_text(data: bytes) -> str:
@@ -626,15 +648,12 @@ def _check_staged_artifact(
     be published. The gate decides on what the artifact store will act on, so every
     file the package can serve is checked:
 
-    * ``meta.json`` is decoded by the store's own ``records.decode_meta`` and must name
-      *package* (one that does not decode, nested past the decoder's limit included,
-      is ``artifact_rejected``); a :data:`REFUSED_META_FIELDS` key that is present refuses it unless
-      its value is exactly the store's own empty value of that type
-      (:data:`REFUSED_META_EMPTY`: the decoder stringifies any other value, so ``0``
-      or ``[]`` would still be a live pointer); the decoded fields must be empty
-      too, and ``kind`` and EVERY ``version_kinds`` entry must be ``dashboard``
-      (:func:`is_carriable_dashboard_meta`, the rule the export applies as well);
-      *version* must be in ``1..meta.version`` (``artifact_missing`` otherwise).
+    * ``meta.json``, read once as JSON, passes the whole metadata rule
+      :func:`admitted_package_meta` (it decodes, names *package*, sets no
+      :data:`REFUSED_META_FIELDS` field and is a dashboard in every version kind),
+      the function the export's carry decision calls too; anything else, a file that
+      does not read or parse included, is ``artifact_rejected``. *version* must be in
+      ``1..meta.version`` (``artifact_missing`` otherwise).
     * The package holds nothing but ``meta.json``, ``current.html`` and
       ``versions/v<n>.html`` for ``n`` in ``1..meta.version``
       (:func:`_staged_versions`).
@@ -643,29 +662,21 @@ def _check_staged_artifact(
       :func:`_page_refusal` (validated, canonical bytes hashing to *digest*).
     * ``current.html`` is byte-equal to the highest version's file.
 
+    The file rules (every point after the first) are the import's alone: the export
+    applies only the metadata rule, so a package can still be carried and then refused
+    for its files.
+
     Each file is decoded the way the store reads it (UTF-8 text, universal newlines).
     A package that passes has its :data:`STRIPPED_META_FIELDS` removed from the staged
     ``meta.json`` (``write_failed`` when that rewrite fails).
     """
-    from kiro_crew.artifact_store import records
-    from kiro_crew.artifact_store.model import ArtifactError
-
     meta_path = art_dir / "meta.json"
     try:
         raw = json.loads(_read_staged(meta_path, MAX_RECORD_BYTES).decode("utf-8"))
-        meta = records.decode_meta(raw, meta_path)
-    except (
-        ArtifactError,
-        TypeError,
-        OSError,
-        ValueError,
-        RecursionError,
-        pinned_fs.PinnedPathRefusal,
-    ):
+    except _DECODE_FAILURES:
         return "artifact_rejected", ""
-    if meta.slug != package or not all(_is_store_empty(raw, name) for name in REFUSED_META_FIELDS):
-        return "artifact_rejected", ""
-    if not is_carriable_dashboard_meta(meta):
+    meta = admitted_package_meta(raw, meta_path, package)
+    if meta is None:
         return "artifact_rejected", ""
     if not 1 <= version <= meta.version:
         return "artifact_missing", ""

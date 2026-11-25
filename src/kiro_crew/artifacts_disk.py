@@ -21,6 +21,7 @@ Instance fields written: none.
 from __future__ import annotations
 
 import errno as _errno
+import io
 import json
 import logging
 import os
@@ -570,6 +571,24 @@ def _read_store_text(path: Path) -> str:
     fd = _open_pinned_for_read(resolved)
     with os.fdopen(fd, "r", encoding="utf-8") as fh:
         return fh.read()
+
+
+def _read_store_text_at_most(path: Path, max_bytes: int) -> str:
+    """:func:`_read_store_text` of the file named *path* itself, at most *max_bytes* long.
+
+    *path* is judged by the fence and opened as named, not resolved first, so a link at
+    its final name is refused (``ArtifactError``) instead of followed; a file longer
+    than *max_bytes* raises ``ValueError``. Decoded as :func:`_read_store_text` decodes
+    (UTF-8, universal newlines), so a bad byte is a ``UnicodeDecodeError``.
+    """
+    if reason := _fence_refusal(path, "read"):
+        raise ArtifactError(reason)
+    fd = _open_pinned_for_read(path)
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"store file is over {max_bytes} bytes: {path}")
+    return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").read()
 
 
 def _write_text(self: ArtifactStore, path: Path, text: str) -> None:

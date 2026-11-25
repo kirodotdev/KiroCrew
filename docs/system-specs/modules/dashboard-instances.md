@@ -408,15 +408,22 @@ ones (`portability_bot_export._hold_if_newest`); when one of those newest files 
 be duplicated, a template record carries no package, since a pin chosen from the rest
 could name one the import, which parses every archived version file, never uses. A template
 record's package is carried only while its live version is bound to `crewmate:<slug>` on
-the source (`dashboard_package.live_binding_of`) and its metadata passes the import's
-staged-gate rule (`portability_bot_stores.is_carriable_dashboard_meta`, which
-`_check_staged_artifact` applies too): one since rebound to another Bot is that Bot's to
-carry, and a record whose `kind` or any `version_kinds` value is not
-`dashboard_package.DASHBOARD_KIND`, or that sets a `REFUSED_META_FIELDS` field (a live
-pointer, `ArtifactStore._is_live_pointer`, or a copy with provenance), is not carried,
-since the import would refuse it.
-That record is read by `artifacts.read_stored_artifact`, which writes nothing on the
-source, and one it cannot read (`artifacts.STORED_READ_FAILURES`) is not carried. The
+the source (`dashboard_package.live_binding_of`) and its raw `meta.json` passes the
+import's whole staged-gate metadata rule (`portability_bot_stores.admitted_package_meta`,
+the one function `_check_staged_artifact` calls on the staged document too): one since
+rebound to another Bot is that Bot's to carry, and a record that does not decode, whose
+`slug` is not the package's directory, whose `kind` or any `version_kinds` value is not
+`dashboard_package.DASHBOARD_KIND`, or that holds a `REFUSED_META_FIELDS` key as
+anything but the store's own empty value (a live pointer,
+`ArtifactStore._is_live_pointer`, a copy with provenance, or a hand-written `0`, `null`
+or `""`) is not carried, since the import would refuse it for its metadata. The gate's
+file rules (every version file bound, `current.html` equal to the highest version, no
+extra files, the pinned page) are the import's alone, so a carried package can still be
+refused for its files, which the import reports as `older_pages_not_restored`.
+That record is read once by `artifacts.read_stored_record`, which writes nothing on the
+source, reads `meta.json` bounded by `MAX_RECORD_BYTES` and refuses a link at its name,
+and returns the one document both the rule and the decoder read; one it cannot read
+(`artifacts.STORED_READ_FAILURES`) is not carried. The
 import (`portability_bot_stores.install_bot_stores`) installs the dashboard directory
 add-only, and only when this install has none: a Bot that already has a dashboard
 keeps it whole. An existing dashboard counts as the Bot's own only when the Bot was

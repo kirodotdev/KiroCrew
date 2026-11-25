@@ -1,4 +1,4 @@
-"""``artifacts.read_stored_artifact``: ``ArtifactStore.get``'s current read, writing nothing.
+"""``artifacts.read_stored_artifact`` and ``read_stored_record``: ``get``'s read, writing nothing.
 
 For a record that is no live pointer and already has its event log it answers what
 ``get`` answers, field for field, and it raises what ``get`` raises for the same
@@ -19,10 +19,12 @@ import pytest
 from conftest import requires_symlinks
 from kiro_crew.artifacts import (
     STORED_READ_FAILURES,
+    ArtifactError,
     ArtifactNotFoundError,
     ArtifactStore,
     ArtifactValidationError,
     read_stored_artifact,
+    read_stored_record,
 )
 
 
@@ -150,3 +152,70 @@ def test_a_live_pointer_is_read_from_the_stores_own_copy(tmp_path: Path) -> None
 
     assert ArtifactStore._is_live_pointer(read)
     assert read.content == "<p>stored</p>"
+
+
+# ``read_stored_record``: the same read, returning ``meta.json`` as the raw document its
+# caller judges and decodes, from one bounded read that refuses a link at the name.
+
+
+def test_the_record_read_returns_the_raw_document_and_writes_nothing(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    art = store.create(name="Board", content="<p>one</p>")
+    meta_path = _edit_meta(
+        store, art.slug, {"source_copy_only": 0}, drop=("events", "events_backfilled")
+    )
+    before = _tree(store.root)
+
+    stored = read_stored_record(store.root, art.slug, max_meta_bytes=1 << 20)
+
+    assert _tree(store.root) == before
+    # Not decoded: decode_meta would read 0 as False.
+    assert stored.document == json.loads(meta_path.read_text(encoding="utf-8"))
+    assert stored.document["source_copy_only"] == 0
+    assert stored.meta_path == meta_path.resolve()
+    assert stored.content == "<p>one</p>"
+
+
+def test_the_record_read_refuses_a_meta_over_its_cap(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    art = store.create(name="Board", content="<p>one</p>")
+    size = (store.root / art.slug / "meta.json").stat().st_size
+
+    assert read_stored_record(store.root, art.slug, max_meta_bytes=size).content == "<p>one</p>"
+    with pytest.raises(ValueError):
+        read_stored_record(store.root, art.slug, max_meta_bytes=size - 1)
+
+
+@requires_symlinks
+def test_the_record_read_refuses_a_linked_meta_that_get_follows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    art = store.create(name="Board", content="<p>one</p>")
+    target = store.root / art.slug / "meta.json"
+    moved = tmp_path / "moved-meta.json"
+    target.rename(moved)
+    os.symlink(moved, target)
+
+    assert _outcome(lambda: read_stored_artifact(store.root, art.slug)) == ("content", "<p>one</p>")
+    with pytest.raises(ArtifactError):
+        read_stored_record(store.root, art.slug, max_meta_bytes=1 << 20)
+
+
+@pytest.mark.parametrize(
+    "data", [b"\xff{}", b"not json", b"[" * 50000], ids=["bad-utf8", "not-json", "nested"]
+)
+def test_every_record_read_failure_is_a_stored_read_failure(tmp_path: Path, data: bytes) -> None:
+    store = _store(tmp_path)
+    art = store.create(name="Board", content="<p>one</p>")
+    (store.root / art.slug / "meta.json").write_bytes(data)
+
+    with pytest.raises(STORED_READ_FAILURES):
+        read_stored_record(store.root, art.slug, max_meta_bytes=1 << 20)
+
+
+def test_the_record_read_creates_no_store_directory(tmp_path: Path) -> None:
+    root = tmp_path / "absent" / "artifacts"
+
+    with pytest.raises(ArtifactNotFoundError):
+        read_stored_record(root, "board", max_meta_bytes=1 << 20)
+
+    assert not (tmp_path / "absent").exists()

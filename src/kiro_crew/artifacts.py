@@ -339,7 +339,9 @@ def _usable_root(root: Path) -> Path:
 #: (``ArtifactError``), a failed read (``OSError``), and a ``meta.json`` that
 #: ``records.decode_meta`` cannot decode: ``ValueError`` (not JSON, or a ``version``
 #: that is no finite number), ``TypeError`` (a ``version`` that is ``null``, a list or
-#: an object) or ``RecursionError`` (nested past the JSON decoder's limit).
+#: an object) or ``RecursionError`` (nested past the JSON decoder's limit). It covers
+#: :func:`read_stored_record` too, whose link refusal is an ``ArtifactError``, whose
+#: size cap and bad UTF-8 are ``ValueError``s, and which decodes nothing.
 STORED_READ_FAILURES: tuple[type[Exception], ...] = (
     ArtifactError,
     OSError,
@@ -378,6 +380,46 @@ def read_stored_artifact(root: Path, slug: str) -> Artifact:
         )
         meta.content = _artifacts_disk._read_store_text(adir / "current.html")
         return meta
+
+
+@dataclass(frozen=True)
+class StoredRecord:
+    """One record as :func:`read_stored_record` read it: the raw document, not decoded."""
+
+    #: What ``json.loads`` gave for ``meta.json``: any JSON value, not yet decoded.
+    document: Any
+    #: The ``meta.json`` that was read, the path ``records.decode_meta`` names in errors.
+    meta_path: Path
+    #: The stored ``current.html``.
+    content: str
+
+
+def read_stored_record(root: Path, slug: str, *, max_meta_bytes: int) -> StoredRecord:
+    """Artifact *slug* of the store at *root* as its raw ``meta.json`` document, writing nothing.
+
+    :func:`read_stored_artifact`'s read for a caller that judges the raw document
+    itself: the same slug check, root refusal, per-root lock, directory rule and
+    fenced, descriptor-pinned reads, and it writes nothing. ``meta.json`` is read
+    ONCE, refused when its final name is a link (``ArtifactError``) or it holds more
+    than *max_meta_bytes* bytes (``ValueError``), and returned as the object
+    ``json.loads`` gives, NOT decoded: the caller decodes that same object
+    (``records.decode_meta(document, meta_path)``), so the document it judges and the
+    record it decodes come from one read. ``content`` is the stored ``current.html``,
+    read as :func:`read_stored_artifact` reads it. What it raises is in
+    :data:`STORED_READ_FAILURES`.
+    """
+    root = root.expanduser()
+    resolved = _usable_root(root)
+    slug = _validate_slug(slug)
+    with _lock_for_root(resolved):
+        adir = _artifacts_disk._artifact_dir_in(root, slug)
+        meta_path = adir / "meta.json"
+        if not meta_path.exists():
+            raise ArtifactNotFoundError(f"artifact not found: {slug}")
+        text = _artifacts_disk._read_store_text_at_most(meta_path, max_meta_bytes)
+        document = json.loads(text)
+        content = _artifacts_disk._read_store_text(adir / "current.html")
+        return StoredRecord(document, meta_path, content)
 
 
 class ArtifactStore:

@@ -953,29 +953,85 @@ def test_a_template_bot_does_not_carry_a_package_the_import_would_refuse(homes, 
     assert f"bot-members/{atlas.slug}/dashboard/versions/2.json" in members
 
 
-def test_the_export_and_the_gate_share_one_package_meta_rule(homes) -> None:
-    from kiro_crew.artifacts import read_stored_artifact
-    from kiro_crew.config.paths import data_home
-    from kiro_crew.portability_bot_stores import is_carriable_dashboard_meta
+#: Raw ``meta.json`` edits the gate refuses on the document itself, though each decodes
+#: to empty fields: ``records.decode_meta`` reads ``0``, ``null``, ``""`` and ``[]`` as
+#: ``source_copy_only`` False, and the gate compares the record's ``slug`` with the
+#: package's directory name.
+_REFUSED_ON_THE_RAW_DOCUMENT = {
+    "copy_only_zero": {"source_copy_only": 0},
+    "copy_only_null": {"source_copy_only": None},
+    "copy_only_empty_str": {"source_copy_only": ""},
+    "copy_only_empty_list": {"source_copy_only": []},
+    "slug_differs": {"slug": "other-board"},
+}
+
+
+@pytest.mark.parametrize(
+    "change",
+    list(_REFUSED_ON_THE_RAW_DOCUMENT.values()),
+    ids=list(_REFUSED_ON_THE_RAW_DOCUMENT),
+)
+def test_a_template_bot_does_not_carry_a_package_whose_raw_meta_the_gate_refuses(
+    homes, tmp_path, change
+):
+    from portability_bot_helpers import archive_members, export_archive
 
     homes.use("a")
-    _atlas, applied = _atlas_on_its_template()
-    root = data_home() / "artifacts"
-    assert is_carriable_dashboard_meta(read_stored_artifact(root, applied.package))
-    for change in (
-        {"kind": "widget"},
-        {"version_kinds": {"1": "widget"}},
-        {"source_path": "elsewhere.html", "source_copy_only": True},
-        {"source_path": "elsewhere.html", "source_copy_only": False},
-        {"source_root": "/"},
-        {"source_copy_only": True},
-    ):
-        before = _package_meta(applied.package).read_text(encoding="utf-8")
-        _edit_meta(applied.package, change)
-        try:
-            assert not is_carriable_dashboard_meta(read_stored_artifact(root, applied.package))
-        finally:
-            _package_meta(applied.package).write_text(before, encoding="utf-8")
+    atlas, applied = _atlas_on_its_template()
+    _edit_meta(applied.package, change)
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    members = archive_members(archive)
+    assert f"bot-members/{atlas.slug}/dashboard/versions/2.json" in members
+
+
+#: One raw ``meta.json`` edit per meta rule of the staged gate, the clean record first.
+_META_RULE_TABLE = {
+    "clean": {},
+    **_REFUSED_ON_THE_RAW_DOCUMENT,
+    "kind_widget": {"kind": "widget"},
+    "version_kinds_widget": {"version_kinds": {"1": "widget"}},
+    "provenance_copy": {"source_path": "elsewhere.html", "source_copy_only": True},
+    "live_pointer": {"source_path": "elsewhere.html", "source_copy_only": False},
+    "source_root": {"source_root": "/"},
+    "copy_only_alone": {"source_copy_only": True},
+}
+
+
+def test_the_export_carries_exactly_what_the_gates_meta_rule_admits(homes, tmp_path) -> None:
+    # The export's carry decision and the staged gate both call admitted_package_meta on
+    # the same raw document, so for every meta rule the three answers agree.
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.portability_bot_stores import _check_staged_artifact, admitted_package_meta
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    meta_path = _package_meta(applied.package)
+    clean = meta_path.read_text(encoding="utf-8")
+    binding = f"crewmate:{atlas.slug}"
+    answers: dict[str, tuple[bool, bool, bool]] = {}
+    for name, change in _META_RULE_TABLE.items():
+        if "source_path" in change:
+            change = {**change, "source_path": str(tmp_path / change["source_path"])}
+        raw = {**json.loads(clean), **change}
+        meta_path.write_text(json.dumps(raw), encoding="utf-8")
+        staged = tmp_path / "stage" / name / applied.package
+        shutil.copytree(meta_path.parent, staged)
+        reason, _page = _check_staged_artifact(
+            staged, applied.package, atlas.slug, applied.version, applied.digest
+        )
+        answers[name] = (
+            admitted_package_meta(raw, meta_path, applied.package) is not None,
+            portability_bot_export._live_binding_is(str(data_home()), applied.package, binding),
+            reason == "",
+        )
+        meta_path.write_text(clean, encoding="utf-8")
+
+    assert answers == {
+        name: (name == "clean",) * 3 for name in _META_RULE_TABLE
+    }, "admitted, carried, gate-passed per raw document"
 
 
 class _DupFailsWhileArmed:

@@ -1169,11 +1169,14 @@ BASE_PUBLIC_NAMES = frozenset(
 
 #: Every public name of the facade: a star import of :mod:`kiro_crew.artifacts` binds
 #: exactly these, the base names plus ``platform_compat``, a public module binding, and
-#: the store's read that writes nothing (``read_stored_artifact``) with the failures it
-#: raises (``STORED_READ_FAILURES``).
+#: the store's reads that write nothing (``read_stored_artifact``, and
+#: ``read_stored_record`` with the ``StoredRecord`` it returns) with the failures they
+#: raise (``STORED_READ_FAILURES``).
 FACADE_PUBLIC_NAMES = BASE_PUBLIC_NAMES | {
     "platform_compat",
     "read_stored_artifact",
+    "read_stored_record",
+    "StoredRecord",
     "STORED_READ_FAILURES",
 }
 
