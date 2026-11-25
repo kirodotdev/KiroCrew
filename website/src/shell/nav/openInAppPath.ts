@@ -4,7 +4,9 @@ import { useAppDispatch, useAppStore } from '../../store'
 import { localCovered, prefillCrewAddForm, setActiveId } from '../../store/instancesSlice'
 import { useCrewDeepLink } from '../../lib/crewDeepLink'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../../lib/remoteCrewAddLink'
-import { switchSlot } from '../../store/chatSlice'
+import { resumeFromHistory, switchSlot } from '../../store/chatSlice'
+import { api } from '../../api/client'
+import { sessionKeyFrom } from '../../utils/sessionKeys'
 import { applyNavIntentInMain, chatDeepLinkSlot, isAppDetailPath, isMembersPath } from '../../utils/navIntent'
 import { useIsCurrentUrl, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 
@@ -42,6 +44,21 @@ export function useOpenInAppPath(): (path: string) => void {
       // the local Crew forward first (as the notification banner does), so
       // the leave prompt and the switched session are both on screen.
       if (localCovered(appStore.getState())) dispatch(setActiveId(null))
+      // A full key the loaded roster lacks names a closed session, which a slot
+      // switch can only report as deleted. Resume it instead, as a closed-session
+      // chip does: probe the one key, resume a transcript still on disk, and hand
+      // a missing one (or a failed probe) to the switch, which says why.
+      const { slots, slotsLoaded } = appStore.getState().dashboard
+      const closedKey = slotsLoaded ? sessionKeyFrom(slotKey) : null
+      if (closedKey && !slots.some(s => s.key === closedKey)) {
+        if (!mayLeave()) return
+        navigate('/chat')
+        void api.sessionMeta(closedKey).catch(() => null).then((row) => {
+          if (row) void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key }))
+          else dispatch(switchSlot({ key: closedKey, announceOnMissing: true }))
+        })
+        return
+      }
       applyNavIntentInMain(
         // `path` is deliberately dropped in favour of the bare route: a
         // NavIntent carries no query string, and ChatPage writes `?sid=` back

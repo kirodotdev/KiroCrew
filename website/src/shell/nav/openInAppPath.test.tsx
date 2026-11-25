@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { createTestStore } from '../../test/helpers'
 import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
+import { api } from '../../api/client'
 import { useOpenInAppPath } from './openInAppPath'
 
 // The crew-link hook is a unit of its own (`lib/crewDeepLink.test.tsx`); here
@@ -135,6 +136,43 @@ describe('useOpenInAppPath', () => {
     act(() => { open('/schedule?job=b') })
     expect(guard).toHaveBeenCalledTimes(1)
     expect(here).toBe('/schedule?job=a')
+  })
+
+  function mountWithRoster(at: string, openKeys: string[]) {
+    const state = createTestStore().getState().dashboard
+    const seeded = createTestStore({
+      dashboard: { ...state, slotsLoaded: true, slots: openKeys.map(key => ({ key, title: key })) as never },
+    })
+    render(
+      <Provider store={seeded}>
+        <MemoryRouter initialEntries={[at]}>
+          <NavigationLeaveGuardProvider><Page guard={() => true} /></NavigationLeaveGuardProvider>
+        </MemoryRouter>
+      </Provider>,
+    )
+    return seeded
+  }
+
+  it('resumes a CLOSED session a link names, as a closed-session chip does, rather than calling it deleted', async () => {
+    const meta = vi.spyOn(api, 'sessionMeta').mockResolvedValue({ key: 'chat-9-1785000000', title: 'Old run' })
+    const resume = vi.spyOn(api, 'resumeChatSlot').mockResolvedValue({ ok: false, key: 'chat-9-1785000000' } as never)
+    const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000'])
+    await act(async () => { open('/chat?sid=chat-9-1785000000') })
+    expect(meta).toHaveBeenCalledWith('chat-9-1785000000')
+    expect(resume).toHaveBeenCalledWith('chat-9-1785000000', 'Old run')
+    expect(store.getState().chat.switchSlotGone).toBeNull()
+    expect(here).toBe('/chat')
+    meta.mockRestore()
+    resume.mockRestore()
+  })
+
+  it('switches an OPEN session a link names in place, with no closed-session probe', () => {
+    const meta = vi.spyOn(api, 'sessionMeta')
+    const store = mountWithRoster('/chat?sid=chat-1-1785000000', ['chat-1-1785000000', 'chat-2-1785000000'])
+    act(() => { open('/chat?sid=chat-2-1785000000') })
+    expect(meta).not.toHaveBeenCalled()
+    expect(store.getState().chat.activeSlot).toBe('chat-2-1785000000')
+    meta.mockRestore()
   })
 
   it('does not ask about the session already on screen', () => {
