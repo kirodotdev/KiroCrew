@@ -133,6 +133,33 @@ def _local_agent_off_start_urls() -> list[str]:
     return sorted(edition_idc_profiles())
 
 
+def _sign_in_policy() -> Any:
+    """The edition's sign-in policy (``lts_sign_in.LTS`` or ``OSS``)."""
+    from kiro_crew import edition, lts_sign_in
+
+    return lts_sign_in.LTS if edition.is_lts() else lts_sign_in.OSS
+
+
+def _refuse_ineligible_provider(provider: str) -> web.Response | None:
+    """A coded 400 when this edition's sign-in checks would refuse *provider*, else None.
+
+    In an LTS build a Builder ID or social sign-in stored in the vault closes the
+    gate (``lts_sign_in.provider_eligible``), so it is refused before it starts,
+    as the sign-in-only gateway refuses it.
+    """
+    from kiro_crew import lts_sign_in
+
+    if lts_sign_in.provider_eligible(provider, _sign_in_policy()):
+        return None
+    return web.json_response(
+        {
+            "error": "Sign in with your organisation's Company SSO.",
+            "code": "organisation_sign_in_required",
+        },
+        status=400,
+    )
+
+
 async def api_kas_login_status(request: web.Request) -> web.Response:
     """GET /api/kas-login — auth state + the transport this install shape supports.
 
@@ -152,6 +179,7 @@ async def api_kas_login_status(request: web.Request) -> web.Response:
         body = await service.status()
         body["company_sign_in"] = await asyncio.to_thread(_company_sign_in)
         body["local_agent_off_start_urls"] = await asyncio.to_thread(_local_agent_off_start_urls)
+        body["organisation_only"] = _sign_in_policy().require_profile
         return web.json_response(body)
     except TokenStoreError as err:
         # A refused (e.g. linked) token-store directory is a coded storage
@@ -186,6 +214,9 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Missing 'provider'.", "code": "invalid_provider"}, status=400
         )
+    refused = _refuse_ineligible_provider(provider)
+    if refused is not None:
+        return refused
     try:
         result = await service.begin_device(
             provider, start_url=start_url, region=region, replaces=replaces
@@ -418,6 +449,9 @@ async def api_kas_login_begin_loopback(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Missing 'provider'.", "code": "invalid_provider"}, status=400
         )
+    refused = _refuse_ineligible_provider(provider)
+    if refused is not None:
+        return refused
     try:
         result = await service.begin_loopback(provider, replaces=replaces)
     except UnknownIdentityError:

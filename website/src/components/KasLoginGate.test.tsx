@@ -102,6 +102,23 @@ describe('KasLoginGate', () => {
     ).toBeInTheDocument()
   })
 
+  it('offers only company SSO in the Settings card when the gateway accepts no other sign-in', async () => {
+    // An LTS gateway: a Builder ID or social sign-in would close its gate.
+    kasLoginStatus.mockResolvedValue({
+      authenticated: false,
+      provider: null,
+      identity: null,
+      transport: 'device',
+      organisation_only: true,
+    })
+    renderWithProviders(<KasLoginEmbedded />)
+
+    expect(await screen.findByTestId('kas-login-sso-form')).toBeInTheDocument()
+    for (const name of ['Continue with Google', 'Continue with GitHub', 'Continue with AWS Builder ID']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+  })
+
   it('shows the AWS Builder ID and company SSO buttons with no caption', async () => {
     renderWithProviders(<KasLoginGate />)
 

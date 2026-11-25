@@ -209,12 +209,9 @@ async def _prerequisite_status(request: web.Request) -> web.Response:
     )
 
 
-#: The only sign-in that yields an organisation profile the rules fetch accepts.
-_ORGANISATION_PROVIDER = "idc"
-
-
 def _kas_handler(name: str) -> Any:
     async def _dispatch(request: web.Request) -> web.StreamResponse:
+        from kiro_crew import lts_sign_in as sign_in
         from kiro_crew.dashboard.handlers import kas_login
 
         if name == "api_kas_login_begin_device":
@@ -223,7 +220,7 @@ def _kas_handler(name: str) -> Any:
             except Exception:
                 body = None
             provider = body.get("provider") if isinstance(body, dict) else None
-            if provider != _ORGANISATION_PROVIDER:
+            if provider != sign_in.ORGANISATION_PROVIDER:
                 # A personal account has no organisation profile, so the boot after
                 # it would only exit. Refused before any sign-in starts.
                 return web.json_response(
