@@ -5199,6 +5199,19 @@ gates the test names and leave `configured_kind_routing_mode()` (or any
 "configured_kind_routing_mode", lambda: "off")` beside the other pins in the pass
 helper, so a default flip in another stage cannot change what this test compares.
 
+### Lines that several threads print to one pipe
+
+A child process whose threads each `print()` a line, compared line by line by the
+parent, races on the pipe. `print(x)` writes `x` and its newline as two writes, so two
+threads released by the same event can land as `runningdropped` plus an empty line.
+`test_a_normal_exit_finishes_running_and_queued_work_and_refuses_new_work` in
+`test/test_enqueue_only_pool.py` red this way on macOS runners, on five PRs over four
+bases, while every line was really printed. `flush=True` does not help: it flushes
+after both writes, not between them. Bad: `print(line, flush=True)` from a worker.
+Good: one `os.write(1, (line + "\n").encode())` per line, a single `write(2)` well under
+`PIPE_BUF`, so no other writer can land inside it; send every line through the same
+helper so no buffered `print` mixes in.
+
 ### A CI wait that runs out is infrastructure, not a red test
 
 A job that waits on another system (a gate run, the API quota) must size its wait
