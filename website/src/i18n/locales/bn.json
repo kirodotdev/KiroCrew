@@ -10665,6 +10665,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "আপনার ফোনে {{productName}} ব্যবহার করুন",
       "close": "বন্ধ করুন",
+      "dialog_load_failed": "ফোন সংযোগ করার উপায়গুলো লোড করা যায়নি। গেটওয়ের সংযোগ পরীক্ষা করে আবার চেষ্টা করো।",
       "scan_with_your_phone_camera_to_continue_with_the_s": "ফোনের ক্যামেরা দিয়ে স্ক্যান করে মোবাইল ব্রাউজারে {{productName}} খুলুন। সবকিছু এই কম্পিউটারের সাথে সিঙ্ক থাকে।",
       "generating": "তৈরি হচ্ছে…",
       "show_qr_code": "QR কোড দেখান",
@@ -13351,6 +13352,7 @@
         "never_started_memory_pressure_reason": "macOS মেমোরির চাপ সময়মতো কমেনি; চাপ কমলে বা চলমান কোনো এজেন্ট শেষ হলে “ব্যর্থগুলো আবার চালান” ব্যবহার করো",
         "loading": "লোড হচ্ছে…",
         "loading_workspace": "ওয়ার্কস্পেস লোড হচ্ছে…",
+        "workspace_load_failed": "ফাইল ট্রি লোড করা যায়নি। গেটওয়ের সংযোগ পরীক্ষা করে আবার চেষ্টা করো।",
         "logs": "লগ",
         "no_issues_in_this_session_yet_mention_a_github_o": "এই সেশনে এখনও কোনো issue নেই। GitHub বা GitLab-এর issue-র লিংক উল্লেখ করো, সেটা এখানে দেখা যাবে।",
         "no_links_yet": "এই সেশনে এখনও কোনো লিংক নেই। চ্যাটে কোনো URL উল্লেখ করো, সেটা এখানে দেখা যাবে।",

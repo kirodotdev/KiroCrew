@@ -4298,6 +4298,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Use {{productName}} on your phone",
       "close": "Close",
+      "dialog_load_failed": "The ways to connect your phone couldn't load. Check the connection to the gateway, then try again.",
       "scan_with_your_phone_camera_to_continue_with_the_s": "Scan with your phone camera to open {{productName}} in your mobile browser. Everything stays in sync with this computer.",
       "generating": "Generating…",
       "show_qr_code": "Show QR code",
@@ -6091,6 +6092,7 @@
         "error": "Error",
         "issues": "Issues",
         "loading_workspace": "Loading workspace…",
+        "workspace_load_failed": "The file tree couldn't load. Check the connection to the gateway, then try again.",
         "logs": "Logs",
         "no_issues_in_this_session_yet_mention_a_github_o": "No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.",
         "no_matches": "No matches",

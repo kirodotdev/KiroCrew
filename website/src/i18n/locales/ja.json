@@ -10421,6 +10421,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "スマホで {{productName}} を使う",
       "close": "閉じる",
+      "dialog_load_failed": "スマホを接続する方法を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
       "scan_with_your_phone_camera_to_continue_with_the_s": "スマホのカメラでスキャンすると、モバイルブラウザーで {{productName}} を開けます。すべてこのパソコンと同期されます。",
       "generating": "生成中…",
       "show_qr_code": "QR コードを表示",
@@ -13049,6 +13050,7 @@
         "never_started_memory_pressure_reason": "macOS のメモリプレッシャーが時間内に下がりませんでした。プレッシャーが下がるか実行中のエージェントが終了したら、「失敗を再試行」を使ってください",
         "loading": "読み込み中…",
         "loading_workspace": "ワークスペースを読み込み中…",
+        "workspace_load_failed": "ファイルツリーを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "logs": "ログ",
         "no_issues_in_this_session_yet_mention_a_github_o": "このセッションにはまだイシューがありません。GitHub または GitLab のイシューリンクを言及すると、ここに表示されます。",
         "no_links_yet": "このセッションにはまだリンクがありません。チャットで URL を言及すると、ここに表示されます。",

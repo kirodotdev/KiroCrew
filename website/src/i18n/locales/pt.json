@@ -10909,6 +10909,7 @@
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar o {{productName}} no seu telefone",
       "close": "Fechar",
+      "dialog_load_failed": "Não foi possível carregar as formas de conectar seu telefone. Verifique a conexão com o gateway e tente novamente.",
       "scan_with_your_phone_camera_to_continue_with_the_s": "Escaneie com a câmera do telefone para abrir o {{productName}} no navegador móvel. Tudo fica sincronizado com este computador.",
       "generating": "Gerando…",
       "show_qr_code": "Mostrar código QR",
@@ -13653,6 +13654,7 @@
         "never_started_memory_pressure_reason": "A pressão de memória do macOS não diminuiu em tempo; quando ela diminuir ou um agente em execução terminar, use “Repetir falhas”",
         "loading": "Carregando…",
         "loading_workspace": "Carregando o espaço de trabalho…",
+        "workspace_load_failed": "Não foi possível carregar a árvore de arquivos. Verifique a conexão com o gateway e tente novamente.",
         "logs": "Logs",
         "no_issues_in_this_session_yet_mention_a_github_o": "Ainda não há issues nesta sessão. Mencione um link de issue do GitHub ou do GitLab e ela vai aparecer aqui.",
         "no_links_yet": "Ainda não há links nesta sessão. Mencione uma URL no chat e ela vai aparecer aqui.",
