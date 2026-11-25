@@ -524,7 +524,12 @@ forms (`is_sensitive_bash_command`, including `cat`, `>`, `tee`, and
 Mechanics:
 
 - Every read fails soft to `{}` → **DISABLED**. Absent, unreadable, truncated or
-  hand-mangled must never mean "enabled".
+  hand-mangled must never mean "enabled". One leading UTF-8 byte-order mark is not
+  content (`user_json.loads_user_json`, as for `denied_commands.json`). A file that
+  is present but unusable logs one WARNING per file version naming
+  `computer_use.json` and the error type, never its contents, and
+  `kirocrew computer doctor` lists the same sentence under errors from one read
+  (`enable_state.load_state_for_report`).
 - `is_enabled()` is strict identity against `True`: a hand-edited
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.

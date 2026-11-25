@@ -2422,7 +2422,10 @@ gateway behaves as it does without it.
   confirmed; a record pointing at the main checkout, another channel's tree or
   an unregistered path fails. Git is then asked from the target's side too: the path must hold a `.git` file, be its own top level and share the repository's common git directory, so a registration forged into the shared `.git`, or a directory swapped in at the path after registration, fails as well (SEL `code_channel_worktree` denied). An untracked symlink is shown as a
   link (mode `120000` and its target text), never followed; without `dir_fd`
-  support (Windows) untracked files are not rendered. Everything bound for Slack —
+  support (Windows) untracked files are not rendered, and the Code tab's note names
+  the platform as the reason (`render_untracked` answers `UNREAD`, which
+  `truncation_note` words on its own), keeping the size-limit and credential
+  sentence for the cases it describes. Everything bound for Slack —
   diff body, base/head labels and context-bar labels — goes through the gateway's
   outbound redaction (`platform.context.redact_via_context`, so an installed credential policy applies: credentials and exfiltration
   URLs) before it is sized, cut and hashed. Line-level redaction alone misses a
