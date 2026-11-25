@@ -755,6 +755,46 @@ budget against the bucket, each deadline against the wait inside it and each
 step's handling of every exit code; `test/test_ci_red_census_week.py` holds the
 sum to what one census of all seven days gives.
 
+### Scheduled workflows: the test-selection miss ledger
+
+`test-selection-ledger.yml` keeps the miss ledger of diff-based test selection:
+what each pull request's shadow verdict (`test-selection-verdict`, from the
+`changes` job) would have skipped, joined with what its run really failed. It is
+shadow only. One job on a standard hosted runner, `read` permissions only
+(`contents`, `actions`, `checks`, `issues`), in this repository only; it opens
+no issue and posts no comment. A verdict is uploaded by the pull request's own
+run, so the ledger's numbers are evidence for a person: nothing may turn
+selection on, make a tier skippable or pass the enforcement gate on them alone.
+Turning selection off on them is safe.
+
+- **Five passes a night, 05:11 to 08:11 UTC.** Each runs
+  `scripts/ci_test_selection_ledger_night.py`: restore the ledger, read at most
+  700 REST requests' worth of the last two days' pull-request runs with
+  `scripts/ci_test_selection_ledger.py`, report on the whole ledger, and upload
+  `ledger.jsonl`, `rates.json` and `summary.md` as the artifact
+  `test-selection-ledger`, kept 90 days. The summary goes to the job summary.
+- **A pass keeps out of a low pool.** It reads nothing unless the hour's pool
+  holds 7,500 requests beyond what it may spend. Under that it uploads nothing
+  and ends green with a notice; it never waits for a reset, and a later pass
+  reads the rest.
+- **The history is the artifact chain.** Verdicts are kept a week, so the days
+  of data live only in this workflow's own artifacts. A pass restores the
+  ledger from the newest successful `schedule` or `workflow_dispatch` run of
+  this workflow on the default branch of this repository that holds one,
+  looking back through at most 20 runs: any run can upload an artifact of the
+  same name. It starts an empty ledger unasked only when every successful run
+  of the workflow was looked at and none lists the artifact at all, live or
+  expired; the summary's first line then says so. In every other case where no
+  ledger is found, and when a read fails or the restored file is not a ledger,
+  the pass fails and uploads nothing. Rows older than 90 days are dropped at
+  restore.
+
+A dispatch takes `since` (the first UTC day of runs to list; verdicts older
+than a week are gone), `restore_run` (restore from that run of this workflow,
+held to the same rule) and `start_empty` (start an empty ledger on purpose).
+The summary's first line records either. `test/test_ci_test_selection_ledger_night.py`
+pins each rule.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.
