@@ -963,7 +963,9 @@ class LinkOpenConfig:
     frame (``apps/app_frame.py``, registered by ``apps/link_open_frame.py``) in a
     host-drawn dialog, which imports ``entry`` and calls the module's ``activate(ctx)``; the returned provider's ``open`` receives
     that one URL. Every other click, and every link nobody claims, behaves as it
-    did.
+    did. An entry with ``page`` instead of ``entry`` opens no frame: the host routes
+    to the app's own dashboard page with the URL in the ``page.param`` query
+    parameter.
 
     Declarative for the reason ``linkPreviews`` is: core reads ``hosts`` without
     importing app code, so a disabled or broken app costs nothing on a click.
@@ -972,6 +974,11 @@ class LinkOpenConfig:
     id: str = ""  # stable id, unique within the app
     # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
     entry: str = ""
+    # ``page.param``: the query parameter of the app's page that carries the URL.
+    # Exactly one of ``entry`` and ``page``.
+    page_param: str = ""
+    #: ``page`` present but not ``{"param": <string>}``. Not serialized.
+    bad_page: bool = False
     # Exact hostnames, or a leading dot for "this domain and every subdomain".
     # https links only. Same rules as ``linkPreviews.hosts`` (``app_hosts``).
     hosts: list[str] = field(default_factory=list)
@@ -989,6 +996,8 @@ class LinkOpenConfig:
             d["id"] = self.id
         if self.entry:
             d["entry"] = self.entry
+        if self.page_param:
+            d["page"] = {"param": self.page_param}
         if self.hosts:
             d["hosts"] = list(self.hosts)
         if self.fullUrl:
@@ -998,9 +1007,14 @@ class LinkOpenConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LinkOpenConfig:
         raw_hosts = data.get("hosts", [])
+        page = data.get("page")
+        param = page.get("param") if isinstance(page, dict) and set(page) == {"param"} else None
+        page_ok = isinstance(param, str)
         return cls(
             id=str(data.get("id", "")),
             entry=str(data.get("entry", "")),
+            page_param=param if isinstance(param, str) else "",
+            bad_page="page" in data and not page_ok,
             # Normalized, as ``LinkPreviewConfig`` does, so what is matched, signed and
             # granted is one form.
             hosts=(
@@ -1020,7 +1034,13 @@ class LinkOpenConfig:
             errors.append("contributes.linkOpen: entry missing id")
         elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
-        if not self.entry:
+        if self.bad_page:
+            errors.append(f'{where}: page must be {{"param": <name>}}')
+        elif self.page_param and not _PANEL_TAB_ID_RE.fullmatch(self.page_param):
+            errors.append(f"{where}: page.param must be a storage-safe slug ({self.page_param!r})")
+        if self.entry and self.page_param:
+            errors.append(f"{where}: declare entry or page, not both")
+        elif not self.entry and not self.page_param and not self.bad_page:
             errors.append(f"{where}: missing entry")
         # The rule every host-claiming point shares (``app_hosts``).
         errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_OPEN_HOSTS))
