@@ -110,11 +110,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for all four: the git/tar self-target floor's GNU ``parallel`` replacement
 #: readings move to ``kiro_crew.security.argv_floor_git_tar_parallel``, which the deny-gate
 #: security path imports eagerly, so one more module loads before the listing on every server.
+#: Raised by 1 for each server: every thread pool ``kiro_crew.executors`` builds is now a
+#: ``kiro_crew.enqueue_only_pool.EnqueueOnlyThreadPoolExecutor``, which the module imports
+#: at its top (it was imported inside ``configure_default_executor()`` alone); that
+#: stdlib-only module is the one file added, and nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 501,
-    "mcp-cron": 368,
-    "mcp-guide": 362,
-    "mcp-mate": 364,
+    "mcp-core": 502,
+    "mcp-cron": 369,
+    "mcp-guide": 363,
+    "mcp-mate": 365,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

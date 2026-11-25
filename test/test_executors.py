@@ -372,6 +372,29 @@ async def test_result_and_exception_pass_through():
         ex.shutdown_maintenance_executor()
 
 
+def test_a_getter_whose_first_worker_cannot_start_raises_and_the_next_call_builds(monkeypatch):
+    """A refused first worker start raises from the getter, inside every fire-and-forget
+    caller's ``try``, as the stdlib's ``submit`` raised it; no pool is kept half-built."""
+    ex.shutdown_maintenance_executor()
+    real_start = threading.Thread.start
+    refused: list[str] = []
+
+    def refusing_start(thread: threading.Thread) -> None:
+        if thread.name == "mc-cron_0" and not refused:
+            refused.append(thread.name)
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", refusing_start)
+    try:
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            ex.cron_executor()
+        assert ex._cron_pool is None
+        assert ex.cron_executor().submit(int, "4").result(default_timeout()) == 4
+    finally:
+        ex.shutdown_maintenance_executor()
+
+
 @pytest.mark.asyncio
 async def test_positional_args_reach_the_callable():
     ex.shutdown_maintenance_executor()
