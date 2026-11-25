@@ -731,6 +731,38 @@ Tests: `website/src/test/ChatEmbed.pushRead.test.tsx`,
 `website/src/test/appSlotPush.test.ts`,
 `website/src/test/useWebSocket.appSlotRows.test.ts`, `test/test_app_slot_push_frames.py`.
 
+## ChatEmbed read relay
+
+While a `ChatEmbed` is seen, the rows it renders count as read: it sends the
+dashboard's `slot_read` through `emitExactSlotRead`, watermarked at exactly the
+newest gateway-minted row it renders (`newestServerRowTs`), never client time,
+so a row that lands after the read keeps its badge on every device. Unlike
+`emitSlotRead`, the exact entry point does not widen the watermark to permission
+rows the dashboard socket received or to a conductor's read cover: the embed has
+not necessarily fetched those rows. Both entry points share the per-slot
+throttle, and a coalesced send carries the newest watermark either caller passed.
+
+Seen means the host tab is active (`info.active`), the person is not away from
+the window (`isWindowAway`: the page is visible and the window has focus), the
+transcript scroller is on screen (`elementOnScreen`: a box with area, some of it
+inside the viewport, and a hit test that lands inside it, so a header without the
+transcript, an overflow clip or an opaque cover counts as unseen), and it is not
+hidden by `visibility` or `opacity` (`checkVisibility`). An embed mounted under
+`display: none` to load ahead, with no mounted transcript scroller, collapsed to
+no height, scrolled out of view or covered reads nothing. The gate reads the
+scroller ref at each check, so a scroller that mounts later is eligible at the
+next poll or visibility event. The gate is judged on demand: on every landed read
+of the slot (`dataUpdatedAt`) and on focus, blur and visibility changes, never by
+an observer. So an embed scrolled or expanded into view, or a cover that lifts,
+with no other event, is read at the next poll; a watermark already sent is not
+sent again. When the embed stops being seen on a focus, blur, visibility or
+host-tab change, its pending trailing read is sent at once (`flushSlotRead`).
+The read rides the dashboard user's own socket, so the gateway's owner gate on
+`slot_read` still applies.
+
+Writers: `website/src/app-sdk/embedSlotRead.ts`, `website/src/app-sdk/ChatEmbed.tsx`.
+Tests: `website/src/test/ChatEmbed.slotRead.test.tsx`.
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.
