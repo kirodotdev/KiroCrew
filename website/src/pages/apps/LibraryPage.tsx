@@ -389,13 +389,19 @@ export default function LibraryPage() {
 
   return (
     <>
-      {/* Standard page header with a right-side actions slot: search only —
-          no SegmentedControl (the split made Discover and Library pages), and
-          the Sources gear stays on Discover (page-layout-pattern). */}
+      {/* Standard page header with a right-side actions slot: the Discover
+          apps button and search — no SegmentedControl (the split made Discover
+          and Library pages), and the Sources gear stays on Discover
+          (page-layout-pattern). The button is how Discover is opened once its
+          sidebar row is off; below `sm` it is icon-only so it fits a phone
+          header beside the search box. */}
       <PageHeader
         title={i18nT('pages.appsPage.library')}
         subtitle={i18nT('pages.appsPage.manage_your_installed_apps')}
-        actions={
+        actions={<>
+          <Btn onClick={() => navigate('/apps')} aria-label={i18nT('pages.appsPage.discover_apps')}>
+            <Compass size={14} aria-hidden /><span className="hidden sm:inline">{i18nT('pages.appsPage.discover_apps')}</span>
+          </Btn>
           <SearchInput
             placeholder={i18nT('pages.appsPage.search_library')}
             value={query}
@@ -403,7 +409,7 @@ export default function LibraryPage() {
             className="w-[220px]"
             aria-label={i18nT('pages.appsPage.search_library')}
           />
-        }
+        </>}
       />
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
