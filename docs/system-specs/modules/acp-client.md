@@ -3006,6 +3006,7 @@ ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 | Servers | A person is waiting (`person_waits`) | Nobody is waiting |
 |---|---|---|
 | Kiro Crew's own managed servers | required: the whole start budget, the start fails without them | the same |
+| An app agent's own app servers (`own_app_servers`: `<app>:<server>`, where `<app>` is the installed app that declares the agent, looked up off the loop by `owning_app_for_start` through `apps.manager.owning_app_for_agent`; on the session or in the agent's block, shared stub included) | best effort, at most `APP_SERVER_WAIT_SECS` (10 s), waited first (`session_handle_mcp.wait_own_app_servers`) and not again by the 5 s wait or the first-turn hold; it ends once each name has settled, a host-disabled or registry-dropped server included; still late, the session's report names it as still starting | the same |
 | Sent on the session by Kiro Crew (a Connection's bridge) | best effort, at most `MOUNTED_MCP_WAIT_SECS` (5 s) | the same |
 | One of the agent's own the gateway shares (a session element that runs `-m kiro_crew.mcp_gateway.stub`) | not waited for by the start; left to the first turn, like the row below | best effort, at most 5 s |
 | The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s; never for `kirocrew-lite` |
