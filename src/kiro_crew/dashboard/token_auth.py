@@ -76,6 +76,7 @@ from kiro_crew.dashboard.token_auth_app_scope import _enforce_app_scope, _prime_
 from kiro_crew.dashboard.token_auth_callers import (
     _derive_internal_caller_app,
     _internal_caller_record_missing,
+    _note_unattested_tcp_session_key,
     _unix_request_socket,
     _verify_unix_peer,
 )
@@ -748,6 +749,10 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    if _unix_sock is None and not _ipc_granted:
+                        # Log only: records a TCP caller whose declared key nothing
+                        # attests, and the request goes on exactly as before.
+                        await _note_unattested_tcp_session_key(request)
                     await publish_actor(
                         request, trust=tailnet_trust, serve_peer=None, internal=True
                     )
@@ -1629,6 +1634,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         app_token_path_allowed,
     )
     from kiro_crew.dashboard.token_auth_callers import (  # noqa: F401
+        _SESSION_KEY_KINDS,
+        _WOULD_REFUSE_COUNTS,
+        _WOULD_REFUSE_LOG_INTERVAL_SECS,
         KNOWN_INTERNAL_CALLERS,
         MEMBER_CHAT_PRINCIPAL_KEY,
         _bound_session_keys_on_chain,
@@ -1636,10 +1644,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_job_owner,
         _key_segment,
         _live_session_keys_on_chain,
+        _route_template,
+        _session_key_kind,
         _slot_by_linked_key,
         _subagent_caller_record,
         _subagent_owner,
         _subagent_record_exists,
+        _would_refuse_log_last,
         app_owner_of_session_key,
         app_owns_transcript,
         caller_names_a_missing_slot,
@@ -1753,6 +1764,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         PeerCredResult,
         check_peer_is_self,
         get_peer_pid,
+    )
+    from kiro_crew.member_memory_auth import (  # noqa: F401
+        session_key_is_attested,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         is_channel_session_key,
