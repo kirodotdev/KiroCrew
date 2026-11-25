@@ -11,7 +11,7 @@ import asyncio
 import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         port_resolution,
+        release_site,
         run_marker,
         shutdown_event,
     )
@@ -194,11 +195,18 @@ def _register_listener_guard_shutdown(app: web.Application, state: DashboardStat
     front of the primary, and each guard restores its neighbour only while it is
     still the installed handler. Detaching the primary first therefore restores
     nothing and leaves the secondary's handler installed on the loop for good.
+    The entry-port guards are armed between the two
+    (:func:`_arm_entry_listener_guards`), so they are detached between them,
+    newest first.
     """
 
     async def _listener_guard_shutdown(app_: web.Application) -> None:
-        for attr in ("_secondary_listener_guard", "_listener_guard"):
-            guard = getattr(state, attr, None)
+        guards = [
+            getattr(state, "_secondary_listener_guard", None),
+            *reversed(getattr(state, "_entry_listener_guards", ())),
+            getattr(state, "_listener_guard", None),
+        ]
+        for guard in guards:
             if guard is not None:
                 guard.stop()
 
@@ -390,6 +398,129 @@ def _arm_secondary_listener_guard(
     )
     guard.arm()
     state._secondary_listener_guard = guard
+
+
+async def _entry_listener_probe(host: str, port: int, *, timeout: float) -> bool:
+    """The entry guards' probe: sends nothing and says the listener answers.
+
+    A request to the entry port is judged by the entry gate, and the guard's own
+    ``GET /api/live`` is not a Crew API path there: each probe would be answered 404
+    and written to the security event log as a refusal. The guard still checks on
+    every interval that the LISTEN socket is open, and still hears a failed accept
+    from the loop, which are the two signs of the defect it exists for.
+    """
+    return True
+
+
+def _arm_entry_listener_guards(
+    state: DashboardState,
+    runner: web.AppRunner,
+    sites: Sequence[web.SockSite],
+    ref: Any,
+) -> None:
+    """Watch each entry-port listener and rebind it if it dies. Windows only.
+
+    The same Windows defect as :func:`_arm_listener_guard`: one failed ``accept()``
+    closes a LISTEN socket for good while the process lives on. Each entry site
+    gets its own guard, which rebinds the loopback address and port it read from
+    the live socket through ``_bind_once``. When a guard cannot, the entry port is
+    closed and the gateway keeps serving its own listener
+    (:func:`_close_entry_port`): the entry port is one the owner added for callers
+    on other machines, and the programs on this machine do not depend on it.
+
+    Call it right after the primary guard is armed and before the secondary one:
+    the shutdown hook stops the guards in the reverse of that order
+    (:func:`_register_listener_guard_shutdown`). The caller then asks
+    :func:`_listener_closed_before_arming`.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return
+    loop = asyncio.get_running_loop()
+
+    def _given_up(reason: str) -> None:
+        # A guard runs its hooks on a worker thread; the listeners, the guards and
+        # the gate belong to the loop.
+        loop.call_soon_threadsafe(_close_entry_port, state, ref, reason)
+
+    def _rebound() -> None:
+        # A guard that was in the middle of a rebind when the port was closed still
+        # finishes it. That listener is closed again here.
+        loop.call_soon_threadsafe(_reclose_entry_listeners, state, ref)
+
+    for site in sites:
+        if not getattr(getattr(site, "_server", None), "sockets", None):
+            continue
+        guard = ListenerGuard(
+            runner,
+            site,
+            shutdown_event,
+            bind_factory=_bind_once,
+            probe=_entry_listener_probe,
+            on_listener_restored=_rebound,
+            on_give_up=_given_up,
+        )
+        guard.arm()
+        state._entry_listener_guards.append(guard)
+
+
+def _close_entry_port(state: DashboardState, ref: Any, reason: str) -> None:
+    """Close the entry port after a guard gave up, and tell the owner. On the loop.
+
+    *ref* is the app's ``entry_gate.GateRef``. Both entry listeners go, the one that
+    still serves too: a proxy that dials ``localhost`` would otherwise reach the
+    entry on one address and not the other. Their guards are stopped first, newest
+    first, so none rebinds what is being closed. The gateway's own listener and its
+    guard are not touched, and nothing reopens the port: a restart of the gateway
+    does.
+    """
+    if ref.closed:
+        return
+    guards = list(getattr(state, "_entry_listener_guards", ()))
+    # Not ``guard.stop()``: that cancels the probe task, and a rebind running inside
+    # it would be cut off after its listener opened, with no guard holding that
+    # listener. A retired guard finishes a rebind it had begun, and
+    # :func:`_reclose_entry_listeners` closes that listener.
+    for guard in reversed(guards):
+        guard.retire()
+    told = ref.close([guard.site for guard in guards], reason)
+    if told is None:
+        return
+    title, body = told
+    logger.warning("%s (%s)", body, reason)
+    try:
+        state.notify("system", title, body)
+    except Exception:
+        logger.debug("the entry-port-closed notification failed", exc_info=True)
+
+
+def _reclose_entry_listeners(state: DashboardState, ref: Any) -> None:
+    """Close an entry listener a guard reopened after the port was closed. On the loop.
+
+    :func:`_close_entry_port` does not interrupt a rebind a guard has already begun,
+    so one may land after it. A stopped guard begins no other. Does nothing while
+    the port is open.
+    """
+    if not ref.closed:
+        return
+    for guard in getattr(state, "_entry_listener_guards", ()):
+        release_site(guard.site)
+
+
+def _listener_closed_before_arming(state: DashboardState) -> str:
+    """Which listener was already closed when its guard was armed: ``"primary"``,
+    ``"entry"`` or ``""`` for none.
+
+    The entry binds are awaits between each listener's start and its guard. A guard
+    reads the name it rebinds from the live socket, and a closed socket has none,
+    so such a guard would later rebind some other port and call it a recovery.
+    Always ``""`` off Windows, where no guard is armed.
+    """
+    primary = getattr(state, "_listener_guard", None)
+    if primary is not None and not primary.listener_open():
+        return "primary"
+    if any(not guard.listener_open() for guard in getattr(state, "_entry_listener_guards", ())):
+        return "entry"
+    return ""
 
 
 def _reconcile_listener_publication(
