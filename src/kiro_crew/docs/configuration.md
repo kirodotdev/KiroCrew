@@ -196,7 +196,7 @@ provider.
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. On opencode 1.x the model is not offered OpenCode's own sub-agents (its `task` tool), because 1.x cannot route their tool approvals to Kiro Crew; Kiro Crew's own sub-agents still work. |
 | `mimocode` | MiMo Code | Uses MiMo Code's native ACP server (`mimo acp`, tested on the 0.1 line). Requires a working sandbox backend; a session is refused when `MIMOCODE_HOME` is set. |
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
-| `goose` | goose | Uses goose's native ACP server. |
+| `goose` | goose | Uses goose's native ACP server. Each session runs on a separate goose home Kiro Crew builds, so your own `permission.yaml` approves nothing there. That home is built on macOS and Linux only: on Windows a goose session is refused; run goose under WSL. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 | `antigravity` | Google Antigravity | Runs the standalone ACP Registry runtime (`agy_acp_server` plus `localharness_external`). Signs in with its own Google/API-key configuration and runs in `default` permission mode; `auto_edit` and `yolo` are refused. Kiro Crew verifies Antigravity ACP 1.4.4 only and refuses other versions, including the newer release the ACP Registry serves; install the 1.4.4 archive the backend card names. |
