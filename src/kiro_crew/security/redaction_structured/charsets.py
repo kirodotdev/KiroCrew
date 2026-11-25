@@ -10,6 +10,8 @@ import string
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
+
 DIGITS = string.digits
 UPPER = string.ascii_uppercase
 LOWER = string.ascii_lowercase
@@ -98,6 +100,37 @@ def ascii_lower(text: str) -> str:
         # Same result for ASCII text, without a per-character table lookup.
         return text.lower()
     return text.translate(_ASCII_LOWER)
+
+
+#: The full-width forms block (``！`` to ``～``) and the ideographic space, mapped to the
+#: ASCII character NFKC gives each: one character for one, so indices are kept.
+_WIDE_FOLD = {**{c: c - 0xFEE0 for c in range(0xFF01, 0xFF5F)}, 0x3000: 0x20}
+
+
+def fold_wide(text: str) -> str:
+    """*text* with full-width ASCII forms (``ｐａｓｓｗｏｒｄ``, ``：``, ``＝``) read as
+    ASCII, so every index of the copy matches the original."""
+    if text.isascii():
+        return text
+    return text.translate(_WIDE_FOLD)
+
+
+def breaks_word(c: str) -> bool:
+    """Whether the non-ASCII character *c* separates words the way a blank does.
+
+    Chinese and Japanese text, and its punctuation, sit where English puts a blank;
+    every anchor literal and credential is ASCII, so such a character cannot be inside
+    one. A character a label match reads as an ASCII letter or digit stays inside the
+    word: ``ſ`` (``s`` under :func:`ascii_lower` and a case-blind regex) and a full-width
+    letter (:func:`fold_wide`). So does a default-ignorable character (``U+200B``): it
+    renders as nothing, and the credential plan reads a token through it.
+    """
+    if c.isascii() or ord(c) in DEFAULT_IGNORABLE:
+        return False
+    wide = fold_wide(c)
+    if wide.isascii():
+        return not (wide.isalnum() or wide == "_")
+    return not any(f.isascii() for f in (ascii_lower(c), c.casefold(), c.lower(), c.upper()))
 
 
 def run_end(text: str, start: int, chars: str, cap: int | None = None) -> int:
