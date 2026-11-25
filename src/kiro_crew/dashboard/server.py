@@ -1034,9 +1034,8 @@ async def start_dashboard(
     # boot-spawned backend gets the true origin, fixed and auto alike.
     from kiro_crew.dashboard.headless import bind_address
 
-    _dashboard_sock = await _reserve_dashboard_port(
-        bind_address(headless, bind_address_for(local_only)), port
-    )
+    state._bind_asked = bind_address(headless, bind_address_for(local_only))
+    _dashboard_sock = await _reserve_dashboard_port(state._bind_asked, port)
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)

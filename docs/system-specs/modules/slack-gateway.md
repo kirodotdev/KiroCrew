@@ -644,6 +644,9 @@ Right after naming the default executor, a step running off the event loop drops
 **No unattended path updates or restarts a running gateway** (maintainer
 decision of 2026-11-10,
 [decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)).
+A policy refresh that refuses the bound address is the one exception: it restarts
+the gateway once it is idle ([decision](../../decisions/2026-11-25-a-refused-bind-address-restarts-the-gateway-once-idle.md),
+[governance](governance.md)).
 The update coordinator may do exactly one thing on its own: build a new version
 BESIDE the running install and leave it staged. That is only possible on a
 `cli.sh` managed-venv install; a git checkout (`git reset`) and a policy
@@ -801,8 +804,10 @@ take the hold in `cli.main` after argument parsing.
   or two tests never share a clock. `kirocrew chat` runs its own provider
   process and registers no session here, so the gateway cannot see it; a caller
   that must cover terminal sessions (the edition's update agent) checks them
-  itself. The readers are the restart idle check (the full census) and the
-  user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
+  itself. The readers are the restart idle check (the full census), the
+  user-clicked restart below and the bind refresh (`dashboard/bind_refresh.py`,
+  which waits for the full census before it restarts for a refused bind address).
+  No other unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
 - **The census names what it counts, only to callers that already list that work.** `_in_flight_work_census`
@@ -882,7 +887,8 @@ take the hold in `cli.main` after argument parsing.
     own) answers with its counts and an empty list.
 - **The dashboard restart takes the same fence.** `updates_apply._restart_gateway`
   calls `DashboardState._restart_admission` (`restart_admission.admit_restart`,
-  wired by `restart_admission.wire` at dashboard boot) after it resolves its
+  wired by `restart_admission.wire` when either server entry point starts, the
+  dashboard or the API-only one) after it resolves its
   launcher and before it saves a slot: pause admission
   (`pause_turn_admission_for_update`, holder `"dashboard_restart"`), drain
   callbacks bounded by `_UPDATE_DRAIN_TIMEOUT_SECS`, read the census, and
@@ -1134,7 +1140,7 @@ Not covered here:
 
 **Self-initiated exits carry a non-zero status.** `_shutdown_and_exit` composes
 `shutdown_exit_code(watchdog) or persistence_lost_exit_code(...) or
-listener_guard_exit_code(...)` (the first term, the stale-asset watchdog's, is 0 in every state), so an operator
+listener_guard_exit_code(...) or bind_refused_exit_code(...)` (the first term, the stale-asset watchdog's, is 0 in every state), so an operator
 stop still exits 0 while a shutdown the gateway asked for itself does not —
 a restart-on-failure supervisor never relaunches an exit 0:
 
@@ -1144,6 +1150,7 @@ a restart-on-failure supervisor never relaunches an exit 0:
 | 72 (`EX_OSFILE`) | persistence watchdog (`dashboard/persistence_watchdog.py`) | the data home stopped persisting after a healthy boot and the re-confirmed failure is the restart-curable `ENOSYS` case (a seccomp filter inherited from a torn-down sandbox). Only `ENOSYS` self-exits: a failure a restart cannot cure (full disk `ENOSPC`, read-only remount `EROFS`, quota) is logged loudly once per distinct reason (not every tick) but keeps serving, since a relaunch would meet the same boot preflight and crash-loop. It does NOT gate the exit on a supervisor being able to relaunch (`supervisor_reentry`): the gateway this targets is typically started by hand inside a sandbox (`nohup`) and may have no supervisor, where exiting 72 stops a silent zombie loudly rather than restarting it; a systemd/launchd gateway never inherits the filter but gets the clean relaunch when any other persistence fault later turns `ENOSYS`-shaped |
 | 75 (`EX_TEMPFAIL`) | stale-asset watchdog | reserved and never produced: a vanished bundle is reported with an "update ready, restart to use it" notice and the gateway keeps serving |
 | 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`), primary or secondary listener | the TCP listener could not be restored, so the process was alive but unreachable; a sidecar listener that cannot be withdrawn gives up with 69 before any rebind attempt |
+| 77 (`EX_NOPERM`) | bind refresh (`dashboard/bind_refresh.py`) | a live policy refresh refuses the address the primary listener is bound to and, once the gateway is idle, the in-app restart cannot run, so the gateway stops rather than keep listening there (see [governance](governance.md), "Remote access") |
 | 78 (`EX_CONFIG`) | gateway lock refusal (`gateway_lock.LIVE_HOLDER_EXIT_CODE`), before the gateway runs — not a shutdown | the serving-holder predicate (`GatewayLock._serving_verdict`) is True: the process `/proc/locks` positively identifies as holding `gateway.lock` is running, holds the configured dashboard port with its OWN socket at the address this gateway is configured to bind, and answers HTTP there — a sibling gateway already serves this home. The systemd unit's `RestartPreventExitStatus=` names this one status so it is NOT relaunched (see [cli](cli.md), *Service Management*); every other lock refusal — a holder no surface can identify, however the recorded pid looks; a holder whose own socket at the probed address is silent (a wedged gateway); a holder on the port only at another address, or one the platform did not report (the residual row, unasserted by design, so a stranger's answer there is never credited to it) among them — exits 1 and is relaunched |
 
 The listener-guard path is Windows-only in practice: CPython's proactor loop
@@ -1154,8 +1161,8 @@ a state no rebind can fix.
 
 **The stale-asset watchdog reports; it never exits the gateway.** When an update
 prunes the running install, the process keeps running with its served bundle
-(`dist/index.html`) gone. A running gateway is never restarted by an unattended
-path ([decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
+(`dist/index.html`) gone. An update never restarts a running gateway by itself
+([decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
 so `run_stale_asset_watchdog` (`dashboard/stale_asset_watchdog.py`) keeps serving:
 a confirmed vanish (the bundle still missing `_CONFIRM_DELAY_SECS` after the first
 missing sample, so a frontend rebuild that recreates `static/dist/` is not an
@@ -1170,8 +1177,8 @@ every exit and never sets `shutdown_event`: this path has no exit status, drain,
 supervisor re-entry check or stay-up refusal. The
 `shutdown_exit_code(watchdog)` term in `_shutdown_and_exit` keeps an operator
 stop at exit 0 and the other self-initiated exits at their own statuses.
-`update_ownership.restart_refusal` has its own tests, and nothing in core
-calls it.
+`update_ownership.restart_refusal` has its own tests; in core only
+`dashboard/bind_refresh.py` reads it.
 
 The operator's opt-out from automatic restarts is read in one place,
 `stale_asset_watchdog.auto_restart_disabled()`: `KIROCREW_AUTO_RESTART=0`, or an
