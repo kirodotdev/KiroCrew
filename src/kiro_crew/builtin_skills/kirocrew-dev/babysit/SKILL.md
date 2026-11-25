@@ -27,6 +27,7 @@ On Webex, use the finite legacy path even for a supported pull request.
 |---|---|
 | User is waiting, total work under 30 minutes | Bounded in-turn `wait` + poll |
 | One supported pull request, readiness decided by typed provider facts | `monitor_watch` |
+| One GitHub pull request that waits on others | `monitor_watch`, up to 3 of them in `also_wake_on` |
 | PR comments/advisory findings | Finite `monitor_start`, `judge: false` |
 | A required final turn, or acting on silence | Finite `monitor_start`, `gate=false` |
 | Act on a schedule, multiple subjects, unsupported ticket or deployment | Finite `monitor_start` |

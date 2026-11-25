@@ -7,6 +7,7 @@ they can be persisted and evaluated without starting an agent turn.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -48,6 +49,18 @@ MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS = 1_000
 MAX_MONITOR_STOP_REASON_CHARS = 500
 MAX_MONITOR_CHECK_NAMES = 8
 MAX_MONITOR_PROVIDER_CONCURRENCY = 4
+#: ``also_wake_on``: the other pull requests one watch also wakes on, and the
+#: states each one's record can hold. ``open`` is the only state still read.
+MAX_MONITOR_ALSO_WAKE_ON = 3
+#: Kinds whose extras read with the gateway's own CLI identity and no per-target
+#: grant, so they can share the target's batched read.
+ALSO_WAKE_KINDS = frozenset({"github_pull_request"})
+ALSO_WAKE_OPEN = "open"
+ALSO_WAKE_END_REASON_CODES = {
+    "merged": "also_wake_merged",
+    "closed": "also_wake_closed",
+    "unreadable": "also_wake_unreadable",
+}
 # The normal turn ceiling is two hours. One extra minute lets the raw completion
 # callback win the timeout race while keeping missing evidence restart-durable
 # and bounded.
@@ -149,6 +162,9 @@ MONITOR_PUBLIC_FIELDS = (
     "cadence_secs",
     "wake_instructions",
     "wake_on_terminal",
+    "also_wake_on",
+    "also_wake_state",
+    "also_wake_claim",
     "last_observation",
     "last_observation_status",
     "last_observation_reason_code",
@@ -794,6 +810,16 @@ class MonitorState:
     #: actionable-wake path. Default False keeps every existing and stored watch
     #: turn-free on merge/close, exactly as before this field existed.
     wake_on_terminal: bool = False
+    #: Other pull requests of the same kind this watch also wakes on, as the
+    #: session configured them; ticking never edits the list.
+    also_wake_on: list[str] = field(default_factory=list)
+    #: Per listed extra: ``state`` (open, merged, closed, unreadable), ``at`` (when
+    #: that end state was seen), ``read_errors`` (consecutive attempted primary-read
+    #: failures) and ``wake_claimed``. Never a provider payload.
+    also_wake_state: dict[str, dict[str, object]] = field(default_factory=dict)
+    #: The extra wake ``last_wake_fingerprint`` names, as ``target``, ``state`` and
+    #: ``reason_code``; empty for a target wake. Honoured only while it matches.
+    also_wake_claim: dict[str, object] = field(default_factory=dict)
     last_observation: dict[str, object] = field(default_factory=dict)
     last_observation_status: MonitorObservationStatus | None = None
     last_observation_reason_code: str = ""
@@ -1107,6 +1133,7 @@ class MonitorState:
             raise ValueError("wake_instructions must be a string")
         if not isinstance(self.wake_on_terminal, bool):
             raise ValueError("wake_on_terminal must be a boolean")
+        self._validate_also_wake()
         if any(
             not isinstance(value, str)
             for value in (
@@ -1183,9 +1210,66 @@ class MonitorState:
         if self._raw_payload is not None:
             _validate_strict_json_object("_raw_payload", self._raw_payload)
 
+    def _validate_also_wake(self) -> None:
+        extras = self.also_wake_on
+        if (
+            not isinstance(extras, (list, tuple))
+            or len(extras) > MAX_MONITOR_ALSO_WAKE_ON
+            or len(set(extras)) != len(extras)
+            or not all(isinstance(item, str) and item for item in extras)
+        ):
+            raise ValueError("also_wake_on must list distinct pull requests")
+        if extras and self.kind not in ALSO_WAKE_KINDS:
+            raise ValueError("also_wake_on is available only on a github_pull_request watch")
+        self.also_wake_on = list(extras)
+        if not isinstance(self.also_wake_state, dict):
+            raise ValueError("also_wake_state must be an object")
+        for entry in self.also_wake_state.values():
+            read_errors = entry.get("read_errors") if isinstance(entry, dict) else None
+            if (
+                not isinstance(entry, dict)
+                or entry.get("state") not in {ALSO_WAKE_OPEN, *ALSO_WAKE_END_REASON_CODES}
+                or not is_finite_non_negative_number(entry.get("at"))
+                or not is_finite_non_negative_number(read_errors)
+                or not isinstance(read_errors, int)
+                or not isinstance(entry.get("wake_claimed"), bool)
+            ):
+                raise ValueError("also_wake_state entries are malformed")
+        # One entry per listed extra: a missing one starts open, a stray one goes.
+        self.also_wake_state = {
+            extra: self.also_wake_state.get(extra) or fresh_also_wake_entry() for extra in extras
+        }
+        claim = self.also_wake_claim
+        if not isinstance(claim, dict):
+            raise ValueError("also_wake_claim must be an object")
+        if claim and (
+            not isinstance(claim.get("target"), str)
+            or not claim["target"]
+            or ALSO_WAKE_END_REASON_CODES.get(str(claim.get("state"))) != claim.get("reason_code")
+        ):
+            raise ValueError("also_wake_claim is malformed")
+        if claim and (
+            not self.wake_in_flight
+            or also_wake_fingerprint(str(claim["target"]), str(claim["state"]))
+            != self.last_wake_fingerprint
+        ):
+            # A claim no in-flight wake names (a downgrade settled it) is stale.
+            self.also_wake_claim = {}
+
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+def fresh_also_wake_entry() -> dict[str, object]:
+    """The record of an extra that has not been seen to end."""
+    return {"state": ALSO_WAKE_OPEN, "at": 0.0, "read_errors": 0, "wake_claimed": False}
+
+
+def also_wake_fingerprint(target: str, state: str) -> str:
+    """The ``last_wake_fingerprint`` of the one wake an extra's end state owes."""
+    digest = hashlib.sha256(f"{target}\n{state}".encode("utf-8")).hexdigest()
+    return f"also_wake:{digest[:32]}"
 
 
 def _validate_strict_json_object(name: str, value: dict[str, object]) -> None:

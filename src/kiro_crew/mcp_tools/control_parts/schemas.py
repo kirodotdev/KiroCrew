@@ -22,6 +22,7 @@ from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, runtime_ceiling_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_ALSO_WAKE_ON,
     MAX_MONITOR_CADENCE_SECS,
     MAX_MONITOR_PROVIDER_ERRORS,
     MAX_MONITOR_TOKENS,
@@ -121,6 +122,22 @@ def _prefers_structured_arming() -> bool:
 def _ending_clause() -> str:
     """The one thing that ENDS a watch, capitalised to open a sentence."""
     return ending_phrase()
+
+
+def _also_wake_on_property(lead: str) -> dict[str, Any]:
+    """The ``also_wake_on`` property both structured-watch tools advertise."""
+    return {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": MAX_MONITOR_ALSO_WAKE_ON,
+        "description": (
+            lead + "Each wakes this session once when it merges, is closed, or is "
+            "retired after max_provider_errors failed reads; it never ends the watch. "
+            "Extras share this watch's budgets: for a slow one raise max_runtime_secs "
+            "(counted from arming) and, for a long wait, max_provider_errors in the same "
+            "call (a higher limit also slows retiring a mistyped one)."
+        ),
+    }
 
 
 def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
@@ -487,6 +504,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "no agent turn."
                         ),
                     },
+                    "also_wake_on": _also_wake_on_property(
+                        "Other pull requests (github_pull_request only) this watch also "
+                        "waits on. "
+                    ),
                 },
                 "required": ["kind", "target", "objective"],
             },
@@ -865,6 +886,11 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
                         "description": "Replacement actionable-wake instructions",
                     },
+                    "also_wake_on": _also_wake_on_property(
+                        "REPLACES the other pull requests a structured github_pull_request "
+                        "watch also waits on; [] clears them. Allowed while a wake is in "
+                        "flight. "
+                    ),
                     "banner": {
                         "type": "string",
                         "description": (
