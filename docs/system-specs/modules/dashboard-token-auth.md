@@ -772,7 +772,22 @@ For a request on the entry port it:
    gateway's own port; token auth chooses its branch by path, and no registered route sits at or
    under an internal `/v1` path other than the frozen one. Pinned by
    `test_a_wrong_method_on_a_crew_api_route_is_405_on_both_ports` and
-   `test_no_registered_route_sits_under_an_internal_v1_path`;
+   `test_no_registered_route_sits_under_an_internal_v1_path`. On either port that `405`
+   is the Crew API's own error body, `invalid_request_error` / `method_not_supported`,
+   with `X-Request-Id`, `Crew-API-Version` and the router's `Allow` value
+   (`crew_api_errors.method_not_supported`). `spa_fallback` makes it from the router's
+   `405`. The router raises that `405` only after every middleware has passed the
+   request on, so every check that refuses a caller has run first:
+   a caller with no credential is still `401`, an app credential is still refused as it
+   was (`403 owner_only` on the gateway's own port, `401` on the entry port), and
+   since no handler runs, `DELETE /v1/responses/{response_id}` answers the same whether
+   the id names a response. A route outside the contract (`/v1/chat/completions`, every
+   `/api/` route) keeps the router's `405`. Pinned by
+   `test_a_method_a_crew_api_route_does_not_serve_is_the_contracts_405`,
+   `test_a_caller_without_a_credential_is_refused_before_the_405`,
+   `test_an_app_credential_is_refused_before_the_405`,
+   `test_deleting_a_response_answers_the_same_whether_the_id_names_one` and
+   `test_a_route_outside_the_crew_api_contract_keeps_the_routers_405`;
 4. answers `400 invalid_request` unless `Host` names `127.0.0.1`, `[::1]` or `localhost`, so
    no web origin the gateway routes by host name, an app's backend included, is
    served on this port;
