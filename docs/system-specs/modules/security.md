@@ -5392,7 +5392,12 @@ invocation cannot reach an HTTP client. `sed` is not in the set because its `e`
 command and `s///e` flag run a shell. Anything with shell evaluation in it falls
 through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
-`date` conversion run on its own is.
+`date` conversion run on its own is. PowerShell's search cmdlet `Select-String`,
+in any letter case, passes this single-command test too (issue #42339). Its alias
+`sls` does not, because it is also the Serverless Framework's CLI, and the
+whole-line test below does not list it: `Get-Content a.txt | Select-String "-d@"`
+stays refused, and `Select-String -Path a.txt -Pattern "-d@"` is the form that
+passes.
 
 A whole line passes too when every command on it, read by the shared reader
 (`_inert_line_allows`), runs nothing that could send: `date`, the inert-search

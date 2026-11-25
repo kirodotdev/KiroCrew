@@ -1,0 +1,3 @@
++10
+The `-d @` file-body gate's single-command carve-out in `exfil_bash` also takes
+PowerShell's `Select-String`, in any letter case, as an inert search verb (#42339).
