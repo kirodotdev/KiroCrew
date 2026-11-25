@@ -68,13 +68,13 @@ class TestGrantVersusGovernance:
             # about where a launch spec is discovered.
             {"mcpServers": {"srv": {"command": "x"}}, "tools": [], "allowedTools": []},
             "a",
-            {"agents": {"a": {"servers": {"srv": {}}}}},
+            {"agents": {"a": {"servers": {"srv": {"autoApprove": ["t1"]}}}}},
         )
 
-    def test_permitted_server_is_auto_approved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_permitted_tool_is_auto_approved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         out = self._policy(monkeypatch, denied=False)
         assert "@srv" in out["tools"]
-        assert "@srv" in out["allowedTools"]
+        assert out["allowedTools"] == ["@srv/t1"]
 
     def test_ceiling_denied_server_is_granted_but_never_auto_approved(
         self, monkeypatch: pytest.MonkeyPatch
@@ -83,7 +83,7 @@ class TestGrantVersusGovernance:
         # Still granted — the user's choice is not silently discarded...
         assert "@srv" in out["tools"]
         # ...but every call must now ask, which is what routes it to the gate.
-        assert "@srv" not in out["allowedTools"]
+        assert not [r for r in out["allowedTools"] if r.startswith("@srv")]
 
     def test_a_governed_host_builtin_loses_auto_approve(
         self, monkeypatch: pytest.MonkeyPatch
