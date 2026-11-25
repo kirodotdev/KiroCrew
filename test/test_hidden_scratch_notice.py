@@ -64,11 +64,12 @@ async def test_the_turn_describes_the_folder_the_session_runs_in(tmp_path):
 
 @pytest.mark.asyncio
 async def test_native_windows_keeps_a_chat_scratch_folder(tmp_path):
-    """Native Windows masks no scratch tree, so a chat's scratch folder is never dropped."""
+    """Native Windows masks no scratch tree, so a chat's scratch folder that exists is kept."""
     from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
 
     root = tmp_path / "scratch"
     old = str(root / "runtime-old" / "checkout")
+    (root / "runtime-old" / "checkout").mkdir(parents=True)
     with (
         patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
         patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
