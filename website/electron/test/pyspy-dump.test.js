@@ -30,6 +30,7 @@ test("returns ok:false with install hint when py-spy is missing (ENOENT)", async
     pid: 5,
     dumpDir: "/tmp/dumps",
     bin: "py-spy",
+    platform: "darwin",
     run: (b, a, t, cb) => cb(err),
     writeFileSync: () => {
       throw new Error("should not write on failure");
@@ -41,6 +42,34 @@ test("returns ok:false with install hint when py-spy is missing (ENOENT)", async
   assert.strictEqual(res.ok, false);
   assert.match(res.reason, /not installed/);
   assert.match(logged, /brew install py-spy/);
+});
+
+test("the missing-py-spy hint names pip, not brew, off macOS", async () => {
+  const err = new Error("spawn py-spy ENOENT");
+  err.code = "ENOENT";
+  for (const platform of ["win32", "linux"]) {
+    const res = await capturePySpyDump({
+      pid: 5,
+      dumpDir: "/tmp/dumps",
+      bin: "py-spy",
+      platform,
+      run: (b, a, t, cb) => cb(err),
+      writeFileSync: () => {
+        throw new Error("should not write on failure");
+      },
+    });
+    assert.strictEqual(res.reason, "py-spy not installed (pip install py-spy)", platform);
+  }
+});
+
+test("resolvePySpy probes no POSIX candidate on Windows and leaves it to PATH", () => {
+  const probed = [];
+  const exe = resolvePySpy((p) => {
+    probed.push(p);
+    return true;
+  }, "win32");
+  assert.strictEqual(exe, "py-spy");
+  assert.deepStrictEqual(probed, []);
 });
 
 test("surfaces py-spy permission failure (macOS sudo case)", async () => {
@@ -84,7 +113,7 @@ test("resolvePySpy falls back to bare PATH lookup when no candidate exists", () 
 test("resolvePySpy returns the first existing candidate", () => {
   const hit = "/opt/homebrew/bin/py-spy";
   assert.strictEqual(
-    resolvePySpy((p) => p === hit),
+    resolvePySpy((p) => p === hit, "darwin"),
     hit,
   );
 });
