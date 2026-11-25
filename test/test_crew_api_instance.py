@@ -9,15 +9,24 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import test_crew_api_app_credential as kit
 import yaml
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from test_shared_crew_teammate_owner_access import TEAMMATES, _publish
+from token_auth_helpers import clear_nonces  # noqa: F401 -- autouse fixture
 
+from kiro_crew.dashboard import crew_api_auth
 from kiro_crew.dashboard import crew_api_instance as instance
+from kiro_crew.dashboard import crew_api_models
 from kiro_crew.dashboard import crew_api_responses as responses
+from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
+from kiro_crew.dashboard.crew_api_scopes import CREDENTIAL_KEY, ROUTES
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+# The fixtures of the app credential tests, registered here under their own names.
+audit, clock, store = kit.audit, kit.clock, kit.store
 
 OWNER = "U_OWNER"
 PATH = "/v1/crew/capabilities"
@@ -231,3 +240,232 @@ def test_an_instance_id_that_cannot_be_saved_is_the_same_for_every_caller(
     first = lease.crew_instance_id(tmp_path)
     assert lease.crew_instance_id(tmp_path) == first
     assert not (tmp_path / lease.INSTANCE_ID_FILE).exists()
+
+
+# ── an app credential: served on both routes, from its grant alone ───────────
+
+BOTH = [PATH, instance.INFO_PATH]
+
+
+def _as_app(request: web.Request, credential: la.LocalCredential) -> web.Request:
+    """*request* as token auth publishes a verified app credential on it."""
+    request["user"] = f"app:{credential.grant_id}"
+    request["app"] = f"local-grant:{credential.grant_id}"
+    request["is_dashboard_user"] = False
+    request[CREDENTIAL_KEY] = credential
+    return request
+
+
+def _app_request(store: la.LocalAuthorization, clock, path: str) -> web.Request:
+    found = store.verify(kit._grant(store, clock)["access_token"])
+    assert found is not None
+    return _as_app(_request() if path == PATH else _info_request(), found)
+
+
+def _owner_catalog_is_never_read(monkeypatch) -> list[str]:
+    """Stub every read of the owner's catalog and return the list of reads made."""
+    reads: list[str] = []
+
+    async def _off_loop() -> list[dict[str, str]]:
+        reads.append("usable_models_off_loop")
+        return [{"id": "the-owners-bot"}]
+
+    def _sync() -> list[dict[str, str]]:
+        reads.append("usable_models")
+        return [{"id": "the-owners-bot"}]
+
+    monkeypatch.setattr(instance, "usable_models_off_loop", _off_loop)
+    monkeypatch.setattr(crew_api_models, "usable_models_off_loop", _off_loop)
+    monkeypatch.setattr(crew_api_models, "usable_models", _sync)
+    return reads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+@pytest.mark.parametrize("scope", ["responses:write", "artifacts:read"])
+async def test_token_auth_admits_any_app_credential_on_both_routes(
+    store, clock, audit, path, scope
+) -> None:
+    tokens = kit._grant(store, clock, scope=scope)
+    resp, request, ran = await kit._send(path=path, headers=kit._bearer(tokens["access_token"]))
+    assert (resp.status, ran) == (200, True)
+    row = audit.log_api_access.call_args.kwargs
+    assert (row["caller"], row["outcome"], row["error"]) == (
+        f"app:{tokens['grant_id']}",
+        "allowed",
+        "",
+    )
+    published = kit._published(request)
+    assert published[CREDENTIAL_KEY].grant_id == tokens["grant_id"]
+    assert published["is_dashboard_user"] is False
+
+
+def test_both_routes_serve_an_app_and_need_no_scope() -> None:
+    for key in (instance.CAPABILITIES_KEY, instance.INFO_KEY):
+        assert key in crew_api_auth.APP_SERVED_ROUTES
+        assert ROUTES[key].scopes == frozenset({"any"})
+        assert key[1] not in crew_api_auth.app_owner_only_routes()
+
+
+@pytest.mark.asyncio
+async def test_an_apps_capabilities_come_from_its_grant_and_read_no_owner_catalog(
+    monkeypatch, store, clock
+) -> None:
+    reads = _owner_catalog_is_never_read(monkeypatch)
+    request = _app_request(store, clock, PATH)
+    resp = await instance.api_capabilities(request)
+    assert resp.status == 200
+    assert resp.headers["Crew-API-Version"] == "1.0"
+    body = json.loads(resp.body)
+    assert body == {
+        "api_version": {"current": "1.0"},
+        "features": {name: False for name in instance.FEATURES},
+        # A grant runs nothing today, so GET /v1/models gives it an empty list too.
+        "agents": {},
+        "limits": {"max_input_bytes": responses._MAX_PROMPT_BYTES},
+    }
+    assert "quota" not in body
+    assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_an_apps_agents_are_the_rows_its_model_list_gives(monkeypatch, store, clock) -> None:
+    reads = _owner_catalog_is_never_read(monkeypatch)
+    request = _app_request(store, clock, PATH)
+    asked: list[la.LocalCredential] = []
+
+    def _for_grant(credential: la.LocalCredential) -> list[dict[str, str]]:
+        asked.append(credential)
+        return [{"id": "helper"}]
+
+    monkeypatch.setattr(instance, "models_for_grant", _for_grant)
+    body = json.loads((await instance.api_capabilities(request)).body)
+    assert list(body["agents"]) == ["helper"]
+    assert asked == [request[CREDENTIAL_KEY]]
+    assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_an_app_and_the_owner_read_the_same_instance_id(
+    monkeypatch, tmp_path, store, clock
+) -> None:
+    from kiro_crew.relay_client import lease
+
+    home = tmp_path / "data-home"
+    home.mkdir()
+    monkeypatch.setattr(instance, "data_home", lambda: home)
+    # The app calls first, so its call is the one that makes and keeps the id.
+    assert not (home / lease.INSTANCE_ID_FILE).exists()
+    app_resp = await instance.api_info(_app_request(store, clock, instance.INFO_PATH))
+    assert app_resp.status == 200
+    assert (home / lease.INSTANCE_ID_FILE).exists()
+    owner_resp = await instance.api_info(_info_request())
+    assert json.loads(app_resp.body) == json.loads(owner_resp.body)
+    assert json.loads(app_resp.body)["id"] == lease.crew_instance_id(home)
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_cannot_be_saved_is_answered_alike_to_an_app_and_the_owner(
+    monkeypatch, tmp_path, store, clock
+) -> None:
+    import kiro_crew.atomic_write as atomic_write_mod
+    from kiro_crew.relay_client import lease
+
+    def _refuse(*args, **kwargs):
+        raise OSError(f"read-only data home {tmp_path}")
+
+    home = tmp_path / "data-home"
+    home.mkdir()
+    monkeypatch.setattr(instance, "data_home", lambda: home)
+    monkeypatch.setattr(atomic_write_mod, "atomic_write", _refuse)
+    monkeypatch.setattr(lease, "_UNSAVED_INSTANCE_IDS", {})
+    app_resp = await instance.api_info(_app_request(store, clock, instance.INFO_PATH))
+    owner_resp = await instance.api_info(_info_request())
+    assert (app_resp.status, owner_resp.status) == (200, 200)
+    assert json.loads(app_resp.body) == json.loads(owner_resp.body)
+    assert str(tmp_path) not in app_resp.body.decode("utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_a_failing_read_is_the_same_error_for_an_app_and_the_owner(
+    monkeypatch, tmp_path, store, clock, path
+) -> None:
+    def _fail(*_args: object) -> None:
+        raise web.HTTPInternalServerError()
+
+    async def _fail_off_loop() -> None:
+        raise web.HTTPInternalServerError()
+
+    monkeypatch.setattr(instance, "_instance_id", _fail)
+    monkeypatch.setattr(instance, "usable_models_off_loop", _fail_off_loop)
+    monkeypatch.setattr(instance, "models_for_grant", _fail)
+    handler = instance.api_capabilities if path == PATH else instance.api_info
+    app_resp = await handler(_app_request(store, clock, path))
+    owner_resp = await handler(_request() if path == PATH else _info_request())
+    assert (app_resp.status, owner_resp.status) == (500, 500)
+    app_error, owner_error = (json.loads(r.body)["error"] for r in (app_resp, owner_resp))
+    app_error.pop("request_id"), owner_error.pop("request_id")
+    assert app_error == owner_error
+    assert str(tmp_path) not in app_resp.body.decode("utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_a_revoked_grants_token_is_401_before_either_handler(store, clock, path) -> None:
+    tokens = kit._grant(store, clock)
+    assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
+    resp, _, ran = await kit._send(path=path, headers=kit._bearer(tokens["access_token"]))
+    kit._assert_401(resp, ran)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_an_expired_token_is_401_before_either_handler(store, clock, path) -> None:
+    tokens = kit._grant(store, clock)
+    clock.now += la.ACCESS_TTL_SECS + 1
+    resp, _, ran = await kit._send(path=path, headers=kit._bearer(tokens["access_token"]))
+    kit._assert_401(resp, ran)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_an_app_credential_through_a_forwarder_is_401_on_both_routes(
+    store, clock, path
+) -> None:
+    tokens = kit._grant(store, clock)
+    headers = {**kit._bearer(tokens["access_token"]), "X-Forwarded-For": "203.0.113.7"}
+    resp, request, ran = await kit._send(path=path, headers=headers)
+    kit._assert_401(resp, ran)
+    assert CREDENTIAL_KEY not in kit._published(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_no_credential_is_401_on_both_routes(store, path) -> None:
+    resp, _, ran = await kit._send(path=path)
+    kit._assert_401(resp, ran)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", BOTH)
+async def test_a_request_marked_as_an_app_without_a_verified_credential_is_refused(
+    monkeypatch, path
+) -> None:
+    """Only the credential token auth verified skips the owner check, never a claim."""
+
+    def _no_read(*_args: object) -> None:
+        raise AssertionError("a refused caller must not reach the catalog or the instance id")
+
+    monkeypatch.setattr(instance, "usable_models_off_loop", _no_read)
+    monkeypatch.setattr(instance, "models_for_grant", _no_read)
+    monkeypatch.setattr(instance, "_instance_id", _no_read)
+    request = _request() if path == PATH else _info_request()
+    request["user"] = "app:grt_made_up"
+    request["app"] = "local-grant:grt_made_up"
+    request["is_dashboard_user"] = False
+    handler = instance.api_capabilities if path == PATH else instance.api_info
+    resp = await handler(request)
+    error = json.loads(resp.body)["error"]
+    assert resp.status == 403
+    assert (error["type"], error["code"]) == ("permission_error", "owner_only")
