@@ -359,6 +359,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/members/{slug}/self-changes/{change_id}/undo", "api_member_self_undo"),
     ):
         app.router.add_route(_method, _path, _deferred("member_self", _name))
+    # A bot's own facts and experiences (``memory_list``), MCP-only under the
+    # same strict prefix; its deletes and edits are a card through ``propose``.
+    app.router.add_post(
+        "/api/member/self/memory/list",
+        _deferred("member_memory_self", "api_member_self_memory_list"),
+    )
     # The crewmate's capability catalog (``find_capabilities``), MCP-only under
     # the same strict prefix.
     app.router.add_post(

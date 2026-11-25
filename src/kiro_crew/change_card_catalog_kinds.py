@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any
 
 from kiro_crew import change_card_mcp_server as _mcp_server_kind
+from kiro_crew import change_card_memory as _memory_kind
 from kiro_crew import change_card_project_mcp as _project_mcp_kind
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
@@ -48,6 +49,8 @@ KIND_CREWMATE_KEY_RESULTS = "crewmate.key_results"
 KIND_CREWMATE_CHECK_INS = "crewmate.check_ins"
 #: A crewmate's one offer to write its own Dashboard page (``change_card_dashboard_page``).
 KIND_CREWMATE_DASHBOARD_PAGE = "crewmate.dashboard_page"
+#: A bot's own batch of memory deletes and edits (:mod:`kiro_crew.change_card_memory`).
+KIND_CREWMATE_MEMORY = _memory_kind.KIND_CREWMATE_MEMORY
 KIND_TEMPLATE_UPDATE = "template.update"
 #: One MCP server added to an agent template's additions record
 #: (:mod:`kiro_crew.template_mcp_additions`), raised only by ``request_server``.
@@ -83,7 +86,7 @@ CREWMATE_CREATING_KINDS = (KIND_CREWMATE_CREATE, KIND_CREWMATE_IMPORT)
 APP_ONLY_KINDS = frozenset({KIND_CREWMATE_IMPORT})
 #: Kinds only a crewmate raises about itself (``member_self.SELF_PROPOSALS``), never
 #: through ``propose_change``: :func:`list_kinds` leaves them out.
-SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
+SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE, KIND_CREWMATE_MEMORY})
 #: Kinds whose parameters the GATEWAY resolves (a server entry it built from its own
 #: loaded servers or the official registry plan), so an agent never names them
 #: through ``propose_change``: a caller-supplied entry would be a launch line the
@@ -730,6 +733,13 @@ KINDS: dict[str, KindDef] = {
             "Enable/disable an MCP server ({name, enabled}) or one tool ({server, tool, enabled}).",
             _obj({"name": _STR, "server": _STR, "tool": _STR, "enabled": _BOOL}, ["enabled"]),
             ("enabled",),
+        ),
+        KindDef(
+            KIND_CREWMATE_MEMORY,
+            "Delete or edit some of one Bot's own facts and experiences. Raised only by "
+            "that Bot's propose_memory_changes.",
+            _memory_kind.params_schema(),
+            _memory_kind.EDITABLE,
         ),
         KindDef(
             KIND_MCP_SERVER,
@@ -1735,6 +1745,8 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         return _mcp_server_kind.clean_params(p)
     if kind == KIND_PROJECT_MCP_SERVER:
         return _project_mcp_kind.clean_params(p)
+    if kind == KIND_CREWMATE_MEMORY:
+        return _memory_kind.clean_params(p)
     if kind == KIND_MCP_TOGGLE:
         _only(p, {"name", "server", "tool", "enabled"})
         enabled = _clean_bool(p, "enabled")

@@ -1091,6 +1091,10 @@ async def read_state(
         }
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         return await asyncio.to_thread(_capability_state, app, params)
+    if kind == catalog.KIND_CREWMATE_MEMORY:
+        from kiro_crew.dashboard.member_memory_records import memory_state
+
+        return await memory_state(params, state)
     if kind == catalog.KIND_FOLDER_STEERING:
         folder = await _folder(state, params["folder"])
         if folder is None:
@@ -1279,6 +1283,7 @@ async def read_context(
         catalog.KIND_CREWMATE_GOAL,
         catalog.KIND_CREWMATE_KEY_RESULTS,
         catalog.KIND_CREWMATE_CHECK_INS,
+        catalog.KIND_CREWMATE_MEMORY,
     ):
         return {"label": await asyncio.to_thread(_crewmate_label, p["member"])}
     if kind == catalog.KIND_SETTING_CHANGE:

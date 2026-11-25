@@ -305,6 +305,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # leaves through `dashboard/crewmate_feed.py` into the crewmate's crew log,
         # and is shown only through the Dashboard page's data island.
         "dashboard/member_waiting.py",
+        # Redacts a bot's own memory text the way the Memory page shows it. It returns
+        # data and serves nothing: the rows leave through the bot's `memory_list` route
+        # (`handlers/member_memory_self.py`) and its `crewmate.memory` card preview.
+        "dashboard/member_memory_records.py",
         # Redacts a crewmate's goal and milestone text the same way before appending
         # it as a snapshot to that crewmate's own crew log. It serves nothing; the
         # snapshot is shown only through the Dashboard page's data island.

@@ -3345,6 +3345,32 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`goal_reminder._page_tools_on`, off when unreadable); without them the daily
   reminder keeps its readings-led chat message, since there is no page to put
   them on.
+- the **`crewmate.memory` card** (`propose_memory_changes`, `change_card_memory.py`):
+  how a Bot cleans up its own facts and experiences on the user's word. It reads
+  them first with `memory_list` (`POST /api/member/self/memory/list`,
+  `handlers/member_memory_self.py`: one kind per page, each row's id, its text as
+  the Memory page shows it, dates, confidence or importance, and `last_used`, when
+  recall last used an experience, only on a store that records it: a V2 store
+  never writes `last_accessed_at`, so its rows carry no `last_used`). The card carries up to 20 changes, each `delete` or `edit`
+  of one memory by id with a one-line reason, and is raised only from a turn the
+  user sent. The gateway fills `member` and `store` from the Bot's own thread: the
+  store its configuration binds (`member_memory_records.own_store`), never the
+  Global store, and refused when the thread runs on another. Each row has a
+  checkbox; unticking it re-previews with that row in `skip`, the card's only
+  editable field, and the last ticked row stays ticked. Apply runs the Memory
+  page's own `POST /api/memory/bulk/preview` then `POST /api/memory/bulk/apply`
+  per group (each edit alone first, then all deletes in one last group, so an edit
+  refused at apply time stops the plan before any delete), pinned at the revision
+  the card showed, so a memory changed since is refused (`stale_memory_preview`)
+  and the rest of the plan stops. The snapshot reader
+  (`member_memory_records.memory_state`) also runs the memory editor's own check
+  (`memory_edit._after`) on every ticked edit, at build, at each re-preview and
+  again before the first apply step, and refuses the card with
+  `memory_not_editable` when the editor would refuse one (a value the Memory page
+  hides, a protected field, blocked text); unticking that row lets the rest build.
+  Both routes are hooked but write no Global memory line.
+  No Undo: the Memory page keeps an edited record's versions. Lessons keep their
+  own `learn_*` tools.
 - the **`crewmate.dashboard_page` card** (`offer_dashboard_page`): the one way a
   Bot on a TEMPLATE page -- one the person adopted, or the page named for it
   -- comes to replace it. `goal_reminder.dashboard_line` gives such a Bot, in

@@ -10,6 +10,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { apiTransport } from './apiTransport'
+import { MEMORY_QUERY_PREFIXES } from './memoryQueryKeys'
 
 export type CardStatus = 'pending' | 'applying' | 'applied' | 'partial' | 'failed' | 'cancelled' | 'expired' | 'undone'
 export type CardRisk = 'normal' | 'tighten' | 'widen' | 'code_exec'
@@ -27,6 +28,7 @@ export const CARD_KINDS = [
   'crewmate.key_results',
   'crewmate.check_ins',
   'crewmate.dashboard_page',
+  'crewmate.memory',
   'template.update',
   'template.mcp_server',
   'mcp.install',
@@ -65,6 +67,11 @@ export interface CardChange {
   interval?: number
   /** The same row: the most runs a day at that interval. */
   per_day?: number
+  /** A memory card's row: its place in the bot's list, what it does, and whether it is ticked. */
+  index?: number
+  memory_kind?: 'fact' | 'episode'
+  action?: 'delete' | 'edit'
+  included?: boolean
 }
 
 /** One thing a capabilities card gives a crewmate's worker. */
@@ -291,4 +298,9 @@ export function applyCardUpdate(queryClient: QueryClient, card: unknown): void {
   // The library list is cached without expiry; a save another tab pressed must
   // show there without a reload.
   if (wroteWorkflowLibrary(card)) void queryClient.invalidateQueries({ queryKey: WORKFLOW_DEFINITIONS_QUERY_KEY })
+  if (card.kind === 'crewmate.memory' && (card.status === 'applied' || card.status === 'partial') && typeof card.params?.store === 'string') {
+    void queryClient.invalidateQueries({ queryKey: ['memory-records', card.params.store] })
+    void queryClient.invalidateQueries({ queryKey: ['member-memory', card.params.store] })
+    for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
+  }
 }
