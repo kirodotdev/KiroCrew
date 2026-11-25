@@ -194,6 +194,34 @@ def test_a_non_extra_spec_is_quoted_for_the_platform(monkeypatch: pytest.MonkeyP
     assert windows.startswith("& '")
 
 
+@pytest.mark.parametrize("quote", ["'", "\u2018", "\u2019", "\u201a", "\u201b"])
+def test_every_pasted_powershell_command_doubles_each_single_quote(
+    monkeypatch: pytest.MonkeyPatch, quote: str
+) -> None:
+    """PowerShell ends a single-quoted string on U+2018..U+201B as well as on ASCII
+    ', so each command a user pastes doubles all five or stops at the path."""
+    from kiro_crew import kiro_cli_bundle, lts_sign_in
+    from kiro_crew.platform import update_layout
+
+    folder = f"/home/O{quote}Brien"
+    monkeypatch.setattr(extras.os, "name", "nt")
+    monkeypatch.setattr(extras.sys, "executable", f"{folder}/python.exe")
+    login, _sso, bundled = kiro_cli_bundle.login_commands(
+        f"{folder}/kiro-cli.exe", {kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV: folder}, windows=True
+    )
+    commands = {
+        "pip install": extras.pip_install_command_for("faiss-cpu"),
+        "update": update_layout._running_interpreter_pip_prefix(),
+        "lts sign-in": lts_sign_in.render_command([f"{folder}/kirocrew.exe"], platform="win32"),
+        "kiro-cli sign-in": login,
+    }
+
+    assert bundled
+    literal = f"& '/home/O{quote * 2}Brien/"
+    for name, command in commands.items():
+        assert literal in command, f"{name}: {command}"
+
+
 # ── Install channel ──
 
 

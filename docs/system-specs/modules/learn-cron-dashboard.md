@@ -2606,7 +2606,9 @@ specified compatibility change.
   `{version: 1, encoding: "utf-8-base64", shells: [{id, prefix}]}`: `powershell` and `cmd`
   rows on Windows (`& '<launcher>'` with every PowerShell single-quote character doubled:
   the ASCII apostrophe and U+2018 to U+201B, each of which ends a single-quoted string; and
-  for `cmd` `"<launcher>"`), one `posix` row (`shlex.quote`) elsewhere. A `%` or a `!`
+  for `cmd` `"<launcher>"`), one `posix` row (`shlex.quote`) elsewhere. That doubling is
+  `kiro_cli_bundle.powershell_single_quoted`, which the kiro-cli and LTS sign-in commands,
+  the pip install and update commands and the SAPI voice script use too. A `%` or a `!`
   anywhere in the launcher omits the `cmd` row (`_cmd_launcher_prefix`) and the PowerShell
   row stays: cmd.exe expands `%NAME%` even inside double quotes (a prompt has no `%%`
   escape), and a cmd.exe started with delayed expansion (`/v:on`) expands `!NAME!` the same

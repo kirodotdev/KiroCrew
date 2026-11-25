@@ -53,6 +53,7 @@ import sysconfig
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 
 #: Distributions each optional extra installs, keyed by extra name. Mirrors
 #: ``[options.extras_require]`` in ``setup.cfg``, with ``voice``'s
@@ -154,8 +155,9 @@ def pip_install_command(extra: str) -> str:
     ``C:\Program Files\...`` layout an unquoted form cannot express. cmd performs
     no ``$`` or backtick processing at all and rejects the leading ``&`` loudly
     ("... was unexpected"), so a cmd user gets a clear error to re-quote for,
-    never a corrupted install. A literal single quote in the path is escaped by
-    doubling, PowerShell's own rule.
+    never a corrupted install. Each PowerShell single-quote character in the path
+    (the ASCII apostrophe and U+2018 to U+201B) is escaped by doubling, PowerShell's
+    own rule.
 
     Returns ``""`` for an extra this build does not declare, so a caller never
     shows a copy button for a command that installs nothing.
@@ -191,8 +193,7 @@ def pip_install_command_for(*specs: str, python: str | None = None) -> str:
     quoted = " ".join(quote_spec(s) for s in specs)
     exe = sys.executable if python is None else python
     if os.name == "nt":
-        exe = exe.replace("'", "''")
-        return f"& '{exe}' -m pip install {quoted}"
+        return f"& {powershell_single_quoted(exe)} -m pip install {quoted}"
     return f"{shlex.quote(exe)} -m pip install {quoted}"
 
 
