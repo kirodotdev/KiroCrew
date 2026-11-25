@@ -3492,7 +3492,12 @@ on an item that never started. The banner names that worker, that item and how
 many selected items the scheduler still queued, and says to re-run the shard;
 that worker's `session_end` progress record carries `channel_closed` to tell the
 two causes apart (other workers' channels close at teardown, so only its own
-record counts).
+record counts). One way a test closes its own worker's channel: rebinding
+`struct.unpack` on the stdlib module to a fake that raises. xdist's receiver
+thread decodes every frame from the controller with it, so a frame that lands
+while the patch holds ends that thread. Replace the module-under-test's own
+`struct` binding instead, as *Never rebind a stdlib clock* below shows for
+`time`.
 
 So any override that still runs MANY tests must carry
 `-n auto --dist loadgroup --max-worker-restart=2`, and keep `-p no:platformdirs`
