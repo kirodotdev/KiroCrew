@@ -516,7 +516,7 @@ _UNCARRIED_SETTINGS = {
         ),
     ],
     "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
-        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
+        ({"fs_write": {"fallbackAction": "allow"}}, "toolsSettings.fs_write.fallbackAction"),
         ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
         (
             {"use_subagent": {"availableAgents": ["reviewer"]}},
