@@ -1367,11 +1367,13 @@ class TestWorkerLooping:
         assert lw.worker_looping(_Broken(), "chat-1") is False
 
 
-def test_every_item_closed_wakes_once_and_is_never_terminal():
-    """Closing every item does not end the goal, so it must not end the watch.
+def test_every_item_closed_ends_the_watch_once_the_conductor_is_idle():
+    """A closed board ends the watch, but never under the conductor's own turn.
 
-    One WAKE says the board is closed; re-reading the same board says nothing; and
-    an empty ledger (a watch armed before the first item) says nothing at all.
+    While the conductor's session owns current or queued work the tick is quiet: the
+    turn that closed the last item may still open the next. Once it is idle the
+    board is one TERMINAL. An empty ledger (a watch armed before the first item)
+    says nothing at all.
     """
     from kiro_crew import irq
     from kiro_crew.probes import work_ledger as probe_module
@@ -1383,11 +1385,11 @@ def test_every_item_closed_wakes_once_and_is_never_terminal():
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item, state="accepted", decision="verified"
     )
+    assert _observe(_probe(running=True), _ctx()).observations == []
     closed = _observe(_probe(), _ctx())
-    assert [o.severity for o in closed.observations] == [irq.Severity.WAKE]
-    assert closed.observations[0].key.startswith(f"{probe_module.ACCEPTED_KEY}:")
+    assert [o.severity for o in closed.observations] == [irq.Severity.TERMINAL]
+    assert closed.observations[0].key == probe_module.ACCEPTED_KEY
     assert "every item is closed and accepted (1 total)" in closed.observations[0].brief
-    assert _observe(_probe(), _ctx()).observations == [], "the same closed board is not news"
 
 
 def test_a_rejected_or_abandoned_board_says_it_did_not_finish_well():
@@ -1402,8 +1404,8 @@ def test_a_rejected_or_abandoned_board_says_it_did_not_finish_well():
             CONDUCTOR, "close", item_id=item, state=state, decision="not met"
         )
         tick = _observe(_probe(), _ctx())
-        assert [o.severity for o in tick.observations] == [irq.Severity.WAKE], state
-        assert tick.observations[0].key.startswith(f"{probe_module.CLOSED_KEY}:"), state
+        assert [o.severity for o in tick.observations] == [irq.Severity.TERMINAL], state
+        assert tick.observations[0].key == probe_module.CLOSED_KEY, state
 
 
 def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
@@ -1419,8 +1421,8 @@ def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
         CONDUCTOR, "close", item_id=bad, state="rejected", decision="not met"
     )
     tick = _observe(_probe(), _ctx())
-    assert [o.key.split(":")[0] for o in tick.observations] == [probe_module.CLOSED_KEY]
-    # The count is in the text, so a wake says which way it ended without a re-read.
+    assert [o.key for o in tick.observations] == [probe_module.CLOSED_KEY]
+    # The count is in the text, so the end says which way it went without a re-read.
     assert "1 accepted of 2" in tick.observations[0].brief
 
 
@@ -1527,15 +1529,16 @@ class TestWorkerRunning:
         assert lw.worker_running(self._Table({"chat-9": object()}), "chat-9") is False
 
 
-def test_only_a_merged_pull_request_is_a_terminal_success():
-    # The driver records success or blocked from the probe's own terminal keys. The
-    # work-ledger probe raises none: every item closed is a wake, so its
-    # "all closed" key prefixes are not success keys either.
+def test_a_merged_pull_request_and_an_all_accepted_board_are_the_terminal_successes():
+    # The driver records success or blocked from the probe's own terminal keys. A
+    # board closed short (rejected or abandoned) ended, but not well. The package
+    # spells the ledger keys as literals, so they are held to the probe's here.
     from kiro_crew import probes
     from kiro_crew.probes import work_ledger as probe_module
 
-    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is False
+    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is True
     assert probes.terminal_succeeded((probe_module.CLOSED_KEY,)) is False
+    assert probes.LEDGER_FINISHED_KEYS == {probe_module.ACCEPTED_KEY, probe_module.CLOSED_KEY}
     assert probes.terminal_succeeded(("merged",)) is True
     assert probes.terminal_succeeded(("closed",)) is False
     # Empty or unusable keys mean "ended, not necessarily well", which is what
