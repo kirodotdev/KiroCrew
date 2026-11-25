@@ -17667,6 +17667,7 @@
       "review_approved": "শেয়ার করা হয়েছে",
       "review_skipped": "শেয়ার করা হয়নি",
       "review_skip": "শেয়ার কোরো না",
+      "review_sharing": "শেয়ার হচ্ছে…",
       "diff_added": "যোগ হয়েছে: {{tokens}}",
       "diff_removed": "সরানো হয়েছে: {{tokens}}",
       "diff_env_added": "এনভ যোগ হয়েছে: {{names}}",

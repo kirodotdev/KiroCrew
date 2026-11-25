@@ -18141,6 +18141,7 @@
       "review_approved": "Partagé",
       "review_skipped": "Non partagé",
       "review_skip": "Ne pas partager",
+      "review_sharing": "Partage en cours…",
       "diff_added": "Ajouté : {{tokens}}",
       "diff_removed": "Retiré : {{tokens}}",
       "diff_env_added": "Env ajoutée : {{names}}",

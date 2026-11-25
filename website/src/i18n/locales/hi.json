@@ -17667,6 +17667,7 @@
       "review_approved": "साझा किया",
       "review_skipped": "साझा नहीं किया",
       "review_skip": "साझा मत करो",
+      "review_sharing": "साझा हो रहा है…",
       "diff_added": "जोड़ा: {{tokens}}",
       "diff_removed": "हटाया: {{tokens}}",
       "diff_env_added": "एनव जोड़ा: {{names}}",

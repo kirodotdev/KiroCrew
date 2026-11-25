@@ -8341,6 +8341,7 @@
       "review_approved": "Shared",
       "review_skipped": "Not shared",
       "review_skip": "Don't share",
+      "review_sharing": "Sharing…",
       "diff_added": "Added: {{tokens}}",
       "diff_removed": "Removed: {{tokens}}",
       "diff_env_added": "Env added: {{names}}",

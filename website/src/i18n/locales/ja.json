@@ -17193,6 +17193,7 @@
       "review_approved": "共有済み",
       "review_skipped": "未共有",
       "review_skip": "共有しない",
+      "review_sharing": "共有中…",
       "diff_added": "追加: {{tokens}}",
       "diff_removed": "削除: {{tokens}}",
       "diff_env_added": "追加された環境変数: {{names}}",
