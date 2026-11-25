@@ -6,6 +6,8 @@ so both read one table pinned to one Unicode version.
 
 from __future__ import annotations
 
+import re
+
 #: ``Default_Ignorable_Code_Point`` (Unicode 15.0, ``DerivedCoreProperties.txt``):
 #: the code points that render as nothing. Most are format characters the
 #: category test already refuses, but the property also holds letters and marks
@@ -53,3 +55,9 @@ DEFAULT_IGNORABLE_RANGES: tuple[tuple[int, int], ...] = (
     (0xE01F0, 0xE0FFF),  # <reserved>
 )
 DEFAULT_IGNORABLE = frozenset(cp for lo, hi in DEFAULT_IGNORABLE_RANGES for cp in range(lo, hi + 1))
+
+#: A run of :data:`DEFAULT_IGNORABLE` characters. A credential reader drops each run
+#: and reads the rest, since the text still reads as the credential without them.
+DEFAULT_IGNORABLE_RUN_RE = re.compile(
+    "[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in DEFAULT_IGNORABLE_RANGES) + "]+"
+)
