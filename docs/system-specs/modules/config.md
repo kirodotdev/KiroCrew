@@ -1935,7 +1935,9 @@ summary are byte-identical to one built without the Bot work.
   (`config_rejected`), so an added Bot never resolves to a
   crewmate file the import did not write. In a Replace, of an existing crewmate
   file at the name of a Bot this install did not have as the same Bot, only a minimal
-  file counts as the imported Bot's own. A Replace installs the archive config as
+  file counts as the imported Bot's own; the first crewmate's boot-time file is not
+  minimal on a host whose user-level Kiro MCP config names servers, so there the
+  archive's `mate` is held ([crew-mode](crew-mode.md)). A Replace installs the archive config as
   given and rewrites nothing in it; a Bot whose crewmate file is held by another Bot
   is reported `crewmate_file` `not_written` / `held_by_other_bot`, and the tab says
   it runs on an agent file this import did not write. When this import installed `config.json` (Replace, or a Merge into an

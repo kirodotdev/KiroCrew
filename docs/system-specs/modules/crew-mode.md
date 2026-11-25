@@ -5421,7 +5421,12 @@ machine keeps its own file. A file whose owner record names another data home
 front with roster reason `foreign_owner`, and a Replace reports `crewmate_file`
 `not_written` / `foreign_owner`. An unreadable owner record makes an existing file
 `held_by_other_bot` (`crewmate_file_held`). Any other existing file is `not_written`
-with `held_by_other_bot`, and a Merge does not add an archive Bot whose name holds a
+with `held_by_other_bot`. That includes the first crewmate's boot-time file on a host
+whose user-level Kiro MCP config names servers: the boot migration seeds it from the
+default agent, which carries those servers and grants their tools
+(`mate_config_migration._default_template_file`), so it is not minimal and a Replace
+onto such a fresh install reports the archive's `mate` held, while on a host with none
+the seeded file is minimal and `kept`. A Merge does not add an archive Bot whose name holds a
 crewmate file that is not its own by the same rule (`crewmate_name_held`, roster
 `held_by_other_bot`). A Replace installs the archive config as given and rewrites
 nothing in it: a Bot whose crewmate file is held by another Bot is reported

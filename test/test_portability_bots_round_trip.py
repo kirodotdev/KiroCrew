@@ -698,6 +698,70 @@ async def test_a_replace_onto_a_fresh_install_brings_the_archives_first_crewmate
     await _assert_mate_usable(mate_a, board)
 
 
+#: A server the host's user-level Kiro MCP config names.
+HOST_SERVER = {"command": "host-tool", "args": ["serve"]}
+
+
+def _default_agent_with_host_server(homes: Homes, name: str) -> None:
+    """Pair *name*'s default agent as a host whose Kiro MCP config names a server has it.
+
+    The agent writer folds the user-level ``settings/mcp.json`` servers into the default
+    agent ``kirocrew.json``, and the boot migration seeds the first crewmate's file from
+    that agent (``mate_config_migration._default_template_file``).
+    """
+    spec = {
+        "name": "kirocrew",
+        "prompt": "",
+        "mcpServers": {"host-tool": HOST_SERVER},
+        "tools": ["@host-tool"],
+        "allowedTools": ["@host-tool"],
+    }
+    path = homes.kiro(name) / "agents" / "kirocrew.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_replace_onto_a_fresh_install_holds_a_boot_file_carrying_host_servers(
+    homes, tmp_path
+) -> None:
+    # A24/A45: on a host whose Kiro MCP config names a server, the second install's
+    # boot-time crewmate file carries that server and grants its tools, which this
+    # install gave its own first crewmate. It is not minimal, so it is never the
+    # imported mate's own: not_written / held_by_other_bot, left byte for byte, and the
+    # mate still opens with everything else whole.
+    mate_a, board, archive = await _used_mate(homes, tmp_path)
+    mc = homes.use("b")
+    _default_agent_with_host_server(homes, "b")
+    boot_first_crewmate()
+    path = mate_config.mate_config_path("mate")
+    boot_file = path.read_bytes()
+    boot = json.loads(boot_file)
+    assert boot["mcpServers"] == {"host-tool": HOST_SERVER}, boot
+    assert "@host-tool" in boot["allowedTools"], boot
+    assert not is_minimal_crewmate_file(boot, "mate")
+    assert mate_config.crewmate_file_recorded_here("mate")
+
+    summary = apply_import_zip(archive, mode="replace")
+
+    row = _row(summary, "mate")
+    assert row["crewmate_file"] == "not_written", row
+    assert row["part_reasons"]["crewmate_file"] == "held_by_other_bot", row
+    assert row["reasons"] == ["held_by_other_bot"], row
+    assert (row["roster"], row["binding"], row["dashboard"], row["briefing"]) == (
+        "imported",
+        "rebuilt",
+        "restored",
+        "restored",
+    ), row
+    assert "bots" in summary["refused_merges"]
+    assert any(
+        line.startswith("bot mate (not whole: crewmate file") for line in summary["items"]
+    ), summary["items"]
+    assert path.read_bytes() == boot_file
+    assert _config(mc)["agents"]["mate"]["memory_store"] == mate_a.store
+    await _assert_mate_usable(mate_a, board)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("used", [False, True])
 async def test_a_merge_never_takes_the_destinations_first_crewmate(homes, tmp_path, used) -> None:
