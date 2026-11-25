@@ -787,6 +787,45 @@ async def test_a_turn_started_during_the_pause_write_is_stopped_too(routes, monk
     assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3", "w4"]
 
 
+@pytest.mark.parametrize("cause", ["size_cap", "replace_refused"])
+@pytest.mark.asyncio
+async def test_a_refused_second_pause_write_still_stops_what_the_first_one_holds(
+    routes, monkeypatch, _pause_store, cause
+):
+    rows = [dict(r) for r in _TREE]
+    real = crew_pause.pause
+    calls: list[list[str]] = []
+
+    def _refused(*_a: Any, **_k: Any) -> None:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    def _pause_while_w4_wakes(root: str, tree: list[str], stopped: list[str]) -> Any:
+        calls.append(list(stopped))
+        out = real(root, tree, stopped)
+        if len(calls) == 1:
+            rows[4]["running"] = True  # w4's patrol wake starts during the write
+            if cause == "size_cap":  # the file is at the cap, so adding w4 would pass it
+                monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+            else:  # a holder without sharing makes the replace fail
+                monkeypatch.setattr(crew_pause, "atomic_write", _refused)
+        return out
+
+    monkeypatch.setattr(crew_pause, "pause", _pause_while_w4_wakes)
+    try:
+        resp = await routes.handler.api_crew_pause(_req(_state(rows)))
+    except OSError as exc:
+        pytest.fail(f"the refused second write left the route before any stop: {exc!r}")
+    assert len(calls) == 2
+    assert resp.status == 500
+    body = json.loads(resp.text)
+    assert body["code"] == "pause_file_unsaved"
+    assert body["stopped"] == ["w1", "w3"] and body["not_stopped"] == ["w4"]
+    # Every key the stored record names as stopped was stopped; w4's turn runs on.
+    assert sorted(key for key, _ in routes.calls["stop"]) == ["root", "w1", "w3"]
+    assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3"]
+    assert routes.calls["notice"] == [{"kind": "crew_paused_notice", "stopped": 2}]
+
+
 @pytest.mark.asyncio
 async def test_a_refused_hand_back_stays_paused_and_is_reported(routes, monkeypatch):
     from kiro_crew.dashboard import chat_handlers
