@@ -196,13 +196,8 @@ await done;
 """
 
 
-def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
-    """A slow completion for an earlier hover names that hover, not the newest one.
-
-    The dashboard drops a card message whose invocation is not the frame's latest
-    (``linkPreviewFrames.ts``). That only works if the frame stamps each control with
-    the show it was handed to, so the controls are per show, not on ``ctx``.
-    """
+def _run_bootstrap(driver: str) -> Any:
+    """Run the frame bootstrap plus ``driver`` under node; the JSON on its last line."""
     import json
     import shutil
     import subprocess
@@ -211,19 +206,24 @@ def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
     if node is None:
         pytest.skip("node is not installed")
     out = subprocess.run(
-        [
-            node,
-            "--input-type=module",
-            "-e",
-            _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + _BOOTSTRAP_DRIVER,
-        ],
+        [node, "--input-type=module", "-e", _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + driver],
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=60,
         check=True,
     )
-    result = json.loads(out.stdout.strip().splitlines()[-1])
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
+    """A slow completion for an earlier hover names that hover, not the newest one.
+
+    The dashboard drops a card message whose invocation is not the frame's latest
+    (``linkPreviewFrames.ts``). That only works if the frame stamps each control with
+    the show it was handed to, so the controls are per show, not on ``ctx``.
+    """
+    result = _run_bootstrap(_BOOTSTRAP_DRIVER)
     # A show without an invocation is not delivered: it could not be answered.
     assert result["shows"] == 2
     assert result["frozen"] is True
@@ -255,22 +255,7 @@ def test_a_middle_or_modified_link_click_asks_for_a_new_tab() -> None:
     The frame marks a middle or modified click ``tab: true``, as the widget shim
     does; a plain click and ``window.open`` carry no mark.
     """
-    import json
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not installed")
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + _LINK_DRIVER],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        check=True,
-    )
-    posted = json.loads(out.stdout.strip().splitlines()[-1])
+    posted = _run_bootstrap(_LINK_DRIVER)
     assert [m.get("tab", False) for m in posted] == [False, True, True, True, True, True, False]
     assert {m["url"] for m in posted} == {"https://gw/chat", "https://gw/scripted"}
 
