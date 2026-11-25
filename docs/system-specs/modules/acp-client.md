@@ -5918,8 +5918,11 @@ Node key and why; nothing is published. There are two pins, one engine release:
 `KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
 release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
 linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
-linux-x64 host whose glibc reads below 2.28; every other host (arm64, macOS,
-Windows, linux-x64 at 2.28+ or with an unreadable glibc) gets `KAS_PIN_VERSION`.
+Linux host whose glibc reads below 2.28 and whose Node key the AL2 pin lists in
+`KAS_PIN_GLIBC_FLOORS` below 2.28 (today linux-x64 only; linux-arm64 joins in the
+commit that pins an AL2 release carrying arm64 builds); every other host (arm64
+until then, macOS, Windows, Linux at 2.28+ or with an unreadable glibc) gets
+`KAS_PIN_VERSION`.
 It is read on every call, so a host that moves to glibc 2.28+ installs the normal
 pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.
 `pinned_version()` is `KIROCREW_KAS_VERSION` when set, else that host pin, and every
@@ -5980,16 +5983,18 @@ stock macOS and Windows carry no `zstd` executable), official Node builds from
 nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
 `provenance.json` beside it (each engine tarball's upstream sha256, each Node
 build's source, any overlay; the installer never reads it), optional `aws s3 cp`.
-For an Amazon Linux 2 release two inputs, each pinned by a caller-given sha256,
-replace linux-x64 pieces only: `--node-linux-x64` publishes a local Node tarball
-under nodejs.org's name (refused unless its one top directory is
-`node-v<N>-linux-x64/`, it carries `bin/node`, and that binary prints exactly
-`v<N>`, checked on a linux-x64 publishing host), and `--onnx-overlay-linux-x64`
-re-packs the linux-x64 engine tarball after its upstream sha256 check with the
-overlay's files swapped in under `onnxruntime-node/bin/napi-v3/linux/x64/`
-(names, modes, owners and mtimes kept, a file stays a file and a symlink a
-symlink, every overlay name must replace something). That tarball is then no
-longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
+For an Amazon Linux 2 release, inputs per Linux architecture (`x64`, `arm64`),
+each pinned by a caller-given sha256, replace that architecture's pieces only:
+`--node-linux-<arch>` publishes a local Node tarball under nodejs.org's name
+(refused unless its one top directory is `node-v<N>-linux-<arch>/`, it carries
+`bin/node`, and that binary prints exactly `v<N>`, checked on a publishing host
+of that architecture), and `--onnx-overlay-linux-<arch>` re-packs that engine
+tarball after its upstream sha256 check with the overlay's files swapped in under
+`onnxruntime-node/bin/napi-v3/linux/<arch>/` (names, modes, owners and mtimes
+kept, a file stays a file and a symlink a symlink, every overlay name must
+replace something). The x64 overlay's sha256 flag is `--onnx-overlay-sha256`,
+the arm64 one's `--onnx-overlay-linux-arm64-sha256`. An overlaid tarball is then
+no longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
 on (or when the route below is chosen automatically), resolves

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build onnxruntime 1.21.0 (CPU EP) + its Node-API binding for linux-x64 so the
-# KAS bundle's onnxruntime-node runs on Amazon Linux 2 (glibc 2.26).
+# Build onnxruntime 1.21.0 (CPU EP) + its Node-API binding for linux-x64 or
+# linux-arm64 so the KAS bundle's onnxruntime-node runs on Amazon Linux 2
+# (glibc 2.26).
 #
 # Everything is compiled inside a pinned amazonlinux:2 container, so the glibc
 # floor is the container's 2.26 and the host stays clean. The C++ runtime is
@@ -8,17 +9,24 @@
 # libstdc++ / libgcc_s at run time.
 #
 # Usage:
-#   build-onnxruntime.sh build  [--work DIR] [--out DIR] [--jobs N]
-#   build-onnxruntime.sh verify --out DIR --bundle-x64 DIR --stock-node FILE --al2-node FILE
+#   build-onnxruntime.sh build  [--arch x64|arm64] [--work DIR] [--out DIR] [--jobs N]
+#   build-onnxruntime.sh verify [--arch x64|arm64] --out DIR --bundle DIR \
+#     --stock-node FILE --al2-node FILE
+#
+# --arch defaults to x64. The container runs as that architecture
+# (docker --platform), so build on a host of the same architecture. The
+# default --work and --out end in -<arch>; a --work you pass must not be shared
+# between architectures, because the cached toolchain is native binaries.
 #
 # `build` writes to --out:
-#   onnxruntime-node-1.21.0-al2-x64.tar.xz (+ .sha256)  drop-in for
-#     node_modules/onnxruntime-node/bin/napi-v3/linux/x64/
+#   onnxruntime-node-1.21.0-al2-<arch>.tar.xz (+ .sha256)  drop-in for
+#     node_modules/onnxruntime-node/bin/napi-v3/linux/<arch>/
 #   glibc-check.txt, provenance.txt, build.log
 # `verify` runs the load and inference checks in amazonlinux:2 / :2023 and
-# writes verify.txt. --bundle-x64 is an unpacked kas-linux-x64 engine tree
-# (holds node_modules/onnxruntime-node), --stock-node the bundle's
-# node-v22.23.4-linux-x64/bin/node, --al2-node a Node 22 that runs on AL2.
+# writes verify.txt. --bundle (alias --bundle-x64) is an unpacked
+# kas-linux-<arch> engine tree (holds node_modules/onnxruntime-node),
+# --stock-node the bundle's node-v22.23.4-linux-<arch>/bin/node, --al2-node a
+# Node 22 that runs on AL2.
 #
 # Requires: docker, bash, coreutils on the host. No root on the host.
 set -euo pipefail
@@ -46,7 +54,8 @@ BINUTILS_SHA256="f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a80
 GNU_MIRROR="https://mirrors.kernel.org/gnu"
 # Kitware's cmake-3.31.12-SHA-256.txt
 CMAKE_VERSION="3.31.12"
-CMAKE_SHA256="0dc2e9a6860f06bf10bd8fadc03e35d9eeb4df46e33763a7e480e987758f385c"
+CMAKE_SHA256_X86_64="0dc2e9a6860f06bf10bd8fadc03e35d9eeb4df46e33763a7e480e987758f385c"
+CMAKE_SHA256_AARCH64="83f8fd91d2038a56556e1400390fcfe42f79602940c494f6c6f1cdae7f9e7f40"
 # python.org release_file API sha256_sum. ORT's CMake needs Python >= 3.10
 # (AL2 ships 3.7), only as a build-time interpreter.
 PYTHON_VERSION="3.12.16"
@@ -66,12 +75,22 @@ NODE_ADDON_API_SHA256="16c0b0e9fbb10a79250b4dc8a4ab6e712e9cd918d17bc59e1034699ac
 EIGEN_COMMIT="1d8b82b0740839c0de7f1242a3585e3390ff5f33"
 EIGEN_GIT_URL="https://gitlab.com/libeigen/eigen.git"
 
-TARBALL="onnxruntime-node-${ORT_VERSION}-al2-x64.tar.xz"
 # -----------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
+
+# Per-architecture names; set_arch runs once the options are parsed.
+ARCH="${ARCH:-x64}"
+set_arch() {
+  case "$ARCH" in
+    x64) PLATFORM=linux/amd64 CMAKE_ARCH=x86_64 CMAKE_SHA256="$CMAKE_SHA256_X86_64" ;;
+    arm64) PLATFORM=linux/arm64 CMAKE_ARCH=aarch64 CMAKE_SHA256="$CMAKE_SHA256_AARCH64" ;;
+    *) die "unknown --arch: $ARCH (x64 or arm64)" ;;
+  esac
+  TARBALL="onnxruntime-node-${ORT_VERSION}-al2-${ARCH}.tar.xz"
+}
 
 host_build() {
   local work="" out="" jobs=""
@@ -80,11 +99,14 @@ host_build() {
       --work) work="$2"; shift 2 ;;
       --out) out="$2"; shift 2 ;;
       --jobs) jobs="$2"; shift 2 ;;
+      --arch) ARCH="$2"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$work" ] || work="$PWD/kas-al2-onnxruntime-work"
-  [ -n "$out" ] || out="$PWD/kas-al2-onnxruntime-out"
+  set_arch
+  # Per architecture: the toolchain cached in --work is native binaries.
+  [ -n "$work" ] || work="$PWD/kas-al2-onnxruntime-work-$ARCH"
+  [ -n "$out" ] || out="$PWD/kas-al2-onnxruntime-out-$ARCH"
   if [ -z "$jobs" ]; then jobs="$(nproc)"; fi
   [ "$jobs" -le 32 ] || jobs=32 # keep the host usable
   mkdir -p "$work" "$out"
@@ -98,11 +120,11 @@ host_build() {
     commit="${commit}-dirty"
   fi
 
-  log "building in $AL2_IMAGE (jobs=$jobs); log: $out/build.log"
+  log "building for linux-$ARCH in $AL2_IMAGE (jobs=$jobs); log: $out/build.log"
   # Root inside the container only; files are handed back to the host user.
-  docker run --rm --platform linux/amd64 \
+  docker run --rm --platform "$PLATFORM" \
     -v "$SCRIPT_DIR:/src:ro" -v "$work:/work" -v "$out:/out" \
-    -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e ARCH="$ARCH" \
     -e SCRIPT_COMMIT="$commit" -e ORT_GIT_URL="$ORT_GIT_URL" \
     "$AL2_IMAGE" bash /src/build-onnxruntime.sh in-container 2>&1 | tee "$out/build.log"
   [ "${PIPESTATUS[0]}" -eq 0 ] || die "container build failed; see $out/build.log"
@@ -120,6 +142,7 @@ fetch() { # url sha256 dest
 
 in_container() {
   local jobs="${JOBS:-8}"
+  set_arch
   # Hand every file back to the host user, even when the run dies on a signal.
   trap 'chown -R "${HOST_UID:-0}:${HOST_GID:-0}" /work /out 2>/dev/null || true' EXIT
   trap 'exit 130' INT TERM HUP PIPE
@@ -135,7 +158,7 @@ in_container() {
 
   fetch "$GNU_MIRROR/binutils/binutils-$BINUTILS_VERSION.tar.xz" "$BINUTILS_SHA256" dl/binutils.tar.xz
   fetch "$GNU_MIRROR/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz" "$GCC_SHA256" dl/gcc.tar.xz
-  fetch "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-x86_64.tar.gz" \
+  fetch "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-linux-$CMAKE_ARCH.tar.gz" \
     "$CMAKE_SHA256" dl/cmake.tar.gz
   fetch "https://www.python.org/ftp/python/$PYTHON_VERSION/Python-$PYTHON_VERSION.tar.xz" "$PYTHON_SHA256" dl/python.tar.xz
   fetch "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-headers.tar.xz" "$NODE_HEADERS_SHA256" dl/node-headers.tar.xz
@@ -180,7 +203,9 @@ in_container() {
   fi
   export PATH="$tc/bin:$tc/cmake/bin:$tc/py/bin:$PATH"
   [ "$("$tc/bin/g++" -print-prog-name=as)" = "$tc/bin/as" ] || die "g++ does not use binutils $BINUTILS_VERSION"
-  echo 'vpdpbusds %zmm1, %zmm2, %zmm3' | as -o /dev/null - || die "assembler lacks AVX-VNNI"
+  if [ "$ARCH" = x64 ]; then
+    echo 'vpdpbusds %zmm1, %zmm2, %zmm3' | as -o /dev/null - || die "assembler lacks AVX-VNNI"
+  fi
 
   log "onnxruntime source at $ORT_COMMIT"
   if [ ! -d ort/.git ] || [ "$(git -C ort rev-parse HEAD)" != "$ORT_COMMIT" ]; then
@@ -236,8 +261,14 @@ in_container() {
   rm -rf ort/js/node/node_modules/node-addon-api && mkdir -p ort/js/node/node_modules/node-addon-api
   tar -xzf dl/node-addon-api.tgz -C ort/js/node/node_modules/node-addon-api --strip-components=1
 
-  # Same hardening flags as the upstream Linux release build.
-  local cflags="-DNDEBUG -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fstack-protector-strong -O3 -pipe -fstack-clash-protection -fcf-protection -ffunction-sections -fdata-sections"
+  # Same hardening flags as the upstream Linux release build. Control-flow
+  # protection is per target: GCC rejects -fcf-protection (Intel CET) on
+  # aarch64, whose counterpart is -mbranch-protection=standard (PAC + BTI, hint
+  # instructions that run as no-ops on cores without them; Node's arm64 build
+  # uses the same flag).
+  local cf_flag="-fcf-protection"
+  if [ "$ARCH" = arm64 ]; then cf_flag="-mbranch-protection=standard"; fi
+  local cflags="-DNDEBUG -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fstack-protector-strong -O3 -pipe -fstack-clash-protection $cf_flag -ffunction-sections -fdata-sections"
   local ldflags="-static-libstdc++ -static-libgcc"
   local common=(
     -DCMAKE_BUILD_TYPE=Release
@@ -273,7 +304,7 @@ in_container() {
   rm -rf ort/js/node/bin binding-build
   PATH="/work/shim:$PATH" cmake -S ort/js/node -B binding-build "${common[@]}" \
     -DCMAKE_JS_INC=/work/node-headers/include/node \
-    -Dnapi_build_version="$NAPI_BUILD_VERSION" -DNODE_ARCH=x64 \
+    -Dnapi_build_version="$NAPI_BUILD_VERSION" -DNODE_ARCH="$ARCH" \
     -DONNXRUNTIME_BUILD_DIR=/work/ort-build
   cmake --build binding-build -j"$jobs"
 
@@ -284,7 +315,7 @@ in_container() {
   cp "ort-build/libonnxruntime.so.$ORT_VERSION" "$stage/libonnxruntime.so.1"
   strip --strip-unneeded "$stage/libonnxruntime.so.1"
   ln -s libonnxruntime.so.1 "$stage/libonnxruntime.so.$ORT_VERSION"
-  cp ort/js/node/bin/napi-v3/linux/x64/onnxruntime_binding.node "$stage/"
+  cp "ort/js/node/bin/napi-v3/linux/$ARCH/onnxruntime_binding.node" "$stage/"
 
   log "glibc check"
   local report=/out/glibc-check.txt fail=0
@@ -328,7 +359,8 @@ in_container() {
     echo "node-addon-api $NODE_ADDON_API_VERSION sha256 $NODE_ADDON_API_SHA256 ($lock_integrity, = js/node/package-lock.json)"
     echo "gcc: $("$tc/bin/gcc" --version | head -1); source gcc-$GCC_VERSION.tar.xz sha256 $GCC_SHA256 (GNU .sig verified when pinned)"
     echo "binutils: $(as --version | head -1); source binutils-$BINUTILS_VERSION.tar.xz sha256 $BINUTILS_SHA256 (GNU .sig verified when pinned)"
-    echo "cmake: $(cmake --version | head -1); cmake-$CMAKE_VERSION-linux-x86_64.tar.gz sha256 $CMAKE_SHA256 (Kitware SHA-256.txt)"
+    echo "target: linux-$ARCH ($(uname -m))"
+    echo "cmake: $(cmake --version | head -1); cmake-$CMAKE_VERSION-linux-$CMAKE_ARCH.tar.gz sha256 $CMAKE_SHA256 (Kitware SHA-256.txt)"
     echo "python (build-time only): $("$tc/py/bin/python3" --version); Python-$PYTHON_VERSION.tar.xz sha256 $PYTHON_SHA256 (python.org)"
     echo "bootstrap compiler: AL2 $(rpm -q gcc gcc-c++ | tr '\n' ' ')"
     echo "build image: $AL2_IMAGE"
@@ -347,12 +379,14 @@ host_verify() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
-      --bundle-x64) bundle="$2"; shift 2 ;;
+      --bundle | --bundle-x64) bundle="$2"; shift 2 ;;
+      --arch) ARCH="$2"; shift 2 ;;
       --al2-node) al2node="$2"; shift 2 ;;
       --stock-node) stock_node="$2"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
+  set_arch
   [ -f "$out/$TARBALL" ] || die "missing $out/$TARBALL; run build first"
   (cd "$out" && sha256sum -c --quiet "$TARBALL.sha256") || die "tarball sha256 mismatch"
   out="$(cd "$out" && pwd)"
@@ -370,14 +404,14 @@ host_verify() {
   trap 'rm -rf "$scratch"' RETURN
   mkdir -p "$scratch/node_modules"
   cp -a "$pkg" "$bundle/node_modules/onnxruntime-common" "$scratch/node_modules/"
-  local bin="$scratch/node_modules/onnxruntime-node/bin/napi-v3/linux/x64"
+  local bin="$scratch/node_modules/onnxruntime-node/bin/napi-v3/linux/$ARCH"
   rm -f "$bin/libonnxruntime.so.1" "$bin/libonnxruntime.so.$ORT_VERSION" "$bin/onnxruntime_binding.node"
   tar -xJf "$out/$TARBALL" -C "$bin"
   curl -fsSL -o "$scratch/mul_1.onnx" \
     "https://raw.githubusercontent.com/ROCm/onnxruntime/$ORT_COMMIT/onnxruntime/test/testdata/mul_1.onnx"
   cat > "$scratch/dlopen.js" <<'EOF'
 const m = { exports: {} };
-process.dlopen(m, '/t/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/onnxruntime_binding.node');
+process.dlopen(m, `/t/node_modules/onnxruntime-node/bin/napi-v3/linux/${process.arch}/onnxruntime_binding.node`);
 console.log('dlopen OK', Object.keys(m.exports));
 EOF
   # mul_1.onnx: Y = X * W, W = [1..6] as float [3,2].
@@ -400,7 +434,7 @@ EOF
     local label="$1" image="$2" node="$3" script="$4" expect="$5"
     echo "== $label ($image, env -i)" | tee -a "$res"
     set +e
-    docker run --rm --platform linux/amd64 -v "$scratch:/t:ro" -v "$node:/n/node:ro" "$image" \
+    docker run --rm --platform "$PLATFORM" -v "$scratch:/t:ro" -v "$node:/n/node:ro" "$image" \
       env -i /n/node "/t/$script" 2>&1 | tee -a "$res"
     rc="${PIPESTATUS[0]}"
     set -e
@@ -414,12 +448,12 @@ EOF
   run "AL2023: AL2-built node, inference" "$AL2023_IMAGE" "$al2node" infer.js 0
   run "AL2023: bundle stock node $NODE_VERSION, inference" "$AL2023_IMAGE" "$stock_node" infer.js 0
   echo "model: onnxruntime/test/testdata/mul_1.onnx at $ORT_COMMIT (sha256 $(sha256sum "$scratch/mul_1.onnx" | cut -d' ' -f1))" | tee -a "$res"
-  echo "al2 node: $(docker run --rm -v "$al2node:/n/node:ro" "$AL2_IMAGE" env -i /n/node --version)" | tee -a "$res"
+  echo "al2 node: $(docker run --rm --platform "$PLATFORM" -v "$al2node:/n/node:ro" "$AL2_IMAGE" env -i /n/node --version)" | tee -a "$res"
 }
 
 case "${1:-}" in
   build) shift; host_build "$@" ;;
   verify) shift; host_verify "$@" ;;
   in-container) shift; in_container "$@" ;;
-  *) sed -n '2,24p' "$0"; exit 2 ;;
+  *) sed -n '2,31p' "$0"; exit 2 ;;
 esac
