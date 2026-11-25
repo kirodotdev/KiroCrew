@@ -609,7 +609,18 @@ thread. The loop thread submits to the default executor (`asyncio.to_thread`,
 `run_in_executor(None, ...)`, the loop's `getaddrinfo`), to `spawn_executor()` for
 every child built off the loop as above, and to the thread pools `kiro_crew.executors`
 builds (`subprocess_executor()`, `discovery_executor()`, `maintenance_executor()`,
-`crew_log_executor()` and the rest).
+`crew_log_executor()` and the rest), and to the task store's one-worker writer
+(`TaskStore.run` / `post`, the `taskq-writer` thread). Each opener of a store the
+loop reaches calls `taskq.start_writer` off the loop: `taskq.open_default_store`
+(the manager's startup worker) and the shared-crew admission gate's opener (under
+`asyncio.to_thread`). So the loop's first call only enqueues. A start the host
+refuses there closes the store and raises `TaskStoreUnavailable`, which each opener
+already handles off the loop as a store that cannot open (the manager's reopen
+backoff), rather than leaving the start to the loop. A store built any other way
+(the doctor's diagnostic reader, tests) builds its writer on first use.
+`TaskStore.close()` shuts it down with `cancel_futures`. Other stdlib
+pools outside `kiro_crew.executors` are still stdlib `ThreadPoolExecutor`s until each
+is checked for a loop-thread submit.
 
 All of them are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
 (`configure_default_executor` installs it as the default executor). Its `submit` takes

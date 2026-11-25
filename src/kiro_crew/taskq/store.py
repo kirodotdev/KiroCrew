@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from kiro_crew import platform_compat
+from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor
 from kiro_crew.metrics.events import TASKQ_COMPLETIONS, emit_counter
 from kiro_crew.on_loop_db import OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
@@ -383,16 +384,17 @@ class TaskStore:
         #: ``sqlite3`` shell, a network filesystem), and a wait taken on the
         #: gateway loop freezes every chat, stream and heartbeat with it; the
         #: async entry points (``/api/spawn`` -> ``spawn_async``, the tasks API)
-        #: await :meth:`run` instead. Lazily created; single-threaded so the
-        #: connection's RLock never contends between two executor workers.
+        #: await :meth:`run` instead. Built off the loop (``taskq.start_writer``),
+        #: else on first use; one enqueue-only worker, so writes stay serialized
+        #: and the loop's submit never waits on a worker start.
         self._executor: ThreadPoolExecutor | None = None
         #: Guards the executor SLOT above, and nothing else. Deliberately not
         #: ``_lock``: :meth:`run` is called FROM the event loop, the writer
         #: thread holds ``_lock`` across ``BEGIN IMMEDIATE``'s busy wait, and a
         #: ``run()`` that took ``_lock`` to reach its executor would hand the
         #: loop the very wait it exists to move off it -- invisibly, since that
-        #: take is not a :meth:`_c` and no counter would show it. Held only for
-        #: the microseconds of a ``ThreadPoolExecutor`` construction.
+        #: take is not a :meth:`_c` and no counter would show it. Held only
+        #: across the pool's construction, which starts its one worker.
         self._executor_lock = threading.Lock()
         #: How many store calls executed ON a thread with a running event loop
         #: -- the blocking shape ``check_sync_io_in_async`` hunts. Counted here
@@ -722,9 +724,7 @@ class TaskStore:
     def _writer_executor(self) -> ThreadPoolExecutor:
         with self._executor_lock:
             if self._executor is None:
-                self._executor = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="taskq-writer"
-                )
+                self._executor = EnqueueOnlyThreadPoolExecutor(1, "taskq-writer")
             return self._executor
 
     async def run(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
