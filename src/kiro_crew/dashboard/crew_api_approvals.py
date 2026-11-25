@@ -431,8 +431,12 @@ async def finish_writes_before_exit(state: Any, wait_secs: float | None, occasio
     graceful stop once its sessions and its web server are closed (``stop``, with
     the bound that stop gives a durable write,
     ``gateway_shutdown_budget.PERSISTENCE_DRAIN_GRACE_SECS``; not measured for this
-    file). A process that is killed runs neither, and its unwritten rows
-    read ``expired`` with reason ``gateway_restart`` on the next start. Waits at
+    file). The stop's wait is spent inside the stop's own limit
+    (``GRACEFUL_SHUTDOWN_SECS``), not added to it, and it runs only when the stop
+    reaches that step: a stop whose earlier steps use the whole limit is cut there
+    and makes no wait. A process that is killed runs neither. In both cases a row
+    whose write had not landed at exit
+    reads ``expired`` with reason ``gateway_restart`` on the next start. Waits at
     most *wait_secs* and never raises: the exit goes on without the write, and the
     warning says how many rows the file does not have. With nothing to write it
     returns without touching the file.
