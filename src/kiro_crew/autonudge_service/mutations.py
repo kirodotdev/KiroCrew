@@ -555,6 +555,7 @@ async def update(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -595,6 +596,7 @@ async def update(
             fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
+            stopped_detail=stopped_detail,
             banner=banner,
             judge=judge,
             watch=watch,
@@ -633,6 +635,7 @@ async def _update_locked(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -655,6 +658,7 @@ async def _update_locked(
             fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
+            stopped_detail=stopped_detail,
             banner=banner,
             judge=judge,
             watch=watch,
@@ -679,6 +683,7 @@ async def _update_unserialized(
     fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
+    stopped_detail: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
     watch: str | None = None,
@@ -777,6 +782,7 @@ async def _update_unserialized(
         #: when both the instruction and the watched subject move together.
         generation_advanced = False
         was_active = loop.active
+        was_reason = loop.stopped_reason
         restored_claim: int | None = None
         claim_undelivered = False
         if message is not None:
@@ -1067,6 +1073,7 @@ async def _update_unserialized(
                 # "manual", which the revive logic never auto-resumes.
                 if loop.active:
                     loop.stopped_reason = ""
+                    loop.stopped_detail = ""
                     # Spent only by an actual REVIVAL, hence ``not
                     # was_active``. A still-active loop may still receive
                     # an idempotent ``active=True`` from API or app callers,
@@ -1113,6 +1120,7 @@ async def _update_unserialized(
                             restart_runtime_clock(loop)
                 else:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+                    loop.stopped_detail = autonudge_stop_log.clean_stop_detail(stopped_detail)
         if (
             refused_revival
             and not any(
@@ -1201,7 +1209,7 @@ async def _update_unserialized(
             # mid-turn.
             if loop.active and (loop.next_due_ts > 0 or revived):
                 self._arm_from_deadline(loop)
-    self._emit("updated", loop)
+    self._emit_activity_update(loop, was_active=was_active, was_reason=was_reason)
     return loop
 
 

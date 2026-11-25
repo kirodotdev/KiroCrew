@@ -24,7 +24,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     AcpEvent,
 )
-from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.autonudge import AGENT_STOP_REASON, AutoNudgeService
 from kiro_crew.messaging import dispatch as messaging_dispatch
 from kiro_crew.slack import gateway as gw
 
@@ -100,8 +100,12 @@ async def test_autonudge_stop_in_a_slack_wake_stops_the_loop(tmp_path, monkeypat
 
     assert await orch._fire_slack_nudge(loop) is True
 
-    assert service.get_by_slot(_KEY) is None
-    assert service.get_by_id(loop.id) is None
+    # The agent's stop keeps the row, deactivated as ``agent_stop`` with its words.
+    kept = service.get_by_slot(_KEY)
+    assert kept is not None and kept.id == loop.id
+    assert kept.active is False
+    assert kept.stopped_reason == AGENT_STOP_REASON
+    assert kept.stopped_detail == "PR merged"
 
 
 @pytest.mark.asyncio

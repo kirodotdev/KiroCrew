@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.autonudge_service.model import AGENT_STOP_REASON
 from kiro_crew.dashboard import session_directive_apply as sda
 from kiro_crew.dashboard.chat_turn.steer_queue import _QUEUE_KIND_ACTORS
 from kiro_crew.dashboard.chat_utils import AUTOMATION_NOTICE_KIND, is_system_injection_item
@@ -125,7 +126,10 @@ async def test_a_stop_in_a_worker_session_reports_stopped_to_the_worker(tmp_path
         service.stop()
 
     assert "stopped" in result
-    assert service.get_by_slot(worker_session) is None
+    # An agent stop keeps the row as ``agent_stop`` (rfc-legacy-loop-reads-stops-waits § 2.3).
+    kept = service.get_by_slot(worker_session)
+    assert kept is not None and kept.active is False
+    assert kept.stopped_reason == AGENT_STOP_REASON
     assert len(queued) == 1
     _assert_queued_as_a_turn(queued[0])
     assert sda.STOP_OUTCOME_NOTICE_PREFIX in queued[0]["content"]

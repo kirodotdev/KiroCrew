@@ -25,11 +25,15 @@ export interface AutoNudgeLoop {
   next_due_ts: number
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
-   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`, and the
-   *  two FINISHED codes in `FINISHED_STOP_REASONS`). Carried
+   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `agent_stop`,
+   *  `manual`, and the two FINISHED codes in `FINISHED_STOP_REASONS`). Carried
    *  by the REST list and by the `autonudge_state` frame alike. `undefined`
    *  means the source did not carry it -- "not known here". */
   stopped_reason?: string
+  /** The agent's own words for an `agent_stop`, redacted and clipped by the
+   *  server; '' on every other stop. Carried by the REST reads and the
+   *  `autonudge_state` frame; `undefined` means the source did not carry it. */
+  stopped_detail?: string
   /** The settled outcome of the loop's own watch: `success` when the watched
    *  pull request merged, `blocked` when it was closed without merging, '' while
    *  none has settled. Carried by the `autonudge_state` frame for every loop; it

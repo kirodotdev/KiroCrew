@@ -410,6 +410,7 @@ class _ArmSvc:
         self._loop = loop
         self.added: list[dict] = []
         self.removed: list[str] = []
+        self.updated: list[tuple[str, dict]] = []
 
     def get_by_slot(self, key):
         return self._loop
@@ -421,6 +422,10 @@ class _ArmSvc:
     async def remove(self, loop_id, *, stop_reason="", stop_detail="", on_absent=None):
         self.removed.append(loop_id)
         return True
+
+    async def update(self, loop_id, on_absent=None, **patch):
+        self.updated.append((loop_id, patch))
+        return self._loop
 
 
 class _ChannelSessions:
@@ -476,7 +481,10 @@ class TestChannelApplierBoundary:
             state, None, session_key, "autonudge_stop", {"reason": "done"}
         )
         assert "stopped on this session" in result
-        assert svc.removed == ["loop-9"]
+        assert svc.removed == []
+        assert [(loop_id, patch["stopped_reason"]) for loop_id, patch in svc.updated] == [
+            ("loop-9", "agent_stop")
+        ]
 
     @pytest.mark.asyncio
     async def test_monitor_start_not_supported_on_non_nudgeable_channel(

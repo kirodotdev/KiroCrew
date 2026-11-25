@@ -131,6 +131,21 @@ describe('automation transport normalizer', () => {
     expect(normalizeAutomationRecord({ ...base, waiting_on_person: false })).not.toHaveProperty('waitingOnPerson')
   })
 
+  it('carries the agent\'s stop words, and only when there are some', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: false, last_fire_ts: 123, stopped_reason: 'agent_stop',
+    }
+    expect(normalizeAutomationRecord({ ...base, stopped_detail: 'PR merged' }))
+      .toMatchObject({ kind: 'legacy_goal_loop', stoppedReason: 'agent_stop', stoppedDetail: 'PR merged' })
+    // The frame envelope carries it the same way the REST row does.
+    expect(normalizeAutomationRecord({ event: 'updated', slot: 'chat-1', loop: { ...base, stopped_detail: 'PR merged' } }))
+      .toMatchObject({ stoppedDetail: 'PR merged' })
+    expect(normalizeAutomationRecord({ ...base, stopped_detail: '' })).not.toHaveProperty('stoppedDetail')
+    expect(normalizeAutomationRecord({ ...base, stopped_detail: ['not', 'text'] })).not.toHaveProperty('stoppedDetail')
+    expect(normalizeAutomationRecord(base)).not.toHaveProperty('stoppedDetail')
+  })
+
   it('folds channel session keys into dashboard slot keys', () => {
     const record = normalizeAutomationRecord({
       id: 'legacy-1', slot_key: 'slack:1785370133.085469', message: 'Keep going',

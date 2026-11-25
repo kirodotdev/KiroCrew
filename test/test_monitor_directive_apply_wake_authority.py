@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from test_monitor_directive_apply import _assert_kept_stopped
 
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.dashboard import session_directive_apply as sda
@@ -329,7 +330,7 @@ async def test_live_wake_can_stop_its_own_active_loop(tmp_path, kind):
                 producer_is_self_wake=True,
                 producer_wake_loop_id=loop.id,
             )
-        assert service.get_by_slot("chat-1") is None
+        _assert_kept_stopped(service, "chat-1")
         assert "stopped" in result
         assert "NOT stopped" not in result
     finally:
@@ -358,7 +359,7 @@ async def test_live_wake_can_stop_its_own_system_deactivated_loop(tmp_path, kind
                 producer_is_self_wake=True,
                 producer_wake_loop_id=loop.id,
             )
-        assert service.get_by_slot("chat-1") is None
+        assert service.get_by_slot("chat-1") is None, "an already-stopped row is removed"
         assert "stopped" in result and "NOT stopped" not in result
     finally:
         service.stop()
@@ -390,7 +391,7 @@ async def test_live_wake_can_mutate_its_own_loop(tmp_path, kind):
             assert current.message == "revised"
             assert "updated" in result
         else:
-            assert service.get_by_slot("chat-1") is None
+            _assert_kept_stopped(service, "chat-1")
             assert "stopped" in result
     finally:
         service.stop()
