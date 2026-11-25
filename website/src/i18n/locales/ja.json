@@ -6751,6 +6751,8 @@
       "closing_terminal": "ターミナルを閉じています…",
       "fullscreen": "全画面",
       "exit_fullscreen": "全画面を終了",
+      "fullscreen_shortcut": "全画面 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "全画面を終了 ({{shortcut}})",
       "find": "検索"
     },
     "tabCloseMenu": {

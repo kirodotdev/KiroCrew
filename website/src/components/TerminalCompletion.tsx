@@ -563,7 +563,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       // intercepted: macOS finds on Cmd+F and toggles fullscreen on
       // Cmd+Shift+F; Linux/Windows find on Ctrl+Shift+F (xterm yields no key
       // for Ctrl+Shift+letter, so nothing reaches the shell for it today) and
-      // have no fullscreen chord: the overflow-menu item is the way in there.
+      // have no fullscreen chord: the dock header's button is the way in there.
       // Matched on the letter typed (isFindChordKey) so a remapped Latin
       // layout keeps its own Ctrl+<letter> shell keys, with the physical F
       // position as the fallback only for non-Latin layouts. It fires only

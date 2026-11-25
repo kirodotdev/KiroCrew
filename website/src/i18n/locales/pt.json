@@ -7119,6 +7119,8 @@
       "closing_terminal": "Fechando terminal…",
       "fullscreen": "Tela cheia",
       "exit_fullscreen": "Sair da tela cheia",
+      "fullscreen_shortcut": "Tela cheia ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Sair da tela cheia ({{shortcut}})",
       "find": "Localizar"
     },
     "tabCloseMenu": {

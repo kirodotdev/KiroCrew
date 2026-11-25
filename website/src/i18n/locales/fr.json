@@ -7119,6 +7119,8 @@
       "closing_terminal": "Fermeture du terminal…",
       "fullscreen": "Plein écran",
       "exit_fullscreen": "Quitter le plein écran",
+      "fullscreen_shortcut": "Plein écran ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Quitter le plein écran ({{shortcut}})",
       "find": "Rechercher"
     },
     "tabCloseMenu": {

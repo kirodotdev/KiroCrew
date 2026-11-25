@@ -7303,6 +7303,8 @@
       "closing_terminal": "Закрытие терминала…",
       "fullscreen": "Полный экран",
       "exit_fullscreen": "Выйти из полноэкранного режима",
+      "fullscreen_shortcut": "Полный экран ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Выйти из полноэкранного режима ({{shortcut}})",
       "find": "Найти"
     },
     "tabCloseMenu": {

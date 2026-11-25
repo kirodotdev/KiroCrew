@@ -6751,6 +6751,8 @@
       "closing_terminal": "터미널을 닫는 중…",
       "fullscreen": "전체 화면",
       "exit_fullscreen": "전체 화면 종료",
+      "fullscreen_shortcut": "전체 화면 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "전체 화면 종료 ({{shortcut}})",
       "find": "찾기"
     },
     "tabCloseMenu": {

@@ -6751,6 +6751,8 @@
       "closing_terminal": "正在关闭终端…",
       "fullscreen": "全屏",
       "exit_fullscreen": "退出全屏",
+      "fullscreen_shortcut": "全屏 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "退出全屏 ({{shortcut}})",
       "find": "查找"
     },
     "tabCloseMenu": {
