@@ -969,6 +969,20 @@ describe("main window frame-load diagnostics", () => {
   });
 });
 
+describe("browser panel focus hand-back diagnostics", () => {
+  it("gives the panels the window's launch log", () => {
+    const setupStart = SOURCE.indexOf("function setupWindowContents");
+    const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
+    assert.notEqual(setupStart, -1);
+    assert.notEqual(setupEnd, -1);
+    assert.match(
+      SOURCE.slice(setupStart, setupEnd),
+      /attachBrowserPanels\(win, view, \{[^}]*\blog: glog,/,
+      "a focus hand-back must leave evidence in gateway-launch.log",
+    );
+  });
+});
+
 // ── Characterization of the window runtime owners ─────────────────────────
 //
 // The facade composes session security, window chrome, Linux captions, modal
