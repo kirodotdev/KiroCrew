@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.mcp_discover import (
     api_mcp_discover_detail,
     api_mcp_discover_install,
 )
+from kiro_crew.dashboard.handlers.mcp_project_file import api_mcp_project_file
 
 
 def register(app: web.Application) -> None:
@@ -88,6 +89,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/mcp/custom", api_mcp_custom_add)
     app.router.add_get("/api/mcp/custom/{name}", api_mcp_custom_get)
     app.router.add_put("/api/mcp/custom/{name}", api_mcp_custom_update)
+    # A chat folder's own MCP file: the Apply of an ``mcp.server`` card with target
+    # ``project``; the agent's file-edit tool is refused on that file.
+    app.router.add_post("/api/mcp/project-file", api_mcp_project_file)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
     app.router.add_post("/api/mcp/probe/{name}", handlers.api_mcp_probe_one)

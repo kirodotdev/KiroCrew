@@ -10,7 +10,11 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, ACP_BACKENDS_OPEN_EXTERNAL_URL
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_OPEN_EXTERNAL_URL,
+)
 from kiro_crew.config.loader import oauth_endpoints_path
 from kiro_crew.dashboard.chat_utils import (
     _expire_dead_child_oauth_meta,
@@ -113,6 +117,27 @@ def _connections_managed_mcp_names() -> frozenset[str]:
     return frozenset(managed & carded)
 
 
+def _card_signs_in_on_kas(slug: str) -> bool:
+    """Whether *slug*'s Connect signs in on the KAS engine, False when unknown. Blocking."""
+    # Local so importing the chat runner does not load the Connections mint engine.
+    from kiro_crew.connections.mint_kas import kas_sign_in_entry
+
+    try:
+        return kas_sign_in_entry(slug) is not None
+    except Exception:
+        logger.warning("Cannot resolve where %s's Connect signs in", slug, exc_info=True)
+        return False
+
+
+async def _card_owns_sign_in(client: Any, server_name: str, managed: frozenset[str]) -> bool:
+    """Whether *server_name*'s card owns its consent: membership, and on KAS a Connect on KAS."""
+    if not server_name or server_name not in managed:
+        return False
+    if capabilities_of(client).backend == ACP_BACKEND_KAS:
+        return await asyncio.to_thread(_card_signs_in_on_kas, server_name)
+    return True
+
+
 async def _drain_session_init_oauth_requests(
     state: "DashboardState", slot: "_ChatSlot", client: Any
 ) -> None:
@@ -125,7 +150,7 @@ async def _drain_session_init_oauth_requests(
     URL out of, so dropping one costs the user their only way to authorize.
 
     Requests for a server a Connections card owns are tagged ``card_owned`` (see
-    :func:`_connections_managed_mcp_names`) purely so the render layer can decide
+    :func:`_card_owns_sign_in`) purely so the render layer can decide
     whether chat needs to repeat a prompt the card already shows. That is a
     presentation question and it is answered where the flag that governs the card
     is known — not here.
@@ -162,7 +187,7 @@ async def _drain_session_init_oauth_requests(
             slot,
             server_name,
             oauth_url,
-            card_owned=bool(server_name) and server_name in managed,
+            card_owned=await _card_owns_sign_in(client, server_name, managed),
             minted_by=minted_by,
             session_id=session_id,
         )
@@ -1164,10 +1189,10 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
     # kiro-cli emits this notification when an MCP server's token
     # has expired or never existed. Surface as an inline banner —
     # kiro-cli's local callback handles the rest of the OAuth flow.
-    # The turn-start sign-in offer re-requests every unauthorized server, so
-    # this arm sees a carded provider on every turn of every session. It is
-    # tagged exactly as the session-init drain tags it, or the render layer
-    # cannot drop a prompt the Connections card already shows.
+    # kiro-cli retries a signed-out server's sign-in on every turn, so this arm
+    # sees a carded provider on every turn of every session. It is tagged
+    # exactly as the session-init drain tags it, or the render layer cannot drop
+    # a prompt the Connections card already shows.
     server_name = event.server_name or ""
     _watch_mcp_sign_in_ends(state, slot, client)
     managed = (
@@ -1179,7 +1204,7 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
         slot,
         event.server_name,
         event.oauth_url,
-        card_owned=bool(server_name) and server_name in managed,
+        card_owned=await _card_owns_sign_in(client, server_name, managed),
         minted_by=str(getattr(client, "process_instance", "") or ""),
         session_id=_provider_session_id(client),
     )

@@ -592,6 +592,8 @@ def describe_manual_change(
         servers = b.get("servers")
         servers = servers if isinstance(servers, dict) else {}
         return f"added custom MCP server(s) {s(', '.join(str(k) for k in servers))}"
+    if route == ("POST", "/api/mcp/project-file"):
+        return f"added MCP server {s(b.get('name'))} to {s(b.get('file'))} in a chat folder"
     if route == ("POST", "/api/mcp/remove"):
         return f"removed MCP server {s(b.get('name'))}"
     if route == ("POST", "/api/mcp/apply"):
@@ -669,6 +671,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("DELETE", "/api/members/{slug}/dashboard/template"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
+        ("POST", "/api/mcp/project-file"),
         ("POST", "/api/mcp/remove"),
         ("POST", "/api/mcp/apply"),
         ("POST", "/api/mcp/toggle"),

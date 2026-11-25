@@ -533,6 +533,7 @@ def wrap_argv(
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
+    project_folder: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
@@ -571,6 +572,10 @@ def wrap_argv(
         exec_cwd: A directory the Linux namespace launcher enters after its seals
             and before it execs, failing closed unless it is read-only and empty
             (an app agent's launch copy). Ignored by every other backend.
+        project_folder: The folder the spawn works in. Its project MCP files are
+            sealed read-only (``project_mcp_files.project_mcp_targets``), so only a
+            ``request_server`` card changes them. Like ``extra_private_dirs`` it
+            never costs a delegation: a delegated sandbox applies no Crew seal.
         is_kiro_cli: Explicit executable classification for descriptor-backed
             Kiro snapshots whose launch path has no ``kiro-cli``
             basename. ``None`` retains basename detection for other callers.
@@ -916,6 +921,7 @@ def wrap_argv(
                     extra_private_dir_ids=extra_private_dir_ids,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
+                    project_folder=project_folder,
                 )
         else:
             delegated = _delegate_to_kiro_internal_sandbox(
@@ -934,6 +940,7 @@ def wrap_argv(
                     sandbox_level,
                     strip_python_env=strip_python_env,
                     forward_ssh_auth_sock=forward_ssh_auth_sock,
+                    project_folder=project_folder,
                 )
 
     backend = detect_backend(config_mode=mode)
@@ -959,6 +966,7 @@ def wrap_argv(
             or extra_writable_dirs
             or extra_expose_files
             or exec_cwd
+            or project_folder
         ):
             wrapped = namespace_argv(
                 argv,
@@ -975,6 +983,7 @@ def wrap_argv(
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
                 exec_cwd=exec_cwd,
+                project_folder=project_folder,
             )
         else:
             wrapped = namespace_argv(
@@ -996,6 +1005,7 @@ def wrap_argv(
             or extra_private_dirs
             or extra_writable_dirs
             or extra_expose_files
+            or project_folder
         ):
             return sandbox_exec_argv(
                 argv,
@@ -1009,6 +1019,7 @@ def wrap_argv(
                 extra_private_dir_ids=extra_private_dir_ids,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
+                project_folder=project_folder,
             )
         return sandbox_exec_argv(
             argv,

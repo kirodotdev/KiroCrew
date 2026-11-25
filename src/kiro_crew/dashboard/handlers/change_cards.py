@@ -1508,6 +1508,11 @@ _REQ_CARD_BEFORE = "card_step_before"
 _REQ_CARD_STEP_RAN = "card_step_ran"
 
 
+def is_admitted_card_step(request: web.Request) -> bool:
+    """Whether *request* is a card step the owner confirmed and the plan matched."""
+    return request.get(_REQ_CARD_STEP_RAN) is True
+
+
 def _note_card_step(request: web.Request, card_id: str, resp_status: int) -> None:
     """Tell the crewmate thread that raised the card what this step settled. Never raises.
 

@@ -50,6 +50,8 @@ import glob
 import hashlib
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -699,9 +701,12 @@ def _kept_files(globs: list[str]) -> list[Path]:
     )
 
 
-def _kept_skill_read(path: Path) -> tuple[int, str, dict[str, Any] | None, str] | None:
-    """*path*'s size, text and KAS reading (:func:`_kas_front_matter`), read once per
-    session start (``build_reuse``); ``None`` when the screened read refuses it.
+def _kept_skill_read(
+    path: Path,
+) -> tuple[int, str, dict[str, Any] | None, str, os.stat_result, int] | None:
+    """*path*'s size, text, KAS reading (:func:`_kas_front_matter`), and its stat and
+    the clock (``time.time_ns``) just before that read, read once per session start
+    (``build_reuse``); ``None`` when the stat fails or the screened read refuses it.
 
     A copy's text reaches the model, as a file:// prompt does, so the file actually
     opened must pass the prompt fence too.
@@ -709,13 +714,20 @@ def _kept_skill_read(path: Path) -> tuple[int, str, dict[str, Any] | None, str] 
     from kiro_crew.build_reuse import reuse
     from kiro_crew.hooks import safe_read_prefix
 
-    def read() -> tuple[int, str, dict[str, Any] | None, str] | None:
+    def read() -> tuple[int, str, dict[str, Any] | None, str, os.stat_result, int] | None:
+        # Stat first: a file changed between the two is kept under its older
+        # identity, so the next start's stat differs and reads it again.
+        seen = time.time_ns()
+        try:
+            st = path.stat()
+        except OSError:
+            return None
         raw = safe_read_prefix(str(path), _MAX_COPY_BYTES + 1, refuse=_unsafe_to_copy)
         if raw is None:
             return None
         text = raw.decode("utf-8", errors="replace")
         front, body = _kas_front_matter(text)
-        return len(raw), text, front, body
+        return len(raw), text, front, body, st, seen
 
     # The body and the front matter are both read out of the text (no YAML alias
     # is accepted), so three times the text bounds all three.
@@ -731,6 +743,54 @@ def _unsafe_to_copy(opened: str) -> bool:
     from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
 
     return is_unsafe_prompt_path(Path(opened))
+
+
+#: What :func:`_skill_facts` learned of each skill file, kept across session starts
+#: under the identity the file had just before it was read (:func:`_identity`), so a
+#: new chat does not screen and parse an unchanged tree again.
+_SKILL_FACTS: dict[str, tuple[tuple[int, ...], tuple[int, str, bool, bool]]] = {}
+# shortcut: cleared whole when full; the next start reads every file again, never a wrong answer.
+_SKILL_FACTS_MAX = 4 * _MAX_SKILL_FILES
+#: A file changed this recently is not kept: a kernel with coarse timestamps can give
+#: a second same-size write within one tick the same identity.
+_SETTLED_NS = 2_000_000_000
+
+
+def _identity(st: os.stat_result) -> tuple[int, ...]:
+    """A file's device, inode, size, modification and change times."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _skill_facts(path: Path) -> tuple[int, str, bool, bool] | None:
+    """*path*'s size, its name, and whether KAS loads it from a default tree and as a
+    ``skill://`` resource, from :func:`_kept_skill_read`; ``None`` when the screened
+    read refuses it.
+
+    Kept across session starts while the file keeps the identity it had when it
+    was read. No text is kept and a refusal is not kept: a copy is always made from
+    a fresh screened read.
+    """
+    try:
+        current = _identity(path.stat())
+    except OSError:
+        return None
+    kept = _SKILL_FACTS.get(str(path))
+    if kept is not None and kept[0] == current:
+        return kept[1]
+    read = _kept_skill_read(path)
+    if read is None:
+        _SKILL_FACTS.pop(str(path), None)
+        return None
+    size, _text, front, _body, st, seen = read
+    native, resource = _kas_loads(front, native=True), _kas_loads(front, native=False)
+    # Only a name KAS accepts can clash with a copy's (``_free_name``), so no other is kept.
+    name = str((front or {})["name"]) if resource else ""
+    facts = (size, name if _valid_kas_name(name) else "", native, resource)
+    if seen - max(st.st_mtime_ns, st.st_ctime_ns) >= _SETTLED_NS:
+        if len(_SKILL_FACTS) >= _SKILL_FACTS_MAX:
+            _SKILL_FACTS.clear()
+        _SKILL_FACTS[str(path)] = (_identity(st), facts)
+    return facts
 
 
 def refused_skill_copies(
@@ -750,8 +810,10 @@ def refused_skill_copies(
     a name KAS accepts, unused by any skill KAS loads, and a description: the
     original's, else the first line of the body, else kiro-cli's
     "No description available", cut to 1024. Each copy is rewritten at every
-    session start, so it follows the original. A skill that cannot be read or
-    written gets no copy and stays dropped, as before.
+    session start from a fresh screened read, so it follows the original; what
+    the other files told the last start is reused while they are unchanged
+    (:func:`_skill_facts`). A skill that cannot be read or written gets no copy
+    and stays dropped, as before.
     """
     from kiro_crew.atomic_write import atomic_write
     from kiro_crew.build_reuse import reuse
@@ -761,22 +823,23 @@ def refused_skill_copies(
     resource = set(_kept_files(_resource_globs(spec, agents_dir / f"{agent}.json", work_dir)))
     in_scope = sorted(native) if globs is None else _kept_files(globs)
     taken: set[str] = set()
-    refused: list[tuple[Path, dict[str, Any] | None, str, str]] = []
+    refused: list[Path] = []
     for path in sorted(native | resource | set(in_scope)):
-        read = _kept_skill_read(path)
-        if read is None:
+        facts = _skill_facts(path)
+        if facts is None:
             continue
-        size, text, front, body = read
-        loads = (path in native and _kas_loads(front, native=True)) or (
-            path in resource and _kas_loads(front, native=False)
-        )
-        if loads:
-            taken.add(str((front or {})["name"]))
+        size, name, loads_native, loads_resource = facts
+        if (path in native and loads_native) or (path in resource and loads_resource):
+            taken.add(name)
         elif path in in_scope and size <= _MAX_COPY_BYTES:
-            refused.append((path, front, body, text))
+            refused.append(path)
     copies: list[SkillCopy] = []
     root = paths.data_home() / COPY_DIR_NAME
-    for path, front, body, text in refused:
+    for path in refused:
+        read = _kept_skill_read(path)
+        if read is None or read[0] > _MAX_COPY_BYTES:
+            continue
+        _size, text, front, body, _st, _seen = read
         # Every name a rule may have been written against: kiro-cli's (read
         # whether or not KAS accepts the front matter), the folder, the path.
         authored = {str(path), path.parent.name if path.name == "SKILL.md" else path.stem}

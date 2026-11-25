@@ -64,6 +64,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
     ),
+    # Owner dashboard only (handlers/mcp_project_file.py); adds one server to a chat
+    # folder's project MCP file, the Apply of an mcp.server card with target project.
+    ("POST", "/api/mcp/project-file"): RouteAccess("mcp.project_file.change", UNSTABLE),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE

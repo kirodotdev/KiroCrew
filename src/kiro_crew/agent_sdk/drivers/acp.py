@@ -59,6 +59,7 @@ __all__ = [
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "spec_with_default_crew_servers",
+    "spec_withholds_server_whole",
     "default_crew_servers_pass",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
@@ -729,6 +730,13 @@ def default_crew_servers_pass() -> AbstractContextManager[None]:
     from kiro_crew.acp.default_crew_servers import one_pass
 
     return one_pass()
+
+
+def spec_withholds_server_whole(spec: Any, server: str) -> bool:
+    """Whether *spec* excludes *server* whole; see :func:`kiro_crew.acp.default_crew_servers.withheld_whole`."""
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    return bool(withheld_whole(spec, [server]))
 
 
 def kiro_cli_resolves() -> bool:
