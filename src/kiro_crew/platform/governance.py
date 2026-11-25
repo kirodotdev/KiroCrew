@@ -956,11 +956,20 @@ def may_skip_gate_now(ref: str) -> bool:
     names asks on every call, so no writer may grant it statically. So does a
     ``hooks.auto_deny_tools`` pattern that names the grant: the gate refuses
     its calls, and a granted call never reaches the gate.
+
+    Inside one :func:`kiro_crew.build_reuse.one_build` block (one session start)
+    each *ref* is answered once; an answer that raises is not kept.
     """
-    return (
-        _policy_may_skip_gate_now(ref)
-        and not _operator_requires_confirmation(ref)
-        and not _operator_denies(ref)
+    from kiro_crew.build_reuse import reuse
+
+    return reuse(
+        ("governance.may_skip_gate_now", ref),
+        lambda: (
+            _policy_may_skip_gate_now(ref)
+            and not _operator_requires_confirmation(ref)
+            and not _operator_denies(ref)
+        ),
+        weight=lambda _: len(ref),
     )
 
 
