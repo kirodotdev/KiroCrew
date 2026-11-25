@@ -341,6 +341,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target  # noqa: F401
+from kiro_crew.dashboard.handlers.prompts_paths import (  # noqa: F401 - owner: uploads
+    _is_path_too_long_error,
+)
 from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SESSION_FOLDER_ROOT_MAX_CHARS,
