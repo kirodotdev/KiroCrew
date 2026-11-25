@@ -321,6 +321,65 @@ def _lock_for_root(root: Path) -> threading.Lock:
         return lock
 
 
+def _usable_root(root: Path) -> Path:
+    """*root* resolved, refused (``ArtifactError``) when it lands under a sensitive path.
+
+    ``is_sensitive_path()`` handles symlink resolution, so it is resolved before the check.
+    """
+    resolved = root.resolve(strict=False)
+    if reason := sensitive_path_refusal(str(resolved)):
+        if is_unverifiable_path_refusal(reason):
+            raise ArtifactError(reason)
+        raise ArtifactError(f"refusing to use sensitive path as artifact root: {resolved}")
+    return resolved
+
+
+#: What :func:`read_stored_artifact` (and ``ArtifactStore.get``) can raise for a record
+#: that is not there or cannot be read: a store refusal or a missing record
+#: (``ArtifactError``), a failed read (``OSError``), and a ``meta.json`` that
+#: ``records.decode_meta`` cannot decode: ``ValueError`` (not JSON, or a ``version``
+#: that is no finite number), ``TypeError`` (a ``version`` that is ``null``, a list or
+#: an object) or ``RecursionError`` (nested past the JSON decoder's limit).
+STORED_READ_FAILURES: tuple[type[Exception], ...] = (
+    ArtifactError,
+    OSError,
+    ValueError,
+    TypeError,
+    RecursionError,
+)
+
+
+def read_stored_artifact(root: Path, slug: str) -> Artifact:
+    """Artifact *slug* of the store at *root* with its stored current content, writing nothing.
+
+    The read-only form of ``ArtifactStore(root).get(slug)``: the same slug check, root
+    refusal, per-root lock, directory rule (``artifacts_disk._artifact_dir_in``) and
+    fenced, descriptor-pinned reads (``artifacts_disk._read_store_text``) of
+    ``meta.json`` (decoded by ``records.decode_meta``) and ``current.html``, so it
+    raises what ``get`` raises for the same record (:data:`STORED_READ_FAILURES`). It
+    writes nothing ``get`` would: no store directory is created, a record with no event
+    log is not backfilled (its ``events`` read as stored), and no content token is
+    assigned. ``content`` is always the store's own copy, which is what ``get`` serves
+    for any record that is not a live pointer; a live pointer
+    (``ArtifactStore._is_live_pointer``) is served by ``get`` from its ``source_path``,
+    which this never opens, so a caller asks the rule of the record returned.
+    ``live_dirty`` and ``source_missing`` are left at their defaults.
+    """
+    root = root.expanduser()
+    resolved = _usable_root(root)
+    slug = _validate_slug(slug)
+    with _lock_for_root(resolved):
+        adir = _artifacts_disk._artifact_dir_in(root, slug)
+        meta_path = adir / "meta.json"
+        if not meta_path.exists():
+            raise ArtifactNotFoundError(f"artifact not found: {slug}")
+        meta = _records.decode_meta(
+            json.loads(_artifacts_disk._read_store_text(meta_path)), meta_path
+        )
+        meta.content = _artifacts_disk._read_store_text(adir / "current.html")
+        return meta
+
+
 class ArtifactStore:
     """File-system backed store for artifacts.
 
@@ -337,13 +396,7 @@ class ArtifactStore:
         # this store in the gateway, so one listener sees them all without the
         # store importing the knowledge package.
         self._change_listener: Callable[[str, str], None] | None = None
-        # Refuse to land under any sensitive path. is_sensitive_path() handles
-        # symlink resolution, so resolve() before checking.
-        resolved = self._root.resolve(strict=False)
-        if reason := sensitive_path_refusal(str(resolved)):
-            if is_unverifiable_path_refusal(reason):
-                raise ArtifactError(reason)
-            raise ArtifactError(f"refusing to use sensitive path as artifact root: {resolved}")
+        resolved = _usable_root(self._root)
         # Keyed by the RESOLVED root so a symlinked alias of the same
         # directory still shares the lock, not just a literal path match.
         self._lock = _lock_for_root(resolved)

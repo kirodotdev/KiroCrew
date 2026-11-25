@@ -22,7 +22,7 @@ import portability_helpers
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew import portability, portability_bot_export, portability_stream
+from kiro_crew import platform_compat, portability, portability_bot_export, portability_stream
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.mate_config import minimal_mate_spec
 from kiro_crew.portability import create_export_zip
@@ -784,3 +784,112 @@ def test_the_export_parses_only_the_newest_version_files(homes, monkeypatch):
     prefix = f"bot-members/{atlas.slug}/dashboard/versions"
     assert {f"{prefix}/{n}.json" for n in range(1, 26)} <= names
     assert {n.split("/")[1] for n in names if n.startswith("bot-artifacts/")} == {applied.package}
+
+
+# The template Bot's live-binding read: a read of the source, never a write, and one
+# failure set with the import's read of the same metadata.
+
+
+def _package_meta(package: str) -> Path:
+    from kiro_crew.config.paths import data_home
+
+    return data_home() / "artifacts" / package / "meta.json"
+
+
+def _edit_meta(package: str, change: dict, drop: tuple[str, ...] = ()) -> None:
+    path = _package_meta(package)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw.update(change)
+    for key in drop:
+        raw.pop(key, None)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+#: What a record written before the event log existed lacks.
+_LEGACY_DROP = ("events", "events_backfilled")
+
+
+@pytest.mark.parametrize("version", [None, [], {}], ids=["null", "list", "object"])
+def test_a_package_version_the_store_cannot_read_carries_nothing_and_the_export_completes(
+    homes, tmp_path, version
+):
+    # records.decode_meta raises TypeError for these: the read answers "not bound".
+    from portability_bot_helpers import archive_members, export_archive
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    _edit_meta(applied.package, {"version": version})
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()
+    assert f"bot-members/{atlas.slug}/dashboard/instance.json" in archive_members(archive)
+
+
+def test_the_live_binding_read_leaves_a_legacy_meta_byte_identical(homes, tmp_path):
+    from portability_bot_helpers import export_archive
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+    _edit_meta(applied.package, {}, drop=_LEGACY_DROP)
+    before = _package_meta(applied.package).read_bytes()
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _package_meta(applied.package).read_bytes() == before
+    assert _bot_artifacts(archive) == {applied.package}
+
+
+def test_the_export_does_not_create_a_missing_artifacts_directory(homes, tmp_path):
+    from portability_bot_helpers import export_archive
+
+    from kiro_crew.config.paths import data_home
+
+    homes.use("a")
+    _atlas_on_its_template()
+    shutil.rmtree(data_home() / "artifacts")
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert not (data_home() / "artifacts").exists()
+    assert _bot_artifacts(archive) == set()
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX or platform_compat.effective_uid() == 0,
+    reason="needs POSIX permission bits that bind this process (not root)",
+)
+def test_a_read_only_package_with_a_legacy_meta_is_carried(homes, tmp_path):
+    import stat
+
+    from portability_bot_helpers import export_archive
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+    _edit_meta(applied.package, {}, drop=_LEGACY_DROP)
+    meta = _package_meta(applied.package)
+    package_dir = meta.parent
+    platform_compat.chmod_safe(meta, stat.S_IRUSR)
+    platform_compat.chmod_safe(package_dir, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        archive = export_archive(tmp_path / "a.zip")
+    finally:
+        platform_compat.chmod_safe(package_dir, stat.S_IRWXU)
+        platform_compat.chmod_safe(meta, stat.S_IRUSR | stat.S_IWUSR)
+
+    assert _bot_artifacts(archive) == {applied.package}
+
+
+def test_a_live_pointer_package_names_no_binding_for_a_template_bot(homes, tmp_path):
+    # The store's own live-pointer rule, as scan_bound_dashboards and the import read it:
+    # a live pointer's bytes are another file's, so it is no Bot's package to carry.
+    from portability_bot_helpers import export_archive
+
+    homes.use("a")
+    _atlas, applied = _atlas_on_its_template()
+    gone = tmp_path / "moved-away.html"
+    _edit_meta(applied.package, {"source_path": str(gone), "source_copy_only": False})
+
+    archive = export_archive(tmp_path / "a.zip")
+
+    assert _bot_artifacts(archive) == set()

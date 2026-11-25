@@ -423,11 +423,16 @@ def list_versions(self: ArtifactStore, slug: str) -> _List[int]:
 
 
 def _artifact_dir(self: ArtifactStore, slug: str) -> Path:
-    adir = (self._root / slug).resolve(strict=False)
+    return _artifact_dir_in(self._root, slug)
+
+
+def _artifact_dir_in(root: Path, slug: str) -> Path:
+    """The directory of *slug* under store *root*: the one rule every store read and
+    write locates an artifact by (``_artifact_dir`` for a store, and
+    ``artifacts.read_stored_artifact`` for a read that builds none)."""
+    adir = (root / slug).resolve(strict=False)
     # Defense in depth: ensure resolved path is still under root.
-    if self._root.resolve(strict=False) not in adir.parents and adir != self._root.resolve(
-        strict=False
-    ):
+    if root.resolve(strict=False) not in adir.parents and adir != root.resolve(strict=False):
         raise ArtifactValidationError(f"slug escapes artifact root: {slug}")
     return adir
 
@@ -546,12 +551,18 @@ def _read_meta_file(self: ArtifactStore, path: Path) -> Artifact:
 
 
 def _read_text(self: ArtifactStore, path: Path) -> str:
+    """Read a store-internal text file through a pinned descriptor (:func:`_read_store_text`)."""
+    return _read_store_text(path)
+
+
+def _read_store_text(path: Path) -> str:
     """Read a store-internal text file through a pinned descriptor.
 
     The fence is asked with the ``realpath`` computed on the line above (see
     :func:`_fence_refuses` for which gate answers, and why). The opened
     descriptor is checked again so a replacement at the final name cannot
-    redirect the read after that first decision.
+    redirect the read after that first decision. It reads no store state, so a
+    read that builds no store (``artifacts.read_stored_artifact``) reads through it too.
     """
     resolved = Path(os.path.realpath(path))
     if reason := _fence_refusal(resolved, "read"):

@@ -891,15 +891,18 @@ def _owned_package(
     so the pinned version alone does not say whose the package is now. The pinned
     version is read and decoded once, and its envelope is the page checked by
     :func:`_page_of`. A package of this Bot's lacking the pinned version has page
-    ``artifact_missing``.
+    ``artifact_missing``. Each of the three reads (the metadata, the live version, the
+    pinned version) answers any of the store's read failures
+    (``artifacts.STORED_READ_FAILURES``) with ``unreadable_record``.
     """
-    from kiro_crew.artifact_store.model import ArtifactError, ArtifactNotFoundError
+    from kiro_crew.artifact_store.model import ArtifactNotFoundError
+    from kiro_crew.artifacts import STORED_READ_FAILURES
 
     store = _artifact_store(mc)
     binding = f"crewmate:{slug}"
     try:
         meta = store._load_meta(package)
-    except (ArtifactError, OSError, ValueError, TypeError, RecursionError):
+    except STORED_READ_FAILURES:
         # Whose a directory with no readable record is cannot be told.
         return _Owned("unreadable_record")
     if _not_a_bound_dashboard(meta):
@@ -913,7 +916,7 @@ def _owned_package(
         try:
             live = store.get(package)
             target = dashboard_package.live_binding_of(live.content or "")
-        except (ArtifactError, OSError, ValueError, RecursionError):
+        except STORED_READ_FAILURES:
             return _Owned("unreadable_record")
     owner = _binding_owner(target, binding)
     if owner:
@@ -922,7 +925,7 @@ def _owned_package(
         pinned = store.get(package, version=version)
     except ArtifactNotFoundError:
         return _Owned(page="artifact_missing")
-    except (ArtifactError, OSError, ValueError):
+    except STORED_READ_FAILURES:
         return _Owned("unreadable_record")
     raw, target = _envelope(pinned.content or "")
     owner = (

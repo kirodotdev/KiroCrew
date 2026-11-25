@@ -510,3 +510,38 @@ def test_the_live_pointer_rule_is_the_stores_own(
     assert dp.scan_bound_dashboards(store).bound == {}
     assert stores.BoundIndex(dst.mc).refusal("second-board", SLUG) == ""
     assert stores._not_a_bound_dashboard(art)
+
+
+class _Unbound:
+    """A ``BoundIndex`` stand-in answering *target* for every package."""
+
+    def __init__(self, target: str | None) -> None:
+        self.target = target
+
+    def live_binding(self, package: str) -> str | None:
+        return self.target
+
+
+@pytest.mark.parametrize("live", [False, True], ids=["live-read-from-the-index", "live-read-here"])
+def test_a_record_that_stops_decoding_between_reads_is_unreadable(
+    world: tuple[_Source, _Import], _floor_monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    # Reachable only by meta.json changing after _owned_package's first read of it, so
+    # pinned by a direct call: the live read (no complete scan) and the pinned read each
+    # answer the store's whole decode-failure set, TypeError included, as the first does.
+    src, dst = world
+    snap = dst.snap_from(src)
+    _package_here(snap, dst.mc, src.package)
+    real_get = ArtifactStore.get
+
+    def stops_decoding(self: ArtifactStore, slug: str, *args: Any, **kwargs: Any) -> Any:
+        if (kwargs.get("version") is None) is live:
+            raise TypeError("int() argument must be a string, not 'NoneType'")
+        return real_get(self, slug, *args, **kwargs)
+
+    _floor_monkeypatch.setattr(ArtifactStore, "get", stops_decoding)
+    index = _Unbound(None if live else f"crewmate:{SLUG}")
+    owned = stores._owned_package(
+        dst.mc, src.package, SLUG, src.version, src.digest, index  # type: ignore[arg-type]
+    )
+    assert (owned.owner, owned.page) == ("unreadable_record", "")

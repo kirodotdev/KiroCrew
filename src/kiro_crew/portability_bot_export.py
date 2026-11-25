@@ -275,19 +275,26 @@ def _held_versions(held: Mapping[str, int], chosen: set[str]) -> dict[int, Mappi
 def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
     """Whether *package*'s live version on the source is bound to *binding*.
 
-    Read by ``dashboard_package.live_binding_of``, the rule ``scan_bound_dashboards``
-    reads, from the source's own artifact store. Anything that cannot be read is no.
+    Read by the rules ``scan_bound_dashboards`` reads a binding by: a live pointer (the
+    store's own rule, ``ArtifactStore._is_live_pointer``) names none, so the import, which
+    refuses a carried live pointer, would bind none; any other record's binding is
+    ``dashboard_package.live_binding_of`` of its stored current content. The record is
+    read by ``artifacts.read_stored_artifact``, the store's read that writes nothing (an
+    export never writes the source: no ``artifacts/`` is created and a record with no
+    event log is not backfilled), and anything it cannot read
+    (``artifacts.STORED_READ_FAILURES``) is no.
     """
     from pathlib import Path
 
     from kiro_crew.artifact_store import dashboard_package
-    from kiro_crew.artifact_store.model import ArtifactError
-    from kiro_crew.artifacts import ArtifactStore
+    from kiro_crew.artifacts import STORED_READ_FAILURES, ArtifactStore, read_stored_artifact
 
     try:
-        live = ArtifactStore(Path(mc_real) / ARTIFACTS_DIR).get(package)
+        live = read_stored_artifact(Path(mc_real) / ARTIFACTS_DIR, package)
+        if ArtifactStore._is_live_pointer(live):
+            return False
         return dashboard_package.live_binding_of(live.content or "") == binding
-    except (ArtifactError, OSError, ValueError, RecursionError):
+    except STORED_READ_FAILURES:
         return False
 
 
