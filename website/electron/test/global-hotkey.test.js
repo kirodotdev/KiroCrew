@@ -369,15 +369,15 @@ test("a fresh install that already disabled it (\"\") is left untouched", () => 
 
 // ── What the Settings recorder may send over IPC ────────────────────────────
 
-test("the recorder's value is kept when it holds Command, Control or Alt", () => {
+test("the recorder's value is kept when it holds Cmd, Ctrl or Alt", () => {
   const { mod } = loadModule();
   for (const ok of [
     "",
     "Alt+Shift+K",
-    "Command+Shift+K",
-    "Control+Alt+Space",
-    "Command+Control+Alt+Shift+F12",
-    "Control+7",
+    "Cmd+Shift+K",
+    "Ctrl+Alt+Space",
+    "Cmd+Ctrl+Alt+Shift+F12",
+    "Ctrl+7",
     "Alt+PageDown",
   ]) {
     assert.strictEqual(mod.parseRecordedHotkey(ok), ok, JSON.stringify(ok));
@@ -397,7 +397,9 @@ test("the recorder's value is refused when it could swallow plain typing or is n
     "Alt+F25",
     "Alt+K+J",
     " Alt+K",
-    "CommandOrControl+Shift+K", // a config-file spelling, not a recorded one
+    "CommandOrControl+Shift+K", // config-file spellings, not recorded ones
+    "Command+Shift+K",
+    "Control+Alt+K",
     "Alt+Shift+K\nAlt+J",
     null,
     undefined,

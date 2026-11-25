@@ -86,13 +86,13 @@ function resolveGlobalHotkey(saved) {
 }
 
 /**
- * The accelerators the Settings recorder may send: Command, Control, Alt and
- * Shift in that order, then one letter, digit, function key or named key. The
- * renderer's recorder (acceleratorFromEvent in website/src/lib/globalHotkey.ts)
- * builds exactly this spelling.
+ * The accelerators the Settings recorder may send: Cmd, Ctrl, Alt and Shift in
+ * that order, then one letter, digit, function key or named key. The renderer's
+ * recorder (acceleratorFromEvent in website/src/lib/globalHotkey.ts) builds
+ * exactly this spelling.
  */
 const RECORDED_HOTKEY_RE =
-  /^(Command\+)?(Control\+)?(Alt\+)?(?:Shift\+)?(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
+  /^(Cmd\+)?(Ctrl\+)?(Alt\+)?(?:Shift\+)?(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
 
 /**
  * Check a value the Settings recorder sent over IPC. Pure.
@@ -104,7 +104,7 @@ const RECORDED_HOTKEY_RE =
  *
  * @param {*} value  What the renderer sent.
  * @returns {string|null} "" to turn the hotkey off, the accelerator when it is
- *   one the recorder can produce and holds Command, Control or Alt, and null
+ *   one the recorder can produce and holds Cmd, Ctrl or Alt, and null
  *   when the value must be refused.
  */
 function parseRecordedHotkey(value) {

@@ -11,11 +11,11 @@ const keydown = (init: Partial<RecorderEvent>): RecorderEvent => ({
 describe('acceleratorFromEvent', () => {
   it('spells the modifiers in a fixed order, then the key', () => {
     expect(acceleratorFromEvent(keydown({ code: 'KeyK', key: 'K', altKey: true, shiftKey: true }), false)).toBe('Alt+Shift+K')
-    expect(acceleratorFromEvent(keydown({ code: 'KeyK', key: 'k', metaKey: true, shiftKey: true }), true)).toBe('Command+Shift+K')
-    expect(acceleratorFromEvent(keydown({ code: 'Space', key: ' ', ctrlKey: true, altKey: true }), false)).toBe('Control+Alt+Space')
+    expect(acceleratorFromEvent(keydown({ code: 'KeyK', key: 'k', metaKey: true, shiftKey: true }), true)).toBe('Cmd+Shift+K')
+    expect(acceleratorFromEvent(keydown({ code: 'Space', key: ' ', ctrlKey: true, altKey: true }), false)).toBe('Ctrl+Alt+Space')
     expect(acceleratorFromEvent(keydown({ code: 'F12', key: 'F12', metaKey: true, ctrlKey: true, altKey: true, shiftKey: true }), true))
-      .toBe('Command+Control+Alt+Shift+F12')
-    expect(acceleratorFromEvent(keydown({ code: 'Digit7', key: '7', ctrlKey: true }), false)).toBe('Control+7')
+      .toBe('Cmd+Ctrl+Alt+Shift+F12')
+    expect(acceleratorFromEvent(keydown({ code: 'Digit7', key: '7', ctrlKey: true }), false)).toBe('Ctrl+7')
     expect(acceleratorFromEvent(keydown({ code: 'ArrowUp', key: 'ArrowUp', altKey: true }), false)).toBe('Alt+Up')
   })
 
@@ -56,7 +56,7 @@ describe('acceleratorFromEvent', () => {
         if (accelerator === null) continue
         recorded += 1
         expect(accelerator).toMatch(accepted)
-        expect(accelerator).toMatch(/^(Command|Control|Alt)\+/)
+        expect(accelerator).toMatch(/^(Cmd|Ctrl|Alt)\+/)
       }
     }
     // Every key with every modifier set that holds Command, Control or Alt.

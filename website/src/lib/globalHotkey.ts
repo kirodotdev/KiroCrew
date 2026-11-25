@@ -42,13 +42,6 @@ const MODIFIER_CAPS: Record<string, { mac: string; other: string }> = {
   Shift: { mac: '\u21e7', other: 'Shift' },
 }
 
-/** Named keys the recorder takes: `KeyboardEvent.code` to the accelerator's key token. */
-const RECORDABLE_NAMED_KEYS: Readonly<Record<string, string>> = {
-  Space: 'Space', Tab: 'Tab', Enter: 'Enter', Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
-  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
-  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
-}
-
 /**
  * The Electron accelerator a keydown records for the summon hotkey, or `null`
  * when the press is not one to record yet (a bare modifier, a key outside the
@@ -56,7 +49,9 @@ const RECORDABLE_NAMED_KEYS: Readonly<Record<string, string>> = {
  * every program, so a bare key or a Shift-only chord would swallow plain typing
  * system-wide; the desktop shell refuses those too (`parseRecordedHotkey` in
  * electron/global-hotkey.js), and it accepts exactly the spelling built here:
- * Command, Control, Alt, Shift in that order, then the key.
+ * Cmd, Ctrl, Alt, Shift in that order, then the key. The key is a letter, a
+ * top-row digit, F1 to F24, or a named key whose `KeyboardEvent.code` is its
+ * accelerator name (an arrow drops the "Arrow").
  *
  * shortcut: punctuation and numpad keys are not recordable, because their
  * accelerator tokens depend on the keyboard layout. The config file still takes
@@ -72,10 +67,10 @@ export function acceleratorFromEvent(
   const code = e.code
   const key = chordLetter(e.key, code)?.toUpperCase()
     ?? (/^Digit\d$/.test(code) ? code.slice(5) : null)
-    ?? (/^F([1-9]|1\d|2[0-4])$/.test(code) ? code : null)
-    ?? RECORDABLE_NAMED_KEYS[code]
+    ?? (/^(?:F(?:[1-9]|1\d|2[0-4])|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown)$/.test(code) ? code : null)
+    ?? (/^Arrow(?:Up|Down|Left|Right)$/.test(code) ? code.slice(5) : null)
   if (!key) return null
-  return [e.metaKey && 'Command', e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', key]
+  return [e.metaKey && 'Cmd', e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', key]
     .filter(Boolean)
     .join('+')
 }

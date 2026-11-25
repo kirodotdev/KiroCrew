@@ -66,7 +66,7 @@ describe('Settings → Shortcuts: summon-hotkey recorder', () => {
 
   it('says so when the recorded chord could not be bound, and Clear drops it', async () => {
     // The shell stored the chord, could not register it, and bound its default.
-    const fellBack: HotkeyInfo = { accelerator: 'Alt+Shift+K', requested: 'Control+Alt+J', default: 'Alt+Shift+K' }
+    const fellBack: HotkeyInfo = { accelerator: 'Alt+Shift+K', requested: 'Ctrl+Alt+J', default: 'Alt+Shift+K' }
     const set = vi.fn(async (accelerator: string) => (accelerator ? fellBack : OFF))
     ;(window as BridgeWindow).electronAPI = { getGlobalHotkey: async () => OFF, setGlobalHotkey: set }
     renderWithProviders(<ShortcutsPanel />)
