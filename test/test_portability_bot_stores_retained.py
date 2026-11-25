@@ -17,8 +17,9 @@ read the stores step's notices through a recording wrapper as well as the summar
 from __future__ import annotations
 
 import json
+import logging
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -456,3 +457,100 @@ def test_a_kept_template_record_whose_package_came_back_is_restored(
     assert (data_home() / "artifacts" / applied.package / "meta.json").is_file()
     assert store_notices == {}
     assert row["notices"] == []
+
+
+# Archive and destination bytes that would make a reader raise instead of refusing.
+
+
+class _Tracebacks(logging.Handler):
+    """Every record the stores step logged with a traceback."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.seen: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.exc_info:
+            self.seen.append(record)
+
+
+@pytest.fixture
+def tracebacks() -> Iterator[list[logging.LogRecord]]:
+    handler = _Tracebacks()
+    stores_logger = logging.getLogger(stores.__name__)
+    stores_logger.addHandler(handler)
+    try:
+        yield handler.seen
+    finally:
+        stores_logger.removeHandler(handler)
+
+
+#: A JSON document nested past the decoder's recursion limit.
+DEEP = "[" * 200_000 + "]" * 200_000
+
+
+@pytest.mark.parametrize("odd", [None, "².json"])
+def test_a_kept_record_with_a_non_ascii_digit_version_name_imports_as_without_it(
+    world: tuple[_Source, _Import], odd: str | None
+) -> None:
+    src, dst = world
+    snap = dst.snap_from(src)
+    kept = dst.mc / "members" / SLUG / "dashboard"
+    shutil.copytree(snap / "bot-members" / SLUG / "dashboard", kept)
+    if odd:
+        (kept / "versions" / odd).write_bytes((kept / "versions" / "1.json").read_bytes())
+    rows, notices = _install(snap, dst.mc, owned=frozenset({SLUG}))
+    assert rows["dashboard"] == PartOutcome(BOT.name, "dashboard", "restored")
+    assert rows["briefing"] == PartOutcome(BOT.name, "briefing", "restored")
+    assert (dst.mc / "members" / SLUG / "briefing.md").is_file()
+    assert notices == {}
+    assert sorted(stores._retained_version_docs(SLUG)[0]) == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("on_template", "dashboard", "notice"),
+    [
+        (True, PartOutcome(BOT.name, "dashboard", "restored"), {BOT.name: [OLDER]}),
+        (
+            False,
+            PartOutcome(BOT.name, "dashboard", "page_not_rebuilt", "artifact_rejected"),
+            {},
+        ),
+    ],
+)
+def test_a_carried_package_whose_meta_nests_too_deep_is_refused_by_the_gate(
+    world: tuple[_Source, _Import],
+    tracebacks: list[logging.LogRecord],
+    on_template: bool,
+    dashboard: PartOutcome,
+    notice: dict[str, list[str]],
+) -> None:
+    src, dst = world
+    if on_template:
+        _on_template(src)
+    snap = dst.snap_from(src)
+    (snap / BOT_ARTIFACTS_DIR / src.package / "meta.json").write_text(DEEP, encoding="utf-8")
+    rows, notices = _install(snap, dst.mc)
+    assert rows["dashboard"] == dashboard
+    assert rows["briefing"] == PartOutcome(BOT.name, "briefing", "restored")
+    assert (dst.mc / "members" / SLUG / "dashboard" / "instance.json").is_file()
+    assert (dst.mc / "members" / SLUG / "briefing.md").is_file()
+    assert not (dst.mc / "artifacts" / src.package).exists()
+    assert notices == notice
+    assert tracebacks == []
+
+
+def test_a_record_that_nests_too_deep_is_an_unreadable_record(
+    world: tuple[_Source, _Import], tracebacks: list[logging.LogRecord]
+) -> None:
+    src, dst = world
+    snap = dst.snap_from(src)
+    (snap / "bot-members" / SLUG / "dashboard" / "instance.json").write_text(DEEP, encoding="utf-8")
+    rows, notices = _install(snap, dst.mc)
+    assert rows["dashboard"] == PartOutcome(
+        BOT.name, "dashboard", "not_restored", "unreadable_record"
+    )
+    assert rows["briefing"] == PartOutcome(BOT.name, "briefing", "restored")
+    assert not (dst.mc / "members" / SLUG / "dashboard").exists()
+    assert notices == {}
+    assert tracebacks == []

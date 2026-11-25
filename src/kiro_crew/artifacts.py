@@ -393,8 +393,13 @@ class ArtifactStore:
 
     @staticmethod
     def _is_live_pointer(art: Artifact) -> bool:
-        """True when reads come from ``source_path`` rather than the store's own copy."""
-        return bool(art.source_path) and not art.source_copy_only
+        """True when reads come from ``source_path`` rather than the store's own copy.
+
+        The one live-pointer rule: every reader that must skip a live pointer before
+        opening it asks this through the class. A listed record that lacks either field
+        reads it as empty, so a duck-typed listing is answered by the same rule.
+        """
+        return bool(getattr(art, "source_path", "")) and not getattr(art, "source_copy_only", False)
 
     def set_change_listener(self, listener: Callable[[str, str], None] | None) -> None:
         """Register a callback fired after a content-affecting mutation.

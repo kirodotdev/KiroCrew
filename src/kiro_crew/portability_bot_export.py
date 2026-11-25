@@ -54,6 +54,7 @@ from kiro_crew.portability_bot_types import (
     raw_entry_slug,
     read_fd_at_most,
     safe_path_component,
+    version_file_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -223,18 +224,52 @@ def _read_record_doc(fd: int) -> Mapping[str, Any] | None:
 def _newest_version_names(names: Sequence[str]) -> set[str]:
     """The ``instance.MAX_RETAINED_VERSIONS`` newest ``<n>.json`` names of *names*.
 
-    Chosen by name, in ``instance._prune_versions``'s order (by ``(n, name)``), before
-    any file is parsed, so a file that does not parse still takes its place: the import
-    chooses the same set from the same names.
+    Chosen by name (``portability_bot_types.version_file_number``: ASCII digits only),
+    in ``instance._prune_versions``'s order (by ``(n, name)``), before any file is
+    parsed, so a file that does not parse still takes its place: the import chooses the
+    same set from the same names.
     """
     from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS
 
-    found = sorted(
-        (int(name[: -len(".json")]), name)
-        for name in names
-        if name.endswith(".json") and name[: -len(".json")].isdigit()
-    )
+    found = sorted((n, name) for name in names if (n := version_file_number(name)) is not None)
     return {name for _n, name in found[-MAX_RETAINED_VERSIONS:]}
+
+
+def _hold_if_newest(held: dict[str, int], name: str, fd: int) -> None:
+    """Keep a duplicate of *fd* in *held* while *name* is among the newest version names.
+
+    *held* maps a version name to a descriptor duplicated from the walked one, and
+    never holds more than ``instance.MAX_RETAINED_VERSIONS``: a name that falls out of
+    :func:`_newest_version_names` has its duplicate closed. So the newest files are
+    parsed after the walk, from the same open files the export archived, and no other
+    is. A duplicate that cannot be made leaves that name unparsed.
+    """
+    if version_file_number(name) is None:
+        return
+    try:
+        held[name] = os.dup(fd)
+    except OSError:
+        return
+    keep = _newest_version_names(list(held))
+    for dropped in [n for n in held if n not in keep]:
+        os.close(held.pop(dropped))
+
+
+def _held_versions(held: Mapping[str, int], chosen: set[str]) -> dict[int, Mapping[str, Any]]:
+    """The documents of the *chosen* version files *held* has open, by ``n``.
+
+    Each read (bounded) with :func:`_read_record_doc`; one that does not parse is
+    left out. Only what the carried pin reads is kept.
+    """
+    versions: dict[int, Mapping[str, Any]] = {}
+    for name in sorted(chosen):
+        n = version_file_number(name)
+        if n is None or name not in held:
+            continue
+        doc = _read_record_doc(held[name])
+        if doc is not None:
+            versions[n] = {"package": doc["package"]} if "package" in doc else {}
+    return versions
 
 
 def _live_binding_is(mc_real: str, package: str, binding: str) -> bool:
@@ -341,10 +376,12 @@ def iter_bot_store_files(
     *mc_real*. A package two Bots pin is carried once.
 
     The caller closes each descriptor, as with ``_walk_contained``. ``instance.json``
-    and each of the ``instance.MAX_RETAINED_VERSIONS`` newest ``versions/<n>.json``
-    names (:func:`_newest_version_names`, chosen by name before any is parsed) are read
-    (bounded) before they are yielded and their descriptors rewound, so the caller
-    archives the same bytes the package was chosen from. Every carried file is archived
+    is read (bounded) before it is yielded and its descriptor rewound. Of the walked
+    ``versions/<n>.json`` files only the ``instance.MAX_RETAINED_VERSIONS`` newest names
+    (:func:`_newest_version_names`, chosen by name before any is parsed) are read, once
+    the walk is done, from descriptors duplicated off the ones yielded
+    (:func:`_hold_if_newest`), so the caller archives the same bytes the package was
+    chosen from and no other version file is parsed. Every carried file is archived
     whether or not it parses.
     """
     from kiro_crew import portability as _pf
@@ -358,21 +395,19 @@ def iter_bot_store_files(
             continue
         record: Mapping[str, Any] | None = None
         walked: list[str] = []
-        docs: dict[str, Mapping[str, Any]] = {}
-        for rel, fd in _member_store_files(mc_real, slug):
-            if rel.parts[2:] == ("dashboard", "instance.json"):
-                record = _read_record_doc(fd)
-            elif rel.parts[2:4] == ("dashboard", "versions") and len(rel.parts) == 5:
-                walked.append(rel.name)
-                doc = _read_record_doc(fd)
-                if doc is not None:
-                    # Only what the pin reads is kept, so a large file costs no memory.
-                    docs[rel.name] = {"package": doc["package"]} if "package" in doc else {}
-            yield PurePath(BOT_MEMBERS_DIR, *rel.parts[1:]), fd
-        chosen = _newest_version_names(walked)
-        versions = {
-            int(name[: -len(".json")]): doc for name, doc in sorted(docs.items()) if name in chosen
-        }
+        held: dict[str, int] = {}
+        try:
+            for rel, fd in _member_store_files(mc_real, slug):
+                if rel.parts[2:] == ("dashboard", "instance.json"):
+                    record = _read_record_doc(fd)
+                elif rel.parts[2:4] == ("dashboard", "versions") and len(rel.parts) == 5:
+                    walked.append(rel.name)
+                    _hold_if_newest(held, rel.name, fd)
+                yield PurePath(BOT_MEMBERS_DIR, *rel.parts[1:]), fd
+            versions = _held_versions(held, _newest_version_names(walked))
+        finally:
+            for fd in held.values():
+                os.close(fd)
         package = _carried_package(mc_real, slug, record, versions)
         if not package or package in carried_packages:
             continue

@@ -111,6 +111,7 @@ from kiro_crew.portability_bot_types import (
     carried_member_file,
     read_fd_at_most,
     safe_path_component,
+    version_file_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,10 @@ UNSTAGED_ARTIFACT_FILES: frozenset[tuple[str, ...]] = frozenset({("comments.json
 
 
 _FAILURES: tuple[type[BaseException], ...] = (OSError, pinned_fs.PinnedPathRefusal, ValueError)
+
+#: :data:`_FAILURES` and a document nested past the JSON decoder's limit: what a step
+#: that decodes archive-supplied JSON answers as its own failure instead of raising.
+_DECODE_FAILURES: tuple[type[BaseException], ...] = (*_FAILURES, RecursionError)
 
 #: The reason a store entry here is another Bot's.
 _HELD = "held_by_other_bot"
@@ -455,12 +460,16 @@ def _new_stage(parent: Path) -> Path:
 
 
 def _staged_pin(stage_record: Path) -> tuple[str, int, str]:
-    """``(package slug, version, digest)`` the staged ``instance.json`` pins, or empty."""
+    """``(package slug, version, digest)`` the staged ``instance.json`` pins, or empty.
+
+    Empty when it is not a JSON object, one nested past the decoder's limit included:
+    such a record is installed and its read-back refuses it (``unreadable_record``).
+    """
     from kiro_crew.dashboard_templates import instance
 
     try:
         raw = json.loads(_read_staged(stage_record, MAX_RECORD_BYTES).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return "", 0, ""
     if not isinstance(raw, dict):
         return "", 0, ""
@@ -600,7 +609,8 @@ def _check_staged_artifact(
     file the package can serve is checked:
 
     * ``meta.json`` is decoded by the store's own ``records.decode_meta`` and must name
-      *package*; a :data:`REFUSED_META_FIELDS` key that is present refuses it unless
+      *package* (one that does not decode, nested past the decoder's limit included,
+      is ``artifact_rejected``); a :data:`REFUSED_META_FIELDS` key that is present refuses it unless
       its value is exactly the store's own empty value of that type
       (:data:`REFUSED_META_EMPTY`: the decoder stringifies any other value, so ``0``
       or ``[]`` would still be a live pointer), and the decoded fields must be empty
@@ -626,7 +636,14 @@ def _check_staged_artifact(
     try:
         raw = json.loads(_read_staged(meta_path, MAX_RECORD_BYTES).decode("utf-8"))
         meta = records.decode_meta(raw, meta_path)
-    except (ArtifactError, TypeError, OSError, ValueError, pinned_fs.PinnedPathRefusal):
+    except (
+        ArtifactError,
+        TypeError,
+        OSError,
+        ValueError,
+        RecursionError,
+        pinned_fs.PinnedPathRefusal,
+    ):
         return "artifact_rejected", ""
     if meta.slug != package or not all(_is_store_empty(raw, name) for name in REFUSED_META_FIELDS):
         return "artifact_rejected", ""
@@ -658,7 +675,7 @@ def _check_staged_artifact(
         return reason, content
     try:
         _rewrite_staged(meta_path, _stripped_meta(meta))
-    except _FAILURES:
+    except _DECODE_FAILURES:
         logger.warning("import: %r's artifact record was not cleaned", package, exc_info=True)
         return "write_failed", ""
     return "", content
@@ -775,7 +792,7 @@ def _record_state_ok(slug: str) -> bool:
 
     try:
         return instance.read(slug).state != instance.STATE_ERROR
-    except (OSError, ValueError, instance.InstanceError):
+    except (OSError, ValueError, RecursionError, instance.InstanceError):
         return False
 
 
@@ -791,7 +808,7 @@ def _template_served(slug: str) -> bool:
 
     try:
         record = instance.read(slug)
-    except (OSError, ValueError, instance.InstanceError):
+    except (OSError, ValueError, RecursionError, instance.InstanceError):
         return False
     if not str(getattr(record, "template_id", "") or ""):
         return True
@@ -1195,14 +1212,19 @@ def _judge_here(
 def _newest_versions(keys: Sequence[tuple[str, ...]]) -> set[tuple[str, ...]]:
     """The ``versions/<n>.json`` keys a record stages: the newest ``MAX_RETAINED_VERSIONS``.
 
-    Chosen by NAME, in ``instance._prune_versions``'s order (by ``(n, name)``), the set
+    Chosen by NAME (``portability_bot_types.version_file_number``), in
+    ``instance._prune_versions``'s order (by ``(n, name)``), the set
     the source keeps after every commit and the set the export read its carried pin
     from, before any file is parsed. An older file of a hand-built archive is not
     installed, so no version a rollback could reach is left unjudged and unnamed.
     """
     from kiro_crew.dashboard_templates import instance
 
-    found = sorted((int(key[1][: -len(".json")]), key) for key in keys if key[0] == "versions")
+    found = sorted(
+        (n, key)
+        for key in keys
+        if key[0] == "versions" and (n := version_file_number(key[1])) is not None
+    )
     return {key for _n, key in found[-instance.MAX_RETAINED_VERSIONS :]}
 
 

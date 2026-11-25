@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -380,3 +381,57 @@ def test_the_carried_single_files_are_the_member_space_and_welcome_names() -> No
     )
     for name in portability_bot_stores.BRIEFING_FILES:
         assert carried_member_file((name,)), name
+
+
+@pytest.mark.parametrize(
+    ("name", "number"),
+    [
+        ("1.json", 1),
+        ("12.json", 12),
+        ("007.json", 7),
+        ("².json", None),
+        ("٣.json", None),
+        ("x.json", None),
+        ("1.json.bak", None),
+        (".json", None),
+        ("1", None),
+    ],
+)
+def test_a_version_file_number_is_read_from_ascii_digits_only(
+    name: str, number: int | None
+) -> None:
+    # str.isdigit() admits superscripts and other scripts' digits, which int() then
+    # refuses: none of them is a version name, and none raises.
+    from kiro_crew import portability_bot_types
+
+    assert portability_bot_types.version_file_number(name) == number
+
+
+@pytest.mark.skipif(
+    not getattr(sys, "get_int_max_str_digits", lambda: 0)(),
+    reason="int() has no digit limit here",
+)
+def test_a_run_of_digits_past_the_int_limit_is_no_version_name() -> None:
+    from kiro_crew import portability_bot_types
+
+    name = "9" * (sys.get_int_max_str_digits() + 1) + ".json"
+    assert portability_bot_types.version_file_number(name) is None
+
+
+def test_every_version_name_is_read_by_the_one_ascii_rule() -> None:
+    """No Bot-store module parses a ``versions/<n>.json`` name by ``str.isdigit``."""
+    from kiro_crew import (
+        portability_bot_export,
+        portability_bot_stores,
+        portability_bot_stores_retained,
+        portability_bot_types,
+    )
+
+    for module in (
+        portability_bot_export,
+        portability_bot_stores,
+        portability_bot_stores_retained,
+        portability_bot_types,
+    ):
+        source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
+        assert ".isdigit(" not in source, module.__name__

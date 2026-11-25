@@ -1802,7 +1802,7 @@ pinned walk:
 - under `members/<slug>/`, only the files the allowlist
   `portability_bot_types.carried_member_file` admits (the export opens each of
   `CARRIED_MEMBER_SINGLE_FILES` by name and lists only `dashboard/versions/`): `members/<slug>/dashboard/instance.json`,
-  `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json` (`n` all digits),
+  `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json` (`n` ASCII digits),
   `briefing.md` and `welcome_claimed.json`, written into the archive under the top-level
   tree `bot-members/<slug>/` (`portability_bot_types.BOT_MEMBERS_DIR`), never
   `members/<slug>/`: `members` is a whole-tree snapshot component, so an earlier

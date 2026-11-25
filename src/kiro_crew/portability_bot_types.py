@@ -176,6 +176,23 @@ def is_whole(outcomes: Iterable[PartOutcome]) -> bool:
 
 _VERSION_FILE = re.compile(r"[0-9]+\.json")
 
+
+def version_file_number(name: str) -> int | None:
+    """``n`` of a ``versions/<n>.json`` file *name*, or ``None`` when it is no such name.
+
+    The one rule every Bot-store reader parses a version name by: ASCII digits only
+    (:data:`_VERSION_FILE`, the rule :func:`carried_member_file` admits by), so a name
+    ``str.isdigit`` would accept but ``int`` refuses (``².json``) is no version name,
+    and so is a run of digits past ``int``'s own limit. Never raises.
+    """
+    if not _VERSION_FILE.fullmatch(name):
+        return None
+    try:
+        return int(name[: -len(".json")])
+    except ValueError:
+        return None
+
+
 #: The single files below ``members/<slug>/`` an export carries.
 _CARRIED_MEMBER_FILES: frozenset[tuple[str, ...]] = frozenset(
     {

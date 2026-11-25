@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.portability_bot_types import ImportedBot
+from kiro_crew.portability_bot_types import ImportedBot, version_file_number
 
 if TYPE_CHECKING:
     from kiro_crew.portability_bot_stores import BoundIndex
@@ -44,13 +44,14 @@ Retained = tuple[dict[int, Mapping[str, Any]], int]
 def _retained_version_docs(slug: str) -> Retained:
     """*slug*'s newest retained version files, read once for every consumer.
 
-    Of the names ``instance._list_versions`` lists, the
+    Of the names ``instance._list_versions`` lists that are version names by
+    ``portability_bot_types.version_file_number`` (ASCII digits only), the
     ``instance.MAX_RETAINED_VERSIONS`` highest by ``(n, name)`` (the set
     ``instance._prune_versions`` keeps), each read with ``instance._read_version`` in
-    its own ``try``. A file that cannot be read is skipped, logged and counted. A
-    listing that fails with ``FileNotFoundError`` (no ``versions/`` folder) is no
-    documents and a count of 0; any other failure of the listing is no documents and a
-    count of 1. Never raises.
+    its own ``try``. A file that cannot be read (one nested past the decoder's limit
+    included) is skipped, logged and counted. A listing that fails with
+    ``FileNotFoundError`` (no ``versions/`` folder) is no documents and a count of 0;
+    any other failure of the listing is no documents and a count of 1. Never raises.
     """
     from kiro_crew.dashboard_templates import instance
 
@@ -61,17 +62,13 @@ def _retained_version_docs(slug: str) -> Retained:
     except (instance.InstanceError, OSError, ValueError):
         logger.warning("import: %r's dashboard versions could not be listed", slug, exc_info=True)
         return {}, 1
-    found = sorted(
-        (int(name[: -len(".json")]), name)
-        for name in names
-        if name.endswith(".json") and name[: -len(".json")].isdigit()
-    )
+    found = sorted((n, name) for name in names if (n := version_file_number(name)) is not None)
     docs: dict[int, Mapping[str, Any]] = {}
     unread = 0
     for n, _name in found[-instance.MAX_RETAINED_VERSIONS :]:
         try:
             docs[n] = instance._read_version(slug, n)
-        except (instance.InstanceError, OSError, ValueError):
+        except (instance.InstanceError, OSError, ValueError, RecursionError):
             logger.warning("import: %r's dashboard version %d is unreadable", slug, n)
             unread += 1
     return docs, unread
@@ -83,7 +80,7 @@ def _installed_record_doc(slug: str) -> Mapping[str, Any]:
 
     try:
         return instance._read_record(slug) or {}
-    except (instance.InstanceError, OSError, ValueError):
+    except (instance.InstanceError, OSError, ValueError, RecursionError):
         return {}
 
 
@@ -207,7 +204,7 @@ def _publish_template_package(
             reason = _stores._publish_artifact(stage, mc, package)
             if reason == "exists":
                 return here(), False
-    except _stores._FAILURES:
+    except _stores._DECODE_FAILURES:
         logger.warning("import: %r's carried package was not published", bot.slug, exc_info=True)
         return "write_failed", False
     if reason:

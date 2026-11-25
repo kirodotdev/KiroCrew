@@ -1287,13 +1287,13 @@ def scan_bound_dashboards(store: "ArtifactStore | None" = None) -> BoundScan:
         from kiro_crew.artifacts import get_default_store
 
         store = get_default_store()
-    from kiro_crew.artifacts import ArtifactError
+    from kiro_crew.artifacts import ArtifactError, ArtifactStore
 
     records = store.list(kind=DASHBOARD_KIND)
     bound: dict[str, list[str]] = {}
     unread = 0
     for art in records[:MAX_BINDING_SCAN]:
-        if store._is_live_pointer(art):
+        if ArtifactStore._is_live_pointer(art):
             continue
         try:
             loaded = store.get(art.slug)

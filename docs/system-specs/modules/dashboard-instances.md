@@ -398,7 +398,11 @@ pins a package (whatever its live binding: the import judges it), and for a reco
 runs its catalog template (as after a rollback to a template version) the pin of the
 highest-numbered retained version that names a package, among the
 `instance.MAX_RETAINED_VERSIONS` newest `versions/<n>.json` names by number (the set
-`instance._prune_versions` keeps, chosen by name before any file is parsed). A template
+`instance._prune_versions` keeps, chosen by name before any file is parsed; a version name
+is ASCII digits only, by `portability_bot_types.version_file_number`, so a name such as
+`².json` is none). The export walks every version file into the archive and parses only
+those newest ones, once the walk is done, from descriptors it duplicated off the walked
+ones (`portability_bot_export._hold_if_newest`). A template
 record's package is carried only while its live version is bound to `crewmate:<slug>` on
 the source (`dashboard_package.live_binding_of`): one since rebound to another Bot is that
 Bot's to carry. The
@@ -449,9 +453,10 @@ Every retained version gets its page back too, so `instance.rollback` to one ser
 page it served on the source. Once the record is in place (and, for a record that pins a
 package, its current page), the newest retained version files are read once per Bot
 (`portability_bot_stores._retained_version_docs`: the `instance.MAX_RETAINED_VERSIONS`
-highest names of `instance._list_versions` by number, each read with
-`instance._read_version`; a missing `versions/` folder is no documents, and a file that
-cannot be read is skipped and logged), and that one read feeds both the carried pin and
+highest version names of `instance._list_versions` by number, by the same ASCII rule,
+each read with `instance._read_version`; a missing `versions/` folder is no documents,
+and a file that cannot be read, one nested past the decoder's limit included, is skipped
+and logged), and that one read feeds both the carried pin and
 `portability_bot_stores._rebuild_retained_pages`. For each distinct digest those
 versions pin, other than the current one, whose snapshot is missing, the page is rebuilt
 only from the carried package, through the judge the current page gets: `_owned_package`

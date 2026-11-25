@@ -697,3 +697,44 @@ def test_the_carried_pin_reads_the_highest_numbered_versions_by_number(homes, tm
     )
     assert carried_pin(pinned, {}) == (applied.package, applied.version, applied.digest)
     assert carried_pin(record, {}) is None
+
+
+def test_a_non_ascii_digit_name_is_no_version_name() -> None:
+    assert portability_bot_export._newest_version_names(["².json", "1.json"]) == {"1.json"}
+
+
+def test_the_export_parses_only_the_newest_version_files(homes, monkeypatch):
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.dashboard_templates.instance import MAX_RETAINED_VERSIONS
+
+    homes.use("a")
+    atlas, applied = _atlas_on_its_template()
+    versions = data_home() / "members" / atlas.slug / "dashboard" / "versions"
+    pinned = (versions / "2.json").read_text()
+    for n in range(1, 26):
+        (versions / f"{n}.json").write_text(pinned)
+    parsed: list[int] = []
+    real_read = portability_bot_export._read_record_doc
+
+    def read(fd: int):
+        parsed.append(fd)
+        return real_read(fd)
+
+    monkeypatch.setattr(portability_bot_export, "_read_record_doc", read)
+
+    files = list(
+        portability_bot_export.iter_bot_store_files(
+            os.path.realpath(data_home()), [(atlas.name, atlas.slug)]
+        )
+    )
+    try:
+        names = {rel.as_posix() for rel, _fd in files}
+    finally:
+        for _rel, fd in files:
+            os.close(fd)
+
+    # instance.json, then the newest MAX_RETAINED_VERSIONS version files and no other.
+    assert len(parsed) == 1 + MAX_RETAINED_VERSIONS
+    prefix = f"bot-members/{atlas.slug}/dashboard/versions"
+    assert {f"{prefix}/{n}.json" for n in range(1, 26)} <= names
+    assert {n.split("/")[1] for n in names if n.startswith("bot-artifacts/")} == {applied.package}
