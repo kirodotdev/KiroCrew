@@ -416,7 +416,7 @@ disk, so there the injection is refused as before.
    the write allowlist, `deniedPaths`, `web_fetch.blocked`) have no field on any
    mirrored harness, and Crew's gate tiers that apply them on KAS
    (`spec-shell-allowlist`, `spec-write-allowlist`) are fed the shell and write
-   allowlists on `claude` and `opencode` alone (`ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS`),
+   allowlists on `claude`, `opencode` and `goose` alone (`ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS`),
    so elsewhere the field is applied nowhere. The other exception is
    `subagent.availableAgents`, which Crew's spawn gate reads from the parent's
    spec on every backend (the `toolsSettings` row). Every mirror says so:
@@ -425,7 +425,7 @@ disk, so there the injection is refused as before.
    `deepseek` and `mimocode`. A new
    chat session whose spec sets it gets one notice naming what goes unapplied:
    `toolsSettings` whole, or each entry other than a declared
-   `subagent.availableAgents` and, on `claude`, the allowlist keys its gate applies
+   `subagent.availableAgents` and, on `claude`, `opencode` and `goose`, the allowlist keys the gate applies
    (`denyByDefault` with `allowedCommands`, `fallbackAction: "deny"` with
    `allowedPaths`), which no notice names
    (`src/kiro_crew/agent_sdk/tools_settings_reach.py`;
