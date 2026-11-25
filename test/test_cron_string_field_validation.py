@@ -374,6 +374,9 @@ class TestAntiDrift:
             # In memory only (never persisted): the nonce approval_grant reads from
             # its own file at load and sets when a save signs the job.
             "grant_nonce",
+            # In memory only: the store directory whose nonce file the fire check
+            # reads, set at load and by a save.
+            "grant_dir",
         }
     )
 

@@ -322,6 +322,10 @@ class CronJob:
     # for this job's grant (``approval_grant.NONCES_FILE``), set at load and by a
     # save that signs the job. "" = none, so the grant does not hold.
     grant_nonce: str = field(default="", compare=False, repr=False)
+    # In-memory only, never written by ``job_record``: the store directory whose
+    # nonce file the fire check reads (``approval_grant.holds``), set at load and
+    # by a save. "" = none, so the grant does not hold.
+    grant_dir: str = field(default="", compare=False, repr=False)
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)

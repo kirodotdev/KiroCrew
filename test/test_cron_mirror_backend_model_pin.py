@@ -184,7 +184,10 @@ async def test_a_refused_pin_is_visible_and_not_billed(backend, pin, build, tmp_
         approval_mode="auto",
     )
     # Signed as every gateway write of an auto job is (approval_grant).
-    approval_grant.sign(job, {})
+    nonces: dict[str, str] = {}
+    job.grant_dir = str(tmp_path)
+    approval_grant.sign(job, nonces)
+    approval_grant.write_nonces(tmp_path, nonces)
     calls: list[str] = []
 
     async def _get_or_create(*_args, **kwargs):

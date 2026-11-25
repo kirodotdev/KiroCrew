@@ -16,7 +16,8 @@ a job that keeps its Bot fields, a new capture) mints a new one, and a grant
 turned off or removed loses its nonce, so an earlier or copied signature written
 back into the store matches nothing. A job
 with no stored nonce never holds. At fire time the grant counts only while that
-MAC matches (:func:`holds`).
+MAC matches (:func:`holds`), checked against the nonce file as it is then; a
+save that finds a job's nonce gone stops trusting the job and signs nothing.
 
 The key comes from the persisted dashboard token-signing key under a label of
 its own. That key file is masked in every sandbox, so a process in a sandbox
@@ -45,6 +46,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -132,45 +134,78 @@ def carries_grant(obj: Any) -> bool:
     )
 
 
+#: The last parse of each nonces file, keyed by the file's stat, so a fire's check
+#: costs one ``lstat`` while the file is unchanged. A write replaces the file
+#: (``atomic_write``), which gives it a new inode, so the next read parses it.
+_NONCE_CACHE: dict[str, tuple[tuple[int, int, int, int], dict[str, str]]] = {}
+_NONCE_CACHE_LOCK = threading.Lock()
+
+
+def _stat_key(info: os.stat_result) -> tuple[int, int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+
+
 def read_nonces(store_dir: Path) -> dict[str, str]:
-    """The stored nonce of each job, by id. Never raises.
+    """The stored nonce of each job, by id: a copy the caller may change. Never raises.
 
     Opened without following a link, non-blocking and bounded, as
     ``kept_grants._read_bounded`` reads. A file that is absent, unreadable, too
     large or malformed reads as ``{}``, so every grant fails closed (interactive);
-    so does an entry that is not 32 lower-case hex characters.
+    so does an entry that is not 32 lower-case hex characters. An unchanged file
+    (same device, inode, mtime and size) is answered from the last parse.
     """
-    from kiro_crew.bounded_read import bounded_read_fd
-
     path = store_dir / MIGRATION_DIR_LEAF / NONCES_FILE
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if path.is_symlink():
-            return {}
-        fd = os.open(path, flags)
+        info = os.lstat(path)
     except OSError:
         return {}
+    if not stat.S_ISREG(info.st_mode):
+        return {}
+    with _NONCE_CACHE_LOCK:
+        cached = _NONCE_CACHE.get(str(path))
+    if cached is not None and cached[0] == _stat_key(info):
+        return dict(cached[1])
+    parsed = _parse_nonces_file(path)
+    if parsed is None:
+        return {}
+    key, nonces = parsed
+    with _NONCE_CACHE_LOCK:
+        _NONCE_CACHE[str(path)] = (key, nonces)
+    return dict(nonces)
+
+
+def _parse_nonces_file(path: Path) -> tuple[tuple[int, int, int, int], dict[str, str]] | None:
+    """The stat key of the file opened and the nonces it holds, or ``None`` when no
+    regular file under the bound could be read."""
+    from kiro_crew.bounded_read import bounded_read_fd
+
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_NONCES_BYTES:
-            return {}
+            return None
         raw = bounded_read_fd(fd, _MAX_NONCES_BYTES + 1)
     except OSError:
-        return {}
+        return None
     finally:
         os.close(fd)
+    key = _stat_key(info)
     if len(raw) > _MAX_NONCES_BYTES:
-        return {}
+        return key, {}
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
-        return {}
+        return key, {}
     if not isinstance(data, dict) or data.get("version") != _NONCES_VERSION:
-        return {}
+        return key, {}
     nonces = data.get("nonces")
     if not isinstance(nonces, dict):
-        return {}
-    return {
+        return key, {}
+    return key, {
         job_id: nonce
         for job_id, nonce in nonces.items()
         if isinstance(job_id, str) and isinstance(nonce, str) and _NONCE_SHAPE.fullmatch(nonce)
@@ -224,34 +259,42 @@ def publish_with_nonces(
 
 
 def attach_nonces(jobs: Iterable[Any], store_dir: Path) -> None:
-    """Give each job in *jobs* that stores a grant its stored nonce, and mark it held
-    (``CronJob.grant_held``) when its MAC matches. Reads the nonces file at most once."""
-    carrying = [job for job in jobs if carries_grant(job)]
-    if not carrying:
-        return
-    nonces = read_nonces(store_dir)
-    for job in carrying:
-        job.grant_nonce = nonces.get(job.id, "")
-        job.grant_held = holds(job)
+    """Bind each job in *jobs* to *store_dir*'s nonces (``CronJob.grant_dir``), and
+    give each that stores a grant the nonce it was loaded with and mark it held
+    (``CronJob.grant_held``) when its MAC matches. Reads the nonces file once."""
+    jobs = list(jobs)
+    nonces = read_nonces(store_dir) if any(carries_grant(job) for job in jobs) else {}
+    for job in jobs:
+        job.grant_dir = str(store_dir)
+        if carries_grant(job):
+            job.grant_nonce = nonces.get(job.id, "")
+            job.grant_held = holds(job, nonces)
 
 
-def _nonce(obj: Any, nonces: Mapping[str, str] | None) -> str:
-    if nonces is not None:
-        return nonces.get(_value(obj, "id"), "")
-    # A raw record is read from the sandbox-writable store, so its nonce comes
-    # only from *nonces*, never from the record.
-    return "" if isinstance(obj, dict) else _value(obj, "grant_nonce")
+def _current_nonces(obj: Any) -> Mapping[str, str]:
+    """The nonces on disk now for a job bound to a store (``CronJob.grant_dir``).
+
+    Never a job's cached ``grant_nonce``: a grant another process revoked must stop
+    holding here even while this process has not reloaded the store. A raw record
+    comes from the sandbox-writable store, so it has no nonce of its own.
+    """
+    directory = "" if isinstance(obj, dict) else _value(obj, "grant_dir")
+    return read_nonces(Path(directory)) if directory else {}
 
 
 def mac(obj: Any, nonces: Mapping[str, str] | None = None) -> str | None:
     """The hex MAC of *obj*'s signed fields and its nonce, or ``None`` with no key or nonce.
 
-    The nonce is ``nonces[obj.id]`` when *nonces* is given, else a job's own
-    ``grant_nonce``; a raw record without *nonces* has none.
+    The nonce is ``nonces[obj.id]``; without *nonces* it is read from the job's
+    store's nonce file now, and a raw record without *nonces* has none.
     """
     key = _key()
-    nonce = _nonce(obj, nonces)
-    if key is None or not _NONCE_SHAPE.fullmatch(nonce):
+    if key is None:
+        return None
+    if nonces is None:
+        nonces = _current_nonces(obj)
+    nonce = nonces.get(_value(obj, "id"), "")
+    if not _NONCE_SHAPE.fullmatch(nonce):
         return None
     text = json.dumps(
         [*(_signed_value(obj, f) for f in _SIGNED_FIELDS), nonce],
@@ -263,7 +306,11 @@ def mac(obj: Any, nonces: Mapping[str, str] | None = None) -> str | None:
 
 
 def holds(obj: Any, nonces: Mapping[str, str] | None = None) -> bool:
-    """Whether *obj* stores a grant AND the gateway signed exactly these fields and nonce."""
+    """Whether *obj* stores a grant AND the gateway signed exactly these fields and nonce.
+
+    Without *nonces* a job's nonce is read from its store's nonce file (cached by
+    the file's stat), so a revoked grant stops holding at the next check.
+    """
     if not carries_grant(obj):
         return False
     stored = _value(obj, "approval_grant")
@@ -276,15 +323,15 @@ def holds(obj: Any, nonces: Mapping[str, str] | None = None) -> bool:
     return hmac.compare_digest(stored, expected)
 
 
-def _signing_nonce(obj: Any, nonces: MutableMapping[str, str], held: str = "") -> str:
+def _signing_nonce(obj: Any, nonces: MutableMapping[str, str]) -> str:
     """The nonce *obj* is signed with, stored in *nonces*.
 
-    The nonce stored for it (else *held*, the job's own) is kept only while *obj*'s
-    stored MAC already matches its fields under it, so nothing signed changed;
-    any other change gets a new nonce, and every earlier MAC stops matching.
+    The nonce stored for it is kept only while *obj*'s stored MAC already matches
+    its fields under it, so nothing signed changed; any other change gets a new
+    nonce, and every earlier MAC stops matching.
     """
     job_id = _value(obj, "id")
-    nonce = nonces.get(job_id) or held
+    nonce = nonces.get(job_id, "")
     stored = _value(obj, "approval_grant")
     if not (
         _NONCE_SHAPE.fullmatch(nonce)
@@ -305,6 +352,11 @@ def sign(job: Any, nonces: MutableMapping[str, str]) -> None:
     before the store. A process with no persisted key writes "" here and leaves
     *nonces* as they are, so the job fires interactive. Marks *job* as held by
     this process (``CronJob.grant_held``).
+
+    A job signed before (``grant_nonce`` set) whose nonce is gone from *nonces*, or
+    differs, had its grant turned off or re-signed by another process: it is no
+    longer held, keeps its stored MAC, and gets no nonce, so a save never brings a
+    revoked grant back. A fresh grant (``grant_nonce == ""``) gets one.
     """
     if not carries_grant(job):
         nonces.pop(job.id, None)
@@ -312,9 +364,12 @@ def sign(job: Any, nonces: MutableMapping[str, str]) -> None:
         job.approval_grant = ""
     elif _key() is None:
         job.approval_grant = ""
+    elif job.grant_nonce and nonces.get(job.id) != job.grant_nonce:
+        job.grant_held = False
+        return
     else:
-        job.grant_nonce = _signing_nonce(job, nonces, job.grant_nonce)
-        job.approval_grant = mac(job) or ""
+        job.grant_nonce = _signing_nonce(job, nonces)
+        job.approval_grant = mac(job, nonces) or ""
     job.grant_held = True
 
 

@@ -917,6 +917,7 @@ class CronService:
                 # is turned off and on again.
                 if kwargs.get("approval_mode") == "auto" and job.approval_mode != "auto":
                     staged.grant_held = True
+                    staged.grant_nonce = ""
                 edits = {
                     name: value
                     for name, value in staged.__dict__.items()

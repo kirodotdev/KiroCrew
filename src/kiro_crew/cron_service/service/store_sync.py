@@ -533,6 +533,7 @@ def _save(self: CronService, jobs: list[CronJob] | None = None) -> None:
         nonces = approval_grant.read_nonces(self._dir) if keyed else {}
         stored = dict(nonces)
         for job, _, _ in previous:
+            job.grant_dir = str(self._dir)
             approval_grant.sign(job, nonces)
         if keyed:
             carrying = {job.id for job in written if approval_grant.carries_grant(job)}

@@ -306,7 +306,10 @@ def test_a_bot_grant_holds_only_once_the_gateway_signed_it(tmp_path) -> None:
     assert not owner_grant.owner_grant_holds(unsigned, _worker(), _config())
     assert owner_grant.fire_approval_mode(unsigned, _worker(), _config()) == ""
 
-    approval_grant.sign(unsigned, {})
+    # As a gateway save signs it: against the stored nonces, written back.
+    nonces = approval_grant.read_nonces(tmp_path)
+    approval_grant.sign(unsigned, nonces)
+    approval_grant.write_nonces(tmp_path, nonces)
 
     assert owner_grant.owner_grant_holds(unsigned, _worker(), _config())
     assert owner_grant.fire_approval_mode(unsigned, _worker(), _config()) == "auto"
@@ -651,3 +654,54 @@ def test_a_failed_store_write_puts_the_previous_nonces_back(tmp_path, monkeypatc
     assert len(written) == 2 and written[0] != written[1]
     assert path.read_bytes() == before
     assert job_fire_approval_mode(_reload(tmp_path, job.id)) == "auto"
+
+
+def _revoked_elsewhere_and_restored(tmp_path) -> tuple[CronService, str]:
+    """A gateway holds a signed auto job; another process turns auto off; the earlier
+    store bytes are then written back exactly, so the gateway sees no change."""
+    job_id = (
+        CronService(base_dir=tmp_path)
+        .add_job(name="a", message="go", every_secs=3600, approval_mode="auto")
+        .id
+    )
+    gateway = CronService(base_dir=tmp_path)
+    cached = gateway.get_job(job_id)
+    assert cached is not None and job_fire_approval_mode(cached) == "auto"
+    earlier = (tmp_path / "crons.json").read_bytes()
+
+    assert CronService(base_dir=tmp_path).update_job(job_id, approval_mode="") is not None
+    assert job_id not in approval_grant.read_nonces(tmp_path)
+    (tmp_path / "crons.json").write_bytes(earlier)
+    return gateway, job_id
+
+
+def test_a_grant_revoked_by_another_process_stops_holding_without_a_reload(tmp_path) -> None:
+    gateway, job_id = _revoked_elsewhere_and_restored(tmp_path)
+
+    cached = gateway.get_job(job_id)
+    assert cached is not None
+    assert (cached.approval_mode, cached.grant_nonce) != ("auto", "")
+    assert job_fire_approval_mode(cached) == ""
+
+
+def test_a_later_save_does_not_bring_a_revoked_grant_back(tmp_path) -> None:
+    gateway, job_id = _revoked_elsewhere_and_restored(tmp_path)
+
+    assert gateway.ack_job(job_id, "seen")
+
+    assert job_id not in approval_grant.read_nonces(tmp_path)
+    cached = gateway.get_job(job_id)
+    assert cached is not None and not cached.grant_held
+    assert job_fire_approval_mode(cached) == ""
+    assert job_fire_approval_mode(_reload(tmp_path, job_id)) == ""
+
+
+def test_the_owner_turning_auto_on_again_after_a_revoke_signs_it(tmp_path) -> None:
+    gateway, job_id = _revoked_elsewhere_and_restored(tmp_path)
+
+    assert gateway.update_job(job_id, approval_mode="") is not None
+    assert gateway.update_job(job_id, approval_mode="auto") is not None
+
+    cached = gateway.get_job(job_id)
+    assert cached is not None and job_fire_approval_mode(cached) == "auto"
+    assert job_fire_approval_mode(_reload(tmp_path, job_id)) == "auto"

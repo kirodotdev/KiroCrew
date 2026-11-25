@@ -86,7 +86,7 @@ def _as_job(row: dict, store_dir) -> SimpleNamespace:
         execution_context=row.get("execution_context"),
         agent_sequence=row.get("agent_sequence", []),
         approval_grant=row.get("approval_grant", ""),
-        grant_nonce=approval_grant.read_nonces(store_dir).get(row["id"], ""),
+        grant_dir=str(store_dir),
     )
 
 

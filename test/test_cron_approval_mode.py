@@ -24,6 +24,25 @@ from kiro_crew.llm_helpers import ToolApprovalPolicy
 from kiro_crew.sel import SecurityEventLog
 from kiro_crew.subagent_persistence import create_agent_folder
 
+_GRANT_STORE: list[Path] = []
+
+
+@pytest.fixture(autouse=True)
+def _grant_store(tmp_path):
+    """The store directory :func:`_sign_stored` keeps a signed job's nonce in."""
+    _GRANT_STORE[:] = [tmp_path]
+    yield
+    _GRANT_STORE.clear()
+
+
+def _sign_stored(job: CronJob) -> None:
+    """Sign *job* as a gateway save does: its nonce lands in the store's nonce file."""
+    (store_dir,) = _GRANT_STORE
+    nonces: dict[str, str] = {}
+    job.grant_dir = str(store_dir)
+    approval_grant.sign(job, nonces)
+    approval_grant.write_nonces(store_dir, nonces)
+
 
 @pytest.fixture(autouse=True)
 def _cron_caller_is_named(named_cron_caller):
@@ -93,7 +112,7 @@ class TestCronApprovalModeGateway:
             approval_mode=approval_mode,
         )
         if signed:
-            approval_grant.sign(job, {})
+            _sign_stored(job)
 
         captured_cb = None
 
@@ -203,7 +222,7 @@ class TestCronApprovalModeExtraEnv:
             env=job_env or {},
         )
         if signed:
-            approval_grant.sign(job, {})
+            _sign_stored(job)
 
         captured_cb = None
 

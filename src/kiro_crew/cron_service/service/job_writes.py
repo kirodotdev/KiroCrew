@@ -264,9 +264,11 @@ def _persist_add_if_absent_locked(
             return False
         bind_cron_memory(job)
         self._drop_owner_if_parent_gone(job)
-        # A grant this write set: the save below signs it (approval_grant).
+        # A grant this write set: the save below signs it as a fresh grant
+        # (approval_grant).
         if approval_grant.carries_grant(job):
             job.grant_held = True
+            job.grant_nonce = ""
         self._jobs.append(job)
         # A failed save must leave the list as disk still holds it: readers
         # see ``self._jobs`` itself, so a rejected row would be fired by the
@@ -326,9 +328,11 @@ def _persist_add_locked(self: CronService, job: CronJob) -> None:
         self._sync_for_write()
         bind_cron_memory(job)
         self._drop_owner_if_parent_gone(job)
-        # A grant this write set: the save below signs it (approval_grant).
+        # A grant this write set: the save below signs it as a fresh grant
+        # (approval_grant).
         if approval_grant.carries_grant(job):
             job.grant_held = True
+            job.grant_nonce = ""
         self._jobs.append(job)
         # Roll the append back on a failed save, for the reason
         # :meth:`_persist_add_if_absent_locked` spells out: a row the store
