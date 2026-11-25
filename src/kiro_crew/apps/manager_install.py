@@ -58,6 +58,7 @@ from kiro_crew.apps.manager_tree import (
     InstalledTreeRefused,
     _check_path_safety,
     _copy_app_tree,
+    _min_version_refusal_code,
     _owned_data_dir,
     _remove_any_shape,
     _reserved_name_code,
@@ -641,7 +642,14 @@ def update_app(
 
     errors = _validate_source_path(source)
     if errors:
-        return AppResult(ok=False, error="; ".join(errors))
+        # The coded refusal lets the dashboard name the app and say what to do;
+        # the joined errors stay as the detail. A new version that only needs a
+        # newer Kiro Crew keeps the min-version code: its maker has nothing to fix.
+        # Any other error wins, since that one still needs the maker.
+        code = "app_update_invalid"
+        if len(errors) == 1:
+            code = _min_version_refusal_code(source) or code
+        return AppResult(ok=False, error="; ".join(errors), error_code=code)
 
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name

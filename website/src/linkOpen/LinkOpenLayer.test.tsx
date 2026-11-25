@@ -122,7 +122,7 @@ describe('linkOpen registry', () => {
   it('keeps only approved hosts and refuses public suffixes', () => {
     const [o] = resolveLinkOpeners([{ ...APP, linkOpenGrant: { hosts: ['tickets.example.com'] } }])
     expect([...o.exact]).toEqual(['tickets.example.com'])
-    expect(o.suffixes).toEqual([])
+    expect([...o.suffixes]).toEqual([])
     const refused = resolveLinkOpeners([{
       ...APP,
       linkOpenGrant: { hosts: ['co.uk', '.com', 'github.io'] },
