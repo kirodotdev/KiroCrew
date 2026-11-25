@@ -20,7 +20,10 @@ import MemoryDocCard from './MemoryDocCard'
 import MemoryPageShell from './memoryPage/MemoryPageShell'
 import MemoryList from './memoryPage/MemoryList'
 import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
+import { MemoryGraphPanel } from './memoryPage/MemoryGraphPanel'
 import { memoryRoute } from '../settings/memoryRoute'
+import { SEED_LIMIT, seedInBatches } from './memorySeedBatches'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 type Kind = 'fact' | 'directive' | 'episode'
 type MemoryRow = { key?: string; id?: string; value_json?: unknown; text?: string; source?: string; created_at?: string; derived_from?: string }
@@ -58,12 +61,24 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
   const [source, setSource] = useState('default')
   const [selection, setSelection] = useState<Selection[]>([])
   const [filter, setFilter] = useState('')
+  const phone = useIsMobile()
   const data = useMemoryRows(source, true, filter)
-  const copy = useMutation({ mutationFn: () => api.memorySeed(source, store, selection), onSuccess: onCopied })
+  const [done, setDone] = useState(0)
+  const copy = useMutation({ mutationFn: () => { setDone(0); return seedInBatches(source, store, selection, setDone) }, onSuccess: onCopied })
+  // "Select all matching" reads every remaining page (up to the limit), then picks them all.
+  const [selectingAll, setSelectingAll] = useState(false)
+  useEffect(() => {
+    if (!selectingAll || data.pending || data.loadingMore) return
+    if (data.error) { setSelectingAll(false); return }
+    if (data.more && data.rows.length < SEED_LIMIT) { void data.loadMore(); return }
+    setSelection(data.rows.slice(0, SEED_LIMIT).map(row => ({ kind: kindOf(row), id: keyOf(row) })))
+    setSelectingAll(false)
+  }, [selectingAll, data])
   const failedResults = copy.data?.results.filter(r => ['unconfirmed', 'rejected', 'not_attempted'].includes(r.outcome)) ?? []
   const failureReasons = failedResults.flatMap(result => result.reason?.trim() ? [result.reason.trim()] : [])
   const copyFailure = [
     copy.data?.partial ? t('memoryV2.copy_partial') : '',
+    copy.data?.error ? errorText(copy.data.error) : '',
     ...failureReasons,
     failureReasons.length < failedResults.length ? t('appSdk.chatMessageList.copy_failed') : '',
   ].filter(Boolean).join('\n')
@@ -73,9 +88,10 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
     const item = { kind: kindOf(row), id: keyOf(row) }
     setSelection(old => old.some(s => s.id === item.id && s.kind === item.kind) ? old.filter(s => s.id !== item.id || s.kind !== item.kind) : [...old, item])
   }
-  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} guardAccidentalDismiss={selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-    <span className="text-[12px] text-muted">{t('memoryV2.copy_limit')}</span>
-    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !selection.length || selection.length > 50} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
+  const allPicked = visible.length > 0 && visible.every(row => selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))) && !data.more
+  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} height={phone ? 'calc(100dvh - 2rem)' : undefined} guardAccidentalDismiss={selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <span className="text-[12px] text-muted">{t('memoryV2.copy_up_to', { limit: fmtNumber(SEED_LIMIT) })}</span>
+    <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !selection.length || selection.length > SEED_LIMIT} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{copy.isPending ? t('memoryV2.copy_progress', { done: fmtNumber(done), total: fmtNumber(selection.length) }) : t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
   </div>}>
     <div className="flex min-w-0 flex-col gap-3">
       <p className="text-[13px] text-muted">{t('memoryV2.copy_explanation')}</p>
@@ -84,9 +100,13 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
       {/* No hand-off: the selection is an unsaved copy request. */}
       <ErrorNotice message={errorText(data.error || copy.error) || copyFailure} />
       {data.pending && <p role="status" className="py-4 text-center text-[13px] text-muted">{t('pages.overview.memoryTab.loading')}</p>}
-      <div className="max-h-80 overflow-y-auto space-y-2">
-        {visible.map(row => <label key={`${kindOf(row)}:${keyOf(row)}`} className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-[13px] transition-colors hover:bg-bg-hover has-[:checked]:border-accent has-[:checked]:bg-accent-subtle">
-          <input type="checkbox" aria-label={bodyOf(row)} className="mt-1 h-4 w-4 shrink-0 accent-accent" checked={selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))} disabled={copy.isPending || (selection.length >= 50 && !selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row)))} onChange={() => toggle(row)} />
+      {visible.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-3 text-[13px]">
+        <input type="checkbox" aria-label={t('memoryV2.copy_select_all')} className="h-4 w-4 shrink-0 accent-accent" checked={allPicked} disabled={copy.isPending || selectingAll} onChange={() => { if (allPicked) setSelection([]); else setSelectingAll(true) }} />
+        {t('memoryV2.copy_select_all')}
+      </label>}
+      <div className={`space-y-2 ${phone ? '' : 'max-h-80 overflow-y-auto'}`}>
+        {visible.map(row => <label key={`${kindOf(row)}:${keyOf(row)}`} className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-[13px] transition-colors hover:bg-bg-hover has-[:checked]:border-accent has-[:checked]:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]">
+          <input type="checkbox" aria-label={bodyOf(row)} className="mt-1 h-4 w-4 shrink-0 accent-accent" checked={selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row))} disabled={copy.isPending || (selection.length >= SEED_LIMIT && !selection.some(s => s.id === keyOf(row) && s.kind === kindOf(row)))} onChange={() => toggle(row)} />
           <span className="min-w-0 break-words"><span className="block text-muted">{t(MEMORY_RECORD_LABELS[kindOf(row)])}</span>{bodyOf(row)}</span>
         </label>)}
       </div>
@@ -104,10 +124,12 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
 /** The Global memory page on its Failures tab (the weekly bell note's link). */
 const GLOBAL_FAILURES_ROUTE = memoryRoute({ focus: 'failures' })
 
-export default function MemberMemoryPanel({ store, summary, onDirtyChange, focusLessonKey, focusFailures = false, switcher, notices }: {
+export default function MemberMemoryPanel({ store, summary, onDirtyChange, focusLessonKey, focusFailures = false, focusGraph = false, switcher, notices }: {
   store: string; summary: MemoryStoreSummary; onDirtyChange?: (dirty: boolean) => void; focusLessonKey?: string
   /** `?focus=failures`: open on the Failures tab. */
   focusFailures?: boolean
+  /** `?focus=graph`: open on the Graph tab. */
+  focusGraph?: boolean
   /** The header's store switcher and the store notices under it. */
   switcher?: ReactNode
   notices?: ReactNode
@@ -152,13 +174,14 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange, focus
   return <div className="min-w-0 space-y-4">
     <MemoryPageShell id={store} label={summary.owner_member || summary.name} switcher={switcher} embedded={<MemoryEmbeddedLine store={store} />}
       notices={<>{notices}{!privateMemory && !summary.is_default && <p className="text-[13px] text-muted">{t('pages.kiroCrewAgentsPage.private_memory_legacy')}</p>}</>}
-      initialTab={focusFailures ? 'failures' : 'memories'} canCreate={false} canRecall={privateMemory}
+      initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate={false} canRecall={privateMemory}
       onCopy={privateMemory ? () => setCopying(true) : undefined} copyDisabled={!summary.exists}
       memories={controls => <MemoryList store={store} storeName={summary.owner_member || summary.name} privateMemory={privateMemory} focusKey={focusLessonKey}
         selecting={controls.selecting} onSelectingChange={controls.setSelecting} recallOpen={controls.recallOpen} onRecallOpenChange={controls.setRecallOpen}
         onDirtyChange={setRecordsDirty} onRecovery={() => controls.openTab('recovery')}
-        emptyActions={<>{privateMemory && <Btn className="min-h-11" onClick={openMember}><ArrowUpRight className="lucide-inline" />{t('memoryV2.open_member')}</Btn>}{privateMemory && <Btn className="min-h-11" disabled={!summary.exists} onClick={() => setCopying(true)}><Copy className="lucide-inline" />{t('memoryV2.copy_action')}</Btn>}</>} />}
+        emptyActions={<>{privateMemory && <Btn className="min-h-11" onClick={openMember}><ArrowUpRight className="lucide-inline" />{t('memoryV2.open_member')}</Btn>}{privateMemory && <Btn className="min-h-11" disabled={!summary.exists} onClick={() => setCopying(true)}><Copy className="lucide-inline" />{t('memoryPage.copy_from')}</Btn>}</>} />}
       panels={{
+        graph: <MemoryGraphPanel store={store} />,
         profile: <><p className="text-[13px] text-muted">{t('memoryV2.profile_hint')}</p><MemoryDocCard docKey="preferences" store={store} title={t('pages.overview.memoryTab.preferences')} rows={7} placeholder={t('pages.overview.memoryTab.loading')} read={api.memoryPreferences} write={api.saveMemoryPreferences} onDirtyChange={value => setDirtyDocs(old => old.preferences === value ? old : { ...old, preferences: value })} /><MemoryDocCard docKey="projects" store={store} title={t('pages.overview.memoryTab.projects')} rows={7} placeholder={t('pages.overview.memoryTab.loading')} read={api.memoryProjects} write={api.saveMemoryProjects} onDirtyChange={value => setDirtyDocs(old => old.projects === value ? old : { ...old, projects: value })} /></>,
         recovery: <><p className="text-[13px] text-muted">{t('memoryV2.recovery_hint')}</p><MemoryBackupsCard store={store} privateMemory={privateMemory} /><MemoryRetiredCard store={store} privateMemory={privateMemory} /></>,
         // Repeated failures are counted across every chat and their lessons save to Global

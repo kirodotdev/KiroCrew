@@ -16859,9 +16859,6 @@
         "logs": {
           "label": "लॉग"
         },
-        "memory": {
-          "label": "मेमोरी"
-        },
         "storage": {
           "label": "स्टोरेज"
         },
@@ -19017,7 +19014,6 @@
       "open_kiro_sign_in": "साइन-इन सेटिंग्स खोलो",
       "back_to_overview": "अवलोकन पर वापस",
       "connecting": "कनेक्ट हो रहा है…",
-      "memory_developer_link": "मेमोरी ग्राफ़ और आंतरिक जानकारी",
       "overview": "अवलोकन",
       "reconnecting": "फिर कनेक्ट हो रहा है…",
       "stat_cron_jobs": "Cron जॉब",
@@ -24382,6 +24378,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "{{total}} में से {{done}} कॉपी हो रही हैं…",
+    "copy_select_all": "सभी मिलान चुनें",
+    "copy_up_to": "एक बार में {{limit}} तक",
     "restore_experience": "अनुभव बहाल करें",
     "member_store_label": "{{member}} · सदस्य स्मृति ({{version}})",
     "copy_explanation": "मौजूदा और स्रोत की यादें बदले बिना चुनी यादें यहाँ कॉपी करो। हर कॉपी का स्रोत दर्ज होगा।",
@@ -24421,7 +24420,6 @@
     "remembered_count": "सहेजी गई स्मृतियाँ: {{count}}",
     "private_status": "सदस्य के दायरे में · स्मृति V2",
     "source_unknown": "स्रोत दर्ज नहीं है",
-    "copy_limit": "अधिकतम 50 प्रविष्टियाँ चुनें",
     "empty_title": "इस सदस्य की नई शुरुआत",
     "empty_body": "काम के साथ सदस्य स्मृति (V2) बढ़ती है। चुनी यादें यहाँ कॉपी करो; स्रोत नहीं बदलेगा।",
     "no_matches": "खोज से मिलती कोई स्मृति नहीं",
@@ -24482,8 +24480,7 @@
     "group_source": "मूल स्रोत",
     "group_kind": "मेमोरी का प्रकार",
     "sensitive_document_read_only": "संवेदनशील मान छिपे हैं। मूल सामग्री बचाने के लिए यहाँ केवल पढ़ सकते हो।",
-    "restart_interrupts": "गेटवे को फिर शुरू करने से सक्रिय बातचीत और निर्धारित काम थोड़ी देर के लिए रुकते हैं।",
-    "copy_action": "मेमोरी कॉपी करें"
+    "restart_interrupts": "गेटवे को फिर शुरू करने से सक्रिय बातचीत और निर्धारित काम थोड़ी देर के लिए रुकते हैं।"
   },
   "memoryEditing": {
     "adjust": "संपादन समायोजित करें",
@@ -24510,7 +24507,7 @@
     "replace_hint": "टेक्स्ट और JSON के स्ट्रिंग मान अपडेट करता है। कुंजियाँ, स्रोत और दायरा बने रहते हैं।",
     "replace_title": "चुनी गई यादें संपादित करें",
     "replacement": "इससे बदलें",
-    "search_hint": "यादें, ईमेल पते या विषय खोजें…",
+    "search_hint": "मेमोरी खोजें…",
     "select_all": "मेल खाने वाली सभी {{count}} यादें चुनें",
     "select_page": "यह पेज चुनें",
     "select_record": "याद चुनें: {{text}}",
@@ -24555,6 +24552,7 @@
     "conf_lowest": "सबसे नीचा",
     "confidence_range": "भरोसा {{low}}–{{high}}",
     "confidence_value": "भरोसा {{value}}",
+    "copy_from": "किसी दूसरी मेमोरी से कॉपी करें…",
     "created_on": "{{date}} को बनी",
     "divider_no_confidence": "कोई भरोसा स्कोर नहीं · अनुभव, नए पहले",
     "divider_no_importance": "कोई महत्व स्कोर नहीं · तथ्य और सीख, नए पहले",
@@ -24569,7 +24567,9 @@
     "for_experiences": "{{group}} · अनुभव",
     "for_facts_lessons": "{{group}} · तथ्य, सीख",
     "for_lessons": "{{group}} · सीख",
+    "hide_filters": "फ़िल्टर छिपाएँ",
     "importance_value": "महत्व {{value}}",
+    "just_saved": "अभी सहेजा गया",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "न करें: {{text}}",
     "match_hint": "यह आपके खोज शब्दों से कितना मिलता है",
@@ -24605,6 +24605,7 @@
     "sort_match": "सबसे अच्छा मेल",
     "store_title": "स्टोर",
     "tab_failures": "विफलताएँ",
+    "tab_graph": "ग्राफ़",
     "tab_settings": "सेटिंग्स",
     "test_recall": "रिकॉल आज़माएँ",
     "updated_on": "{{date}} को अपडेट",

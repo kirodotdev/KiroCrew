@@ -16,10 +16,10 @@ import { MEMORY_QUERY_PREFIXES } from '../MemoryStoreCard'
 import { NewLessonDialog, NewMemoryDialog } from './MemoryNewDialogs'
 import { MemoryActionSheet, type SheetAction } from './MemoryActionSheet'
 
-export type MemoryPageTab = 'memories' | 'profile' | 'recovery' | 'failures' | 'settings'
+export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'settings'
 export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; recallOpen: boolean; setRecallOpen: (open: boolean) => void; openTab: (tab: MemoryPageTab) => void }
 const TABS: [MemoryPageTab, string][] = [
-  ['memories', 'memoryV2.tab_memories'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
+  ['memories', 'memoryV2.tab_memories'], ['graph', 'memoryPage.tab_graph'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
   ['failures', 'memoryPage.tab_failures'], ['settings', 'memoryPage.tab_settings'],
 ]
 
@@ -36,7 +36,8 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   embedded?: ReactNode
   initialTab?: MemoryPageTab
   /** Mount every panel at once (the global page, whose Settings cards report
-   *  state the other panels read); otherwise a panel mounts when first opened. */
+   *  state the other panels read); otherwise a panel mounts when first opened.
+   *  The graph always waits for its first visit: it reads the whole store. */
   mountAll?: boolean
   /** New memory and New lesson write the global store only. */
   canCreate: boolean
@@ -67,29 +68,31 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
     for (const prefix of MEMORY_QUERY_PREFIXES) void client.invalidateQueries({ queryKey: prefix })
     onCreated?.()
   }
-  // On a phone the list's own Select and Test recall, and Copy memories, move into the ⋯ sheet.
+  // On a phone the list's own Select and Test recall move into the ⋯ sheet.
   const listActions: SheetAction[] = phone ? [
     { key: 'select', icon: ListChecks, label: t('memoryPage.select'), run: () => { open('memories'); setSelecting(true) } },
-    ...(onCopy ? [{ key: 'copy', icon: Copy, label: t('memoryV2.copy_action'), run: onCopy, disabled: copyDisabled }] : []),
     ...(canRecall ? [{ key: 'recall', icon: Sparkles, label: t('memoryPage.test_recall'), run: () => { open('memories'); setRecallOpen(true) } }] : []),
   ] : []
-  const createActions: SheetAction[] = canCreate ? [{ key: 'lesson', icon: Lightbulb, label: t('memoryPage.new_lesson'), run: () => setCreating('lesson') }] : []
+  // Rare actions live in ⋯ on every width.
+  const createActions: SheetAction[] = [
+    ...(canCreate ? [{ key: 'lesson', icon: Lightbulb, label: t('memoryPage.new_lesson'), run: () => setCreating('lesson') }] : []),
+    ...(onCopy ? [{ key: 'copy', icon: Copy, label: t('memoryPage.copy_from'), run: onCopy, disabled: copyDisabled }] : []),
+  ]
   const more = listActions.length + createActions.length > 0
   const moreButtonClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border sm:h-9 sm:w-9'
-  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={tab !== key} className="space-y-4">{(mountAll || visited.has(key)) && content}</TabsContent>
+  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={tab !== key} className="space-y-4">{((mountAll && key !== 'graph') || visited.has(key)) && content}</TabsContent>
   return <div className="min-w-0 space-y-4">
     <header className="space-y-3">
       <div className="flex min-w-0 items-center justify-between gap-1.5 sm:gap-2">
         <div className="min-w-0">{switcher}</div>
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {!phone && onCopy && <Btn className="min-h-9" disabled={copyDisabled} onClick={onCopy}><Copy className="lucide-inline" />{t('memoryV2.copy_action')}</Btn>}
           {canCreate && <Btn primary className="min-h-11 sm:min-h-9" onClick={() => setCreating('memory')}><Plus className="lucide-inline" />{t('memoryPage.new_memory')}</Btn>}
           {more && (phone
             ? <IconButton aria-label={t('memoryPage.more_actions')} aria-haspopup="dialog" className={moreButtonClass} onClick={() => setSheetOpen(true)}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton>
             : <DropdownMenu>
               <DropdownMenuTrigger asChild><IconButton aria-label={t('memoryPage.more_actions')} className={moreButtonClass}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton></DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
-                {createActions.map(item => <DropdownMenuItem key={item.key} onSelect={item.run}><item.icon className="lucide-inline text-muted" aria-hidden="true" />{item.label}</DropdownMenuItem>)}
+                {createActions.map(item => <DropdownMenuItem key={item.key} disabled={item.disabled} onSelect={item.run}><item.icon className="lucide-inline text-muted" aria-hidden="true" />{item.label}</DropdownMenuItem>)}
               </DropdownMenuContent>
             </DropdownMenu>)}
         </div>
@@ -99,16 +102,18 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
     </header>
     {saved && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text"><span className="min-w-0 flex-1 break-words">{saved}</span><IconButton aria-label={t('components.errorNotice.dismiss')} className="flex h-8 w-8 items-center justify-center" onClick={() => setSaved('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
     <Tabs variant="underline" layoutId={`memory-page-tabs-${id}`} value={tab} onValueChange={value => open(value as MemoryPageTab)}>
-      <TabsList aria-label={t('memoryV2.title', { member: label })} className="mb-4">
+      {/* A phone scrolls the tab row sideways when the tabs do not fit. */}
+      <TabsList aria-label={t('memoryV2.title', { member: label })} className={`mb-4 ${phone ? 'overflow-x-auto overflow-y-hidden [scrollbar-width:none]' : ''}`}>
         {TABS.map(([key, text]) => {
           // A phone shows four text tabs and a gear for Settings at the end of the rule.
           const gear = phone && key === 'settings'
-          return <TabsTrigger key={key} value={key} aria-label={gear ? t(text) : undefined} className={gear ? 'ml-auto w-11 px-0' : phone ? 'px-2.5' : undefined}>
+          return <TabsTrigger key={key} value={key} aria-label={gear ? t(text) : undefined} className={gear ? 'ml-auto w-11 shrink-0 px-0' : phone ? 'shrink-0 px-2.5' : undefined}>
             {gear ? <Settings className="lucide-inline" aria-hidden="true" /> : t(text)}
           </TabsTrigger>
         })}
       </TabsList>
       {panel('memories', memories({ selecting, setSelecting, recallOpen, setRecallOpen, openTab: open }))}
+      {panel('graph', panels.graph)}
       {panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
       {panel('failures', panels.failures)}

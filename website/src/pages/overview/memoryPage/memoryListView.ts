@@ -81,7 +81,8 @@ export function toggleFilter(filters: MemoryRecordFilters, group: MemoryRecordFa
   return out
 }
 
-export const SCOPE_UNUSABLE = '!unusable'
+// The same value as memory_record_facets.SCOPE_UNUSABLE, which the facet counts carry.
+export const SCOPE_UNUSABLE = ':unusable'
 const CATEGORY_KEYS: Record<string, string> = { knowledge: 'memoryPage.category_knowledge', tool: 'memoryPage.category_tool', preference: 'memoryPage.category_preference' }
 const APPLIES_KEYS: Record<string, string> = { always: 'memoryPage.applies_always', on_topic: 'memoryPage.applies_on_topic', unstated: 'memoryPage.applies_unstated' }
 const SOURCE_KEYS: Record<string, string> = {

@@ -97,6 +97,10 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-artifacts-pinned-only',
   'mc-artifacts-session-docs-collapsed',
   'mc-artifact-folders-expanded',
+  // The memory page's filter rail, hidden on a wide screen ('1'; absent is shown)
+  // (pages/overview/memoryPage/MemoryList.tsx). Written only by its hide and show
+  // clicks, through savePrefExplicitly. It gates nothing.
+  'kirocrew:memory-filters-collapsed',
   // Misc opt-ins and acknowledgements the user should not have to repeat.
   //
   // NOT here: 'mc-yolo-ack'. Its mere PRESENCE makes ApprovalModePicker skip the

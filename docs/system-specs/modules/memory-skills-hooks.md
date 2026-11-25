@@ -1870,7 +1870,24 @@ replace the gear tab's former Explore memory card, which grouped by the same
 columns. On a phone the filter sheet has a search box that narrows every group's
 values by label and keeps their counts; the wide rail has none. The phone layout
 is keyed on `useIsMobile` (below 768 px), not on a width class, so the toolbar
-wraps and the search box keeps its own row on a 640–767 px phone too.
+wraps and the search box keeps its own row on a 640–767 px phone too. The wide
+filter rail has the same search box and a hide control at its top; hidden, the
+toolbar's Filters button (with the active count) shows it again, and the choice
+is kept per browser (`kirocrew:memory-filters-collapsed`). A row's filterable
+chips (lesson category, applies, scope, tags, source) are toggle buttons that
+tick or clear that value in its group without opening the row.
+
+Colour follows the approved mock (S2/S3): the accent marks selection, primary
+actions, checkboxes and Every session; an open or picked row is an 8% accent
+tint; the row a Lesson saved link lands on gets the saved tint and an `--ok` bar
+with "Just saved"; the picked kind pill is filled with the text colour on dark;
+Global memory's avatar is the `--tile-blue` tile; only Confidence below 0.5 is red.
+
+The page's Graph tab, after Memories, draws the selected store
+(`GET /api/memory/graph?store=`, the same owner-gated resolver as the profile
+documents; a bot's lessons come from its own vector tier, never the Global
+lessons file). It mounts on first visit only. Settings > Developer has no memory
+page any more; `/settings/developer/memory` opens `/settings/memory?focus=graph`.
 
 The embedded line under the header reads "X of Y embedded": X is every fact,
 lesson and experience with a stored vector (`memory_stats`'s `embedded_count`,
@@ -2064,11 +2081,18 @@ Experiences as recallable events. Narrow Explore memory results use wrapping
 cards that retain memory type, content, member and channel. Restore keeps its
 original control visible while a separate warning, Confirm and Cancel appear.
 
-Choose starting knowledge is an explicit owner operation. The owner selects a
-source and up to 50 fact, directive or episode identities. The server validates
-the complete selection before writing, copies without overwriting target
-identities, and reports imported/skipped outcomes with reasons and provenance.
-No row is selected automatically. This is selective copying, not V1 migration.
+Copy from another memory (a bot page's ⋯ menu on every width, and its empty
+list) is an explicit owner operation. The owner picks a source and up to 1,000
+fact, directive or episode identities, one by one or with Select all matching,
+which reads the remaining source pages first. `POST /api/memory/seed` takes at
+most `MAX_SEED_ITEMS` (50) per request, a request-body bound: each copy is one
+row write whose vector the backfill sweep fills later. So the dialog
+(`pages/overview/memorySeedBatches.ts`) sends 50-item batches in order with a
+progress count, and stops at the first batch that is partial or refused, marking
+every later item not attempted. Per batch the server validates the complete
+selection before writing, copies without overwriting target identities, and
+reports imported/skipped outcomes with reasons and provenance. No row is
+selected automatically. This is selective copying, not V1 migration.
 
 V1 fresh-session context keeps complete preferences and eligible project-scoped
 lessons as protected context. With `memory.inject_activity` on (the default) the

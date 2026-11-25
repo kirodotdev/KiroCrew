@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { Trans } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, X, ArrowRight } from 'lucide-react'
+import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { requestRefresh } from '../../lib/pollRule'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton, PanelSectionHeader } from '../../components/ui'
@@ -22,6 +22,7 @@ import {
   useMemoryStores,
 } from './MemoryStoreCard'
 import { MemoryEmbeddedLine } from './memoryPage/MemoryEmbeddedLine'
+import { MemoryGraphPanel } from './memoryPage/MemoryGraphPanel'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
 import MemoryFailuresCard from './MemoryFailuresCard'
@@ -138,11 +139,12 @@ export const MEMORY_FOCUS_LESSONS = 'lessons'
 /** `?focus=` value that lands the global Memory view on the Repeated failures
  *  card: the link of the weekly repeated-failures bell note. */
 export const MEMORY_FOCUS_FAILURES = 'failures'
+/** `?focus=` value that opens the memory page on its Graph tab. */
+export const MEMORY_FOCUS_GRAPH = 'graph'
 /** The Lessons card, the landing spot for that focus when vector memory is off. */
 export const LESSONS_CARD_ID = 'memory-lessons-card'
 
 /** Settings > Developer > Memory: the memory graph and internals. */
-const MEMORY_DEVELOPER_ROUTE = '/settings/developer/memory'
 
 /** `requestRefresh`'s id for the turn-end store-list read, and its gap: the
  *  gateway sends at most one turn-end frame per 1.5 s. */
@@ -255,7 +257,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
   const switcher = <MemoryStoreSwitcher store={store} onStoreChange={choose} />
   const notices = <MemoryStoreNotices store={store} />
   return <>
-    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} switcher={switcher} notices={notices} onDirtyChange={setDirty} focusFailures={focus === MEMORY_FOCUS_FAILURES} focusLessonKey={store === landingStore.current && focus === MEMORY_FOCUS_LESSONS ? focusLessonKey ?? undefined : undefined} /> : <div className="space-y-4">{/* No switcher until the owner loads: it would name the store by its directory. */}<Card>
+    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} switcher={switcher} notices={notices} onDirtyChange={setDirty} focusFailures={focus === MEMORY_FOCUS_FAILURES} focusGraph={focus === MEMORY_FOCUS_GRAPH} focusLessonKey={store === landingStore.current && focus === MEMORY_FOCUS_LESSONS ? focusLessonKey ?? undefined : undefined} /> : <div className="space-y-4">{/* No switcher until the owner loads: it would name the store by its directory. */}<Card>
       {stores.isPending && !queryReadFailed(stores) ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
         <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
         <div className="min-w-0 flex-1 space-y-2">
@@ -276,7 +278,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card></div> : <GlobalMemoryTab switcher={switcher} notices={notices} refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusLessonKey={store === landingStore.current ? focusLessonKey ?? undefined : undefined} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
+    </Card></div> : <GlobalMemoryTab switcher={switcher} notices={notices} refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusLessonKey={store === landingStore.current ? focusLessonKey ?? undefined : undefined} focusFailures={focus === MEMORY_FOCUS_FAILURES} focusGraph={focus === MEMORY_FOCUS_GRAPH} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">
@@ -287,7 +289,7 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
   </>
 }
 
-function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, focusLessons = false, focusLessonKey, focusFailures = false }: { switcher: ReactNode; notices: ReactNode; refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusLessonKey?: string; focusFailures?: boolean }) {
+function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, focusLessons = false, focusLessonKey, focusFailures = false, focusGraph = false }: { switcher: ReactNode; notices: ReactNode; refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusLessonKey?: string; focusFailures?: boolean; focusGraph?: boolean }) {
   const queryClient = useQueryClient()
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
@@ -758,7 +760,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   }
   const globalLabel = i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
   return (<>
-    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : 'memories'} canCreate canRecall={false} onCreated={() => { void showLessons('load') }}
+    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall={false} onCreated={() => { void showLessons('load') }}
       memories={controls => <>
         {/* With vector memory off the store has no records to list; its lessons are the card below. */}
         {!(vectorSettled && !vectorActive) && <MemoryList store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
@@ -853,10 +855,11 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
         )}
       </>}
       panels={{
+        graph: <MemoryGraphPanel store="" />,
         profile: <>
           {vectorActive && <p className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</p>}
-        {/* The graph explorer lives on Developer. This user-facing V1 browser keeps
-            its preferences, projects, history, semantic/episodic records, recovery,
+        {/* The graph is its own tab. This user-facing V1 browser keeps its
+            preferences, projects, history, semantic/episodic records, recovery,
             settings and lessons in the normal page flow. */}
         {/* `vectorActive` comes from the vector card, which reads the global store,
             independently of the picked one — so these three text documents are hidden whenever THAT
@@ -1042,7 +1045,6 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
           initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
           focusKey={focusLessons ? focusLessonKey : undefined}
         />
-          <Btn className="min-h-11 w-fit" onClick={() => leave(() => navigate(MEMORY_DEVELOPER_ROUTE), MEMORY_DEVELOPER_ROUTE)}>{i18nT('pages.overviewPage.memory_developer_link')}<ArrowRight className="lucide-inline" aria-hidden="true" /></Btn>
         </>,
       }} />
     {confirmDialog}

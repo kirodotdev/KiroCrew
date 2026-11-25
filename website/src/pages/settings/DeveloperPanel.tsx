@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
-import { ExternalLink, FlaskConical, ScrollText, Monitor, Brain, Archive, Database, Activity, FileCode2, Bug } from 'lucide-react'
+import { ExternalLink, FlaskConical, ScrollText, Monitor, Archive, Database, Activity, FileCode2, Bug } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { ContentSkeleton } from '../../components/ui'
@@ -15,9 +15,7 @@ import { LOCKED_DEBUG_TOOLS, useControlLocked } from '../../utils/editionLocks'
 
 /**
  * Lazy: every internals page loads its chunk when it is first opened. They sit
- * in the Settings chunk otherwise, which every Settings visit downloads, and
- * MemoryGraphTab alone carries the sigma/graphology stack (vendor-graph,
- * ~180 KB gzip) that a static import would put in the entry modulepreload set.
+ * in the Settings chunk otherwise, which every Settings visit downloads.
  */
 const LogViewer = lazy(() => import('../LogsPage').then(m => ({ default: m.LogViewer })))
 const SystemPage = lazy(() => import('../SystemPage'))
@@ -28,7 +26,6 @@ const ConfigPage = lazy(() => import('../overview').then(m => ({
   default: () => <><m.KiroCrewCfgTab /><m.AgentCfgTab /></>,
 })))
 const DebugToolsTab = lazy(() => import('../developer/DebugToolsTab').then(m => ({ default: m.DebugToolsTab })))
-const MemoryGraphTab = lazy(() => import('../overview/MemoryGraphTab'))
 /** Its own chunk too: the Settings chunk sits at its 500 KB budget (`scripts/check-bundle-size.mjs`). */
 const SessionControlSection = lazy(() => import('./SessionControlSection').then(m => ({ default: m.SessionControlSection })))
 
@@ -44,7 +41,7 @@ const LOCAL_GATEWAY_TUNNEL_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/
 /** Settings > Developer tab: a SettingsSubNav whose first page, Feature
  *  Previews, holds the per-device opt-in switches, and whose other pages are
  *  the internals views (logs, system metrics, telemetry, storage,
- *  memory graph, config, debug tools, session archive). Every page is always
+ *  config, debug tools, session archive). Every page is always
  *  listed: there is no consent gate in front of the internals views.
  *
  *  The Gateway section is desktop-app-only and appears only when the Electron
@@ -73,7 +70,6 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'system', label: i18nT('pages.developerPage.tabs.system.label'), icon: <Monitor size={16} /> },
     { key: 'telemetry', label: i18nT('pages.developerPage.tabs.telemetry.label'), icon: <Activity size={16} /> },
     { key: 'storage', label: i18nT('pages.developerPage.tabs.storage.label'), icon: <Database size={16} /> },
-    { key: 'memory', label: i18nT('pages.developerPage.tabs.memory.label'), icon: <Brain size={16} /> },
     { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} /> },
     { key: 'debug-tools', label: i18nT('pages.developerPage.tabs.debugTools.label'), icon: <Bug size={16} /> },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} /> },
@@ -154,11 +150,6 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'storage':
           return loading(<LocalStorageDebug />)
-
-        case 'memory':
-          // The memory GRAPH visualizer is an internals view. The user-facing
-          // memory browser lives in Settings > Overview > Memory.
-          return loading(<MemoryGraphTab />)
 
         case 'config':
           return loading(<ConfigPage />)

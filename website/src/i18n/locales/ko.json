@@ -16416,9 +16416,6 @@
         "logs": {
           "label": "로그"
         },
-        "memory": {
-          "label": "메모리"
-        },
         "storage": {
           "label": "스토리지"
         },
@@ -18505,7 +18502,6 @@
       "open_kiro_sign_in": "로그인 설정 열기",
       "back_to_overview": "개요로 돌아가기",
       "connecting": "연결 중…",
-      "memory_developer_link": "메모리 그래프와 내부 정보",
       "overview": "개요",
       "reconnecting": "다시 연결하는 중…",
       "stat_cron_jobs": "cron 작업",
@@ -23780,6 +23776,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "{{total}}개 중 {{done}}개 복사 중…",
+    "copy_select_all": "일치 항목 모두 선택",
+    "copy_up_to": "한 번에 최대 {{limit}}개",
     "restore_experience": "경험 복원",
     "member_store_label": "{{member}} · 멤버 기억({{version}})",
     "copy_explanation": "선택한 기억을 여기에 복사합니다. 기존 기억과 원본은 그대로 두고 각 사본에 출처를 기록합니다.",
@@ -23819,7 +23818,6 @@
     "remembered_count": "저장된 기억: {{count}}",
     "private_status": "멤버 범위 · 기억 V2",
     "source_unknown": "출처 기록 없음",
-    "copy_limit": "최대 50개 항목 선택",
     "empty_title": "이 멤버의 새로운 시작",
     "empty_body": "함께 작업하며 멤버 기억(V2)이 쌓입니다. 선택한 기억을 복사해도 원본은 그대로입니다.",
     "no_matches": "검색과 일치하는 기억이 없습니다",
@@ -23880,8 +23878,7 @@
     "group_source": "원래 출처",
     "group_kind": "메모리 종류",
     "sensitive_document_read_only": "민감한 값은 숨깁니다. 읽기 전용 화면으로 원본 내용을 보존합니다.",
-    "restart_interrupts": "게이트웨이를 다시 시작하면 진행 중인 대화와 예약된 작업이 잠시 중단됩니다.",
-    "copy_action": "메모리 복사"
+    "restart_interrupts": "게이트웨이를 다시 시작하면 진행 중인 대화와 예약된 작업이 잠시 중단됩니다."
   },
   "memoryEditing": {
     "adjust": "편집 조정",
@@ -23908,7 +23905,7 @@
     "replace_hint": "텍스트와 JSON 문자열 값을 업데이트합니다. 키, 출처, 범위는 유지됩니다.",
     "replace_title": "선택한 기억 편집",
     "replacement": "바꿀 텍스트",
-    "search_hint": "기억, 이메일 주소 또는 주제 검색…",
+    "search_hint": "메모리 검색…",
     "select_all": "일치하는 기억 {{count}}개 모두 선택",
     "select_page": "이 페이지 선택",
     "select_record": "기억 선택: {{text}}",
@@ -23953,6 +23950,7 @@
     "conf_lowest": "최저",
     "confidence_range": "신뢰도 {{low}}–{{high}}",
     "confidence_value": "신뢰도 {{value}}",
+    "copy_from": "다른 메모리에서 복사…",
     "created_on": "{{date}} 생성",
     "divider_no_confidence": "신뢰도 점수 없음 · 경험, 최신순",
     "divider_no_importance": "중요도 점수 없음 · 사실과 학습 내용, 최신순",
@@ -23967,7 +23965,9 @@
     "for_experiences": "{{group}} · 경험",
     "for_facts_lessons": "{{group}} · 사실, 학습 내용",
     "for_lessons": "{{group}} · 학습 내용",
+    "hide_filters": "필터 숨기기",
     "importance_value": "중요도 {{value}}",
+    "just_saved": "방금 저장됨",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "하지 말 것: {{text}}",
     "match_hint": "검색어와 얼마나 일치하는지",
@@ -24003,6 +24003,7 @@
     "sort_match": "가장 일치",
     "store_title": "저장소",
     "tab_failures": "실패",
+    "tab_graph": "그래프",
     "tab_settings": "설정",
     "test_recall": "기억 불러오기 테스트",
     "updated_on": "{{date}} 업데이트",

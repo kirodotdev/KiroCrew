@@ -17,6 +17,8 @@ export function memoryRoute(query: { store?: string; focus?: string; lesson?: st
  *  `?tab=overview&view=memory`. Null for any other address. */
 export function legacyMemoryRedirect(pathname: string, search: string): string | null {
   const path = pathname.replace(/\/$/, '')
+  // The memory graph was Settings > Developer > Memory; it is the Graph tab now.
+  if (path === '/settings/developer/memory') return memoryRoute({ focus: 'graph' })
   const params = new URLSearchParams(search)
   const tab = params.get('tab')
   const overview = path === '/settings/overview' || (path === '/settings' && (tab === null || tab === 'overview'))

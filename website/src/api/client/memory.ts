@@ -236,7 +236,7 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
-    memoryGraph: () => fetch('/api/memory/graph').then(j),
+    memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }
 

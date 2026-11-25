@@ -169,14 +169,14 @@ describe('MemoryTab — settings', () => {
       screen.getByRole('heading', { name: /^Memory Settings\s*$/i }),
       screen.getByTestId('embed-card'),
       screen.getByTestId('vector-card'),
-      screen.getByRole('button', { name: /Memory graph and internals/i }),
     ]
     for (let index = 0; index < ordered.length - 1; index += 1) {
       expect(ordered[index].compareDocumentPosition(ordered[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
     expect(screen.getByTestId('vector-card')).toHaveAttribute('data-diagnostics-only', 'false')
-    await userEvent.click(screen.getByRole('button', { name: /Memory graph and internals/i }))
-    expect(mockNavigate).toHaveBeenCalledWith('/settings/developer/memory')
+    // The graph is its own tab now, not a link to Developer.
+    expect(screen.queryByRole('button', { name: /Memory graph and internals/i })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Graph' })).toBeVisible()
   })
 
   it('loads the saved retention settings and writes both fields back', async () => {

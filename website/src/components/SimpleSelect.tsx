@@ -283,7 +283,7 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
                 ) : icon ? (
                   <span className="flex min-w-0 items-center gap-2">
                     <span aria-hidden="true" className="shrink-0">{icon}</span>
-                    <span className="min-w-0 truncate">{label(opt, i)}</span>
+                    <span className="min-w-0 truncate" title={label(opt, i)}>{label(opt, i)}</span>
                   </span>
                 ) : truncateLabels ? (
                   <span className="block truncate" title={label(opt, i)}>{label(opt, i)}</span>

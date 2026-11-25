@@ -56,17 +56,33 @@ describe('the memory toolbar', () => {
   it('stays on one row on a wide screen', async () => {
     renderWithProviders(<List />)
     const toolbar = await screen.findByTestId('memory-toolbar')
+    // A short placeholder, so it fits beside the mode switch, Select and Test recall.
+    expect(within(toolbar).getByRole('textbox', { name: 'Search memory' })).toHaveAttribute('placeholder', 'Search memories…')
     expect(toolbar).toHaveClass('flex-nowrap')
     expect(within(toolbar).getByRole('textbox', { name: 'Search memory' }).closest('label')).not.toHaveClass('basis-full')
   })
 })
 
-describe('the saved-lesson focus ring', () => {
-  it('rounds the first and last rows to the list corners, so the ring is not clipped', async () => {
+describe('row colours (mock S2)', () => {
+  it('marks a saved-lesson landing with the saved tint and bar, and an open row with the 8% accent tint', async () => {
     renderWithProviders(<List focusKey="lesson.tool" />)
     await screen.findByText('Work in a worktree')
     const row = document.querySelector('[data-memory-focus]')!
-    expect(row).toHaveClass('ring-2', 'ring-inset', 'first:rounded-t-[15px]', 'last:rounded-b-[15px]')
+    expect(row).toHaveClass('first:rounded-t-[15px]', 'last:rounded-b-[15px]', 'shadow-[inset_3px_0_0_var(--ok)]')
+    expect(row).toHaveTextContent('Just saved')
+    expect(row.className).not.toMatch(/ring-accent|bg-accent-subtle/)
+  })
+
+  it('tints an open row with 8% of the accent', async () => {
+    renderWithProviders(<List />)
+    fireEvent.click(await screen.findByRole('button', { name: 'View details' }))
+    expect(screen.getAllByText('Work in a worktree')[0].closest('li')).toHaveClass('bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]')
+  })
+
+  it('fills the picked kind pill with the text colour on dark', async () => {
+    renderWithProviders(<List />)
+    const pill = (await screen.findByRole('radio', { name: /^All/ })).firstElementChild!
+    expect(pill).toHaveClass('[[data-mode=dark]_&]:bg-text', '[[data-mode=dark]_&]:text-bg', 'bg-bg-hover')
   })
 })
 
@@ -89,11 +105,33 @@ describe('the filter sheet', () => {
     expect(within(sheet).getByRole('checkbox', { name: 'Tool' })).toBeVisible()
   })
 
-  it('leaves the wide filter rail without a search box', async () => {
+  it('searches the wide filter rail too', async () => {
     renderWithProviders(<List />)
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
     await within(rail).findByRole('checkbox', { name: 'Tool' })
-    expect(within(rail).queryByRole('searchbox')).toBeNull()
+    fireEvent.change(within(rail).getByRole('searchbox', { name: 'Search filters' }), { target: { value: 'src' } })
+    expect(within(rail).queryByRole('checkbox', { name: 'Tool' })).toBeNull()
+    expect(within(rail).getByRole('checkbox', { name: 'src/kiro_crew' })).toBeVisible()
+  })
+
+  it('hides the wide rail, remembers it, and shows it again from the toolbar with the filter count', async () => {
+    localStorage.removeItem('kirocrew:memory-filters-collapsed')
+    const first = renderWithProviders(<List />)
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    fireEvent.click(await within(rail).findByRole('checkbox', { name: 'Tool' }))
+    expect(screen.queryByRole('button', { name: 'Filters' })).toBeNull()
+    fireEvent.click(within(rail).getByRole('button', { name: 'Hide filters' }))
+    expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
+    const show = screen.getByRole('button', { name: 'Filters' })
+    expect(show).toHaveTextContent('1')
+    expect(localStorage.getItem('kirocrew:memory-filters-collapsed')).toBe('1')
+    first.unmount()
+    renderWithProviders(<List />)
+    await screen.findByText('Work in a worktree')
+    expect(screen.queryByRole('complementary', { name: 'Filters' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(await screen.findByRole('complementary', { name: 'Filters' })).toBeVisible()
+    expect(localStorage.getItem('kirocrew:memory-filters-collapsed')).toBe('0')
   })
 
   it('filters a bot\'s memories by the channel and the crew that wrote them', async () => {
@@ -107,5 +145,37 @@ describe('the filter sheet', () => {
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { surface: ['slack'] } }))
     fireEvent.click(within(rail).getByRole('checkbox', { name: 'reviewer' }))
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { surface: ['slack'], crew: ['reviewer'] } }))
+  })
+})
+
+describe('row chips as filters', () => {
+  const EPISODE = { kind: 'episode', id: 'ep-1', text: 'Cleaned up stale worktrees', tags: '["release","worktree"]', importance: 0.6, source: 'consolidation', updated_at: '2026-11-13T10:00:00Z', created_at: '2026-11-13T10:00:00Z', revision: 'b'.repeat(64) }
+  const SCOPED = { ...LESSON, id: 'lesson.web', key: 'lesson.web', value_json: JSON.stringify({ rule: 'Check the phone layout', category: 'tool', applies: 'on_topic', repo_scope: 'website' }) }
+  beforeEach(() => { api.memoryRecords.mockResolvedValue({ entries: [SCOPED, EPISODE], total: 2, has_more: false, facets: FACETS }) })
+
+  it('ticks a tag, scope, applies, category or source from its chip, and a second press clears it', async () => {
+    renderWithProviders(<List />)
+    const rows = await screen.findByRole('list', { name: 'Memories' })
+    const tag = await within(rows).findByRole('button', { name: '#worktree' })
+    expect(tag).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(tag)
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { tag: ['worktree'] } }))
+    const list = () => screen.getByRole('list', { name: 'Memories' })
+    await waitFor(() => expect(within(list()).getByRole('button', { name: '#worktree' })).toHaveAttribute('aria-pressed', 'true'))
+    fireEvent.click(within(list()).getByRole('button', { name: '#worktree' }))
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all' }))
+    for (const name of ['website', 'On topic', 'Lesson · Tool', 'Saved by you or the agent']) {
+      fireEvent.click((await within(await screen.findByRole('list', { name: 'Memories' })).findAllByRole('button', { name }))[0])
+    }
+    await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { scope: ['website'], applies: ['on_topic'], category: ['tool'], source: ['user_explicit'] } }))
+    // The press filters; it does not open the row.
+    expect(screen.queryByTestId('memory-record-detail')).toBeNull()
+  })
+
+  it('leaves chips as plain labels while selecting rows', async () => {
+    renderWithProviders(<List selecting />)
+    const rows = await screen.findByRole('list', { name: 'Memories' })
+    await within(rows).findByText('#worktree')
+    expect(within(rows).queryByRole('button', { name: '#worktree' })).toBeNull()
   })
 })

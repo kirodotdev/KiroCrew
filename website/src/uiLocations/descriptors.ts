@@ -126,7 +126,7 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   },
   // Settings > Memory: the user-facing way to see and edit what is remembered
   // (preferences, projects, history, lessons), for Global memory and each bot.
-  // Developer > Memory is only the memory graph.
+  // Its Graph tab draws the memory graph.
   'settings.tab.memory': {
     en: [
       'see my memory', 'view my memory', 'edit my memory', 'what do you remember about me',

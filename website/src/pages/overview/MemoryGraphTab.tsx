@@ -63,7 +63,8 @@ interface GraphEdge { from: string; to: string }
 /** Which capped populations the server left rows out of (`/api/memory/graph`). */
 interface GraphPartial { semantic?: boolean; lessons?: boolean }
 
-export default function MemoryGraphTab() {
+/** The graph of one store: `store` names a bot's memory; empty is Global memory. */
+export default function MemoryGraphTab({ store = '' }: { store?: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const sigmaRef = useRef<Sigma | null>(null)
   const graphRef = useRef<Graph | null>(null)
@@ -78,9 +79,9 @@ export default function MemoryGraphTab() {
   // A failed read must reach the query: folding it into an empty graph showed
   // "no memory data" in front of an outage, with nothing to retry.
   const graphRead = useQuery({
-    queryKey: ['memory-graph'],
+    queryKey: ['memory-graph', store],
     queryFn: async () => {
-      const r = await api.memoryGraph()
+      const r = await api.memoryGraph(store || undefined)
       return r as { nodes: GraphNode[]; edges: GraphEdge[]; partial?: GraphPartial }
     },
   })

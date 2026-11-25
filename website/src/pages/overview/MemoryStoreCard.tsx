@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { Database } from 'lucide-react'
+import { Brain } from 'lucide-react'
 import { api } from '../../api/client'
 import { retryPolicy } from '../../api/queryClient'
 import { parseErrorCode } from '../../utils/errorReport'
@@ -112,7 +112,8 @@ export const NO_MEMORY_STORES: readonly MemoryStoreSummary[] = []
 export function MemoryStoreAvatar({ summary, size = 24 }: { summary?: MemoryStoreSummary; size?: number }) {
   return summary?.owner_member && !summary.is_default
     ? <CrewAvatar seed={summary.owner_member} avatar={summary.owner_avatar} size={size} />
-    : <span className="inline-flex shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted" style={{ width: size, height: size }} aria-hidden="true"><Database className="lucide-inline" /></span>
+    // Global memory's own colour: a fixed tile hue, never the accent or a status tone (mock S2).
+    : <span data-testid="global-memory-avatar" className="inline-flex shrink-0 items-center justify-center rounded-full text-[color:var(--tile-fg)]" style={{ width: size, height: size, background: 'var(--tile-blue)' }} aria-hidden="true"><Brain style={{ width: size * 0.62, height: size * 0.62 }} /></span>
 }
 
 /** A count the listing could not read comes back as `null`, which means "not
@@ -211,7 +212,7 @@ export function MemoryStoreSwitcher({ store, onStoreChange }: { store: string; o
   const pending = !selected || (selected.memory_version === 2 && !selected.owner_member)
   const name = pending ? i18nT('pages.overview.memoryTab.loading') : selected.is_default ? i18nT('memoryPage.global_memory') : selected.owner_member || selected.name
   return (
-    <div data-testid="memory-store-switcher" className="flex min-h-12 min-w-0 max-w-full items-center gap-1.5 rounded-xl border border-border bg-card py-1 pl-1.5 pr-0.5 sm:gap-2.5 sm:pl-2.5 sm:pr-1">
+    <div data-testid="memory-store-switcher" className="flex min-h-12 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border bg-card py-1 pl-1.5 pr-0.5 sm:gap-2.5 sm:pl-2.5 sm:pr-1">
       <MemoryStoreAvatar summary={pending ? undefined : selected} size={28} />
       <div className="min-w-0">
         <SimpleSelect
@@ -221,6 +222,9 @@ export function MemoryStoreSwitcher({ store, onStoreChange }: { store: string; o
           options={rows.map(s => s.name)}
           optionLabels={rows.map(storeLabel)}
           optionIcons={rows.map(s => <MemoryStoreAvatar key={s.name} summary={s} />)}
+          // The trigger hugs the short name, so the list sizes to its longest store
+          // label instead (up to 22rem, then each row truncates with a tooltip).
+          contentClassName="w-max min-w-[var(--radix-select-trigger-width)] max-w-[min(22rem,calc(100vw-2rem))]"
           triggerContent={<span className="block truncate">{name}</span>}
           triggerFallback={name}
           value={shown}

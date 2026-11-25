@@ -9,6 +9,9 @@ import { useTranslation } from 'react-i18next'
 import { ChevronLeft, ChevronRight, ListChecks, Replace, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react'
 import { api } from '../../../api/client'
 import { Btn, Card, EmptyState, IconButton, Input, Skeleton } from '../../../components/ui'
+import { PanelLeftLight } from '../../../components/icons/panels'
+import { savePrefExplicitly } from '../../../lib/uiPrefs'
+import { safeGetItem } from '../../../utils/safeStorage'
 import ErrorNotice from '../../../components/ErrorNotice'
 import Modal from '../../../components/Modal'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -25,6 +28,8 @@ import { MemoryRecordDetail } from './MemoryRecordDetail'
 import { MemoryRecallDialog } from './MemoryRecallDialog'
 
 const PAGE_SIZE = 50
+/** '1' while the wide filter rail is hidden; absent (the default) shows it. */
+export const FILTERS_COLLAPSED_KEY = 'kirocrew:memory-filters-collapsed'
 const SELECT_ALL_LIMIT = 10000
 
 export default function MemoryList({ store, privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, recallOpen, onRecallOpenChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
@@ -57,6 +62,8 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
   const [page, setPage] = useState(0)
   const pager = usePagerFocus()
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [railOpen, setRailOpenState] = useState(() => safeGetItem(FILTERS_COLLAPSED_KEY) !== '1')
+  const setRailOpen = (open: boolean) => { setRailOpenState(open); savePrefExplicitly(FILTERS_COLLAPSED_KEY, open ? '0' : '1') }
   const [detailKey, setDetailKey] = useState<string | null>(null)
   const picked = useMemoryRecordSelection()
   const { all, isSelected } = picked
@@ -149,7 +156,8 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
         <Input className="min-h-11 w-full pl-9 pr-10 sm:min-h-10" aria-label={t('memoryV2.search')} placeholder={t('memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
         {input && <IconButton aria-label={t('memoryV2.clear_search')} className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center" onClick={clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
       </label>
-      {phone && <Btn aria-label={t('memoryPage.filters')} className="relative min-h-11 min-w-11 justify-center" onClick={() => setFiltersOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
+      {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
+      {(phone || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={phone ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => phone ? setFiltersOpen(true) : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
       <SortControl view={view} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order })} />
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onSelectingChange(true)}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
       {!phone && privateMemory && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onRecallOpenChange(true)}><Sparkles className="lucide-inline" />{t('memoryPage.test_recall')}</Btn>}
@@ -171,7 +179,7 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
     {rows.length > 0 && <ul className="m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0" aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
       {rows.map((row, index) => [
         index === firstUnscored && index > 0 && view.kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li> : null,
-        <RecordRow key={recordIdentity(row)} row={row} sort={sort} selecting={selecting} selected={isSelected(row)}
+        <RecordRow key={recordIdentity(row)} row={row} sort={sort} selecting={selecting} selected={isSelected(row)} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }}
           selectDisabled={picked.lockedRow(row)}
           open={detailKey === recordIdentity(row)} focus={row === focused} focusRef={row === focused ? focusRow : undefined}
           onSelect={() => picked.toggle(row)} onOpen={() => setDetailKey(recordIdentity(row))}
@@ -188,11 +196,16 @@ export default function MemoryList({ store, privateMemory, focusKey, focusLesson
 
   return <div className="min-w-0" data-testid="memory-list">
     {phone ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
-      <aside className="w-60 shrink-0 pt-1" aria-label={t('memoryPage.filters')}>{filterPanel}</aside>
+      {railOpen && <aside className="w-60 shrink-0" aria-label={t('memoryPage.filters')}>
+        <div className="mb-1 flex justify-end">
+          <IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph flex h-8 w-8 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>
+        </div>
+        {filterPanel}
+      </aside>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       {detailPanel}
     </div>}
-    {phone && filtersOpen && <Modal open title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}><FilterPanel view={view} facets={facets} searchable onToggle={onToggleFilter} onRange={onRange} /></Modal>}
+    {phone && filtersOpen && <Modal open title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{filterPanel}</Modal>}
     {recallOpen && <MemoryRecallDialog store={store} initialTask={input.trim()} onClose={() => onRecallOpenChange(false)} />}
     {edit.dialog}
   </div>

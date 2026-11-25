@@ -17302,9 +17302,6 @@
         "logs": {
           "label": "Logs"
         },
-        "memory": {
-          "label": "Memória"
-        },
         "storage": {
           "label": "Armazenamento"
         },
@@ -19529,7 +19526,6 @@
       "open_kiro_sign_in": "Abrir configurações de login",
       "back_to_overview": "Voltar à visão geral",
       "connecting": "Conectando…",
-      "memory_developer_link": "Grafo de memória e detalhes internos",
       "overview": "Visão geral",
       "reconnecting": "Reconectando…",
       "stat_cron_jobs": "Tarefas cron",
@@ -24984,6 +24980,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "Copiando {{done}} de {{total}}…",
+    "copy_select_all": "Selecionar todos os resultados",
+    "copy_up_to": "Até {{limit}} por vez",
     "restore_experience": "Restaurar experiência",
     "member_store_label": "{{member}} · Memória do membro ({{version}})",
     "copy_explanation": "Copie memórias selecionadas aqui sem alterar as atuais ou as de origem. Cada cópia registra sua origem.",
@@ -25023,7 +25022,6 @@
     "remembered_count": "Lembranças salvas: {{count}}",
     "private_status": "Âmbito do membro · Memória V2",
     "source_unknown": "Origem não registrada",
-    "copy_limit": "Selecione até 50 itens",
     "empty_title": "Um novo começo para este membro",
     "empty_body": "A memória do membro (V2) cresce com o trabalho. Copie memórias selecionadas aqui; a origem não muda.",
     "no_matches": "Nenhuma lembrança corresponde à pesquisa",
@@ -25084,8 +25082,7 @@
     "group_source": "Origem inicial",
     "group_kind": "Tipo de memória",
     "sensitive_document_read_only": "Valores sensíveis estão ocultos. Esta visualização somente leitura preserva o conteúdo original.",
-    "restart_interrupts": "Reiniciar o gateway interrompe brevemente as conversas ativas e o trabalho agendado.",
-    "copy_action": "Copiar memórias"
+    "restart_interrupts": "Reiniciar o gateway interrompe brevemente as conversas ativas e o trabalho agendado."
   },
   "memoryEditing": {
     "adjust": "Ajustar edição",
@@ -25112,7 +25109,7 @@
     "replace_hint": "Atualiza textos e valores de texto em JSON. Chaves, origem e escopo são preservados.",
     "replace_title": "Editar memórias selecionadas",
     "replacement": "Substituir por",
-    "search_hint": "Busque memórias, endereços de e-mail ou assuntos…",
+    "search_hint": "Buscar memórias…",
     "select_all": "Selecionar todas as {{count}} memórias encontradas",
     "select_page": "Selecionar esta página",
     "select_record": "Selecionar memória: {{text}}",
@@ -25157,6 +25154,7 @@
     "conf_lowest": "Mínimo",
     "confidence_range": "Confiança {{low}}–{{high}}",
     "confidence_value": "Confiança {{value}}",
+    "copy_from": "Copiar de outra memória…",
     "created_on": "Criada em {{date}}",
     "divider_no_confidence": "Sem pontuação de confiança · experiências, mais recentes primeiro",
     "divider_no_importance": "Sem pontuação de importância · fatos e lições, mais recentes primeiro",
@@ -25171,7 +25169,9 @@
     "for_experiences": "{{group}} · experiências",
     "for_facts_lessons": "{{group}} · fatos, lições",
     "for_lessons": "{{group}} · lições",
+    "hide_filters": "Ocultar filtros",
     "importance_value": "Importância {{value}}",
+    "just_saved": "Salvo agora",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "Não: {{text}}",
     "match_hint": "Quanto isto corresponde às suas palavras de pesquisa",
@@ -25207,6 +25207,7 @@
     "sort_match": "Melhor correspondência",
     "store_title": "Armazenamento",
     "tab_failures": "Falhas",
+    "tab_graph": "Grafo",
     "tab_settings": "Configurações",
     "test_recall": "Testar recuperação",
     "updated_on": "Atualizada em {{date}}",

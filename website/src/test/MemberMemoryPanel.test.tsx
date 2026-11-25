@@ -10,6 +10,12 @@ import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '.
 import SidePanelLayout from '../components/SidePanelLayout'
 import CrewAvatar, { seededTraits } from '../components/CrewAvatar'
 import { useLocation } from 'react-router-dom'
+
+/** Copy lives in the page's ⋯ menu. */
+async function openCopy() {
+  fireEvent.pointerDown(await screen.findByRole('button', { name: 'More actions' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Copy from another memory…' }))
+}
 import type { MemoryStoreSummary } from '../types'
 
 const { api } = vi.hoisted(() => ({ api: {
@@ -17,7 +23,7 @@ const { api } = vi.hoisted(() => ({ api: {
   vectorSemanticWrite: vi.fn(), vectorSemanticDelete: vi.fn(), vectorEpisodicDelete: vi.fn(),
   memoryPreferences: vi.fn(), memoryProjects: vi.fn(), memoryHistory: vi.fn(),
   saveMemoryPreferences: vi.fn(), saveMemoryProjects: vi.fn(),
-  memoryCarve: vi.fn(), memoryRetired: vi.fn(), memoryRestoreRetired: vi.fn(), memoryBackups: vi.fn(), memoryBackupNow: vi.fn(), memoryRestoreBackup: vi.fn(), cancelMemberMemoryRestore: vi.fn(), memorySettings: vi.fn(), lessons: vi.fn(),
+  memoryCarve: vi.fn(), memoryGraph: vi.fn(), memoryRetired: vi.fn(), memoryRestoreRetired: vi.fn(), memoryBackups: vi.fn(), memoryBackupNow: vi.fn(), memoryRestoreBackup: vi.fn(), cancelMemberMemoryRestore: vi.fn(), memorySettings: vi.fn(), lessons: vi.fn(),
   themes: vi.fn(), themeDetail: vi.fn(), themeBoot: vi.fn(),
   // The header's embedded-count line: no provider, so it stays hidden.
   vectorEmbeddingStatus: vi.fn(), vectorStats: vi.fn(),
@@ -154,7 +160,8 @@ describe('private member memory lifecycle', () => {
       expect(api.memoryRecords.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
       const focused = screen.getByText(target.text).closest('[data-memory-focus="true"]')!
       expect(focused).not.toBeNull()
-      expect(focused.className).toContain('ring-accent')
+      expect(focused.className).toContain('var(--ok)')
+      expect(focused).toHaveTextContent('Just saved')
       await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
       expect(scroll.mock.instances[0]).toBe(focused)
       expect(sessionStorage.getItem(`kirocrew:memory-page-view:${MEMBER_STORE}`)).toBe(savedFilter)
@@ -200,7 +207,7 @@ describe('private member memory lifecycle', () => {
     expect(guidance).toHaveTextContent(/^This bot keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new bot\.$/)
     expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
     expect(screen.queryByText('Member memory · V2')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy from another memory…' })).toBeNull()
     expect(api.memberMemoryPage).toHaveBeenCalledWith(LEGACY_STORE, 'semantic', 0)
   })
 
@@ -212,7 +219,7 @@ describe('private member memory lifecycle', () => {
     expect(screen.queryByRole('tablist', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
     expect(screen.queryByText(MEMBER_STORE, { exact: true })).toBeNull()
     expect(screen.queryByRole('combobox', { name: 'Memory store' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy from another memory…' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memoryPreferences).not.toHaveBeenCalled()
@@ -228,7 +235,7 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     expect(await screen.findByText('The member catalog cannot be read')).toBeVisible()
     expect(screen.getByRole('heading', { name: 'This memory store’s member identity is unavailable.' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy from another memory…' })).toBeNull()
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     api.memoryStores.mockResolvedValue({ stores: avatarStores(), active: 'default' })
@@ -247,7 +254,7 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
     await screen.findByRole('heading', { name: 'This memory store’s member identity is unavailable.' })
     expect(screen.queryByRole('tablist', { name: `Memory for ${MEMBER_STORE}` })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy from another memory…' })).toBeNull()
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
@@ -302,10 +309,37 @@ describe('private member memory lifecycle', () => {
     expect(api.saveMemoryPreferences).not.toHaveBeenCalled()
   })
 
-  it('keeps the same header copy action when the member becomes empty', async () => {
+  it('puts the graph after Memories and draws the picked bot store', async () => {
+    api.memoryGraph.mockResolvedValue({ nodes: [], edges: [] })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    const tabs = screen.getAllByRole('tab').map(tab => tab.textContent)
+    expect(tabs.slice(0, 2)).toEqual(['Memories', 'Graph'])
+    expect(api.memoryGraph).not.toHaveBeenCalled()
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0, ctrlKey: false })
+    await waitFor(() => expect(api.memoryGraph).toHaveBeenCalledWith(MEMBER_STORE))
+  })
+
+  it('draws the store picker with the toolbar radius and a list as wide as its longest store', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    const switcher = screen.getByTestId('memory-store-switcher')
+    expect(switcher).toHaveClass('rounded-lg')
+    expect(switcher).not.toHaveClass('rounded-xl')
+    fireEvent.click(screen.getByRole('combobox', { name: 'Memory store' }))
+    const option = await screen.findByRole('option', { name: 'writer · Member memory (V2)' })
+    const list = option.closest('.w-max')
+    expect(list).not.toBeNull()
+    expect(list).toHaveClass('min-w-[var(--radix-select-trigger-width)]')
+    expect(within(option).getByText('writer · Member memory (V2)')).toHaveAttribute('title', 'writer · Member memory (V2)')
+    expect(screen.getAllByTestId('global-memory-avatar')[0].getAttribute('style')).toContain('var(--tile-blue)')
+  })
+
+  it('offers copying from the ⋯ menu, and from the empty list once the member is empty', async () => {
     const { queryClient } = renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    const copy = screen.getByRole('button', { name: 'Copy memories', exact: true })
+    // Rare, so not a header button.
+    expect(screen.queryByRole('button', { name: /^Copy/ })).toBeNull()
     api.memberMemoryPage.mockResolvedValue({ entries: [] })
     api.memoryStores.mockResolvedValue({ stores: stores.map(s => s.name === MEMBER_STORE ? { ...s, semantic_count: 0, episodic_count: 0 } : s), active: 'default' })
     await act(async () => {
@@ -315,10 +349,10 @@ describe('private member memory lifecycle', () => {
       ])
     })
     await screen.findByText('A fresh start for this member')
-    // The empty list offers Copy memories too; the header keeps its own button.
-    expect(screen.getAllByRole('button', { name: 'Copy memories', exact: true })[0]).toBe(copy)
-    expect(copy).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Copy from another memory…' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Open member conversation' })).toBeVisible()
+    await openCopy()
+    expect(screen.getByRole('dialog', { name: /^Copy memories to/ })).toBeInTheDocument()
     expect(api.memorySeed).not.toHaveBeenCalled()
   })
 
@@ -483,7 +517,7 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     const targetAvatar = headerAvatar('reviewer')
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     expect(dialog).toHaveAccessibleName('Copy memories to “reviewer”')
     const source = within(dialog).getByRole('combobox', { name: 'Source memory' })
@@ -565,7 +599,7 @@ describe('private member memory lifecycle', () => {
     expect(api.memberMemoryPage.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
     expect(screen.queryByText('Adds only selected memories to this member; the source stays unchanged.')).toBeNull()
     expect(api.memorySeed).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     await waitFor(() => expect(within(dialog).getByText('Copy selected memories here without changing existing or source memories. Each copy records its origin.')).toBeVisible())
     expect(within(dialog).getByText('Search memory', { exact: true })).toBeVisible()
@@ -595,7 +629,7 @@ describe('private member memory lifecycle', () => {
       : original(store, table, offset))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     await within(dialog).findByRole('checkbox', { name: 'Source item 99' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show more' }))
@@ -740,7 +774,7 @@ describe('private member memory lifecycle', () => {
     api.memorySeed.mockResolvedValue({ partial: true, results: [{ id: 'global.selected', outcome: 'unconfirmed', reason: 'Could not confirm the database write' }] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Selected source knowledge' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy selected (1)' }))
@@ -754,7 +788,7 @@ describe('private member memory lifecycle', () => {
     api.memorySeed.mockResolvedValue({ partial: false, results: [{ id: 'global.selected', outcome: 'rejected' }] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Selected source knowledge' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy selected (1)' }))
@@ -765,7 +799,7 @@ describe('private member memory lifecycle', () => {
     api.memorySeed.mockResolvedValue({ partial: true, results: [{ id: 'global.selected', outcome: 'not_attempted', reason: 'Copy stopped before this item was attempted' }] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
     fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Selected source knowledge' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy selected (1)' }))
@@ -795,7 +829,7 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     if (surface === 'copy') {
-      fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+      await openCopy()
       await screen.findByRole('checkbox', { name: 'Selected source knowledge' })
     }
     const view = surface === 'copy' ? within(screen.getByRole('dialog', { name: /^Copy memories to/ })) : screen
@@ -854,23 +888,28 @@ describe('private member memory lifecycle', () => {
     expect(await screen.findByText(FACT.value_json)).toBeInTheDocument()
   })
 
-  it('caps copy selection at fifty while keeping selected items deselectable', async () => {
+  it('selects every matching item and copies them in batches of fifty', async () => {
     const original = api.memberMemoryPage.getMockImplementation()!
+    // 120 source facts over two pages of 100.
     api.memberMemoryPage.mockImplementation((store: string, table: string, offset: number) => store === 'default' && table === 'semantic'
-      ? Promise.resolve({ entries: Array.from({ length: 51 }, (_, index) => ({ key: `source.${index}`, value_json: `Source item ${index}` })) })
+      ? Promise.resolve({ entries: Array.from({ length: Math.max(0, Math.min(100, 120 - offset)) }, (_, index) => ({ key: `source.${offset + index}`, value_json: `Source item ${offset + index}` })) })
       : original(store, table, offset))
+    api.memorySeed.mockImplementation(async (_source: string, _store: string, items: { id: string }[]) => ({ results: items.map(item => ({ id: item.id, outcome: 'imported' })) }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy memories' }))
+    await openCopy()
     const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
-    const choices = await within(dialog).findAllByRole('checkbox')
-    choices.slice(0, 50).forEach(choice => fireEvent.click(choice))
-    expect(choices[50]).toBeDisabled()
-    expect(choices[0]).not.toBeDisabled()
-    expect(within(dialog).getByRole('button', { name: 'Copy selected (50)' })).toBeEnabled()
-    fireEvent.click(choices[0])
-    expect(choices[50]).toBeEnabled()
-    expect(within(dialog).getByRole('button', { name: 'Copy selected (49)' })).toBeEnabled()
+    await within(dialog).findByRole('checkbox', { name: 'Source item 99' })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Select all matching' }))
+    // The second page loads, then all 120 are picked: past the old cap of 50.
+    const copy = await within(dialog).findByRole('button', { name: 'Copy selected (120)' })
+    expect(within(dialog).getByRole('checkbox', { name: 'Source item 119' })).toBeChecked()
+    expect(within(dialog).getByText('Up to 1,000 at a time')).toBeVisible()
+    fireEvent.click(copy)
+    await within(dialog).findByText('Copied: 120. Skipped: 0.')
+    expect(api.memorySeed.mock.calls.map(call => call[2].length)).toEqual([50, 50, 20])
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Source item 0' }))
+    expect(within(dialog).getByRole('button', { name: 'Copy selected (119)' })).toBeEnabled()
   })
 
   it('stages a confirmed recovery for this member and explains the restart requirement', async () => {

@@ -16416,9 +16416,6 @@
         "logs": {
           "label": "日志"
         },
-        "memory": {
-          "label": "记忆"
-        },
         "storage": {
           "label": "存储"
         },
@@ -18505,7 +18502,6 @@
       "open_kiro_sign_in": "打开登录设置",
       "back_to_overview": "返回概览",
       "connecting": "正在连接…",
-      "memory_developer_link": "记忆图谱与内部信息",
       "overview": "概览",
       "reconnecting": "正在重连…",
       "stat_cron_jobs": "定时任务",
@@ -23780,6 +23776,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "正在复制 {{done}} / {{total}}…",
+    "copy_select_all": "全选匹配项",
+    "copy_up_to": "一次最多 {{limit}} 条",
     "restore_experience": "恢复这条经历",
     "member_store_label": "{{member}} · 成员记忆（{{version}}）",
     "copy_explanation": "复制所选记忆到这里，已有记忆和来源不变。每份副本均记录来源。",
@@ -23819,7 +23818,6 @@
     "remembered_count": "已保存记忆：{{count}}",
     "private_status": "成员记忆 · V2",
     "source_unknown": "未记录来源",
-    "copy_limit": "最多选择 50 条",
     "empty_title": "从空白开始，逐渐熟悉彼此",
     "empty_body": "成员记忆（V2）随协作积累。可复制所选记忆到这里，来源不变。",
     "no_matches": "没有符合搜索条件的记忆",
@@ -23880,8 +23878,7 @@
     "group_source": "原始来源",
     "group_kind": "记忆类型",
     "sensitive_document_read_only": "敏感值已隐藏，只读视图保留原始内容。",
-    "restart_interrupts": "重启网关会短暂中断正在进行的对话和计划任务。",
-    "copy_action": "复制记忆"
+    "restart_interrupts": "重启网关会短暂中断正在进行的对话和计划任务。"
   },
   "memoryEditing": {
     "adjust": "调整修改",
@@ -23908,7 +23905,7 @@
     "replace_hint": "更新文本和 JSON 字符串值，保留键名、来源与作用范围。",
     "replace_title": "编辑所选记忆",
     "replacement": "替换为",
-    "search_hint": "搜索记忆、邮箱地址或主题…",
+    "search_hint": "搜索记忆…",
     "select_all": "选择全部 {{count}} 条匹配记忆",
     "select_page": "选择本页",
     "select_record": "选择记忆：{{text}}",
@@ -23953,6 +23950,7 @@
     "conf_lowest": "最低",
     "confidence_range": "置信度 {{low}}–{{high}}",
     "confidence_value": "置信度 {{value}}",
+    "copy_from": "从其他记忆复制…",
     "created_on": "创建于 {{date}}",
     "divider_no_confidence": "无置信度分数 · 经历，最新在前",
     "divider_no_importance": "无重要度分数 · 事实和经验，最新在前",
@@ -23967,7 +23965,9 @@
     "for_experiences": "{{group}} · 经历",
     "for_facts_lessons": "{{group}} · 事实、经验",
     "for_lessons": "{{group}} · 经验",
+    "hide_filters": "隐藏筛选",
     "importance_value": "重要度 {{value}}",
+    "just_saved": "刚刚保存",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "不要：{{text}}",
     "match_hint": "与搜索词的匹配程度",
@@ -24003,6 +24003,7 @@
     "sort_match": "最佳匹配",
     "store_title": "存储",
     "tab_failures": "失败",
+    "tab_graph": "图谱",
     "tab_settings": "设置",
     "test_recall": "试试召回",
     "updated_on": "更新于 {{date}}",

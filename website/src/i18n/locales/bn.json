@@ -16859,9 +16859,6 @@
         "logs": {
           "label": "লগ"
         },
-        "memory": {
-          "label": "মেমরি"
-        },
         "storage": {
           "label": "স্টোরেজ"
         },
@@ -19017,7 +19014,6 @@
       "open_kiro_sign_in": "সাইন-ইন সেটিংস খোলো",
       "back_to_overview": "ওভারভিউতে ফিরুন",
       "connecting": "কানেক্ট হচ্ছে…",
-      "memory_developer_link": "মেমরি গ্রাফ ও অভ্যন্তরীণ বিষয়",
       "overview": "ওভারভিউ",
       "reconnecting": "আবার কানেক্ট হচ্ছে…",
       "stat_cron_jobs": "Cron জব",
@@ -24382,6 +24378,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "{{total}}টির মধ্যে {{done}}টি কপি হচ্ছে…",
+    "copy_select_all": "সব মিল বেছে নিন",
+    "copy_up_to": "একবারে সর্বোচ্চ {{limit}}টি",
     "restore_experience": "অভিজ্ঞতা পুনরুদ্ধার করুন",
     "member_store_label": "{{member}} · সদস্য স্মৃতি ({{version}})",
     "copy_explanation": "আগের ও উৎসের স্মৃতি না বদলে বাছাই করা স্মৃতি এখানে কপি করো। প্রতি কপির উৎস লেখা থাকে।",
@@ -24421,7 +24420,6 @@
     "remembered_count": "সংরক্ষিত স্মৃতি: {{count}}",
     "private_status": "সদস্যের পরিসর · স্মৃতি V2",
     "source_unknown": "উৎস নথিভুক্ত নেই",
-    "copy_limit": "সর্বোচ্চ 50টি আইটেম বাছুন",
     "empty_title": "এই সদস্যের নতুন শুরু",
     "empty_body": "কাজের সঙ্গে সদস্য স্মৃতি (V2) বাড়ে। বাছাই করা স্মৃতি এখানে কপি করো; উৎস বদলাবে না।",
     "no_matches": "অনুসন্ধানের সঙ্গে কোনো স্মৃতি মেলেনি",
@@ -24482,8 +24480,7 @@
     "group_source": "মূল উৎস",
     "group_kind": "মেমোরির ধরন",
     "sensitive_document_read_only": "সংবেদনশীল মান লুকানো। মূল বিষয়বস্তু রাখতে এখানে শুধু পড়া যায়।",
-    "restart_interrupts": "গেটওয়ে পুনরায় চালু করলে সক্রিয় কথোপকথন ও নির্ধারিত কাজ অল্প সময়ের জন্য ব্যাহত হয়।",
-    "copy_action": "মেমোরি কপি করুন"
+    "restart_interrupts": "গেটওয়ে পুনরায় চালু করলে সক্রিয় কথোপকথন ও নির্ধারিত কাজ অল্প সময়ের জন্য ব্যাহত হয়।"
   },
   "memoryEditing": {
     "adjust": "সম্পাদনা সংশোধন করুন",
@@ -24510,7 +24507,7 @@
     "replace_hint": "লেখা ও JSON-এর স্ট্রিং মান আপডেট করে। কী, উৎস ও পরিধি অপরিবর্তিত থাকে।",
     "replace_title": "বেছে নেওয়া স্মৃতি সম্পাদনা করুন",
     "replacement": "যা দিয়ে প্রতিস্থাপন করবেন",
-    "search_hint": "স্মৃতি, ইমেইল ঠিকানা বা বিষয় খুঁজুন…",
+    "search_hint": "মেমোরি খুঁজুন…",
     "select_all": "মিলে যাওয়া {{count}}টি স্মৃতির সব বেছে নিন",
     "select_page": "এই পৃষ্ঠা বেছে নিন",
     "select_record": "স্মৃতি বেছে নিন: {{text}}",
@@ -24555,6 +24552,7 @@
     "conf_lowest": "সর্বনিম্ন",
     "confidence_range": "আস্থা {{low}}–{{high}}",
     "confidence_value": "আস্থা {{value}}",
+    "copy_from": "অন্য মেমোরি থেকে কপি করুন…",
     "created_on": "{{date}} তৈরি",
     "divider_no_confidence": "আস্থার স্কোর নেই · অভিজ্ঞতা, নতুনগুলো আগে",
     "divider_no_importance": "গুরুত্বের স্কোর নেই · তথ্য ও শিক্ষা, নতুনগুলো আগে",
@@ -24569,7 +24567,9 @@
     "for_experiences": "{{group}} · অভিজ্ঞতা",
     "for_facts_lessons": "{{group}} · তথ্য, শিক্ষা",
     "for_lessons": "{{group}} · শিক্ষা",
+    "hide_filters": "ফিল্টার লুকান",
     "importance_value": "গুরুত্ব {{value}}",
+    "just_saved": "এইমাত্র সংরক্ষিত",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "করবেন না: {{text}}",
     "match_hint": "এটি আপনার খোঁজার শব্দের সঙ্গে কতটা মেলে",
@@ -24605,6 +24605,7 @@
     "sort_match": "সেরা মিল",
     "store_title": "স্টোর",
     "tab_failures": "ব্যর্থতা",
+    "tab_graph": "গ্রাফ",
     "tab_settings": "সেটিংস",
     "test_recall": "রিকল যাচাই",
     "updated_on": "{{date}} হালনাগাদ",

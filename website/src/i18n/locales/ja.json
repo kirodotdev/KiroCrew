@@ -16416,9 +16416,6 @@
         "logs": {
           "label": "ログ"
         },
-        "memory": {
-          "label": "メモリ"
-        },
         "storage": {
           "label": "ストレージ"
         },
@@ -18505,7 +18502,6 @@
       "open_kiro_sign_in": "サインイン設定を開く",
       "back_to_overview": "概要に戻る",
       "connecting": "接続中…",
-      "memory_developer_link": "メモリグラフと内部情報",
       "overview": "概要",
       "reconnecting": "再接続中…",
       "stat_cron_jobs": "Cronジョブ",
@@ -23780,6 +23776,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "{{total}} 件中 {{done}} 件をコピー中…",
+    "copy_select_all": "一致するものをすべて選択",
+    "copy_up_to": "一度に最大 {{limit}} 件",
     "restore_experience": "経験を復元",
     "member_store_label": "{{member}} · メンバー記憶（{{version}}）",
     "copy_explanation": "選択した記憶をここにコピーします。既存の記憶とコピー元は変えず、各コピーに出典を記録します。",
@@ -23819,7 +23818,6 @@
     "remembered_count": "保存した記憶：{{count}}",
     "private_status": "メンバー単位 · 記憶 V2",
     "source_unknown": "出典の記録なし",
-    "copy_limit": "最大 50 件選択できます",
     "empty_title": "このメンバーの新たな出発",
     "empty_body": "作業とともにメンバー記憶（V2）が蓄積されます。選択した記憶をコピーしても、コピー元は変わりません。",
     "no_matches": "検索に一致する記憶がありません",
@@ -23880,8 +23878,7 @@
     "group_source": "元の出所",
     "group_kind": "メモリの種類",
     "sensitive_document_read_only": "機密値は非表示です。読み取り専用表示で元の内容を保持します。",
-    "restart_interrupts": "ゲートウェイを再起動すると、進行中の会話とスケジュール済みの作業が一時的に中断されます。",
-    "copy_action": "メモリをコピー"
+    "restart_interrupts": "ゲートウェイを再起動すると、進行中の会話とスケジュール済みの作業が一時的に中断されます。"
   },
   "memoryEditing": {
     "adjust": "編集を調整",
@@ -23908,7 +23905,7 @@
     "replace_hint": "テキストとJSONの文字列値を更新します。キー、出典、適用範囲は保持されます。",
     "replace_title": "選択した記憶を編集",
     "replacement": "置換後の文字列",
-    "search_hint": "記憶、メールアドレス、トピックを検索…",
+    "search_hint": "記憶を検索…",
     "select_all": "一致する{{count}}件の記憶をすべて選択",
     "select_page": "このページを選択",
     "select_record": "記憶を選択: {{text}}",
@@ -23953,6 +23950,7 @@
     "conf_lowest": "最低",
     "confidence_range": "確信度 {{low}}–{{high}}",
     "confidence_value": "確信度 {{value}}",
+    "copy_from": "別の記憶からコピー…",
     "created_on": "{{date}} に作成",
     "divider_no_confidence": "確信度スコアなし · 経験、新しい順",
     "divider_no_importance": "重要度スコアなし · 事実とレッスン、新しい順",
@@ -23967,7 +23965,9 @@
     "for_experiences": "{{group}} · 経験",
     "for_facts_lessons": "{{group}} · 事実、レッスン",
     "for_lessons": "{{group}} · レッスン",
+    "hide_filters": "フィルターを隠す",
     "importance_value": "重要度 {{value}}",
+    "just_saved": "保存しました",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "しないこと: {{text}}",
     "match_hint": "検索語とどれだけ一致しているか",
@@ -24003,6 +24003,7 @@
     "sort_match": "最も一致",
     "store_title": "ストア",
     "tab_failures": "失敗",
+    "tab_graph": "グラフ",
     "tab_settings": "設定",
     "test_recall": "想起をテスト",
     "updated_on": "{{date}} に更新",

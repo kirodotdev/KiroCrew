@@ -17302,9 +17302,6 @@
         "logs": {
           "label": "Log"
         },
-        "memory": {
-          "label": "Memoria"
-        },
         "storage": {
           "label": "Archiviazione"
         },
@@ -19529,7 +19526,6 @@
       "open_kiro_sign_in": "Apri le impostazioni di accesso",
       "back_to_overview": "Torna alla panoramica",
       "connecting": "Connessione…",
-      "memory_developer_link": "Grafo della memoria e dettagli interni",
       "overview": "Panoramica",
       "reconnecting": "Riconnessione…",
       "stat_cron_jobs": "Job cron",
@@ -24984,6 +24980,9 @@
     }
   },
   "memoryV2": {
+    "copy_progress": "Copia di {{done}} su {{total}}…",
+    "copy_select_all": "Seleziona tutti i risultati",
+    "copy_up_to": "Fino a {{limit}} alla volta",
     "restore_experience": "Ripristina esperienza",
     "member_store_label": "{{member}} · Memoria del Bot ({{version}})",
     "copy_explanation": "Copia qui i ricordi selezionati senza modificare quelli esistenti o di origine. Ogni copia registra la propria origine.",
@@ -25023,7 +25022,6 @@
     "remembered_count": "Ricordi salvati: {{count}}",
     "private_status": "Ambito del Bot · Memoria V2",
     "source_unknown": "Fonte non registrata",
-    "copy_limit": "Seleziona fino a 50 elementi",
     "empty_title": "Un nuovo inizio per questo Bot",
     "empty_body": "La memoria del Bot (V2) cresce lavorando. Copia qui i ricordi selezionati; la fonte resta invariata.",
     "no_matches": "Nessun ricordo corrisponde alla ricerca",
@@ -25084,8 +25082,7 @@
     "group_source": "Fonte originale",
     "group_kind": "Tipo di memoria",
     "sensitive_document_read_only": "I valori sensibili sono nascosti. Questa vista di sola lettura conserva il contenuto originale.",
-    "restart_interrupts": "Il riavvio del gateway interrompe brevemente le conversazioni attive e il lavoro pianificato.",
-    "copy_action": "Copia ricordi"
+    "restart_interrupts": "Il riavvio del gateway interrompe brevemente le conversazioni attive e il lavoro pianificato."
   },
   "memoryEditing": {
     "adjust": "Modifica bozza",
@@ -25112,7 +25109,7 @@
     "replace_hint": "Aggiorna testo e valori stringa JSON. Chiavi, origine e ambito restano invariati.",
     "replace_title": "Modifica memorie selezionate",
     "replacement": "Sostituisci con",
-    "search_hint": "Cerca memorie, indirizzi email o argomenti…",
+    "search_hint": "Cerca nei ricordi…",
     "select_all": "Seleziona tutte le {{count}} memorie trovate",
     "select_page": "Seleziona questa pagina",
     "select_record": "Seleziona memoria: {{text}}",
@@ -25157,6 +25154,7 @@
     "conf_lowest": "Minimo",
     "confidence_range": "Affidabilità {{low}}–{{high}}",
     "confidence_value": "Affidabilità {{value}}",
+    "copy_from": "Copia da un’altra memoria…",
     "created_on": "Creato il {{date}}",
     "divider_no_confidence": "Senza punteggio di affidabilità · esperienze, prima le più recenti",
     "divider_no_importance": "Senza punteggio di importanza · fatti e lezioni, prima i più recenti",
@@ -25171,7 +25169,9 @@
     "for_experiences": "{{group}} · esperienze",
     "for_facts_lessons": "{{group}} · fatti, lezioni",
     "for_lessons": "{{group}} · lezioni",
+    "hide_filters": "Nascondi filtri",
     "importance_value": "Importanza {{value}}",
+    "just_saved": "Appena salvato",
     "lesson_category": "{{kind}} · {{category}}",
     "lesson_dont": "Da evitare: {{text}}",
     "match_hint": "Quanto corrisponde alle tue parole di ricerca",
@@ -25207,6 +25207,7 @@
     "sort_match": "Miglior corrispondenza",
     "store_title": "Archivio",
     "tab_failures": "Errori",
+    "tab_graph": "Grafo",
     "tab_settings": "Impostazioni",
     "test_recall": "Prova il richiamo",
     "updated_on": "Aggiornato il {{date}}",

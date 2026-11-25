@@ -45,8 +45,8 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls, red
 from kiro_crew.validation import clamp_query_offset
 from kiro_crew.workflow_memory import WorkflowMemoryError
 
+from ._shared import _get_memory  # noqa: F401  (a name this facade serves)
 from ._shared import (
-    _get_memory,
     _is_restricted_session,
     _read_session_key,
     _redact_memory_field,
@@ -1545,15 +1545,23 @@ async def api_memory_promote(request: web.Request) -> web.Response:
 
 
 async def api_memory_graph(request: web.Request) -> web.Response:
-    """GET /api/memory/graph — return all memory as nodes + edges for graph visualization."""
+    """GET /api/memory/graph — the store named by ``?store=`` (a bot's memory), else
+    the GLOBAL store, as nodes + edges for graph visualization."""
     state: DashboardState = request.app["state"]
-    mem = _get_memory(state)
+    store, denial = await resolve_requested_memory_store(request, state, "graph.read")
+    if denial is not None:
+        return denial
+    try:
+        mem = await markdown_memory_for_store(state, store)
+    except (UnknownMemoryStore, OSError) as exc:
+        return _store_unavailable_response(store, exc)
 
     try:
         partial: dict[str, bool] = {}
-        nodes, edges = await asyncio.to_thread(
-            lambda: _build_memory_graph(mem, state.lessons.load_all(), partial)
-        )
+        # The lessons file is Global memory's; a bot keeps its lessons in its own
+        # vector tier, which the graph reads first.
+        lessons = state.lessons.load_all() if not store else []
+        nodes, edges = await asyncio.to_thread(lambda: _build_memory_graph(mem, lessons, partial))
 
         for n in nodes:
             n["label"] = _redact_memory_field(n["label"])

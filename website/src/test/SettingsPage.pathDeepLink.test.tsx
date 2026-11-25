@@ -210,6 +210,14 @@ describe('Settings > Memory', () => {
     expect(screen.queryByTestId('overview-panel')).toBeNull()
   })
 
+  it('the old Developer memory graph link opens the Graph tab', async () => {
+    mobile = false
+    mockWidth = 1000
+    renderAt('/settings/developer/memory')
+    expect(await screen.findByTestId('memory-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings/memory?focus=graph')
+  })
+
   it('the legacy ?tab=overview&view=memory form lands there too', async () => {
     mobile = false
     mockWidth = 1000

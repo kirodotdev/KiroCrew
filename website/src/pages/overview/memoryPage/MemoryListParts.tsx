@@ -2,9 +2,9 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, ArrowDownUp, ChevronDown, Folder, History, Mail, MoreHorizontal, Search, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Search, X } from 'lucide-react'
 import { Btn, IconButton, Input, PanelSectionHeader, Slider } from '../../../components/ui'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
@@ -25,6 +25,12 @@ const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = {
 }
 // A group heading names the kind it filters while the All pill shows every kind.
 const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences' }
+// The picked kind pill: a soft grey on light, the text colour on dark (mock S2).
+export const PILL_ON = 'border-border-strong bg-bg-hover font-medium text-text [[data-mode=dark]_&]:border-text [[data-mode=dark]_&]:bg-text [[data-mode=dark]_&]:text-bg'
+// An open or picked row: an 8% accent tint (mock S2).
+export const ROW_PICKED = 'bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]'
+// The lesson a "Lesson saved" link lands on: the saved tint and a bar on its left edge.
+export const ROW_SAVED = 'bg-[color-mix(in_srgb,var(--ok-subtle)_55%,transparent)] shadow-[inset_3px_0_0_var(--ok)]'
 const CHIP = 'inline-flex h-[22px] max-w-full items-center gap-1 whitespace-nowrap rounded-full text-[12px] leading-none'
 // Red only below the review line; every other score is a plain number.
 const REVIEW_LINE = 0.5
@@ -41,7 +47,7 @@ export function KindPills({ kind, counts, onChange, disabled }: { kind: KindTab;
       const on = key === kind
       const count = key === 'all' ? total : counts ? counts[key] || 0 : undefined
       return <button key={key} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(key)} className="flex min-h-11 shrink-0 items-center disabled:opacity-40 sm:min-h-8">
-        <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? 'border-border-strong bg-bg-hover font-medium text-text' : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className="tabular-nums text-muted">{fmtNumber(count)}</span>}</span>
+        <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? PILL_ON : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className={`tabular-nums ${on ? 'opacity-70' : 'text-muted'}`}>{fmtNumber(count)}</span>}</span>
       </button>
     })}
   </div>
@@ -90,9 +96,9 @@ function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count
 }
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
- *  With `searchable` (the phone sheet), a box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, searchable = false, onToggle, onRange }: {
-  view: ListView; facets?: MemoryRecordFacets; searchable?: boolean
+ *  A box at the top narrows every group's values by label. */
+export function FilterPanel({ view, facets, onToggle, onRange }: {
+  view: ListView; facets?: MemoryRecordFacets
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
@@ -112,10 +118,10 @@ export function FilterPanel({ view, facets, searchable = false, onToggle, onRang
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
   return <div className="space-y-5">
-    {searchable && <div className="relative">
+    <div className="relative">
       <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
       <Input type="search" className="min-h-11 w-full pl-9 sm:min-h-9" aria-label={t('memoryPage.search_filters')} placeholder={t('memoryPage.search_filters')} value={find} onChange={event => setFind(event.target.value)} />
-    </div>}
+    </div>
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
     {shown.map(({ group, counts, ticked, values }) => {
       const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
@@ -160,32 +166,45 @@ export function KindLabel({ row }: { row: MemoryRecord }) {
   const { t } = useTranslation()
   const Icon = MEMORY_RECORD_ICONS[row.kind]
   const kind = t(MEMORY_RECORD_LABELS[row.kind])
-  return <span className={`${CHIP} text-muted`}><Icon className="lucide-inline" aria-hidden="true" />{row.kind === 'directive' ? t('memoryPage.lesson_category', { kind, category: facetLabel('category', lessonFacts(row).category) }) : kind}</span>
+  return <><Icon className="lucide-inline" aria-hidden="true" />{row.kind === 'directive' ? t('memoryPage.lesson_category', { kind, category: facetLabel('category', lessonFacts(row).category) }) : kind}</>
+}
+
+export type ChipFilter = { filters: MemoryRecordFilters; onToggle: (group: MemoryRecordFacetGroup, value: string) => void }
+
+/** A row chip that is also a filter: a press ticks its value in the matching
+ *  group, a second press clears it, and the row behind it does not open. A touch
+ *  screen gets a 44 px hit area around the 22 px chip. */
+function FilterChip({ group, value, tone, chip, title, children }: { group: MemoryRecordFacetGroup; value: string; tone: string; chip?: ChipFilter; title?: string; children: ReactNode }) {
+  if (!chip) return <span className={`${CHIP} ${tone}`} title={title}>{children}</span>
+  const on = !!chip.filters[group]?.includes(value)
+  return <button type="button" aria-pressed={on} title={title} onClick={event => { event.stopPropagation(); chip.onToggle(group, value) }}
+    className={`${CHIP} ${tone} relative cursor-pointer transition-colors hover:brightness-95 hover:ring-1 hover:ring-inset hover:ring-border-strong focus-ring pointer-coarse:before:absolute pointer-coarse:before:-inset-y-[11px] pointer-coarse:before:inset-x-0 pointer-coarse:before:content-[''] ${on ? 'ring-1 ring-inset ring-accent' : ''}`}>{children}</button>
 }
 
 /** The chips under a row's text: what it is, how sure, where from, when. */
-export function RecordMeta({ row, sort }: { row: MemoryRecord; sort: MemoryRecordSort }) {
+export function RecordMeta({ row, sort, chip }: { row: MemoryRecord; sort: MemoryRecordSort; chip?: ChipFilter }) {
   const { t } = useTranslation()
   const lesson = row.kind === 'directive' ? lessonFacts(row) : null
   const score = typeof row.importance === 'number' ? row.importance : null
   const created = sort === 'created'
   const when = created ? row.created_at : row.updated_at
   return <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-    <KindLabel row={row} />
-    {lesson && lesson.applies !== 'unstated' && <span className={`${CHIP} px-2 ${lesson.applies === 'always' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>{facetLabel('applies', lesson.applies)}</span>}
-    {lesson?.scope === SCOPE_UNUSABLE && <span className={`${CHIP} bg-warn-subtle px-2 text-warn-text`} title={t('pages.overview.memoryTab.scope_unusable_hint')}><AlertTriangle className="lucide-inline" aria-hidden="true" />{facetLabel('scope', SCOPE_UNUSABLE)}</span>}
-    {lesson && lesson.scope && lesson.scope !== SCOPE_UNUSABLE && <span className={`${CHIP} bg-bg-hover px-2 text-muted`}><Folder className="lucide-inline" aria-hidden="true" /><span className="truncate font-mono">{lesson.scope}</span></span>}
+    {lesson ? <FilterChip group="category" value={lesson.category} tone="px-1 text-muted" chip={chip}><KindLabel row={row} /></FilterChip> : <span className={`${CHIP} text-muted`}><KindLabel row={row} /></span>}
+    {lesson && lesson.applies !== 'unstated' && <FilterChip group="applies" value={lesson.applies} tone={`px-2 ${lesson.applies === 'always' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`} chip={chip}>{facetLabel('applies', lesson.applies)}</FilterChip>}
+    {lesson?.scope === SCOPE_UNUSABLE && <FilterChip group="scope" value={SCOPE_UNUSABLE} tone="bg-warn-subtle px-2 text-warn-text" chip={chip} title={t('pages.overview.memoryTab.scope_unusable_hint')}><AlertTriangle className="lucide-inline" aria-hidden="true" />{facetLabel('scope', SCOPE_UNUSABLE)}</FilterChip>}
+    {lesson && lesson.scope && lesson.scope !== SCOPE_UNUSABLE && <FilterChip group="scope" value={lesson.scope} tone="bg-bg-hover px-2 text-muted" chip={chip}><Folder className="lucide-inline" aria-hidden="true" /><span className="truncate font-mono">{lesson.scope}</span></FilterChip>}
     {typeof row.match === 'number' && <span className={`${CHIP} bg-bg-hover px-2 text-muted`} title={t('memoryPage.match_hint')}><span className="tabular-nums">{t('memoryPage.match_value', { value: fmtScore(row.match) })}</span></span>}
-    {row.kind === 'episode' && recordTags(row).map(tag => <span key={tag} className={`${CHIP} bg-bg-hover px-2 text-muted`}>#{tag}</span>)}
+    {row.kind === 'episode' && recordTags(row).map(tag => <FilterChip key={tag} group="tag" value={tag} tone="bg-bg-hover px-2 text-muted" chip={chip}>#{tag}</FilterChip>)}
     {score !== null && <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />}
-    <span className={`${CHIP} text-muted`}><span className="truncate">{facetLabel('source', row.source || '')}</span></span>
+    {/* The facet counts spell a blank source as `unknown` (memory_record_facets.SOURCE_UNKNOWN). */}
+    <FilterChip group="source" value={row.source?.trim() || 'unknown'} tone="px-1 text-muted" chip={chip}><span className="truncate">{facetLabel('source', row.source || '')}</span></FilterChip>
     {when && <span className={`${CHIP} text-muted`} title={fmtDateTimeNumeric(when)}><time dateTime={when} className="tabular-nums" data-i18n-opaque>{t(created ? 'memoryPage.created_on' : 'memoryPage.updated_on', { date: fmtDate(when) })}</time></span>}
   </div>
 }
 
 /** One record in the list: text, chips, key, and its actions menu. */
-export function RecordRow({ row, sort, selecting, selected, selectDisabled, open, focus, onSelect, onOpen, onEdit, onForget, focusRef }: {
-  row: MemoryRecord; sort: MemoryRecordSort; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean
+export function RecordRow({ row, sort, selecting, selected, selectDisabled, open, focus, chip, onSelect, onOpen, onEdit, onForget, focusRef }: {
+  row: MemoryRecord; sort: MemoryRecordSort; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; chip?: ChipFilter
   onSelect: () => void; onOpen: () => void; onEdit: () => void; onForget: () => void
   focusRef?: React.Ref<HTMLLIElement>
 }) {
@@ -195,17 +214,17 @@ export function RecordRow({ row, sort, selecting, selected, selectDisabled, open
   const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
   const pending = row.metadata?.pending_conflicts || 0
   // The first and last rows take the list's inner corner radius (16 px less its
-  // 1 px border), so the focus ring and the open tint follow the rounded corners
-  // instead of being cut by the list's clip.
-  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${open || selected ? 'bg-accent-subtle' : ''} ${focus ? 'ring-2 ring-inset ring-accent' : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
+  // 1 px border), so the saved and open tints follow the rounded corners.
+  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr) auto` }}>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
+      {focus && <p className="flex items-center gap-1 text-[12px] font-medium text-ok-text"><Check className="lucide-inline" aria-hidden="true" />{t('memoryPage.just_saved')}</p>}
       <button type="button" onClick={onOpen} className="block w-full text-left focus-ring" aria-label={t('memoryV2.view_details')} aria-expanded={open}>
         <p className="line-clamp-3 whitespace-pre-wrap break-words text-[15px] leading-[22px] text-text [overflow-wrap:anywhere]">{title}</p>
       </button>
       {negative && <p className="line-clamp-2 text-[13px] leading-5 text-muted">{t('memoryPage.lesson_dont', { text: negative })}</p>}
       {!!row.metadata?.email_addresses?.length && <p className="flex flex-wrap gap-x-3 text-[13px] leading-5 text-muted">{row.metadata.email_addresses.slice(0, 3).map(email => <span key={email} className="inline-flex min-w-0 items-start gap-1 break-all"><Mail className="lucide-inline shrink-0" aria-hidden="true" />{email}</span>)}</p>}
-      <RecordMeta row={row} sort={sort} />
+      <RecordMeta row={row} sort={sort} chip={chip} />
       {row.key && <p className="truncate font-mono text-[11px] text-muted" title={row.key}>{row.key}</p>}
       {pending > 0 && <Btn className="mt-1 min-h-11" onClick={onOpen}><History className="lucide-inline" />{t('memoryEditing.review_proposals', { count: fmtNumber(pending) })}</Btn>}
     </div>
