@@ -501,6 +501,10 @@ class _DenyWaiver:
 
 # Matches the ssh floor's _MAX_SSH_READING_DEPTH; unify the two once both are on main.
 _MAX_SUBSTITUTION_DEPTH = 32
+#: Floors whose refusal can add ``CASE_NAME_HINT`` (``refused_for_case_names``).
+_CASE_NAME_HINT_RULES = frozenset({"sandbox-escape-ssh-self", "sandbox-escape-git-tar-self"})
+#: Text that names this machine anywhere in a command; such a refusal gets no hint.
+_SELF_HOST_TEXT = ("localhost", "127.", "::1", "0.0.0.0", "hostname")
 # Where a shell word starts, for a ``#`` comment and the ``case`` / ``esac`` words.
 _WORD_BREAK = frozenset(" \t\n;&|()<>`")
 _DEPTH_REFUSAL = f"substitution nesting deeper than {_MAX_SUBSTITUTION_DEPTH}"
@@ -629,6 +633,31 @@ def _reentered_floor_hit(command: str) -> "tuple[str, str | None] | None":
     if hit is not None and reentered is not None:
         reentered.append(hit)
     return hit
+
+
+def refused_for_case_names(
+    rule_id: str, command: str, floor_enabled: "set[str] | None" = None
+) -> bool:
+    """True if *rule_id* refused *command* only because two of its shell names
+    differ only in case: with those names renamed apart, no argv floor refuses it.
+
+    Presentation only. It runs after the refusal is decided and picks the refusal's
+    wording; it never allows a command. A real self-dial stays refused with the
+    names renamed apart, so its refusal carries no rename hint.
+    """
+    if rule_id not in _CASE_NAME_HINT_RULES:
+        return False
+    lower = command.lower()
+    # A command that names this machine is a self-dial whatever its names are, so
+    # its refusal keeps the plain wording: no hint toward retrying it.
+    if any(host in lower for host in _SELF_HOST_TEXT):
+        return False
+    if _submodule("argv_floor")._value_names_literal_self(lower) is not False:
+        return False
+    renamed = _submodule("diagnostics").case_distinct_names(command)
+    if renamed is None:
+        return False
+    return _self_protection_floor_hit(renamed.lower(), renamed, floor_enabled) is None
 
 
 def _self_protection_floor_hit(
@@ -1051,9 +1080,12 @@ def is_denied(
         # its id.
         refusal_key = floor_pattern if floor_pattern is not None else rule_id
         _emit_deny_event(tool_name, refusal_key, lower)
+        note = _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, "")
+        if refused_for_case_names(rule_id, tool_name, floor_enabled):
+            note += _diag.CASE_NAME_HINT
         return _reason(
             refusal_key,
-            _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+            note,
             rule=rule_id,
             component="argv-floor",
             span=span,
