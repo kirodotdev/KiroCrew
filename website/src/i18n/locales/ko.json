@@ -8857,6 +8857,7 @@
       "expiry": "만료",
       "expiry_after_days_other": "{{count}}일 후",
       "expiry_never": "없음",
+      "previous_link_expired": "이전 링크가 {{date}}에 만료되었습니다. 다시 게시하면 새 링크가 만들어집니다.",
       "public_exposure_warning": "게시된 링크가 있는 사람은 누구나 이 콘텐츠를 볼 수 있습니다. 인증 없이 공용 인터넷에서 제공됩니다."
     },
     "pullRequestPanel": {
@@ -12592,6 +12593,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}에 게시됨",
+      "publication_expires_on": "{{date}}에 만료 예정",
+      "publication_expires_soon_on": "곧 {{date}}에 만료 예정",
+      "published_to_provider_expired": "{{provider}}의 게시가 {{date}}에 만료되었습니다",
       "open_published_page": "게시된 페이지 열기",
       "a_newer_version_is_available_in_the_remote_copy": "· 원격 사본에 더 새로운 버전이 있습니다",
       "activity": "활동",

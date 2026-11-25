@@ -9078,6 +9078,7 @@
       "expiry_after_days_one": "{{count}} দিন পরে",
       "expiry_after_days_other": "{{count}} দিন পরে",
       "expiry_never": "কখনো না",
+      "previous_link_expired": "আগের লিঙ্কের মেয়াদ {{date}} তারিখে শেষ হয়েছে। আবার প্রকাশ করলে নতুন লিঙ্ক তৈরি হবে।",
       "public_exposure_warning": "প্রকাশিত লিঙ্ক থাকা যে কেউ এই কন্টেন্ট দেখতে পারবে। এটি কোনো প্রমাণীকরণ ছাড়াই পাবলিক ইন্টারনেটে পরিবেশিত হয়।",
       "published_distribution_disabled": "এই লিঙ্কের ডেলিভারি নেটওয়ার্ক নিষ্ক্রিয়, তাই লিঙ্কটি রেজলভ হবে না। AWS কনসোলে ডিস্ট্রিবিউশনটি আবার সক্রিয় করুন।",
       "published_origin_mismatch": "এই লিঙ্কটি ভিন্ন কনটেন্ট দেখাতে পারে। AWS কনসোলে ডিস্ট্রিবিউশন অরিজিন ঠিক করো।",
@@ -12888,6 +12889,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}-এ প্রকাশিত",
+      "publication_expires_on": "{{date}} তারিখে মেয়াদ শেষ হবে",
+      "publication_expires_soon_on": "শীঘ্রই, {{date}} তারিখে মেয়াদ শেষ হবে",
+      "published_to_provider_expired": "{{provider}}-এ প্রকাশনার মেয়াদ {{date}} তারিখে শেষ হয়েছে",
       "open_published_page": "প্রকাশিত পেজ খোলো",
       "a_newer_version_is_available_in_the_remote_copy": "· রিমোট কপিতে একটি নতুন সংস্করণ পাওয়া যাচ্ছে",
       "activity": "অ্যাক্টিভিটি",

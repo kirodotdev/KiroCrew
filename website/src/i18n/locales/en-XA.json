@@ -8145,6 +8145,7 @@
       "expiry_after_days_one": "[Àƒţèŕ {{count}} ðàý ···············]",
       "expiry_after_days_other": "[Àƒţèŕ {{count}} ðàýş ··········]",
       "expiry_never": "[Ñèṽèŕ ········]",
+      "previous_link_expired": "[Ţĥè þŕèṽìøùş ĺìñķ èẋþìŕèð øñ {{date}}. Þùƀĺìşĥìñğ àğàìñ çŕèàţèş à ñèẁ ĺìñķ. ·······················]",
       "public_exposure_warning": "[Àñýøñè ẁìţĥ ţĥè þùƀĺìşĥèð ĺìñķ çàñ ṽìèẁ ţĥìş çøñţèñţ. Ìţ ìş şèŕṽèð øñ ţĥè þùƀĺìç ìñţèŕñèţ ẁìţĥ ñø àùţĥèñţìçàţìøñ. ··································]"
     },
     "pullRequestPanel": {
@@ -12578,6 +12579,9 @@
       "to_version": "[→ ṽ{{version}} ·····]",
       "version_change": "[ṽ{{from}} → ṽ{{to}} ········]",
       "published_to_provider": "[Þùƀĺìşĥèð ţø {{provider}} ············]",
+      "publication_expires_on": "[Èẋþìŕèş øñ {{date}} ··········]",
+      "publication_expires_soon_on": "[Èẋþìŕèş şøøñ, øñ {{date}} ···············]",
+      "published_to_provider_expired": "[Þùƀĺìçàţìøñ øñ {{provider}} èẋþìŕèð øñ {{date}} ···················]",
       "open_published_page": "[Øþèñ þùƀĺìşĥèð þàğè ·················]",
       "agent_chat": "[Àğèñţ çĥàţ ···············]",
       "artifact_name": "[Àŕţìƒàçţ ñàɱè ············]",

@@ -9305,6 +9305,7 @@
       "expiry_after_days_one": "Dopo {{count}} giorno",
       "expiry_after_days_other": "Dopo {{count}} giorni",
       "expiry_never": "Mai",
+      "previous_link_expired": "Il link precedente è scaduto il {{date}}. Pubblicando di nuovo si crea un nuovo link.",
       "public_exposure_warning": "Chiunque abbia il link pubblicato può visualizzare questo contenuto. Viene servito su Internet pubblico senza autenticazione."
     },
     "pullRequestPanel": {
@@ -13184,6 +13185,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Pubblicato su {{provider}}",
+      "publication_expires_on": "Scade il {{date}}",
+      "publication_expires_soon_on": "Scade presto, il {{date}}",
+      "published_to_provider_expired": "La pubblicazione su {{provider}} è scaduta il {{date}}",
       "open_published_page": "Apri la pagina pubblicata",
       "a_newer_version_is_available_in_the_remote_copy": "· è disponibile una versione più recente nella copia remota",
       "activity": "Attività",

@@ -8857,6 +8857,7 @@
       "expiry": "有効期限",
       "expiry_after_days_other": "{{count}}日後",
       "expiry_never": "なし",
+      "previous_link_expired": "以前のリンクは {{date}} に期限切れになりました。もう一度公開すると新しいリンクが作成されます。",
       "public_exposure_warning": "公開されたリンクを知っている人は誰でもこのコンテンツを閲覧できます。認証なしで公開インターネット上に配信されます。"
     },
     "pullRequestPanel": {
@@ -12592,6 +12593,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",
+      "publication_expires_on": "{{date}} に期限切れになります",
+      "publication_expires_soon_on": "まもなく {{date}} に期限切れになります",
+      "published_to_provider_expired": "{{provider}} での公開は {{date}} に期限切れになりました",
       "open_published_page": "公開済みのページを開く",
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",
       "activity": "アクティビティ",

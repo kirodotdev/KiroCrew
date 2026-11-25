@@ -358,6 +358,11 @@ export default function ArtifactDetailPageCanvas({
                 <ArtifactUpstreamSync artifact={artifact} stateRead={stateRead} UpstreamSyncBanner={UpstreamSyncBanner}
                   onBeforeMutate={async () => {
                     if (!(await flushCanvas(slug))) throw new Error(i18nT('components.canvas.save_failed_title'))
+                  }}
+                  // Opens the publish column, never toggles it closed; the chat yields it as in toggleOwn.
+                  onPublish={() => {
+                    if (chatOpen) { sidebarUserToggledRef.current = true; setPanel('none') }
+                    setOwn('publish')
                   }} />
                 <ArtifactPublicationNotices artifact={artifact} editorRead={editorRead} />
                 {/* No hand-off: the board may hold a waiting autosave not yet saved anywhere. */}

@@ -8857,6 +8857,7 @@
       "expiry": "到期",
       "expiry_after_days_other": "{{count}} 天后",
       "expiry_never": "永不",
+      "previous_link_expired": "之前的链接已于 {{date}} 到期。再次发布会创建新链接。",
       "public_exposure_warning": "任何拥有已发布链接的人都可以查看此内容。它通过公共互联网提供，且没有任何身份验证。"
     },
     "pullRequestPanel": {
@@ -12592,6 +12593,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "已发布到 {{provider}}",
+      "publication_expires_on": "将于 {{date}} 到期",
+      "publication_expires_soon_on": "即将于 {{date}} 到期",
+      "published_to_provider_expired": "在 {{provider}} 上的发布已于 {{date}} 到期",
       "open_published_page": "打开已发布的页面",
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",
       "activity": "动态",

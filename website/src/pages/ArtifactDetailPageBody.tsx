@@ -275,21 +275,22 @@ export const ActivityTimeline = memo(function ActivityTimeline({
   )
 })
 
-export type UpstreamSyncBannerComponent = ComponentType<{ artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void> }>
+export type UpstreamSyncBannerComponent = ComponentType<{ artifact: Artifact; busy?: boolean; onPulled: () => void; onBeforeMutate?: () => Promise<void>; onPublish?: () => void }>
 
 /** Where a fork or a publication stands against its remote copy, on both detail pages.
  *  `onBeforeMutate` saves what the page holds unsaved before a pull, overwrite or
- *  snapshot replaces the live content. */
-export function ArtifactUpstreamSync({ artifact, stateRead, UpstreamSyncBanner, onBeforeMutate }: {
+ *  snapshot replaces the live content; `onPublish` opens the page's Publish panel. */
+export function ArtifactUpstreamSync({ artifact, stateRead, UpstreamSyncBanner, onBeforeMutate, onPublish }: {
   artifact: Artifact
   stateRead: ArtifactDetailPageStateRead
   UpstreamSyncBanner: UpstreamSyncBannerComponent
   onBeforeMutate: () => Promise<void>
+  onPublish?: () => void
 }) {
   const { slug, queryClient, saving } = stateRead
   if (!artifact.fork_metadata && !artifact.publication) return null
   return (
-    <UpstreamSyncBanner artifact={artifact} busy={saving} onBeforeMutate={onBeforeMutate} onPulled={() => {
+    <UpstreamSyncBanner artifact={artifact} busy={saving} onBeforeMutate={onBeforeMutate} onPublish={onPublish} onPulled={() => {
       queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
       queryClient.invalidateQueries({ queryKey: ['upstream-status', slug] })
     }} />
@@ -311,11 +312,12 @@ export function ArtifactPublicationNotices({ artifact, editorRead, className = '
       {/* Read-only publication sync-error surface: keeps a persisted sync
           error visible (no controls) if a publishing provider is ever
           registered. Inert in the public edition, where the registry is empty
-          and `artifact.publication` is always null. */}
+          and `artifact.publication` is always null. An expired copy is gone, so
+          its stored error no longer describes it. */}
       {/* No hand-off: see the doc comment above. */}
       <ErrorNotice
         title={i18nT('pages.artifactDetailPage.publication_sync_issue')}
-        message={artifact.publication?.last_error}
+        message={artifact.publication?.expired ? null : artifact.publication?.last_error}
         className={className}
       />
 
@@ -323,8 +325,9 @@ export function ArtifactPublicationNotices({ artifact, editorRead, className = '
           it just is not reachable yet (e.g. CloudFront still rolling out). That
           is not a failure, so it renders as a neutral/warn line -- never the
           danger surface `last_error` drives. Suppressed when a real error is
-          present, since that is the more important thing to show. */}
-      {artifact.publication?.notice && !artifact.publication.last_error && (
+          present, since that is the more important thing to show, and once the
+          copy expired. */}
+      {artifact.publication?.notice && !artifact.publication.last_error && !artifact.publication.expired && (
         <div className={`${className} flex items-start gap-2 px-3 py-2 rounded-md border border-warn/30 bg-warn-subtle text-[13px] text-warn-text`}>
           <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
           <span className="min-w-0 flex-1">{i18nT(publishNoticeKey({
@@ -441,13 +444,16 @@ export function ArtifactDetailPageBody({
   // (next cron run will create a newer version) without noisy chrome on
   // read-only views.
   const showCronWarning = editing && artifact.source === 'cron'
+  const hasPublishPanel = artifact.kind !== 'webapp' && artifact.kind !== 'image'
   return (
     <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
       {artifact.description && (
         <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
       )}
 
-      <ArtifactUpstreamSync artifact={artifact} stateRead={stateRead} UpstreamSyncBanner={UpstreamSyncBanner} onBeforeMutate={flushLiveEdits} />
+      {/* Opens, never toggles, the Publish panel below. */}
+      <ArtifactUpstreamSync artifact={artifact} stateRead={stateRead} UpstreamSyncBanner={UpstreamSyncBanner} onBeforeMutate={flushLiveEdits}
+        onPublish={hasPublishPanel ? () => setShowPublish(true) : undefined} />
 
       {showCronWarning && (
         <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-warn/40 bg-warn-subtle text-[13px] text-warn-text">
@@ -524,7 +530,7 @@ export function ArtifactDetailPageBody({
       <ArtifactPublicationNotices artifact={artifact} editorRead={editorRead} className="mb-3" />
 
       {/* Publish panel — toggled by the Publish toolbar button */}
-      {showPublish && artifact.kind !== 'webapp' && artifact.kind !== 'image' && (
+      {showPublish && hasPublishPanel && (
         <div className="mb-3">
           <PublishHub artifact={artifact} onClose={() => setShowPublish(false)} />
         </div>

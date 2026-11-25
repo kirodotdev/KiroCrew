@@ -164,7 +164,8 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     # provider, not the (default) requested one, or a re-publish with no explicit
     # provider would gate on the default provider and permit bytes to a DENIED existing
     # destination. Mirrors api_artifact_update_sharing (which gates on the
-    # existing publication's provider).
+    # existing publication's provider). publish() is handed the gated destination,
+    # so a record cleared before it takes its lock cannot redirect the upload.
     try:
         # ≤25 MiB store read — offload off the event loop.
         existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
@@ -214,7 +215,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
             visibility=visibility,
             shared_with=shared_with,
             actor=actor,
-            provider_name=provider_name,
+            provider_name=effective_provider,
             expires_in_days=expires_in_days,
         )
         art = await _run_off_loop(lambda: get_default_store().get(slug))

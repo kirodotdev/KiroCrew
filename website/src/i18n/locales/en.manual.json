@@ -3525,6 +3525,7 @@
       "expiry_after_days_one": "After {{count}} day",
       "expiry_after_days_other": "After {{count}} days",
       "expiry_never": "Never",
+      "previous_link_expired": "The previous link expired on {{date}}. Publishing again creates a new link.",
       "public_exposure_warning": "Anyone with the published link can view this content. It is served on the public internet with no authentication."
     },
     "pullRequestPanel": {
@@ -5823,6 +5824,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Published to {{provider}}",
+      "publication_expires_on": "Expires on {{date}}",
+      "publication_expires_soon_on": "Expires soon, on {{date}}",
+      "published_to_provider_expired": "Publication on {{provider}} expired on {{date}}",
       "open_published_page": "Open published page",
       "agent_chat": "Agent chat",
       "artifact_name": "Artifact name",

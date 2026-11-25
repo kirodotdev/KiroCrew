@@ -9078,6 +9078,7 @@
       "expiry_after_days_one": "{{count}} दिन बाद",
       "expiry_after_days_other": "{{count}} दिन बाद",
       "expiry_never": "कभी नहीं",
+      "previous_link_expired": "पिछला लिंक {{date}} को समाप्त हो गया। फिर से प्रकाशित करने पर नया लिंक बनेगा।",
       "public_exposure_warning": "प्रकाशित लिंक वाला कोई भी व्यक्ति यह सामग्री देख सकता है। यह सार्वजनिक इंटरनेट पर बिना किसी प्रमाणीकरण के परोसी जाती है।",
       "published_distribution_disabled": "इस लिंक का डिलीवरी नेटवर्क निष्क्रिय है, इसलिए लिंक रिज़ॉल्व नहीं होगा। AWS कंसोल में डिस्ट्रिब्यूशन फिर से सक्रिय करें।",
       "published_origin_mismatch": "यह लिंक अलग सामग्री दिखा सकता है। AWS कंसोल में डिस्ट्रिब्यूशन का ओरिजिन ठीक करो।",
@@ -12888,6 +12889,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} पर प्रकाशित",
+      "publication_expires_on": "{{date}} को समाप्त होगा",
+      "publication_expires_soon_on": "जल्द ही, {{date}} को समाप्त होगा",
+      "published_to_provider_expired": "{{provider}} पर प्रकाशन {{date}} को समाप्त हो गया",
       "open_published_page": "प्रकाशित पेज खोलो",
       "a_newer_version_is_available_in_the_remote_copy": "· रिमोट कॉपी में एक नया संस्करण उपलब्ध है",
       "activity": "गतिविधि",

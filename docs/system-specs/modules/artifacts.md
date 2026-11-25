@@ -731,7 +731,11 @@ destinations:<provider>`, an alias in
 `publish_governance.publish_denied_reason` — the same decision the public-web
 deploy path uses, see `governance.md`) BEFORE dispatch — `overwrite-remote` on the resolved
 `publication.provider`, and `clone` on the routed provider (a clone sets
-`auto_sync=True`, arming every future snapshot push). The four remote comment
+`auto_sync=True`, arming every future snapshot push). The publish route gates the
+destination it reads for the request (the existing publication's, else the requested or
+default one) and passes that same destination to `publish_sync.publish`, so a publication
+cleared before the publish takes its lock cannot send the upload to another one. The four
+remote comment
 WRITE routes (post / reply / review / delete) are outbound egress too, so each
 goes through the same `_publish_governance_denied` gate BEFORE the provider call
 — a denial is an audited 403 and no bytes leave the box (there is no local
@@ -1090,12 +1094,51 @@ with a 400 before anything is uploaded, and passes the period to `PublishProvide
 as `expires_in_days`. It passes the keyword only to a destination that declares choices,
 so a provider that declares no choices keeps its signature; a request naming an expiry for such a
 destination is a 400. The destination fixes the lifetime when the publication is created,
-so a re-publish that names an expiry is a 409: it comes from a panel that saw the artifact
-unpublished, and reporting success would claim a lifetime that was never applied. The
+so a re-publish that names an expiry is a 409 (unless the publication has expired, below): it
+comes from a panel that saw the artifact unpublished, and reporting success would claim a
+lifetime that was never applied. The
 panel sends no expiry on a re-publish. A core row never shows the deploy surface's TTL
 control, because the core publish carries no `ttl_hours`. `supports_expiration` follows
 `expiration_choices_days` unless a provider sets it; an explicit `False` beside declared
 choices is refused.
+
+**A recorded expiry.** That first publish records `publication.expires_at` (ISO 8601,
+UTC): the time the provider's `publish()` returned plus the resolved period, or empty for
+"no expiry". Nothing else writes it, so a clone, a destination without choices and a record
+written before the field have none and behave as before. The gateway's clock decides
+whether it has passed (`ArtifactPublication.is_expired()`), and the serialized artifact and
+the publication summary a publish or sharing change returns carry `expires_at` and the answer
+as `expired`, computed on every read and never stored. An
+expired publication is no longer treated as live:
+
+- the auto-sync push skips it (no call to the destination, no `last_error`); a forced push
+  such as an overwrite still runs and reports its own outcome;
+- a publish that names an expiry is validated and rendered first, then, right before the
+  upload, withdraws the old copy by calling `unpublish` (it continues only on a confirmed
+  removal or a `DriveNotFound`, which clears the record, and otherwise fails and keeps the
+  record), then uploads on the same destination and records the new publication; if that
+  upload fails, the artifact is left unpublished and a retry is an ordinary first publish;
+- a publish that names no expiry is a 409, because it comes from a panel or caller that
+  still saw the old publication as live, and a first publish needs a chosen lifetime.
+
+A provider that declares expiry choices answers `unpublish` normally when the destination
+itself reports the id no longer exists (expired, or already removed, for example by an
+Unpublish from another panel); an unreachable, unauthorized or throttled reply still raises,
+and the stored date is never the evidence. So an expired record can be replaced, unpublished
+or deleted. The artifact page, a fork's included, shows "Expires on <date>", "Expires soon,
+on <date>" in a warning style in the last 7 days (by the browser's clock; a period of 7 days
+or less shows it throughout), and "Publication on <destination> expired on <date>" once the
+gateway says so, without offering the link as live or showing its stored sync error or
+notice; that expired line offers a Publish button that opens the Publish panel, on a page
+that has one. The dated line also shows on the fork or remote-ahead banner (on a fork it
+names the destination too), and the expired line with its Publish button replaces that
+banner, so the page offers no Pull or Overwrite to the deleted copy. The library
+table and gallery badges say "Expired" (label, tooltip and a muted tone, over any sync issue
+or notice), and the row or card shows no stored sync error. The Publish panel treats an expired publication as not yet published:
+it opens on that publication's own destination, says the previous link expired, and offers a
+first publish's visibility and expiry choices, so its request carries `expires_in_days`.
+The dashboard has no Unpublish control; `DELETE /api/artifacts/{slug}/publish` still
+withdraws an expired record.
 
 ## Widget auto-registration
 

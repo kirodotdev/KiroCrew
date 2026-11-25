@@ -9529,6 +9529,7 @@
       "expiry_after_days_one": "Через {{count}} день",
       "expiry_after_days_other": "Через {{count}} дня",
       "expiry_never": "Бессрочно",
+      "previous_link_expired": "Срок действия предыдущей ссылки истёк {{date}}. Повторная публикация создаст новую ссылку.",
       "public_exposure_warning": "Любой, у кого есть опубликованная ссылка, может просмотреть этот контент. Он доступен в общедоступном интернете без аутентификации."
     },
     "pullRequestPanel": {
@@ -13480,6 +13481,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Опубликовано в {{provider}}",
+      "publication_expires_on": "Истекает {{date}}",
+      "publication_expires_soon_on": "Скоро истекает: {{date}}",
+      "published_to_provider_expired": "Срок публикации в {{provider}} истёк {{date}}",
       "open_published_page": "Открыть опубликованную страницу",
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",
       "activity": "Активность",
