@@ -1048,13 +1048,6 @@
       "hint": "In an empty message input, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
     },
     {
-      "id": "chat.require-a-second-escape-to-stop-the-turn",
-      "label": "Require a second Escape to stop the turn",
-      "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
-      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
-    },
-    {
       "id": "chat.response-verbosity",
       "label": "Response Verbosity",
       "tab": "chat",

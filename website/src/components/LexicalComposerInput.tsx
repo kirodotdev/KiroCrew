@@ -47,7 +47,7 @@ import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
-import type { StopTurnOnEscape } from './chat-input/stopKey'
+import type { ComposerEscapeKey } from './chat-input/optimizeEscape'
 import { BACKSPACE_KEY, DELETE_KEY } from './domDeleteKeys'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import type { MentionKeyMods } from './chat-input/props'
@@ -142,12 +142,11 @@ interface LexicalComposerInputProps {
    *  result of removing the touched mention(s) whole, or null when the edit
    *  touches no staged mention (then the editor's own delete runs). */
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
-  /** A bare Escape: stop the running turn. The SAME precedence gate the
-   *  textarea's keydown runs (useComposerStopKey), so the binding behaves
-   *  identically in both editors; it returns true when it claimed the key and
-   *  false when a picker, dictation, an approval, a dialog, IME composition or
-   *  voice read-back owns Escape, or no turn is running (#22315). */
-  onEscapeStop?: StopTurnOnEscape
+  /** A bare Escape: the composer's Escape gate (chat-input/optimizeEscape.ts),
+   *  the SAME gate the textarea's keydown runs, so both editors behave alike.
+   *  It returns true when it claimed the key (it cancelled an in-flight
+   *  optimize). Escape never stops a running turn. */
+  onEscapeKey?: ComposerEscapeKey
 }
 
 function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
@@ -494,8 +493,8 @@ function InteractionPlugin({
   showFullPastes,
   onEndUndoBurst,
   onMentionKey,
-  onEscapeStop,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst' | 'onMentionKey' | 'onEscapeStop'>) {
+  onEscapeKey,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst' | 'onMentionKey' | 'onEscapeKey'>) {
   const [editor] = useLexicalComposerContext()
   const endUndoBurstRef = useRef(onEndUndoBurst)
   endUndoBurstRef.current = onEndUndoBurst
@@ -505,8 +504,8 @@ function InteractionPlugin({
   onMentionKeyRef.current = onMentionKey
   // Same ref pattern: the stop gate's identity changes whenever the running
   // state does, which must not re-register the command block.
-  const onEscapeStopRef = useRef(onEscapeStop)
-  onEscapeStopRef.current = onEscapeStop
+  const onEscapeKeyRef = useRef(onEscapeKey)
+  onEscapeKeyRef.current = onEscapeKey
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
   const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
@@ -826,18 +825,17 @@ function InteractionPlugin({
       event => navigateHistory(event, 'down'),
       COMMAND_PRIORITY_HIGH,
     )
-    // Escape stops the running turn (#22315), through the same precedence
-    // gate as the textarea. The composition verdict is THIS editor's: Lexical's
-    // own flag, the shared latch (which outlives `compositionend` on WebKit)
-    // and the native flags, so an Escape that only cancels an IME candidate
-    // window never also stops the turn. A modified Escape is not the binding.
+    // A bare Escape goes through the composer's Escape gate, the same one the
+    // textarea runs. The composition verdict is THIS editor's: Lexical's own
+    // flag, the shared latch (which outlives `compositionend` on WebKit) and
+    // the native flags. A modified Escape is not the binding.
     const unregisterEscape = editor.registerCommand(
       KEY_ESCAPE_COMMAND,
       event => {
-        const stop = onEscapeStopRef.current
-        if (!stop || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false
+        const gate = onEscapeKeyRef.current
+        if (!gate || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false
         const composing = editor.isComposing() || latch.isLatched() || event.isComposing || event.keyCode === 229
-        return stop(event, { native: event, composing })
+        return gate(event, { native: event, composing })
       },
       COMMAND_PRIORITY_HIGH,
     )
@@ -896,7 +894,7 @@ export default function LexicalComposerInput({
   historyScope,
   onEditLastRequest,
   onMentionKey,
-  onEscapeStop,
+  onEscapeKey,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -981,7 +979,7 @@ export default function LexicalComposerInput({
           sendOnEnter={sendOnEnter}
           onEndUndoBurst={onEndUndoBurst}
           onMentionKey={onMentionKey}
-          onEscapeStop={onEscapeStop}
+          onEscapeKey={onEscapeKey}
         />
       </div>
     </LexicalComposer>
