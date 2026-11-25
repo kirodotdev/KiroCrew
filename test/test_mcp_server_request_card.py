@@ -33,7 +33,7 @@ from kiro_crew.config import write_provenance
 from kiro_crew.dashboard.change_cards import CardStore
 from kiro_crew.dashboard.handlers import change_cards as routes
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
-from kiro_crew.dashboard.handlers import mcp_custom, request_server_page
+from kiro_crew.dashboard.handlers import mcp_custom, mcp_project_file, request_server_page
 from kiro_crew.dashboard.handlers import template_server_request as tsr
 from kiro_crew.security.paths import sensitive_write_path_refusal
 from kiro_crew.testing.synthetic_credentials import github_classic
@@ -76,8 +76,8 @@ class _Null:
         return None
 
 
-@pytest.fixture
-def env(tmp_path, monkeypatch):
+@pytest.fixture(name="env")
+def env_fixture(tmp_path, monkeypatch):
     from kiro_crew import agent as agent_facade
     from kiro_crew.config import paths
     from kiro_crew.dashboard.handlers import _shared
@@ -99,6 +99,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_mod, "_MCP_LOCK_PATH", tmp_path / "kiro.mcp.lock")
     monkeypatch.setattr(routes, "sel", lambda: _Null())
     monkeypatch.setattr(mcp_custom, "sel", lambda: _Null())
+    monkeypatch.setattr(mcp_project_file, "sel", lambda: _Null())
     monkeypatch.setattr(tsr, "_audit", lambda *a, **k: None)
 
     async def rebuilt() -> bool:
@@ -134,6 +135,7 @@ def _app(store: CardStore, seen: dict[str, Any]) -> web.Application:
     app.router.add_put("/api/mcp/custom/{name}", mcp_custom.api_mcp_custom_update)
     app.router.add_post("/api/mcp/remove", mcp_mod.api_mcp_remove)
     app.router.add_post("/api/mcp/apply", mcp_mod.api_mcp_apply)
+    app.router.add_post("/api/mcp/project-file", mcp_project_file.api_mcp_project_file)
     app.router.add_post("/api/sessions/restart", restart)
 
     async def launch(request: web.Request) -> web.Response:
@@ -1469,6 +1471,7 @@ def test_an_add_for_kiro_cli_names_its_file_and_writes_both_stores(env, tmp_path
     "body",
     [
         {"action": "remove", "server": "weather", "target": "kiro-cli"},
+        {"action": "remove", "server": "weather", "target": "project"},
         {**ADD, "target": "elsewhere"},
     ],
 )

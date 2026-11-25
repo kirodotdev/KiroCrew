@@ -64,6 +64,7 @@ import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
+import { useFullScreenExitHint } from './platform/fullScreenExitHint'
 import { useCrewAddressLink, useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
@@ -1002,6 +1003,7 @@ export function useAppShell() {
   }, [navigate, dispatch, mayLeaveForNavigation, appStore, openCrewLink])
   // A mouse's Back/Forward buttons on macOS: raw presses and the shell's relayed swipe.
   useNativeHistoryStep(isMobile)
+  useFullScreenExitHint()
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {

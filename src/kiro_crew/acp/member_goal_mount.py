@@ -34,6 +34,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _spec_excludes_goal_server(spec: Any, session_key: str | None) -> bool:
+    """Whether *spec* withholds ``kirocrew-mate`` whole (``excludedTools`` naming
+    ``@kirocrew-mate``, ``managedToolPolicy.excludeServers``, a whole-server deny).
+
+    The element appended here bypasses the spec's own exclusions, so mounting it
+    then would undo what the agent's author wrote.
+    """
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+    from kiro_crew.members import MEMBER_MATE_SERVER
+
+    if not withheld_whole(spec, [MEMBER_MATE_SERVER]):
+        return False
+    logger.warning(
+        "member session %s: the agent spec excludes %s, so the goal tools are not mounted",
+        session_key,
+        MEMBER_MATE_SERVER,
+    )
+    return True
+
+
 def append_member_goal_server(
     client: AcpClient,
     servers: list[dict[str, Any]],
@@ -59,6 +79,8 @@ def append_member_goal_server(
     if not is_member_session_key(client._session_key):
         return servers
     if not chat_lacks_goal_tools(client._agent or "", spec):
+        return servers
+    if _spec_excludes_goal_server(spec, client._session_key):
         return servers
     if client._member_mount_withheld(MEMBER_MATE_SERVER, "the goal tools", restricted, disabled):
         return servers
@@ -86,8 +108,9 @@ async def mount_member_goal_tools(
 
     Asked on create and resume alike, since ``session/load`` re-initializes the
     session's servers. Withheld, like the panel, when the server is switched off
-    (``disabled``) or one of its tools is (``disabledTools``): the element bypasses
-    the ``tools`` allowlist, so mounting it then would undo that switch.
+    (``disabled``) or one of its tools is (``disabledTools``), and when the spec
+    excludes the server whole: the element bypasses the ``tools`` allowlist and the
+    spec's exclusions, so mounting it then would undo that switch.
     """
     if not member_session_key or runtime.acp_backend == ACP_BACKEND_KAS:
         return mcp_servers
@@ -102,6 +125,8 @@ async def mount_member_goal_tools(
     # resolves it, then the user-level agents directory.
     spec = await asyncio.to_thread(_read_template, agent_name, "", session_work_dir or None)
     if not chat_lacks_goal_tools(agent_name, spec):
+        return mcp_servers
+    if _spec_excludes_goal_server(spec, member_session_key):
         return mcp_servers
     scope = _disable_check_scope(runtime.acp_backend, session_work_dir)
     if await asyncio.to_thread(

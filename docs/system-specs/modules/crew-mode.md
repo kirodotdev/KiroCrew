@@ -3144,7 +3144,10 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`ACP_BACKENDS_MEMBER_PANEL`) the session array gains a
   `members.member_mate_session_server` element (`acp/member_goal_mount.py`),
   withheld like the panel when the server or one of its tools is switched
-  off. Kiro Crew's own default agent, the conductor and a Bot's own file are
+  off, and when the spec excludes the server whole
+  (`default_crew_servers.withheld_whole`: `excludedTools` naming
+  `@kirocrew-mate`, `managedToolPolicy.excludeServers`, a whole-server deny),
+  where the Bot's wording names no goal tool either. Kiro Crew's own default agent, the conductor and a Bot's own file are
   left alone, as is a spec that already mounts the server. So a chat that cannot write the goal down is a defect
   in that chat, never a state this tab routes around; the no-tools prompts
   (another harness, or a switched-off server) say the chat cannot save a goal
