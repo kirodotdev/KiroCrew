@@ -15,6 +15,7 @@ import pytest
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.kas_agents import (
@@ -22,6 +23,7 @@ from kiro_crew.acp.kas_agents import (
     build_kas_custom_agents,
     resolve_prompt,
 )
+from kiro_crew.acp.kas_prompt import expand_prompt_ref
 from kiro_crew.agent_sdk.spec_hooks import kas_spec_load_error
 
 
@@ -33,6 +35,36 @@ def test_a_prompt_path_expands_an_env_var(monkeypatch, tmp_path, ref):
     text = resolve_prompt({"prompt": ref}, agent_id="a", agents_dir=tmp_path / "agents")
 
     assert text == "from env path"
+
+
+@pytest.fixture
+def windows_without_home(monkeypatch, tmp_path):
+    """Windows shape: no ``HOME``, the home folder in ``USERPROFILE``."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+
+@pytest.mark.usefixtures("windows_without_home")
+@pytest.mark.parametrize("ref", ["file://$HOME/prompts/p.md", "file://${HOME}/prompts/p.md"])
+def test_a_home_prompt_path_on_windows_without_home_reads_the_profile(tmp_path, ref):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "p.md").write_text("from the profile", encoding="utf-8")
+
+    text = resolve_prompt({"prompt": ref}, agent_id="a", agents_dir=tmp_path / "agents")
+
+    assert text == "from the profile"
+
+
+@pytest.mark.usefixtures("windows_without_home")
+def test_only_a_missing_home_on_windows_is_filled(monkeypatch, tmp_path):
+    assert expand_prompt_ref("$HOMEPATH/$N9_UNSET/p.md") == Path("$HOMEPATH/$N9_UNSET/p.md")
+    monkeypatch.setenv("HOME", str(tmp_path / "set"))
+    assert expand_prompt_ref("$HOME/p.md") == tmp_path / "set" / "p.md"
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    assert expand_prompt_ref("$HOME/p.md") == Path("$HOME/p.md")
 
 
 def test_system_prompt_is_read_when_prompt_is_absent(tmp_path):
