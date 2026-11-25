@@ -14078,7 +14078,7 @@
       },
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",
-        "details_unavailable_for_historical_tool_calls": "পুরোনো টুল কলের বিস্তারিত পাওয়া যায় না।",
+        "details_unavailable_for_historical_tool_calls": "এই আগের কলের বিস্তারিত সংরক্ষিত হয়নি। চ্যাটে জিজ্ঞেস করো এটি কী করেছে।",
         "formatted": "ফরম্যাট করা",
         "no_input_or_output_captured_for_this_tool_call": "এই টুল কলের কোনো ইনপুট বা আউটপুট রাখা হয়নি।",
         "null": "null",

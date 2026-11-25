@@ -14422,7 +14422,7 @@
       },
       "toolDetails": {
         "auto": "Auto",
-        "details_unavailable_for_historical_tool_calls": "Détails indisponibles pour les appels d’outils antérieurs.",
+        "details_unavailable_for_historical_tool_calls": "Les détails de cet appel antérieur n’ont pas été enregistrés. Demande dans le chat ce qu’il a fait.",
         "formatted": "Formaté",
         "no_input_or_output_captured_for_this_tool_call": "Aucune entrée ni sortie enregistrée pour cet appel d’outil.",
         "null": "null",

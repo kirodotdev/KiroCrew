@@ -14766,7 +14766,7 @@
       },
       "toolDetails": {
         "auto": "Авто",
-        "details_unavailable_for_historical_tool_calls": "Подробности недоступны для прошлых вызовов инструментов.",
+        "details_unavailable_for_historical_tool_calls": "Подробности этого прошлого вызова не сохранились. Спроси в чате, что он сделал.",
         "formatted": "Форматировано",
         "no_input_or_output_captured_for_this_tool_call": "Для этого вызова инструмента не записаны входные и выходные данные.",
         "null": "null",

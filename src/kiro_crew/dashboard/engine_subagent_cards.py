@@ -5,7 +5,9 @@ agent runs its in-turn sub-agents inside the KAS engine (``acp/kas_engine_subage
 Such a child is a native card (``chat_turn/native_cards``), and the engine reports more about
 it than the card's roster row carries, and less than a ``spawn_run`` child's card
 shows. This module holds that difference, and only a card of such a turn takes it
-(:func:`turn_runs_engine_children`); every other native card is drawn as it was.
+(:func:`turn_runs_engine_children`); every other native card is drawn as it was. The
+one exception is an approval card's two display fields (:func:`approval_card_fields`),
+which every KAS turn shows.
 
 What the engine reports and the card shows: the task the child was given, each
 tool call the child makes, and why a child that did not complete ended. What it does
@@ -286,11 +288,12 @@ def approval_card_fields(turn: Any, event: Any) -> dict[str, str]:
     (:func:`shown_cut`, :data:`APPROVAL_TASK_MAX` and :data:`ASKER_MAX`), so the
     card's own builder (``chat_turn.permission_prompt``), which redacts and bounds
     every field it shows, cuts neither again. Neither is read by any
-    gate, grant or audit. Outside an engine turn, or when the engine reported
-    neither, this is empty and the card is as it was.
+    gate, grant or audit. Read on every KAS turn, the ``kas_subagents`` preview on
+    or off: a dispatch's request carries only its ``Sub-agent: <name>`` title, so
+    without the task the card has nothing to show. Only KAS writes either input
+    (a roster row's ``dispatch_call``, the event's asker), so on another harness,
+    or when the engine reported neither, this is empty and the card is as it was.
     """
-    if not turn_runs_engine_children(turn):
-        return {}
     fields: dict[str, str] = {}
     # The roster row keeps the dispatch's id as its liveness key; look it up the same way.
     call = liveness_key(getattr(event, "tool_call_id", ""))

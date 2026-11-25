@@ -14422,7 +14422,7 @@
       },
       "toolDetails": {
         "auto": "Auto",
-        "details_unavailable_for_historical_tool_calls": "Detalhes indisponíveis para chamadas de ferramenta antigas.",
+        "details_unavailable_for_historical_tool_calls": "Os detalhes desta chamada anterior não foram salvos. Pergunte no chat o que ela fez.",
         "formatted": "Formatado",
         "no_input_or_output_captured_for_this_tool_call": "Nenhuma entrada ou saída foi capturada para esta chamada de ferramenta.",
         "null": "null",

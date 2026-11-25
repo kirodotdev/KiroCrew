@@ -14422,7 +14422,7 @@
       },
       "toolDetails": {
         "auto": "Automático",
-        "details_unavailable_for_historical_tool_calls": "No hay detalles disponibles para las llamadas de herramientas del historial.",
+        "details_unavailable_for_historical_tool_calls": "Los detalles de esta llamada anterior no se guardaron. Pregunta en el chat qué hizo.",
         "formatted": "Con formato",
         "no_input_or_output_captured_for_this_tool_call": "No se capturó ninguna entrada ni salida de esta llamada de herramienta.",
         "null": "null",

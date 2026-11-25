@@ -6388,7 +6388,7 @@
         "retry": "Retry"
       },
       "toolDetails": {
-        "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
+        "details_unavailable_for_historical_tool_calls": "This earlier call's details weren't saved. Ask in the chat what it did.",
         "formatted": "Formatted",
         "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
         "raw": "Raw",

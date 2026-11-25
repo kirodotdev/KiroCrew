@@ -14078,7 +14078,7 @@
       },
       "toolDetails": {
         "auto": "स्वतः",
-        "details_unavailable_for_historical_tool_calls": "पुराने टूल कॉल के लिए विवरण उपलब्ध नहीं है।",
+        "details_unavailable_for_historical_tool_calls": "इस पुराने कॉल का विवरण सहेजा नहीं गया। चैट में पूछो कि इसने क्या किया।",
         "formatted": "फ़ॉर्मैट",
         "no_input_or_output_captured_for_this_tool_call": "इस टूल कॉल के लिए कोई इनपुट या आउटपुट कैप्चर नहीं हुआ।",
         "null": "null",
