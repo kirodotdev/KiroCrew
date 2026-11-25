@@ -77,7 +77,9 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
     enabled: mcpOpen,
     staleTime: 0,
   })
-  const servers = serversQ.data ?? []
+  // A failed re-ask keeps the earlier answer in the cache; that answer may be
+  // about a session that has since moved, so a failure shows no list at all.
+  const servers = serversQ.isError ? [] : serversQ.data ?? []
   const mcpServersErrorId = useId()
   // Closing the menu closes its MCP submenu too, so the next open of that
   // submenu enables the server read again and asks afresh.

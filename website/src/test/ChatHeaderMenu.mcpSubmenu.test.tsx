@@ -116,6 +116,21 @@ describe('ChatHeaderMenu — MCP submenu and colour-pick close', () => {
     expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
   })
 
+  it('drops the earlier list when a later read fails', async () => {
+    const utils = renderMenu()
+    const sub = await screen.findByText('MCP servers')
+    fireEvent.keyDown(sub.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText('github')).toBeInTheDocument()
+    vi.mocked(api.mcpActive).mockRejectedValueOnce(new Error('mcp_config_busy'))
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('MCP servers')).not.toBeInTheDocument())
+    fireEvent.keyDown(utils.container.querySelector('button')!, { key: 'Enter' })
+    const again = await screen.findByText('MCP servers')
+    fireEvent.keyDown(again.closest('[role="menuitem"]')!, { key: 'ArrowRight' })
+    expect(await screen.findByText("Couldn't load the MCP servers")).toBeInTheDocument()
+    expect(screen.queryByText('github')).not.toBeInTheDocument()
+  })
+
   it('closes the menu after a swatch pick', async () => {
     renderMenu()
     const swatch = await screen.findByRole('button', { name: 'No color' })
