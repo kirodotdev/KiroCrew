@@ -246,15 +246,15 @@ than a byte figure (`docs/system-specs/common/code-style.md` owns this rule).
 | Lessons (ordinary budget) | 22.6% | `_LESSONS_CAP` |
 | Learned experience (past findings) | 5% | `_LESSON_EXPERIENCE_CAP` |
 | Semantic / episodic | 7.7% each | `_SEMANTIC_MEMORY_CAP`, `_EPISODIC_MEMORY_CAP` |
-| Skills discovery block | 15% | `_SKILLS_CAP` |
 | Preamble headroom | 3% | `_PREAMBLE_HEADROOM` |
 
-Six more limits are fixed constants rather than shares of that base, so read each
+Seven more limits are fixed constants rather than shares of that base, so read each
 one where it is defined:
 
 | Name | Constant |
 |---|---|
 | Standing-rule block at session start (window-independent) | `_LESSONS_STARTUP_CAP` |
+| `[Skills:]` startup index (window-independent; the only path a skill's name and description have to the model at session start, so a 15% share of the pinned base named about 25 skills and dropped the rest of a large library without notice; an authored block, so it is not charged to the pool and the memory blocks are not charged for it; the index says how many skills it lists of how many, and Customize → Skills → Context budget shows the same counts) | `_SKILLS_CAP` |
 | `[FOLDER STEERING …]` section (window-independent; every document in it is an every-session rule, and on a harness that does not load `.kiro/steering` itself it is the only path those trees have) | `_STEERING_CAP` |
 | Confined project skill bodies | `PROJECT_SKILL_BODY_CAP` in `skills_body_reads.py` |
 | Episodic block on a new session | `_EPISODIC_INJECT_CAP` |

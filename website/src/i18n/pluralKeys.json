@@ -337,6 +337,7 @@
   "pages.overview.memoryTab.session",
   "pages.overview.memoryTab.consolidated_count",
   "pages.overview.portabilityTab.import_complete_restart_gateway",
+  "pages.overview.skillsTab.budget_startup_index",
   "pages.overview.skillsTab.loaded_by_agents",
   "pages.schedulePage.backing_off_after_n_failures",
   "pages.schedulePage.cronFolders.batch_move_failed",

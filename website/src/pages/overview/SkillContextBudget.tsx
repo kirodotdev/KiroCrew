@@ -148,6 +148,19 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
       </Btn>
       <h4 className="text-lg font-semibold text-text-strong mb-1">{i18nT('pages.overview.skillsTab.budget_title')}</h4>
       <p className="text-[12.5px] text-muted mb-1">{i18nT('pages.overview.skillsTab.budget_subtitle')}</p>
+      {/* How many skills the model can see by name at session start. The
+       *  count comes from the same render that builds the block, so it is
+       *  the figure the model gets, not an estimate; the sentence says which
+       *  session it describes, because a mapped agent or an open project
+       *  sees its own index. */}
+      {data?.index_listed != null && data.index_total != null && data.index_total > 0 && (
+        <p className="text-[12.5px] text-muted mb-1" data-testid="startup-index-count">
+          {i18nT('pages.overview.skillsTab.budget_startup_index', { listed: data.index_listed, count: data.index_total })}
+          {data.index_listed < data.index_total && (
+            <> {i18nT('pages.overview.skillsTab.budget_startup_index_hidden')}</>
+          )}
+        </p>
+      )}
       <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.skillsTab.budget_why')}</p>
       <Card>
         {/* Header row */}

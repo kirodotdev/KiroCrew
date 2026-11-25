@@ -249,18 +249,70 @@ def _compute_budget(
     }
 
 
+def _startup_index(skills_loader: Any) -> dict[str, Any]:
+    """How many on-demand skills the startup ``[Skills:]`` index names, of how many.
+
+    ``index_budget_chars`` is the index's own allowance (``caps.skills``, a
+    window-independent constant); ``index_listed`` / ``index_total`` come from the
+    loader's own render through ``index_counts_out``, so the screen reports the
+    admission arithmetic that builds the block rather than a second estimate.
+    Computed for the DEFAULT agent at session start with no project open and the
+    configured ``skills.lazy_load`` mode; a mapped agent or a trusted project sees
+    its own index, and the screen says so. Both counts are ``None`` when the render
+    itself fails (an ``always: true`` body over the pinned capacity fails every
+    session the same way, which the log already names).
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports handlers
+    from kiro_crew.skills import SkillContextCapacityError
+
+    cfg = ctx.KiroCrewConfig.load()
+    budget = ctx._resolve_caps(None).skills
+    counts: dict[str, int] = {"listed": 0, "total": 0}
+    try:
+        # The same call ``inclusion.skill_parts`` makes for a default-agent
+        # session start (no mapping, no project). ``required_parts_out`` is what
+        # keeps pinned ``always: true`` bodies OUT of the index allowance: without
+        # it the loader charges them to ``budget`` first, and a large pinned
+        # body makes this screen report fewer rows than every session lists.
+        skills_loader.get_context(
+            budget=budget,
+            only=None,
+            project_dir=None,
+            project_body_budget=ctx._PINNED_PROJECT_BODY_CAP,
+            discovery_only=not bool(getattr(cfg.skills, "lazy_load", False)),
+            required_parts_out=[],
+            index_counts_out=counts,
+        )
+    except SkillContextCapacityError:
+        logger.warning("skill-budget: startup index render failed", exc_info=True)
+        return {"index_budget_chars": budget, "index_listed": None, "index_total": None}
+    return {
+        "index_budget_chars": budget,
+        "index_listed": counts["listed"],
+        "index_total": counts["total"],
+    }
+
+
+def _budget_response(skills_loader: Any) -> dict[str, Any]:
+    """The full ``GET /api/skills/-/budget`` body; blocking, off the event loop."""
+    result = _compute_budget(skills_loader)
+    result.update(_startup_index(skills_loader))
+    return result
+
+
 async def api_skills_budget(request: web.Request) -> web.Response:
-    """GET /api/skills/budget — per-skill 30-day injection cost.
+    """GET /api/skills/budget — per-skill 30-day injection cost and the startup index.
 
     Offloads the blocking filesystem work (path resolution for alias folding,
-    frontmatter reads) to the discovery executor, same as GET /api/skills.
+    frontmatter reads, the index render) to the discovery executor, same as
+    GET /api/skills.
     """
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
 
     result = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(),
-        _compute_budget,
+        _budget_response,
         skills,
     )
     return web.json_response(result)

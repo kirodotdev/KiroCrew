@@ -259,6 +259,7 @@ def get_context(
     *,
     discovery_only: bool = False,
     required_parts_out: list[str] | None = None,
+    index_counts_out: dict[str, int] | None = None,
 ) -> str:
     """Build a bounded directory over the agent's resolved available set.
 
@@ -274,6 +275,11 @@ def get_context(
     ``required_parts_out`` separates complete required bodies for the caller's
     protected-content admission. ``only=[]`` admits nothing. The explicit
     ``budget=None`` catalog reader retains its legacy unbudgeted rendering.
+    ``index_counts_out`` receives ``{"listed": N, "total": M}`` for the on-demand
+    index of a budgeted render: *total* on-demand skills, of which *listed* reached
+    the model by name (the pinned bodies above are injected whole and not counted).
+    The dashboard's Context budget screen reads it, so the figure it shows is the
+    one admission arithmetic that renders the block, not a second estimate.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -441,6 +447,18 @@ def get_context(
             if len(wrap([pointer + line])) <= optional_budget:
                 pointer += line
                 named.add(str(skill["key"]))
+        # The count, after the names: the eight-name entry otherwise reads as
+        # complete, and the model has no way to know how much of the catalog it
+        # hides. Charged like every other line, and ahead of the family hint:
+        # a budget too small for both keeps the count, never a name already
+        # admitted.
+        if len(named) < len(on_demand):
+            line = (
+                f"{len(named)} of {len(on_demand)} skills listed here; "
+                "skill_search reaches the rest.\n"
+            )
+            if len(wrap([pointer + line])) <= optional_budget:
+                pointer += line
         # Families last, and only over what was NOT named: the line exists to
         # cover what the entry hides, so repeating a family whose members are
         # all listed spends the budget saying nothing and can crowd out a
@@ -453,6 +471,9 @@ def get_context(
                 pointer += line
         if len(wrap([pointer])) <= optional_budget:
             optional.append(pointer)
+        if index_counts_out is not None:
+            index_counts_out["listed"] = len(named) if optional else 0
+            index_counts_out["total"] = len(on_demand)
     elif on_demand:
         ranked = loader._user_first(sorted(on_demand, key=loader._rank_key, reverse=True))
         header = (
@@ -510,8 +531,15 @@ def get_context(
             lines = [candidates[i] for i in admitted]
             hidden = [row for i, row in enumerate(ranked) if i not in taken]
             block = summary(lines, hidden)
-        if len(wrap(optional + [block])) <= optional_budget:
+        admitted_block = len(wrap(optional + [block])) <= optional_budget
+        if admitted_block:
             optional.append(block)
+        if index_counts_out is not None:
+            index_counts_out["listed"] = len(lines) if admitted_block else 0
+            index_counts_out["total"] = len(ranked)
+    elif index_counts_out is not None:
+        index_counts_out["listed"] = 0
+        index_counts_out["total"] = 0
 
     return notice + (required if required_parts_out is None else "") + wrap(optional)
 

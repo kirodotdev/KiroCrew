@@ -600,7 +600,11 @@ def build_session_context(
         for required_skill in required_skills:
             append_required(required_skill)
         if skills_ctx:
-            append_required(skills_ctx)
+            # The index is bounded by its own allowance (``caps.skills``, applied
+            # by the loader), not by the pool: a large skill library must not
+            # crowd the memory blocks out, and the memory blocks must not hide
+            # skill names. Pinned bodies above stay pooled, as before.
+            blocks.append_authored(skills_ctx)
     _mark("skills")
 
     # Lessons: injected for ALL agents (skipped for temporary sessions), gated

@@ -19335,6 +19335,11 @@
       "skillsTab": {
         "add_skill": "Добавить навык",
         "adds_new_requirements_to": "Добавляет новые требования в {{target}} — {{description}}",
+        "budget_startup_index_hidden": "Остальные доступны через skill_search; закреплённый навык (always: true) вставляется целиком в каждой сессии.",
+        "budget_startup_index_few": "{{listed}} из {{count}} навыков перечислены по имени при запуске сессии, для агента по умолчанию без открытого проекта.",
+        "budget_startup_index_many": "{{listed}} из {{count}} навыков перечислены по имени при запуске сессии, для агента по умолчанию без открытого проекта.",
+        "budget_startup_index_one": "{{listed}} из {{count}} навыка перечислен по имени при запуске сессии, для агента по умолчанию без открытого проекта.",
+        "budget_startup_index_other": "{{listed}} из {{count}} навыков перечислены по имени при запуске сессии, для агента по умолчанию без открытого проекта.",
         "loaded_by_agents_few": "Загружается {{count}} агентами",
         "loaded_by_agents_many": "Загружается {{count}} агентами",
         "loaded_by_agents_one": "Загружается {{count}} агентом",

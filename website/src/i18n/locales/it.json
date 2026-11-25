@@ -18845,6 +18845,10 @@
       "skillsTab": {
         "add_skill": "Aggiungi skill",
         "adds_new_requirements_to": "Aggiunge nuovi requisiti a {{target}} — {{description}}",
+        "budget_startup_index_hidden": "Gli altri restano raggiungibili tramite skill_search; uno skill fissato (always: true) viene iniettato per intero in ogni sessione.",
+        "budget_startup_index_many": "{{listed}} skill su {{count}} elencati per nome all'avvio della sessione, per l'agente predefinito senza progetto aperto.",
+        "budget_startup_index_one": "{{listed}} skill su {{count}} elencato per nome all'avvio della sessione, per l'agente predefinito senza progetto aperto.",
+        "budget_startup_index_other": "{{listed}} skill su {{count}} elencati per nome all'avvio della sessione, per l'agente predefinito senza progetto aperto.",
         "loaded_by_agents_many": "Caricato da {{count}} agenti",
         "loaded_by_agents_one": "Caricato da {{count}} agente",
         "loaded_by_agents_other": "Caricato da {{count}} agenti",

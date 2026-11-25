@@ -17865,6 +17865,8 @@
       "skillsTab": {
         "add_skill": "スキルを追加",
         "adds_new_requirements_to": "{{target}} に新しい要件を追加 — {{description}}",
+        "budget_startup_index_hidden": "残りは skill_search から到達できます。固定（always: true）したスキルは毎セッション全文が注入されます。",
+        "budget_startup_index_other": "セッション開始時に {{count}} 件中 {{listed}} 件のスキルが名前で一覧表示されます（プロジェクトを開いていない既定エージェントの場合）。",
         "loaded_by_agents_other": "{{count}} エージェントが読み込み済み",
         "approval_required_hint": "候補はここで承認を待ちます。<settingRef/> がオフの場合、スクリプトを含まない新しいスキルは自動的に公開できます — スクリプトを含むスキルと既存スキルの更新は常にレビューが必要です（skills.auto_refine_on_deviation がオンの場合を除く）。",
         "approve": "承認",
