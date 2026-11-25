@@ -117,10 +117,7 @@ function PanelToggleConfig() {
             {PANEL_TOGGLES_SKIPPING_SHELL.has(id) && (
               <div className="text-[12px] text-muted pt-1">{i18nT(IS_MAC ? 'pages.settings.shortcutsPanel.skips_shell_hint_mac' : 'pages.settings.shortcutsPanel.skips_shell_hint')}</div>
             )}
-            {/* Same disclosure for a terminal-focus command: its chord is taken
-                from the shell it acts on, and the row also says where it does
-                NOT act, which is what makes sharing ⌘K with Search Everywhere
-                safe to choose. */}
+            {/* A terminal-focus command also takes its chord from the shell. */}
             {TERMINAL_FOCUS_PANEL_TOGGLE_IDS.has(id) && (
               <div className="text-[12px] text-muted pt-1">{i18nT('pages.settings.shortcutsPanel.terminal_focus_hint')}</div>
             )}
