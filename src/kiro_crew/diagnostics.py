@@ -41,6 +41,7 @@ from kiro_crew import (
     agent_scratch,
     diagnostics_host_name,
     diagnostics_kiro_home_logs,
+    diagnostics_login,
     platform_compat,
     release_channel,
 )
@@ -135,7 +136,7 @@ class BundleResult:
     #: member name -> number of secret redactions applied (0 = clean)
     redaction_summary: dict[str, int] = field(default_factory=dict)
     #: Count of home/data-home path prefixes collapsed to ``~``, plus host-name
-    #: replacements, across all text members. Tracked apart from
+    #: and login replacements, across all text members. Tracked apart from
     #: :attr:`redaction_summary` because each hides a login or a machine name,
     #: not a secret -- folding it into the secret tally would overstate
     #: "N secret(s) auto-redacted" in the issue body.
@@ -247,7 +248,7 @@ def _home_prefixes() -> list[str]:
     :func:`_prefix_spellings`): the native form, the forward-slash form, and the
     JSON-escaped backslash form on Windows. A symlinked home is also collapsed
     in its resolved spelling, which ``os.getcwd()`` and ``Path.resolve()``
-    write into logs.
+    write into logs, and a Windows home in its 8.3 short one (:func:`_login_homes`).
 
     The data-home prefix is emitted on its own ONLY when it is not nested under
     home. When it IS under home (the usual case -- ``<home>/.kiro/crew``),
@@ -262,7 +263,7 @@ def _home_prefixes() -> list[str]:
     data_home = str(config_dir())
     bases: list[str] = []
     if home and not _is_root_or_single_segment(home):
-        bases.append(home)
+        bases.extend(_login_homes(home))
         resolved = os.path.realpath(home)
         if not _is_root_or_single_segment(resolved):
             bases.append(resolved)
@@ -284,6 +285,18 @@ def _home_prefixes() -> list[str]:
             seen.add(p)
             prefixes.append(p)
     return prefixes
+
+
+def _login_homes(home: str) -> list[str]:
+    """*home* in the spellings whose last segment is the OS login.
+
+    As given, and its Windows 8.3 short spelling (``JONATH~1``), which a
+    ``%TEMP%`` path can carry; none for a root or single-segment home.
+    """
+    if _is_root_or_single_segment(home):
+        return []
+    short = platform_compat.short_path_name(home)
+    return [home] if _is_root_or_single_segment(short) else [home, short]
 
 
 # A home prefix only collapses when the login segment ENDS at the boundary --
@@ -331,7 +344,7 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
 
 
 def _scrub_bundle(text: str) -> tuple[str, int, int]:
-    """``_scrub`` plus a home-prefix collapse and the host-name replacement.
+    """``_scrub`` plus a home-prefix collapse, the host-name and login replacements.
 
     The bundle's stated destination is a public issue, so a text member must not
     carry the OS login: on Windows the login is embedded in nearly every
@@ -348,8 +361,8 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     and repo-relative frames are left intact.
 
     Returns ``(clean, secrets, path_collapses)``: the secret count and the
-    path-collapse count (host-name replacements included) are kept apart so the
-    issue body does not report either as a "secret".
+    path-collapse count (host-name and login replacements included) are kept
+    apart so the issue body does not report either as a "secret".
     """
     # The host pass runs only AFTER the credential scrub and the home collapse:
     # replaced first, a host name that is also a word a credential rule keys on
@@ -361,7 +374,8 @@ def _scrub_bundle(text: str) -> tuple[str, int, int]:
     text, secrets = _scrub(text)
     text, collapses = _collapse_home_prefixes(text)
     text, replaced = diagnostics_host_name.replace_host_names(text, names, joined)
-    return text, secrets, collapses + replaced
+    text, logins = diagnostics_login.replace_logins(text, _login_homes(str(Path.home())))
+    return text, secrets, collapses + replaced + logins
 
 
 def _kiro_log_dirs() -> list[Path]:
@@ -1319,7 +1333,7 @@ def _issue_url(result: BundleResult, note: str, *, prefill: bool = True) -> str:
                 f"{result.total_redactions} secret(s) auto-redacted"
                 + (
                     f" and {result.path_collapses} path(s) collapsed to `~`"
-                    " or host name(s) replaced"
+                    " or host name(s) or login(s) replaced"
                     if result.path_collapses
                     else ""
                 )
