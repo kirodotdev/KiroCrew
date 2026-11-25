@@ -539,7 +539,9 @@ async def test_an_id_that_cannot_be_written_is_not_announced_and_an_answer_still
 
 
 def _stored_states(home: Path) -> list[str]:
-    return [row["state"] for row in json.loads(_record_file(home).read_text())["approvals"]]
+    # The gateway's own reader: off the loop it rides out the Windows window in which
+    # a concurrent save's replace denies the open.
+    return [row["state"] for row in records.load(_record_file(home))]
 
 
 def _stopping(state: Any, monkeypatch) -> Any:
@@ -583,6 +585,7 @@ async def test_an_ending_made_on_another_surface_is_written_when_it_happens(
     await async_wait_until(
         lambda: _stored_states(tmp_path) == ["allowed", "expired", "allowed", "denied"],
         describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
     )
     assert await task is True
 
@@ -614,6 +617,7 @@ async def test_a_timeout_while_the_gateway_is_not_closing_is_written_as_timeout(
     await async_wait_until(
         lambda: _stored_states(tmp_path) == ["expired"],
         describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
     )
     restarted = _state(tmp_path / "restarted", monkeypatch)
     async with _serve(restarted) as second:
@@ -634,6 +638,7 @@ async def test_an_update_pause_is_not_the_gateway_closing(client, tmp_path):
     await async_wait_until(
         lambda: _stored_states(tmp_path) == ["expired"],
         describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
     )
     read = await (await client.get(f"{LIST}/{row['id']}", headers=AS_OWNER)).json()
     assert (read["state"], read["expired_reason"]) == ("expired", "timeout")
