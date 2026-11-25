@@ -298,7 +298,7 @@ class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
     def test_a_save_or_revoke_never_replaces_a_store_with_a_second_name(self):
         """A replace gives the store a fresh inode; the old name would keep the old tokens.
 
-        Then the sandbox's hard-link check no longer finds that name, so it stays unmasked.
+        Then the sandbox's hard-link check cannot find that name, so it stays unmasked.
         Both stores: the moved one, and the root one before the move.
         """
         for moved in (True, False):
