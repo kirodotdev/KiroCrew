@@ -442,7 +442,9 @@ on timeout, and on error alike. There is no conversation to come back to.
 This is the same model subagents use, and it is why the `sessionKey` is a routing
 key rather than a handle: two calls with the same `sessionKey` are two unrelated
 turns, not a thread. Anything the second turn needs to know, the first turn has
-to have written down.
+to have written down. One exception: while a sub-agent the first turn started
+still owes it a report, its conversation is kept for that report, and a call
+that reuses the `sessionKey` in that time continues it.
 
 Before the first prompt of a new session, the run waits up to 30 seconds for
 every MCP server the agent spec declares to report that it started, failed or
