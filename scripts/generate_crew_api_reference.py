@@ -309,7 +309,10 @@ def _anchor(method: str, path: str) -> str:
     return kept.replace(" ", "-")
 
 
-def _errors(spec: _Spec, responses: Mapping[str, Any], doc: str) -> list[str]:
+def _errors(
+    spec: _Spec, responses: Mapping[str, Any], doc: str, marked: Sequence[str] = ()
+) -> list[str]:
+    """The error table. *marked* holds the response headers the operation does not send."""
     rows = []
     for status, response in sorted(responses.items(), key=lambda item: str(item[0])):
         if not str(status).startswith(("4", "5")):
@@ -323,7 +326,17 @@ def _errors(spec: _Spec, responses: Mapping[str, Any], doc: str) -> list[str]:
             for name, example in examples.items()
         ]
         codes = ", ".join(_code(code) for code in dict.fromkeys(found))
-        rows.append((str(status), codes, _cell(response.get("description"))))
+        # A header this response declares and the operation's mark names is not sent
+        # on the error either, whatever the shared description says.
+        unsent = [name for name in response.get("headers", {}) if name in marked]
+        note = (
+            "**Not served yet:** "
+            + ", ".join(map(_code, unsent))
+            + ". Where this note says the response carries them, that is the planned behaviour. "
+            if unsent
+            else ""
+        )
+        rows.append((str(status), codes, note + _cell(response.get("description"))))
     if not rows:
         return []
     return [
@@ -408,7 +421,7 @@ def _operation(spec: _Spec, tier: str, method: str, path: str, op: Mapping[str, 
             lines += ["Response headers:", ""]
             lines += _table(("Name", "Type", "Description"), headers)
         lines += _body(spec, response.get("content", {}), response_doc, "Response body")
-    return lines + _errors(spec, op["responses"], doc)
+    return lines + _errors(spec, op["responses"], doc, not_served.get("response-headers", ()))
 
 
 def _page_name(tier: str, tag: str) -> str:

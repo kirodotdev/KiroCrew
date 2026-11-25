@@ -520,6 +520,25 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/Error
+              examples:
+                invalid_request:
+                  summary: The decision is neither approve nor deny.
+                  value:
+                    error:
+                      type: invalid_request_error
+                      code: invalid_request
+                      message: decision must be approve or deny
+                      param: null
+                      request_id: req_01JBXQ4K7Y2M
+                invalid_scope:
+                  summary: The approval names a scope the app did not ask for.
+                  value:
+                    error:
+                      type: invalid_request_error
+                      code: invalid_scope
+                      message: scopes must be a subset of the requested scopes
+                      param: null
+                      request_id: req_01JBXQ4K7Y2M
         '401':
           $ref: ./components.yaml#/components/responses/OwnerUnauthorized
         '403':
@@ -537,6 +556,16 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/Error
+              examples:
+                grant_request_already_resolved:
+                  summary: This request was already answered.
+                  value:
+                    error:
+                      type: conflict_error
+                      code: grant_request_already_resolved
+                      message: this request was already answered
+                      param: null
+                      request_id: req_01JBXQ4K7Y2M
         '500':
           $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
         '503':
@@ -740,6 +769,16 @@ paths:
             application/json:
               schema:
                 $ref: ./components.yaml#/components/schemas/Error
+              examples:
+                approval_already_resolved:
+                  summary: This approval is not pending.
+                  value:
+                    error:
+                      type: conflict_error
+                      code: approval_already_resolved
+                      message: this approval is not pending
+                      param: null
+                      request_id: req_01JBXQ4K7Y2M
         '500':
           $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
       x-crew-tier: owner
