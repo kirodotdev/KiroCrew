@@ -4,6 +4,13 @@
 
 The primary ACP session transport path spans **five** entry modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
 
+The package itself (`acp/__init__.py`) imports none of these modules. Each name in its
+`__all__` is read from `acp/client.py`, `acp/runtime.py` or `acp/types.py` on first
+access, through a module `__getattr__`, and nothing is cached, so importing one ACP
+module loads only what that module imports. `test/test_package_import_ratchet.py` holds
+`import kiro_crew.acp` to the `kiro_crew` and `kiro_crew.acp` modules in a fresh
+interpreter, so an eager import put back fails.
+
 Module-level code moved out of the two transports lives in the owner modules
 below: `acp/runtime_start.py` serves the runtime alone, the six host adapters
 serve the client alone, and the rest serve both.
@@ -80,7 +87,7 @@ permission deferral).
 | Client owner | Owns |
 |---|---|
 | `acp/client_timeouts.py` | every protocol timeout and turn budget of the direct client, the respawn backoff, and the resolution of a prompt's timeout from its ceiling or deadline |
-| `acp/client_spawn_env.py` | a spawn before the process exists: kiro-cli and codex-acp binary resolution, the child's environment repair (pod HOME remap, bundle swap, session identity), `finish_suspended_spawn` and the `_exit_origin` reading of how a child exited, the launch tools, and the workspace, `agent.env` and `--agent` argv staging |
+| `acp/client_spawn_env.py` | a spawn before the process exists: kiro-cli and codex-acp binary resolution, the child's environment repair (the `SSH_AUTH_SOCK` and `KRB5CCNAME` pointers through `_resolve_spawn_env`, pod HOME remap, bundle swap, session identity), `finish_suspended_spawn` and the `_exit_origin` reading of how a child exited, the launch tools, and the workspace, `agent.env` and `--agent` argv staging |
 | `acp/client_claude.py` | `ClaudeAcpClient`, the `AcpClient` subclass a claude-agent-acp session is built as (see above): its constructor fields, the three seed static methods, and the bindings of the claude owners below |
 | `acp/client_claude_turn.py` | what only a claude prompt turn reads, bound on `ClaudeAcpClient`: its compaction notices and native `compaction_update`, the `_session/steering` floor, a turn whose only unfinished calls are background agents', and the debug line for an unhandled session update |
 | `acp/client_claude_session.py` | the claude-agent-acp session contract `ClaudeAcpClient` binds: adapter version floors and the tested release with its install command, leaving a project-owned settings file out of the setting sources, the `_meta` envelope, Side Chat read-deny rules and the starting-mode pin |
@@ -124,12 +131,13 @@ the class's own code. The class keeps `is_process_alive` (the pid-reader ratchet
 its name). `ClaudeAcpClient` keeps the three seed static methods that read the `ClaudeAcpClient`
 global (`_settings_path_holds`, `_claim_pathname_if_ours`,
 `_restore_aside_without_clobber`). The class homes of `AcpRuntime` and `AcpSessionHandle` are below. `acp/client.py`
-keeps `_mise_which`, `_resolve_ssh_auth_sock` and `_resolve_spawn_env` (the spawn audit,
-the subprocess-encoding baseline and the cross-platform gate key them on this path) and
-the compatibility facade. The session start reads `_resolve_spawn_env` as a global of
-its own module, which `acp/client.py` fills in right after defining it, because an
-owner never imports the facade; a patch through `kiro_crew.acp.client` reaches it
-through the mirror.
+keeps `_mise_which` (the spawn audit keys it on this path) and the compatibility facade.
+`_resolve_ssh_auth_sock` and `_resolve_spawn_env` live in `acp/client_spawn_env.py`, and
+`acp/client.py` re-exports both. The session start imports `_resolve_spawn_env` from that
+owner, so it is bound in a process that never imports the facade, and an owner still
+never imports the facade; a patch through `kiro_crew.acp.client` reaches both readers
+through the mirror. No owner declares a name for the facade to fill, and the facade
+assigns no attribute of another module (`test_client_bindings.py` scans for both).
 
 `AcpSessionHandle`'s behaviour lives in `acp/session_handle_*.py` owner modules the
 same way, one responsibility each. A member's body is a module-level function there whose
