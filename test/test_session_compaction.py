@@ -9,6 +9,7 @@ compact timeout, and the cooldowns after a failed or an ineffective compaction.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,8 +21,15 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
     cfg_fixture,
 )
 
+from kiro_crew.acp_backends import ACP_BACKEND_DEEPSEEK
+from kiro_crew.agent_sdk.backend_identity import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.session import SessionManager
 from kiro_crew.testing.wait import await_until
+
+#: What a claude session's provider reports: it keeps its native session across
+#: ``/compact``, so ``_compact_session`` takes the in-place arm.
+CLAUDE_CAPABILITIES = capabilities_for(ACP_BACKEND_CLAUDE)
 
 
 class TestCompactCallback:
@@ -432,7 +440,7 @@ class TestClaudeBackendCompaction:
 
         mgr.set_compact_callback(cb)
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         provider.compact.assert_awaited_once()
@@ -440,6 +448,25 @@ class TestClaudeBackendCompaction:
         assert mgr.has_session("k1")
         assert callback_args == [("k1", 92.0, True)]
         assert "k1" not in mgr._compacting
+
+    @pytest.mark.asyncio
+    async def test_the_in_place_arm_follows_the_capability_not_the_backend_name(self, cfg):
+        """A non-claude backend whose record says it keeps its session takes the arm."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.compact = AsyncMock()
+        keeps = dataclasses.replace(
+            capabilities_for(ACP_BACKEND_DEEPSEEK), keeps_session_across_compaction=True
+        )
+
+        with patch.object(provider, "capabilities", keeps):
+            await mgr._compact_session("k1", 92.0)
+
+        provider.compact.assert_awaited_once()
+        provider.shutdown.assert_not_awaited()
+        assert mgr.has_session("k1")
+        await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_compact_session_claude_failure_keeps_session(self, cfg, caplog):
@@ -451,7 +478,7 @@ class TestClaudeBackendCompaction:
         mgr.set_compact_callback(cb)
 
         with (
-            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            patch.object(provider, "capabilities", CLAUDE_CAPABILITIES),
             caplog.at_level(logging.ERROR, logger="kiro_crew.session"),
         ):
             await mgr._compact_session("k1", 92.0)
@@ -981,7 +1008,7 @@ class TestCompactFailureCooldown:
         mgr.release("k1")
         provider.compact = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         # flake-ok: the awaited failure arms the cooldown at monotonic plus 60 s and the real clock is read right after; only a 60 s stall flips it; moved verbatim
@@ -1010,7 +1037,7 @@ class TestCompactFailureCooldown:
         # Pre-existing cooldown from an earlier failure.
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         assert "k1" not in mgr._compact_cooldown_until
@@ -1058,7 +1085,7 @@ class TestCompactTimeout:
         mgr.set_compact_callback(cb)
 
         with (
-            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            patch.object(provider, "capabilities", CLAUDE_CAPABILITIES),
             # Only the outer cap is scaled — see _COMPACT_RESULT_WAIT_FLOOR_SECS
             # note above if the inner wait must time out quickly.
             # flake-ok: the 0.05 s budget is meant to expire: the stand-in compact sleeps 10 s so the timeout arm runs on any host; moved verbatim
@@ -1083,7 +1110,7 @@ class TestCompactTimeout:
         provider.compact = AsyncMock()
 
         with (
-            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            patch.object(provider, "capabilities", CLAUDE_CAPABILITIES),
             # flake-ok: the 0.05 s budget is meant to expire: the held turn is released only after it, so the timeout arm runs on any host
             patch("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.05),
         ):
@@ -1113,7 +1140,7 @@ class TestCompactCallbackSuccessFlag:
 
         mgr.set_compact_callback(cb)
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         assert calls == [("k1", 92.0, True)]
@@ -1187,7 +1214,7 @@ class TestIneffectiveCompactionCooldown:
         provider.context_usage_pct = lambda: 40.0
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 999
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         assert "k1" not in mgr._compact_cooldown_until
@@ -1315,7 +1342,7 @@ class TestIneffectiveCompactionCooldown:
         provider.compact = AsyncMock()
         provider.context_usage_pct = lambda: 92.0  # unchanged: stats never reset
 
-        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+        with patch.object(provider, "capabilities", CLAUDE_CAPABILITIES):
             await mgr._compact_session("k1", 92.0)
 
         # Deferred, not damped: a successful compaction must not be punished.
@@ -1384,7 +1411,7 @@ class TestIneffectiveCompactionCooldown:
         mgr.set_compact_callback(cb)
 
         with (
-            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            patch.object(provider, "capabilities", CLAUDE_CAPABILITIES),
             caplog.at_level(logging.WARNING, logger="kiro_crew.session"),
         ):
             await mgr._compact_session("k1", 92.0)
