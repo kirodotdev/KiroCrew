@@ -70,7 +70,7 @@ import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, selectPageLoaded, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { useHeldWindowWarm } from './chat/useHeldWindowWarm'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -614,11 +614,11 @@ export default function ChatPane({
   const hydrateLimit = PANE_HYDRATE_LIMIT
   // A crewmate's chat that filters a BOUNDED window down to no speech has
   // proved nothing: the last thing it said may sit just behind the window,
-  // under fifty newer patrol rows. The never-spoken hint is a claim about the
-  // whole history, so the hint waits while the pane walks back one older page
-  // at a time (the same loaders the "earlier" bar uses) until a bubble shows or
-  // the history runs out. Never one unbounded read: a long patroller's whole
-  // transcript is slow to fetch and parse.
+  // under fifty newer patrol rows. The never-spoken hint and the live region's
+  // baseline are claims about the whole history, so both wait while the pane
+  // walks back one older page at a time (the same loaders the "earlier" bar
+  // uses) until a bubble shows or the history runs out. Never one unbounded
+  // read: a long patroller's whole transcript is slow to fetch and parse.
   const olderHasMore = pagesActiveSlot ? activeHasMore : warmHasMore === true
   const crewmateQuietUnproven = !!crewmate && olderHasMore && paneMessages.length > 0 && messages.length === 0
   const walkFailed = pagesActiveSlot ? olderFailed : paneOlderFailed
@@ -672,11 +672,11 @@ export default function ChatPane({
   // shows in place of the chip.
   useRedactionHostsReload(slotKey)
   // Whether this pane's transcript is its loaded page, for the footer's stall
-  // watch: the active slot's page comes from the slot switch; a background
+  // watch and the live region's baseline: the active slot's page comes from the slot switch; a background
   // slot's is any page the store has described (its `slotPaneHasMore` marker),
   // written by the hydrate above, a warm, or the park of a once-active
   // transcript, so the watch does not drop when the active slot moves away.
-  const activePageLoaded = useAppSelector((s) => !s.chat.slotLoading && s.chat.slotSwitchTarget !== slotKey)
+  const activePageLoaded = useAppSelector((s) => selectPageLoaded(s, slotKey))
   const transcriptLoaded = paneIsActive ? activePageLoaded : warmHasMore !== undefined
   // A conductor mode root on a conductor that is the default agent keeps its picker
   // until its first message (a transcript still loading or with older rows counts
@@ -736,7 +736,7 @@ export default function ChatPane({
     onSessionOpen ? sessions : undefined,
   )
   const { announcement, announceSent } = useTranscriptAnnouncement(
-    announcementTail(messages), paneTail?.role === 'streaming' || running, crewmate ? (crewmate.label || crewmate.name) : undefined, slotKey, paneApprovals, messages.length, paneUserSpeaker,
+    announcementTail(messages), paneTail?.role === 'streaming' || running, crewmate ? (crewmate.label || crewmate.name) : undefined, slotKey, paneApprovals, messages.length, paneUserSpeaker, transcriptLoaded && !crewmateQuietUnproven,
   )
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({
     slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent,

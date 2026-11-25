@@ -254,11 +254,12 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
   // The transcript's one live region, the same decision the main chat makes:
   // a side answer is spoken once when it lands, and the side question when it
   // is sent. The shared scroller is not a live region, so without this a side
-  // answer would arrive in silence.
+  // answer would arrive in silence. Only the reader and the agent write a side
+  // conversation, so its first rows are its baseline.
   const sideApprovals = useMemo(() => pendingApprovalsOf(transcript), [transcript])
   const sideUserSpeaker = useUserRowSpeaker(transcript[transcript.length - 1]?.meta ?? undefined, slot, transcript[transcript.length - 1]?.content)
   const { announcement, announceSent } = useTranscriptAnnouncement(
-    announcementTail(transcript), isBusy, undefined, `side:${slot}`, sideApprovals, transcript.length, sideUserSpeaker,
+    announcementTail(transcript), isBusy, undefined, `side:${slot}`, sideApprovals, transcript.length, sideUserSpeaker, transcript.length > 0,
   )
   const renderedLastAnswer = transcript[lastIdx]?.role === 'assistant'
     ? searchableText(transcript[lastIdx])

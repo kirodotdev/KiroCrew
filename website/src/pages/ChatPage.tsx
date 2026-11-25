@@ -7,7 +7,7 @@ import { useAppSelector, store, type AppDispatch } from '../store'
 import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import { useUserRowSpeaker } from './chat/shared-crew/MessageByline'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput, selectPageLoaded,
 } from '../store/chatSlice'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
@@ -651,7 +651,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     lastMsg?.content,
     connected ? sessionTitles : undefined,
   )
-  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker)
+  const pageLoaded = useAppSelector(s => selectPageLoaded(s, activeSlot ?? ''))
+  const { announcement, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming || !!slotRunning, undefined, activeSlot, pendingApprovals, messages.length, tailUserSpeaker, pageLoaded)
   // Follow-up option chips and the ownership of the text they append.
   const {
     followUpOptions, followUpSourceKey, followUpMulti,
