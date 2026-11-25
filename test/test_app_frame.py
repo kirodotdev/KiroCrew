@@ -186,18 +186,19 @@ const done = (async () => {
   shows[0].card.open();
   shows[0].card.resize({ width: 10, height: 10 });
   shows[1].card.open();
-  console.log(JSON.stringify({
+  return {
     shows: shows.length,
     frozen: Object.isFrozen(shows[0].card),
     card: posted.filter((m) => ['open', 'resize'].includes(m.type)).map((m) => [m.type, m.invocation]),
-  }));
+  };
 })();
-await done;
+return await done;
 """
 
 
-def _run_bootstrap(driver: str) -> Any:
-    """Run the frame bootstrap plus ``driver`` under node; the JSON on its last line."""
+@pytest.fixture(scope="module")
+def bootstrap_results() -> dict[str, Any]:
+    """Run both drivers in one Node child, with a fresh harness for each."""
     import json
     import shutil
     import subprocess
@@ -205,8 +206,19 @@ def _run_bootstrap(driver: str) -> Any:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
+    script = "const results = {};\n"
+    for name, driver in (("card", _BOOTSTRAP_DRIVER), ("link", _LINK_DRIVER)):
+        # Await each scope before the next harness replaces the window and globals.
+        script += (
+            f"results[{json.dumps(name)}] = await (async () => {{\n"
+            + _BOOTSTRAP_HARNESS
+            + lp._BOOTSTRAP
+            + driver
+            + "\n})();\n"
+        )
+    script += "console.log(JSON.stringify(results));"
     out = subprocess.run(
-        [node, "--input-type=module", "-e", _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + driver],
+        [node, "--input-type=module", "-e", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -216,14 +228,17 @@ def _run_bootstrap(driver: str) -> Any:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
+@pytest.mark.xdist_group(name="node_child_app_frame")
+def test_card_controls_keep_the_invocation_of_their_own_show(
+    bootstrap_results: dict[str, Any],
+) -> None:
     """A slow completion for an earlier hover names that hover, not the newest one.
 
     The dashboard drops a card message whose invocation is not the frame's latest
     (``linkPreviewFrames.ts``). That only works if the frame stamps each control with
     the show it was handed to, so the controls are per show, not on ``ctx``.
     """
-    result = _run_bootstrap(_BOOTSTRAP_DRIVER)
+    result = bootstrap_results["card"]
     # A show without an invocation is not delivered: it could not be answered.
     assert result["shows"] == 2
     assert result["frozen"] is True
@@ -245,17 +260,20 @@ fire('click', {});
 for (const k of ['ctrlKey', 'metaKey', 'shiftKey', 'altKey']) fire('click', { [k]: true });
 fire('auxclick', {});
 window.open('https://gw/scripted');
-console.log(JSON.stringify(posted.filter((m) => m.type === 'kirocrew-dashboard:open')));
+return posted.filter((m) => m.type === 'kirocrew-dashboard:open');
 """
 
 
-def test_a_middle_or_modified_link_click_asks_for_a_new_tab() -> None:
+@pytest.mark.xdist_group(name="node_child_app_frame")
+def test_a_middle_or_modified_link_click_asks_for_a_new_tab(
+    bootstrap_results: dict[str, Any],
+) -> None:
     """Only a plain click may open a dashboard page in place (``useFrameLinkBridge``).
 
     The frame marks a middle or modified click ``tab: true``, as the widget shim
     does; a plain click and ``window.open`` carry no mark.
     """
-    posted = _run_bootstrap(_LINK_DRIVER)
+    posted = bootstrap_results["link"]
     assert [m.get("tab", False) for m in posted] == [False, True, True, True, True, True, False]
     assert {m["url"] for m in posted} == {"https://gw/chat", "https://gw/scripted"}
 
