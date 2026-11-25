@@ -273,7 +273,8 @@ with no row here.
        the dashboard's compaction card folds)
    * - ``ACP_BACKENDS_TOOL_TITLE_REFINEMENT``
      - semantic question (``SessionCapabilities.refines_tool_call_titles``: whether
-       a Crew-spawned subagent's card takes a ``tool_call_update``'s title)
+       a Crew-spawned subagent's card, or a channel turn's task card, takes a
+       ``tool_call_update``'s title)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.runs_own_slash_commands``)
    * - ``ACP_BACKENDS_NATIVE_WORKFLOWS``
