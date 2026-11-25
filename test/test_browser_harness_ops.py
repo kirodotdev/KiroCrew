@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import browser_snapshots
-from kiro_crew.browser_harness import ops
+from kiro_crew.browser_harness import daemon_line, ops
 from kiro_crew.mcp_tools import browser as browser_tool
 
 _METHOD_RE = re.compile(r"\.(\w+)\((.*)\)$", re.DOTALL)
@@ -629,8 +629,18 @@ def test_type_steps_stopped_by_an_open_dialog_name_the_step(fake: FakeBrowser) -
 
 
 _TABLE = "<table><tr><td>a</td><td>b</td></tr></table>"
+#: About the size of the comment-stripped walker on the daemon's line: paste measures
+#: the walker call it makes, and these tests are about what it does once that fits.
+_STRIPPED_WALKER = "(() => {" + "x" * 50_000 + "})()"
 
 
+@pytest.fixture
+def stripped_walker(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setattr(ops, "WALKER_SOURCE", _STRIPPED_WALKER)
+    return _STRIPPED_WALKER
+
+
+@pytest.mark.usefixtures("stripped_walker")
 @pytest.mark.parametrize("handled", [True, False])
 def test_paste_hands_html_and_text_to_the_page_and_types_only_what_it_left(
     fake: FakeBrowser, handled: bool
@@ -649,6 +659,7 @@ def test_paste_hands_html_and_text_to_the_page_and_types_only_what_it_left(
     assert fake.steps[-1] == "Paste into e1"
 
 
+@pytest.mark.usefixtures("stripped_walker")
 @pytest.mark.parametrize(
     ("moved", "code"), [({"password": True}, "password_field"), ({"asked": True}, "asked_field")]
 )
@@ -663,6 +674,7 @@ def test_paste_types_nothing_where_the_page_handler_moved_focus(
     assert "type_text" not in fake.helper_names()
 
 
+@pytest.mark.usefixtures("stripped_walker")
 def test_paste_types_its_fallback_only_into_the_ref_it_was_given(fake: FakeBrowser) -> None:
     """A page handler that moved focus off ``ref`` gets no text: the ref is focused
     again before typing, and one that will not keep focus is refused."""
@@ -693,6 +705,7 @@ def test_paste_types_its_fallback_only_into_the_ref_it_was_given(fake: FakeBrows
         ({}, {"html": "x" * (ops.TEXT_CAP + 1)}, "bad_html"),
     ],
 )
+@pytest.mark.usefixtures("stripped_walker")
 def test_paste_is_refused_where_type_is(
     fake: FakeBrowser, page: dict[str, Any], args: dict[str, Any], code: str
 ) -> None:
@@ -707,9 +720,6 @@ def test_paste_is_refused_where_type_is(
 
 
 _DAEMON_LINE_BYTES = 64 * 1024  # Harness's request line: asyncio's StreamReader limit
-#: About the size of the comment-stripped walker on the daemon's line, so the paste
-#: boundary below does not move with every walker change.
-_STRIPPED_WALKER = "(() => {" + "x" * 50_000 + "})()"
 
 
 def test_type_splits_a_long_text_so_each_daemon_line_fits(fake: FakeBrowser) -> None:
@@ -734,16 +744,13 @@ def _harness_line(expression: str) -> bytes:
 
 @pytest.mark.parametrize("unit", ["x", '"', "漢"], ids=["ascii", "quote", "cjk"])
 def test_paste_takes_what_fits_the_daemon_line_and_refuses_one_more(
-    fake: FakeBrowser, monkeypatch: pytest.MonkeyPatch, unit: str
+    fake: FakeBrowser, stripped_walker: str, unit: str
 ) -> None:
-    from kiro_crew.browser_harness import daemon_line
-
-    monkeypatch.setattr(ops, "WALKER_SOURCE", _STRIPPED_WALKER)
     fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
     fake.page["paste"] = {"ok": True, "handled": True}
 
     def walker_call(text: str) -> str:
-        return f'{_STRIPPED_WALKER}.paste(null, "", {json.dumps(text)})'
+        return f'{stripped_walker}.paste(null, "", {json.dumps(text)})'
 
     # The longest text of *unit* whose whole walker call fits, beside the envelope.
     room = daemon_line.DAEMON_LINE_BYTES - daemon_line.ENVELOPE_BYTES
@@ -758,6 +765,15 @@ def test_paste_takes_what_fits_the_daemon_line_and_refuses_one_more(
     assert out["ok"] is False and out["code"] == "bad_text"
     assert "paste" not in fake.page_methods(), "nothing reaches the page"
     assert "type_text" not in fake.helper_names()
+
+
+def test_paste_measures_the_walker_it_runs(fake: FakeBrowser) -> None:
+    """A walker over the line by itself fails every call at the daemon: paste says so."""
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "div"}
+    fake.page["paste"] = {"ok": True, "handled": True}
+    expected = daemon_line.expression_fits(ops.WALKER_SOURCE + '.paste(null, "", "a")')
+    out = run(ops.run_op("paste", {"text": "a"}, fake.ctx()))
+    assert out["ok"] is expected
 
 
 def test_type_judges_the_field_again_before_each_later_piece(fake: FakeBrowser) -> None:
