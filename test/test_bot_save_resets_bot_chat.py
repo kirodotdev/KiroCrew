@@ -10,6 +10,7 @@ so the turn's selection (``slot.model or <Bot's model>``, and the effort overrid
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -281,3 +282,161 @@ class TestAClosedBotChat:
         restored = await rehydrate_slot_from_history_async(bot.state, key, adopt_closed=True)
         assert restored is not None
         assert restored.reasoning_effort == ""
+
+
+NEW_MODEL = "claude-sonnet-5"
+
+
+@pytest.fixture()
+def watcher(bot):
+    """The dashboard's config-watcher applier for the Bot's chat, on *bot*'s state."""
+    from kiro_crew.config import live
+    from kiro_crew.config.live import ConfigChange, diff_config_docs, watch_document
+    from kiro_crew.dashboard.server import _register_config_watch
+
+    live.reset_for_tests()
+    app = web.Application()
+    _register_config_watch(app, bot.state, None)
+    subs = {s.name: s for s in app["config_watch_subscriptions"]}
+    # No such applier means the watcher leaves the Bot's chat as it was.
+    follow = subs.get("bot_chat.follow")
+    apply = follow.callback() if follow is not None else (lambda change: None)
+
+    async def observe(old: KiroCrewConfig, degraded: frozenset[str] = frozenset()) -> None:
+        # What one watcher cycle hands the applier for the write on disk now.
+        new = KiroCrewConfig.load()
+        new._degraded_sections = new.degraded_sections | degraded
+        changed = diff_config_docs(watch_document(old), watch_document(new))
+        apply(ConfigChange(old=old, new=new, changed=changed))
+        # The applier hands the clear to a tracked task; wait for exactly those.
+        follows = [t for t in bot.state._background_tasks if t.get_name() == "bot-chat-follow"]
+        await asyncio.wait_for(asyncio.gather(*follows), timeout=30)
+
+    yield observe
+    live.reset_for_tests()
+
+
+def _edit(**fields) -> KiroCrewConfig:
+    """A write from outside the dashboard; returns the config before it."""
+    before = KiroCrewConfig.load()
+    cfg = KiroCrewConfig.load()
+    for field, value in fields.items():
+        setattr(cfg.agents[BOT], field, value)
+    cfg.save()
+    return before
+
+
+class TestAnEditOutsideTheDashboard:
+    """``kirocrew agent update --model``, ``kirocrew config set`` or a hand edit."""
+
+    @pytest.mark.asyncio
+    async def test_a_cli_model_change_moves_the_chat_onto_it(self, bot, watcher):
+        await watcher(_edit(model=NEW_MODEL))
+
+        assert bot.chat.model == ""
+        assert _turn_selection(bot.chat, KiroCrewConfig.load())[0] == NEW_MODEL
+        assert bot.chat._pending_reset_history_key == f"dashboard:{KEY}"
+        bot.state.sessions.reset.assert_not_called()
+        assert bot.chat.reasoning_effort == "max"
+
+    @pytest.mark.asyncio
+    async def test_a_hand_edited_effort_moves_the_chat_onto_it(self, bot, watcher):
+        await watcher(_edit(reasoning_effort="high"))
+
+        assert bot.chat.reasoning_effort == ""
+        assert _turn_selection(bot.chat, KiroCrewConfig.load())[1] == "high"
+        assert bot.chat.model == OLD_MODEL
+
+    @pytest.mark.asyncio
+    async def test_a_repaired_config_tear_does_not_stop_the_chat_following(self, bot, watcher):
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+        # The loader keeps the whole-config flag for the process's life once one
+        # read tore; a dispatched change can only carry it after the repair.
+        torn = frozenset({DEGRADED_WHOLE_CONFIG, f"{DEGRADED_WHOLE_CONFIG}config.json"})
+        await watcher(_edit(model=NEW_MODEL), degraded=torn)
+
+        assert bot.chat.model == ""
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_agents_section_defers_and_clears_nothing(self, bot, watcher):
+        from kiro_crew.config.live import ConfigDeferred
+
+        with pytest.raises(ConfigDeferred):
+            await watcher(_edit(model=NEW_MODEL), degraded=frozenset({"agents"}))
+
+        assert bot.chat.model == OLD_MODEL
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_edit_leaves_the_chat_alone(self, bot, watcher):
+        await watcher(_edit(description="unrelated"))
+
+        assert (bot.chat.model, bot.chat.reasoning_effort) == (OLD_MODEL, "max")
+
+    @pytest.mark.asyncio
+    async def test_the_watcher_does_not_clear_a_dashboard_save_again(self, bot, watcher):
+        before = KiroCrewConfig.load()
+        await _put(bot.app, {"model": NEW_MODEL})
+        assert bot.chat.model == ""
+        # `/model` typed in the chat before the watcher's cycle saw the save.
+        bot.chat.model = OLD_MODEL
+
+        await watcher(before)
+
+        assert bot.chat.model == OLD_MODEL
+
+    @pytest.mark.asyncio
+    async def test_a_save_does_not_clear_again_after_the_watcher_saw_its_write(self, bot, watcher):
+        before = KiroCrewConfig.load()
+
+        async def refresh(*_a, **_kw):
+            # The watcher's cycle lands between the save's write and its own clear,
+            # and a `/model` pick follows it.
+            await watcher(before)
+            assert bot.chat.model == ""
+            bot.chat.model = OLD_MODEL
+
+        bot.state.sessions.refresh_defaults = AsyncMock(side_effect=refresh)
+
+        await _put(bot.app, {"model": NEW_MODEL})
+
+        bot.state.sessions.refresh_defaults.assert_awaited()
+        assert bot.chat.model == OLD_MODEL
+
+    @pytest.mark.asyncio
+    async def test_a_cli_change_after_a_dashboard_save_still_clears(self, bot, watcher):
+        before = KiroCrewConfig.load()
+        await _put(bot.app, {"model": NEW_MODEL})
+        await watcher(before)
+        bot.chat.model = OLD_MODEL
+
+        await watcher(_edit(model=BOT_MODEL))
+
+        assert bot.chat.model == ""
+
+
+@pytest.mark.asyncio
+async def test_an_effort_edited_outside_the_editor_rebuilds_the_factory():
+    # The factory reads a Bot's effort from the config it was built with, so the
+    # chat's reset must not restart before the session manager rebuilds it.
+    from kiro_crew.session_parts import config_apply
+
+    refreshed: list[object] = []
+
+    class _Manager:
+        _CONFIG_SECTIONS = config_apply._CONFIG_SECTIONS
+        _FACTORY_CONFIG_PATHS = config_apply._FACTORY_CONFIG_PATHS
+
+        async def refresh_defaults(self, cfg=None):
+            refreshed.append(cfg)
+
+    new = SimpleNamespace(degraded_sections=frozenset())
+    path = f"agents.{BOT}.reasoning_effort"
+    change = SimpleNamespace(
+        new=new,
+        changed=frozenset({path}),
+        touched=lambda *prefixes: False,
+        under=lambda prefix: frozenset({path}),
+    )
+    await config_apply._on_config_change(_Manager(), change)
+    assert refreshed == [new]
