@@ -814,7 +814,7 @@ async def create_session(
         # reach the shielded close.
         self._unclaimed_new_sessions.add(session_id)
         kas_memory.require_memory_ack(resp, kas_memory_mode)
-        if harness_state is not None:
+        if harness_state is not None or self._harness.checks_stateless_session_start:
             # Before the handle exists, so a session the host refuses never
             # reaches a caller. Its own refusal ends only this session.
             await self._harness.after_session_start(

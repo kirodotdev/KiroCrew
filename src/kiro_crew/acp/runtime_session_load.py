@@ -680,6 +680,7 @@ async def load_session(
         self._fold_mcp_frame(resume_sid, msg)
     if harness_state is not None:
         self._session_harness_states[resume_sid] = harness_state
+    if harness_state is not None or self._harness.checks_stateless_session_start:
         try:
             # A restored session carries the mode it was left in, so it is checked
             # again before its first prompt. A refusal ends only this session.
