@@ -9958,7 +9958,7 @@
       "desc_exit": "Sair da sessão de conversa",
       "desc_experiment": "Ativar ou desativar recursos experimentais",
       "desc_fork": "Continuar em uma cópia desta conversa",
-      "desc_fork_temporary": "Uma cópia que não salva memória",
+      "desc_fork_temporary": "Cópia que nada adiciona à memória",
       "desc_help": "Mostrar os comandos disponíveis",
       "desc_hooks": "Ver os hooks de contexto configurados",
       "desc_issue": "Relatar um problema ou bug",

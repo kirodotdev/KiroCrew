@@ -9958,7 +9958,7 @@
       "desc_exit": "Sortir de la session de chat",
       "desc_experiment": "Activer ou désactiver les fonctionnalités expérimentales",
       "desc_fork": "Continuer dans une copie de cette conversation",
-      "desc_fork_temporary": "Une copie qui ne mémorise rien",
+      "desc_fork_temporary": "Copie qui n'ajoute rien à la mémoire",
       "desc_help": "Afficher les commandes disponibles",
       "desc_hooks": "Voir les hooks de contexte configurés",
       "desc_issue": "Signaler un problème ou un bug",

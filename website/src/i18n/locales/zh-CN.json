@@ -9482,7 +9482,7 @@
       "desc_exit": "退出聊天会话",
       "desc_experiment": "开关实验性功能",
       "desc_fork": "在此对话的副本中继续",
-      "desc_fork_temporary": "不保存记忆的副本",
+      "desc_fork_temporary": "不向记忆添加内容的副本",
       "desc_help": "显示可用命令",
       "desc_hooks": "查看已配置的上下文钩子",
       "desc_issue": "报告问题或缺陷",

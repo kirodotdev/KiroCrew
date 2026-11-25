@@ -9482,7 +9482,7 @@
       "desc_exit": "チャットセッションを終了する",
       "desc_experiment": "実験的機能を切り替える",
       "desc_fork": "この会話のコピーで続ける",
-      "desc_fork_temporary": "メモリに保存しないコピー",
+      "desc_fork_temporary": "メモリに何も追加しないコピー",
       "desc_help": "利用可能なコマンドを表示する",
       "desc_hooks": "構成されたコンテキストフックを表示する",
       "desc_issue": "問題またはバグを報告する",
