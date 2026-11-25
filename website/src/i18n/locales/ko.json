@@ -20204,6 +20204,8 @@
         "retrying_theme_list": "다시 시도 중…",
         "show_unread_dot": "세션 카드에 읽지 않음 점 표시",
         "show_unread_dot_save_failed": "읽지 않음 점 설정을 저장할 수 없습니다.",
+        "expand_linked_items": "세션 카드에서 연결된 항목을 펼쳐서 표시",
+        "expand_linked_items_save_failed": "연결된 항목 설정을 저장할 수 없습니다.",
         "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다.",
         "font_family_option_custom": "사용자 지정",
         "custom_font_family": "사용자 지정 글꼴",

@@ -296,6 +296,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        "dashboard.expand_linked_items",
         # A feature preview only decides whether the dashboard OFFERS an
         # unreleased page or menu entry; the feature's own routes and checks
         # are the same either way.

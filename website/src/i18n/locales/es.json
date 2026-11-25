@@ -21306,6 +21306,8 @@
         "retrying_theme_list": "Reintentando…",
         "show_unread_dot": "Mostrar el punto de no leído en las tarjetas de sesión",
         "show_unread_dot_save_failed": "No se pudo guardar el ajuste del punto de no leído.",
+        "expand_linked_items": "Mostrar desplegados los elementos vinculados en las tarjetas de sesión",
+        "expand_linked_items_save_failed": "No se pudo guardar el ajuste de los elementos vinculados.",
         "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
         "font_family_option_custom": "Personalizada",
         "custom_font_family": "Fuente personalizada",

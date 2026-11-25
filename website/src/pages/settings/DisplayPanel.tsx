@@ -288,6 +288,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     dashboard?: {
       recent_tint_count?: number
       show_unread_dot?: boolean
+      expand_linked_items?: boolean
       command_bar_enabled?: boolean
       milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
@@ -341,6 +342,20 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
     onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
     onSupersede: () => setUnreadDotError(null),
+  }))
+
+  // Sidebar cards start with their linked-items strip open (dashboard.expand_linked_items).
+  // Off by default; only a literal `true` is on, the same rule ChatSidebar reads.
+  const shownExpandLinks = overlay.shown('dashboard.expand_linked_items', mcQ.data?.dashboard?.expand_linked_items === true)
+  const [expandLinksError, setExpandLinksError] = useState<string | null>(null)
+  const expandLinksMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.expand_linked_items', value),
+    path: () => 'dashboard.expand_linked_items',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.expand_linked_items', value),
+    onFailure: () => setExpandLinksError(i18nT('pages.settings.displayPanel.expand_linked_items_save_failed')),
+    onSupersede: () => setExpandLinksError(null),
   }))
 
   // What the quick-search shortcut opens (dashboard.command_bar_enabled): the
@@ -1570,6 +1585,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
               on this panel that navigation would discard. */}
           <ErrorNotice message={unreadDotError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.expand_linked_items')}
+            checked={shownExpandLinks}
+            onChange={v => expandLinksMut.mutate(v)}
+            disabled={expandLinksMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.expand_linked_items"
+          />
+          {/* No hand-off, for the same reason as the unread dot's notice above. */}
+          <ErrorNotice message={expandLinksError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
             <span className="text-[13px] font-semibold text-text" id="display-default-session-color-label">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>

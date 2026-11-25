@@ -19,19 +19,24 @@ type SourceChipsProps = Parameters<typeof SessionSourceChips>[0]
  * The expanded strip sits on a 2px top pad so an expanded row grows by 20px per
  * chip line and stays on the row's 4px grid (the chip line itself is 18px).
  */
-export function SessionStatusLinksLine({ status, links, total, ...chips }: {
+export function SessionStatusLinksLine({ status, links, total, defaultOpen = false, ...chips }: {
   /** The line's left side: the status resolver's output. */
   status: ReactNode
   links: SidebarSourceLink[] | undefined
   total?: number
+  /** `dashboard.expand_linked_items`: start with the strip open. Absent reads as folded. */
+  defaultOpen?: boolean
 } & Omit<SourceChipsProps, 'links' | 'total'>) {
-  const [open, setOpen] = useState(false)
+  // null until the count is pressed, so a setting change still reaches an untouched row;
+  // once pressed, the row keeps its own choice.
+  const [picked, setPicked] = useState<boolean | null>(null)
+  const open = picked ?? defaultOpen
   if (!links || links.length === 0) return <>{status}</>
   return (
     <>
       <div className="flex items-center gap-2 min-w-0" data-testid="session-status-links-line">
         <div className="flex-1 min-w-0">{status}</div>
-        <SessionLinksCount links={links} total={total} expanded={open} onToggle={() => setOpen(o => !o)} />
+        <SessionLinksCount links={links} total={total} expanded={open} onToggle={() => setPicked(!open)} />
       </div>
       <AnimatePresence initial={false}>
         {open && (

@@ -20755,6 +20755,8 @@
         "retrying_theme_list": "Wird erneut versucht…",
         "show_unread_dot": "Ungelesen-Punkt auf Sitzungskarten anzeigen",
         "show_unread_dot_save_failed": "Die Einstellung für den Ungelesen-Punkt konnte nicht gespeichert werden.",
+        "expand_linked_items": "Verknüpfte Elemente auf Sitzungskarten aufgeklappt anzeigen",
+        "expand_linked_items_save_failed": "Die Einstellung für verknüpfte Elemente konnte nicht gespeichert werden.",
         "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
         "font_family_option_custom": "Benutzerdefiniert",
         "custom_font_family": "Benutzerdefinierte Schrift",
