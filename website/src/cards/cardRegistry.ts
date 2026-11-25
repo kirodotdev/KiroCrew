@@ -154,6 +154,10 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     icon: FolderCog, label: () => i18nT('components.folderConfigModal.steering_dirs'),
     primary: () => i18nT('components.changeCards.primary_setting_change'), Body: NoBody,
   },
+  'knowledge.import_sources': {
+    icon: FolderCog, label: () => i18nT('pages.knowledge.index.knowledge_library'),
+    primary: () => i18nT('pages.knowledge.sourcesList.confirm_scan'), Body: NoBody,
+  },
   'workflow.save': {
     icon: Workflow, label: () => i18nT('components.changeCards.kind_workflow_save'),
     primary: () => i18nT('components.changeCards.primary_workflow_save'),

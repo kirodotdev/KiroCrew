@@ -23,6 +23,60 @@ is empty by default, so nothing is fetched until you add a host, for example
 `kirocrew config set knowledge.doc_ingest_hosts '["example.com"]'`. A host matches
 exactly: `example.com` does not cover `docs.example.com`.
 
+## Import several prepared folders
+
+Ask your agent to preview `kind: "knowledge.import_sources"` through
+`propose_change`. Preview reads directory metadata and estimates work; it does
+not register sources, extract content, call a model, or change settings.
+The owner presses **Confirm scan** once to register and confirm the batch through
+the same routes as Add Source. This needs an ordinary user-sent dashboard turn;
+an automated session cannot confirm on the owner's behalf.
+
+Prepare separate folders for reviewed documents/code and current/draft versions.
+Keep provenance sidecars outside them. Each root must be a real absolute local
+directory on the gateway host with 1–1,000 eligible files. A batch accepts at
+most four non-overlapping roots with distinct namespaces. Home, filesystem roots,
+UNC/device paths, root symlinks and sensitive paths are refused.
+
+Example `params` for a reviewed DaSens package (replace paths with real roots):
+
+```json
+{
+  "sources": [
+    {"root": "/srv/prepared/dasens/knowledge-import-ready/main-snapshot", "name": "DaSens main documents", "namespace": "dasens-main", "mode": "documents"},
+    {"root": "/srv/prepared/dasens/knowledge-import-ready/draft-review", "name": "DaSens draft documents", "namespace": "dasens-draft-review", "mode": "documents"},
+    {"root": "/srv/prepared/dasens/knowledge-import-ready/code-main", "name": "DaSens main code", "namespace": "dasens-code-main", "mode": "code"},
+    {"root": "/srv/prepared/dasens/knowledge-import-ready/code-draft-review", "name": "DaSens draft code", "namespace": "dasens-code-draft-review", "mode": "code"}
+  ]
+}
+```
+
+`documents` accepts Markdown/PDF; `code` accepts the intersection of native
+code-extractor and file-reader extensions. Unsupported CAD, archives and code
+extensions stay out; renaming them is not a supported import.
+Discovery inherits native sensitive-path, hidden/build-file and confined-symlink
+checks. Agent instructions, fixtures, stubs, vendor trees and known generated
+headers are excluded. Detected credentials are masked before hashing, model calls
+and storage. This is not a customer-data classifier: review contents beforehand.
+Do not include secrets, customer data or agent summaries.
+
+Preview shows eligible files, estimated chunks/model calls and the configured
+chunk budget per sweep. Confirming uses configured extraction and may consume
+credits. This feature adds no OCR or embedding service.
+
+Repeated proposals reuse compatible sources and preserve file statuses. Pending
+sources are confirmed in place; changed scope, filters or budgets fail as
+`source_conflict`. A completed batch returns `no_change` on repeat.
+If a later step fails, earlier sources remain: correct the input and preview
+again. Do not delete successful sources to retry.
+
+An applied card means indexing was submitted, not that files are searchable.
+Check source file statuses in Knowledge, then search distinctive content in each
+namespace and verify its source URI and file path. Resolve failed files and
+low-text/OCR gaps separately. Commit/page provenance stays in the external
+manifest: the importer does not infer it. Remove sources through Knowledge
+management when needed; the card offers no destructive automatic undo.
+
 ## What search returns
 
 A ranked list of passages, each with a citation naming where it came from:

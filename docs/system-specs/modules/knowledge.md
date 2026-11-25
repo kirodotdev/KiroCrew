@@ -273,6 +273,30 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 
 ## 2. Folder discovery & scan (`folder_watcher.py`)
 
+**Owner-approved batch import**: `knowledge.import_sources` accepts 1–4 explicit
+prepared roots (`root`, `name`, `namespace`, `mode` only).
+`change_card_knowledge.py` validates and plans; the bounded filesystem probe in
+`dashboard/knowledge_import_preview.py` discovers eligible files, estimates native
+cost and snapshots existing source state without registering or ingesting anything.
+Owner Apply replays native `POST /api/knowledge/sources` then
+`POST /api/knowledge/sources/{id}/confirm`; the real create response fills the
+confirm path. Both routes participate in normal card owner middleware.
+No auto-registration setting, identity override or second storage writer is used.
+
+Documents narrow discovery to `.md`/`.pdf`; code uses
+`CODE_EXTS & FileReader.SUPPORTED`. Each source has at most 1,000 eligible files,
+confined file links, instruction/vendor/fixture/generated exclusions, and explicit
+`redact_secrets: true`. The ingestion pipeline applies the existing credential
+scrubber before content hashing, extraction and storage for this opt-in property
+as well as the legacy auto-added source. It does not classify arbitrary private
+data. Native chunk defaults, extraction and file status/error tracking remain
+authoritative. Matching source scope/filter/budget properties are reused; only
+`pending_confirmation` sources receive confirm. Different properties conflict.
+After partial failure a fresh preview adds only missing sources, preserving
+successful and failed file statuses. Confirming starts asynchronous indexing,
+not a completion/retrieval claim. Usage and the four-folder example:
+`src/kiro_crew/docs/knowledge-library-how-it-works.md`.
+
 **Namespace routing**: folder/vault sources read their target namespace from `properties["namespace"]` (default `"default"`). The `add_source` handler accepts namespace either as a top-level body field or inside `properties`; a top-level `namespace` is folded into `properties` (if dict and not already set) before storage. This ensures FolderWatcher and Watcher resolve the correct namespace at scan time via `props.get("namespace", "default")`.
 `FolderWatcher.scan_source(source)` scans a folder-type source under a per-`source_id` `asyncio.Lock` (one scan per source at a time) and returns `{new, changed, deleted, skipped, capped, failed}`.
 

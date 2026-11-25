@@ -23,6 +23,7 @@ import shlex
 import urllib.parse
 from typing import Any
 
+from kiro_crew import change_card_knowledge as _knowledge_import
 from kiro_crew import guide_catalog
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
@@ -385,7 +386,9 @@ def build_preview(
     rows: list[dict[str, Any]]
     changed: dict[str, Any]
     body: Any
-    if kind == KIND_SETTING_CHANGE and "op" in p:
+    if kind == _knowledge_import.KIND:
+        _knowledge_import.preview(p, snapshot, out, fail=_fail, step=step)
+    elif kind == KIND_SETTING_CHANGE and "op" in p:
         if (
             snapshot.get("store") != STORE_DASHBOARD
             or snapshot.get("key") not in DASHBOARD_LIST_KEYS
@@ -1274,6 +1277,7 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
     from their settings page; the card offers no Undo.
     """
     if kind in (
+        _knowledge_import.KIND,
         KIND_MCP_INSTALL,
         KIND_MCP_ADD_CUSTOM,
         KIND_MCP_SERVER,

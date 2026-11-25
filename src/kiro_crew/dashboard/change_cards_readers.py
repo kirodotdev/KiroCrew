@@ -1057,6 +1057,18 @@ async def read_state(
     kind: str, params: dict[str, Any], evidence: list[dict[str, Any]], *, state: Any, app: Any
 ) -> dict[str, Any]:
     """The gateway's read of what *params* replaces (or, with *evidence*, what it made)."""
+    if kind == "knowledge.import_sources":
+        from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
+        from kiro_crew.dashboard.knowledge_import_preview import read_sources
+
+        watcher = (app or {}).get("knowledge_watcher")
+        folder = getattr(watcher, "_folder_watcher", None)
+        try:
+            return await _run_path_probe(read_sources, params, state.knowledge_store, folder)
+        except _PathProbeBusy:
+            raise catalog.CardCatalogError(
+                "path_probe_busy", "folder discovery is busy; try later"
+            ) from None
     if kind in (catalog.KIND_SCHEDULE_CREATE, catalog.KIND_SCHEDULE_UPDATE):
         job_id = params.get("id") if kind == catalog.KIND_SCHEDULE_UPDATE else None
         if kind == catalog.KIND_SCHEDULE_CREATE:

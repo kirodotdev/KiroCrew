@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from kiro_crew import change_card_knowledge as _knowledge_import
 from kiro_crew import change_card_mcp_server as _mcp_server_kind
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
@@ -490,6 +491,14 @@ _AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$")
 KINDS: dict[str, KindDef] = {
     k.id: k
     for k in (
+        KindDef(
+            _knowledge_import.KIND,
+            "Preview up to four explicitly prepared document/code folders. Writes nothing "
+            "until the dashboard owner applies the card. Existing sources are reused; "
+            "configured extraction may consume credits. No auto-add setting is changed.",
+            _knowledge_import.SCHEMA,
+            (),
+        ),
         KindDef(
             KIND_SETTING_CHANGE,
             "Change one setting. Pass `setting_id` from find_setting (preferred) "
@@ -1366,6 +1375,8 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
     p = params
     out: dict[str, Any]
     f: dict[str, Any]
+    if kind == _knowledge_import.KIND:
+        return _knowledge_import.validate(p, fail=_fail)
     if kind == KIND_SETTING_CHANGE:
         _only(p, {"setting_id", "path", "value", "op", "item"})
         if ("setting_id" in p) == ("path" in p):
